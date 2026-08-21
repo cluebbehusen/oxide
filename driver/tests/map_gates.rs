@@ -61,7 +61,10 @@ fn every_map_carries_complete_metadata() {
             );
         }
         assert!(
-            matches!(meta.pace.as_str(), "quick" | "standard" | "large" | "vast"),
+            matches!(
+                meta.pace.as_str(),
+                "quick" | "standard" | "large" | "vast" | "grand"
+            ),
             "{name}: pace '{}' is not a recognized label",
             meta.pace
         );
@@ -78,19 +81,25 @@ fn every_map_carries_complete_metadata() {
 
 #[test]
 fn routes_connect_and_pace_labels_hold() {
-    // Route bands per pace label, in ground BFS steps between Foundry
-    // doorsteps. Disjoint on purpose: an overlapping band gates nothing.
+    // Route bands per pace label, in effective steps between Foundry
+    // doorsteps: ground BFS steps, or the air detour on island pairs
+    // that no ground route serves (the sim's connectivity gate already
+    // guarantees SOME mover connects every pair). Disjoint on purpose:
+    // an overlapping band gates nothing.
     for (name, scenario) in shipped() {
         let report = audit(&scenario).expect("audit builds");
-        let pace = scenario.meta.as_ref().unwrap().pace.clone();
+        let meta = scenario.meta.as_ref().unwrap();
+        let pace = meta.pace.clone();
+        let metric = meta.symmetry == "metric";
         assert!(!report.routes.is_empty(), "{name}: no hostile pair routed");
+        let mut min_effective = usize::MAX;
         for route in &report.routes {
-            let ground = route
-                .ground_steps
-                .unwrap_or_else(|| panic!("{name}: ground sealed"));
             route
                 .air_tiles
                 .unwrap_or_else(|| panic!("{name}: sky sealed"));
+            let effective = route
+                .effective_steps()
+                .unwrap_or_else(|| panic!("{name}: no mover routes the pair"));
             // Bands in weighted tile-equivalents (the sim's own 14/10
             // diagonal costs) — recalibrated when the audit stopped
             // counting hops. Disjoint on purpose.
@@ -101,11 +110,41 @@ fn routes_connect_and_pace_labels_hold() {
                 // 0.10: matches should run tens of minutes — the vast
                 // class exists to hold maps big enough to make it so.
                 "vast" => 91..=150,
+                // 0.15: the grand class — island wars, 12-seat FFAs,
+                // maps whose matches are campaigns.
+                "grand" => 151..=400,
+                other => panic!("{name}: unknown pace '{other}'"),
+            };
+            min_effective = min_effective.min(effective);
+            if metric {
+                // A free-for-all ring spans near and far neighbors by
+                // construction; the pace label is the FIRST-contact
+                // clock, so the floor binds every pair and the band
+                // binds the nearest one (checked after the loop).
+                assert!(
+                    effective >= *band.start(),
+                    "{name}: pace '{pace}' floor {} broken by a {effective}-step pair",
+                    band.start()
+                );
+            } else {
+                assert!(
+                    band.contains(&effective),
+                    "{name}: pace '{pace}' promises {band:?} effective steps, measured {effective}"
+                );
+            }
+        }
+        if metric {
+            let band = match pace.as_str() {
+                "quick" => 8..=28,
+                "standard" => 29..=52,
+                "large" => 53..=90,
+                "vast" => 91..=150,
+                "grand" => 151..=400,
                 other => panic!("{name}: unknown pace '{other}'"),
             };
             assert!(
-                band.contains(&ground),
-                "{name}: pace '{pace}' promises {band:?} ground steps, measured {ground}"
+                band.contains(&min_effective),
+                "{name}: pace '{pace}' promises first contact in {band:?}, measured {min_effective}"
             );
         }
     }
@@ -113,13 +152,16 @@ fn routes_connect_and_pace_labels_hold() {
 
 #[test]
 fn artillery_pressure_stays_bounded() {
-    // Past ~0.5 the map is a siege range, not a battlefield. Quick
-    // brawl maps tolerate more by design (Scrapyard is the honest
-    // ceiling); standard and large must leave room to maneuver.
+    // The caps preserve the same minimum-route floors the 0.10 caps
+    // enforced with the Bombard's 9.5 reach (quick >= ~14.6 steps,
+    // everything else >= 19): the 0.15 Avalanche stretched the longest
+    // reach to 14, which rescales the ratio, not the geometry the maps
+    // must keep. A tier-three siege piece on a knife map is a late
+    // commitment, not the opening problem the old cap policed.
     for (name, scenario) in shipped() {
         let report = audit(&scenario).expect("audit builds");
         let pace = scenario.meta.as_ref().unwrap().pace.clone();
-        let cap = if pace == "quick" { 0.65 } else { 0.50 };
+        let cap = if pace == "quick" { 0.96 } else { 0.74 };
         for route in &report.routes {
             let Some(pressure) = route.artillery_pressure else {
                 continue;
@@ -137,6 +179,15 @@ fn spawns_are_fair_to_every_seat() {
     for (name, scenario) in shipped() {
         let report = audit(&scenario).expect("audit builds");
         let seats = &report.seats;
+        let symmetry = scenario
+            .meta
+            .as_ref()
+            .map(|m| m.symmetry.clone())
+            .unwrap_or_default();
+        if symmetry == "metric" {
+            metric_fairness(&name, seats);
+            continue;
+        }
         let first = &seats[0];
         for seat in seats.iter().skip(1) {
             assert_eq!(
@@ -177,13 +228,85 @@ fn spawns_are_fair_to_every_seat() {
                     );
                 }
             }
-            n => panic!("{name}: unexpected seat count {n}"),
+            // 0.15 seat counts beyond the legacy lanes: mirrored maps
+            // still hold room and clock exactly (asserted above); scrap
+            // holds within the cross-parity lean the 4p rule tolerates.
+            _ => {
+                for i in 1..seats.len() {
+                    assert!(
+                        gap(0, i) <= 1.5,
+                        "{name}: scrap leans {:.2} against seat {i}",
+                        gap(0, i)
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The free-for-all fairness class: no tile mirror to lean on, so every
+/// seat's measured position must sit inside a tolerance of the field's
+/// mean — room within 5%, first-contact clock within 15%, scrap within
+/// 2.5 tiles, and (when the map has frames at all) extractor access
+/// within 20%.
+fn metric_fairness(name: &str, seats: &[oxide_driver::audit::SeatAudit]) {
+    let mean = |xs: &[f64]| xs.iter().sum::<f64>() / xs.len() as f64;
+    let rooms: Vec<f64> = seats.iter().map(|s| s.reachable_tiles as f64).collect();
+    let room_mean = mean(&rooms);
+    for s in seats {
+        let dev = (s.reachable_tiles as f64 - room_mean).abs() / room_mean;
+        assert!(
+            dev <= 0.05,
+            "{name}: seat {} rooms {:.1}% off the field",
+            s.seat,
+            dev * 100.0
+        );
+    }
+    let clocks: Vec<f64> = seats
+        .iter()
+        .map(|s| {
+            s.nearest_enemy_route
+                .unwrap_or_else(|| panic!("{name}: seat {} sealed off", s.seat)) as f64
+        })
+        .collect();
+    let clock_mean = mean(&clocks);
+    for (s, clock) in seats.iter().zip(&clocks) {
+        let dev = (clock - clock_mean).abs() / clock_mean;
+        assert!(
+            dev <= 0.15,
+            "{name}: seat {} meets the enemy {:.1}% off the field's clock",
+            s.seat,
+            dev * 100.0
+        );
+    }
+    let scrap_mean = mean(&seats.iter().map(|s| s.nearest_scrap).collect::<Vec<_>>());
+    for s in seats {
+        assert!(
+            (s.nearest_scrap - scrap_mean).abs() <= 2.5,
+            "{name}: seat {} digs {:.2} tiles off the field's scrap",
+            s.seat,
+            (s.nearest_scrap - scrap_mean).abs()
+        );
+    }
+    if seats.iter().all(|s| s.nearest_extractor.is_some()) {
+        let frames: Vec<f64> = seats.iter().map(|s| s.nearest_extractor.unwrap()).collect();
+        let frame_mean = mean(&frames);
+        for (s, d) in seats.iter().zip(&frames) {
+            let dev = (d - frame_mean).abs() / frame_mean.max(1.0);
+            assert!(
+                dev <= 0.20,
+                "{name}: seat {} reaches its extractor {:.1}% off the field",
+                s.seat,
+                dev * 100.0
+            );
         }
     }
 }
 
 #[test]
 fn every_map_mirrors_its_paired_seats_entry_by_entry() {
+    // The metric class opts out: its fairness is measured, not
+    // mirrored (see `metric_fairness`).
     // The authoring rule the 0.7 mirror bug broke: a paired seat's
     // starting units must be the entry-by-entry 180-degree image of its
     // partner's, because ids are handed out in list order and every
@@ -198,6 +321,13 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
     // Kinds compare by Role, not by kind: a launch-time retint and any
     // future faction-varied starting unit must still read as a mirror.
     for (name, scenario) in shipped() {
+        if scenario
+            .meta
+            .as_ref()
+            .is_some_and(|m| m.symmetry == "metric")
+        {
+            continue;
+        }
         let (map, anchors) =
             Map::parse(&scenario.map).unwrap_or_else(|e| panic!("{name}: map parses ({e})"));
         let (w, h) = (map.width(), map.height());
@@ -219,7 +349,7 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
             );
         }
 
-        let (fw, fh) = BuildingKind::Foundry.stats().size;
+        let (fw, fh) = BuildingKind::Foundry.base_stats().size;
         let anchor = |seat: PlayerId| {
             anchors
                 .iter()
@@ -321,7 +451,7 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
                     a.kind, b.kind,
                     "{name}: seat {index}'s structure #{k} differs in kind from its mirror's"
                 );
-                let (bw, bh) = a.kind.stats().size;
+                let (bw, bh) = a.kind.base_stats().size;
                 assert_eq!(
                     (b.x, b.y),
                     (w - bw - a.x, h - bh - a.y),

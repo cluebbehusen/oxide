@@ -28,6 +28,8 @@ const ROCK: u32 = 0x52525E;
 const PEAK: u32 = 0x22212A;
 const PEAK_FACE: u32 = 0x34333D;
 const PEAK_LIP: u32 = 0x57545F;
+const PIT: u32 = 0x0B0B10;
+const PIT_RIM: u32 = 0x1B1B22;
 const SCRAP_FULL: u32 = 0xD9A441;
 const SCRAP_LOW: u32 = 0x8C6A2F;
 const HP_BACK: u32 = 0x141418;
@@ -97,6 +99,12 @@ pub fn render_state(state: &State) -> Pixmap {
                 fill_rect(&mut pixmap, x, y + 7.0, TILE_PX, 1.0, PEAK_LIP);
                 fill_rect(&mut pixmap, x + 2.0, y + 3.0, 5.0, 1.0, PEAK_FACE);
             }
+            // Bottomless pits fall away to near-black, with a thin lit rim
+            // along the top edge so the void reads as depth, not paint.
+            (Terrain::Pit, _) => {
+                fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, PIT);
+                fill_rect(&mut pixmap, x, y, TILE_PX, 1.0, PIT_RIM);
+            }
             // Rubble: a faint lightening so the goldens register it.
             // Wreck salvage: a small dim-amber square, unmistakably not a
             // node (nodes render bigger and brighter below).
@@ -139,7 +147,7 @@ pub fn render_state(state: &State) -> Pixmap {
 
     for building in state.buildings() {
         let color = faction_color(state.player(building.player).faction);
-        let (w, h) = building.kind.stats().size;
+        let (w, h) = building.stats().size;
         let (x, y) = (
             building.anchor.x as f32 * TILE_PX,
             building.anchor.y as f32 * TILE_PX,
@@ -156,7 +164,7 @@ pub fn render_state(state: &State) -> Pixmap {
             y - 4.0,
             pw,
             building.hp,
-            building.kind.stats().max_hp,
+            building.stats().max_hp,
         );
     }
 

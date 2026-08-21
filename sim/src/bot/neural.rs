@@ -3,12 +3,15 @@
 //! The sim may not touch floats, so a shipped network is a fixed-point
 //! artifact produced by `tools/train/export.py`: Q12 weights, a Q12
 //! tanh lookup table, per-feature reciprocal scales. Everything here is
-//! `i64` adds, multiplies, and shifts — bit-identical on every platform,
-//! which is what lets a neural tier live inside replays and hash
-//! fixtures like any other command source. The quantized network is a
-//! slightly different player than the float one that trained (12
-//! fractional bits), so promotion tournaments run against *this* bot,
-//! not the torch checkpoint.
+//! `i64` adds, multiplies, and shifts — bit-identical on every
+//! platform, which is what lets a neural policy live inside replays
+//! and hash fixtures like any other command source. The quantized
+//! network is a slightly different player than the float one that
+//! trained (12 fractional bits), so promotion tournaments run against
+//! *this* bot, not the torch checkpoint. The shipped artifact is the
+//! promoted 0.15 actor embedded as `ladder_weights.json`; see
+//! `.agents/skills/bot-training/references/artifact-lineage.md` for
+//! its provenance and the battery it passed.
 
 use super::gym::{
     ACTION_COUNT, ACTION_HEADS, ActionPlan, Decision, FEATURE_COUNT, GYM_VERSION, GymBot,
@@ -22,10 +25,6 @@ use chassis::rng::Pcg32;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::fmt::Write as _;
-use std::sync::OnceLock;
-
-/// The decision cadence the shipped ladder network trained at.
-pub const LADDER_CADENCE: u64 = 16;
 
 /// Stream selector a seat's hesitation rng runs on: this base plus the
 /// player index. Every shipped path uses that derivation; the constant
@@ -87,11 +86,11 @@ pub fn deal_aggression(scenario_seed: u64, player: PlayerId) -> u32 {
     }
 }
 
-/// The shipped difficulty ladder: one trained network, four execution
-/// handicaps calibrated against the scripted tiers. Difficulty changes
-/// hesitation and reaction cadence, while the network receives the
-/// measured strong conditioning for the selected strategy. This keeps a
-/// non-monotonic learned conditioning input from inverting named levels.
+/// The player-facing difficulty ladder: one trained network, four
+/// execution handicaps. Difficulty changes hesitation and reaction
+/// cadence, never rules or information. The enum is authored scenario
+/// data (`BotConfig.level`) and survives the 0.14 actor's deletion;
+/// the retrained actor re-measures every handicap before promotion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Level {
@@ -110,10 +109,10 @@ impl Level {
     pub const LADDER: [Level; 4] = [Level::Easy, Level::Medium, Level::Hard, Level::Expert];
 
     /// The historical raw skill profile for dial-isolation experiments.
-    /// Named ladder play does not feed this value to the network: learned
-    /// skill conditioning is not monotonic, so [`NeuralBot::ladder`] uses
-    /// a measured strategy-specific condition and takes only hesitation
-    /// and cadence from the level.
+    /// Named ladder play does not feed this value to the network:
+    /// learned skill conditioning is not monotonic, so ladder
+    /// constructors use a measured strategy-specific condition and take
+    /// only hesitation and cadence from the level.
     pub fn skill(self) -> u32 {
         match self {
             Level::Easy => 300,
@@ -127,35 +126,42 @@ impl Level {
     /// profile API's legacy zero sentinel, this is an exact rate: Expert
     /// therefore represents zero hesitation rather than deriving it from
     /// the policy-conditioning skill.
+    ///
+    /// Re-measured for the 0.15.2 actor with the ladder handicap
+    /// sweep: the auto-2 champion holds 39-40/40 on the Overseer
+    /// yardstick everywhere below 650 per mille (the previous actor's
+    /// Hard rung saturated outright), and strength still cliffs
+    /// between 800 and 900. Hesitation stays the ladder's real lever;
+    /// the rungs sit at 16/29/37/40 wins with strictly falling tick
+    /// totals. Hard and Medium now share a hesitation rate and differ
+    /// on the clock below.
+    ///
+    /// The 0.15.5 evolution champion re-measures at 15/30/37/40 on the
+    /// same sweep with tick totals still strictly falling — its gains
+    /// over the prior actor are anti-rush, not yardstick strength, so
+    /// every rung carries over unchanged.
     pub fn hesitation_permille(self) -> u32 {
         match self {
-            Level::Easy => 350,
-            Level::Medium => 190,
-            Level::Hard => 5,
+            Level::Easy => 900,
+            Level::Medium => 800,
+            Level::Hard => 800,
             Level::Expert => 0,
         }
     }
 
     /// How often this level thinks, in ticks — the second execution
-    /// handicap. Calibrated against aggressive scripted yardsticks,
-    /// because slower neural mirrors can turtle into an advantage and
-    /// hide an inverted ladder. The response has sharp local optima, so
-    /// the 160-match, two-style gate and a disjoint-seed holdout measure
-    /// these exact values rather than assuming faster is always stronger.
+    /// handicap. Measured for the 0.15 actors: the cadence response
+    /// saturates past 64 ticks (identical slates), and 34 is both the
+    /// strongest and fastest-finishing full-strength point. Medium
+    /// alone thinks at 48 — at the shared 800-per-mille hesitation the
+    /// slower clock is exactly what separates it from Hard (29 wins
+    /// against 37 on the champion's slate).
     pub fn cadence(self) -> u64 {
         match self {
-            Level::Easy => 56,
-            // Re-metered after ladder policy conditioning was decoupled
-            // from difficulty. At 36, Medium stays strictly between Easy
-            // and Hard on both the pinned two-style yardstick and a
-            // disjoint-seed holdout; 26 collapses that holdout margin.
-            Level::Medium => 36,
-            // Defense placement moved both upper-rung optima. The cadence
-            // response is discontinuous: 34 with Hard's small hesitation and
-            // 37 without it keep the pinned slate, a disjoint holdout, and the
-            // canonical-profile cup ordered without sacrificing decisiveness.
+            Level::Easy => 34,
+            Level::Medium => 48,
             Level::Hard => 34,
-            Level::Expert => 37,
+            Level::Expert => 34,
         }
     }
 }
@@ -450,7 +456,7 @@ impl QuantNet {
     /// If the embedded artifact doesn't match this build's gym
     /// contract — a build error surfaced at first use, caught by tests.
     pub fn ladder() -> &'static QuantNet {
-        static NET: OnceLock<QuantNet> = OnceLock::new();
+        static NET: std::sync::OnceLock<QuantNet> = std::sync::OnceLock::new();
         NET.get_or_init(|| {
             QuantNet::from_json(include_str!("ladder_weights.json"))
                 .expect("embedded ladder weights match the gym contract")
@@ -466,13 +472,6 @@ impl QuantNet {
             validate_lineage(lineage)?;
         }
         if dto.gym_version != GYM_VERSION {
-            if dto.gym_version == 7 && GYM_VERSION == 8 {
-                return Err(
-                    "weights speak gym v7, sim speaks v8; migrate the artifact with \
-                     `cd tools/train && uv run widen.py --src OLD.json --out NEW.json`"
-                        .into(),
-                );
-            }
             return Err(format!(
                 "weights speak gym v{}, sim speaks v{GYM_VERSION}",
                 dto.gym_version
@@ -616,18 +615,16 @@ impl QuantNet {
         a + (((b - a) * frac) >> 7)
     }
 
-    fn affine(w: &[Vec<i32>], b: &[i32], input: &[i64]) -> Vec<i64> {
-        w.iter()
-            .zip(b)
-            .map(|(row, bias)| {
-                let acc: i64 = row
-                    .iter()
-                    .zip(input)
-                    .map(|(wi, xi)| i64::from(*wi) * xi)
-                    .sum();
-                (acc >> Q) + i64::from(*bias)
-            })
-            .collect()
+    fn affine_into(w: &[Vec<i32>], b: &[i32], input: &[i32], out: &mut Vec<i64>) {
+        out.clear();
+        out.extend(w.iter().zip(b).map(|(row, bias)| {
+            let acc: i64 = row
+                .iter()
+                .zip(input)
+                .map(|(wi, xi)| i64::from(*wi) * i64::from(*xi))
+                .sum();
+            (acc >> Q) + i64::from(*bias)
+        }));
     }
 
     /// Number of conditioning knobs this artifact expects.
@@ -635,35 +632,74 @@ impl QuantNet {
         self.conditioning
     }
 
-    /// Q12 logits for gym features plus conditioning knobs (in 0..=1000;
-    /// empty for unconditioned artifacts).
-    pub fn logits(&self, features: &[i64; FEATURE_COUNT], knobs: &[i64]) -> Vec<i64> {
+    /// Q12 logits for gym features plus conditioning knobs, written
+    /// into `scratch` (the result lands in `scratch.front`). One
+    /// forward pass allocates nothing once the buffers have reached
+    /// the widest layer — inference runs thousands of times per
+    /// second across matches and the gym, and per-layer vectors were
+    /// measurable in match profiles.
+    fn logits_into(
+        &self,
+        features: &[i64; FEATURE_COUNT],
+        knobs: &[i64],
+        scratch: &mut InferenceScratch,
+    ) {
         // The two saturations that close the kernel's overflow class:
         // an observation is a number the sim computed, not one the
         // artifact's contract covers, so it is held inside the
         // envelope the accumulator bound was derived for. Neither can
         // bind on a reachable observation — MAX_ACT is 262144.0 once
         // normalized, five orders past any feature the gym reports.
-        let mut act: Vec<i64> = features
-            .iter()
-            .chain(knobs.iter().take(self.conditioning))
-            .zip(&self.recips)
-            .map(|(&f, r)| ((f.clamp(-MAX_FEATURE, MAX_FEATURE) * r) >> Q).clamp(-MAX_ACT, MAX_ACT))
-            .collect();
+        //
+        // Activations live as i32 — every value is clamp- or
+        // tanh-bounded well inside it — so the accumulator's multiply
+        // is a widening i32*i32 -> i64, which the target has a single
+        // instruction for. The pinned Q12 golden proves the
+        // arithmetic is unchanged.
+        let act = &mut scratch.front;
+        act.clear();
+        act.extend(
+            features
+                .iter()
+                .chain(knobs.iter().take(self.conditioning))
+                .zip(&self.recips)
+                .map(|(&f, r)| {
+                    ((f.clamp(-MAX_FEATURE, MAX_FEATURE) * r) >> Q).clamp(-MAX_ACT, MAX_ACT) as i32
+                }),
+        );
         act.resize(self.recips.len(), 0);
         for (w, b) in &self.layers {
-            act = Self::affine(w, b, &act)
-                .into_iter()
-                .map(|x| self.tanh(x))
-                .collect();
+            Self::affine_into(w, b, &scratch.front, &mut scratch.raw);
+            scratch.back.clear();
+            scratch
+                .back
+                .extend(scratch.raw.iter().map(|&x| self.tanh(x) as i32));
+            std::mem::swap(&mut scratch.front, &mut scratch.back);
         }
-        Self::affine(&self.head.0, &self.head.1, &act)
+        Self::affine_into(&self.head.0, &self.head.1, &scratch.front, &mut scratch.raw);
     }
 
-    /// Greedy masked action plan: one highest-logit legal choice per
-    /// head, ties to the first action in that head's declared order.
-    pub fn act(&self, decision: &Decision, knobs: &[i64]) -> ActionPlan {
-        let logits = self.logits(&decision.features, knobs);
+    /// Q12 logits for gym features plus conditioning knobs (in 0..=1000;
+    /// empty for unconditioned artifacts). Allocating convenience over
+    /// [`Self::act_with`]'s scratch path; instruments and tests use it,
+    /// match loops should not.
+    pub fn logits(&self, features: &[i64; FEATURE_COUNT], knobs: &[i64]) -> Vec<i64> {
+        let mut scratch = InferenceScratch::default();
+        self.logits_into(features, knobs, &mut scratch);
+        scratch.raw
+    }
+
+    /// Greedy masked action plan through caller-owned scratch: one
+    /// highest-logit legal choice per head, ties to the first action
+    /// in that head's declared order.
+    pub fn act_with(
+        &self,
+        decision: &Decision,
+        knobs: &[i64],
+        scratch: &mut InferenceScratch,
+    ) -> ActionPlan {
+        self.logits_into(&decision.features, knobs, scratch);
+        let logits = &scratch.raw;
         let mut choices = ActionPlan::default().indices();
         for (head_index, head) in ACTION_HEADS.iter().enumerate() {
             let mut best: Option<(i64, usize)> = None;
@@ -678,6 +714,23 @@ impl QuantNet {
         }
         ActionPlan::from_indices(choices)
     }
+
+    /// Greedy masked action plan with one-shot scratch — the
+    /// allocating convenience for tests and one-off calls.
+    pub fn act(&self, decision: &Decision, knobs: &[i64]) -> ActionPlan {
+        let mut scratch = InferenceScratch::default();
+        self.act_with(decision, knobs, &mut scratch)
+    }
+}
+
+/// Reusable forward-pass buffers for [`QuantNet`] inference. Owned by
+/// whoever runs decisions in a loop (one per bot); the buffers grow to
+/// the widest layer once and never allocate again.
+#[derive(Debug, Clone, Default)]
+pub struct InferenceScratch {
+    front: Vec<i32>,
+    back: Vec<i32>,
+    raw: Vec<i64>,
 }
 
 fn profile_knobs(
@@ -761,6 +814,7 @@ pub struct NeuralBot {
     knobs: Vec<i64>,
     blunder_permille: u32,
     rng: Pcg32,
+    scratch: InferenceScratch,
 }
 
 impl NeuralBot {
@@ -886,27 +940,14 @@ impl NeuralBot {
             knobs: profile_knobs(skill, aggression, faction, facets).to_vec(),
             blunder_permille: blunder,
             rng: Pcg32::new(scenario_seed, stream),
+            scratch: InferenceScratch::default(),
         }
     }
 
-    /// Backward-compatible raw ladder bot with embedded weights and zero
-    /// named-profile facets. `aggression` is 0..=1000; `None` uses the
-    /// deterministic legacy raw deal.
-    pub fn ladder(
-        player: PlayerId,
-        scenario_seed: u64,
-        level: Level,
-        aggression: Option<u32>,
-        faction: Faction,
-    ) -> Self {
-        Self::ladder_with_net(
-            player,
-            scenario_seed,
-            level,
-            aggression,
-            faction,
-            QuantNet::ladder().clone(),
-        )
+    /// Installs the scenario's authored start anchors — public map
+    /// knowledge the search consults before sweeping darkness.
+    pub fn set_start_anchors(&mut self, anchors: Vec<chassis::grid::TilePos>) {
+        self.gym.set_start_anchors(anchors);
     }
 
     /// The shipped ladder wrapper for one construction-time named profile.
@@ -1101,6 +1142,35 @@ impl NeuralBot {
         )
     }
 
+    /// The raw zero-facet ladder wrapper with both execution handicaps
+    /// explicit. Promotion's handicap-recalibration sweep measures a
+    /// candidate across the (hesitation, cadence) plane under exactly
+    /// the shipped ladder conditioning; [`Level`] then pins the
+    /// measured rungs.
+    pub fn ladder_with_net_at_execution(
+        player: PlayerId,
+        scenario_seed: u64,
+        aggression: Option<u32>,
+        faction: Faction,
+        net: QuantNet,
+        hesitation_permille: u32,
+        cadence: u64,
+    ) -> Self {
+        let aggression = aggression.unwrap_or_else(|| deal_aggression(scenario_seed, player));
+        Self::profile(
+            player,
+            cadence,
+            net,
+            ladder_policy_skill(aggression),
+            aggression,
+            faction,
+            ProfileFacets::ZERO,
+            Some(hesitation_permille),
+            scenario_seed,
+            DECISION_STREAM_BASE + u64::from(player.0),
+        )
+    }
+
     /// Back-compat constructor: an explicit blunder dial, straight knobs.
     pub fn with_blunder(
         player: PlayerId,
@@ -1132,7 +1202,7 @@ impl NeuralBot {
             return Vec::new();
         }
         let decision = self.gym.decision(state);
-        let mut plan = self.net.act(&decision, &self.knobs);
+        let mut plan = self.net.act_with(&decision, &self.knobs, &mut self.scratch);
         if self.blunder_permille > 0 && self.rng.next_below(1000) < self.blunder_permille {
             // A blunder is HESITATION — the commander lets a decision
             // window pass — not a wrong action. The 0.10 campaign
@@ -1153,7 +1223,43 @@ impl NeuralBot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::{PROFILE_TEAM_ROLES, canonical_profiles};
+    use crate::bot::canonical_profiles;
+
+    /// A hand-built v9 artifact: identity-ish single layer. The
+    /// constructor contracts under test read knobs, cadence, and rng —
+    /// any shape-valid net serves them.
+    fn tiny_net() -> QuantNet {
+        let inputs = FEATURE_COUNT + CONDITIONING_COUNT;
+        let lut: Vec<i32> = (0..=512).map(|i| (i - 256) * 16).collect();
+        let trunk_w: Vec<Vec<i32>> = (0..4)
+            .map(|o| {
+                let mut row = vec![0; inputs];
+                row[o] = 4096;
+                row
+            })
+            .collect();
+        let head_w: Vec<Vec<i32>> = (0..ACTION_COUNT)
+            .map(|o| {
+                let mut row = vec![0; 4];
+                if o < 4 {
+                    row[o] = 4096;
+                }
+                row
+            })
+            .collect();
+        let artifact = serde_json::json!({
+            "gym_version": GYM_VERSION,
+            "q_bits": 12,
+            "features": FEATURE_COUNT,
+            "conditioning": CONDITIONING_COUNT,
+            "actions": ACTION_COUNT,
+            "recips": vec![1i64 << 24; inputs],
+            "tanh_lut": lut,
+            "layers": [{"w": trunk_w, "b": vec![0; 4]}],
+            "head": {"w": head_w, "b": vec![0; ACTION_COUNT]},
+        });
+        QuantNet::from_json(&artifact.to_string()).expect("the tiny artifact is shape-valid")
+    }
 
     /// The numeric contract's arithmetic, checked rather than argued:
     /// if a future ceiling rises past what `i64` holds, this fails
@@ -1209,55 +1315,6 @@ mod tests {
     }
 
     #[test]
-    fn promoted_ladder_carries_every_trained_profile_column() {
-        let dto: ArtifactDto =
-            serde_json::from_str(include_str!("ladder_weights.json")).expect("embedded artifact");
-        assert_eq!(dto.gym_version, 8);
-        assert_eq!(dto.conditioning, 12);
-        assert_eq!(dto.recips.len(), FEATURE_COUNT + CONDITIONING_COUNT);
-        for column in FEATURE_COUNT + 7..FEATURE_COUNT + CONDITIONING_COUNT {
-            assert!(
-                dto.layers[0].w.iter().any(|row| row[column] != 0),
-                "promoted profile column {column} must carry learned coefficients"
-            );
-        }
-        assert_eq!(
-            QuantNet::ladder().digest(),
-            0xc36f_ce50_824b_9fb5,
-            "the embedded policy must remain the fully gated promotion artifact"
-        );
-    }
-
-    #[test]
-    fn named_profile_conditioning_changes_promoted_logits() {
-        let net = QuantNet::ladder();
-        let mut features = [0; FEATURE_COUNT];
-        for (index, feature) in features.iter_mut().enumerate() {
-            *feature = (index as i64 * 97) % 1_001;
-        }
-        let mut changed = 0;
-
-        for profile in canonical_profiles() {
-            for role in PROFILE_TEAM_ROLES {
-                for faction in [Faction::Ferrous, Faction::Cupric] {
-                    let named = ladder_condition_values_with_facets(
-                        profile.aggression,
-                        faction,
-                        profile.facets.with_role(role),
-                    );
-                    let raw = ladder_condition_values(profile.aggression, faction);
-                    changed +=
-                        usize::from(net.logits(&features, &named) != net.logits(&features, &raw));
-                }
-            }
-        }
-        assert!(
-            changed > 0,
-            "the promoted artifact must consume named profile facets"
-        );
-    }
-
-    #[test]
     fn legacy_raw_deal_stays_inside_the_promoted_safe_window() {
         let mut saw_industry = false;
         let mut saw_combined = false;
@@ -1293,7 +1350,7 @@ mod tests {
                     level,
                     Some(aggression),
                     Faction::Ferrous,
-                    QuantNet::ladder().clone(),
+                    tiny_net(),
                 );
                 assert_eq!(raw.knobs[0], policy_skill);
                 assert_eq!(raw.blunder_permille, level.hesitation_permille());
@@ -1305,7 +1362,7 @@ mod tests {
                     level,
                     Some(aggression),
                     Faction::Ferrous,
-                    QuantNet::ladder().clone(),
+                    tiny_net(),
                     DECISION_STREAM_BASE,
                 );
                 assert_eq!(explicit_stream.knobs, raw.knobs);
@@ -1334,14 +1391,14 @@ mod tests {
             17,
             profile,
             Faction::Cupric,
-            QuantNet::ladder().clone(),
+            tiny_net(),
         );
         let faster = NeuralBot::ladder_resolved_with_net_at_cadence(
             PlayerId(0),
             17,
             profile,
             Faction::Cupric,
-            QuantNet::ladder().clone(),
+            tiny_net(),
             11,
         );
 
@@ -1359,7 +1416,7 @@ mod tests {
             Level::Medium,
             Some(550),
             Faction::Ferrous,
-            QuantNet::ladder().clone(),
+            tiny_net(),
         );
         let crossed = NeuralBot::ladder_with_net_at_stream(
             PlayerId(0),
@@ -1367,7 +1424,7 @@ mod tests {
             Level::Medium,
             Some(550),
             Faction::Ferrous,
-            QuantNet::ladder().clone(),
+            tiny_net(),
             DECISION_STREAM_BASE + 1,
         );
         assert_eq!(crossed.knobs, raw.knobs);
@@ -1394,14 +1451,14 @@ mod tests {
             17,
             profile,
             Faction::Ferrous,
-            QuantNet::ladder().clone(),
+            tiny_net(),
         );
         let crossed = NeuralBot::ladder_resolved_with_net_at_stream(
             PlayerId(0),
             17,
             profile,
             Faction::Ferrous,
-            QuantNet::ladder().clone(),
+            tiny_net(),
             DECISION_STREAM_BASE + 1,
         );
         assert_eq!(crossed.knobs, named.knobs);
@@ -1415,8 +1472,8 @@ mod tests {
     fn exact_zero_hesitation_does_not_change_the_legacy_profile_api() {
         let legacy = NeuralBot::with_profile(
             PlayerId(0),
-            LADDER_CADENCE,
-            QuantNet::ladder().clone(),
+            16,
+            tiny_net(),
             620,
             300,
             Faction::Ferrous,
@@ -1425,8 +1482,8 @@ mod tests {
         );
         let exact = NeuralBot::with_profile_hesitation(
             PlayerId(0),
-            LADDER_CADENCE,
-            QuantNet::ladder().clone(),
+            16,
+            tiny_net(),
             620,
             300,
             Faction::Ferrous,

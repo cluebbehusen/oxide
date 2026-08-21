@@ -352,8 +352,8 @@ fn a_dead_building_splits_its_wreck_across_the_footprint() {
             .iter()
             .any(|e| matches!(e, Event::BuildingDestroyed { .. }))
     });
-    let expected =
-        BuildingKind::Turret.stats().construction.unwrap().cost * WRECK_VALUE_NUM / WRECK_VALUE_DEN;
+    let expected = BuildingKind::Turret.base_stats().construction.unwrap().cost * WRECK_VALUE_NUM
+        / WRECK_VALUE_DEN;
     let found = state.map().wreck_at(anchor);
     assert!(
         found > 0 && found <= expected,
@@ -498,6 +498,23 @@ fn standing(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
     BuildingSpec { player, kind, x, y }
 }
 
+/// Foundry drip credits earned between `from_tick` and `state`'s current
+/// tick by a single-Foundry seat — exact-bank assertions add this so
+/// salvage/repair accounting and the always-on floor stay separately
+/// verifiable.
+fn drips_between(from_tick: u64, state: &oxide_sim::State) -> u32 {
+    let period = oxide_sim::stats::FOUNDRY_DRIP_PERIOD;
+    let start = oxide_sim::stats::FOUNDRY_DRIP_START_TICK;
+    let credits_by = |tick: u64| {
+        if tick < start {
+            0
+        } else {
+            tick / period - (start / period - 1)
+        }
+    };
+    u32::try_from(credits_by(state.current_tick()) - credits_by(from_tick)).unwrap()
+}
+
 #[test]
 fn a_full_health_salvage_banks_exactly_its_permille() {
     let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 7, 2)]);
@@ -513,6 +530,7 @@ fn a_full_health_salvage_banks_exactly_its_permille() {
         .unwrap()
         .id;
     let bank_before = state.player(PlayerId(0)).scrap;
+    let tick_before = state.current_tick();
     state.tick(&[cmd(
         0,
         Command::Salvage {
@@ -522,13 +540,13 @@ fn a_full_health_salvage_banks_exactly_its_permille() {
         },
     )]);
     let events = run_until(&mut state, 800, |s, _| s.building(turret).is_none());
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     let cost = stats.construction.unwrap().cost;
     let refund = u32::try_from(u64::from(cost) * SALVAGE_REFUND_PERMILLE / 1000).unwrap();
     assert_eq!(
         state.player(PlayerId(0)).scrap,
-        bank_before + refund,
-        "a full-health salvage banks exactly cost * permille"
+        bank_before + refund + drips_between(tick_before, &state),
+        "a full-health salvage banks exactly cost * permille (plus the drip)"
     );
     assert!(
         events.iter().any(|e| matches!(
@@ -566,7 +584,7 @@ fn an_interrupted_salvage_credits_only_the_hp_it_drained() {
         .unwrap()
         .id;
     let bank_before = state.player(PlayerId(0)).scrap;
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     state.tick(&[cmd(
         0,
         Command::Salvage {
@@ -596,10 +614,13 @@ fn an_interrupted_salvage_credits_only_the_hp_it_drained() {
         drained > 0 && credited > 0,
         "test premise: real work stopped"
     );
-    assert_eq!(
+    assert!(
+        state.player(PlayerId(0)).scrap >= bank_before + credited
+            && state.player(PlayerId(0)).scrap <= bank_before + credited + drips_between(0, &state),
+        "credit follows hp actually drained, floor-truncated, no drift \
+         beyond the passive drip (bank {}, refund basis {})",
         state.player(PlayerId(0)).scrap,
-        bank_before + credited,
-        "credit follows hp actually drained, floor-truncated, no drift"
+        bank_before + credited
     );
 }
 
@@ -620,7 +641,7 @@ fn the_repair_salvage_pump_strictly_loses_scrap() {
         .find(|b| b.kind == BuildingKind::Turret)
         .unwrap()
         .id;
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     let bank_start = state.player(PlayerId(0)).scrap;
     state.tick(&[cmd(
         0,
@@ -644,11 +665,12 @@ fn the_repair_salvage_pump_strictly_loses_scrap() {
     run_until(&mut state, 2000, |s, _| {
         s.building(turret).unwrap().hp == stats.max_hp
     });
+    let drip_free = state.player(PlayerId(0)).scrap - drips_between(0, &state);
     assert!(
-        state.player(PlayerId(0)).scrap < bank_start,
-        "welding back what salvage banked must cost more than it paid: {} -> {}",
+        drip_free < bank_start,
+        "welding back what salvage banked must cost more than it paid: {} -> {} (drip removed)",
         bank_start,
-        state.player(PlayerId(0)).scrap
+        drip_free
     );
 }
 
@@ -713,7 +735,7 @@ fn fire_finishing_a_salvage_target_wins_and_forfeits_the_rest() {
         state.map().wreck_at(TilePos::new(9, 2)) > 0,
         "fire leaves its wreck"
     );
-    let stats = BuildingKind::Array.stats();
+    let stats = BuildingKind::Array.base_stats();
     let full =
         u32::try_from(u64::from(stats.construction.unwrap().cost) * SALVAGE_REFUND_PERMILLE / 1000)
             .unwrap();
@@ -845,14 +867,17 @@ fn a_salvaged_producer_refunds_its_prepaid_queue_in_full() {
         !state.units().iter().any(|u| u.kind == UnitKind::Lancer),
         "test premise: the teardown outran the training line"
     );
-    let stats = BuildingKind::Fabricator.stats();
+    let stats = BuildingKind::Fabricator.base_stats();
     let refund =
         u32::try_from(u64::from(stats.construction.unwrap().cost) * SALVAGE_REFUND_PERMILLE / 1000)
             .unwrap();
-    assert_eq!(
-        state.player(PlayerId(0)).scrap,
-        bank_after_orders + refund + 2 * lancer_cost,
-        "the building refunds its permille, the queue refunds in full"
+    assert!(
+        state.player(PlayerId(0)).scrap >= bank_after_orders + refund + 2 * lancer_cost
+            && state.player(PlayerId(0)).scrap
+                <= bank_after_orders + refund + 2 * lancer_cost + drips_between(0, &state),
+        "the building refunds its permille, the queue refunds in full \
+         (only drip credits ride on top; bank {})",
+        state.player(PlayerId(0)).scrap
     );
 }
 
@@ -873,7 +898,7 @@ fn repair_and_salvage_evict_each_other_from_a_target() {
         .find(|b| b.kind == BuildingKind::Turret)
         .unwrap()
         .id;
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     state.tick(&[cmd(
         0,
         Command::Salvage {
@@ -939,7 +964,7 @@ fn salvage_walks_the_construction_ramp_backward_on_schedule() {
         .find(|b| b.kind == BuildingKind::Turret)
         .unwrap()
         .id;
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     state.tick(&[cmd(
         0,
         Command::Salvage {
@@ -1033,7 +1058,7 @@ fn eviction_strips_queued_legs_but_spares_the_rest_of_the_program() {
         },
     )]);
     run_until(&mut state, 400, |s, _| {
-        s.building(turret).unwrap().hp < BuildingKind::Turret.stats().max_hp
+        s.building(turret).unwrap().hp < BuildingKind::Turret.base_stats().max_hp
     });
     state.tick(&[cmd(
         0,
@@ -1057,43 +1082,27 @@ fn eviction_strips_queued_legs_but_spares_the_rest_of_the_program() {
 
 #[test]
 fn foundry_repair_bills_against_its_authored_price() {
-    // The Foundry has no purchase cost; its welding bills against
-    // FOUNDRY_REPAIR_PRICE on the authored FOUNDRY_REPAIR_TICKS ramp.
-    // One prepaid coin covers exactly the hp whose milli-price ceils
-    // to one scrap — the same derivation buildable kinds use.
-    let mut scenario = arena(vec![
-        unit(0, UnitKind::Harvester, 4, 2),
-        unit(1, UnitKind::Scuttler, 4, 4),
-    ]);
+    // The Foundry keeps its authored welding ramp and billing basis even
+    // now that it is purchasable — repairing the victory token stays the
+    // tuned defensive lever. One prepaid coin covers exactly the hp
+    // whose milli-price ceils to one scrap, same derivation as buildable
+    // kinds. The wound and the clock are staged directly so the whole
+    // weld fits inside one drip period: passive income never touches
+    // the measurement.
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 4, 2)]);
     scenario.players[0].scrap = 1;
-    let mut state = scenario.build().unwrap();
-    let (welder, raider) = (state.units()[0].id, state.units()[1].id);
+    let state = scenario.build().unwrap();
     let foundry = state.buildings()[0].id;
-    state.tick(&[cmd(
-        1,
-        Command::Attack {
-            units: vec![raider],
-            target: Target::Building(foundry),
-            queue: false,
-        },
-    )]);
-    run_until(&mut state, 600, |s, _| {
-        s.building(foundry)
-            .unwrap()
-            .hp
-            .checked_add(60)
-            .is_some_and(|h| h < oxide_sim::stats::BuildingKind::Foundry.stats().max_hp)
-    });
-    // Call the raider off so the weld runs uncontested.
-    state.tick(&[cmd(
-        1,
-        Command::Move {
-            units: vec![raider],
-            goal: TilePos::new(13, 2),
-            queue: false,
-        },
-    )]);
+    let max_hp = BuildingKind::Foundry.base_stats().max_hp;
+    let mut value = serde_json::to_value(&state).unwrap();
+    for building in value["buildings"].as_array_mut().unwrap() {
+        if building["id"] == serde_json::json!(foundry.0) {
+            building["hp"] = serde_json::json!(max_hp - 64);
+        }
+    }
+    let mut state: oxide_sim::State = serde_json::from_value(value).unwrap();
     let hp_before = state.building(foundry).unwrap().hp;
+    let welder = state.units()[0].id;
     state.tick(&[cmd(
         0,
         Command::Repair {
@@ -1102,14 +1111,17 @@ fn foundry_repair_bills_against_its_authored_price() {
             queue: false,
         },
     )]);
-    run_until(&mut state, 800, |_, events| {
+    run_until(&mut state, 40, |_, events| {
         events
             .iter()
             .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == welder))
     });
+    assert!(
+        state.current_tick() < oxide_sim::stats::FOUNDRY_DRIP_START_TICK,
+        "test premise: the weld and its stall fit before the first drip credit"
+    );
     assert_eq!(state.player(PlayerId(0)).scrap, 0, "the coin was spent");
     let healed = state.building(foundry).unwrap().hp - hp_before;
-    let max_hp = BuildingKind::Foundry.stats().max_hp;
     let ramp = u64::from(max_hp - max_hp / 5);
     let ticks = u64::from(oxide_sim::stats::FOUNDRY_REPAIR_TICKS);
     let basis = u64::from(oxide_sim::stats::FOUNDRY_REPAIR_PRICE);
@@ -1157,7 +1169,7 @@ fn a_rejected_command_never_evicts_the_working_crew() {
         },
     )]);
     run_until(&mut state, 400, |s, _| {
-        s.building(turret).unwrap().hp < BuildingKind::Turret.stats().max_hp
+        s.building(turret).unwrap().hp < BuildingKind::Turret.base_stats().max_hp
     });
     state.tick(&[cmd(
         0,
@@ -1233,7 +1245,7 @@ fn eviction_reaches_a_looping_programs_rotation() {
         },
     )]);
     run_until(&mut state, 400, |s, _| {
-        s.building(turret).unwrap().hp < BuildingKind::Turret.stats().max_hp
+        s.building(turret).unwrap().hp < BuildingKind::Turret.base_stats().max_hp
     });
     state.tick(&[cmd(
         0,

@@ -17,7 +17,7 @@ fn mirrored_tile(tile: TilePos) -> TilePos {
 }
 
 fn mirrored_anchor(anchor: TilePos, kind: BuildingKind) -> TilePos {
-    let (width, height) = kind.stats().size;
+    let (width, height) = kind.base_stats().size;
     TilePos::new(WIDTH - width - anchor.x, HEIGHT - height - anchor.y)
 }
 
@@ -95,7 +95,7 @@ fn attack_building(
 
 #[test]
 fn defense_stats_name_three_distinct_jobs() {
-    let turret = BuildingKind::Turret.stats();
+    let turret = BuildingKind::Turret.base_stats();
     assert_eq!(turret.max_hp, 350);
     assert_eq!(turret.vision, 6);
     assert_eq!(turret.weapons[0].damage, 12);
@@ -105,7 +105,7 @@ fn defense_stats_name_three_distinct_jobs() {
     assert_eq!(turret.construction.unwrap().cost, 100);
     assert_eq!(turret.construction.unwrap().build_ticks, 300);
 
-    let flak = BuildingKind::FlakTurret.stats();
+    let flak = BuildingKind::FlakTurret.base_stats();
     assert_eq!(flak.max_hp, 300);
     assert_eq!(flak.vision, 7);
     assert_eq!(flak.weapons[0].damage, 7);
@@ -118,7 +118,7 @@ fn defense_stats_name_three_distinct_jobs() {
     assert_eq!(flak.construction.unwrap().cost, 90);
     assert_eq!(flak.construction.unwrap().build_ticks, 250);
 
-    let bastion = BuildingKind::Bastion.stats();
+    let bastion = BuildingKind::Bastion.base_stats();
     assert_eq!(bastion.max_hp, 500);
     assert_eq!(bastion.vision, 6);
     assert_eq!(bastion.weapons[0].damage, 40);
@@ -129,7 +129,7 @@ fn defense_stats_name_three_distinct_jobs() {
     );
     assert_eq!(bastion.weapons[0].cooldown_ticks, 90);
     assert_eq!(bastion.weapons[0].splash, Some(chassis::fx::Fx::lit("1.3")));
-    assert_eq!(bastion.construction.unwrap().cost, 250);
+    assert_eq!(bastion.construction.unwrap().cost, 210);
     assert_eq!(bastion.construction.unwrap().build_ticks, 500);
 }
 
@@ -177,7 +177,7 @@ fn lancer_sieges_a_turret_from_outside_return_range() {
 fn a_spotted_bombard_sieges_a_bastion_at_nominal_range_parity() {
     assert_eq!(
         UnitKind::Bombard.stats().weapons[0].range,
-        BuildingKind::Bastion.stats().weapons[0].range
+        BuildingKind::Bastion.base_stats().weapons[0].range
     );
     for defender in [0, 1] {
         let attacker = 1 - defender;
@@ -294,7 +294,7 @@ fn close_pressure_breaches_an_isolated_bastion_dead_zone() {
             !shots.is_empty(),
             "the breach must cross the outer firing envelope before reaching safety"
         );
-        let minimum = BuildingKind::Bastion.stats().weapons[0].minimum_range;
+        let minimum = BuildingKind::Bastion.base_stats().weapons[0].minimum_range;
         assert!(
             shots
                 .iter()

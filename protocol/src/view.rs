@@ -81,6 +81,10 @@ pub struct PlayerView {
     /// Whether this seat has conceded and can no longer issue commands.
     #[serde(default)]
     pub resigned: bool,
+    /// The tick this seat lost its last Foundry and site, if it has
+    /// (free-for-all placement reads from these).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eliminated_at: Option<u64>,
 }
 
 /// One unit, floats-for-reading.
@@ -155,6 +159,10 @@ pub struct BuildingView {
     /// Construction or training progress ticks.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub progress: u32,
+    /// Upgrade-ladder rung (0 = base). Visible in every view: a
+    /// building's tier shows in its silhouette on the ground.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub tier: u8,
 }
 
 /// The world as one seat honestly knows it — the fog-safe counterpart to
@@ -282,7 +290,12 @@ impl FogView {
                 .buildings()
                 .iter()
                 .filter(|b| {
-                    !state.hostile(player, b.player) || b.tiles().any(|t| vision.visible(t))
+                    // Sight of the ground is not knowledge of a buried
+                    // charge: the stealth rule gates this view exactly
+                    // as it gates targeting and ghosts.
+                    !state.hostile(player, b.player)
+                        || (b.tiles().any(|t| vision.visible(t))
+                            && state.building_apparent(player, b))
                 })
                 .map(|b| {
                     if state.hostile(player, b.player) {
@@ -312,6 +325,10 @@ impl FogView {
 
 fn default_true() -> bool {
     true
+}
+
+fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
 }
 
 fn is_zero_u32(n: &u32) -> bool {
@@ -441,6 +458,7 @@ fn player_view(state: &State, index: usize) -> PlayerView {
             .filter(|building| usize::from(building.player.0) == index)
             .count(),
         resigned: player.resigned,
+        eliminated_at: player.eliminated_at,
     }
 }
 
@@ -487,6 +505,7 @@ fn building_view(b: &Building) -> BuildingView {
         focus: b.focus,
         built: b.built,
         progress: b.progress,
+        tier: b.tier,
     }
 }
 
@@ -747,12 +766,13 @@ mod tests {
             player: oxide_sim::PlayerId(0),
             kind: oxide_sim::BuildingKind::Turret,
             anchor: chassis::grid::TilePos::new(4, 5),
-            hp: oxide_sim::BuildingKind::Turret.stats().max_hp,
+            hp: oxide_sim::BuildingKind::Turret.base_stats().max_hp,
             queue: std::collections::VecDeque::new(),
             progress: 0,
             rally: None,
             focus: Some(target),
             built: true,
+            tier: 0,
             cooldown: 0,
             salvage_drained: 0,
             salvage_credited: 0,

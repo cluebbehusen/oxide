@@ -13,11 +13,11 @@ raising their bias from -8 to 0, after the exact round-trip has passed.
 
 Usage (from tools/train/):
     uv run dequantize.py \
-      --weights runs/candidate-v8.json \
-      --out runs/incumbent-v8-exact.pt
+      --weights runs/candidate.json \
+      --out runs/candidate-exact.pt
     uv run dequantize.py \
-      --weights runs/candidate-v8.json \
-      --out runs/incumbent-v8-trainable.pt \
+      --weights runs/candidate.json \
+      --out runs/candidate-trainable.pt \
       --unfloor-actions <new-action-indices>
 """
 
@@ -72,11 +72,6 @@ def _semantic_view(artifact: dict) -> dict:
 def recover_actor(artifact: dict) -> tuple[Mlp, dict]:
     """Recovers the exact Q12 actor and a deterministic zero critic."""
     if artifact.get("gym_version") != GYM_VERSION:
-        if artifact.get("gym_version") == 7 and GYM_VERSION == 8:
-            raise ValueError(
-                "weights speak gym v7, trainer speaks v8; migrate the artifact "
-                "with `uv run widen.py --src OLD.json --out NEW.json`"
-            )
         raise ValueError(
             f"weights speak gym v{artifact.get('gym_version')}, "
             f"trainer speaks v{GYM_VERSION}"

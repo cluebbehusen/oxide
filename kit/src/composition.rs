@@ -18,8 +18,24 @@
 //! decision: a roster that never stands a Fabricator never had the
 //! advanced kinds available to choose, and the unit shares alone cannot
 //! say which of the two happened.
+//!
+//! Beside the shares run two whole-roster readings a share table cannot
+//! give. Reach answers "did this kind ever get made at all", which a
+//! 2% share and a never-built kind both report as roughly nothing. The
+//! scrap ledger answers "where did the money go", which no
+//! presence-weighted share can: a seat can pour half its income into
+//! defenses that never take a body-time sample. Both are measured over
+//! the same competitive lifetime the combat mixes use.
+//!
+//! The ledger bills what the sim bills, from the same two moments:
+//! construction is charged when a site first appears or its tier lifts
+//! (placement and upgrade, at the placed tier's price), and production
+//! is charged at the unit's price when the `UnitTrained` event names
+//! its kind. Repair is deliberately absent: unit repair is billed by a
+//! per-tick ramp function the sim keeps private, building repair emits
+//! no event at all, and an invented per-hp price would be a guess
+//! wearing a measurement's clothes.
 
-use crate::runner;
 use anyhow::{Result, ensure};
 use oxide_sim::{
     BuildingId, BuildingKind, Event, Faction, GameResult, Scenario, State, TickReport, UnitKind,
@@ -154,20 +170,66 @@ pub struct MatchComposition {
     /// building count changed. Sample-resolution, so a frozen tail
     /// reads as `ticks - last_progress_tick`.
     pub last_progress_tick: u64,
+    /// Distinct fight windows: maximal runs of consecutive samples
+    /// whose window saw any combat event. A good match has several —
+    /// concrete fights separated by concrete lulls — where one long
+    /// smear or none at all both read as poor rhythm.
+    pub fight_windows: u64,
+    /// Fraction of sample windows that saw combat.
+    pub fight_share: f64,
+    /// Longest run of combat-free ticks between the first and last
+    /// combat window (0 when fewer than two windows exist). The
+    /// mid-match dead air fun reviews should look at.
+    pub longest_lull_ticks: u64,
+    /// First tick at which one team's fielded fighter value held at
+    /// least three times every hostile team's for two consecutive
+    /// samples — the "this is decided" moment. `None` when no team
+    /// ever reached it. `ticks - advantage_tick` on a decided match is
+    /// the finish latency the old bots famously failed.
+    pub advantage_tick: Option<u64>,
+    /// The team holding that first decisive advantage.
+    pub advantage_team: Option<u8>,
+    /// Per seat: fraction of samples holding at least one standing
+    /// completed Extractor — how long the contestable economy was
+    /// actually worked.
+    pub extractor_hold_share: Vec<f64>,
+    /// Per seat: every unit and building kind the seat finished at
+    /// least one of during its competitive lifetime, by canonical
+    /// name. Event-sourced, so a work destroyed between samples still
+    /// counts and an upgrade completion counts as its building's kind.
+    /// This is the "was it ever reachable at all" lens the shares
+    /// cannot give: a kind built once and a kind never built both read
+    /// as a share near zero.
+    pub competitive_kind_reach: Vec<BTreeSet<String>>,
+    /// Per seat: scrap committed per kind during the competitive
+    /// lifetime — units at their price when trained, construction at
+    /// the placed tier's price when a site appears or its tier lifts.
+    /// Authored opening buildings are never billed, and repair is not
+    /// billed at all (see the module docs).
+    pub competitive_spend: Vec<BTreeMap<String, u64>>,
 }
 
 /// Runs one bot-vs-bot match and integrates each seat's army value by
 /// kind: every sample adds `cost` for each living unit, so a unit's
 /// share reflects both how many were fielded and how long they lived —
 /// the honest "what was this army made of" number.
+///
+/// The Overseer — the scripted QA anchor — plays every `bot`-flagged
+/// seat. This is balance-probe's default sampler by design: probing
+/// the fixed scripted commander isolates world and balance movement
+/// from policy movement, which `--weights` measures instead.
 pub fn sample_match(
     scenario: &Scenario,
     max_ticks: u64,
     sample_every: u64,
 ) -> Result<MatchComposition> {
-    let mut bots = oxide_sim::bot::seat_bots(scenario);
+    let mut bots = crate::bench::overseer_bots(scenario);
     sample_driven(scenario, max_ticks, sample_every, |state| {
-        runner::step(state, &mut bots, None)
+        let mut commands = Vec::new();
+        for bot in bots.iter_mut() {
+            commands.extend(bot.act(state));
+        }
+        state.tick(&commands)
     })
 }
 
@@ -194,6 +256,39 @@ pub fn sample_driven(
     let mut last_progress_tick = 0;
     let mut activity = MatchActivity::default();
     let mut ran = 0;
+    let mut samples: u64 = 0;
+    let mut fight_samples: u64 = 0;
+    let mut fight_windows: u64 = 0;
+    let mut in_fight_window = false;
+    let mut lull_run: u64 = 0;
+    let mut longest_lull: u64 = 0;
+    let mut combat_seen_before_sample: u64 = 0;
+    let mut advantage_tick: Option<u64> = None;
+    let mut advantage_team: Option<u8> = None;
+    let mut advantage_streak: (Option<u8>, u32) = (None, 0);
+    let mut extractor_samples: Vec<u64> = vec![0; seats];
+    let mut unit_reach: Vec<BTreeSet<UnitKind>> = vec![BTreeSet::new(); seats];
+    let mut building_reach: Vec<BTreeSet<BuildingKind>> = vec![BTreeSet::new(); seats];
+    let mut unit_spend: Vec<BTreeMap<UnitKind, u64>> = vec![BTreeMap::new(); seats];
+    let mut building_spend: Vec<BTreeMap<BuildingKind, u64>> = vec![BTreeMap::new(); seats];
+    // Construction already billed, and the tier it was billed at,
+    // indexed by building id — a dense counter, so this is a lookup
+    // table rather than a map the hot loop would have to search. The
+    // authored opening seeds it, so scenario-placed works are never
+    // charged as purchases; afterwards an unindexed id is a placement
+    // and a lifted tier is an upgrade — the same two moments the sim
+    // takes payment.
+    let mut billed_tier: Vec<Option<u8>> = Vec::new();
+    for building in state.buildings() {
+        let id = building.id.0 as usize;
+        if billed_tier.len() <= id {
+            billed_tier.resize(id + 1, None);
+        }
+        billed_tier[id] = Some(building.tier);
+    }
+    let mut competitive: Vec<bool> = vec![false; seats];
+    let mut holds_foundry: Vec<bool> = vec![false; seats];
+    let mut placements: Vec<(usize, BuildingKind, u8)> = Vec::new();
     for tick in 0..max_ticks {
         let report = tick_fn(&mut state);
         note_activity(&mut activity, &report);
@@ -212,42 +307,158 @@ pub fn sample_driven(
             activity.last_economy_tick = ran;
         }
         previous_banks = banks;
+        // One pass over the works serves two readings: who is still
+        // competitive this tick, and what construction was newly paid
+        // for. The competitive rule is the one the sampled mixes use —
+        // unresigned, holding a living completed Foundry — so the
+        // sample block below reads this vector instead of recomputing
+        // it.
+        holds_foundry.fill(false);
+        placements.clear();
+        for building in state.buildings() {
+            let seat = building.player.0 as usize;
+            if seat >= seats {
+                continue;
+            }
+            let id = building.id.0 as usize;
+            if billed_tier.len() <= id {
+                billed_tier.resize(id + 1, None);
+            }
+            if billed_tier[id].is_none_or(|billed| billed < building.tier) {
+                billed_tier[id] = Some(building.tier);
+                placements.push((seat, building.kind, building.tier));
+            }
+            if building.hp > 0 && building.built && building.kind == BuildingKind::Foundry {
+                holds_foundry[seat] = true;
+            }
+        }
+        for (seat, live) in competitive.iter_mut().enumerate() {
+            *live = !state.players()[seat].resigned && holds_foundry[seat];
+        }
+        for &(seat, kind, tier) in &placements {
+            if !competitive[seat] {
+                continue;
+            }
+            let cost = kind
+                .tier_stats(tier)
+                .construction
+                .map_or(0, |construction| construction.cost);
+            if cost > 0 {
+                *building_spend[seat].entry(kind).or_default() += u64::from(cost);
+            }
+        }
+        // Production is event-sourced: the tick report names the kind
+        // and the owner, which is the whole reading. A unit is billed
+        // when it rolls out rather than when it was queued, so a
+        // half-paid production queue at the final tick is not counted
+        // as spend on a machine that never existed.
+        for event in &report.events {
+            match event {
+                Event::UnitTrained { kind, player, .. } => {
+                    let seat = player.0 as usize;
+                    if seat < seats && competitive[seat] {
+                        unit_reach[seat].insert(*kind);
+                        *unit_spend[seat].entry(*kind).or_default() += u64::from(kind.stats().cost);
+                    }
+                }
+                Event::BuildingCompleted { kind, player, .. } => {
+                    let seat = player.0 as usize;
+                    if seat < seats && competitive[seat] {
+                        building_reach[seat].insert(*kind);
+                    }
+                }
+                _ => {}
+            }
+        }
         if tick % sample_every == 0 {
+            samples += 1;
+            let combat_total = activity.attack_hits + activity.turret_shots + activity.shell_shots;
+            let fought = combat_total > combat_seen_before_sample;
+            combat_seen_before_sample = combat_total;
+            if fought {
+                fight_samples += 1;
+                if !in_fight_window {
+                    fight_windows += 1;
+                    in_fight_window = true;
+                    if fight_windows > 1 {
+                        longest_lull = longest_lull.max(lull_run * sample_every);
+                    }
+                }
+                lull_run = 0;
+            } else {
+                in_fight_window = false;
+                if fight_windows > 0 {
+                    lull_run += 1;
+                }
+            }
             let mut live: Vec<(u64, usize)> = vec![(0, 0); seats];
-            let competitive: Vec<bool> = (0..seats)
-                .map(|seat| {
-                    !state.players()[seat].resigned
-                        && state.buildings().iter().any(|building| {
-                            building.player.0 as usize == seat
-                                && building.hp > 0
-                                && building.built
-                                && building.kind == BuildingKind::Foundry
-                        })
-                })
-                .collect();
+            let mut fighter_value: Vec<u64> = vec![0; seats];
             for unit in state.units() {
                 let seat = unit.player.0 as usize;
                 if seat < seats {
                     let cost = u64::from(unit.kind.stats().cost);
                     *value_acc[seat].entry(unit.kind).or_default() += cost;
                     *count_acc[seat].entry(unit.kind).or_default() += 1;
-                    if competitive[seat] && unit.kind.stats().can_fight() {
-                        *combat_value_acc[seat].entry(unit.kind).or_default() += cost;
-                        *combat_count_acc[seat].entry(unit.kind).or_default() += 1;
+                    if unit.kind.stats().can_fight() {
+                        fighter_value[seat] += cost;
+                        if competitive[seat] {
+                            *combat_value_acc[seat].entry(unit.kind).or_default() += cost;
+                            *combat_count_acc[seat].entry(unit.kind).or_default() += 1;
+                        }
                     }
                     live[seat].0 += cost;
                 }
             }
+            let mut holds_extractor = vec![false; seats];
             for building in state.buildings() {
                 let seat = building.player.0 as usize;
                 if seat < seats {
                     live[seat].1 += 1;
                     if building.built {
                         standing[seat].insert((building.kind, building.id));
+                        if building.kind == BuildingKind::Extractor {
+                            holds_extractor[seat] = true;
+                        }
                         if competitive[seat] {
                             competitive_standing[seat].insert((building.kind, building.id));
                         }
                     }
+                }
+            }
+            for (seat, holds) in holds_extractor.iter().enumerate() {
+                if *holds {
+                    extractor_samples[seat] += 1;
+                }
+            }
+            if advantage_tick.is_none() {
+                let mut team_value: BTreeMap<u8, u64> = BTreeMap::new();
+                for (seat, value) in fighter_value.iter().enumerate() {
+                    *team_value.entry(state.players()[seat].team).or_default() += value;
+                }
+                let leader = team_value
+                    .iter()
+                    .max_by_key(|(team, value)| (**value, std::cmp::Reverse(**team)))
+                    .map(|(team, value)| (*team, *value));
+                let decisive = leader.filter(|(team, value)| {
+                    *value > 0
+                        && team_value
+                            .iter()
+                            .filter(|(other, _)| *other != team)
+                            .all(|(_, other_value)| *value >= other_value.saturating_mul(3))
+                });
+                match decisive {
+                    Some((team, _)) => {
+                        if advantage_streak.0 == Some(team) {
+                            advantage_streak.1 += 1;
+                        } else {
+                            advantage_streak = (Some(team), 1);
+                        }
+                        if advantage_streak.1 >= 2 {
+                            advantage_tick = Some(ran);
+                            advantage_team = Some(team);
+                        }
+                    }
+                    None => advantage_streak = (None, 0),
                 }
             }
             if live != previous {
@@ -314,6 +525,36 @@ pub fn sample_driven(
             counts
         })
         .collect();
+    // Units and buildings share one name space here on purpose: a
+    // scrap destination table is only readable when the two things
+    // competing for the same bank sit in the same column. The sums are
+    // additive so a future name collision would blur two kinds
+    // together rather than silently drop one kind's scrap.
+    let competitive_kind_reach: Vec<BTreeSet<String>> = unit_reach
+        .into_iter()
+        .zip(building_reach)
+        .map(|(units, buildings)| {
+            units
+                .into_iter()
+                .map(|kind| kind.name().to_string())
+                .chain(buildings.into_iter().map(|kind| kind.name().to_string()))
+                .collect()
+        })
+        .collect();
+    let competitive_spend: Vec<BTreeMap<String, u64>> = unit_spend
+        .into_iter()
+        .zip(building_spend)
+        .map(|(units, buildings)| {
+            let mut spend: BTreeMap<String, u64> = BTreeMap::new();
+            for (kind, scrap) in units {
+                *spend.entry(kind.name().to_string()).or_default() += scrap;
+            }
+            for (kind, scrap) in buildings {
+                *spend.entry(kind.name().to_string()).or_default() += scrap;
+            }
+            spend
+        })
+        .collect();
     let result = state.result();
     let final_economy = capture_final_economy(&state);
     Ok(MatchComposition {
@@ -345,6 +586,27 @@ pub fn sample_driven(
         final_economy,
         activity,
         last_progress_tick,
+        fight_windows,
+        fight_share: if samples == 0 {
+            0.0
+        } else {
+            fight_samples as f64 / samples as f64
+        },
+        longest_lull_ticks: longest_lull,
+        advantage_tick,
+        advantage_team,
+        extractor_hold_share: extractor_samples
+            .into_iter()
+            .map(|held| {
+                if samples == 0 {
+                    0.0
+                } else {
+                    held as f64 / samples as f64
+                }
+            })
+            .collect(),
+        competitive_kind_reach,
+        competitive_spend,
     })
 }
 
@@ -382,8 +644,13 @@ fn note_activity(activity: &mut MatchActivity, report: &TickReport) {
             | Event::NodeDepleted { .. } => {
                 activity.last_economy_tick = tick;
             }
-            Event::UnitDied { .. } | Event::BuildingDestroyed { .. } => {
+            Event::UnitDied { .. }
+            | Event::BuildingDestroyed { .. }
+            | Event::ChargeDetonated { .. } => {
                 activity.last_combat_tick = tick;
+            }
+            Event::UnitBoarded { .. } | Event::UnitUnloaded { .. } => {
+                activity.last_economy_tick = tick;
             }
             Event::ShellLanded { .. }
             | Event::UnitRepaired { .. }
@@ -551,6 +818,19 @@ pub struct Aggregate {
     /// Share of competitive combat seats that completed at least one of
     /// that kind before resignation or Foundry loss.
     pub competitive_seats_with_building: BTreeMap<String, f64>,
+    /// Share of competitive combat seats that ever produced at least
+    /// one of that kind, units and buildings alike. The generalized
+    /// reading the authored per-structure floors special-case: a kind
+    /// nothing ever builds is invisible in a share table and obvious
+    /// here.
+    pub competitive_kind_reach: BTreeMap<String, f64>,
+    /// Share of the cohort's whole competitive scrap spend that went to
+    /// each kind — where the money went, which no presence-weighted
+    /// share can report.
+    pub competitive_spend_share: BTreeMap<String, f64>,
+    /// Scrap the share table divides, summed over the folded seats.
+    /// Reported so a reader can tell a thin sample from a real one.
+    pub competitive_spend_total: u64,
     /// Seats aggregated.
     pub seats: usize,
     /// Aggregated seats that fielded a weapon-bearing unit while still
@@ -584,6 +864,9 @@ pub fn aggregate_where(
     let mut building_seats: BTreeMap<String, usize> = BTreeMap::new();
     let mut competitive_building_sum: BTreeMap<String, u32> = BTreeMap::new();
     let mut competitive_building_seats: BTreeMap<String, usize> = BTreeMap::new();
+    let mut competitive_reach_seats: BTreeMap<String, usize> = BTreeMap::new();
+    let mut competitive_spend_sum: BTreeMap<String, u64> = BTreeMap::new();
+    let mut competitive_spend_total = 0u64;
     let mut entropies: Vec<f64> = Vec::new();
     let mut count_entropies: Vec<f64> = Vec::new();
     let mut count_dominance: Vec<f64> = Vec::new();
@@ -647,6 +930,13 @@ pub fn aggregate_where(
                 for (kind, count) in m.competitive_buildings.get(seat).into_iter().flatten() {
                     *competitive_building_sum.entry(kind.clone()).or_default() += count;
                     *competitive_building_seats.entry(kind.clone()).or_default() += 1;
+                }
+                for kind in m.competitive_kind_reach.get(seat).into_iter().flatten() {
+                    *competitive_reach_seats.entry(kind.clone()).or_default() += 1;
+                }
+                for (kind, scrap) in m.competitive_spend.get(seat).into_iter().flatten() {
+                    *competitive_spend_sum.entry(kind.clone()).or_default() += scrap;
+                    competitive_spend_total += scrap;
                 }
             }
             for (kind, count) in m.buildings.get(seat).into_iter().flatten() {
@@ -753,6 +1043,22 @@ pub fn aggregate_where(
             .into_iter()
             .map(|(k, v)| (k, per_combat_seat(v as f64)))
             .collect(),
+        competitive_kind_reach: competitive_reach_seats
+            .into_iter()
+            .map(|(k, v)| (k, per_combat_seat(v as f64)))
+            .collect(),
+        competitive_spend_share: competitive_spend_sum
+            .into_iter()
+            .map(|(k, v)| {
+                let share = if competitive_spend_total == 0 {
+                    0.0
+                } else {
+                    v as f64 / competitive_spend_total as f64
+                };
+                (k, share)
+            })
+            .collect(),
+        competitive_spend_total,
         seats,
         combat_seats,
         matches: played,
@@ -822,6 +1128,8 @@ mod tests {
             seed: 0,
             buildings: vec![BTreeMap::new(); seats.len()],
             competitive_buildings: vec![BTreeMap::new(); seats.len()],
+            competitive_kind_reach: vec![BTreeSet::new(); seats.len()],
+            competitive_spend: vec![BTreeMap::new(); seats.len()],
             factions: vec!["ferrous".into(), "cupric".into()],
             entropy_bits,
             seats,
@@ -841,6 +1149,12 @@ mod tests {
             },
             activity: MatchActivity::default(),
             last_progress_tick: 0,
+            fight_windows: 0,
+            fight_share: 0.0,
+            longest_lull_ticks: 0,
+            advantage_tick: None,
+            advantage_team: None,
+            extractor_hold_share: Vec::new(),
         }
     }
 
@@ -933,7 +1247,7 @@ mod tests {
                 },
                 SeatEconomy {
                     resigned: false,
-                    recovery_income_active: false,
+                    recovery_income_active: true,
                     bank_scrap: 150,
                     living_harvesters: 3,
                     queued_harvesters: 0,
@@ -992,8 +1306,8 @@ mod tests {
             "a stranded seat with a living Foundry has fast automatic recovery"
         );
         assert!(
-            !m.final_economy.seats[1].recovery_income_active,
-            "an ordinary early-game harvest line has no automatic income"
+            m.final_economy.seats[1].recovery_income_active,
+            "the Foundry drip means every unresigned Foundry seat reports passive income"
         );
     }
 
@@ -1038,11 +1352,11 @@ mod tests {
         let scenario = Scenario::skirmish();
         let m = sample_driven(
             &scenario,
-            oxide_sim::stats::FOUNDRY_BASELINE_START_TICK,
+            oxide_sim::stats::FOUNDRY_DRIP_START_TICK,
             20,
             |state| state.tick(&[]),
         )
-        .expect("samples the Foundry's baseline credit");
+        .expect("samples the Foundry's drip credit");
         assert_eq!(m.activity.last_economy_tick, 0);
         assert_eq!(m.activity.deliveries, 0);
         assert_eq!(m.activity.units_trained, 0);
@@ -1051,7 +1365,7 @@ mod tests {
                 .seats
                 .iter()
                 .all(|seat| seat.recovery_income_active),
-            "the Rust economy reports the late Foundry baseline without Python constants"
+            "the Rust economy reports the Foundry drip without Python constants"
         );
     }
 
@@ -1298,6 +1612,210 @@ mod tests {
         assert!(!agg.mean_combat_share.contains_key("sentinel"));
         assert_eq!(agg.mean_combat_share["scuttler"], 0.5);
         assert_eq!(agg.combat_entropy_bits, 1.0);
+    }
+
+    /// The ledger bills purchases, not inventory. A scenario's authored
+    /// opening was never bought, so a match that spends nothing reports
+    /// nothing — otherwise every seat would open with a free Foundry on
+    /// its scrap bill.
+    #[test]
+    fn an_authored_opening_is_never_billed_as_a_purchase() {
+        let scenario = Scenario::skirmish();
+        let m = sample_driven(&scenario, 40, 20, |state| state.tick(&[])).expect("samples");
+        assert!(
+            m.competitive_spend.iter().all(BTreeMap::is_empty),
+            "starting buildings and units are inventory, not spend"
+        );
+        assert!(
+            m.competitive_kind_reach.iter().all(BTreeSet::is_empty),
+            "reach counts what a seat produced, not what it was handed"
+        );
+    }
+
+    /// A unit is billed when it rolls out: the event names the kind, and
+    /// the price is the kind's own.
+    #[test]
+    fn a_trained_unit_bills_its_price_and_reaches_its_kind() {
+        let scenario = Scenario::skirmish();
+        let mut ordered = false;
+        let m = sample_driven(&scenario, 200, 20, |state| {
+            if ordered {
+                return state.tick(&[]);
+            }
+            ordered = true;
+            let foundry = state
+                .buildings()
+                .iter()
+                .find(|building| {
+                    building.player == oxide_sim::PlayerId(0)
+                        && building.kind == BuildingKind::Foundry
+                })
+                .expect("seat zero has a Foundry")
+                .id;
+            state.tick(&[oxide_sim::PlayerCommand {
+                player: oxide_sim::PlayerId(0),
+                command: oxide_sim::Command::Train {
+                    building: foundry,
+                    kind: UnitKind::Harvester,
+                },
+            }])
+        })
+        .expect("samples");
+
+        assert!(m.competitive_kind_reach[0].contains("harvester"));
+        assert_eq!(
+            m.competitive_spend[0].get("harvester"),
+            Some(&u64::from(UnitKind::Harvester.stats().cost))
+        );
+        assert!(
+            m.competitive_spend[1].is_empty(),
+            "the opponent bought nothing"
+        );
+    }
+
+    /// Construction is billed the moment the site claims its ground —
+    /// the same moment the sim takes the money — so scrap poured into a
+    /// work that never finished is still scrap that went somewhere.
+    #[test]
+    fn a_placed_site_bills_the_tier_price_before_it_finishes() {
+        let scenario = Scenario::skirmish();
+        let mut ordered = false;
+        let ticks = 60;
+        let m = sample_driven(&scenario, ticks, 20, |state| {
+            if ordered {
+                return state.tick(&[]);
+            }
+            let Some(builder) = state
+                .units()
+                .iter()
+                .find(|unit| {
+                    unit.player == oxide_sim::PlayerId(0) && unit.kind == UnitKind::Harvester
+                })
+                .map(|unit| unit.id)
+            else {
+                return state.tick(&[]);
+            };
+            let anchor = chassis::grid::TilePos::new(6, 6);
+            ordered = true;
+            state.tick(&[oxide_sim::PlayerCommand {
+                player: oxide_sim::PlayerId(0),
+                command: oxide_sim::Command::Build {
+                    units: vec![builder],
+                    kind: BuildingKind::Turret,
+                    anchor,
+                    queue: false,
+                    defer: false,
+                },
+            }])
+        })
+        .expect("samples");
+
+        assert!(
+            ticks
+                < u64::from(
+                    BuildingKind::Turret
+                        .base_stats()
+                        .construction
+                        .expect("turrets are buildable")
+                        .build_ticks
+                ),
+            "the site is deliberately still unfinished when the sample ends"
+        );
+        assert_eq!(
+            m.competitive_spend[0].get("turret"),
+            Some(&u64::from(
+                BuildingKind::Turret
+                    .base_stats()
+                    .construction
+                    .expect("turrets are buildable")
+                    .cost
+            ))
+        );
+        assert!(
+            !m.competitive_kind_reach[0].contains("turret"),
+            "reach is completion, and this one never finished"
+        );
+    }
+
+    /// The same competitive lifetime the combat mixes honor: a seat that
+    /// has conceded is an autonomous remnant, and its purchases are not
+    /// evidence about competitive play.
+    #[test]
+    fn a_resigned_seat_stops_billing_and_reaching() {
+        let scenario = Scenario::skirmish();
+        let m = sample_driven(&scenario, 200, 20, |state| {
+            let foundry = state
+                .buildings()
+                .iter()
+                .find(|building| {
+                    building.player == oxide_sim::PlayerId(0)
+                        && building.kind == BuildingKind::Foundry
+                })
+                .expect("seat zero has a Foundry")
+                .id;
+            let commands = if state.current_tick() == 0 {
+                vec![
+                    oxide_sim::PlayerCommand {
+                        player: oxide_sim::PlayerId(0),
+                        command: oxide_sim::Command::Train {
+                            building: foundry,
+                            kind: UnitKind::Harvester,
+                        },
+                    },
+                    oxide_sim::PlayerCommand {
+                        player: oxide_sim::PlayerId(0),
+                        command: oxide_sim::Command::Surrender,
+                    },
+                ]
+            } else {
+                Vec::new()
+            };
+            state.tick(&commands)
+        })
+        .expect("samples");
+
+        assert!(
+            m.final_economy.seats[0].resigned,
+            "the seat conceded on the first tick"
+        );
+        assert!(
+            m.competitive_spend[0].is_empty() && m.competitive_kind_reach[0].is_empty(),
+            "a remnant's paid-for Harvester is not competitive evidence"
+        );
+    }
+
+    /// Reach is a per-seat yes/no over competitive lifetimes; spend is a
+    /// share of the cohort's whole scrap bill. The two answer different
+    /// questions and a cheap ubiquitous kind separates them.
+    #[test]
+    fn reach_counts_seats_while_spend_shares_the_bank() {
+        let mut m = record(vec![mix(&[("sentinel", 1.0)]), mix(&[("sentinel", 1.0)])]);
+        m.competitive_kind_reach[0] = ["sentinel", "turret"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        m.competitive_kind_reach[1] = ["sentinel"].into_iter().map(str::to_string).collect();
+        m.competitive_spend[0] = [("sentinel".to_string(), 300), ("turret".to_string(), 100)]
+            .into_iter()
+            .collect();
+        m.competitive_spend[1] = [("sentinel".to_string(), 600)].into_iter().collect();
+
+        let agg = aggregate(&[m]);
+        assert_eq!(agg.competitive_kind_reach["sentinel"], 1.0);
+        assert_eq!(agg.competitive_kind_reach["turret"], 0.5);
+        assert_eq!(agg.competitive_spend_total, 1_000);
+        assert_eq!(agg.competitive_spend_share["sentinel"], 0.9);
+        assert_eq!(agg.competitive_spend_share["turret"], 0.1);
+    }
+
+    /// An empty cohort divides nothing by nothing and must say so
+    /// rather than inventing a share.
+    #[test]
+    fn an_empty_cohort_reports_no_reach_and_no_spend() {
+        let agg = aggregate(&[record(vec![BTreeMap::new()])]);
+        assert!(agg.competitive_kind_reach.is_empty());
+        assert!(agg.competitive_spend_share.is_empty());
+        assert_eq!(agg.competitive_spend_total, 0);
     }
 
     #[test]

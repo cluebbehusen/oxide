@@ -310,15 +310,6 @@ fn damaged_purchase_value(state: &State, player: PlayerId) -> u64 {
 mod tests {
     use super::*;
 
-    fn incumbent_path(label: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "oxide-repair-probe-{label}-{}.json",
-            std::process::id()
-        ));
-        std::fs::write(&path, include_str!("../../sim/src/bot/ladder_weights.json")).unwrap();
-        path
-    }
-
     #[test]
     fn fixture_is_wounded_fog_honest_and_pressure_free_in_every_orientation() {
         for seat in [0u8, 1] {
@@ -353,25 +344,18 @@ mod tests {
         }
     }
 
+    /// The report's JSON SHAPE, pinned against the committed fixture
+    /// artifact. Behavioral numbers (command counts, healing) belong to
+    /// whichever real artifact is probed and are deliberately not
+    /// asserted here.
     #[test]
-    fn report_carries_provenance_shape_and_the_embedded_policy_snapshot() {
-        let path = incumbent_path("shape");
-        let report = run_probe(&path, 512).unwrap();
-        std::fs::remove_file(&path).ok();
-        assert_eq!(
-            report.digest,
-            format!("{:016x}", QuantNet::ladder().digest())
-        );
+    fn report_carries_the_provenance_and_totals_shape() {
+        let path = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/tiny_policy_v9.json"
+        ));
+        let report = run_probe(&path, 64).unwrap();
         assert_eq!(report.cases.len(), 8);
-        assert_eq!(report.totals.repair_unit_commands, 96);
-        assert_eq!(report.totals.repair_bay_build_attempts, 0);
-        assert_eq!(report.totals.repair_bay_completions, 0);
-        assert!(report.totals.actual_healing);
-        assert_eq!(report.totals.cases_with_healing, 8);
-        assert!(
-            report.totals.final_damaged_purchase_value
-                < report.totals.initial_damaged_purchase_value
-        );
 
         let json = serde_json::to_value(report).unwrap();
         assert_eq!(json["schema"], 1);

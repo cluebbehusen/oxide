@@ -32,7 +32,11 @@ use serde::{Deserialize, Serialize};
 /// v7: terrain knowledge gained the required `known_peaks` subset and
 /// exact explored mask so defense roles can distinguish mountain barriers
 /// from flyable rock without proposing foundations in unknown ground.
-pub const OBSERVATION_VERSION: u32 = 7;
+/// v8: the 0.15 tree's accumulated shape — `UnitObs` gained `cargo`,
+/// `BuildingObs` gained `tier` (now honest for every live sighting),
+/// and the observation itself gained `known_frames`, `my_shells`, and
+/// `incoming_shells`. Stamped late: v7 recordings predate these fields.
+pub const OBSERVATION_VERSION: u32 = 8;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +58,9 @@ pub struct UnitObs {
     pub idle: bool,
     /// Scrap carried (own harvesters; zero otherwise).
     pub carrying: u32,
+    /// Sling room its riders occupy (own transports; zero otherwise).
+    #[serde(default)]
+    pub cargo: u8,
     /// The construction site this unit is building, if any (own units
     /// only; always `None` for enemy observations).
     pub site: Option<BuildingId>,
@@ -87,6 +94,10 @@ pub struct BuildingObs {
     pub built: bool,
     /// Live sight right now (false = remembered ghost).
     pub seen: bool,
+    /// Upgrade-ladder rung (0 = base; ghosts report their last-seen
+    /// hull, which for now is always the base row).
+    #[serde(default)]
+    pub tier: u8,
 }
 
 /// Everything a policy gets. Same shape for both builders.
@@ -134,6 +145,10 @@ pub struct Observation {
     /// static, so once seen it is known forever). What placement and
     /// staging decisions steer around; sorted by (y, x).
     pub known_rock: Vec<TilePos>,
+    /// Derelict Extractor frame anchors on explored ground (all of
+    /// them, omnisciently). Frames are map facts and never move.
+    #[serde(default)]
+    pub known_frames: Vec<TilePos>,
     /// Explored peak terrain, also present in `known_rock`. This separate
     /// subset is what air routing and peak-blocked fire steer around while
     /// ordinary rock remains open sky. Sorted by (y, x).
@@ -160,6 +175,23 @@ pub struct Observation {
 }
 
 impl Observation {
+    /// Whether `tile` is known impassable terrain — a binary point lookup
+    /// into `known_rock`, which is sorted by (y, x) both by row-major
+    /// construction and by the orientation re-sort.
+    pub fn known_rock_at(&self, tile: TilePos) -> bool {
+        self.known_rock
+            .binary_search_by_key(&(tile.y, tile.x), |p| (p.y, p.x))
+            .is_ok()
+    }
+
+    /// Whether `tile` holds a known scrap node — the same sorted point
+    /// lookup into `known_scrap`.
+    pub fn known_scrap_at(&self, tile: TilePos) -> bool {
+        self.known_scrap
+            .binary_search_by_key(&(tile.y, tile.x), |(p, _)| (p.y, p.x))
+            .is_ok()
+    }
+
     /// Whether `tile` has ever been seen by this seat's team.
     pub fn explored(&self, tile: TilePos) -> bool {
         if tile.x < 0 || tile.y < 0 || tile.x >= self.map_width || tile.y >= self.map_height {
@@ -209,6 +241,7 @@ impl Observation {
                     hp: b.hp,
                     built: b.built,
                     seen: true,
+                    tier: b.tier,
                 });
             } else {
                 obs.enemy_buildings.push(BuildingObs {
@@ -219,6 +252,7 @@ impl Observation {
                     hp: b.hp,
                     built: b.built,
                     seen: true,
+                    tier: b.tier,
                 });
             }
         }
@@ -229,10 +263,13 @@ impl Observation {
             if tile.wreck > 0 {
                 obs.known_wrecks.push((pos, tile.wreck));
             }
-            if tile.terrain != crate::map::Terrain::Ground {
+            if tile.terrain.blocks_ground() {
                 obs.known_rock.push(pos);
             }
-            if tile.terrain == crate::map::Terrain::Peak {
+            if state.map().is_extractor_frame(pos) {
+                obs.known_frames.push(pos);
+            }
+            if tile.terrain.blocks_air() {
                 obs.known_peaks.push(pos);
             }
         }
@@ -281,8 +318,9 @@ impl Observation {
                     hp: b.hp,
                     built: b.built,
                     seen: true,
+                    tier: b.tier,
                 });
-            } else if b.tiles().any(|t| vision.visible(t)) {
+            } else if b.tiles().any(|t| vision.visible(t)) && state.building_apparent(me, b) {
                 obs.enemy_buildings.push(BuildingObs {
                     id: b.id,
                     player: b.player,
@@ -291,13 +329,14 @@ impl Observation {
                     hp: b.hp,
                     built: b.built,
                     seen: true,
+                    tier: b.tier,
                 });
             }
         }
         // Ghost memories cover ground currently out of sight.
         for ghost in vision.ghosts() {
             let visible_now = {
-                let (w, h) = ghost.kind.stats().size;
+                let (w, h) = ghost.kind.base_stats().size;
                 (0..h)
                     .flat_map(|dy| (0..w).map(move |dx| ghost.anchor.offset(dx, dy)))
                     .any(|t| vision.visible(t))
@@ -314,6 +353,7 @@ impl Observation {
                     hp: ghost.hp,
                     built: ghost.built,
                     seen: false,
+                    tier: 0,
                 });
             }
         }
@@ -321,29 +361,41 @@ impl Observation {
             .sort_by_key(|b| (b.anchor.y, b.anchor.x, b.player));
         // Remembered salvage: what this player last saw, everywhere. Rock
         // is static, so explored is knowledge enough.
-        for (pos, tile) in state.map().iter() {
-            obs.explored.push(vision.explored(pos));
-            let amount = if vision.visible(pos) {
-                state.map().scrap_at(pos)
-            } else {
-                vision.remembered_scrap(pos)
-            };
-            if amount > 0 {
-                obs.known_scrap.push((pos, amount));
+        // Row slices, the way vision::refresh itself walks: the point
+        // accessors re-tested the same fog bits up to seven times per
+        // tile, and the per-tile frame test rescanned the frame list
+        // for every cell — the frames get their own single pass below.
+        for y in 0..state.map().height() {
+            let (visible, explored, scrap_mem, wreck_mem) = vision.rows(y).expect("row in range");
+            let tiles = state.map().grid().row(y).expect("row in range");
+            for (x, tile) in tiles.iter().enumerate() {
+                let pos = TilePos::new(x as i32, y);
+                let seen = visible[x];
+                let known = explored[x];
+                obs.explored.push(known);
+                let amount = if seen { tile.scrap } else { scrap_mem[x] };
+                if amount > 0 {
+                    obs.known_scrap.push((pos, amount));
+                }
+                let wreck = if seen { tile.wreck } else { wreck_mem[x] };
+                if wreck > 0 {
+                    obs.known_wrecks.push((pos, wreck));
+                }
+                if known {
+                    if tile.terrain.blocks_ground() {
+                        obs.known_rock.push(pos);
+                    }
+                    if tile.terrain.blocks_air() {
+                        obs.known_peaks.push(pos);
+                    }
+                }
             }
-            let wreck = if vision.visible(pos) {
-                state.map().wreck_at(pos)
-            } else {
-                vision.remembered_wreck(pos)
-            };
-            if wreck > 0 {
-                obs.known_wrecks.push((pos, wreck));
-            }
-            if tile.terrain != crate::map::Terrain::Ground && vision.explored(pos) {
-                obs.known_rock.push(pos);
-            }
-            if tile.terrain == crate::map::Terrain::Peak && vision.explored(pos) {
-                obs.known_peaks.push(pos);
+        }
+        // Frames are authored in row-major order, the same order the
+        // per-tile walk produced them in.
+        for frame in state.map().extractor_frames() {
+            if vision.explored(*frame) {
+                obs.known_frames.push(*frame);
             }
         }
         // Blips ride through untouched: tiles only, by construction.
@@ -378,6 +430,7 @@ impl Observation {
             explored: Vec::new(),
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
+            known_frames: Vec::new(),
             known_peaks: Vec::new(),
             known_wrecks: Vec::new(),
             blips: Vec::new(),
@@ -397,6 +450,7 @@ fn own_unit(u: &crate::state::Unit) -> UnitObs {
         hp: u.hp,
         idle: u.order == Order::Idle,
         carrying: u.carrying,
+        cargo: u.cargo.iter().map(|r| r.kind.stats().transport_size).sum(),
         site: match u.order {
             Order::Build { site } => Some(site),
             _ => None,
@@ -421,6 +475,7 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
         hp: u.hp,
         idle: false,     // enemy intent is not observable
         carrying: 0,     // nor their cargo manifests
+        cargo: 0,        // a sealed sling shows nothing
         site: None,      // nor their work orders
         salvaging: None, // ditto
         founding: None,  // ditto
@@ -436,5 +491,6 @@ fn own_building(b: &crate::state::Building) -> BuildingObs {
         hp: b.hp,
         built: b.built,
         seen: true,
+        tier: b.tier,
     }
 }

@@ -47,7 +47,10 @@ pub(super) fn build(
         return;
     };
     let (anchor, kind) = (b.anchor, b.kind);
-    let stats = kind.stats();
+    // Tier stats: an upgrading building (tier already bumped, built
+    // false) ramps on the NEW tier's price row; a fresh site's tier is
+    // zero, so this is the ordinary construction row there.
+    let stats = b.stats();
     let size = stats.size;
     let build_ticks = stats
         .construction
@@ -57,9 +60,18 @@ pub(super) fn build(
     if tile_adjacent_to_rect(tile, anchor, size) {
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
+        // An Excavator's crew-tick counts double: same ramp, half the
+        // wall clock, telescoping exactly like a second pair of hands.
+        let rate = state
+            .unit(id)
+            .expect("caller checked")
+            .kind
+            .stats()
+            .build_rate;
         let b = state.building_mut(site).expect("just seen");
-        let step = (ramp * (b.progress + 1) / build_ticks) - (ramp * b.progress / build_ticks);
-        b.progress += 1;
+        let advanced = (b.progress + rate).min(build_ticks);
+        let step = (ramp * advanced / build_ticks) - (ramp * b.progress / build_ticks);
+        b.progress = advanced;
         // Both the hp gain and the completion are buffered and applied
         // after damage — see PendingHpGain. The builder learns the site is
         // done next tick, through the built-site branch above.
@@ -132,7 +144,7 @@ pub(super) fn found(
         unit.advance_queue();
         return;
     }
-    let size = kind.stats().size;
+    let size = kind.base_stats().size;
     let tile = state.unit(id).expect("caller checked").tile();
     let inside = tile.x >= anchor.x
         && tile.x < anchor.x + size.0
@@ -174,24 +186,36 @@ pub(super) fn repair(
     let me = state.unit(id).expect("caller checked").player;
     let Some(b) = state
         .building(building)
-        .filter(|b| b.player == me && b.built && b.hp > 0 && b.hp < b.kind.stats().max_hp)
+        .filter(|b| b.player == me && b.built && b.hp > 0 && b.hp < b.stats().max_hp)
     else {
         // Healed, destroyed, or never a patient: the job is over.
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     };
-    let (anchor, kind) = (b.anchor, b.kind);
-    let stats = kind.stats();
+    let (anchor, kind, tier) = (b.anchor, b.kind, b.tier);
+    // The active tier's row: a Bulwark's weld ramp, ceiling, and billing
+    // basis are the Bulwark's, not the base Turret's.
+    let stats = kind.tier_stats(tier);
     let size = stats.size;
-    // The welding rate is the construction ramp; the unbuyable Foundry
-    // repairs on an authored ramp (and billing basis) of its own.
-    let (ramp_ticks, basis) = stats.construction.map_or(
+    // The welding rate is the construction ramp — except the Foundry,
+    // which keeps its authored ramp and billing basis: repairing the
+    // victory token stays the tuned defensive lever it always was, even
+    // now that expansions make Foundries purchasable at a price that
+    // would otherwise quadruple the weld bill.
+    let (ramp_ticks, basis) = if kind == crate::stats::BuildingKind::Foundry {
         (
             crate::stats::FOUNDRY_REPAIR_TICKS,
             crate::stats::FOUNDRY_REPAIR_PRICE,
-        ),
-        |c| (c.build_ticks, c.cost),
-    );
+        )
+    } else {
+        stats.construction.map_or(
+            (
+                crate::stats::FOUNDRY_REPAIR_TICKS,
+                crate::stats::FOUNDRY_REPAIR_PRICE,
+            ),
+            |c| (c.build_ticks, c.cost),
+        )
+    };
     let tile = state.unit(id).expect("caller checked").tile();
     if tile_adjacent_to_rect(tile, anchor, size) {
         // Billing derives entirely from the welder's own tick meter:
@@ -496,8 +520,10 @@ pub(super) fn salvage(
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     };
-    let (anchor, kind) = (b.anchor, b.kind);
-    let stats = kind.stats();
+    let (anchor, kind, tier) = (b.anchor, b.kind, b.tier);
+    // Strip on the active tier's construction clock: dismantling a
+    // Refinery is undoing the Refinery's build, not the Reclaimer's.
+    let stats = kind.tier_stats(tier);
     let size = stats.size;
     let ramp_ticks = stats
         .construction
@@ -622,6 +648,57 @@ type SourceScore = (i32, usize, Reverse<u32>, i32, u8, i32, i32);
 /// full path-length by threat-count scan.
 const HARVEST_DANGER_LOOKAHEAD: usize = 8;
 
+/// The near slice of the lookahead that always reacts immediately: a
+/// threat inside the first three route tiles replans this tick, exactly
+/// as it always did. Only a flag beyond this zone — a rumor four to
+/// eight tiles out that a hovering enemy re-raises every tick — defers
+/// to the staggered replan window below.
+const HARVEST_DANGER_REACT_ZONE: usize = 3;
+
+/// A worker whose retained route fails the danger lookahead only in
+/// the FAR zone does not re-plan every tick while the threat lingers —
+/// that thrashed a full multi-candidate A* per worker per tick and
+/// jittered the fleet between near-equal detours. Far-zone replans
+/// stagger on this period, keyed by unit id so a fleet never re-plans
+/// in unison; near-zone threats never wait.
+const HARVEST_REPLAN_PERIOD: u64 = 4;
+
+/// Whether this is the tick on which `id` may re-plan a retained route
+/// the danger lookahead has flagged beyond the react zone.
+fn danger_replan_window(state: &State, id: UnitId) -> bool {
+    (state.tick + u64::from(id.0)).is_multiple_of(HARVEST_REPLAN_PERIOD)
+}
+
+/// Whether the retained route may be kept this tick: clear routes and
+/// off-window far-zone rumors keep it; near-zone threats and on-window
+/// far-zone flags surrender it for a replan.
+fn keep_flagged_route(
+    state: &State,
+    id: UnitId,
+    path: &PathFollow,
+    safe: impl FnMut(TilePos) -> bool,
+) -> bool {
+    match first_flagged_waypoint(path, safe) {
+        None => true,
+        Some(index) => index >= HARVEST_DANGER_REACT_ZONE && !danger_replan_window(state, id),
+    }
+}
+
+/// Index (relative to the walker's next waypoint) of the first
+/// lookahead tile `safe` rejects, or `None` for a clear near segment.
+/// The scan touches at most [`HARVEST_DANGER_LOOKAHEAD`] tiles however
+/// long the route is.
+fn first_flagged_waypoint(
+    path: &PathFollow,
+    mut safe: impl FnMut(TilePos) -> bool,
+) -> Option<usize> {
+    path.waypoints
+        .iter()
+        .skip(path.next as usize)
+        .take(HARVEST_DANGER_LOOKAHEAD)
+        .position(|waypoint| !safe(*waypoint))
+}
+
 /// Salvage knowledge follows the same freeze-frame rule the shell and
 /// fog-honest bots use: live amounts only on visible ground, remembered
 /// amounts everywhere else.
@@ -742,7 +819,9 @@ fn approach_source(
     let from = unit.tile();
     let keep = unit.path.as_ref().is_some_and(|path| {
         goal_matches(path.goal)
-            && near_route_is_safe(path, |waypoint| danger.route_safe_from(from, waypoint))
+            && keep_flagged_route(state, id, path, |waypoint| {
+                danger.route_safe_from(from, waypoint)
+            })
     });
     if keep {
         return true;
@@ -758,15 +837,6 @@ fn approach_source(
         next: 0,
     });
     true
-}
-
-fn near_route_is_safe(path: &PathFollow, mut safe: impl FnMut(TilePos) -> bool) -> bool {
-    path.waypoints
-        .iter()
-        .skip(path.next as usize)
-        .take(HARVEST_DANGER_LOOKAHEAD)
-        .copied()
-        .all(&mut safe)
 }
 
 /// Honor the source the commander actually named while preferring a route
@@ -788,7 +858,7 @@ fn approach_authoritative_source(
         SourceKind::Scrap => tile_adjacent_to_rect(goal, source.pos, (1, 1)),
     };
     if let Some(path) = unit.path.as_ref().filter(|path| goal_matches(path.goal)) {
-        let near_route_is_clear = near_route_is_safe(path, |waypoint| {
+        let near_route_is_clear = keep_flagged_route(state, id, path, |waypoint| {
             known_ground_passable(state, danger, player, waypoint)
                 && danger.route_safe_from(from, waypoint)
         });
@@ -948,74 +1018,127 @@ fn known_ground_passable(
     player: PlayerId,
     tile: TilePos,
 ) -> bool {
-    let vision = state.vision(player);
-    let Some(ground) = state
-        .map
-        .tile(tile)
-        .map(|cell| cell.terrain == crate::map::Terrain::Ground)
-    else {
-        return false;
-    };
-    if !ground {
-        return false;
-    }
-    if vision.visible(tile) {
-        return state.map.scrap_at(tile) == 0 && !danger.known_building_blocked(tile);
-    }
-    if vision.remembered_scrap(tile) > 0 {
-        return false;
-    }
-    !danger.known_building_blocked(tile)
+    // Memoized in the phase snapshot: terrain never mutates, fog
+    // knowledge and building spans are frozen for the phase, and the
+    // one input a phase can still change — a visible node's live
+    // scrap draining to zero — is declared volatile so that tile
+    // re-evaluates per probe instead of pinning a stale verdict.
+    danger.known_ground_cached(tile, || {
+        let vision = state.vision(player);
+        let Some(ground) = state
+            .map
+            .tile(tile)
+            .map(|cell| cell.terrain == crate::map::Terrain::Ground)
+        else {
+            return (false, false);
+        };
+        if !ground {
+            return (false, false);
+        }
+        if vision.visible(tile) {
+            let live_scrap = state.map.scrap_at(tile);
+            let open = live_scrap == 0 && !danger.known_building_blocked(tile);
+            return (open, live_scrap > 0);
+        }
+        if vision.remembered_scrap(tile) > 0 {
+            return (false, false);
+        }
+        (!danger.known_building_blocked(tile), false)
+    })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SafeApproach {
-    Moving,
-    DangerBlocked,
-    Unreachable,
+/// One worker's drop-off scan: after any same-pass flood exhausts the
+/// walkable component, every later foundry's doorsteps are decided by
+/// the same flood — the path scratch still holds it because nothing
+/// else searches between the calls.
+#[derive(Default)]
+struct DropOffScan {
+    flood_exhausted: bool,
 }
 
 /// Approach one rectangle using only the worker's shared battlefield
 /// knowledge. A bounded near-path check reacts to newly known danger
 /// without rescanning a long route every tick; a full deterministic A*
 /// runs only when that check fails or no path exists yet.
-fn approach_safe_rect(
+/// Walks the worker toward the nearest safely-approachable drop-off.
+/// The per-foundry semantics of the old single-pass scan are exact:
+/// the retained path is honored until the first failed safe route
+/// clears it, and the danger-ignoring classification that decides
+/// waiting-versus-stalling runs only after every safe attempt failed.
+/// Splitting the passes lets one exhausted flood answer every
+/// remaining foundry — a fully sealed worker floods twice per tick,
+/// not twice per foundry. Returns false only when no drop-off is
+/// reachable at all: the caller's stall.
+/// Ticks between repeated DangerHold reports for one waiting worker.
+const DANGER_HOLD_REPORT_PERIOD: u64 = 100;
+
+fn try_drop_offs(
     state: &mut State,
     danger: &GroundSalvageDanger,
     id: UnitId,
-    anchor: TilePos,
-    size: (i32, i32),
-) -> SafeApproach {
-    let unit = state.unit(id).expect("caller checked");
-    let player = unit.player;
-    let from = unit.tile();
-    if let Some(path) = unit
-        .path
-        .as_ref()
-        .filter(|path| tile_adjacent_to_rect(path.goal, anchor, size))
-        && near_route_is_safe(path, |waypoint| {
-            known_ground_passable(state, danger, player, waypoint)
-                && danger.route_safe_from(from, waypoint)
-        })
-    {
-        return SafeApproach::Moving;
+    drop_offs: &[BuildingId],
+    events: &mut Vec<Event>,
+) -> bool {
+    let mut scan = DropOffScan::default();
+    let mut path_cleared = false;
+    for &foundry_id in drop_offs {
+        let foundry = state.building(foundry_id).expect("collected live drop-off");
+        let (anchor, size) = (foundry.anchor, foundry.stats().size);
+        if !path_cleared {
+            let unit = state.unit(id).expect("caller checked");
+            let player = unit.player;
+            let from = unit.tile();
+            if let Some(path) = unit
+                .path
+                .as_ref()
+                .filter(|path| tile_adjacent_to_rect(path.goal, anchor, size))
+                && keep_flagged_route(state, id, path, |waypoint| {
+                    known_ground_passable(state, danger, player, waypoint)
+                        && danger.route_safe_from(from, waypoint)
+                })
+            {
+                return true;
+            }
+        }
+        if let Some((goal, waypoints)) =
+            known_rect_route(state, danger, id, anchor, size, true, Some(&mut scan))
+        {
+            state.unit_mut(id).expect("caller checked").path = Some(PathFollow {
+                goal,
+                waypoints,
+                next: 0,
+            });
+            return true;
+        }
+        if !path_cleared {
+            state.unit_mut(id).expect("caller checked").path = None;
+            path_cleared = true;
+        }
     }
-
-    if let Some((goal, waypoints)) = known_rect_route(state, danger, id, anchor, size, true) {
-        state.unit_mut(id).expect("caller checked").path = Some(PathFollow {
-            goal,
-            waypoints,
-            next: 0,
-        });
-        return SafeApproach::Moving;
+    let mut scan = DropOffScan::default();
+    for &foundry_id in drop_offs {
+        let foundry = state.building(foundry_id).expect("collected live drop-off");
+        let (anchor, size) = (foundry.anchor, foundry.stats().size);
+        if known_rect_route(state, danger, id, anchor, size, false, Some(&mut scan)).is_some() {
+            // Danger-blocked, not sealed: stand and wait for the window —
+            // visibly. A silent wait scored as an employed worker to
+            // every counter, the bot's recovery logic included.
+            if state
+                .current_tick()
+                .is_multiple_of(DANGER_HOLD_REPORT_PERIOD)
+            {
+                let unit = state.unit(id).expect("caller checked");
+                events.push(Event::OrderStalled {
+                    unit: id,
+                    player: unit.player,
+                    pos: unit.pos,
+                    reason: StallReason::DangerHold,
+                });
+            }
+            return true;
+        }
     }
-
-    state.unit_mut(id).expect("caller checked").path = None;
-    if known_rect_route(state, danger, id, anchor, size, false).is_some() {
-        SafeApproach::DangerBlocked
-    } else {
-        SafeApproach::Unreachable
-    }
+    false
 }
 
 fn known_rect_route(
@@ -1025,6 +1148,7 @@ fn known_rect_route(
     anchor: TilePos,
     size: (i32, i32),
     avoid_danger: bool,
+    mut scan: Option<&mut DropOffScan>,
 ) -> Option<(TilePos, Vec<TilePos>)> {
     let unit = state.unit(id).expect("caller checked");
     let from = unit.tile();
@@ -1038,14 +1162,39 @@ fn known_rect_route(
     if near > 1 {
         candidates[..near].rotate_left(id.0 as usize % near);
     }
-    candidates.into_iter().find_map(|goal| {
-        danger
-            .find_route(from, goal, |tile| {
-                known_ground_passable(state, danger, player, tile)
-                    && (!avoid_danger || danger.route_safe_from(from, tile))
-            })
-            .map(|waypoints| (goal, waypoints))
-    })
+    // The passability predicate is candidate-independent, so one failed
+    // search that exhausted the walkable component has already decided
+    // every remaining doorstep — including a prior same-scan foundry's
+    // flood, which the scratch still holds at entry. Skipping a proven
+    // tile returns the identical None without re-flooding to the cap.
+    let mut reachability = None;
+    if scan.as_deref().is_some_and(|scan| scan.flood_exhausted) {
+        reachability = danger.last_route_reachability(&candidates, false);
+    }
+    for (rank, &goal) in candidates.iter().enumerate() {
+        if reachability
+            .as_ref()
+            .is_some_and(|reachable: &Vec<bool>| !reachable[rank])
+        {
+            continue;
+        }
+        let route = danger.find_route(from, goal, |tile| {
+            known_ground_passable(state, danger, player, tile)
+                && (!avoid_danger || danger.route_safe_from(from, tile))
+        });
+        if let Some(waypoints) = route {
+            return Some((goal, waypoints));
+        }
+        if reachability.is_none() {
+            reachability = danger.last_route_reachability(&candidates, false);
+            if reachability.is_some()
+                && let Some(scan) = scan.as_deref_mut()
+            {
+                scan.flood_exhausted = true;
+            }
+        }
+    }
+    None
 }
 
 fn switch_source(state: &mut State, id: UnitId, node: TilePos, anchor: TilePos) {
@@ -1139,13 +1288,13 @@ fn deliver(
 ) {
     let unit = state.unit(id).expect("caller checked");
     let (tile, me, carrying) = (unit.tile(), unit.player, unit.carrying);
-    let foundries = foundries_by_distance(state, id);
-    let at_foundry = foundries.iter().any(|foundry_id| {
+    let drop_offs = drop_offs_by_distance(state, id);
+    let at_drop_off = drop_offs.iter().any(|foundry_id| {
         state.building(*foundry_id).is_some_and(|foundry| {
-            tile_adjacent_to_rect(tile, foundry.anchor, foundry.kind.stats().size)
+            tile_adjacent_to_rect(tile, foundry.anchor, foundry.stats().size)
         })
     });
-    if at_foundry {
+    if at_drop_off {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.carrying = 0;
         unit.progress = 0;
@@ -1171,17 +1320,7 @@ fn deliver(
         return;
     }
 
-    let mut danger_blocked = false;
-    for foundry_id in foundries {
-        let foundry = state.building(foundry_id).expect("collected live Foundry");
-        let (anchor, size) = (foundry.anchor, foundry.kind.stats().size);
-        match approach_safe_rect(state, danger, id, anchor, size) {
-            SafeApproach::Moving => return,
-            SafeApproach::DangerBlocked => danger_blocked = true,
-            SafeApproach::Unreachable => {}
-        }
-    }
-    if danger_blocked {
+    if try_drop_offs(state, danger, id, &drop_offs, events) {
         return;
     }
 
@@ -1207,25 +1346,17 @@ fn retire(state: &mut State, danger: &GroundSalvageDanger, id: UnitId, events: &
         return;
     }
     let tile = state.unit(id).expect("caller checked").tile();
-    let foundries = foundries_by_distance(state, id);
-    if foundries.iter().any(|foundry_id| {
-        let foundry = state.building(*foundry_id).expect("collected live Foundry");
-        tile_adjacent_to_rect(tile, foundry.anchor, foundry.kind.stats().size)
+    let drop_offs = drop_offs_by_distance(state, id);
+    if drop_offs.iter().any(|foundry_id| {
+        let foundry = state
+            .building(*foundry_id)
+            .expect("collected live drop-off");
+        tile_adjacent_to_rect(tile, foundry.anchor, foundry.stats().size)
     }) {
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     }
-    let mut danger_blocked = false;
-    for foundry_id in foundries {
-        let foundry = state.building(foundry_id).expect("collected live Foundry");
-        let (anchor, size) = (foundry.anchor, foundry.kind.stats().size);
-        match approach_safe_rect(state, danger, id, anchor, size) {
-            SafeApproach::Moving => return,
-            SafeApproach::DangerBlocked => danger_blocked = true,
-            SafeApproach::Unreachable => {}
-        }
-    }
-    if danger_blocked {
+    if try_drop_offs(state, danger, id, &drop_offs, events) {
         return;
     }
     let unit = state.unit_mut(id).expect("caller checked");
@@ -1239,23 +1370,26 @@ fn retire(state: &mut State, danger: &GroundSalvageDanger, id: UnitId, events: &
     });
 }
 
-fn foundries_by_distance(state: &State, id: UnitId) -> Vec<BuildingId> {
+/// The player's completed drop-off structures, nearest first. The one
+/// funnel deliveries and retirement consult — a kind joins the drop-off
+/// network by answering [`crate::stats::BuildingKind::is_drop_off`].
+fn drop_offs_by_distance(state: &State, id: UnitId) -> Vec<BuildingId> {
     let unit = state.unit(id).expect("caller checked");
-    let mut foundries: Vec<(chassis::fx::Fx, BuildingId)> = state
+    let mut drop_offs: Vec<(chassis::fx::Fx, BuildingId)> = state
         .buildings
         .iter()
         .filter(|building| {
             building.player == unit.player
                 && building.hp > 0
                 && building.built
-                && building.kind == crate::stats::BuildingKind::Foundry
+                && building.kind.is_drop_off()
         })
         .map(|building| (unit.pos.dist_sq(building.center()), building.id))
         .collect();
-    foundries.sort_unstable();
-    foundries
+    drop_offs.sort_unstable();
+    drop_offs
         .into_iter()
-        .map(|(_, foundry_id)| foundry_id)
+        .map(|(_, drop_off_id)| drop_off_id)
         .collect()
 }
 
@@ -1459,10 +1593,13 @@ mod harvest_zone_tests {
             next: 3,
         };
         let checks = Cell::new(0);
-        assert!(near_route_is_safe(&path, |_| {
-            checks.set(checks.get() + 1);
-            true
-        }));
+        assert!(
+            first_flagged_waypoint(&path, |_| {
+                checks.set(checks.get() + 1);
+                true
+            })
+            .is_none()
+        );
         assert_eq!(
             checks.get(),
             HARVEST_DANGER_LOOKAHEAD,

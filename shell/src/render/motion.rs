@@ -134,7 +134,7 @@ pub(crate) fn building_frame(kind: BuildingKind, state: BuildingAnimationState) 
         };
     }
 
-    if kind.stats().weapons.is_empty() {
+    if kind.base_stats().weapons.is_empty() {
         let body = match state.activity {
             BuildingActivity::Idle => BuildingBodyFrame::Idle,
             BuildingActivity::Production { cycle, .. } => {
@@ -206,8 +206,21 @@ fn unit_preparation_frame(kind: UnitKind, progress: f32) -> usize {
         | UnitKind::Buzzard
         | UnitKind::Darter
         | UnitKind::Talon
-        | UnitKind::Wisp => 0,
-        UnitKind::Harvester => 0,
+        | UnitKind::Wisp
+        | UnitKind::Warden
+        | UnitKind::Shrike
+        | UnitKind::Sylph
+        | UnitKind::Condor
+        | UnitKind::Moth
+        | UnitKind::Breaker
+        | UnitKind::Avalanche => 0,
+        UnitKind::Harvester
+        | UnitKind::Tender
+        | UnitKind::Excavator
+        | UnitKind::Kestrel
+        | UnitKind::Gnat
+        | UnitKind::Skyhook
+        | UnitKind::Sapper => 0,
     }
 }
 
@@ -222,8 +235,21 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Buzzard
             | UnitKind::Darter
             | UnitKind::Talon
-            | UnitKind::Wisp => 1,
-            UnitKind::Harvester => 0,
+            | UnitKind::Wisp
+            | UnitKind::Warden
+            | UnitKind::Shrike
+            | UnitKind::Sylph
+            | UnitKind::Condor
+            | UnitKind::Moth
+            | UnitKind::Breaker
+            | UnitKind::Avalanche => 1,
+            UnitKind::Harvester
+            | UnitKind::Tender
+            | UnitKind::Excavator
+            | UnitKind::Kestrel
+            | UnitKind::Gnat
+            | UnitKind::Skyhook
+            | UnitKind::Sapper => 0,
         },
         AttackPhase::Recover { progress, .. } => match kind {
             UnitKind::Lancer | UnitKind::Bombard => 4 + cycle_index(progress, 2),
@@ -234,8 +260,21 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Buzzard
             | UnitKind::Darter
             | UnitKind::Talon
-            | UnitKind::Wisp => 2 + cycle_index(progress, 2),
-            UnitKind::Harvester => 0,
+            | UnitKind::Wisp
+            | UnitKind::Warden
+            | UnitKind::Shrike
+            | UnitKind::Sylph
+            | UnitKind::Condor
+            | UnitKind::Moth
+            | UnitKind::Breaker
+            | UnitKind::Avalanche => 2 + cycle_index(progress, 2),
+            UnitKind::Harvester
+            | UnitKind::Tender
+            | UnitKind::Excavator
+            | UnitKind::Kestrel
+            | UnitKind::Gnat
+            | UnitKind::Skyhook
+            | UnitKind::Sapper => 0,
         },
     }
 }

@@ -103,7 +103,7 @@ pub(super) fn run(
     state: &mut State,
     index: &mut super::spatial::UnitIndex,
     events: &mut Vec<Event>,
-) {
+) -> logistics::Pending {
     // One index serves every acquisition window this phase: brains
     // decide against the start-of-tick world — positions, hp, and the
     // unit list itself hold still until resolution — so a snapshot
@@ -117,6 +117,7 @@ pub(super) fn run(
     let mut drains: Vec<PendingHpDrain> = Vec::new();
     let mut founds: Vec<PendingFounding> = Vec::new();
     let mut launches: Vec<crate::state::Shell> = Vec::new();
+    let mut logistics_pending = logistics::Pending::default();
     let mut harvest_danger_by_team: Vec<Option<crate::vision::GroundSalvageDanger>> =
         (0..state.players.len()).map(|_| None).collect();
     // Alternate direction by tick parity: sequential phases must not hand
@@ -180,22 +181,31 @@ pub(super) fn run(
             Order::Salvage { building } => salvage(state, id, building, events, &mut drains),
             Order::Found { kind, anchor } => found(state, id, kind, anchor, events, &mut founds),
             Order::RepairUnit { unit } => repair_unit(state, id, unit, events, &mut field_welds),
+            Order::Board { transport } => {
+                logistics::board(state, id, transport, &mut logistics_pending, events)
+            }
+            Order::Unload { at } => {
+                logistics::unload(state, id, at, &mut logistics_pending, events)
+            }
         }
     }
     commit_unit_welds(state, field_welds, events, &mut heals);
     turret_fire(state, &motion, events, &mut hits, &mut launches);
     repair_bay_aura(state, &mut heals);
+    crucible_smelter(state);
     // Arrivals join this tick's volley; launches land on later ticks
     // (flight is at least one tick), so ordering here cannot matter.
     land_shells(state, &mut hits, events);
     state.shells.extend(launches);
     resolve_hits(state, hits, builds, heals, drains, events);
     resolve_founds(state, founds, events);
+    logistics_pending
 }
 
 mod combat;
 mod economy;
 mod locomotion;
+pub(super) mod logistics;
 
 use combat::attack;
 use combat::{MotionSnapshot, advance, land_shells, retaliate, target_standing, turret_fire};
@@ -261,7 +271,7 @@ fn resolve_hits(
             let i = match rooms.iter().position(|(id, _)| *id == gain.site) {
                 Some(i) => i,
                 None => {
-                    let room = i64::from(b.kind.stats().max_hp) - i64::from(b.hp);
+                    let room = i64::from(b.stats().max_hp) - i64::from(b.hp);
                     rooms.push((gain.site, room));
                     rooms.len() - 1
                 }
@@ -330,7 +340,7 @@ fn resolve_hits(
         if b.hp == 0 {
             continue; // fire won this tick; every gain and drain forfeits
         }
-        let stats = b.kind.stats();
+        let stats = b.stats();
         let before = b.hp;
         let after = (i64::from(before) + w.gain - w.drain).clamp(0, i64::from(stats.max_hp)) as u32;
         b.hp = after;
@@ -539,6 +549,60 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
                 paid: due as u32,
                 source: crate::event::UnitRepairSource::RepairBay { building: bay },
             });
+        }
+    }
+}
+
+/// The Crucible's smelter: each pulse, every built Crucible melts one
+/// wreck unit within its ring into one scrap for its owner. Fuel is
+/// unowned battlefield debris, so no fog or ownership question arises —
+/// the works eats what the war left where it stands. Crucibles work in
+/// id order and each takes the first wreck in row-major scan order
+/// inside its reach, so the same scattered field always melts in the
+/// same sequence.
+fn crucible_smelter(state: &mut State) {
+    use crate::stats::BuildingKind;
+    use chassis::grid::TilePos;
+    if !state
+        .current_tick()
+        .is_multiple_of(crate::stats::CRUCIBLE_SMELT_PERIOD)
+    {
+        return;
+    }
+    let crucibles: Vec<crate::ids::BuildingId> = state
+        .buildings
+        .iter()
+        .filter(|b| b.built && b.hp > 0 && b.kind == BuildingKind::Crucible)
+        .map(|b| b.id)
+        .collect();
+    let radius = crate::stats::CRUCIBLE_SMELT_RADIUS;
+    for id in crucibles {
+        let Some(b) = state.building(id) else {
+            continue;
+        };
+        let owner = b.player;
+        let anchor = b.anchor;
+        let (w, h) = b.stats().size;
+        let reach = radius.to_num::<i32>() + 1;
+        let mut fuel = None;
+        'scan: for y in (anchor.y - reach)..(anchor.y + h + reach) {
+            for x in (anchor.x - reach)..(anchor.x + w + reach) {
+                let tile = TilePos::new(x, y);
+                if state.map.wreck_at(tile) == 0 {
+                    continue;
+                }
+                let center = tile.center();
+                if b.closest_point_to(center).dist_sq(center) <= radius * radius {
+                    fuel = Some(tile);
+                    break 'scan;
+                }
+            }
+        }
+        if let Some(tile) = fuel
+            && state.map.extract_wreck(tile).is_some()
+        {
+            let bank = &mut state.player_mut(owner).scrap;
+            *bank = bank.saturating_add(1);
         }
     }
 }

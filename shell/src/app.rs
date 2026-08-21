@@ -20,6 +20,7 @@ use crate::debug_server::IncomingRequest;
 use crate::frame_profile::{FrameObservation, FrameProfiler};
 use crate::game::{Game, GameReplay, SoundKind};
 use crate::menu::{Menu, PreviewCache};
+use crate::screens::codex::CodexScreen;
 use crate::screens::final_map::FinalMapScreen;
 use crate::screens::home::HomeScreen;
 use crate::screens::pause::PauseScreen;
@@ -54,6 +55,15 @@ enum Screen {
     Settings {
         /// The screen itself.
         screen: SettingsScreen,
+        /// The displaced screen, restored wholesale on leave.
+        back: Box<Screen>,
+    },
+    /// The codex — every machine and works with its figures — opened
+    /// over Home or the paused match, which waits here intact exactly
+    /// as it does under Settings.
+    Codex {
+        /// The screen itself.
+        screen: CodexScreen,
         /// The displaced screen, restored wholesale on leave.
         back: Box<Screen>,
     },
@@ -135,8 +145,8 @@ struct App {
 fn launch(draft: &NewMatchDraft) -> Result<Game> {
     let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
     // ONE consumer, one source: the per-seat vector the setup screen
-    // filled. Every AI seat gets its own config here, and the vacated
-    // human seat can never fall to the team-blind classic bot.
+    // filled. Every AI seat gets its own explicit config here, so a
+    // launched scenario always declares what each bot seat plays.
     anyhow::ensure!(
         draft.seats.len() == scenario.players.len(),
         "draft seats out of step with the map"
@@ -170,6 +180,16 @@ fn launch(draft: &NewMatchDraft) -> Result<Game> {
         if let Some(faction) = screens::wizard::faction_override(plan.faction_choice) {
             scenario.retint_seat(i, faction);
         }
+    }
+    // Per-seat team chips (the setup screen's): teams regroup seats
+    // without touching factions — an FFA chip drops the seat onto its
+    // own team, and the sim densifies chosen ids by first appearance
+    // at build. The scenario carries the choice, so saves and replays
+    // reproduce the grouping with no extra plumbing. An all-one-team
+    // draft fails the build (OneTeam) like any other launch error;
+    // the wizard refuses it earlier with the reason inline.
+    for (i, plan) in draft.seats.iter().enumerate() {
+        scenario.players[i].team = screens::wizard::team_override(plan.team_choice);
     }
     // Duels run through the same per-seat chips as every other map:
     // Auto keeps the authored roster (even seats Ferrous, odd Cupric —
@@ -239,6 +259,12 @@ impl Mixer {
             | SoundKind::Artillery
             | SoundKind::ArtilleryLaunch => 0.2,
             SoundKind::FlakhoundFire | SoundKind::FlakTurretFire => 0.12,
+            SoundKind::WardenFire => 0.1,
+            SoundKind::BreakerFire
+            | SoundKind::AvalancheFire
+            | SoundKind::BombRelease
+            | SoundKind::DemolitionBoom => 0.2,
+            SoundKind::UpgradeDone => 0.3,
             SoundKind::StingerFire
             | SoundKind::BuzzardFire
             | SoundKind::DarterFire
@@ -277,6 +303,12 @@ impl Mixer {
             SoundKind::WispFire => 0.23,
             SoundKind::BastionFire => 0.55,
             SoundKind::FlakTurretFire => 0.34,
+            SoundKind::WardenFire => 0.3,
+            SoundKind::BreakerFire => 0.55,
+            SoundKind::AvalancheFire => 0.5,
+            SoundKind::BombRelease => 0.45,
+            SoundKind::DemolitionBoom => 0.65,
+            SoundKind::UpgradeDone => 0.35,
         }
     }
 
@@ -314,6 +346,12 @@ impl Mixer {
             SoundKind::WispFire => &sounds.attack_wisp,
             SoundKind::BastionFire => &sounds.attack_bastion,
             SoundKind::FlakTurretFire => &sounds.attack_flak_turret,
+            SoundKind::WardenFire => &sounds.attack_warden,
+            SoundKind::BreakerFire => &sounds.attack_breaker,
+            SoundKind::AvalancheFire => &sounds.avalanche_launch,
+            SoundKind::BombRelease => &sounds.bomb_release,
+            SoundKind::DemolitionBoom => &sounds.demolition_boom,
+            SoundKind::UpgradeDone => &sounds.upgrade_done,
         }
     }
 
@@ -377,13 +415,17 @@ fn soundtrack_scene(screen: &Screen, game: &Game) -> crate::soundtrack::Scene {
         ),
         Screen::FinalMap(_) => match_soundtrack_scene(game, true),
         Screen::Pause(_) => match_soundtrack_scene(game, true),
-        Screen::Settings { back, .. } if matches!(**back, Screen::Pause(_)) => {
+        Screen::Settings { back, .. } | Screen::Codex { back, .. }
+            if matches!(**back, Screen::Pause(_)) =>
+        {
             match_soundtrack_scene(game, true)
         }
         Screen::Results(_) => match_soundtrack_scene(game, false),
-        Screen::Home(_) | Screen::Settings { .. } | Screen::Wizard(_) | Screen::Replays(_) => {
-            crate::soundtrack::Scene::Menu
-        }
+        Screen::Home(_)
+        | Screen::Settings { .. }
+        | Screen::Codex { .. }
+        | Screen::Wizard(_)
+        | Screen::Replays(_) => crate::soundtrack::Scene::Menu,
     }
 }
 
@@ -408,6 +450,11 @@ fn raises_combat_music(kind: SoundKind) -> bool {
             | SoundKind::WispFire
             | SoundKind::BastionFire
             | SoundKind::FlakTurretFire
+            | SoundKind::WardenFire
+            | SoundKind::BreakerFire
+            | SoundKind::AvalancheFire
+            | SoundKind::BombRelease
+            | SoundKind::DemolitionBoom
     )
 }
 
@@ -598,10 +645,13 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) | Screen::Results(_) => {
                 app.game.update_fx(dt);
             }
-            Screen::Settings { back, .. } if !matches!(**back, Screen::Pause(_)) => {
+            Screen::Settings { back, .. } | Screen::Codex { back, .. }
+                if !matches!(**back, Screen::Pause(_)) =>
+            {
                 app.game.update_fx(dt);
             }
             Screen::Settings { .. }
+            | Screen::Codex { .. }
             | Screen::Playing
             | Screen::Playback(_)
             | Screen::FinalMap(_)
@@ -632,7 +682,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 // Settings) build their screen after the draw below.
                 let mut next: Option<Screen> = None;
                 match out {
-                    screens::home::Out::Stay | screens::home::Out::Settings => {}
+                    screens::home::Out::Stay
+                    | screens::home::Out::Settings
+                    | screens::home::Out::Roster => {}
                     screens::home::Out::Continue => {
                         // Resume the newest autosave — a replay load, so
                         // it cannot desync from its own history.
@@ -687,6 +739,11 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                         screen: SettingsScreen::open(&app.config),
                         back: Box::new(Screen::Home(home)),
                     }
+                } else if out == screens::home::Out::Roster {
+                    Screen::Codex {
+                        screen: CodexScreen::open(),
+                        back: Box::new(Screen::Home(home)),
+                    }
                 } else {
                     next.unwrap_or(Screen::Home(home))
                 }
@@ -720,6 +777,24 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                     *back
                 } else {
                     Screen::Settings { screen: sc, back }
+                }
+            }
+            Screen::Codex {
+                screen: mut codex,
+                back,
+            } => {
+                let out = codex.update(&events, &mut app.input.mouse, &mut app.game.sounds_pending);
+                render::draw(&app.game, &app.sprites, &app.input);
+                veil();
+                let viewer = app.game.state.player(app.game.human).faction;
+                codex.draw(&app.sprites, viewer);
+                if out == screens::codex::Out::Leave {
+                    *back
+                } else {
+                    Screen::Codex {
+                        screen: codex,
+                        back,
+                    }
                 }
             }
             Screen::Wizard(mut w) => {
@@ -1095,6 +1170,10 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                             back: Box::new(Screen::Pause(ps)),
                         }
                     }
+                    screens::pause::Out::Roster => Screen::Codex {
+                        screen: CodexScreen::open(),
+                        back: Box::new(Screen::Pause(ps)),
+                    },
                     screens::pause::Out::Surrender => {
                         // The command lands on the next tick like any
                         // other. A 1v1 decides on the spot and the
@@ -1325,7 +1404,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                         | Screen::Results(_)
                         | Screen::FinalMap(_)
                         | Screen::Pause(_) => true,
-                        Screen::Settings { back, .. } => matches!(**back, Screen::Pause(_)),
+                        Screen::Settings { back, .. } | Screen::Codex { back, .. } => {
+                            matches!(**back, Screen::Pause(_))
+                        }
                         Screen::Playback(pb) => matches!(
                             pb.return_to,
                             PlaybackReturn::Pause | PlaybackReturn::Results
@@ -1385,6 +1466,7 @@ fn visible_profile_mode(screen: &Screen) -> &'static str {
     match screen {
         Screen::Home(_) => "home",
         Screen::Settings { .. } => "settings",
+        Screen::Codex { .. } => "codex",
         Screen::Wizard(_) => "wizard",
         Screen::Playing => "playing",
         Screen::Playback(_) => "playback",
@@ -1442,6 +1524,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
     let (mode_name, menu): (&str, Option<&Menu>) = match screen {
         Screen::Home(home) => ("home", Some(&home.menu)),
         Screen::Settings { screen: sc, .. } => (sc.mode_name(), Some(&sc.menu)),
+        Screen::Codex { screen: codex, .. } => (codex.mode_name(), Some(&codex.menu)),
         Screen::Wizard(w) => {
             // The wizard's custom screens (grid, setup) speak the same
             // protocol surface the row menus do — automation keeps its
@@ -1605,9 +1688,52 @@ fn frozen_map_refuses(request: &Request) -> bool {
 /// screenshots, the overlay), answered for the screen the window shows,
 /// or live-mutating (commands, loads, saves), refused wholesale while
 /// the viewer owns the screen.
+/// Which session a request addresses, and whether it is allowed to —
+/// decided before any state is touched. The Playback pick is the
+/// load-bearing row: a regression there aims a viewer-bound
+/// `AdvanceTicks` at the hidden live match, which advances silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// The final battlefield is frozen; time and session verbs bounce.
+    RefuseFrozen,
+    /// A shared verb, dispatched to the playback viewer.
+    SharedToViewer,
+    /// A shared verb, dispatched to the live session.
+    SharedToLive,
+    /// A local mutating verb while the read-only viewer owns the screen.
+    RefuseViewer,
+    /// A locally-answered verb against the app's own state.
+    Local,
+}
+
+/// The routing decision for one request. `shared` is whether the
+/// protocol's shared dispatch handles this verb — the caller learns it
+/// from `dispatch_shared` itself, so this function cannot drift from
+/// the trait's coverage; what it owns is the ORDER: frozen-map refusal
+/// first, then the session pick for shared verbs, then the viewer's
+/// read-only guard for everything local.
+fn route(playback: bool, final_map: bool, request: &Request, shared: bool) -> Route {
+    if final_map && frozen_map_refuses(request) {
+        return Route::RefuseFrozen;
+    }
+    if shared {
+        return if playback {
+            Route::SharedToViewer
+        } else {
+            Route::SharedToLive
+        };
+    }
+    if playback && viewer_refuses(request) {
+        return Route::RefuseViewer;
+    }
+    Route::Local
+}
+
 fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen, ui_view: &UiView) {
     let IncomingRequest { id, request, reply } = incoming;
-    if matches!(&*screen, Screen::FinalMap(_)) && frozen_map_refuses(&request) {
+    let playback = matches!(&*screen, Screen::Playback(_));
+    let final_map = matches!(&*screen, Screen::FinalMap(_));
+    if route(playback, final_map, &request, false) == Route::RefuseFrozen {
         reply
             .send(ResponseEnvelope::err(
                 id,
@@ -1634,7 +1760,9 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
         if matches!(request, Request::Resume) && outcome.is_ok() {
             let over_pause = match &*screen {
                 Screen::Pause(_) => true,
-                Screen::Settings { back, .. } => matches!(**back, Screen::Pause(_)),
+                Screen::Settings { back, .. } | Screen::Codex { back, .. } => {
+                    matches!(**back, Screen::Pause(_))
+                }
                 _ => false,
             };
             if over_pause {
@@ -1651,7 +1779,7 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
     }
     // The viewer is read-only: refusing beats acknowledging a request
     // that would silently mutate the hidden match.
-    if matches!(&*screen, Screen::Playback(_)) && viewer_refuses(&request) {
+    if route(playback, final_map, &request, false) == Route::RefuseViewer {
         let refusal = "the viewer is read-only; leave playback first".to_string();
         reply.send(ResponseEnvelope::err(id, refusal)).ok();
         return;
@@ -1820,6 +1948,38 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
 mod tests {
     use super::*;
 
+    /// The routing table, row by row: frozen-map precedence, the
+    /// viewer-vs-live session pick for shared verbs, and the viewer's
+    /// read-only guard for local ones. Every QA session reads the
+    /// world through this decision.
+    #[test]
+    fn requests_route_by_screen_and_kind() {
+        let advance = Request::AdvanceTicks { ticks: 8 };
+        let send = Request::SendCommand {
+            player: oxide_sim::PlayerId(0),
+            command: oxide_sim::Command::Surrender,
+        };
+        let camera = Request::QueryCamera;
+
+        // Shared verbs go to whichever session owns the screen.
+        assert_eq!(route(true, false, &advance, true), Route::SharedToViewer);
+        assert_eq!(route(false, false, &advance, true), Route::SharedToLive);
+
+        // The frozen final map outranks everything it names, shared
+        // or not — time may not advance behind a frozen battlefield.
+        assert_eq!(route(false, true, &advance, true), Route::RefuseFrozen);
+        assert_eq!(route(false, true, &send, false), Route::RefuseFrozen);
+        assert_eq!(route(false, true, &camera, false), Route::Local);
+
+        // The read-only viewer bounces local mutation and answers
+        // local reads.
+        assert_eq!(route(true, false, &send, false), Route::RefuseViewer);
+        assert_eq!(route(true, false, &camera, false), Route::Local);
+
+        // The live screen answers everything else locally.
+        assert_eq!(route(false, false, &send, false), Route::Local);
+    }
+
     #[test]
     fn every_authored_weapon_report_raises_combat_pressure() {
         for kind in [
@@ -1837,6 +1997,11 @@ mod tests {
             SoundKind::BastionFire,
             SoundKind::FlakTurretFire,
             SoundKind::ArtilleryLaunch,
+            SoundKind::WardenFire,
+            SoundKind::BreakerFire,
+            SoundKind::AvalancheFire,
+            SoundKind::BombRelease,
+            SoundKind::DemolitionBoom,
         ] {
             assert!(
                 raises_combat_music(kind),
@@ -1950,6 +2115,61 @@ mod tests {
             players[0].name, players[1].name,
             "ordinals keep names unique"
         );
+    }
+
+    #[test]
+    fn launch_writes_the_chosen_teams_into_the_scenario() {
+        // Untouched dials reproduce the authored grouping — the
+        // scenario (and so every save and replay) carries the teams.
+        let draft = team_draft(); // trident-plateau: teams 0,0,0 / 1,1,1
+        let game = launch(&draft).expect("launches");
+        let teams: Vec<Option<u8>> = game.scenario.players.iter().map(|p| p.team).collect();
+        assert_eq!(
+            teams,
+            vec![Some(0), Some(0), Some(0), Some(1), Some(1), Some(1)],
+            "defaults launch the map as authored"
+        );
+
+        // Re-dialed seats regroup: FFA drops the seat onto its own
+        // team, a moved seat joins its new one — factions untouched.
+        let mut draft = team_draft();
+        let authored: Vec<_> = draft
+            .scenario
+            .as_deref()
+            .unwrap()
+            .players
+            .iter()
+            .map(|p| p.faction)
+            .collect();
+        draft.seats[0].team_choice = 0; // FFA
+        draft.seats[3].team_choice = 1; // crosses to Team 1
+        let game = launch(&draft).expect("launches");
+        let players = &game.scenario.players;
+        assert_eq!(players[0].team, None, "the FFA seat drops its team");
+        assert_eq!(players[3].team, Some(0), "the moved seat joined Team 1");
+        assert_eq!(players[1].team, Some(0));
+        let launched: Vec<_> = players.iter().map(|p| p.faction).collect();
+        assert_eq!(launched, authored, "the team dial never retints a seat");
+        // The sim's dense normalization sees the regrouping: the FFA
+        // seat stands alone against everyone.
+        let alone = game.state.player(oxide_sim::PlayerId(0)).team;
+        assert!(
+            (1..players.len())
+                .all(|i| game.state.player(oxide_sim::PlayerId(i as u8)).team != alone),
+            "an FFA seat shares a team with no one"
+        );
+    }
+
+    #[test]
+    fn an_all_one_team_draft_fails_the_launch_instead_of_the_process() {
+        // The wizard refuses this at Start; launch stays the backstop
+        // and surfaces the sim's OneTeam build error as a menu notice,
+        // never a crash.
+        let mut draft = team_draft();
+        for plan in &mut draft.seats {
+            plan.team_choice = 1;
+        }
+        assert!(launch(&draft).is_err(), "one team can never launch");
     }
 
     #[test]

@@ -23,8 +23,13 @@ replay that re-executes headless to a bit-identical state hash.
 
 ## Playing
 
-The front door offers Play, Tutorial, Replays, Settings, and Quit
-(plus Continue when an autosave waits). The pause menu carries Save
+The front door offers Play, Tutorial, Replays, Roster, Settings, and
+Quit (plus Continue when an autosave waits). Roster is the codex:
+every machine and works with its sprite, what it is for, and its
+figures, in the order the factories unlock them; the pause menu
+carries it too, so a match can be consulted without leaving it, and
+hovering a train or build card shows the same description and
+figures as a tooltip. The pause menu carries Save
 Game — name the save inline (Enter accepts the suggested name) and
 load it back any time from the Replays shelf, which shelves saves
 and finished-match replays in their own sections. Settings holds live volume
@@ -85,8 +90,10 @@ ridge doors carry the fight sideways — then opens one setup screen
 for every map size: pick your chair from the seat cards (grouped
 under team headings when the map has teams) and tune every
 opponent's difficulty (**Easy, Medium, Hard, Expert**), personality
-(**turtle, balanced, aggressive**, or let the map decide), and
-faction in place beside a who-is-where preview. Start is
+(**turtle, balanced, aggressive**, or let the map decide), faction,
+and team in place beside a who-is-where preview — the team dial
+turns any map into a free-for-all or any grouping you can imagine
+(only everyone-on-one-team is refused; nobody to fight). Start is
 preselected, so Enter-Enter from the map grid still launches the
 classic matchup — and the chips can now arrange what the old quick
 questions never could: a mirror match, or your seat on the other
@@ -121,8 +128,10 @@ condition; the **Fabricator** unlocks everything advanced including
 the air wing; **Turrets** hold ground; **Flak Turrets** hold sky;
 the **Bastion** is artillery in a fortress shell — full reach needs a
 spotter; the **Array** is radar (true sight in close, unidentified
-blips out to its ring); the **Reclaimer** grinds an early long-war scrap
-trickle; the **Repair Bay** is a field
+blips out to its ring) and standing anti-stealth cover, sweeping
+buried charges nearby — the **Deep Array** upgrade sweeps the whole
+ring; the **Reclaimer** grinds an early long-war scrap trickle;
+the **Repair Bay** is a field
 workshop — an unarmed ring that welds your wounded machines, ground
 and air alike, billed per hp from your bank at the same rate a
 harvester's torch charges. After a very long war, every surviving
@@ -234,7 +243,7 @@ Start the shell with a socket, then talk to it:
 ```sh
 cargo run -p oxide-shell -- --debug-server --paused   # driven mode
 cargo run -p oxide-driver -- balance-probe          # value/body-time composition + entropy
-cargo run -p oxide-driver -- repair-probe --weights sim/src/bot/ladder_weights.json
+cargo run -p oxide-driver -- repair-probe --weights tools/train/runs/candidate.json
 cargo run -p oxide-driver -- matchup --a sentinel:8 --b bombard:2,sentinel:4
 cargo run -p oxide-driver -- bench                  # 500-unit ticks/s
 cargo run -p oxide-driver -- live status
@@ -260,6 +269,10 @@ per-seat views, key/click injection, camera, overlay, scenario loading).
 per-seat command activity and longest silence, plus exact snapshots. A snapshot
 at tick `N` is the state immediately before commands stamped `N` execute;
 repeat `--tick` or pass a comma-separated list, and omit it for the final state.
+`replay-summary` narrates a whole replay as a compact text digest — an event
+timeline (first contact, battles, expansions, eliminations, lulls), per-seat
+digests at intervals, and coarse ASCII minimaps — with `--json` as the stable
+machine contract.
 `profile-shell` builds an optimized native shell, reconstructs the record through
 `--from`, then resumes it as a real live Playing match with the normal HUD, fog,
 and bots. The record's later commands are not replayed: this is an honest live
@@ -331,33 +344,35 @@ for is deleted only by you.
 ## Status and road ahead
 
 Working today: the full loop (harvest → train → fight → win) with fog of
-war and ghost memory, the two-faction eleven-unit roster (ground, air,
-artillery) behind a build-your-tech gate, the harvester-built structure
-palette from turrets to radar to Reclaimers, wreck salvage and repair
-welding (buildings and ground machines alike), team games from 2v2 to
-4v4 with shared sight, order queues
-and patrols, solid
-units that crowd without gridlocking, zero-chase advances and attack-move with line-of-sight
-fire, damage retaliation, rally points, control groups, shift-select,
-order feedback, a fog-aware minimap, sound, twenty-five maps in a
-thumbnail-grid browser sectioned by format (sixteen duels, five 2v2s,
-two 3v3s, two 4v4s), per-seat match setup on
-team maps (team-grouped seat cards with inline difficulty,
-personality, and faction dials beside a who-is-where map — every
-seat's faction is free, yours included), building salvage as harvester labor, ally
-inspection with visible orders and team-color accents on the machines
-themselves (allied seats use distinct cool accents, hostile seats use distinct
-warm accents, and your own keep pure faction paint), touch gestures (pan, tap, long-press,
-pinch, two-finger box), menus, a trained neural opponent with four
-difficulty levels and selectable personalities, save/resume via
-replays, and the agent tooling described above.
+war and ghost memory, a two-faction TWENTY-FOUR-unit roster across three
+tiers (line infantry through bombers on committed attack runs, air
+transports with sealed cargo holds, tier-three siege walkers and rocket
+batteries, a walking demolition charge), buildable Foundry expansions
+with kill-all-Foundries elimination, derelict Extractor frames restored
+for escalating contested income, in-place building upgrades (Heavy
+Turret, Bulwark, Burst Flak, Refinery, Deep Array — each wearing its
+own hull), buried Scuttle Charges as the game's only stealth (detected
+by scouts and by Array masts on a two-tier ring, cleared honestly by
+saturation fire), Barricade walls and Scrap Depot drop-offs,
+bottomless-pit terrain that
+blocks ground while air passes over, wreck salvage and repair welding,
+team games from 2v2 to 4v4 with shared sight plus the first shipped
+free-for-alls (3-, 5-, and 6-way on a measured-fairness gate class),
+order queues and patrols, solid units that crowd without gridlocking,
+zero-chase advances and attack-move with line-of-sight fire, damage
+retaliation, rally points, control groups, shift-select, order
+feedback, a fog-aware minimap, a synth sound bank with voices for the
+new heavy weapons, THIRTY-FOUR maps in a thumbnail-grid browser
+sectioned by format, per-seat match setup on team maps, building
+salvage as harvester labor, ally inspection with team-color accents,
+touch gestures, menus, a trained neural opponent with four difficulty
+levels and selectable personalities, save/resume via replays, and the
+agent tooling described above.
 
-Not yet: expansions (Foundries aren't buildable), formations,
-free-for-all (the sim seats up to eight players and the menu lists any
-scenario it can parse, but no shipped map plays FFA), and the mobile
-ports — macroquad makes iOS/Android plausible, and the desktop shell
-already resolves touch gestures, but no mobile build exists. The sim freezes at game
-end; the pause menu's Restart is the rematch.
+Not yet: formations, and the
+mobile ports — macroquad makes iOS/Android plausible, and the desktop
+shell already resolves touch gestures, but no mobile build exists. The
+sim freezes at game end; the pause menu's Restart is the rematch.
 
 Built with [macroquad](https://macroquad.rs/); simulation math on the
 [`fixed`](https://crates.io/crates/fixed) crate; goldens via

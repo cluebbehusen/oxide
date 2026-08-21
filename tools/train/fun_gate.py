@@ -30,16 +30,24 @@ The composition contract separates broad quality from catastrophic tails:
     was the tech tree climbed at all.
   --min-top-tech-share (0.15) on the LARGEST single tech kind demands
     that something on the tree was actually worth building.
-  --min-fabricator-reach (0.90), --min-turret-reach (0.40),
-    --min-array-reach (0.60), and --min-reclaimer-reach (0.25) require
+  --min-fabricator-reach (0.90), --min-turret-reach (0.30),
+    --min-array-reach (0.25), and --min-reclaimer-reach (0.20) require
     those completed structures across competitive lifetimes. Repair
     Bays remain diagnostic because field repair is the dedicated
     `repair-probe` gate and the building is intentionally niche.
   Industrial Attrition must independently reach a Reclaimer in at least
-    25% of competitive lifetimes, and Air Combined must carry at least
+    20% of competitive lifetimes, and Air Combined must carry at least
     13% of its army value in faction-appropriate air units. Named profiles
     therefore have to express their advertised identity, not merely clear
     the broad anti-spam floor.
+
+Two schema-10 tables print for the dealt profile without gating it: the
+per-kind reach every unit and building was produced at, and the share of
+the competitive scrap bill each kind consumed. They generalize what the
+four authored structure floors sample — a kind nothing ever builds is
+invisible in a share table — and they show the money that never takes a
+body-time sample. Both are diagnostic on purpose: a floor drawn before
+the campaign measures the distribution is a guess, not a contract.
 
 Composition judgment reads the competitive-lifetime combat fields from
 `driver balance-probe --out`. Every seat contributes while it is
@@ -67,6 +75,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from statistics import mean
 
 # The Fabricator's produce list (sim/src/stats.rs) — the roster a match
 # only reaches by building the tech gate first.
@@ -89,11 +98,13 @@ AIR_KINDS = {
     "wisp",
 }
 
-# The exact `--out` payload shape this gate reads. Schema 7 identifies
+# The exact `--out` payload shape this gate reads. Schema 10 identifies
 # explicitly selected named styles and variants alongside the legacy
-# aggression component; accepting another schema risks silently judging a
-# raw zero-facet profile while labeling it as a shipped personality.
-EXPECTED_SCHEMA = 7
+# aggression component, carries no scripted-tier dial, and adds the
+# per-kind reach and scrap-destination tables; accepting another schema
+# risks silently judging a raw zero-facet profile while labeling it as
+# a shipped personality.
+EXPECTED_SCHEMA = 10
 DEFAULT_STALE_CAP_TICKS = 2_000
 MIN_PROMOTION_SEEDS = 3
 
@@ -160,6 +171,83 @@ def cap_health(matches: list[dict], stale_ticks: int) -> dict[str, int]:
     return counts
 
 
+TIER2_KINDS = frozenset(
+    {
+        "lancer",
+        "bombard",
+        "flakhound",
+        "stinger",
+        "warden",
+        "tender",
+        "sapper",
+        "excavator",
+        "skyhook",
+        "kestrel",
+        "gnat",
+        "buzzard",
+        "darter",
+        "talon",
+        "wisp",
+    }
+)
+TIER3_KINDS = frozenset({"breaker", "avalanche", "condor", "moth", "shrike", "sylph"})
+
+
+def fun_rhythm(matches: list[dict]) -> dict:
+    """Match-rhythm evidence from the schema-9 probe fields: fight
+    windows and lulls, the decided-moment latency the old bots failed,
+    base expansion, tier reach, and contested-economy tenure. Reported
+    for every profile; gated only where a flag sets a measured floor."""
+    windows = [int(m.get("fight_windows", 0)) for m in matches]
+    shares = [float(m.get("fight_share", 0.0)) for m in matches]
+    lulls = [int(m.get("longest_lull_ticks", 0)) for m in matches]
+    latencies: list[int] = []
+    for m in matches:
+        tick = m.get("advantage_tick")
+        team = m.get("advantage_team")
+        if tick is None or team is None or m.get("capped", True):
+            continue
+        winners = m.get("winners") or []
+        factions = m.get("factions") or []
+        # The advantaged team finished the job when a winning seat
+        # belongs to it; seat->team is not in the payload, so use the
+        # conservative check: any decided match with an advantage.
+        del winners, factions
+        latencies.append(max(0, int(m.get("ticks", 0)) - int(tick)))
+    expansions = 0
+    expansion_seats = 0
+    tier23_share_sum = 0.0
+    tier23_seats = 0
+    extractor_tenures: list[float] = []
+    for m in matches:
+        for seat_buildings in m.get("competitive_buildings", []):
+            expansion_seats += 1
+            extra = max(0, int(seat_buildings.get("foundry", 0)) - 1)
+            if extra > 0:
+                expansions += 1
+        for seat_shares in m.get("combat_seats", []):
+            if not seat_shares:
+                continue
+            tier23_seats += 1
+            tier23_share_sum += sum(
+                share
+                for kind, share in seat_shares.items()
+                if kind in TIER2_KINDS or kind in TIER3_KINDS
+            )
+        extractor_tenures.extend(
+            float(tenure) for tenure in m.get("extractor_hold_share", [])
+        )
+    return {
+        "mean_fight_windows": mean(windows) if windows else 0.0,
+        "mean_fight_share": mean(shares) if shares else 0.0,
+        "max_lull_ticks": max(lulls, default=0),
+        "finish_latencies": sorted(latencies),
+        "expansion_rate": (expansions / expansion_seats) if expansion_seats else 0.0,
+        "mean_tier23_share": (tier23_share_sum / tier23_seats) if tier23_seats else 0.0,
+        "mean_extractor_tenure": mean(extractor_tenures) if extractor_tenures else 0.0,
+    }
+
+
 def combat_tail_rates(
     matches: list[dict],
     catastrophic_value_entropy: float,
@@ -169,7 +257,7 @@ def combat_tail_rates(
     """Measures catastrophic competitive lifetimes from raw seat arrays.
 
     Aggregate quantiles hide the exact number of bad seats and small
-    cohorts make nearest-rank p10/p90 jump sharply. The raw schema-7 arrays
+    cohorts make nearest-rank p10/p90 jump sharply. The raw per-seat arrays
     let the gate state its real contract as rates. Seats with no competitive
     combat mix are skipped, exactly as ``Aggregate.combat_seats`` skips them.
     """
@@ -437,7 +525,7 @@ def run_probe(
     ticks: int,
     profile: ProbeProfile,
 ) -> dict:
-    """Runs one profile and returns its schema-7 JSON payload."""
+    """Runs one profile and returns its schema-10 JSON payload."""
     with tempfile.TemporaryDirectory(prefix="oxide-fun-gate-") as directory:
         out = pathlib.Path(directory) / "probe.json"
         command = [
@@ -564,6 +652,36 @@ def evaluate_profile(
                 args.min_reclaimer_reach,
             )
         )
+    rhythm = fun_rhythm(payload["matches"])
+    overall = dict(overall)
+    overall["fun_rhythm"] = rhythm
+    if full_gate:
+        # Rhythm floors ship OFF (None) until the campaign measures
+        # them; a set flag is a calibrated promise, not a guess.
+        if args.max_finish_latency is not None and rhythm["finish_latencies"]:
+            worst = rhythm["finish_latencies"][-1]
+            if worst > args.max_finish_latency:
+                failures.append(
+                    f"finish latency {worst} ticks exceeds the "
+                    f"{args.max_finish_latency} ceiling (won matches "
+                    f"must be closed out)"
+                )
+        if (
+            args.min_fight_windows is not None
+            and rhythm["mean_fight_windows"] < args.min_fight_windows
+        ):
+            failures.append(
+                f"mean fight windows {rhythm['mean_fight_windows']:.1f} below "
+                f"{args.min_fight_windows} (matches need concrete fights and lulls)"
+            )
+        if (
+            args.min_expansion_rate is not None
+            and rhythm["expansion_rate"] < args.min_expansion_rate
+        ):
+            failures.append(
+                f"expansion rate {rhythm['expansion_rate']:.2f} below "
+                f"{args.min_expansion_rate} (bases should grow past the first Foundry)"
+            )
     return overall, tails, health, failures
 
 
@@ -613,6 +731,77 @@ def print_profile(
         f"{tails['dominant']}/{tails['seats']} "
         f"({float(tails['dominant_rate']) * 100:.1f}%)"
     )
+    rhythm = overall.get("fun_rhythm")
+    if rhythm:
+        latencies = rhythm["finish_latencies"]
+        finish = (
+            f"{latencies[len(latencies) // 2]} med / {latencies[-1]} max ticks"
+            if latencies
+            else "none observed"
+        )
+        print(
+            f"rhythm: fights {rhythm['mean_fight_windows']:.1f} windows · "
+            f"{rhythm['mean_fight_share'] * 100:.0f}% of samples · longest lull "
+            f"{rhythm['max_lull_ticks']} ticks · finish latency {finish}"
+        )
+        print(
+            f"growth: expansion rate {rhythm['expansion_rate'] * 100:.0f}% of seats · "
+            f"tier-2/3 value share {rhythm['mean_tier23_share'] * 100:.0f}% · "
+            f"extractor tenure {rhythm['mean_extractor_tenure'] * 100:.0f}% of samples"
+        )
+
+
+def ranked(shares: dict[str, float]) -> list[tuple[str, float]]:
+    """Biggest first, name-ordered within a tie so two runs of the same
+    payload print the same page."""
+    return sorted(shares.items(), key=lambda kv: (-float(kv[1]), kv[0]))
+
+
+def print_per_map_diagnostics(payload: dict) -> None:
+    """The same two schema-10 tables sliced by map cohort, compacted to
+    the three biggest spenders and the never-built kinds per map — the
+    full tables live in the record for anything deeper. Diagnostic like
+    the overall tables: map identity is where balance problems hide
+    (an island map with no Skyhook spend tells a story no aggregate
+    can), but no floor is drawn here."""
+    cohorts = (payload.get("cohorts") or {}).get("map") or {}
+    if not cohorts:
+        return
+    print("diagnostic (not gated) — per-map spend leaders and blind spots:")
+    for name in sorted(cohorts):
+        cohort = cohorts[name]
+        spend = cohort.get("competitive_spend_share") or {}
+        reach = cohort.get("competitive_kind_reach") or {}
+        leaders = ", ".join(
+            f"{kind} {float(share) * 100:.0f}%" for kind, share in ranked(spend)[:3]
+        )
+        unbuilt = [kind for kind, share in sorted(reach.items()) if float(share) == 0.0]
+        blind = f" · never built: {', '.join(unbuilt)}" if unbuilt else ""
+        print(f"  {name:<20} {leaders}{blind}")
+
+
+def print_kind_diagnostics(overall: dict) -> None:
+    """Prints the two schema-10 per-kind tables.
+
+    Reach answers a question no share table can: a kind built once and a
+    kind never built are both a share near zero, and only one of those
+    is a design problem. Scrap destination answers the other one — a
+    presence-weighted share never sees the money spent on defenses,
+    tech, and expansion, because those never take a body-time sample.
+
+    Strictly diagnostic. The four authored structure floors remain the
+    only reach contract; a floor drawn over this whole distribution
+    before the campaign has measured it would be a guess.
+    """
+    reach = overall.get("competitive_kind_reach") or {}
+    spend = overall.get("competitive_spend_share") or {}
+    total = int(overall.get("competitive_spend_total", 0))
+    print("diagnostic (not gated) — kind reach over competitive lifetimes:")
+    for kind, share in ranked(reach) or [("(none reported)", 0.0)]:
+        print(f"  {kind:<16} {float(share) * 100:5.1f}%")
+    print(f"diagnostic (not gated) — scrap destination of {total} scrap:")
+    for kind, share in ranked(spend) or [("(none reported)", 0.0)]:
+        print(f"  {kind:<16} {float(share) * 100:5.1f}%")
 
 
 def main() -> int:
@@ -621,6 +810,12 @@ def main() -> int:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     ap.add_argument("--weights", required=True, help="candidate Q12 weights JSON")
+    ap.add_argument(
+        "--per-map",
+        action="store_true",
+        help="also print the dealt profile's spend leaders and never-built "
+        "kinds per map cohort",
+    )
     ap.add_argument(
         "--baseline-weights",
         help="optional pinned artifact for a same-map/seed regression envelope",
@@ -635,7 +830,31 @@ def main() -> int:
         default="../../scenarios",
         help="shipped scenario directory",
     )
-    ap.add_argument("--level", default="medium", help="neural difficulty level")
+    # Expert since the 0.15 handicap recalibration: the gate judges the
+    # policy's game quality, and the lower rungs now carry execution
+    # handicaps severe enough (Medium: 800 per-mille hesitation) that a
+    # non-expert probe would measure hesitation noise instead.
+    ap.add_argument("--level", default="expert", help="neural difficulty level")
+    ap.add_argument(
+        "--max-finish-latency",
+        type=int,
+        default=None,
+        help="ticks allowed between decisive advantage and victory "
+        "(unset: report-only until the campaign calibrates it)",
+    )
+    ap.add_argument(
+        "--min-fight-windows",
+        type=float,
+        default=None,
+        help="mean distinct fight windows per match (unset: report-only)",
+    )
+    ap.add_argument(
+        "--min-expansion-rate",
+        type=float,
+        default=None,
+        help="share of competitive seats that expanded past their first "
+        "Foundry (unset: report-only)",
+    )
     ap.add_argument(
         "--seeds",
         type=int,
@@ -752,28 +971,44 @@ def main() -> int:
         default=0.90,
         help="minimum dealt-profile competitive-seat Fabricator reach",
     )
+    # Turret and Array floors re-anchored 2026-08-10 from the measured
+    # 0.15 candidate family (r8/r9: turret 33.8-38.7%, array 22.5-26.6%
+    # at the pre-rebalance Array price). The original 0.40/0.60 floors
+    # described the deleted 0.14 actor's turtle-leaning, Array-reliant
+    # meta. The turret floor is an anti-passivity minimum for an
+    # aggressive meta; the array floor is the anti-stealth minimum (a
+    # candidate blind to Scuttle Charge lanes must stay rare), expected
+    # to be cleared with room once the Array rebalance is trained in.
     ap.add_argument(
         "--min-turret-reach",
         type=float,
-        default=0.40,
+        default=0.30,
         help="minimum dealt-profile competitive-seat Turret reach",
     )
     ap.add_argument(
         "--min-array-reach",
         type=float,
-        default=0.60,
+        default=0.25,
         help="minimum dealt-profile competitive-seat Array reach",
     )
+    # Reclaimer floors re-anchored 2026-08-10: the 0.25 floors were
+    # authored for the 0.14 economy, where the Reclaimer was the only
+    # economy structure a seat could build. In 0.15 the Derelict
+    # Extractor owns that role (its tenure is gated separately in the
+    # growth evidence) and the Reclaimer is insurance income; even an
+    # undistilled candidate measures 23.2% at expert execution. 0.20
+    # keeps the anti-degenerate minimum: a fifth of competitive
+    # lifetimes still establish fallback economy.
     ap.add_argument(
         "--min-reclaimer-reach",
         type=float,
-        default=0.25,
+        default=0.20,
         help="minimum dealt-profile competitive-seat Reclaimer reach",
     )
     ap.add_argument(
         "--min-industrial-reclaimer-reach",
         type=float,
-        default=0.25,
+        default=0.20,
         help="minimum Industrial Attrition competitive-seat Reclaimer reach",
     )
     ap.add_argument(
@@ -851,6 +1086,12 @@ def main() -> int:
                 )
             )
             print_profile(profile.label, overall, tails, health, args)
+            if profile.label == "dealt":
+                # One slate's worth is enough for a diagnostic; the
+                # named specialists deliberately skew these tables.
+                print_kind_diagnostics(overall)
+                if args.per_map:
+                    print_per_map_diagnostics(payload)
             all_failures.extend(f"{profile.label}: {failure}" for failure in failures)
 
         if args.baseline_weights:

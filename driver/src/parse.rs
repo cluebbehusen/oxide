@@ -51,6 +51,19 @@ pub(crate) enum UnitKindArg {
     Darter,
     Talon,
     Wisp,
+    Warden,
+    Tender,
+    Excavator,
+    Kestrel,
+    Gnat,
+    Shrike,
+    Sylph,
+    Condor,
+    Moth,
+    Breaker,
+    Avalanche,
+    Skyhook,
+    Sapper,
 }
 
 impl From<UnitKindArg> for UnitKind {
@@ -67,12 +80,26 @@ impl From<UnitKindArg> for UnitKind {
             UnitKindArg::Darter => UnitKind::Darter,
             UnitKindArg::Talon => UnitKind::Talon,
             UnitKindArg::Wisp => UnitKind::Wisp,
+            UnitKindArg::Warden => UnitKind::Warden,
+            UnitKindArg::Tender => UnitKind::Tender,
+            UnitKindArg::Excavator => UnitKind::Excavator,
+            UnitKindArg::Kestrel => UnitKind::Kestrel,
+            UnitKindArg::Gnat => UnitKind::Gnat,
+            UnitKindArg::Shrike => UnitKind::Shrike,
+            UnitKindArg::Sylph => UnitKind::Sylph,
+            UnitKindArg::Condor => UnitKind::Condor,
+            UnitKindArg::Moth => UnitKind::Moth,
+            UnitKindArg::Breaker => UnitKind::Breaker,
+            UnitKindArg::Avalanche => UnitKind::Avalanche,
+            UnitKindArg::Skyhook => UnitKind::Skyhook,
+            UnitKindArg::Sapper => UnitKind::Sapper,
         }
     }
 }
 
-/// Buildable kinds only — the Foundry is scenario-authored and rejecting
-/// it at the parser teaches that faster than a sim rejection would.
+/// Every player-buildable kind, expansion Foundries included since
+/// 0.15 made them purchasable; the sim's placement rules remain the
+/// authority on where each may stand.
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub(crate) enum BuildingKindArg {
     Turret,
@@ -82,6 +109,12 @@ pub(crate) enum BuildingKindArg {
     Array,
     Reclaimer,
     RepairBay,
+    Airworks,
+    Crucible,
+    Foundry,
+    Extractor,
+    Barricade,
+    ScuttleCharge,
 }
 
 impl From<BuildingKindArg> for oxide_sim::BuildingKind {
@@ -94,6 +127,12 @@ impl From<BuildingKindArg> for oxide_sim::BuildingKind {
             BuildingKindArg::Array => oxide_sim::BuildingKind::Array,
             BuildingKindArg::Reclaimer => oxide_sim::BuildingKind::Reclaimer,
             BuildingKindArg::RepairBay => oxide_sim::BuildingKind::RepairBay,
+            BuildingKindArg::Airworks => oxide_sim::BuildingKind::Airworks,
+            BuildingKindArg::Crucible => oxide_sim::BuildingKind::Crucible,
+            BuildingKindArg::Foundry => oxide_sim::BuildingKind::Foundry,
+            BuildingKindArg::Extractor => oxide_sim::BuildingKind::Extractor,
+            BuildingKindArg::Barricade => oxide_sim::BuildingKind::Barricade,
+            BuildingKindArg::ScuttleCharge => oxide_sim::BuildingKind::ScuttleCharge,
         }
     }
 }

@@ -94,6 +94,19 @@ def cohort(
             "array": 0.70,
             "reclaimer": 0.30,
         },
+        "competitive_kind_reach": {
+            "sentinel": 1.0,
+            "fabricator": 1.0,
+            "turret": 0.50,
+            "barricade": 0.05,
+        },
+        "competitive_spend_share": {
+            "sentinel": 0.55,
+            "fabricator": 0.30,
+            "turret": 0.14,
+            "barricade": 0.01,
+        },
+        "competitive_spend_total": 1_234_567,
     }
 
 
@@ -300,7 +313,7 @@ def good_payload(
             "reclaimer": 0.30 if style == "turtle" and variant == 1 else 0.0,
         }
     return {
-        "schema": 7,
+        "schema": 10,
         "seeds": seeds,
         "dials": {
             "style": style,
@@ -634,6 +647,38 @@ def test_main_runs_dealt_and_two_named_composition_profiles(
     assert output.count("composition-only") == 2
     assert "inactive 1" in output
     assert "fun gate: open" in output
+    # The per-kind tables print once, for the dealt slate only, and say
+    # plainly that nothing here gates.
+    assert output.count("kind reach over competitive lifetimes") == 1
+    assert output.count("scrap destination of 1234567 scrap") == 1
+    assert output.count("diagnostic (not gated)") == 2
+
+
+def test_kind_diagnostics_rank_by_share_and_survive_an_empty_table(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert fun_gate.ranked({"a": 0.1, "b": 0.3, "c": 0.3}) == [
+        ("b", 0.3),
+        ("c", 0.3),
+        ("a", 0.1),
+    ]
+
+    fun_gate.print_kind_diagnostics(cohort(GOOD_SHARES))
+    lines = capsys.readouterr().out.splitlines()
+    reach = lines.index(
+        "diagnostic (not gated) — kind reach over competitive lifetimes:"
+    )
+    assert [line.split()[0] for line in lines[reach + 1 : reach + 5]] == [
+        "fabricator",
+        "sentinel",
+        "turret",
+        "barricade",
+    ]
+
+    # A cohort whose probe never spent anything must still print rather
+    # than raise: an empty table is the finding.
+    fun_gate.print_kind_diagnostics({})
+    assert capsys.readouterr().out.count("(none reported)") == 2
 
 
 def test_main_rejects_a_probe_with_no_competitive_combat(
@@ -884,3 +929,46 @@ def test_main_rejects_a_baseline_with_a_different_seed_slate(
 
     assert fun_gate.main() == 1
     assert "exact map/seed slate" in capsys.readouterr().out
+
+
+def test_main_reports_measured_failures_and_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The audit measured main()'s failure aggregation and reporting
+    # block at zero execution: every prior main() test fed it a passing
+    # payload. Feed the dealt profile sentinel spam instead and pin the
+    # whole refusal path — the per-profile prefix on each failure line
+    # and the nonzero exit the autopilot's hard constraint keys on.
+    def fake_run(
+        argv: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        profile = requested_profile(argv)
+        out = pathlib.Path(argv[argv.index("--out") + 1])
+        payload = good_payload(
+            style=profile.style,
+            variant=profile.variant,
+            aggression=None,
+        )
+        if profile.label == "dealt":
+            # The verdict reads the overall cohort tables, so the spam
+            # goes there — the same shape the sentinel-spam unit tests
+            # prove fails every floor.
+            payload["overall"].update(
+                cohort(
+                    {"sentinel": 1.0},
+                    diagnostic_shares={"sentinel": 0.55, "harvester": 0.45},
+                )
+            )
+        out.write_text(json.dumps(payload))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(fun_gate.subprocess, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["fun_gate.py", "--weights", "candidate.json"])
+
+    assert fun_gate.main() == 1
+    out = capsys.readouterr().out
+    assert "FUN GATE FAIL: dealt: " in out, "failures carry their profile label"
+    assert "mix entropy" in out
+    assert "fun gate: open" not in out, "a failing gate must not also open"

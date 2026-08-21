@@ -3,13 +3,14 @@
 //!
 //! A [`GymBot`] is the Phase-A architecture with the policy layer
 //! removed and handed to whoever is driving — the PPO trainer over the
-//! debug socket's sibling protocol, a scripted test, eventually frozen
-//! weights. Chores stay automatic (harvest assignment, orphan-site
-//! resume — bookkeeping nobody needs to learn), the executive keeps all
-//! its micro (focus fire, withdrawal, pullbacks), and the external
-//! policy picks one action from each of three fixed, masked heads per
-//! think: production, construction/maintenance, and operations. The
-//! executive instantiates all three against one shared budget.
+//! debug socket's sibling protocol, a scripted test, eventually
+//! promoted weights. Chores stay automatic (harvest assignment,
+//! orphan-site resume — bookkeeping nobody needs to learn), the
+//! executive keeps all its micro (focus fire, withdrawal, pullbacks),
+//! and the external policy picks one action from each of four fixed,
+//! masked heads per think: production, construction/maintenance,
+//! upgrades, and operations. The executive instantiates them against
+//! one shared budget.
 //! Everything runs fog-honest and seat-oriented: a learned policy is
 //! honest and seat-symmetric by construction.
 
@@ -27,7 +28,7 @@ use chassis::grid::{CARDINALS, DIAGONALS, TilePos};
 
 /// Bump when actions or features change shape — recorded checkpoints
 /// and shipped weights must refuse mismatched worlds.
-pub const GYM_VERSION: u32 = 8;
+pub const GYM_VERSION: u32 = 9;
 
 /// The global macro menu, partitioned among [`ACTION_HEADS`]. Training
 /// slots are role-indexed where the factions differ: one action means
@@ -42,7 +43,7 @@ pub enum Action {
     TrainHarvester = 1,
     /// Queue a Sentinel at the Foundry.
     TrainSentinel = 2,
-    /// Queue a Scuttler at the Fabricator.
+    /// Queue a Scuttler at the Foundry.
     TrainScuttler = 3,
     /// Queue a Lancer at the Fabricator.
     TrainLancer = 4,
@@ -50,9 +51,9 @@ pub enum Action {
     TrainBombard = 5,
     /// Queue the faction's anti-air crawler at the Fabricator.
     TrainAntiAir = 6,
-    /// Queue the faction's ground-attack flyer at the Fabricator.
+    /// Queue the faction's ground-attack flyer at the Airworks.
     TrainAirGround = 7,
-    /// Queue the faction's air-superiority flyer at the Fabricator.
+    /// Queue the faction's air-superiority flyer at the Airworks.
     TrainAirAir = 8,
     /// Start a Fabricator near home.
     BuildFabricator = 9,
@@ -88,29 +89,75 @@ pub enum Action {
     NoConstruction = 24,
     /// Do nothing in the military-operations head.
     NoOperation = 25,
+    /// Queue a Warden at the Fabricator.
+    TrainWarden = 26,
+    /// Queue a Tender at the Fabricator.
+    TrainTender = 27,
+    /// Queue an Excavator at the Foundry (requires a Fabricator).
+    TrainExcavator = 28,
+    /// Queue the faction's scout flyer at the Airworks.
+    TrainScoutFlyer = 29,
+    /// Queue the faction's interceptor at the Airworks.
+    TrainInterceptor = 30,
+    /// Queue the faction's bomber at the Airworks (requires a Crucible).
+    TrainBomber = 31,
+    /// Queue a Skyhook at the Airworks.
+    TrainTransport = 32,
+    /// Queue a Sapper at the Fabricator.
+    TrainSapper = 33,
+    /// Queue a Breaker at the Crucible.
+    TrainBreaker = 34,
+    /// Queue an Avalanche at the Crucible.
+    TrainAvalanche = 35,
+    /// Start an Airworks near home.
+    BuildAirworks = 36,
+    /// Start a Crucible near home.
+    BuildCrucible = 37,
+    /// Start an expansion Foundry near known salvage.
+    BuildFoundry = 38,
+    /// Restore the nearest known derelict Extractor frame.
+    BuildExtractor = 39,
+    /// Lift the best-value eligible works one rung (fixed priority:
+    /// Refinery, then Heavy Turret, then Deep Array, then Burst Flak,
+    /// then Bulwark — the documented lowering abstraction).
+    Upgrade = 40,
+    /// Airlift: a loaded transport drops its cargo at the front; an
+    /// empty one gathers the nearest idle fighters aboard.
+    Airlift = 41,
+    /// Keep the upgrade head idle.
+    NoUpgrade = 42,
 }
 
 /// Number of actions in [`Action`].
-pub const ACTION_COUNT: usize = 26;
+pub const ACTION_COUNT: usize = 43;
 
 /// Global action indices in the production head, in policy order.
-pub const PRODUCTION_ACTIONS: [usize; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+/// Indices are a wire contract with the trainer — append, never
+/// renumber.
+pub const PRODUCTION_ACTIONS: [usize; 19] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+];
 /// Global action indices in the construction/maintenance head, in
 /// policy order.
-pub const CONSTRUCTION_ACTIONS: [usize; 11] = [24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23];
+pub const CONSTRUCTION_ACTIONS: [usize; 15] =
+    [24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23, 36, 37, 38, 39];
+/// Global action indices in the dedicated upgrade head. Idling first,
+/// like every head's no-op.
+pub const UPGRADE_ACTIONS: [usize; 2] = [42, 40];
 /// Global action indices in the military-operations head, in policy
 /// order.
-pub const OPERATION_ACTIONS: [usize; 6] = [25, 16, 17, 18, 19, 20];
-/// The three independent policy heads, each expressed in global action
+pub const OPERATION_ACTIONS: [usize; 7] = [25, 16, 17, 18, 19, 20, 41];
+/// The four independent policy heads, each expressed in global action
 /// indices.
-pub const ACTION_HEADS: [&[usize]; 3] = [
+pub const ACTION_HEADS: [&[usize]; 4] = [
     &PRODUCTION_ACTIONS,
     &CONSTRUCTION_ACTIONS,
+    &UPGRADE_ACTIONS,
     &OPERATION_ACTIONS,
 ];
 
 /// Number of entries in the feature vector.
-pub const FEATURE_COUNT: usize = 81;
+pub const FEATURE_COUNT: usize = 107;
 
 /// How far (Manhattan tiles) a free harvester may stand from a wounded
 /// machine for [`Action::RepairUnit`] to consider it a patient. The
@@ -126,9 +173,16 @@ pub const REPAIR_UNIT_RADIUS: i32 = 12;
 /// outright, and a walking founder receives Stop on the next think.
 pub const CONSTRUCTION_PLAN_TIMEOUT_TICKS: u64 = 1_200;
 
-/// Capital tech must wait for a minimal home screen. Committing the
-/// opening bank before the bot can survive a straight Sentinel rush
-/// turns every small map into a deterministic build-order loss.
+/// A remembered salvage field farther than this (Chebyshev) from every
+/// own Foundry counts as an unserved frontier — the place an expansion
+/// Foundry earns its keep as a drop-off and production forward base.
+const FOUNDRY_EXPANSION_RADIUS: i32 = 12;
+
+/// The named-profile opening doctrine holds capital tech until a
+/// minimal home screen stands: committing the opening bank before the
+/// seat can survive a straight Sentinel rush turns every small map
+/// into a deterministic build-order loss. Doctrine only — the mask
+/// never enforces this.
 const FABRICATOR_MIN_HARVESTERS: usize = 4;
 const FABRICATOR_MIN_SCREEN_STRENGTH: i64 = 150;
 
@@ -165,11 +219,89 @@ const RECOVERY_SCREEN_SIZE: u32 = 1;
 const RECOVERY_SECURE_RADIUS: i32 = 3;
 /// A rejected or stalled worker hold is retried on a bounded cadence.
 const RECOVERY_HOLD_RETRY_TICKS: u64 = 120;
+/// Consecutive ticks a broken economy may save fruitlessly (income
+/// dead, replacement unaffordable) before it liquidates a rear
+/// building to fund the fleet instead of idling forever.
+const RECOVERY_SAVING_PATIENCE: u64 = 1_200;
+/// A push's objective still lives while a known enemy stands within
+/// this many tiles of its target.
+const FINISH_OBJECTIVE_RADIUS: i32 = 8;
+/// Consecutive loaded-transport losses before the island doctrine stops
+/// forcing the ferry for a cooldown, so the policy can reach raids,
+/// scouting, and air production instead of feeding the guns one hull
+/// at a time (14 single shootdowns in one game).
+const FERRY_SHOOTDOWN_LIMIT: u8 = 3;
+/// Ticks a bounced rider stays off the ferry's guest list.
+const RIDER_BOUNCE_COOLDOWN: u64 = 1_200;
+/// Air-to-ground strike units that make a sealed seat self-sufficient
+/// across water, exempting it from the ferry forcing.
+const ISLAND_AIR_STRIKE_QUOTA: u32 = 4;
+const FERRY_SHOOTDOWN_COOLDOWN: u64 = 6_000;
+/// Known enemy anti-air within this many tiles of a landing refuses it.
+const LANDING_AA_RADIUS: i32 = 8;
+/// How far back toward home a refused landing falls, to a beachhead.
+const BEACHHEAD_PULL: i32 = 8;
 /// A critically wounded, undefended Foundry under visible pressure cannot
 /// plausibly wait out the public fallback-income clock.
 const RECOVERY_CONCEDE_HP_NUM: u32 = 1;
 const RECOVERY_CONCEDE_HP_DEN: u32 = 4;
 const RECOVERY_HOME_DANGER_RADIUS: i32 = 8;
+/// Transports the island doctrine keeps on the roster before it stops
+/// narrowing production toward them — the flat floor beneath the
+/// army-proportional ferry rule.
+const ISLAND_TRANSPORT_QUOTA: usize = 2;
+/// A doctrine target within this Chebyshev distance of a reported
+/// wedge inherits its evidence: push targets get nudged by
+/// standability adjustments, so exact-tile matching would miss the
+/// report.
+const WEDGE_EVIDENCE_RADIUS: i32 = 4;
+
+/// The proportional ferry floor: total transport lift times this must
+/// cover the ground army's transport bulk, so one assault ferries in a
+/// bounded number of waves instead of trickling behind two shuttles.
+const ISLAND_LIFT_FRACTION: u32 = 3;
+/// The measured-identity horizon: the style gate's contact cohort runs
+/// to this tick, so everything inside it is certified as the policy's
+/// own choices. Doctrines wake strictly beyond it — one constant, one
+/// source, shared with the gate's fixture so the two can never drift
+/// apart silently.
+pub const STYLE_CONTACT_HORIZON: u64 = 12_000;
+/// Tick after which the stall doctrines may wake — the identity
+/// horizon by definition, not an independent number.
+const FINISH_WAKE_TICK: u64 = STYLE_CONTACT_HORIZON;
+/// Material advantage (in the same /100 strength units as the feature
+/// surface) required before the finishing doctrine forces a commitment.
+/// A seat that is even or behind keeps its own counsel — turtles stay
+/// turtles — while a decided game must actually be finished.
+const FINISH_DOMINANCE_FACTOR: i64 = 2;
+/// Floor on the finish lock's patience, for maps small enough that a
+/// crossing takes less time than a real fight.
+const FINISH_LOCK_PATIENCE_FLOOR: u64 = 2_000;
+
+/// Consecutive ticks the finish reconciliation may hold its no-op lock
+/// before it must yield a think to the doctrines. Derived, not
+/// authored: one slowest-marcher crossing of the map's long diagonal —
+/// a protected push that has not arrived after crossing the whole map
+/// is a standoff, whatever the map's size. The fixed 2,000-tick
+/// version was measurably wrong on 250-tile colossal fields, where a
+/// single legitimate march consumed the entire patience.
+fn finish_lock_patience(obs: &Observation) -> u64 {
+    let slowest = UnitKind::Avalanche.stats().speed;
+    let span = obs.map_width.saturating_add(obs.map_height).max(1) as u64;
+    let ticks_per_tile = if slowest > Fx::ZERO {
+        (Fx::ONE / slowest).to_num::<u64>().max(1)
+    } else {
+        8
+    };
+    span.saturating_mul(ticks_per_tile)
+        .max(FINISH_LOCK_PATIENCE_FLOOR)
+}
+/// Idle share of the harvester fleet (numerator/denominator) at which
+/// the expansion doctrine reads the economy as starving where it
+/// stands. Idle here is the sim's own verdict — a harvester with any
+/// job, including the walk between jobs, does not count.
+const EXPANSION_IDLE_NUM: usize = 2;
+const EXPANSION_IDLE_DEN: usize = 3;
 /// Finishing needs a real body, not one expensive machine that happens to
 /// score highly in the strength estimate.
 const FINISH_MIN_FIGHTERS: usize = 5;
@@ -194,6 +326,7 @@ struct OwnUnitMemory {
     id: UnitId,
     tile: TilePos,
     hp: u32,
+    cargo: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,7 +358,7 @@ fn recovery_rect_closest_point(anchor: TilePos, size: (i32, i32), from: Vec2Fx) 
 }
 
 fn recovery_building_ground_reach(kind: BuildingKind) -> Option<Fx> {
-    kind.stats()
+    kind.base_stats()
         .weapons
         .iter()
         .filter(|weapon| weapon.targets.covers(Domain::Ground))
@@ -237,6 +370,7 @@ fn recovery_building_ground_reach(kind: BuildingKind) -> Option<Fx> {
 enum RecoveryPosture {
     Inactive,
     Saving,
+    Salvage,
     QueueHarvester,
     QueuePackage,
     Prospect,
@@ -330,6 +464,32 @@ pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
     "nearest_enemy_distance",
     "construction_plan",
     "construction_reserve",
+    "my_wardens",
+    "my_tenders",
+    "my_excavators",
+    "my_scout_flyers",
+    "my_interceptors",
+    "my_bombers",
+    "my_transports",
+    "my_sappers",
+    "my_breakers",
+    "my_avalanches",
+    "enemy_interceptors",
+    "enemy_bombers",
+    "enemy_heavies",
+    "airworks_built",
+    "crucible_built",
+    "my_foundries_built",
+    "my_extractors_built",
+    "known_frames",
+    "nearest_frame_x",
+    "nearest_frame_y",
+    "nearest_frame_distance",
+    "my_upgraded_works",
+    "upgrade_candidates",
+    "tech_tier",
+    "transport_cargo",
+    "enemy_foundries_known",
 ];
 
 /// Salvage's fixed liquidation order: cheapest and least useful
@@ -376,6 +536,23 @@ impl Action {
             23 => Action::BuildRepairBay,
             24 => Action::NoConstruction,
             25 => Action::NoOperation,
+            26 => Action::TrainWarden,
+            27 => Action::TrainTender,
+            28 => Action::TrainExcavator,
+            29 => Action::TrainScoutFlyer,
+            30 => Action::TrainInterceptor,
+            31 => Action::TrainBomber,
+            32 => Action::TrainTransport,
+            33 => Action::TrainSapper,
+            34 => Action::TrainBreaker,
+            35 => Action::TrainAvalanche,
+            36 => Action::BuildAirworks,
+            37 => Action::BuildCrucible,
+            38 => Action::BuildFoundry,
+            39 => Action::BuildExtractor,
+            40 => Action::Upgrade,
+            41 => Action::Airlift,
+            42 => Action::NoUpgrade,
             _ => Action::Idle,
         }
     }
@@ -392,6 +569,10 @@ impl Action {
         OPERATION_ACTIONS.contains(&(self as usize))
     }
 
+    fn upgrade(self) -> bool {
+        UPGRADE_ACTIONS.contains(&(self as usize))
+    }
+
     fn building(self) -> Option<BuildingKind> {
         match self {
             Action::BuildFabricator => Some(BuildingKind::Fabricator),
@@ -401,6 +582,9 @@ impl Action {
             Action::BuildArray => Some(BuildingKind::Array),
             Action::BuildReclaimer => Some(BuildingKind::Reclaimer),
             Action::BuildRepairBay => Some(BuildingKind::RepairBay),
+            Action::BuildAirworks => Some(BuildingKind::Airworks),
+            Action::BuildCrucible => Some(BuildingKind::Crucible),
+            Action::BuildFoundry => Some(BuildingKind::Foundry),
             _ => None,
         }
     }
@@ -413,17 +597,20 @@ pub struct ActionPlan {
     pub production: Action,
     /// Construction or maintenance choice.
     pub construction: Action,
+    /// Upgrade-head choice.
+    pub upgrade: Action,
     /// Military-operations choice.
     pub operation: Action,
 }
 
 impl ActionPlan {
-    /// Decodes a wire triple, folding an invalid or wrong-head index to
+    /// Decodes a wire quad, folding an invalid or wrong-head index to
     /// that head's no-op.
-    pub fn from_indices(indices: [usize; 3]) -> Self {
+    pub fn from_indices(indices: [usize; 4]) -> Self {
         let production = Action::from_index(indices[0]);
         let construction = Action::from_index(indices[1]);
-        let operation = Action::from_index(indices[2]);
+        let upgrade = Action::from_index(indices[2]);
+        let operation = Action::from_index(indices[3]);
         Self {
             production: if production.production() {
                 production
@@ -435,6 +622,11 @@ impl ActionPlan {
             } else {
                 Action::NoConstruction
             },
+            upgrade: if upgrade.upgrade() {
+                upgrade
+            } else {
+                Action::NoUpgrade
+            },
             operation: if operation.operation() {
                 operation
             } else {
@@ -443,7 +635,7 @@ impl ActionPlan {
         }
     }
 
-    /// Maps one legacy flat action into its head while the other two
+    /// Maps one legacy flat action into its head while the other
     /// heads stay idle.
     pub fn from_action(action: Action) -> Self {
         if action.production() {
@@ -456,6 +648,11 @@ impl ActionPlan {
                 construction: action,
                 ..Self::default()
             }
+        } else if action.upgrade() {
+            Self {
+                upgrade: action,
+                ..Self::default()
+            }
         } else if action.operation() {
             Self {
                 operation: action,
@@ -466,11 +663,12 @@ impl ActionPlan {
         }
     }
 
-    /// Returns the three global action indices in head order.
-    pub fn indices(self) -> [usize; 3] {
+    /// Returns the four global action indices in head order.
+    pub fn indices(self) -> [usize; 4] {
         [
             self.production as usize,
             self.construction as usize,
+            self.upgrade as usize,
             self.operation as usize,
         ]
     }
@@ -481,6 +679,7 @@ impl Default for ActionPlan {
         Self {
             production: Action::Idle,
             construction: Action::NoConstruction,
+            upgrade: Action::NoUpgrade,
             operation: Action::NoOperation,
         }
     }
@@ -491,6 +690,7 @@ struct ProfileDoctrineProgress {
     workforce: bool,
     commitment_screen: bool,
     fabricator: bool,
+    airworks: bool,
     reclaimer: bool,
     air_ground: bool,
     air_air: bool,
@@ -507,6 +707,14 @@ struct ProfileDoctrineProgress {
 pub struct GymBot {
     player: PlayerId,
     dials: Dials,
+    /// The seat's frame of reference, latched at the first decision
+    /// and kept for the match. Recomputing it per think anchored on
+    /// whichever Foundry currently holds the lowest id — so losing
+    /// the home while an expansion stood flipped the frame mid-game
+    /// and silently mirrored every oriented cross-tick memory
+    /// (recovery assignments, founding claims). Mirror seats latch
+    /// mirrored frames, so seat symmetry is untouched.
+    orientation: Option<Orientation>,
     /// Construction-time named strategy. Zero is the raw research path and
     /// must leave the decision surface byte-for-byte unchanged.
     profile_facets: ProfileFacets,
@@ -543,6 +751,57 @@ pub struct GymBot {
     recovery_worker_hold: Option<(UnitId, u64)>,
     /// Avoid restarting the same deliberate liquidation every think.
     recovery_liquidation: Option<BuildingId>,
+    /// Ground-reachability verdicts, stamped with the known-rock
+    /// count: rock knowledge only grows, so a stale stamp is exactly a
+    /// stale set. Multi-entry because the doctrines, the finish lock,
+    /// and the search all ask about different goals in one think.
+    island_route_cache: (usize, Vec<(TilePos, TilePos, bool)>),
+    /// Tick the finish reconciliation's no-op lock first engaged in the
+    /// current consecutive streak; a lock that outlives its patience is
+    /// a standoff, not a finish, and yields to the doctrines.
+    finish_lock_since: Option<u64>,
+    /// Tick a fruitless recovery save first stalled; cleared whenever
+    /// recovery deactivates or makes progress.
+    recovery_saving_since: Option<u64>,
+    /// Riders whose boarding bounced (seen idle again while ordered
+    /// aboard), with the tick. Excluded from re-pairing for a cooldown:
+    /// one rider was re-paired to the same sling every think for twenty
+    /// minutes (574 identical Load orders).
+    rider_bounces: Vec<(UnitId, u64)>,
+    /// Loaded transports lost in a row since the last delivery.
+    ferry_shootdowns: u8,
+    /// Tick of the latest loaded-transport loss.
+    ferry_shootdown_at: Option<u64>,
+    /// Tick the seat was first found discovery-dead: an enemy Foundry
+    /// it once knew is gone from its knowledge, no free idle fighter can
+    /// go looking, every fighter is held in a staging rally. Cleared
+    /// whenever any of those changes.
+    discovery_dead_since: Option<u64>,
+    /// Whether an enemy Foundry has ever been in this seat's knowledge.
+    /// Discovery-dead means LOST, not never-found: the opening of every
+    /// game has no Foundry known and every fighter staged, and that is
+    /// the ordinary scouting doctrine's job, not a discharge.
+    enemy_foundry_seen: bool,
+    /// Tick the seat first took the Contest posture; cleared when
+    /// recovery finds a safe source, deactivates, or escapes. Contest
+    /// is otherwise the freeze's only posture with no exit: its sole
+    /// release is a viable safe assignment, so a seat whose every
+    /// known node stayed guarded froze its spending forever.
+    recovery_contest_since: Option<u64>,
+    /// Enemy Foundry START anchors from the scenario — public map
+    /// data, the same prior a player has from picking the map. Fog
+    /// still governs what stands there now; these only tell the
+    /// search where bases BEGAN. World-space; oriented at use.
+    start_anchors: Vec<TilePos>,
+    /// Set for the single think after the finish lock's patience
+    /// expires: the finishing doctrine may recall even a routed push on
+    /// that think, because a march that outlived the lock is stuck
+    /// regardless of what the route map claims.
+    finish_lock_released_at: Option<u64>,
+    /// Riders ordered aboard a sling whose absence from the field means
+    /// cargo, not casualty — tactical memory must not mark the pickup
+    /// point as a massacre.
+    pending_boarders: Vec<UnitId>,
 }
 
 /// What the world looks like at a decision point.
@@ -584,6 +843,7 @@ impl GymBot {
                 cadence: cadence.clamp(4, 64),
                 ..Dials::full()
             },
+            orientation: None,
             profile_facets,
             profile_progress: ProfileDoctrineProgress::default(),
             policy: UtilityPolicy::new(),
@@ -604,12 +864,51 @@ impl GymBot {
             recovery_target: None,
             recovery_worker_hold: None,
             recovery_liquidation: None,
+            island_route_cache: (0, Vec::new()),
+            finish_lock_since: None,
+            finish_lock_released_at: None,
+            pending_boarders: Vec::new(),
+            recovery_saving_since: None,
+            recovery_contest_since: None,
+            discovery_dead_since: None,
+            enemy_foundry_seen: false,
+            ferry_shootdowns: 0,
+            rider_bounces: Vec::new(),
+            ferry_shootdown_at: None,
+            start_anchors: Vec::new(),
         }
+    }
+
+    /// Installs the scenario's authored start anchors (all seats;
+    /// the bot's own is filtered at use). Public map knowledge — see
+    /// the field's contract.
+    pub fn set_start_anchors(&mut self, anchors: Vec<TilePos>) {
+        self.start_anchors = anchors;
     }
 
     /// The think cadence (ticks between decisions).
     pub fn cadence(&self) -> u64 {
         self.dials.cadence
+    }
+
+    /// A compact executive census for external QA sampling: army counts
+    /// by state plus membership totals. Observational only — reading it
+    /// never touches decisions, ordering, or randomness.
+    pub fn exec_census(&self) -> ExecCensus {
+        let mut census = ExecCensus::default();
+        for army in self.exec.armies() {
+            match army.state {
+                super::executive::ArmyState::Staging => {
+                    census.staging += 1;
+                    census.staged_members += army.members.len() as u32;
+                }
+                super::executive::ArmyState::Pushing => census.pushing += 1,
+                super::executive::ArmyState::Engaging => census.engaging += 1,
+                super::executive::ArmyState::Withdrawing => census.withdrawing += 1,
+            }
+        }
+        census.enlisted = self.exec.enlisted().count() as u32;
+        census
     }
 
     /// The player this bot drives.
@@ -628,13 +927,23 @@ impl GymBot {
     /// what the subsequent lowering will see.
     pub fn decision(&mut self, state: &State) -> Decision {
         let (world, orientation) = self.observe(state);
-        self.refresh_tactical_memory(&world);
+        self.refresh_tactical_memory(&world, state);
         let obs = orientation.observe(&world);
         self.refresh_recovery_assignment(state, &obs, &orientation);
         self.remember(&world);
         let rear = rear_tile(&world);
         let mut projected = self.exec.clone();
-        let _ = projected.maintain_repair_capable(self.player, &world, rear);
+        {
+            let connected = ground_connectivity(&self.policy, &world);
+            let _ = projected.maintain_connected(self.player, &world, rear, &connected);
+        }
+        reconcile_discovery(
+            &mut self.discovery_dead_since,
+            &mut self.enemy_foundry_seen,
+            &obs,
+            &mut projected,
+            false,
+        );
         self.refresh_founding_claims(&obs);
         self.reconcile_plan(&obs);
         self.refresh_profile_progress(&obs);
@@ -681,7 +990,8 @@ impl GymBot {
             ArmyState::Engaging => 3,
             ArmyState::Withdrawing => 4,
         });
-        let enemy_site = home.and_then(|h| UtilityPolicy::enemy_site(&obs, h));
+        let beaten = self.enemy_beaten(&obs);
+        let enemy_site = home.and_then(|h| UtilityPolicy::enemy_objective(&obs, h, beaten));
         let home_intruder = home.and_then(|h| nearest_home_intruder(&obs, h));
         let my_strength: i64 = obs
             .my_units
@@ -757,11 +1067,11 @@ impl GymBot {
         let damaged: Vec<_> = obs
             .my_buildings
             .iter()
-            .filter(|b| b.built && b.hp < b.kind.stats().max_hp)
+            .filter(|b| b.built && b.hp < b.kind.base_stats().max_hp)
             .collect();
         let repair_deficit: i64 = damaged
             .iter()
-            .map(|b| i64::from(b.kind.stats().max_hp - b.hp))
+            .map(|b| i64::from(b.kind.base_stats().max_hp - b.hp))
             .sum();
         let ally_strength: i64 = (obs
             .ally_units
@@ -827,7 +1137,7 @@ impl GymBot {
             .my_units
             .iter()
             .filter(|u| {
-                u.kind == UnitKind::Harvester
+                u.kind.stats().harvest.is_some()
                     && u.idle
                     && u.site.is_none()
                     && u.founding.is_none()
@@ -850,13 +1160,7 @@ impl GymBot {
             .my_buildings
             .iter()
             .filter(|building| !building.built)
-            .map(|building| {
-                building
-                    .kind
-                    .stats()
-                    .construction
-                    .map_or(0, |construction| i64::from(construction.cost))
-            })
+            .map(|building| feature_price(building.kind))
             .sum::<i64>();
         let my_unit_health_value = obs
             .my_units
@@ -870,11 +1174,8 @@ impl GymBot {
             .my_buildings
             .iter()
             .filter(|b| b.built)
-            .filter_map(|b| {
-                b.kind.stats().construction.map(|construction| {
-                    i64::from(construction.cost) * i64::from(b.hp)
-                        / i64::from(b.kind.stats().max_hp)
-                })
+            .map(|b| {
+                feature_price(b.kind) * i64::from(b.hp) / i64::from(b.kind.base_stats().max_hp)
             })
             .sum::<i64>();
         let hostile_fighters_near_home = home.map_or(0, |home| {
@@ -896,6 +1197,85 @@ impl GymBot {
             .map_or(-1, i64::from);
         let construction_plan = self.planned_build.map_or(0, building_plan_code);
         let construction_reserve = i64::from(self.construction_reserve(&obs));
+
+        // v9 additions: the 0.15 roster, tree state, and frame intel.
+        let count_mine = |kind: UnitKind| -> i64 {
+            obs.my_units.iter().filter(|u| u.kind == kind).count() as i64
+        };
+        let count_enemy = |kind: UnitKind| -> i64 {
+            obs.enemy_units.iter().filter(|u| u.kind == kind).count() as i64
+        };
+        let built_count = |kind: BuildingKind| -> i64 {
+            obs.my_buildings
+                .iter()
+                .filter(|b| b.kind == kind && b.built)
+                .count() as i64
+        };
+        let my_scout_flyers = count_mine(UnitKind::Kestrel) + count_mine(UnitKind::Gnat);
+        let my_interceptors = count_mine(UnitKind::Shrike) + count_mine(UnitKind::Sylph);
+        let my_bombers = count_mine(UnitKind::Condor) + count_mine(UnitKind::Moth);
+        let enemy_interceptors = count_enemy(UnitKind::Shrike) + count_enemy(UnitKind::Sylph);
+        let enemy_bombers = count_enemy(UnitKind::Condor) + count_enemy(UnitKind::Moth);
+        let enemy_heavies = count_enemy(UnitKind::Breaker) + count_enemy(UnitKind::Avalanche);
+        let airworks_built = built_count(BuildingKind::Airworks);
+        let crucible_built = built_count(BuildingKind::Crucible);
+        let my_foundries_built = built_count(BuildingKind::Foundry);
+        let my_extractors_built = built_count(BuildingKind::Extractor);
+        let unclaimed_frame = |anchor: TilePos| -> bool { frame_unclaimed(&obs, anchor) };
+        let open_frames: Vec<TilePos> = obs
+            .known_frames
+            .iter()
+            .copied()
+            .filter(|f| unclaimed_frame(*f))
+            .collect();
+        let nearest_frame = home.and_then(|home| {
+            open_frames
+                .iter()
+                .min_by_key(|f| (f.chebyshev(home), f.y, f.x))
+                .copied()
+        });
+        let (nearest_frame_x, nearest_frame_y, nearest_frame_distance) = match (nearest_frame, home)
+        {
+            (Some(f), Some(home)) => (i64::from(f.x), i64::from(f.y), i64::from(f.chebyshev(home))),
+            _ => (-1, -1, -1),
+        };
+        let my_upgraded_works = obs
+            .my_buildings
+            .iter()
+            .filter(|b| b.built && b.tier > 0)
+            .count() as i64;
+        let upgrade_candidates = obs
+            .my_buildings
+            .iter()
+            .filter(|b| {
+                b.built
+                    && b.kind.upgrade_from(b.tier).is_some_and(|upgrade| {
+                        upgrade.requires.iter().all(|req| {
+                            obs.my_buildings
+                                .iter()
+                                .any(|owned| owned.kind == *req && owned.built)
+                        })
+                    })
+            })
+            .count() as i64;
+        let tech_tier = if crucible_built > 0 {
+            3
+        } else if airworks_built > 0 || built_count(BuildingKind::Fabricator) > 0 {
+            2
+        } else {
+            1
+        };
+        let transport_cargo = obs
+            .my_units
+            .iter()
+            .filter(|u| u.kind.stats().transport_capacity > 0)
+            .map(|u| i64::from(u.cargo))
+            .sum::<i64>();
+        let enemy_foundries_known = obs
+            .enemy_buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Foundry)
+            .count() as i64;
 
         let features: [i64; FEATURE_COUNT] = [
             obs.tick as i64,
@@ -985,12 +1365,7 @@ impl GymBot {
             obs.my_buildings
                 .iter()
                 .filter(|b| b.built)
-                .map(|b| {
-                    b.kind
-                        .stats()
-                        .construction
-                        .map_or(0i64, |c| i64::from(c.cost))
-                })
+                .map(|b| feature_price(b.kind))
                 .sum::<i64>(),
             // v6: scrap locked in own ground wounds — what RepairUnit
             // recovers and what a Repair Bay amortizes against.
@@ -1023,6 +1398,32 @@ impl GymBot {
             nearest_enemy_distance,
             construction_plan,
             construction_reserve,
+            count_mine(UnitKind::Warden),
+            count_mine(UnitKind::Tender),
+            count_mine(UnitKind::Excavator),
+            my_scout_flyers,
+            my_interceptors,
+            my_bombers,
+            count_mine(UnitKind::Skyhook),
+            count_mine(UnitKind::Sapper),
+            count_mine(UnitKind::Breaker),
+            count_mine(UnitKind::Avalanche),
+            enemy_interceptors,
+            enemy_bombers,
+            enemy_heavies,
+            airworks_built,
+            crucible_built,
+            my_foundries_built,
+            my_extractors_built,
+            open_frames.len() as i64,
+            nearest_frame_x,
+            nearest_frame_y,
+            nearest_frame_distance,
+            my_upgraded_works,
+            upgrade_candidates,
+            tech_tier,
+            transport_cargo,
+            enemy_foundries_known,
         ];
 
         let mut mask = [false; ACTION_COUNT];
@@ -1031,12 +1432,19 @@ impl GymBot {
         mask[Action::NoConstruction as usize] = true;
         mask[Action::NoOperation as usize] = true;
         if let Some(h) = home {
-            let foundry_open = obs.my_buildings.iter().enumerate().any(|(qi, b)| {
-                b.kind == BuildingKind::Foundry && b.built && obs.my_queues[qi].len() < 2
-            });
-            let fab_open = obs.my_buildings.iter().enumerate().any(|(qi, b)| {
-                b.kind == BuildingKind::Fabricator && b.built && obs.my_queues[qi].len() < 2
-            });
+            let producer_open = |wanted: BuildingKind| {
+                obs.my_buildings.iter().enumerate().any(|(qi, b)| {
+                    b.kind == wanted && b.built && obs.my_queues[qi].len() < crate::stats::QUEUE_CAP
+                })
+            };
+            let foundry_open = producer_open(BuildingKind::Foundry);
+            let fab_open = producer_open(BuildingKind::Fabricator);
+            let airworks_open = producer_open(BuildingKind::Airworks);
+            let crucible_open = producer_open(BuildingKind::Crucible);
+            let crucible_standing = obs
+                .my_buildings
+                .iter()
+                .any(|b| b.kind == BuildingKind::Crucible && b.built);
             let reserve = self.construction_reserve(&obs);
             let spendable = obs.scrap.saturating_sub(reserve);
             // Production choices are intentions: an open producer is
@@ -1044,12 +1452,30 @@ impl GymBot {
             // lowering waits until the post-construction bank can pay.
             mask[Action::TrainHarvester as usize] = foundry_open;
             mask[Action::TrainSentinel as usize] = foundry_open;
-            mask[Action::TrainScuttler as usize] = fab_open;
+            mask[Action::TrainScuttler as usize] = foundry_open;
             mask[Action::TrainLancer as usize] = fab_open;
             mask[Action::TrainBombard as usize] = fab_open;
             mask[Action::TrainAntiAir as usize] = fab_open;
-            mask[Action::TrainAirGround as usize] = fab_open;
-            mask[Action::TrainAirAir as usize] = fab_open;
+            mask[Action::TrainAirGround as usize] = airworks_open;
+            mask[Action::TrainAirAir as usize] = airworks_open;
+            mask[Action::TrainWarden as usize] = fab_open;
+            mask[Action::TrainTender as usize] = fab_open;
+            mask[Action::TrainSapper as usize] = fab_open;
+            mask[Action::TrainExcavator as usize] = foundry_open
+                && obs
+                    .my_buildings
+                    .iter()
+                    .any(|b| b.kind == BuildingKind::Fabricator && b.built);
+            mask[Action::TrainScoutFlyer as usize] = airworks_open;
+            mask[Action::TrainInterceptor as usize] = airworks_open;
+            mask[Action::TrainTransport as usize] = airworks_open;
+            mask[Action::TrainBomber as usize] = airworks_open && crucible_standing;
+            mask[Action::TrainBreaker as usize] = crucible_open;
+            mask[Action::TrainAvalanche as usize] = crucible_open;
+            // Turret, FlakTurret, and Bastion feasibility all consult the
+            // same known passability and builder routes; one think builds
+            // that pair at most once and shares it across the loop.
+            let mut defense_probe = None;
             for action in [
                 Action::BuildFabricator,
                 Action::BuildTurret,
@@ -1058,19 +1484,64 @@ impl GymBot {
                 Action::BuildArray,
                 Action::BuildReclaimer,
                 Action::BuildRepairBay,
+                Action::BuildAirworks,
+                Action::BuildCrucible,
+                Action::BuildFoundry,
             ] {
                 let kind = action.building().expect("build action names a kind");
-                let screen_ready = kind != BuildingKind::Fabricator
-                    || (obs
-                        .my_units
-                        .iter()
-                        .filter(|unit| unit.kind == UnitKind::Harvester)
-                        .count()
-                        >= FABRICATOR_MIN_HARVESTERS
-                        && my_strength >= FABRICATOR_MIN_SCREEN_STRENGTH);
                 mask[action as usize] =
-                    screen_ready && self.can_plan_build(&obs, &enlisted, h, kind);
+                    self.can_plan_build(&obs, &enlisted, h, kind, &mut defense_probe);
             }
+            let unclaimed_frame = |anchor: TilePos| frame_unclaimed(&obs, anchor);
+            // The route filter mirrors the lowering: a frame no builder
+            // can walk to must not make the action legal, or a doctrine
+            // narrowing construction to it starves the whole head.
+            mask[Action::BuildExtractor as usize] = free_builder(&obs, &enlisted)
+                && self.unpaid_claim_reserve(&obs) == 0
+                && obs.known_frames.iter().any(|f| {
+                    unclaimed_frame(*f) && {
+                        let (_, builders) = defense_probe.get_or_insert_with(|| {
+                            let passability = KnownPassability::from_observation(&obs);
+                            let builders =
+                                DefenseBuilderRoutes::measure(&obs, &enlisted, &passability);
+                            (passability, builders)
+                        });
+                        builders.travel_to(*f, BuildingKind::Extractor).is_some()
+                    }
+                });
+            mask[Action::Upgrade as usize] = free_builder(&obs, &enlisted)
+                && obs.my_buildings.iter().any(|b| {
+                    b.built
+                        && b.kind.upgrade_from(b.tier).is_some_and(|upgrade| {
+                            upgrade.requires.iter().all(|req| {
+                                obs.my_buildings
+                                    .iter()
+                                    .any(|owned| owned.kind == *req && owned.built)
+                            })
+                        })
+                });
+            let loaded_transport = obs
+                .my_units
+                .iter()
+                .any(|u| u.kind.stats().transport_capacity > 0 && u.cargo > 0);
+            let empty_transport = obs
+                .my_units
+                .iter()
+                .any(|u| u.kind.stats().transport_capacity > 0 && u.cargo == 0 && u.idle);
+            // The staged army's riders count too: the executive's Load
+            // already strikes boarding riders from army bodies, so a
+            // fully-enlisted island garrison is still liftable cargo.
+            let staged_members: Vec<crate::ids::UnitId> =
+                staging.map(|a| a.members.clone()).unwrap_or_default();
+            let liftable_fighters = obs.my_units.iter().any(|u| {
+                u.idle
+                    && (!enlisted.contains(&u.id) || staged_members.contains(&u.id))
+                    && u.kind.stats().transport_size > 0
+                    && u.kind.stats().can_fight()
+            });
+            mask[Action::Airlift as usize] = (loaded_transport
+                && (enemy_site.is_some() || staging.is_some()))
+                || (empty_transport && liftable_fighters);
             // Repair and salvage never share a target: a patient an
             // own crew is stripping is not a patient (the sim evicts
             // the loser anyway; masking keeps the oscillator out of
@@ -1080,7 +1551,9 @@ impl GymBot {
             mask[Action::Repair as usize] = free_builder(&obs, &enlisted)
                 && spendable > 0
                 && obs.my_buildings.iter().any(|b| {
-                    b.built && b.hp < b.kind.stats().max_hp && !under_salvage.contains(&b.id)
+                    b.built
+                        && b.hp < b.kind.tier_stats(b.tier).max_hp
+                        && !under_salvage.contains(&b.id)
                 });
             mask[Action::Salvage as usize] = free_builder(&obs, &enlisted)
                 && obs.scrap < UnitKind::Harvester.stats().cost
@@ -1114,10 +1587,22 @@ impl GymBot {
             mask[Action::Recall as usize] = armies
                 .iter()
                 .any(|a| matches!(a.state, ArmyState::Pushing | ArmyState::Engaging));
+            // A staged army's members may scout (the executive strikes
+            // a dispatched scout from its army): a fully-enlisted seat
+            // that has lost track of every enemy must still be able to
+            // go looking, exactly as a player would detach one machine.
+            // Staged members skip the idle test — a rally hold is not
+            // a job.
             mask[Action::Scout as usize] = obs.my_units.iter().any(|u| {
-                !enlisted.contains(&u.id)
-                    && u.site.is_none()
-                    && (u.kind == UnitKind::Harvester || (u.idle && u.kind.stats().can_fight()))
+                u.site.is_none()
+                    && u.founding.is_none()
+                    && if staged_members.contains(&u.id) {
+                        u.kind.stats().can_fight()
+                    } else {
+                        !enlisted.contains(&u.id)
+                            && (u.kind.stats().harvest.is_some()
+                                || (u.idle && u.kind.stats().can_fight()))
+                    }
             });
             // Home defense is executive reconciliation, not a strategic
             // preference. Once an armed intruder reaches the economy,
@@ -1138,18 +1623,49 @@ impl GymBot {
                 for action in OPERATION_ACTIONS {
                     mask[action] = action == defense as usize;
                 }
-            } else if let Some(finish) = self.finish_operation(&obs, &armies, h) {
+            } else if let Some(finish) = self.finish_operation_with_patience(&obs, &armies, h) {
                 tactical_reconciliation = true;
                 for action in OPERATION_ACTIONS {
                     mask[action] = action == finish as usize;
                 }
             }
         }
+        mask[Action::NoUpgrade as usize] = true;
         let recovery = self.recovery_posture(&obs, &orientation);
         if recovery != RecoveryPosture::Inactive {
+            // The emergency is a SPENDING freeze, not a fighting
+            // freeze: production, construction, and upgrades lock so
+            // the replacement package's savings survive, but the
+            // operation head keeps its ordinary legality — orders cost
+            // nothing, and a recovering seat with an army must be able
+            // to clear the very guards its Contest posture is stuck
+            // on. Measured before this: a seat with four Fabricators,
+            // a live Harvester, and 2,000 banked scrap idled at a
+            // four-wide mask for a hundred thousand ticks.
+            let operations: Vec<(usize, bool)> = OPERATION_ACTIONS
+                .iter()
+                .map(|&action| (action, mask[action]))
+                .collect();
             mask.fill(false);
+            for (action, legal) in operations {
+                mask[action] = legal;
+            }
+            // Except Scout: the seat's scouts are its harvesters, and
+            // the emergency owns every worker it has left. And except
+            // the gathering verbs: a recovering seat lowering FormArmy
+            // every think ratchets a staging army's target upward
+            // forever (the size floor grows with membership), enlisting
+            // the whole roster into a body that never commits — measured
+            // as pentangle FFAs collapsing from 29-minute decisions into
+            // passive 50-minute caps. The freeze frees only the verbs
+            // that free the SEAT: push the guard, or come home.
+            mask[Action::Scout as usize] = false;
+            mask[Action::FormArmy as usize] = false;
+            mask[Action::AirRaid as usize] = false;
+            mask[Action::Airlift as usize] = false;
             let action = match recovery {
                 RecoveryPosture::QueueHarvester => Action::TrainHarvester,
+                RecoveryPosture::Salvage => Action::Salvage,
                 RecoveryPosture::Inactive
                 | RecoveryPosture::Saving
                 | RecoveryPosture::QueuePackage
@@ -1159,12 +1675,330 @@ impl GymBot {
                 | RecoveryPosture::Concede => Action::Idle,
             };
             mask[action as usize] = true;
-            mask[Action::NoConstruction as usize] = true;
+            if action == Action::Salvage {
+                // Salvage lives in the construction head; the
+                // production head still needs its no-op.
+                mask[Action::Idle as usize] = true;
+            } else {
+                mask[Action::NoConstruction as usize] = true;
+            }
             mask[Action::NoOperation as usize] = true;
-        } else if !tactical_reconciliation && home_intruder.is_none() {
-            self.apply_profile_doctrine(&obs, &mut mask);
+            if action != Action::TrainHarvester && action != Action::Salvage {
+                mask[Action::Idle as usize] = true;
+            }
+            mask[Action::NoUpgrade as usize] = true;
+        } else if !tactical_reconciliation {
+            // The stall doctrines run whenever no defense reconciliation
+            // actually fired: an unanswerable intruder (no army, no idle
+            // fighters) must not freeze the seat forever. The finite
+            // profile milestones keep the stricter guard.
+            self.apply_island_doctrine(&obs, home, enemy_site, &mut mask);
+            let push_targets: Vec<TilePos> = armies
+                .iter()
+                .filter(|army| army.state == ArmyState::Pushing)
+                .filter_map(|army| army.target)
+                .collect();
+            self.apply_finishing_doctrine(
+                &obs,
+                home,
+                enemy_site,
+                my_strength,
+                &push_targets,
+                &mut mask,
+            );
+            apply_expansion_doctrine(&obs, &mut mask);
+            if home_intruder.is_none() {
+                self.apply_profile_doctrine(&obs, &mut mask);
+            }
         }
         Decision { features, mask }
+    }
+
+    /// Narrows the operation head toward the finishing loop the stalled
+    /// endgames never ran: past the wake tick, a seat with no known
+    /// enemy site keeps scouting, and a dominant seat with a known,
+    /// ground-reachable site forms up and commits. Measured before this
+    /// existed, stalled seats chose the idle operation 69-98% of the
+    /// time while Scout and Push sat mask-legal for most of the game.
+    /// The dominance gate keeps profile identity intact: an even or
+    /// losing seat is never forced out of its own strategy, and the
+    /// unreachable-site case belongs to the island doctrine above.
+    /// Whether a recent push wedged near this tile: empirical proof of
+    /// no ground route that outranks the optimistic known-terrain
+    /// answer (unexplored reads open, so a real wall in the dark keeps
+    /// reading routable forever).
+    fn wedge_evidence_near(&self, tile: TilePos) -> bool {
+        self.exec
+            .wedged_targets()
+            .iter()
+            .any(|(target, _)| target.chebyshev(tile) <= WEDGE_EVIDENCE_RADIUS)
+    }
+
+    /// Wedge evidence for a strategic site, checked both at the site and
+    /// at the doorstep a push toward it would actually march to — the
+    /// march target is what the executive testifies about, and a
+    /// doorstep can sit beyond the evidence radius of its anchor.
+    fn site_wedged(&self, obs: &Observation, site: TilePos) -> bool {
+        self.wedge_evidence_near(site)
+            || doorstep_near(obs, site).is_some_and(|doorstep| self.wedge_evidence_near(doorstep))
+    }
+
+    fn apply_finishing_doctrine(
+        &mut self,
+        obs: &Observation,
+        home: Option<TilePos>,
+        enemy_site: Option<TilePos>,
+        my_strength: i64,
+        push_targets: &[TilePos],
+        mask: &mut [bool; ACTION_COUNT],
+    ) {
+        // The release is a one-think dispensation: it holds exactly for
+        // the tick that granted it (a stamp, not a consumed flag, so the
+        // same think's `step_plan` can honor it at execution — a taken
+        // flag freed the mask while the lowering re-imposed the lock,
+        // and the escape hatch never emitted a command).
+        let lock_released = self.finish_lock_released_at == Some(obs.tick);
+        if obs.tick <= FINISH_WAKE_TICK {
+            return;
+        }
+        // The lost-track signal is the enemy Foundry, not any remembered
+        // building: a seat that only knows a stray turret still has no
+        // kill target and must keep looking (the scout peeks at known
+        // buildings first, so a remembered ruin guides the search).
+        let foundry_known = obs
+            .enemy_buildings
+            .iter()
+            .any(|b| b.kind == BuildingKind::Foundry);
+        if !foundry_known {
+            if mask[Action::Scout as usize] {
+                narrow_head(mask, &OPERATION_ACTIONS, Action::Scout);
+            }
+            return;
+        }
+        let Some(site) = enemy_site else {
+            return;
+        };
+        let Some(home) = home else {
+            return;
+        };
+        if !self.known_ground_route(obs, home, site) {
+            return;
+        }
+        let seen = (self.seen_strength / 100) as i64;
+        if my_strength < seen.saturating_mul(FINISH_DOMINANCE_FACTOR) {
+            return;
+        }
+        // A site a push already wedged against is not a finish target,
+        // whatever the optimistic route says: re-narrowing Push there
+        // re-ran the wedge once per patience window while the island
+        // doctrine (which this evidence wakes) never got the head.
+        let wedged_site = self.site_wedged(obs, site);
+        if !wedged_site && mask[Action::Push as usize] {
+            narrow_head(mask, &OPERATION_ACTIONS, Action::Push);
+        } else if !wedged_site && mask[Action::FormArmy as usize] {
+            narrow_head(mask, &OPERATION_ACTIONS, Action::FormArmy);
+        } else if mask[Action::Recall as usize]
+            && (lock_released
+                || push_targets.iter().any(|target| {
+                    !self.known_ground_route(obs, home, *target)
+                        || self.wedge_evidence_near(*target)
+                }))
+        {
+            // Recall only a WEDGED push (no known ground route to its
+            // target): bring the body home to staging so a later think
+            // can ferry or re-commit it. A healthy push in flight is
+            // never recalled — narrowing Recall on any absent army
+            // measured as a push/recall oscillator that reset every
+            // march one think after launching it.
+            narrow_head(mask, &OPERATION_ACTIONS, Action::Recall);
+        }
+    }
+
+    /// Narrows choices toward the airlift shuttle when the known enemy
+    /// site has no known ground route from home: the structural island
+    /// war no push can prosecute. This is map geometry, not a
+    /// personality preference, so every profile shares it; defense
+    /// reconciliation still preempts it exactly like the profile
+    /// milestones below, and the profile milestones compose after it
+    /// because they skip any action this narrowing masked off.
+    /// Passability reads known rock only, so the doctrine wakes when
+    /// scouting has actually seen the seal, never from map omniscience.
+    fn apply_island_doctrine(
+        &mut self,
+        obs: &Observation,
+        home: Option<TilePos>,
+        enemy_site: Option<TilePos>,
+        mask: &mut [bool; ACTION_COUNT],
+    ) {
+        let Some(home) = home else {
+            return;
+        };
+        // Sealed = no known ground route to the enemy. Before any enemy is
+        // discovered, the authored start anchors answer instead — public
+        // map knowledge, and the escape from the archipelago chicken-and-
+        // egg where discovery needs air, air needs this doctrine, and
+        // this doctrine used to need discovery.
+        let sealed = match enemy_site {
+            Some(site) => !self.known_ground_route(obs, home, site) || self.site_wedged(obs, site),
+            None => {
+                let anchors = self.oriented_start_anchors(obs);
+                !anchors.is_empty()
+                    && anchors
+                        .iter()
+                        .all(|anchor| !self.known_ground_route(obs, home, *anchor))
+            }
+        };
+        if !sealed {
+            return;
+        }
+        let transports = obs
+            .my_units
+            .iter()
+            .filter(|u| u.kind.stats().transport_capacity > 0)
+            .count();
+        // The ferry floor scales with the army: enough total lift to move
+        // a fraction of the ground force per wave, never below the flat
+        // minimum. A ground-leaning personality on an archipelago ferries
+        // in bulk instead of parking a bulk army behind two shuttles.
+        let ground_bulk: u32 = obs
+            .my_units
+            .iter()
+            .filter(|u| {
+                u.kind.stats().domain == crate::stats::Domain::Ground && u.kind.stats().can_fight()
+            })
+            .map(|u| u32::from(u.kind.stats().transport_size))
+            .sum();
+        let lift: u32 = obs
+            .my_units
+            .iter()
+            .map(|u| u32::from(u.kind.stats().transport_capacity))
+            .sum();
+        // A seat already fielding an air strike force crosses the water
+        // on its own terms: forcing lift on it starved the wings that
+        // were winning (the scattering, seed 0: a darter-and-gnat seat
+        // that killed the enemy Foundry at 19:48 was conscripted into
+        // ferrying and never crossed again). Ground-leaning seats still
+        // get the ferry doctrine; air-leaning seats keep their raids.
+        let air_strike = obs
+            .my_units
+            .iter()
+            .filter(|u| {
+                let stats = u.kind.stats();
+                stats.domain == Domain::Air && stats.can_fight() && stats.can_target(Domain::Ground)
+            })
+            .count() as u32;
+        let air_self_sufficient = air_strike >= ISLAND_AIR_STRIKE_QUOTA;
+        let lift_short = transports < ISLAND_TRANSPORT_QUOTA
+            || lift.saturating_mul(ISLAND_LIFT_FRACTION) < ground_bulk;
+        if !air_self_sufficient && lift_short {
+            if mask[Action::TrainTransport as usize] {
+                narrow_head(mask, &PRODUCTION_ACTIONS, Action::TrainTransport);
+            } else if mask[Action::BuildAirworks as usize]
+                && !obs
+                    .my_buildings
+                    .iter()
+                    .any(|b| b.kind == BuildingKind::Airworks && b.built)
+            {
+                narrow_head(mask, &CONSTRUCTION_ACTIONS, Action::BuildAirworks);
+            }
+        }
+        // Operations steer only toward a target that actually exists; the
+        // bootstrap above needs no destination, and discovery flights are
+        // the search party's job once air stands.
+        if !air_self_sufficient && lift_short {
+            // Lift-short and unable to afford the shuttle: more ground
+            // bulk only deepens the hole (severance seed 0: 7 -> 15
+            // Lancers, 0 Skyhooks, the bank touching the shuttle's price
+            // once in ten windows). Save instead, once air stands.
+            let airworks_built = obs
+                .my_buildings
+                .iter()
+                .any(|b| b.kind == BuildingKind::Airworks && b.built);
+            if airworks_built
+                && !mask[Action::TrainTransport as usize]
+                && mask[Action::Idle as usize]
+            {
+                narrow_head(mask, &PRODUCTION_ACTIONS, Action::Idle);
+            }
+        }
+        if enemy_site.is_some() {
+            // A ground push cannot cross the seal — off, whatever else
+            // the head offers. Both narrowings below used to be guarded by
+            // their own legality, so a sealed seat with no shuttle and no
+            // away army fell through with Push still legal and re-issued
+            // a guaranteed-NoRoute march every think.
+            mask[Action::Push as usize] = false;
+            let ferry_cooling = self.ferry_shootdowns >= FERRY_SHOOTDOWN_LIMIT
+                && self
+                    .ferry_shootdown_at
+                    .is_some_and(|at| obs.tick.saturating_sub(at) <= FERRY_SHOOTDOWN_COOLDOWN);
+            if ferry_cooling || air_self_sufficient {
+                // The guns have the crossing, or the wings do: leave the
+                // head to the policy rather than forcing another hull.
+            } else if mask[Action::Airlift as usize] {
+                narrow_head(mask, &OPERATION_ACTIONS, Action::Airlift);
+            } else if mask[Action::Recall as usize] {
+                // Bring the army home to staging so the shuttle has
+                // riders to gather.
+                narrow_head(mask, &OPERATION_ACTIONS, Action::Recall);
+            }
+        }
+    }
+
+    /// The scenario's start anchors in the bot's oriented frame, own
+    /// base excluded, unexplored-first ordering left to the caller.
+    fn oriented_start_anchors(&self, obs: &Observation) -> Vec<TilePos> {
+        let Some(orientation) = &self.orientation else {
+            return Vec::new();
+        };
+        self.start_anchors
+            .iter()
+            // Footprint-anchor mapping, not tile mapping: flipping a 2x2
+            // span moves its anchor to what was its far corner, and a
+            // plain tile map leaves every flipped seat's list off by one —
+            // including its own anchor, which then never filters out.
+            .map(|anchor| orientation.anchor(*anchor, BuildingKind::Foundry.base_stats().size))
+            .filter(|anchor| {
+                !obs.my_buildings
+                    .iter()
+                    .any(|b| b.kind == BuildingKind::Foundry && b.anchor == *anchor)
+            })
+            .collect()
+    }
+
+    /// Whether any rock-free route joins `home` to `site` over the
+    /// terrain this seat has actually seen. Cached per site and
+    /// re-proved only when new rock is discovered.
+    fn known_ground_route(&mut self, obs: &Observation, home: TilePos, site: TilePos) -> bool {
+        let stamp = obs.known_rock.len();
+        if self.island_route_cache.0 != stamp {
+            self.island_route_cache = (stamp, Vec::new());
+        }
+        if let Some((.., verdict)) = self
+            .island_route_cache
+            .1
+            .iter()
+            .find(|(h, s, _)| *h == home && *s == site)
+        {
+            return *verdict;
+        }
+        let passability = KnownPassability::from_observation(obs);
+        let passable = |tile: TilePos| {
+            passability
+                .index(tile)
+                .is_some_and(|index| passability.terrain_open[index])
+        };
+        let verdict = chassis::path::astar(
+            obs.map_width,
+            obs.map_height,
+            home,
+            site,
+            passable,
+            crate::stats::PATH_EXPANSION_CAP,
+        )
+        .is_some();
+        self.island_route_cache.1.push((home, site, verdict));
+        verdict
     }
 
     /// Narrows ordinary legal choices around finite, observable profile
@@ -1280,6 +2114,16 @@ impl GymBot {
             return Some(Action::BuildFabricator);
         }
 
+        // The sky lives at the Airworks on the closed tree, so an air
+        // lean owes its own hangar before its wings can queue.
+        if facets.air_bias >= PROFILE_DOCTRINE_THRESHOLD
+            && self.profile_progress.fabricator
+            && !self.profile_progress.airworks
+            && mask[Action::BuildAirworks as usize]
+        {
+            return Some(Action::BuildAirworks);
+        }
+
         if facets.support_bias >= PROFILE_DOCTRINE_THRESHOLD
             && !self.profile_progress.turret
             && mask[Action::BuildTurret as usize]
@@ -1298,6 +2142,7 @@ impl GymBot {
         self.profile_progress.commitment_screen |=
             committed_direct_ground_fighters(obs) >= PROFILE_COMMITMENT_SCREEN_TARGET;
         self.profile_progress.fabricator |= committed_buildings(obs, BuildingKind::Fabricator) > 0;
+        self.profile_progress.airworks |= committed_buildings(obs, BuildingKind::Airworks) > 0;
         self.profile_progress.reclaimer |= committed_buildings(obs, BuildingKind::Reclaimer) > 0;
         self.profile_progress.air_ground |=
             committed_units(obs, Role::AirGround.unit_for(obs.faction)) > 0;
@@ -1321,12 +2166,23 @@ impl GymBot {
     /// executive housekeeping, and returns this tick's commands.
     pub fn step_plan(&mut self, state: &State, plan: ActionPlan) -> Vec<PlayerCommand> {
         let (world, orientation) = self.observe(state);
-        self.refresh_tactical_memory(&world);
+        self.refresh_tactical_memory(&world, state);
         let obs = orientation.observe(&world);
         self.refresh_recovery_assignment(state, &obs, &orientation);
         self.remember(&world);
         let rear = rear_tile(&world);
-        let mut commands = self.exec.maintain_repair_capable(self.player, &world, rear);
+        let mut commands = {
+            let connected = ground_connectivity(&self.policy, &world);
+            self.exec
+                .maintain_connected(self.player, &world, rear, &connected)
+        };
+        reconcile_discovery(
+            &mut self.discovery_dead_since,
+            &mut self.enemy_foundry_seen,
+            &obs,
+            &mut self.exec,
+            true,
+        );
 
         self.refresh_founding_claims(&obs);
         self.reconcile_plan(&obs);
@@ -1351,6 +2207,46 @@ impl GymBot {
                 home,
                 recovery,
             ));
+            // The freeze stops SPENDING, not the war: the mask kept the
+            // operation head legal, so the sampled operation must lower
+            // — a recovering seat's army fights its way out instead of
+            // dying with a legal verb nothing ever executed.
+            let enlisted: Vec<_> = self.exec.enlisted().collect();
+            let staging = armies
+                .iter()
+                .filter(|a| a.state == ArmyState::Staging)
+                .min_by_key(|a| a.id);
+            let enemy_site = UtilityPolicy::enemy_objective(&obs, home, self.enemy_beaten(&obs));
+            let mut op_intents = Vec::new();
+            self.lower_operation(
+                &obs,
+                &armies,
+                staging,
+                &enlisted,
+                enemy_site,
+                home,
+                plan.operation,
+                &mut op_intents,
+            );
+            let op_intents = orientation.emit(op_intents);
+            let vision = state.vision(self.player);
+            let defer_needed = |kind: BuildingKind, anchor: TilePos| {
+                let (w, h) = kind.base_stats().size;
+                (0..h).any(|dy| (0..w).any(|dx| !vision.visible(anchor.offset(dx, dy))))
+            };
+            let ground_component = |from: TilePos| self.policy.reachable_component(&world, from);
+            commands.extend(self.exec.apply_with(
+                self.player,
+                &world,
+                &op_intents,
+                &LoweringRules::gym(&defer_needed, &ground_component),
+            ));
+            // The construction-plan clock does not charge the seat for
+            // the freeze: an expiry mid-recovery would block_capital a
+            // seat whose plan never had a chance to spend.
+            if self.planned_since.is_some() {
+                self.planned_since = Some(obs.tick);
+            }
             return commands;
         }
         let enlisted: Vec<_> = self.exec.enlisted().collect();
@@ -1368,19 +2264,80 @@ impl GymBot {
             .iter()
             .filter(|a| a.state == ArmyState::Staging)
             .min_by_key(|a| a.id);
-        let enemy_site = UtilityPolicy::enemy_site(&obs, home);
+        let enemy_site = UtilityPolicy::enemy_objective(&obs, home, self.enemy_beaten(&obs));
         let home_intruder = nearest_home_intruder(&obs, home);
         let mut plan = plan;
+        // The finish lock's patience release extends through execution:
+        // on the tick the dispensation was granted, the sampled action
+        // stands instead of the lock's verdict.
         if home_intruder.is_none()
+            && self.finish_lock_released_at != Some(obs.tick)
             && let Some(finish) = self.finish_operation(&obs, &armies, home)
         {
             plan.operation = finish;
         }
 
+        // One defense probe serves this whole think: the feasibility
+        // check and the anchor search below run the same full-map
+        // route flood, and rebuilding it per question was the
+        // construction think's dominant cost.
+        let mut defense_probe = None;
         if let Some(kind) = plan.construction.building()
-            && self.can_plan_build(&obs, &enlisted, home, kind)
+            && self.can_plan_build(&obs, &enlisted, home, kind, &mut defense_probe)
         {
             self.set_planned_build(kind, obs.tick);
+        }
+        // Restoring a frame skips the planned-build machinery: its
+        // anchor is the frame itself, not a placement search. The
+        // route filter mirrors the mask: a frame no builder can walk
+        // to (a cross-gulf claim) would die at walk time and re-stage
+        // every think.
+        let mut extractor_reserve: u32 = 0;
+        if plan.construction == Action::BuildExtractor {
+            let cost = BuildingKind::Extractor
+                .base_stats()
+                .construction
+                .map(|c| c.cost)
+                .unwrap_or(0);
+            let unclaimed = |anchor: TilePos| frame_unclaimed(&obs, anchor);
+            let (_, builders) = defense_probe.get_or_insert_with(|| {
+                let passability = KnownPassability::from_observation(&obs);
+                let builders = DefenseBuilderRoutes::measure(&obs, &enlisted, &passability);
+                (passability, builders)
+            });
+            let frame = obs
+                .known_frames
+                .iter()
+                .filter(|f| unclaimed(**f))
+                .filter(|f| builders.travel_to(**f, BuildingKind::Extractor).is_some())
+                .min_by_key(|f| (f.chebyshev(home), f.y, f.x));
+            if let Some(frame) = frame {
+                // A frame claim is a capital project like any other: its
+                // price is reserved whether the claim emits this think
+                // (so a same-think Train or rung cannot rob the walking
+                // founder into an InsufficientScrap death) or the bank is
+                // still short (so the seat SAVES toward the restore
+                // instead of letting production spend under it forever).
+                extractor_reserve = cost;
+                if obs.scrap >= cost {
+                    intents.push(Intent::Build {
+                        kind: BuildingKind::Extractor,
+                        anchor: *frame,
+                    });
+                }
+            }
+        }
+        // The upgrade head keeps its historical position and raw-bank
+        // budget: the rung is lowered BEFORE the planned build, exactly
+        // as the style signatures were measured (Intent::Upgrade claims
+        // a worker, so even reordering the emission reshuffles labor
+        // assignments and flips the fortification and force families
+        // 7/7 -> 0/7). The same-think collision where the rung's price
+        // would leave a staged build short is handled inside
+        // `try_planned_build`, which defers the build a think instead
+        // of letting dispatch reject it and poison the site ledger.
+        if plan.upgrade == Action::Upgrade {
+            let _ = self.lower_upgrade(&obs, obs.scrap, &mut intents);
         }
         let maintenance_selected = matches!(
             plan.construction,
@@ -1393,13 +2350,23 @@ impl GymBot {
         let build_spend = if maintenance_selected {
             None
         } else {
-            self.try_planned_build(&obs, &enlisted, home, &mut intents)
+            self.try_planned_build(&obs, &enlisted, home, &mut intents, &mut defense_probe)
         };
         let reserve = self
             .unpaid_claim_reserve(&obs)
-            .saturating_add(build_spend.unwrap_or_else(|| self.saved_plan_reserve()));
+            .saturating_add(build_spend.unwrap_or_else(|| self.saved_plan_reserve()))
+            .saturating_add(extractor_reserve);
         let mut spendable = obs.scrap.saturating_sub(reserve);
 
+        // The upgrade head spends above this think's HARD commitments —
+        // unpaid founding claims and a build actually staged this very
+        // think (whose price a same-think rung was robbing at dispatch,
+        // killing the build with NotEnoughScrap and poisoning the site
+        // ledger). A merely SAVED plan's soft savings stay spendable,
+        // exactly as before: gating rungs on the savings target starved
+        // the fortification ladder outright (measured 0/7). Emitting the
+        // rung after the build intent also makes dispatch pay the build
+        // first.
         if build_spend.is_none()
             && !(plan.construction == Action::RepairUnit && home_intruder.is_some())
         {
@@ -1420,10 +2387,10 @@ impl GymBot {
         );
 
         // Chores after the heads: idle harvesters to work (with the
-        // starvation ladder behind the normal channel — neural bots
-        // prospect; the scripted yardstick tiers never do), orphaned
+        // starvation ladder behind the normal channel — gym bots
+        // prospect; the scripted Brain never does), orphaned
         // sites resumed (paid-for progress must not strand).
-        self.policy.economy(&obs, home, &mut intents);
+        self.policy.economy(&obs, home, true, &mut intents);
         // The action's Build/Repair/Salvage spends a harvester the
         // executive picks only at lowering time, and Scout's lowering
         // is unconditional: a prospector drawn from that same machine
@@ -1455,20 +2422,57 @@ impl GymBot {
         // strict predicate's live-occupancy checks. Own vision is own
         // knowledge, and the emitted intents are world-space like the
         // commands. The gym rules also arm the Scout claim guard; the
-        // scripted tiers keep both amendments off — they are the
-        // ladder's anchors and must not move.
+        // scripted path keeps both amendments off.
         let vision = state.vision(self.player);
         let defer_needed = |kind: BuildingKind, anchor: TilePos| {
-            let (w, h) = kind.stats().size;
+            let (w, h) = kind.base_stats().size;
             (0..h).any(|dy| (0..w).any(|dx| !vision.visible(anchor.offset(dx, dy))))
         };
+        let ground_component = |from: TilePos| self.policy.reachable_component(&world, from);
         commands.extend(self.exec.apply_with(
             self.player,
             &world,
             &intents,
-            &LoweringRules::gym(&defer_needed),
+            &LoweringRules::gym(&defer_needed, &ground_component),
         ));
+        // The bounce audit judges only what was actually commanded.
+        self.policy.confirm_harvest_dispatches(&commands);
         commands
+    }
+
+    /// Lifts the first eligible works on a fixed priority: income
+    /// first (Refinery), then the defense ladder, then the deep rungs.
+    fn lower_upgrade(&self, obs: &Observation, spendable: u32, intents: &mut Vec<Intent>) -> u32 {
+        const PRIORITY: [(BuildingKind, u8); 5] = [
+            (BuildingKind::Reclaimer, 0),
+            (BuildingKind::Turret, 0),
+            (BuildingKind::Array, 0),
+            (BuildingKind::FlakTurret, 0),
+            (BuildingKind::Turret, 1),
+        ];
+        for (kind, tier) in PRIORITY {
+            let Some(upgrade) = kind.upgrade_from(tier) else {
+                continue;
+            };
+            let tech_met = upgrade.requires.iter().all(|req| {
+                obs.my_buildings
+                    .iter()
+                    .any(|owned| owned.kind == *req && owned.built)
+            });
+            if !tech_met || spendable < upgrade.cost {
+                continue;
+            }
+            let target = obs
+                .my_buildings
+                .iter()
+                .filter(|b| b.kind == kind && b.built && b.tier == tier)
+                .min_by_key(|b| (b.anchor.y, b.anchor.x, b.id));
+            if let Some(b) = target {
+                intents.push(Intent::Upgrade { building: b.id });
+                return upgrade.cost;
+            }
+        }
+        0
     }
 
     fn lower_production(
@@ -1481,7 +2485,7 @@ impl GymBot {
         let choice = match action {
             Action::TrainHarvester => Some((BuildingKind::Foundry, UnitKind::Harvester)),
             Action::TrainSentinel => Some((BuildingKind::Foundry, UnitKind::Sentinel)),
-            Action::TrainScuttler => Some((BuildingKind::Fabricator, UnitKind::Scuttler)),
+            Action::TrainScuttler => Some((BuildingKind::Foundry, UnitKind::Scuttler)),
             Action::TrainLancer => Some((BuildingKind::Fabricator, UnitKind::Lancer)),
             Action::TrainBombard => Some((BuildingKind::Fabricator, UnitKind::Bombard)),
             Action::TrainAntiAir => Some((
@@ -1489,12 +2493,29 @@ impl GymBot {
                 Role::AntiAir.unit_for(obs.faction),
             )),
             Action::TrainAirGround => Some((
-                BuildingKind::Fabricator,
+                BuildingKind::Airworks,
                 Role::AirGround.unit_for(obs.faction),
             )),
             Action::TrainAirAir => {
-                Some((BuildingKind::Fabricator, Role::AirAir.unit_for(obs.faction)))
+                Some((BuildingKind::Airworks, Role::AirAir.unit_for(obs.faction)))
             }
+            Action::TrainWarden => Some((BuildingKind::Fabricator, UnitKind::Warden)),
+            Action::TrainTender => Some((BuildingKind::Fabricator, UnitKind::Tender)),
+            Action::TrainSapper => Some((BuildingKind::Fabricator, UnitKind::Sapper)),
+            Action::TrainExcavator => Some((BuildingKind::Foundry, UnitKind::Excavator)),
+            Action::TrainScoutFlyer => {
+                Some((BuildingKind::Airworks, Role::Scout.unit_for(obs.faction)))
+            }
+            Action::TrainInterceptor => Some((
+                BuildingKind::Airworks,
+                Role::Interceptor.unit_for(obs.faction),
+            )),
+            Action::TrainBomber => {
+                Some((BuildingKind::Airworks, Role::Bomber.unit_for(obs.faction)))
+            }
+            Action::TrainTransport => Some((BuildingKind::Airworks, UnitKind::Skyhook)),
+            Action::TrainBreaker => Some((BuildingKind::Crucible, UnitKind::Breaker)),
+            Action::TrainAvalanche => Some((BuildingKind::Crucible, UnitKind::Avalanche)),
             _ => None,
         };
         if let Some((building, kind)) = choice
@@ -1520,10 +2541,12 @@ impl GymBot {
                     .my_buildings
                     .iter()
                     .filter(|b| {
-                        b.built && b.hp < b.kind.stats().max_hp && !under_salvage.contains(&b.id)
+                        b.built
+                            && b.hp < b.kind.tier_stats(b.tier).max_hp
+                            && !under_salvage.contains(&b.id)
                     })
                     .map(|b| {
-                        let deficit = b.kind.stats().max_hp - b.hp;
+                        let deficit = b.kind.tier_stats(b.tier).max_hp - b.hp;
                         (std::cmp::Reverse(deficit), b.anchor.y, b.anchor.x, b.id)
                     })
                     .min()
@@ -1580,6 +2603,135 @@ impl GymBot {
         intents: &mut Vec<Intent>,
     ) {
         match action {
+            Action::Airlift => {
+                // A loaded sling with a destination drops at the front;
+                // otherwise an empty (or destination-less) sling gathers
+                // the nearest idle fighters. One leg per decision — the
+                // policy paces the ferry. The lowering is TOTAL over the
+                // mask's disjunction: whichever arm justified the action
+                // is the arm that runs, never an if/else that goes quiet.
+                let mut loaded: Vec<&UnitObs> = obs
+                    .my_units
+                    .iter()
+                    .filter(|u| u.kind.stats().transport_capacity > 0 && u.cargo > 0)
+                    .collect();
+                loaded.sort_by_key(|u| u.id);
+                // The landing is a doorstep, never a footprint, and never
+                // under known anti-air: a hull that would land inside the
+                // guns falls back toward home to a beachhead instead.
+                let landing = enemy_site.and_then(|site| {
+                    let aa_near = |tile: TilePos| {
+                        obs.enemy_units.iter().any(|u| {
+                            u.kind.stats().can_target(Domain::Air)
+                                && u.tile.chebyshev(tile) <= LANDING_AA_RADIUS
+                        }) || obs.enemy_buildings.iter().any(|b| {
+                            b.kind == BuildingKind::FlakTurret
+                                && b.anchor.chebyshev(tile) <= LANDING_AA_RADIUS
+                        })
+                    };
+                    let doorstep = standable_near(obs, site);
+                    if aa_near(site) {
+                        let (dx, dy) = (home.x - site.x, home.y - site.y);
+                        let d = dx.abs().max(dy.abs());
+                        if d > 0 {
+                            let pull = BEACHHEAD_PULL.min(d);
+                            let back = TilePos::new(site.x + dx * pull / d, site.y + dy * pull / d);
+                            // A beachhead over open water is no landing:
+                            // unloading at one stalled NoOpenGround every
+                            // think (2,349 in one game). Fall back to the
+                            // doorstep, and hold if even that is gone.
+                            return standable_near(obs, back).or(doorstep);
+                        }
+                    }
+                    doorstep
+                });
+                let destination = landing.or_else(|| staging.map(|a| a.staging));
+                if let (false, Some(at)) = (loaded.is_empty(), destination) {
+                    // Every loaded hull drops in one decision: the ferry is
+                    // a wave, not a shuttle. Production already has to
+                    // build lift for a third of the ground bulk; dropping
+                    // one hull per think spent none of it.
+                    for t in &loaded {
+                        intents.push(Intent::Unload {
+                            transport: t.id,
+                            at,
+                        });
+                    }
+                } else if let Some(t) = obs
+                    .my_units
+                    .iter()
+                    .filter(|u| u.kind.stats().transport_capacity > 0 && u.cargo == 0 && u.idle)
+                    .min_by_key(|u| u.id)
+                {
+                    let staged: Vec<UnitId> =
+                        staging.map(|a| a.members.clone()).unwrap_or_default();
+                    // A rider boards on foot, so the sling's ground
+                    // component is the guest list: a fighter across a
+                    // wall from the rack was re-paired and re-stalled
+                    // every think (measured 1,400 times in one game)
+                    // before this consulted route truth like every
+                    // other ground dispatch.
+                    let rack_reach = self.policy.reachable_component(obs, t.tile);
+                    let reach_index = |tile: TilePos| (tile.y * obs.map_width + tile.x) as usize;
+                    let boardable = |u: &UnitObs| {
+                        !self.rider_bounces.iter().any(|(id, _)| *id == u.id)
+                            && (u.kind.stats().domain == Domain::Air
+                                || [(0, 0), (0, 1), (0, -1), (1, 0), (-1, 0)].iter().any(
+                                    |(dx, dy)| {
+                                        let tile = u.tile.offset(*dx, *dy);
+                                        tile.x >= 0
+                                            && tile.y >= 0
+                                            && tile.x < obs.map_width
+                                            && tile.y < obs.map_height
+                                            && rack_reach[reach_index(tile)]
+                                    },
+                                ))
+                    };
+                    let mut candidates: Vec<(i32, UnitId, u32)> = obs
+                        .my_units
+                        .iter()
+                        .filter(|u| {
+                            u.idle
+                                && (!enlisted.contains(&u.id) || staged.contains(&u.id))
+                                && u.kind.stats().transport_size > 0
+                                && u.kind.stats().can_fight()
+                                && boardable(u)
+                        })
+                        .map(|u| {
+                            (
+                                u.tile.chebyshev(t.tile),
+                                u.id,
+                                u32::from(u.kind.stats().transport_size),
+                            )
+                        })
+                        .collect();
+                    candidates.sort();
+                    // Take what fits the rack: a machine too big for the
+                    // remaining room is passed over for a smaller one
+                    // behind it (mirrors the scripted ferry — a raw
+                    // head-count named riders the sling then stranded
+                    // strikeless with TransportFull).
+                    let mut room = u32::from(t.kind.stats().transport_capacity);
+                    let mut riders: Vec<UnitId> = Vec::new();
+                    for (_, id, size) in candidates {
+                        if size <= room {
+                            room -= size;
+                            riders.push(id);
+                        }
+                    }
+                    if !riders.is_empty() {
+                        for rider in &riders {
+                            if !self.pending_boarders.contains(rider) {
+                                self.pending_boarders.push(*rider);
+                            }
+                        }
+                        intents.push(Intent::Load {
+                            transport: t.id,
+                            riders,
+                        });
+                    }
+                }
+            }
             Action::AirRaid => {
                 let target = obs
                     .enemy_units
@@ -1602,7 +2754,31 @@ impl GymBot {
                 });
             }
             Action::Push => {
-                let target = nearest_home_intruder(obs, home).or(enemy_site);
+                // A home-defense push must fight the intrusion, not march
+                // at the distant base while home burns: while any intruder
+                // is present the target stays local — the nearest standable
+                // intruder, else open ground beside the unstandable one.
+                // Only an intruder-free push takes the strategic site.
+                // The strategic site is a building anchor: a footprint
+                // tile nobody can stand on, so an order aimed straight at
+                // it stalls NoRoute even with open ground beside it
+                // (1,150 such stalls in one game). March to the doorstep.
+                let reach = self.policy.reachable_component(obs, home);
+                let target = nearest_standable_intruder(obs, home, &reach).or_else(|| {
+                    match nearest_home_intruder(obs, home) {
+                        // A flyer over rock is pushed beside, where ground
+                        // anti-air can answer it — but only if that ground
+                        // is reachable. A raider across a channel is a job
+                        // for guns and wings, not a march: no push.
+                        Some(intruder) => standable_near(obs, intruder).filter(|tile| {
+                            reach
+                                .get((tile.y * obs.map_width + tile.x) as usize)
+                                .copied()
+                                .unwrap_or(false)
+                        }),
+                        None => enemy_site.map(|site| doorstep_near(obs, site).unwrap_or(site)),
+                    }
+                });
                 if let (Some(army), Some(target)) = (staging, target) {
                     intents.push(Intent::PushArmy {
                         army: army.id,
@@ -1615,7 +2791,32 @@ impl GymBot {
                     intents.push(Intent::RecallArmy { army: army.id });
                 }
             }
-            Action::Scout => self.policy.scouting(obs, home, enlisted, true, intents),
+            Action::Scout => {
+                let staged: Vec<UnitId> = staging.map(|a| a.members.clone()).unwrap_or_default();
+                let anchors = self.oriented_start_anchors(obs);
+                // Ground fighters join the search only while some
+                // birthplace is ground-reachable on known terrain; on a
+                // sealed map they stay home for the ferry instead of
+                // stalling wave after wave against the coast.
+                let ground_may_search = anchors.is_empty()
+                    || anchors
+                        .clone()
+                        .into_iter()
+                        .any(|anchor| self.known_ground_route(obs, home, anchor));
+                self.policy.scouting(
+                    obs,
+                    home,
+                    enlisted,
+                    super::utility::ScoutAids {
+                        extra: &staged,
+                        anchors: &anchors,
+                        ground_may_search,
+                        frontier_step: true,
+                    },
+                    true,
+                    intents,
+                );
+            }
             _ => {}
         }
     }
@@ -1627,10 +2828,6 @@ impl GymBot {
             self.planned_since = None;
             return;
         };
-        if committed_buildings(obs, kind) >= building_cap(kind) {
-            self.clear_planned_build();
-            return;
-        }
         if self
             .planned_since
             .is_some_and(|since| obs.tick.saturating_sub(since) >= CONSTRUCTION_PLAN_TIMEOUT_TICKS)
@@ -1678,7 +2875,7 @@ impl GymBot {
 
     fn saved_plan_reserve(&self) -> u32 {
         self.planned_build
-            .and_then(|kind| kind.stats().construction)
+            .and_then(|kind| kind.base_stats().construction)
             .map_or(0, |construction| construction.cost)
     }
 
@@ -1728,7 +2925,7 @@ impl GymBot {
         founding_claims(obs)
             .into_iter()
             .filter(|(kind, anchor)| !self.founding_claim_stale(*kind, *anchor, obs.tick))
-            .filter_map(|(kind, _)| kind.stats().construction)
+            .filter_map(|(kind, _)| kind.base_stats().construction)
             .fold(0u32, |total, construction| {
                 total.saturating_add(construction.cost)
             })
@@ -1775,38 +2972,105 @@ impl GymBot {
         enlisted: &[crate::ids::UnitId],
         home: TilePos,
         kind: BuildingKind,
+        defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
     ) -> bool {
         obs.tick >= self.capital_retry_after
-            && committed_buildings(obs, kind) < building_cap(kind)
             && self.unpaid_claim_reserve(obs) == 0
             && !self
                 .build_retry_after
                 .iter()
                 .any(|(blocked, retry_after)| *blocked == kind && obs.tick < *retry_after)
+            && construction_prerequisites_met(obs, kind)
             && free_builder(obs, enlisted)
-            && self.has_build_anchor(obs, enlisted, home, kind)
+            && self.has_build_anchor(obs, enlisted, home, kind, defense_probe)
     }
 
+    /// `defense_probe` memoizes the known-passability grid and builder-route
+    /// Dijkstra for one think: they depend only on the observation and the
+    /// enlisted set, both fixed across a think, never on the queried kind.
     fn has_build_anchor(
         &self,
         obs: &Observation,
         enlisted: &[UnitId],
         home: TilePos,
         kind: BuildingKind,
+        defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
     ) -> bool {
         match kind {
             BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => {
-                let passability = KnownPassability::from_observation(obs);
-                let builders = DefenseBuilderRoutes::measure(obs, enlisted, &passability);
+                let (_, builders) = defense_probe.get_or_insert_with(|| {
+                    let passability = KnownPassability::from_observation(obs);
+                    let builders = DefenseBuilderRoutes::measure(obs, enlisted, &passability);
+                    (passability, builders)
+                });
                 defense_foci(obs, home, kind)
                     .into_iter()
                     .chain(std::iter::once(home))
-                    .flat_map(|focus| self.policy.placements_near(obs, kind, focus))
+                    .flat_map(|focus| self.policy.placements_near(obs, kind, focus, true))
                     .any(|anchor| builders.travel_to(anchor, kind).is_some())
             }
-            BuildingKind::Foundry => false,
-            _ => self.policy.placement_near(obs, kind, home).is_some(),
+            BuildingKind::Foundry => self
+                .expansion_anchor(obs, enlisted, defense_probe)
+                .is_some(),
+            _ => self.policy.placement_near(obs, kind, home, true).is_some(),
         }
+    }
+
+    /// Where an expansion Foundry wants to stand: an anchor beside the
+    /// closest remembered salvage field no own Foundry already serves
+    /// that a live builder can actually reach over known terrain. The
+    /// route check is load-bearing: a deferred found at an unroutable
+    /// anchor dies at walk time, the site audit blacklists it as
+    /// refused, and the planner retries the neighbor every think —
+    /// measured on island maps as hundreds of doomed build orders and
+    /// zero foundings. `None` when no reachable frontier exists — the
+    /// action stays masked and exhaustion falls through to the
+    /// Reclaimer.
+    fn expansion_anchor(
+        &self,
+        obs: &Observation,
+        enlisted: &[UnitId],
+        defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
+    ) -> Option<TilePos> {
+        let foundries: Vec<TilePos> = obs
+            .my_buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Foundry)
+            .map(|b| b.anchor)
+            .collect();
+        let mut frontiers: Vec<(i32, i32, i32, TilePos)> = obs
+            .known_scrap
+            .iter()
+            .filter(|(tile, amount)| {
+                *amount > 0
+                    && foundries
+                        .iter()
+                        .all(|f| f.chebyshev(*tile) > FOUNDRY_EXPANSION_RADIUS)
+            })
+            .map(|(tile, _)| {
+                let frontier = foundries
+                    .iter()
+                    .map(|f| f.chebyshev(*tile))
+                    .min()
+                    .unwrap_or(0);
+                (frontier, tile.y, tile.x, *tile)
+            })
+            .collect();
+        if frontiers.is_empty() {
+            return None;
+        }
+        frontiers.sort_unstable();
+        let (_, builders) = defense_probe.get_or_insert_with(|| {
+            let passability = KnownPassability::from_observation(obs);
+            let builders = DefenseBuilderRoutes::measure(obs, enlisted, &passability);
+            (passability, builders)
+        });
+        frontiers.into_iter().find_map(|(.., focus)| {
+            self.policy
+                .placements_near(obs, BuildingKind::Foundry, focus, true)
+                .into_iter()
+                .find(|anchor| builders.travel_to(*anchor, BuildingKind::Foundry).is_some())
+        })
     }
 
     fn build_anchor(
@@ -1815,13 +3079,44 @@ impl GymBot {
         enlisted: &[UnitId],
         home: TilePos,
         kind: BuildingKind,
+        defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
     ) -> Option<TilePos> {
         match kind {
             BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => {
-                self.defense_anchor(obs, enlisted, home, kind)
+                self.defense_anchor(obs, enlisted, home, kind, defense_probe)
             }
-            BuildingKind::Foundry => None,
-            _ => self.policy.placement_near(obs, kind, home),
+            BuildingKind::Foundry => self.expansion_anchor(obs, enlisted, defense_probe),
+            BuildingKind::Array => {
+                // A mast IS its ring: a second mast inside a standing
+                // ring re-buys coverage the first already paid for
+                // (measured as four adjacent masts watching one
+                // corridor). Prefer the candidate farthest from every
+                // own or allied mast, saturating at one ring radius so
+                // everything beyond a ring ties and the (y, x) order
+                // keeps the pick stable and close to home.
+                let masts: Vec<TilePos> = obs
+                    .my_buildings
+                    .iter()
+                    .chain(obs.ally_buildings.iter())
+                    .filter(|building| building.kind == BuildingKind::Array)
+                    .map(|building| building.anchor)
+                    .collect();
+                self.policy
+                    .placements_near(obs, kind, home, true)
+                    .into_iter()
+                    .map(|anchor| {
+                        let ring = masts
+                            .iter()
+                            .map(|mast| mast.chebyshev(anchor))
+                            .min()
+                            .unwrap_or(crate::stats::RADAR_DETECT_RADIUS)
+                            .min(crate::stats::RADAR_DETECT_RADIUS);
+                        (std::cmp::Reverse(ring), anchor.y, anchor.x, anchor)
+                    })
+                    .min()
+                    .map(|(.., anchor)| anchor)
+            }
+            _ => self.policy.placement_near(obs, kind, home, true),
         }
     }
 
@@ -1831,6 +3126,7 @@ impl GymBot {
         enlisted: &[UnitId],
         home: TilePos,
         kind: BuildingKind,
+        defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
     ) -> Option<TilePos> {
         let mut foci = defense_foci(obs, home, kind);
         foci.sort_unstable_by_key(|tile| (tile.y, tile.x));
@@ -1838,15 +3134,25 @@ impl GymBot {
 
         let mut candidates: Vec<_> = foci
             .into_iter()
-            .flat_map(|focus| self.policy.placements_near(obs, kind, focus))
+            .flat_map(|focus| self.policy.placements_near(obs, kind, focus, true))
             .collect();
         candidates.sort_unstable_by_key(|anchor| (anchor.y, anchor.x));
         candidates.dedup();
         let traffic = DefenseTraffic::measure(obs, home, kind);
-        let builders = DefenseBuilderRoutes::measure(obs, enlisted, &traffic.passability);
+        // The feasibility probe already ran this full-map Dijkstra
+        // for the same observation and enlisted set; its routes are
+        // value-identical to ones built from the traffic's own
+        // passability grid (both derive from the same observation),
+        // so the anchor search reuses them instead of flooding again.
+        let (_, builders) = defense_probe.get_or_insert_with(|| {
+            let passability = KnownPassability::from_observation(obs);
+            let builders = DefenseBuilderRoutes::measure(obs, enlisted, &passability);
+            (passability, builders)
+        });
+        let builders = &*builders;
         candidates.retain(|anchor| builders.travel_to(*anchor, kind).is_some());
         if candidates.is_empty() {
-            candidates = self.policy.placements_near(obs, kind, home);
+            candidates = self.policy.placements_near(obs, kind, home, true);
             candidates.retain(|anchor| builders.travel_to(*anchor, kind).is_some());
         }
         if candidates.is_empty() {
@@ -1855,7 +3161,7 @@ impl GymBot {
         let metrics: Vec<_> = candidates
             .iter()
             .copied()
-            .map(|anchor| DefenseMetrics::measure(obs, home, kind, anchor, &traffic, &builders))
+            .map(|anchor| DefenseMetrics::measure(obs, home, kind, anchor, &traffic, builders))
             .collect();
         let bounds = DefenseBounds::from_metrics(&metrics);
         candidates
@@ -1879,17 +3185,57 @@ impl GymBot {
         enlisted: &[crate::ids::UnitId],
         home: TilePos,
         intents: &mut Vec<Intent>,
+        defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
     ) -> Option<u32> {
         let kind = self.planned_build?;
-        let construction = kind.stats().construction?;
+        let construction = kind.base_stats().construction?;
+        // An upgrade already staged this think pays at dispatch before
+        // this build does; commit only what the bank covers AFTER that
+        // rung, or the build dies to NotEnoughScrap with its plan
+        // cleared and its anchor blacklisted.
+        let upgrade_committed: u32 = intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::Upgrade { building } => obs
+                    .my_buildings
+                    .iter()
+                    .find(|b| b.id == *building)
+                    .and_then(|b| b.kind.upgrade_from(b.tier))
+                    .map(|upgrade| upgrade.cost),
+                Intent::Build {
+                    kind: BuildingKind::Extractor,
+                    ..
+                } => BuildingKind::Extractor
+                    .base_stats()
+                    .construction
+                    .map(|c| c.cost),
+                _ => None,
+            })
+            .sum();
         if self.unpaid_claim_reserve(obs) > 0
-            || obs.scrap < construction.cost
+            || obs.scrap < construction.cost.saturating_add(upgrade_committed)
+            || !construction_prerequisites_met(obs, kind)
             || !free_builder(obs, enlisted)
-            || committed_buildings(obs, kind) >= building_cap(kind)
         {
             return None;
         }
-        let anchor = self.build_anchor(obs, enlisted, home, kind)?;
+        // The plan commits (pending site noted, plan cleared) only when
+        // the executive can actually staff it: a builder must survive
+        // the labor claims of the intents already staged this think, or
+        // the emission is a silent no-op that poisons the site ledger
+        // and loses the plan.
+        let claimed = self.exec.labor_claims(obs, intents);
+        let staffable = obs.my_units.iter().any(|u| {
+            u.kind.stats().harvest.is_some()
+                && u.site.is_none()
+                && u.founding.is_none()
+                && !enlisted.contains(&u.id)
+                && !claimed.contains(&u.id)
+        });
+        if !staffable {
+            return None;
+        }
+        let anchor = self.build_anchor(obs, enlisted, home, kind, defense_probe)?;
         self.policy.note_pending_site(anchor);
         intents.push(Intent::Build { kind, anchor });
         self.clear_planned_build();
@@ -1907,7 +3253,9 @@ impl GymBot {
             .my_buildings
             .iter()
             .enumerate()
-            .filter(|(qi, b)| b.kind == at && b.built && obs.my_queues[*qi].len() < 2)
+            .filter(|(qi, b)| {
+                b.kind == at && b.built && obs.my_queues[*qi].len() < crate::stats::QUEUE_CAP
+            })
             .min_by_key(|(_, b)| b.id)
         {
             intents.push(Intent::TrainAt {
@@ -1921,20 +3269,82 @@ impl GymBot {
     /// visible/shared hostile units, radar contacts, visible incoming
     /// impacts, and changes to our own units. Calling `decision` followed
     /// by `step_plan` at the same tick is idempotent.
-    fn refresh_tactical_memory(&mut self, world: &Observation) {
+    fn refresh_tactical_memory(&mut self, world: &Observation, state: &State) {
         if self.memory_tick == Some(world.tick) {
             return;
+        }
+        // Live evidence outranks memory: a remembered danger whose tile
+        // the seat can SEE right now, with no enemy near it, is gone.
+        // Without this the only purge was the 1,800-tick expiry, and a
+        // dying Buzzard sighting kept a seat's own doorstep wrecks
+        // "guarded" through a full memory window while its one worker
+        // idled beside 187 scrap (open-quarry seed 1).
+        let vision = state.vision(self.player);
+        self.danger.retain(|memory| {
+            !(vision.visible(memory.tile)
+                && !world
+                    .enemy_units
+                    .iter()
+                    .any(|u| u.tile.chebyshev(memory.tile) <= DANGER_RADIUS)
+                && !world
+                    .enemy_buildings
+                    .iter()
+                    .any(|b| b.anchor.chebyshev(memory.tile) <= DANGER_RADIUS))
+        });
+        // Boarding ledger upkeep: a pending rider seen idle again
+        // bounced off the sling (samples apply to it normally from here
+        // on), and when no sling holds any cargo an absent rider has no
+        // alibi left — it is dead and the ledger clears.
+        self.rider_bounces
+            .retain(|(_, at)| world.tick.saturating_sub(*at) <= RIDER_BOUNCE_COOLDOWN);
+        // A pending rider seen idle again bounced off the sling, whether
+        // or not any sling holds cargo — the wholesale clear below used
+        // to erase the evidence first.
+        let tick = world.tick;
+        let bounced: Vec<UnitId> = self
+            .pending_boarders
+            .iter()
+            .copied()
+            .filter(|id| world.my_units.iter().any(|u| u.id == *id && u.idle))
+            .collect();
+        self.rider_bounces
+            .extend(bounced.iter().map(|id| (*id, tick)));
+        if !world.my_units.iter().any(|u| u.cargo > 0) {
+            self.pending_boarders.clear();
+        } else {
+            self.pending_boarders.retain(|id| !bounced.contains(id));
         }
         self.danger
             .retain(|memory| world.tick.saturating_sub(memory.seen_at) <= DANGER_MEMORY_TICKS);
 
         let mut samples: Vec<(TilePos, u64)> = Vec::new();
+        // Ferry outcomes: a loaded sling that vanishes was shot down
+        // with its riders (cargo dies with the airframe); one seen empty
+        // again after flying loaded delivered. Consecutive shootdowns
+        // suspend the island doctrine's ferry forcing for a cooldown.
+        for previous in &self.own_units_seen {
+            if previous.cargo == 0 {
+                continue;
+            }
+            match world.my_units.iter().find(|unit| unit.id == previous.id) {
+                None if !self.pending_boarders.contains(&previous.id) => {
+                    self.ferry_shootdowns = self.ferry_shootdowns.saturating_add(1);
+                    self.ferry_shootdown_at = Some(world.tick);
+                }
+                Some(unit) if unit.cargo == 0 => self.ferry_shootdowns = 0,
+                _ => {}
+            }
+        }
         for previous in &self.own_units_seen {
             match world.my_units.iter().find(|unit| unit.id == previous.id) {
                 Some(unit) if unit.hp < previous.hp => {
                     samples.push((unit.tile, recovery_uncertainty_floor()));
                 }
-                None => samples.push((previous.tile, recovery_uncertainty_floor())),
+                // Absent AND ordered aboard = riding as cargo, not dead.
+                None if !self.pending_boarders.contains(&previous.id) => {
+                    samples.push((previous.tile, recovery_uncertainty_floor()))
+                }
+                None => {}
                 Some(_) => {}
             }
         }
@@ -1980,6 +3390,7 @@ impl GymBot {
                 id: unit.id,
                 tile: unit.tile,
                 hp: unit.hp,
+                cargo: unit.cargo,
             })
             .collect();
         self.memory_tick = Some(world.tick);
@@ -2114,7 +3525,7 @@ impl GymBot {
                 building.built
                     && recovery_building_ground_reach(building.kind).is_some_and(|range| {
                         let reach = range + crate::stats::HARVEST_STATIC_DANGER_MARGIN;
-                        let size = building.kind.stats().size;
+                        let size = building.kind.base_stats().size;
                         recovery_reach_contains(
                             recovery_rect_closest_point(building.anchor, size, tile_point)
                                 .dist_sq(tile_point),
@@ -2131,13 +3542,11 @@ impl GymBot {
                     danger.chebyshev(tile) <= crate::stats::HARVEST_INCIDENT_DANGER_RADIUS
                 })
         };
-        let known_scrap = |tile: TilePos| {
-            obs.known_scrap
-                .iter()
-                .any(|(known, amount)| *known == tile && *amount > 0)
-        };
-        let passable =
-            |tile: TilePos| passability.route_open(tile) && !known_scrap(tile) && !dangerous(tile);
+        // route_open already excludes every known-scrap tile at
+        // construction (from_observation zeroes them), so a separate
+        // scan of known_scrap per probe re-tested a condition the
+        // grid encodes.
+        let passable = |tile: TilePos| passability.route_open(tile) && !dangerous(tile);
         if observed_path.is_some_and(|path| {
             path.waypoints
                 .iter()
@@ -2172,6 +3581,30 @@ impl GymBot {
         })
     }
 
+    /// Saving, unless the save has stalled past its patience with a
+    /// liquidatable rear building available: an income-dead emergency
+    /// funds the replacement fleet by salvaging instead of waiting on
+    /// a bank that cannot grow. Measured before this existed, such
+    /// seats idled at a four-wide mask to the time cap.
+    fn recovery_saving_with_patience(&mut self, obs: &Observation) -> RecoveryPosture {
+        let since = *self.recovery_saving_since.get_or_insert(obs.tick);
+        let liquidatable = obs
+            .my_buildings
+            .iter()
+            .any(|b| b.built && SALVAGE_PRIORITY.contains(&b.kind));
+        // Stripping needs a harvest-capable machine; a workerless seat
+        // has nothing to send and keeps saving on whatever trickles in.
+        let stripper = obs
+            .my_units
+            .iter()
+            .any(|u| u.kind.stats().harvest.is_some());
+        if liquidatable && stripper && obs.tick.saturating_sub(since) > RECOVERY_SAVING_PATIENCE {
+            RecoveryPosture::Salvage
+        } else {
+            RecoveryPosture::Saving
+        }
+    }
+
     fn recovery_posture(
         &mut self,
         obs: &Observation,
@@ -2185,13 +3618,15 @@ impl GymBot {
             self.recovery_active = false;
             self.recovery_assignment = None;
             self.recovery_target = None;
+            self.recovery_saving_since = None;
+            self.recovery_contest_since = None;
             return RecoveryPosture::Inactive;
         }
 
         let harvesters: Vec<&UnitObs> = obs
             .my_units
             .iter()
-            .filter(|unit| unit.kind == UnitKind::Harvester)
+            .filter(|unit| unit.kind.stats().harvest.is_some())
             .collect();
         let queued_harvester = obs
             .my_queues
@@ -2204,6 +3639,16 @@ impl GymBot {
         if !self.recovery_active {
             return RecoveryPosture::Inactive;
         }
+        // A broken economy adopts its rear line: whatever screens the
+        // executive was resting become draftable for the emergency.
+        let screen_kinds: Vec<UnitId> = obs
+            .my_units
+            .iter()
+            .filter(|u| recovery_screen_kind(u.kind))
+            .map(|u| u.id)
+            .collect();
+        self.exec
+            .release_rear_where(|id| screen_kinds.contains(&id));
         if self.recovery_assignment.is_some() {
             return RecoveryPosture::Saving;
         }
@@ -2229,32 +3674,67 @@ impl GymBot {
                 .fold(0u64, u64::saturating_add);
             remembered.saturating_add(static_guard)
         };
+        let source_danger: Vec<(TilePos, u64)> = sources
+            .iter()
+            .map(|source| (*source, danger(*source)))
+            .collect();
         let recovery_worker = recovery_worker(obs);
-        let safe = sources.iter().copied().find(|source| {
-            danger(*source) == 0
-                && recovery_worker.is_none_or(|worker| {
-                    self.recovery_route_is_safe(obs, orientation, worker, *source, false, None)
-                })
-        });
+        let safe = source_danger
+            .iter()
+            .find(|(source, guard)| {
+                *guard == 0
+                    && recovery_worker.is_none_or(|worker| {
+                        self.recovery_route_is_safe(obs, orientation, worker, *source, false, None)
+                    })
+            })
+            .map(|(source, _)| *source);
 
         if !harvesters.is_empty() {
             if let Some(source) = safe {
+                self.recovery_contest_since = None;
                 return RecoveryPosture::Harvest(source);
             }
             if sources.is_empty() {
                 self.recovery_target = None;
+                self.recovery_contest_since = None;
                 return RecoveryPosture::Prospect;
+            }
+            // Contest borrows the saving patience for its exit: a seat
+            // that has contested guarded ground for the whole window
+            // while able to fund a replacement worker is not
+            // income-dead — it is besieged, and the full doctrine
+            // (armies, expansion, extractors) fights sieges better
+            // than a frozen one. Measured deciding scramble seed 1
+            // seven minutes faster.
+            // The bank clause alone is circular when the freeze is what
+            // keeps the bank from growing: after twice the patience with
+            // no safe source found, the seat is released regardless.
+            let since = *self.recovery_contest_since.get_or_insert(obs.tick);
+            let held = obs.tick.saturating_sub(since);
+            if (obs.scrap >= UnitKind::Harvester.stats().cost && held > RECOVERY_SAVING_PATIENCE)
+                || held > 2 * RECOVERY_SAVING_PATIENCE
+            {
+                self.recovery_active = false;
+                self.recovery_target = None;
+                self.recovery_worker_hold = None;
+                self.recovery_liquidation = None;
+                self.recovery_contest_since = None;
+                return RecoveryPosture::Inactive;
             }
             let target = self
                 .recovery_target
-                .filter(|target| sources.contains(target) && danger(*target) > 0)
-                .unwrap_or_else(|| {
-                    sources
+                .filter(|target| {
+                    source_danger
                         .iter()
-                        .copied()
-                        .min_by_key(|source| {
-                            (danger(*source), source.manhattan(home), source.y, source.x)
+                        .any(|(source, guard)| source == target && *guard > 0)
+                })
+                .unwrap_or_else(|| {
+                    source_danger
+                        .iter()
+                        .min_by_key(|(source, guard)| {
+                            (*guard, source.manhattan(home), source.y, source.x)
                         })
+                        .map(|(source, _)| *source)
                         .expect("the guarded source list is non-empty")
                 });
             self.recovery_target = Some(target);
@@ -2264,22 +3744,35 @@ impl GymBot {
         if sources.is_empty() || safe.is_some() {
             return if queued_harvester {
                 RecoveryPosture::Saving
-            } else if obs.scrap >= UnitKind::Harvester.stats().cost {
+            } else if obs.scrap >= UnitKind::Harvester.stats().cost
+                && open_foundry(obs, 1).is_some()
+            {
+                self.recovery_saving_since = None;
                 RecoveryPosture::QueueHarvester
             } else {
-                RecoveryPosture::Saving
+                // Affordable but nowhere to queue it: every Foundry
+                // slot is full, so the honest posture is to wait —
+                // advertising TrainHarvester here made the forced
+                // recovery mask promise an action the lowering could
+                // not perform, and the seat idled a think instead.
+                self.recovery_saving_with_patience(obs)
             };
         }
 
-        let live_screen = recovery_screen_units(obs).next().is_some();
+        let live_screen = recovery_screen_units(obs, self.exec.rear())
+            .next()
+            .is_some();
         let queued_screen = recovery_screen_queued(obs);
         if live_screen {
             if queued_harvester {
                 RecoveryPosture::Saving
-            } else if obs.scrap >= UnitKind::Harvester.stats().cost {
+            } else if obs.scrap >= UnitKind::Harvester.stats().cost
+                && open_foundry(obs, 1).is_some()
+            {
+                self.recovery_saving_since = None;
                 RecoveryPosture::QueueHarvester
             } else {
-                RecoveryPosture::Saving
+                self.recovery_saving_with_patience(obs)
             }
         } else if queued_screen {
             RecoveryPosture::QueuePackage
@@ -2308,19 +3801,55 @@ impl GymBot {
         let lower = |this: &mut Self, intents: Vec<Intent>| {
             let vision = state.vision(this.player);
             let defer_needed = |kind: BuildingKind, anchor: TilePos| {
-                let (w, h) = kind.stats().size;
+                let (w, h) = kind.base_stats().size;
                 (0..h).any(|dy| (0..w).any(|dx| !vision.visible(anchor.offset(dx, dy))))
             };
+            let ground_component = |from: TilePos| this.policy.reachable_component(world, from);
             this.exec.apply_with(
                 this.player,
                 world,
                 &orientation.emit(intents),
-                &LoweringRules::gym(&defer_needed),
+                &LoweringRules::gym(&defer_needed, &ground_component),
             )
         };
 
         match posture {
             RecoveryPosture::Inactive | RecoveryPosture::Saving => {}
+            RecoveryPosture::Salvage => {
+                // Liquidate the cheapest-priority rear building to fund
+                // the replacement fleet; every harvest-capable machine
+                // is offered and the sim keeps only valid strippers.
+                let target = obs
+                    .my_buildings
+                    .iter()
+                    .filter(|b| b.built)
+                    .filter_map(|b| {
+                        SALVAGE_PRIORITY
+                            .iter()
+                            .position(|kind| *kind == b.kind)
+                            .map(|rank| (rank, b.anchor.y, b.anchor.x, b.id))
+                    })
+                    .min()
+                    .map(|(.., id)| id);
+                let strippers: Vec<UnitId> = obs
+                    .my_units
+                    .iter()
+                    .filter(|u| u.kind.stats().harvest.is_some())
+                    .map(|u| u.id)
+                    .collect();
+                if let Some(building) = target
+                    && !strippers.is_empty()
+                {
+                    commands.push(PlayerCommand {
+                        player: self.player,
+                        command: Command::Salvage {
+                            units: strippers,
+                            building,
+                            queue: false,
+                        },
+                    });
+                }
+            }
             RecoveryPosture::Concede => commands.push(PlayerCommand {
                 player: self.player,
                 command: Command::Surrender,
@@ -2346,7 +3875,9 @@ impl GymBot {
                     foundry_slots,
                 ) = self.cancel_for_recovery(obs);
                 commands.append(&mut cancellations);
-                let live_screen = recovery_screen_units(obs).next().is_some();
+                let live_screen = recovery_screen_units(obs, self.exec.rear())
+                    .next()
+                    .is_some();
                 let need_screen = !live_screen && !screen_queued;
                 let need_worker = !worker_queued;
                 let buy_screen = need_screen && projected_scrap >= UnitKind::Sentinel.stats().cost;
@@ -2412,7 +3943,8 @@ impl GymBot {
                 let Some(worker) = recovery_worker(obs) else {
                     return commands;
                 };
-                let live_screen: Vec<UnitId> = recovery_screen_units(obs).collect();
+                let live_screen: Vec<UnitId> =
+                    recovery_screen_units(obs, self.exec.rear()).collect();
                 if live_screen.is_empty() {
                     let queued_screen = recovery_screen_queued(obs);
                     self.recovery_liquidation = self.recovery_liquidation.filter(|building| {
@@ -2584,6 +4116,7 @@ impl GymBot {
             self.recovery_target = None;
             self.recovery_worker_hold = None;
             self.recovery_liquidation = None;
+            self.recovery_contest_since = None;
         }
     }
 
@@ -2613,7 +4146,9 @@ impl GymBot {
                     .map(move |(index, _)| (queue_index, index))
             })
             .min_by_key(|(queue_index, index)| (*index, obs.my_buildings[*queue_index].id));
-        let worker_to_keep = (recovery_screen_units(obs).next().is_some()
+        let worker_to_keep = (recovery_screen_units(obs, self.exec.rear())
+            .next()
+            .is_some()
             || screen_to_keep.is_some())
         .then(|| {
             obs.my_queues
@@ -2650,16 +4185,24 @@ impl GymBot {
             }
         }
 
-        for building in obs.my_buildings.iter().filter(|building| !building.built) {
+        // Only fresh tier-zero sites are cancellable: the sim refuses to
+        // demolish a committed upgrade, so counting its refund here would
+        // budget recovery purchases against scrap that never arrives.
+        for building in obs
+            .my_buildings
+            .iter()
+            .filter(|building| !building.built && building.tier == 0)
+        {
             commands.push(PlayerCommand {
                 player: self.player,
                 command: Command::Cancel {
                     building: building.id,
                 },
             });
-            if let Some(construction) = building.kind.stats().construction {
-                projected = projected
-                    .saturating_add(construction.cost * building.hp / building.kind.stats().max_hp);
+            if let Some(construction) = building.kind.base_stats().construction {
+                projected = projected.saturating_add(
+                    construction.cost * building.hp / building.kind.base_stats().max_hp,
+                );
             }
         }
         let founders: Vec<UnitId> = obs
@@ -2727,17 +4270,62 @@ impl GymBot {
         }]
     }
 
+    /// [`Self::finish_operation`] with the lock's patience applied: a
+    /// no-op lock held past [`FINISH_LOCK_PATIENCE`] consecutive ticks
+    /// yields one think to the doctrines (typically a Recall for the
+    /// standoff body), then may re-engage on fresh conditions.
+    fn finish_operation_with_patience(
+        &mut self,
+        obs: &Observation,
+        armies: &[super::executive::Army],
+        home: TilePos,
+    ) -> Option<Action> {
+        match self.finish_operation(obs, armies, home) {
+            Some(Action::NoOperation) => {
+                let since = *self.finish_lock_since.get_or_insert(obs.tick);
+                // Releases only past the doctrine wake tick: inside the
+                // style-signature windows the lock's behavior is part of
+                // the measured identity, and no stall runs that short.
+                if obs.tick > FINISH_WAKE_TICK
+                    && obs.tick.saturating_sub(since) > finish_lock_patience(obs)
+                {
+                    self.finish_lock_since = None;
+                    self.finish_lock_released_at = Some(obs.tick);
+                    None
+                } else {
+                    Some(Action::NoOperation)
+                }
+            }
+            other => {
+                self.finish_lock_since = None;
+                other
+            }
+        }
+    }
+
     fn finish_operation(
         &mut self,
         obs: &Observation,
         armies: &[super::executive::Army],
         home: TilePos,
     ) -> Option<Action> {
-        let _target = UtilityPolicy::enemy_site(obs, home)?;
+        let target = UtilityPolicy::enemy_objective(obs, home, self.enemy_beaten(obs))?;
         if armies
             .iter()
             .any(|army| army.state == ArmyState::Withdrawing)
         {
+            return None;
+        }
+        // An objective with no known ground route, or one a push already
+        // wedged against, is the island doctrine's war, not a finish:
+        // committing a staged body at it re-ran the refused march once
+        // per bounce pair for the rest of the game (severance seed 0,
+        // 10,555 NoRoute stalls), and the narrowed head kept the
+        // doctrine that would have sealed it from ever running. A body
+        // already fighting keeps its lock.
+        let objective_routable =
+            self.known_ground_route(obs, home, target) && !self.site_wedged(obs, target);
+        if !objective_routable && !armies.iter().any(|army| army.state == ArmyState::Engaging) {
             return None;
         }
 
@@ -2787,18 +4375,49 @@ impl GymBot {
         // not freeze a stronger staged or idle reserve behind it.
         // Lock the learned operation head to a no-op: Recall must not
         // interrupt a justified finish, while reissuing Push would reset
-        // paths and weapon opportunities.
-        if armies
+        // paths and weapon opportunities. A push is only a justified
+        // finish while its target is known-ground-reachable: a body
+        // wedged against a seal it can never cross must release the
+        // lock so the island doctrine can recall it and ferry instead
+        // (measured: this lock held dominant seats idle to the time cap
+        // on part-sealed maps).
+        // ...and only while it is still doing something: a body that
+        // is entirely idle on a target with no known enemy near it has
+        // finished that push. Holding the lock for it measured as 5:08
+        // of a 4,000-strength team idling over a dead base (compass
+        // grand seed 0).
+        let wedge_free: Vec<bool> = armies
             .iter()
-            .filter(|army| matches!(army.state, ArmyState::Pushing | ArmyState::Engaging))
-            .any(|army| {
-                fighters
+            .map(|army| match army.state {
+                ArmyState::Engaging => true,
+                ArmyState::Pushing => army.target.is_none_or(|target| {
+                    let routable = self.known_ground_route(obs, home, target)
+                        && !self.site_wedged(obs, target);
+                    let moving = obs
+                        .my_units
+                        .iter()
+                        .any(|u| army.members.contains(&u.id) && !u.idle);
+                    let objective_alive = obs
+                        .enemy_units
+                        .iter()
+                        .any(|u| u.tile.chebyshev(target) <= FINISH_OBJECTIVE_RADIUS)
+                        || obs
+                            .enemy_buildings
+                            .iter()
+                            .any(|b| b.anchor.chebyshev(target) <= FINISH_OBJECTIVE_RADIUS);
+                    routable && (moving || objective_alive)
+                }),
+                _ => false,
+            })
+            .collect();
+        if armies.iter().zip(&wedge_free).any(|(army, justified)| {
+            *justified
+                && fighters
                     .iter()
                     .filter(|unit| army.members.contains(&unit.id))
                     .count()
                     >= FINISH_MIN_FIGHTERS
-            })
-        {
+        }) {
             return Some(Action::NoOperation);
         }
         let staging = armies
@@ -2832,6 +4451,15 @@ impl GymBot {
                 && !self.exec.enlisted().any(|id| id == unit.id)
         }) {
             Some(Action::FormArmy)
+        } else if armies
+            .iter()
+            .zip(&wedge_free)
+            .any(|(army, justified)| army.state == ArmyState::Pushing && !*justified)
+        {
+            // A wedged push and nothing else to commit: hand the head
+            // back to the doctrines so the body can be recalled and
+            // ferried instead of holding the lock to the time cap.
+            None
         } else {
             Some(Action::NoOperation)
         }
@@ -2841,6 +4469,21 @@ impl GymBot {
     /// enemy fighter is visible, the remembered army is what's visible
     /// now (strength and centroid tile); the timestamp freezes when
     /// sight is lost.
+    /// Whether the enemy reads as beaten: no fighter in sight and none
+    /// remembered inside the danger-memory window. Out-of-sight is not
+    /// beaten — under fog the enemy army is simply elsewhere most
+    /// thinks, and treating that as beaten flipped the strategic target
+    /// mid-fight and erased two style families' measured identity.
+    fn enemy_beaten(&self, obs: &Observation) -> bool {
+        // Never having seen a fighter is not beaten either: the enemy
+        // army is merely undiscovered, and reading that as beaten sent
+        // the first push straight at the Foundry in every contested
+        // opening.
+        self.seen_at > 0
+            && !obs.enemy_units.iter().any(|u| u.kind.stats().can_fight())
+            && obs.tick.saturating_sub(self.seen_at) > DANGER_MEMORY_TICKS
+    }
+
     fn remember(&mut self, world: &Observation) {
         let fighters: Vec<_> = world
             .enemy_units
@@ -2862,16 +4505,29 @@ impl GymBot {
         self.seen_pos = Some(TilePos::new((sx / n) as i32, (sy / n) as i32));
     }
 
-    fn observe(&self, state: &State) -> (Observation, Orientation) {
+    /// The latched frame of reference, for tests and debug surfaces.
+    pub fn latched_orientation(&self) -> Option<Orientation> {
+        self.orientation
+    }
+
+    fn observe(&mut self, state: &State) -> (Observation, Orientation) {
         let obs = Observation::fog_honest(state, self.player);
-        let home = obs
-            .my_buildings
-            .iter()
-            .filter(|b| b.kind == BuildingKind::Foundry)
-            .min_by_key(|b| b.id)
-            .map(|b| b.anchor)
-            .unwrap_or(TilePos::new(0, 0));
-        let orientation = Orientation::for_home(&obs, home);
+        let orientation = *self.orientation.get_or_insert_with(|| {
+            // Built Foundries first — the same rule home_tile uses, so
+            // the frame and every distance agree — then any site, so a
+            // seat born rebuilding still latches something real.
+            let foundry = |built_only: bool| {
+                obs.my_buildings
+                    .iter()
+                    .filter(|b| b.kind == BuildingKind::Foundry && (!built_only || b.built))
+                    .min_by_key(|b| b.id)
+                    .map(|b| b.anchor)
+            };
+            let home = foundry(true)
+                .or_else(|| foundry(false))
+                .unwrap_or(TilePos::new(0, 0));
+            Orientation::for_home(&obs, home)
+        });
         (obs, orientation)
     }
 }
@@ -2901,17 +4557,123 @@ fn rear_tile(world: &Observation) -> TilePos {
 /// no-op poisons the pending-site ledger.
 fn free_builder(obs: &Observation, enlisted: &[crate::ids::UnitId]) -> bool {
     obs.my_units.iter().any(|u| {
-        u.kind == UnitKind::Harvester
+        u.kind.stats().harvest.is_some()
             && u.site.is_none()
             && u.founding.is_none()
             && !enlisted.contains(&u.id)
     })
 }
 
+/// Narrows construction toward a new claim when the economy is starving
+/// where it stands: past the wake tick, with most of the harvester
+/// fleet idle over exhausted fields, the doctrine presses the known
+/// unclaimed Extractor frame first and an expansion Foundry otherwise.
+/// Whether either is affordable, sited, and crewed stays the mask's
+/// judgment — this only stops "bank the scrap and idle" from being the
+/// default answer to a dead home field, which the audit measured as
+/// entire fleets idle over nothing while banks held 100-350 scrap and
+/// no seat in any long game ever built a second Foundry.
+fn apply_expansion_doctrine(obs: &Observation, mask: &mut [bool; ACTION_COUNT]) {
+    if obs.tick <= FINISH_WAKE_TICK {
+        return;
+    }
+    let (total, idle) = obs
+        .my_units
+        .iter()
+        .filter(|u| u.kind.stats().harvest.is_some())
+        .fold((0usize, 0usize), |(t, i), u| {
+            (t + 1, i + usize::from(u.idle))
+        });
+    if total == 0 || idle * EXPANSION_IDLE_DEN < total * EXPANSION_IDLE_NUM {
+        return;
+    }
+    if mask[Action::BuildExtractor as usize] {
+        narrow_head(mask, &CONSTRUCTION_ACTIONS, Action::BuildExtractor);
+    } else if mask[Action::BuildFoundry as usize] {
+        narrow_head(mask, &CONSTRUCTION_ACTIONS, Action::BuildFoundry);
+    } else if mask[Action::BuildReclaimer as usize] {
+        // No frame to claim and no foundry site: the Reclaimer is the
+        // building designed for exactly this moment — "the reason a
+        // match can outlive its scrap patches."
+        narrow_head(mask, &CONSTRUCTION_ACTIONS, Action::BuildReclaimer);
+    }
+}
+
 fn nearest_home_intruder(obs: &Observation, home: TilePos) -> Option<TilePos> {
     obs.enemy_units
         .iter()
         .filter(|unit| unit.kind.stats().can_fight() && unit.tile.chebyshev(home) <= 12)
+        .map(|unit| (unit.tile.chebyshev(home), unit.tile.y, unit.tile.x, unit.id))
+        .min()
+        .map(|(_, y, x, _)| TilePos::new(x, y))
+}
+
+/// The nearest standable tile touching a site's anchor: a march target a
+/// unit can actually stand on without leaving the building's own ground.
+/// `standable_near`'s wider ring could return a tile across a channel
+/// from a coastal base, and a march "succeeded" onto the shore facing it
+/// — the army then sat Engaging across water with a focus order that
+/// stalled NoFiringPosition every tick (47,000 in one game).
+fn doorstep_near(obs: &Observation, site: TilePos) -> Option<TilePos> {
+    let mut best: Option<((i32, i32, i32), TilePos)> = None;
+    for dy in -1..=2 {
+        for dx in -1..=2 {
+            let tile = site.offset(dx, dy);
+            if tile.x < 0 || tile.y < 0 || tile.x >= obs.map_width || tile.y >= obs.map_height {
+                continue;
+            }
+            if standable_near(obs, tile) != Some(tile) {
+                continue;
+            }
+            let key = (tile.chebyshev(site), tile.y, tile.x);
+            if best.is_none_or(|(best_key, _)| key < best_key) {
+                best = Some((key, tile));
+            }
+        }
+    }
+    best.map(|(_, tile)| tile)
+}
+
+/// The nearest tile around `want` a ground machine can stand on by the
+/// seat's own knowledge, ring-scanned outward to three tiles in stable
+/// (r, dy, dx) order. `None` when the whole neighborhood reads as rock.
+fn standable_near(obs: &Observation, want: TilePos) -> Option<TilePos> {
+    for r in 0i32..=3 {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue;
+                }
+                let t = want.offset(dx, dy);
+                if t.x >= 0
+                    && t.y >= 0
+                    && t.x < obs.map_width
+                    && t.y < obs.map_height
+                    && !obs.known_rock_at(t)
+                {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// [`nearest_home_intruder`] restricted to tiles a ground army can
+/// stand on AND reach: a flyer hovering over rock, or a raider across a
+/// channel, is a real threat but not a marchable target — a push aimed
+/// at its tile can only wedge there (measured first as a push/recall
+/// oscillator, then as a 16-unit attack-move re-issued every think with
+/// its units stalling NoFiringPosition every tick, 108,000 times in one
+/// game). Only the Push execution's target choice uses this; masks and
+/// milestone gating keep the unrestricted read.
+fn nearest_standable_intruder(obs: &Observation, home: TilePos, reach: &[bool]) -> Option<TilePos> {
+    let index = |tile: TilePos| (tile.y * obs.map_width + tile.x) as usize;
+    obs.enemy_units
+        .iter()
+        .filter(|unit| unit.kind.stats().can_fight() && unit.tile.chebyshev(home) <= 12)
+        .filter(|unit| !obs.known_rock.contains(&unit.tile))
+        .filter(|unit| reach.get(index(unit.tile)).copied().unwrap_or(false))
         .map(|unit| (unit.tile.chebyshev(home), unit.tile.y, unit.tile.x, unit.id))
         .min()
         .map(|(_, y, x, _)| TilePos::new(x, y))
@@ -2932,7 +4694,7 @@ impl Point2 {
     }
 
     fn building(anchor: TilePos, kind: BuildingKind) -> Self {
-        let (width, height) = kind.stats().size;
+        let (width, height) = kind.base_stats().size;
         Self {
             x: anchor.x.saturating_mul(2).saturating_add(width),
             y: anchor.y.saturating_mul(2).saturating_add(height),
@@ -3013,7 +4775,7 @@ impl KnownPassability {
             .chain(obs.ally_buildings.iter())
             .chain(obs.enemy_buildings.iter())
         {
-            let (building_width, building_height) = building.kind.stats().size;
+            let (building_width, building_height) = building.kind.base_stats().size;
             for dy in 0..building_height {
                 for dx in 0..building_width {
                     let tile = building.anchor.offset(dx, dy);
@@ -3154,7 +4916,7 @@ impl DefenseBuilderRoutes {
     }
 
     fn travel_to(&self, anchor: TilePos, kind: BuildingKind) -> Option<u32> {
-        let (width, height) = kind.stats().size;
+        let (width, height) = kind.base_stats().size;
         (-1..=width)
             .flat_map(|dx| (-1..=height).map(move |dy| (dx, dy)))
             .filter(|(dx, dy)| !(0..width).contains(dx) || !(0..height).contains(dy))
@@ -3667,7 +5429,7 @@ impl DefenseMetrics {
                     .chain(obs.ally_buildings.iter())
                     .filter(|building| building.built)
                     .map(|building| {
-                        let sight = building.kind.stats().vision.saturating_mul(2);
+                        let sight = building.kind.base_stats().vision.saturating_mul(2);
                         if center.chebyshev(Point2::building(building.anchor, building.kind))
                             <= sight
                         {
@@ -3826,7 +5588,7 @@ fn normalized(value: i64, (low, high): (i64, i64), inverse: bool) -> i64 {
 }
 
 fn defense_reach2(kind: BuildingKind) -> (i32, i32) {
-    kind.stats().weapons.first().map_or((0, 0), |weapon| {
+    kind.base_stats().weapons.first().map_or((0, 0), |weapon| {
         let doubled = chassis::fx::Fx::from_num(2);
         (
             (weapon.minimum_range * doubled).floor().to_num(),
@@ -3865,7 +5627,7 @@ fn defense_foci(obs: &Observation, home: TilePos, kind: BuildingKind) -> Vec<Til
             foci.extend(
                 obs.my_buildings
                     .iter()
-                    .filter(|building| building.built && !building.kind.stats().can_fight())
+                    .filter(|building| building.built && !building.kind.base_stats().can_fight())
                     .take(8)
                     .map(|building| building.anchor),
             );
@@ -3938,7 +5700,7 @@ fn defense_threats(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)> 
                 .filter(|building| {
                     building
                         .kind
-                        .stats()
+                        .base_stats()
                         .weapons
                         .iter()
                         .any(|weapon| weapon.targets.covers(Domain::Ground))
@@ -3954,6 +5716,15 @@ fn defense_threats(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)> 
     threats
 }
 
+/// A building's price for the value-aggregate features (standing
+/// stock, health value, site value): its construction cost, or zero
+/// for kinds that cannot be built.
+fn feature_price(kind: BuildingKind) -> i64 {
+    kind.base_stats()
+        .construction
+        .map_or(0, |construction| i64::from(construction.cost))
+}
+
 fn protected_points(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)> {
     let building_value = |building: &super::observation::BuildingObs| {
         let base: i64 = match building.kind {
@@ -3964,6 +5735,14 @@ fn protected_points(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)>
             BuildingKind::Array => 700,
             BuildingKind::Bastion => 450,
             BuildingKind::Turret | BuildingKind::FlakTurret => 350,
+            // Restored income machinery is worth defending like a
+            // Reclaimer's weight in works.
+            BuildingKind::Extractor => 900,
+            BuildingKind::Airworks => 1_000,
+            BuildingKind::Crucible => 1_400,
+            // Field fortifications and buried charges are positions,
+            // not assets.
+            BuildingKind::Barricade | BuildingKind::ScuttleCharge => 100,
         };
         if building.built { base } else { base / 2 }
     };
@@ -4068,16 +5847,8 @@ fn known_open_coverage(
     open
 }
 
-fn building_cap(kind: BuildingKind) -> usize {
-    match kind {
-        BuildingKind::Fabricator => 1,
-        BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => 2,
-        BuildingKind::Array | BuildingKind::RepairBay => 1,
-        BuildingKind::Reclaimer => 2,
-        BuildingKind::Foundry => 0,
-    }
-}
-
+/// Nonzero code per plannable kind for the `construction_plan`
+/// feature; zero is reserved for "no saved plan".
 fn building_plan_code(kind: BuildingKind) -> i64 {
     match kind {
         BuildingKind::Fabricator => 1,
@@ -4087,8 +5858,63 @@ fn building_plan_code(kind: BuildingKind) -> i64 {
         BuildingKind::Array => 5,
         BuildingKind::Reclaimer => 6,
         BuildingKind::RepairBay => 7,
-        BuildingKind::Foundry => 0,
+        BuildingKind::Airworks => 8,
+        BuildingKind::Crucible => 9,
+        BuildingKind::Foundry => 10,
+        BuildingKind::Extractor => 11,
+        // Never planned through the construction head today; distinct
+        // codes anyway so a future plan cannot alias "no plan".
+        BuildingKind::Barricade => 12,
+        // 13 was the removed ScrapDepot; the gap is permanent so no
+        // future kind can alias a code an old trace may carry.
+        BuildingKind::ScuttleCharge => 14,
     }
+}
+
+/// One seat's executive shape at a think, for QA instruments (the
+/// audit's per-think sampling). Serialized into the gym step frames.
+#[derive(Debug, Default, Clone, Copy, serde::Serialize)]
+pub struct ExecCensus {
+    /// Armies gathering at a rally.
+    pub staging: u32,
+    /// Armies marching on a target.
+    pub pushing: u32,
+    /// Armies in contact.
+    pub engaging: u32,
+    /// Armies pulling back to a rally.
+    pub withdrawing: u32,
+    /// Members held by staging armies.
+    pub staged_members: u32,
+    /// Every unit any army holds.
+    pub enlisted: u32,
+}
+
+/// Whether a derelict Extractor frame is genuinely open: no own,
+/// ALLIED, or enemy building holds its anchor. The allied check is
+/// load-bearing — a teammate's restored Extractor read as "unclaimed"
+/// for whole matches, and the doctrine spammed a doomed build at it
+/// once per think (measured at 1,069 BadSite rejections on one anchor,
+/// every 28 ticks for 35 minutes).
+fn frame_unclaimed(obs: &Observation, anchor: TilePos) -> bool {
+    !obs.my_buildings.iter().any(|b| b.anchor == anchor)
+        && !obs.ally_buildings.iter().any(|b| b.anchor == anchor)
+        && !obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
+}
+
+/// Fog-honest mirror of the sim's construction tech gate
+/// (`State::prerequisites_met`): every required kind must stand built
+/// among the seat's own buildings. The mask must never advertise a
+/// Fabricator-gated kind (Airworks, Crucible, Foundry) to a seat with
+/// no Fabricator — dispatch rejects it every think, and a doctrine
+/// narrowed onto it deadlocks the whole construction head.
+fn construction_prerequisites_met(obs: &Observation, kind: BuildingKind) -> bool {
+    kind.base_stats().construction.is_none_or(|construction| {
+        construction.requires.iter().all(|required| {
+            obs.my_buildings
+                .iter()
+                .any(|building| building.kind == *required && building.built)
+        })
+    })
 }
 
 fn founding_claims(obs: &Observation) -> Vec<(BuildingKind, TilePos)> {
@@ -4190,7 +6016,7 @@ fn nearby_salvage(obs: &Observation) -> u32 {
 }
 
 fn affordable_capital(obs: &Observation, kind: BuildingKind, reserve: u32) -> bool {
-    kind.stats()
+    kind.base_stats()
         .construction
         .is_some_and(|construction| obs.scrap >= construction.cost.saturating_add(reserve))
 }
@@ -4210,7 +6036,7 @@ fn unit_patient(
 ) -> Option<crate::ids::UnitId> {
     let welder_near = |patient: &UnitObs| {
         let mut available = obs.my_units.iter().filter(|u| {
-            u.kind == UnitKind::Harvester
+            u.kind.stats().harvest.is_some()
                 && u.site.is_none()
                 && u.founding.is_none()
                 && u.id != patient.id
@@ -4247,6 +6073,77 @@ fn unit_patient(
         .map(|u| u.id)
 }
 
+/// A seat whose enemy has vanished into fog with every fighter enlisted
+/// in a rally has no legal way to look: Scout and FormArmy both want a
+/// free idle fighter, and the finishing doctrine's scout narrowing needs
+/// Scout legal first. After a patience window, one staged rally-holder
+/// is discharged to the free pool — the trained-legal verbs reopen on
+/// their own, with no mask widening (measured: a 5,540-value army idle
+/// 99% of its tail with push 0% / form 0% legal on trident-plateau).
+fn reconcile_discovery(
+    since: &mut Option<u64>,
+    ever_seen: &mut bool,
+    obs: &Observation,
+    exec: &mut super::executive::Executive,
+    commit: bool,
+) {
+    let foundry_known = obs
+        .enemy_buildings
+        .iter()
+        .any(|b| b.kind == BuildingKind::Foundry);
+    *ever_seen |= foundry_known;
+    if !*ever_seen {
+        *since = None;
+        return;
+    }
+    let free_fighter = obs.my_units.iter().any(|u| {
+        let stats = u.kind.stats();
+        stats.can_fight()
+            && stats.domain == Domain::Ground
+            && u.idle
+            && !exec.enlisted().any(|id| id == u.id)
+    });
+    let staged = exec.armies().iter().any(|a| a.state == ArmyState::Staging);
+    if foundry_known || free_fighter || !staged {
+        *since = None;
+        return;
+    }
+    // The decision preview and the real step both call this in one tick
+    // and must make the same cut, so both discharge — but only the real
+    // step restarts the clock. Leaving the clock alone measured as a
+    // discharge/re-draft oscillation every think from minute one (3,950
+    // commands against 988) that burned the operation head for the
+    // whole game.
+    let started = *since.get_or_insert(obs.tick);
+    if obs.tick.saturating_sub(started) > RECOVERY_SAVING_PATIENCE {
+        exec.discharge_one_staged();
+        if commit {
+            *since = Some(obs.tick);
+        }
+    }
+}
+
+/// A ground-connectivity predicate over the seat's known terrain,
+/// flooding once per distinct origin and answering from the cache after
+/// that (an army's members share an origin for a whole think).
+fn ground_connectivity<'a>(
+    policy: &'a UtilityPolicy,
+    world: &'a Observation,
+) -> impl Fn(TilePos, TilePos) -> bool + 'a {
+    let cache: std::cell::RefCell<Vec<(TilePos, Vec<bool>)>> = std::cell::RefCell::new(Vec::new());
+    move |from: TilePos, to: TilePos| {
+        let index = (to.y * world.map_width + to.x) as usize;
+        let mut cache = cache.borrow_mut();
+        if let Some((_, component)) = cache.iter().find(|(origin, _)| *origin == from) {
+            return component.get(index).copied().unwrap_or(false);
+        }
+        let component = policy.reachable_component(world, from);
+        let hit = component.get(index).copied().unwrap_or(false);
+        cache.push((from, component));
+        hit
+    }
+}
+
 fn home_tile(obs: &Observation) -> Option<TilePos> {
     obs.my_buildings
         .iter()
@@ -4269,10 +6166,19 @@ fn recovery_screen_kind(kind: UnitKind) -> bool {
     kind.is_recovery_screen()
 }
 
-fn recovery_screen_units(obs: &Observation) -> impl Iterator<Item = UnitId> + '_ {
+/// Live, DEPLOYABLE screens: the rear-held are excluded because
+/// recovery cannot draft them — counting an undraftable wounded
+/// veteran as "the screen exists" while suppressing every ordinary
+/// head was the 0.14 controller deadlock. Callers release rear-held
+/// screen kinds before consulting this, so in practice the set only
+/// shrinks while the executive still holds patients mid-weld.
+fn recovery_screen_units<'a>(
+    obs: &'a Observation,
+    rear: &'a [UnitId],
+) -> impl Iterator<Item = UnitId> + 'a {
     obs.my_units
         .iter()
-        .filter(|unit| recovery_screen_kind(unit.kind))
+        .filter(|unit| recovery_screen_kind(unit.kind) && !rear.contains(&unit.id))
         .map(|unit| unit.id)
 }
 
@@ -4287,7 +6193,7 @@ fn recovery_worker(obs: &Observation) -> Option<UnitId> {
     obs.my_units
         .iter()
         .filter(|unit| {
-            unit.kind == UnitKind::Harvester
+            unit.kind.stats().harvest.is_some()
                 && unit.site.is_none()
                 && unit.founding.is_none()
                 && unit.salvaging.is_none()
@@ -4308,7 +6214,7 @@ fn recovery_is_conclusive(obs: &Observation, home: TilePos) -> bool {
     let critically_wounded = foundry.hp.saturating_mul(RECOVERY_CONCEDE_HP_DEN)
         <= foundry
             .kind
-            .stats()
+            .base_stats()
             .max_hp
             .saturating_mul(RECOVERY_CONCEDE_HP_NUM);
     let visible_pressure = obs.enemy_units.iter().any(|unit| {
@@ -4364,11 +6270,11 @@ fn useful_recovery_liquidation(obs: &Observation) -> Option<BuildingId> {
             let rank = SALVAGE_PRIORITY
                 .iter()
                 .position(|kind| *kind == building.kind)?;
-            let construction = building.kind.stats().construction?;
+            let construction = building.kind.base_stats().construction?;
             let refund = u64::from(construction.cost)
                 * u64::from(building.hp)
                 * crate::stats::SALVAGE_REFUND_PERMILLE
-                / (1000 * u64::from(building.kind.stats().max_hp));
+                / (1000 * u64::from(building.kind.base_stats().max_hp));
             (u64::from(obs.scrap).saturating_add(refund)
                 >= u64::from(UnitKind::Sentinel.stats().cost))
             .then_some((rank, building.anchor.y, building.anchor.x, building.id))
@@ -4380,6 +6286,68 @@ fn useful_recovery_liquidation(obs: &Observation) -> Option<BuildingId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ACTION_COUNT and the per-head index arrays are hand-maintained;
+    /// the audit found nothing pinning them to each other. A head that
+    /// drops or doubles an index silently corrupts every mask row and
+    /// the trained policy's output space.
+    #[test]
+    fn action_heads_partition_the_action_space_exactly() {
+        let mut seen: Vec<usize> = ACTION_HEADS.iter().copied().flatten().copied().collect();
+        assert_eq!(
+            seen.len(),
+            ACTION_COUNT,
+            "heads must cover every action once"
+        );
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            (0..ACTION_COUNT).collect::<Vec<_>>(),
+            "heads must partition 0..ACTION_COUNT with no gaps or doubles"
+        );
+    }
+
+    #[test]
+    fn recovery_adopts_rear_held_screens_instead_of_deadlocking() {
+        // The 0.14 replay shape: a broken economy (no harvesters), a
+        // wounded screen-kind fighter the executive parked on the rear
+        // line, and recovery consulting "is there a live screen?". The
+        // old controller counted the undraftable veteran as a screen
+        // while suppressing every ordinary head — a stall that held for
+        // thousands of ticks. The fix: recovery ADOPTS the rear line
+        // (screen kinds are released) before the screen question is
+        // asked, and the predicate itself refuses rear-held ids.
+        let mut scenario = crate::Scenario::skirmish();
+        scenario.units.clear();
+        scenario.units.push(crate::scenario::UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 6,
+            y: 3,
+        });
+        let state = scenario.build().expect("fixture builds");
+        let mut bot = GymBot::new(PlayerId(0));
+        let sentinel = state.units()[0].id;
+        bot.exec.hold_rear_for_test(sentinel);
+        let (obs, orientation) = bot.observe(&state);
+        assert!(
+            recovery_screen_units(&obs, bot.exec.rear())
+                .next()
+                .is_none(),
+            "a rear-held veteran is not a deployable screen"
+        );
+        let posture = bot.recovery_posture(&obs, &orientation);
+        assert!(
+            !bot.exec.rear().contains(&sentinel),
+            "recovery adopts the rear line: {posture:?}"
+        );
+        assert!(
+            recovery_screen_units(&obs, bot.exec.rear())
+                .next()
+                .is_some(),
+            "once adopted, the veteran counts as the live screen it is"
+        );
+    }
 
     #[test]
     fn danger_memory_is_bounded_and_cools_deterministically() {
@@ -4471,7 +6439,7 @@ mod tests {
         assert!(bastion_tile.chebyshev(bastion_anchor) > DANGER_RADIUS);
         let bastion_reach = recovery_building_ground_reach(bastion).unwrap()
             + crate::stats::HARVEST_STATIC_DANGER_MARGIN;
-        let size = bastion.stats().size;
+        let size = bastion.base_stats().size;
         let tile_point = bastion_tile.center();
         assert!(recovery_reach_contains(
             recovery_rect_closest_point(bastion_anchor, size, tile_point).dist_sq(tile_point),

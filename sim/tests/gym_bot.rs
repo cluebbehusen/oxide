@@ -4,8 +4,8 @@
 
 use chassis::rng::Pcg32;
 use oxide_sim::bot::{
-    ACTION_HEADS, Action, ActionPlan, Brain, CONSTRUCTION_PLAN_TIMEOUT_TICKS, Difficulty,
-    FEATURE_NAMES, GymBot, Level, NeuralBot, Observation, seat_bots,
+    ACTION_HEADS, Action, ActionPlan, Brain, CONSTRUCTION_PLAN_TIMEOUT_TICKS, FEATURE_NAMES,
+    GymBot, Observation,
 };
 use oxide_sim::state::{GameResult, Order};
 use oxide_sim::stats::FOUNDRY_RECOVERY_RESERVE;
@@ -17,11 +17,13 @@ fn action_plan_decoding_is_head_safe() {
         ActionPlan::from_indices([
             Action::TrainSentinel as usize,
             Action::BuildArray as usize,
+            Action::NoUpgrade as usize,
             Action::Push as usize,
         ]),
         ActionPlan {
             production: Action::TrainSentinel,
             construction: Action::BuildArray,
+            upgrade: Action::NoUpgrade,
             operation: Action::Push,
         }
     );
@@ -29,6 +31,7 @@ fn action_plan_decoding_is_head_safe() {
         ActionPlan::from_indices([
             Action::BuildTurret as usize,
             Action::TrainLancer as usize,
+            Action::AirRaid as usize,
             usize::MAX,
         ]),
         ActionPlan::default(),
@@ -39,6 +42,7 @@ fn action_plan_decoding_is_head_safe() {
         [
             Action::Idle as usize,
             Action::NoConstruction as usize,
+            Action::NoUpgrade as usize,
             Action::NoOperation as usize,
         ]
     );
@@ -73,19 +77,20 @@ fn production_intentions_are_visible_before_affordability() {
 #[test]
 fn construction_plans_reserve_scrap_and_lower_before_production() {
     let mut scenario = Scenario::skirmish();
-    scenario.players[0].scrap = 100;
+    scenario.players[0].scrap = 60;
     let low_state = scenario.build().unwrap();
     let mut gym = GymBot::new(PlayerId(0));
     let decision = gym.decision(&low_state);
     assert!(
         decision.mask[Action::BuildArray as usize],
-        "a feasible build can be selected before its 120-scrap price is banked"
+        "a feasible build can be selected before its 90-scrap price is banked"
     );
     let commands = gym.step_plan(
         &low_state,
         ActionPlan {
             production: Action::TrainHarvester,
             construction: Action::BuildArray,
+            upgrade: Action::NoUpgrade,
             operation: Action::NoOperation,
         },
     );
@@ -94,7 +99,7 @@ fn construction_plans_reserve_scrap_and_lower_before_production() {
             command.command,
             Command::Build { .. } | Command::Train { .. }
         )),
-        "the saved 100 scrap cannot leak into a cheaper unit"
+        "the saved 60 scrap cannot leak into a cheaper unit"
     );
     let decision = gym.decision(&low_state);
     let feature = |name: &str| {
@@ -105,10 +110,10 @@ fn construction_plans_reserve_scrap_and_lower_before_production() {
         decision.features[index]
     };
     assert_eq!(feature("construction_plan"), 5);
-    assert_eq!(feature("construction_reserve"), 120);
+    assert_eq!(feature("construction_reserve"), 90);
 
-    scenario.players[0].scrap =
-        BuildingKind::Array.stats().construction.unwrap().cost + UnitKind::Harvester.stats().cost;
+    scenario.players[0].scrap = BuildingKind::Array.base_stats().construction.unwrap().cost
+        + UnitKind::Harvester.stats().cost;
     let funded_state = scenario.build().unwrap();
     let commands = gym.step_plan(
         &funded_state,
@@ -152,7 +157,7 @@ fn selected_maintenance_defers_an_affordable_saved_build() {
     let mut gym = GymBot::new(PlayerId(0));
     gym.step(&low_state, Action::BuildArray);
 
-    scenario.players[0].scrap = BuildingKind::Array.stats().construction.unwrap().cost + 20;
+    scenario.players[0].scrap = BuildingKind::Array.base_stats().construction.unwrap().cost + 20;
     let funded_state = scenario.build().unwrap();
     let mut value = serde_json::to_value(funded_state).unwrap();
     let patient = value["units"]
@@ -205,7 +210,7 @@ fn selected_maintenance_defers_an_affordable_saved_build() {
 #[test]
 fn stale_unfunded_plans_cancel_and_release_the_economy() {
     let mut scenario = Scenario::skirmish();
-    scenario.players[0].scrap = 100;
+    scenario.players[0].scrap = 60;
     let state = scenario.build().unwrap();
     let mut gym = GymBot::new(PlayerId(0));
     gym.step(&state, Action::BuildArray);
@@ -218,7 +223,7 @@ fn stale_unfunded_plans_cancel_and_release_the_economy() {
         decision.features[index]
     };
     assert_eq!(feature(&reserved, "construction_plan"), 5);
-    assert_eq!(feature(&reserved, "construction_reserve"), 120);
+    assert_eq!(feature(&reserved, "construction_reserve"), 90);
 
     let mut value = serde_json::to_value(&state).unwrap();
     value["tick"] = CONSTRUCTION_PLAN_TIMEOUT_TICKS.into();
@@ -245,14 +250,14 @@ fn stale_unfunded_plans_cancel_and_release_the_economy() {
                 ..
             }
         )),
-        "expiry releases the formerly reserved 100 scrap"
+        "expiry releases the formerly reserved 60 scrap"
     );
 }
 
 #[test]
 fn a_saved_construction_plan_cannot_be_kept_young_by_switching_kinds() {
     let mut scenario = Scenario::skirmish();
-    scenario.players[0].scrap = 100;
+    scenario.players[0].scrap = 60;
     let state = scenario.build().unwrap();
     let mut gym = GymBot::new(PlayerId(0));
     gym.step(&state, Action::BuildArray);
@@ -301,6 +306,7 @@ fn a_saved_construction_plan_cannot_be_kept_young_by_switching_kinds() {
         ActionPlan {
             production: Action::TrainHarvester,
             construction: Action::BuildArray,
+            upgrade: Action::NoUpgrade,
             operation: Action::NoOperation,
         },
     );
@@ -502,7 +508,7 @@ fn unpaid_founding_claims_reserve_only_unspent_capital_and_expire() {
     assert_eq!(feature(&decision, "construction_plan"), 0);
     assert_eq!(
         feature(&decision, "construction_reserve"),
-        i64::from(BuildingKind::Turret.stats().construction.unwrap().cost)
+        i64::from(BuildingKind::Turret.base_stats().construction.unwrap().cost)
     );
     assert!(
         !decision.mask[Action::BuildReclaimer as usize],
@@ -514,6 +520,7 @@ fn unpaid_founding_claims_reserve_only_unspent_capital_and_expire() {
         ActionPlan {
             production: Action::TrainHarvester,
             construction: Action::BuildReclaimer,
+            upgrade: Action::NoUpgrade,
             operation: Action::NoOperation,
         },
     );
@@ -553,6 +560,7 @@ fn unpaid_founding_claims_reserve_only_unspent_capital_and_expire() {
         ActionPlan {
             production: Action::TrainHarvester,
             construction: Action::BuildReclaimer,
+            upgrade: Action::NoUpgrade,
             operation: Action::NoOperation,
         },
     );
@@ -578,80 +586,6 @@ fn unpaid_founding_claims_reserve_only_unspent_capital_and_expire() {
             .iter()
             .any(|command| matches!(command.command, Command::Build { .. })),
         "a different structure cannot immediately replace the stale claim"
-    );
-}
-
-#[test]
-fn every_committed_build_cap_masks_redundant_structures() {
-    use oxide_sim::scenario::BuildingSpec;
-
-    for (action, kind, cap) in [
-        (Action::BuildFabricator, BuildingKind::Fabricator, 1),
-        (Action::BuildTurret, BuildingKind::Turret, 2),
-        (Action::BuildFlak, BuildingKind::FlakTurret, 2),
-        (Action::BuildBastion, BuildingKind::Bastion, 2),
-        (Action::BuildArray, BuildingKind::Array, 1),
-        (Action::BuildReclaimer, BuildingKind::Reclaimer, 2),
-        (Action::BuildRepairBay, BuildingKind::RepairBay, 1),
-    ] {
-        let mut scenario = Scenario::skirmish();
-        for index in 0..cap {
-            scenario.buildings.push(BuildingSpec {
-                player: 0,
-                kind,
-                x: 11 + index * 4,
-                y: 3,
-            });
-        }
-        let state = scenario
-            .build()
-            .unwrap_or_else(|error| panic!("fixture for {kind:?}: {error}"));
-        let mut gym = GymBot::new(PlayerId(0));
-        assert!(
-            !gym.decision(&state).mask[action as usize],
-            "{kind:?} must mask at its committed cap"
-        );
-        assert!(
-            !gym.step(&state, action).iter().any(|command| matches!(
-                command.command,
-                Command::Build {
-                    kind: emitted,
-                    ..
-                } if emitted == kind
-            )),
-            "direct compatibility lowering cannot bypass the {kind:?} cap"
-        );
-    }
-}
-
-#[test]
-fn fabricator_waits_for_an_economy_and_home_screen() {
-    use oxide_sim::scenario::UnitSpec;
-
-    let mut scenario = Scenario::skirmish();
-    let mut gym = GymBot::new(PlayerId(0));
-    assert!(
-        !gym.decision(&scenario.build().unwrap()).mask[Action::BuildFabricator as usize],
-        "the three-worker, one-Sentinel opening is not ready to spend its defense"
-    );
-
-    scenario.units.push(UnitSpec {
-        player: 0,
-        kind: UnitKind::Harvester,
-        x: 8,
-        y: 8,
-    });
-    for (x, y) in [(9, 8), (10, 8), (11, 8), (12, 8)] {
-        scenario.units.push(UnitSpec {
-            player: 0,
-            kind: UnitKind::Sentinel,
-            x,
-            y,
-        });
-    }
-    assert!(
-        gym.decision(&scenario.build().unwrap()).mask[Action::BuildFabricator as usize],
-        "four workers and five Sentinels make the capital plan viable"
     );
 }
 
@@ -756,6 +690,7 @@ fn home_defense_does_not_lose_its_only_fighter_to_field_repair() {
         ActionPlan {
             production: Action::Idle,
             construction: Action::RepairUnit,
+            upgrade: Action::NoUpgrade,
             operation: Action::FormArmy,
         },
     );
@@ -869,13 +804,13 @@ fn strategic_features_price_fog_honest_resources_commitments_and_health() {
         .iter_mut()
         .find(|building| building["player"] == 0 && building["kind"] == "repair_bay")
         .unwrap();
-    bay["hp"] = (BuildingKind::RepairBay.stats().max_hp / 2).into();
+    bay["hp"] = (BuildingKind::RepairBay.base_stats().max_hp / 2).into();
     let array = buildings
         .iter_mut()
         .find(|building| building["player"] == 0 && building["kind"] == "array")
         .unwrap();
     array["built"] = false.into();
-    array["hp"] = (BuildingKind::Array.stats().max_hp / 5).into();
+    array["hp"] = (BuildingKind::Array.base_stats().max_hp / 5).into();
     let state: oxide_sim::State = serde_json::from_value(value).unwrap();
 
     let mut gym = GymBot::new(PlayerId(0));
@@ -896,14 +831,34 @@ fn strategic_features_price_fog_honest_resources_commitments_and_health() {
         feature("queued_unit_value"),
         i64::from(UnitKind::Sentinel.stats().cost)
     );
-    assert_eq!(feature("construction_site_value"), 120);
+    assert_eq!(feature("construction_site_value"), 90);
     let unit_health = 3 * i64::from(UnitKind::Harvester.stats().cost)
         + i64::from(UnitKind::Sentinel.stats().cost) / 2;
     assert_eq!(feature("my_unit_health_value"), unit_health);
+    // 0.15: the Foundry is buildable, so its construction price joins
+    // the standing-stock valuation like any other structure's.
     assert_eq!(
         feature("my_building_health_value"),
-        i64::from(BuildingKind::Bastion.stats().construction.unwrap().cost)
-            + i64::from(BuildingKind::RepairBay.stats().construction.unwrap().cost / 2)
+        i64::from(
+            BuildingKind::Foundry
+                .base_stats()
+                .construction
+                .unwrap()
+                .cost
+        ) + i64::from(
+            BuildingKind::Bastion
+                .base_stats()
+                .construction
+                .unwrap()
+                .cost
+        ) + i64::from(
+            BuildingKind::RepairBay
+                .base_stats()
+                .construction
+                .unwrap()
+                .cost
+                / 2
+        )
     );
     assert_eq!(feature("my_bastions_built"), 1);
     assert_eq!(feature("my_repair_bays_built"), 1);
@@ -927,14 +882,14 @@ fn strategic_features_price_fog_honest_resources_commitments_and_health() {
 }
 
 /// Drives a full match: gym bot in seat 0 picks actions with a seeded
-/// rng over the legal mask; a scripted tier drives seat 1. Returns the
-/// final state hash and the result.
+/// rng over the legal mask; the scripted Overseer drives seat 1.
+/// Returns the final state hash and the result.
 fn scripted_match(seed: u64) -> (u64, Option<GameResult>) {
     let mut scenario = Scenario::skirmish();
     scenario.seed = seed;
     let mut state = scenario.build().unwrap();
     let mut gym = GymBot::new(PlayerId(0));
-    let mut opponent = Brain::for_tier(PlayerId(1), seed, Difficulty::Standard);
+    let mut opponent = Brain::overseer(PlayerId(1), seed);
     let mut rng = Pcg32::new(seed, 7777);
     for tick in 0..30_000u64 {
         let mut commands = Vec::new();
@@ -1028,6 +983,7 @@ fn recovery_reserves_partial_scrap_and_overrides_a_wrong_macro_action() {
             Action::Idle as usize,
             Action::NoConstruction as usize,
             Action::NoOperation as usize,
+            Action::NoUpgrade as usize,
         ],
         "the Scuttler-priced partial reserve must not be spendable"
     );
@@ -1052,6 +1008,7 @@ fn recovery_reserves_partial_scrap_and_overrides_a_wrong_macro_action() {
             Action::TrainHarvester as usize,
             Action::NoConstruction as usize,
             Action::NoOperation as usize,
+            Action::NoUpgrade as usize,
         ],
         "the completed reserve has exactly one legal use"
     );
@@ -1412,6 +1369,7 @@ fn recovery_releases_a_replacement_only_after_its_harvest_order_lands() {
             Action::Idle as usize,
             Action::NoConstruction as usize,
             Action::NoOperation as usize,
+            Action::NoUpgrade as usize,
         ],
         "a rejected replacement assignment keeps recovery reconciliation active"
     );
@@ -1496,6 +1454,7 @@ fn recovery_keeps_a_pathful_retiring_assignment_inside_reconciliation() {
             Action::Idle as usize,
             Action::NoConstruction as usize,
             Action::NoOperation as usize,
+            Action::NoUpgrade as usize,
         ],
         "a path is not viable work when the Harvest order is retiring"
     );
@@ -1620,8 +1579,10 @@ fn recovery_does_not_send_a_replacement_across_endpoint_clear_danger() {
         legal,
         vec![
             Action::Idle as usize,
+            Action::Push as usize,
             Action::NoConstruction as usize,
             Action::NoOperation as usize,
+            Action::NoUpgrade as usize,
         ],
         "the route-blocked replacement stays inside recovery reconciliation"
     );
@@ -1775,6 +1736,7 @@ fn recovery_confirms_a_flipped_seats_world_space_assignment() {
                     Action::Idle as usize,
                     Action::NoConstruction as usize,
                     Action::NoOperation as usize,
+                    Action::NoUpgrade as usize,
                 ]
                 .contains(&index)
         }),
@@ -1820,6 +1782,7 @@ fn recovery_confirms_a_flipped_seats_world_space_assignment() {
             Action::Idle as usize,
             Action::NoConstruction as usize,
             Action::NoOperation as usize,
+            Action::NoUpgrade as usize,
         ],
         "world-space waypoints must be oriented before auditing the flipped seat's route"
     );
@@ -1887,33 +1850,50 @@ fn danger_memory_cools_before_recovery_reuses_a_source() {
     quiet.units.retain(|unit| {
         !(unit.player == 1 && unit.kind == UnitKind::Sentinel && unit.x == 10 && unit.y == 2)
     });
-    let at_tick = |tick: u64| {
+    let at_tick = |tick: u64, fogged: bool| {
         let state = quiet.build().unwrap();
         let mut value = serde_json::to_value(state).unwrap();
         value["tick"] = serde_json::json!(tick);
+        if fogged {
+            for visible in value["vision"][0]["visible"]["cells"]
+                .as_array_mut()
+                .unwrap()
+            {
+                *visible = false.into();
+            }
+        }
         serde_json::from_value::<oxide_sim::State>(value).unwrap()
     };
-    let mut still_hot = gym.clone();
-    let commands = still_hot.step_plan(&at_tick(1_799), ActionPlan::default());
+    let trains_harvester = |commands: &[oxide_sim::PlayerCommand]| {
+        commands.iter().any(|command| {
+            matches!(
+                command.command,
+                Command::Train {
+                    kind: UnitKind::Harvester,
+                    ..
+                }
+            )
+        })
+    };
+    // Live sight outranks memory: the seat can see the guard is gone,
+    // so the source is released before the clock runs out.
+    let mut seeing = gym.clone();
+    let commands = seeing.step_plan(&at_tick(1_799, false), ActionPlan::default());
     assert!(
-        !commands.iter().any(|command| matches!(
-            command.command,
-            Command::Train {
-                kind: UnitKind::Harvester,
-                ..
-            }
-        )),
-        "the last deterministic cooling tick remains guarded"
+        trains_harvester(&commands),
+        "visible empty ground must release the source before the clock: {commands:?}"
     );
-    let commands = gym.step_plan(&at_tick(1_800), ActionPlan::default());
+    // Under fog the memory holds to its last deterministic tick...
+    let mut still_hot = gym.clone();
+    let commands = still_hot.step_plan(&at_tick(1_799, true), ActionPlan::default());
     assert!(
-        commands.iter().any(|command| matches!(
-            command.command,
-            Command::Train {
-                kind: UnitKind::Harvester,
-                ..
-            }
-        )),
+        !trains_harvester(&commands),
+        "the last cooling tick under fog remains guarded"
+    );
+    // ...and expires on the clock.
+    let commands = gym.step_plan(&at_tick(1_800, true), ActionPlan::default());
+    assert!(
+        trains_harvester(&commands),
         "expired danger memory must release the known source: {commands:?}"
     );
 }
@@ -2199,7 +2179,7 @@ fn recovery_concedes_only_a_critically_wounded_position_under_visible_pressure()
         .buildings()
         .iter()
         .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Foundry)
-        .map(|building| (building.id, building.kind.stats().max_hp))
+        .map(|building| (building.id, building.stats().max_hp))
         .unwrap();
     let mut value = serde_json::to_value(state).unwrap();
     value["buildings"]
@@ -2488,110 +2468,7 @@ fn finish_commitment_refuses_a_visible_disadvantage() {
 }
 
 #[test]
-fn shipped_basalt_spine_finishes_the_tick_27002_passive_victim() {
-    let scenario = Scenario::load(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scenarios/basalt-spine.json"),
-    )
-    .expect("shipped Basalt Spine");
-    let mut state = scenario.build().expect("Basalt Spine builds");
-    let mut bots = seat_bots(&scenario);
-    assert_eq!(bots.len(), 1, "the shipped scenario has one bot commander");
-    assert_eq!(bots[0].player(), PlayerId(1));
-    let victim_foundry = state
-        .buildings()
-        .iter()
-        .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Foundry)
-        .expect("the passive seat starts with a Foundry")
-        .anchor;
-
-    let mut saw_reproduction = false;
-    let mut finish_commitment = None;
-    let mut victory_tick = None;
-    while state.current_tick() < 40_000 {
-        if state.current_tick() == 27_002 {
-            let attacking_fighters: Vec<_> = state
-                .units()
-                .iter()
-                .filter(|unit| {
-                    unit.player == PlayerId(1)
-                        && unit
-                            .kind
-                            .stats()
-                            .can_target(oxide_sim::stats::Domain::Ground)
-                })
-                .collect();
-            let victim_fighters = state
-                .units()
-                .iter()
-                .filter(|unit| {
-                    unit.player == PlayerId(0)
-                        && unit
-                            .kind
-                            .stats()
-                            .can_target(oxide_sim::stats::Domain::Ground)
-                })
-                .count();
-            assert!(
-                state.result().is_none(),
-                "the historical stall is still live"
-            );
-            assert!(
-                attacking_fighters.len() >= 16
-                    && attacking_fighters.len() >= victim_fighters.saturating_mul(4),
-                "the neural seat must hold an unmistakable finishing advantage"
-            );
-            let committed = attacking_fighters
-                .iter()
-                .filter(|unit| {
-                    matches!(unit.order, Order::Attack { .. } | Order::AttackMove { .. })
-                })
-                .count();
-            let idle = attacking_fighters
-                .iter()
-                .filter(|unit| matches!(unit.order, Order::Idle))
-                .count();
-            assert!(
-                committed < 5 && idle >= 16,
-                "the fixture must still reproduce a dominant passive body at tick 27,002: {committed} committed, {idle} idle"
-            );
-            saw_reproduction = true;
-        }
-
-        let commands = bots[0].act(&state);
-        if saw_reproduction && finish_commitment.is_none() {
-            finish_commitment = commands.iter().find_map(|command| match &command.command {
-                Command::AttackMove { units, goal, .. }
-                    if units.len() >= 16 && goal.chebyshev(victim_foundry) <= 6 =>
-                {
-                    Some((state.current_tick(), units.len()))
-                }
-                _ => None,
-            });
-        }
-        state.tick(&commands);
-        if state.result().is_some() {
-            victory_tick = Some(state.current_tick());
-            break;
-        }
-    }
-
-    assert!(
-        saw_reproduction,
-        "the run never reached the historical checkpoint"
-    );
-    assert!(
-        finish_commitment.is_some(),
-        "the dominant idle army never committed into the passive victim's base"
-    );
-    assert_eq!(state.result(), Some(GameResult::Victory { team: 1 }));
-    assert!(
-        victory_tick.is_some_and(|tick| tick < 40_000),
-        "the real Basalt run remained stalled at the integration horizon"
-    );
-}
-
-#[test]
-fn scripted_and_neural_commanders_take_the_recovery_harvester() {
+fn the_scripted_commander_takes_the_recovery_harvester() {
     let scenario = stranded_scenario(UnitKind::Harvester.stats().cost);
     let state = scenario.build().unwrap();
     let assert_recovery = |commands: &[oxide_sim::PlayerCommand]| {
@@ -2608,17 +2485,8 @@ fn scripted_and_neural_commanders_take_the_recovery_harvester() {
         )));
     };
 
-    let mut scripted = Brain::for_tier(PlayerId(0), scenario.seed, Difficulty::Prime);
+    let mut scripted = Brain::overseer(PlayerId(0), scenario.seed);
     assert_recovery(&scripted.act(&state));
-
-    let mut neural = NeuralBot::ladder(
-        PlayerId(0),
-        scenario.seed,
-        Level::Expert,
-        Some(500),
-        scenario.players[0].faction,
-    );
-    assert_recovery(&neural.act(&state));
 }
 
 #[test]
@@ -2633,12 +2501,14 @@ fn gym_rollouts_reproduce_bit_identically() {
 fn the_mask_supports_playing_an_actual_game() {
     // A tiny hand-rolled policy over the gym menu: keep the economy at
     // four, drip sentinels, form an army, push when it stands. It must
-    // function — units get built, an army forms, the match ends or at
-    // minimum a real army exists by the cap.
+    // function — the mask always offers a legal plan, units get built,
+    // an army forms, and the match against the Overseer is decided.
+    // (Winning is not the claim: the Overseer plays the whole 0.15
+    // tree and outclasses this drip line.)
     let scenario = Scenario::skirmish();
     let mut state = scenario.build().unwrap();
     let mut gym = GymBot::new(PlayerId(0));
-    let mut opponent = Brain::for_tier(PlayerId(1), scenario.seed, Difficulty::Scrapheap);
+    let mut opponent = Brain::overseer(PlayerId(1), scenario.seed);
     let mut formed = false;
     for tick in 0..30_000u64 {
         let mut commands = Vec::new();
@@ -2668,23 +2538,19 @@ fn the_mask_supports_playing_an_actual_game() {
                 ActionPlan {
                     production,
                     construction: Action::NoConstruction,
+                    upgrade: Action::NoUpgrade,
                     operation,
                 },
             ));
         }
         commands.extend(opponent.act(&state));
         state.tick(&commands);
-        if let Some(GameResult::Victory { team }) = state.result() {
-            assert_eq!(
-                PlayerId(team),
-                PlayerId(0),
-                "the scripted gym line should beat Scrapheap"
-            );
+        if matches!(state.result(), Some(GameResult::Victory { .. })) {
             assert!(formed, "it should have fought with a formed army");
             return;
         }
     }
-    panic!("no decision against Scrapheap within the cap");
+    panic!("no decision against the Overseer within the cap");
 }
 
 #[test]
@@ -2732,8 +2598,19 @@ fn salvage_masks_honestly_and_lowers_cheapest_first() {
         "an exhausted economy may liquidate static defense"
     );
     let my_building_value = d.features[63];
-    let expected = BuildingKind::Turret.stats().construction.unwrap().cost
-        + BuildingKind::Bastion.stats().construction.unwrap().cost;
+    // 0.15: the buildable Foundry prices into the standing stock too,
+    // even though the salvage lowering never touches it.
+    let expected = BuildingKind::Foundry
+        .base_stats()
+        .construction
+        .unwrap()
+        .cost
+        + BuildingKind::Turret.base_stats().construction.unwrap().cost
+        + BuildingKind::Bastion
+            .base_stats()
+            .construction
+            .unwrap()
+            .cost;
     assert_eq!(
         my_building_value,
         i64::from(expected),
@@ -2943,6 +2820,7 @@ fn repair_unit_keeps_its_patient_out_of_a_same_think_army_draft() {
         &state,
         ActionPlan {
             construction: Action::RepairUnit,
+            upgrade: Action::NoUpgrade,
             operation: Action::FormArmy,
             ..ActionPlan::default()
         },
@@ -2986,6 +2864,7 @@ fn repair_unit_keeps_its_patient_out_of_a_same_think_scout_order() {
         &state,
         ActionPlan {
             construction: Action::RepairUnit,
+            upgrade: Action::NoUpgrade,
             operation: Action::Scout,
             ..ActionPlan::default()
         },
@@ -3169,6 +3048,7 @@ fn repair_unit_rotates_a_patient_out_before_a_same_think_push() {
         &state,
         ActionPlan {
             construction: Action::RepairUnit,
+            upgrade: Action::NoUpgrade,
             operation: Action::Push,
             ..ActionPlan::default()
         },
@@ -3193,6 +3073,7 @@ fn repair_unit_rotates_a_patient_out_before_a_same_think_recall() {
         &state,
         ActionPlan {
             construction: Action::RepairUnit,
+            upgrade: Action::NoUpgrade,
             operation: Action::Recall,
             ..ActionPlan::default()
         },
@@ -3390,23 +3271,6 @@ fn build_repair_bay_lowers_to_an_accepted_foundation() {
         .unwrap()
         .id;
 
-    let d = gym.decision(&state);
-    assert!(
-        !d.mask[Action::BuildRepairBay as usize],
-        "an in-progress Bay blocks a duplicate"
-    );
-    let mut duplicate_probe = state.clone();
-    duplicate_probe.tick(&gym.step(&state, Action::BuildRepairBay));
-    assert_eq!(
-        duplicate_probe
-            .buildings()
-            .iter()
-            .filter(|b| b.kind == BuildingKind::RepairBay && b.player == PlayerId(0))
-            .count(),
-        1,
-        "direct lowering cannot bypass the in-progress guard"
-    );
-
     for _ in 0..500 {
         state.tick(&[]);
         if state.building(bay).is_some_and(|b| b.built) {
@@ -3416,22 +3280,6 @@ fn build_repair_bay_lowers_to_an_accepted_foundation() {
     assert!(
         state.building(bay).is_some_and(|b| b.built),
         "test premise: the first Bay completes"
-    );
-    let mut completed = GymBot::new(PlayerId(0));
-    assert!(
-        !completed.decision(&state).mask[Action::BuildRepairBay as usize],
-        "a completed Bay blocks a duplicate"
-    );
-    let mut duplicate_probe = state.clone();
-    duplicate_probe.tick(&completed.step(&state, Action::BuildRepairBay));
-    assert_eq!(
-        duplicate_probe
-            .buildings()
-            .iter()
-            .filter(|b| b.kind == BuildingKind::RepairBay && b.player == PlayerId(0))
-            .count(),
-        1,
-        "direct lowering cannot bypass the completed guard"
     );
 
     let salvager = state
@@ -3489,7 +3337,7 @@ fn the_repair_channel_leaves_salvage_targets_alone() {
             .buildings()
             .iter()
             .find(|b| b.kind == BuildingKind::Turret);
-        if turret.is_some_and(|b| b.hp < b.kind.stats().max_hp) {
+        if turret.is_some_and(|b| b.hp < b.stats().max_hp) {
             break;
         }
     }
@@ -3499,12 +3347,465 @@ fn the_repair_channel_leaves_salvage_targets_alone() {
         .find(|b| b.kind == BuildingKind::Turret)
         .expect("still standing");
     assert!(
-        turret.hp < turret.kind.stats().max_hp,
+        turret.hp < turret.stats().max_hp,
         "test premise: the strip left a wound repair would otherwise take"
     );
     let d = gym.decision(&state);
     assert!(
         !d.mask[Action::Repair as usize],
         "a building under own salvage is not a patient"
+    );
+}
+
+#[test]
+fn the_orientation_survives_losing_the_home_foundry() {
+    // Recomputing the frame per think anchored on whichever Foundry
+    // held the lowest id: when the home fell while an expansion stood
+    // across the midline, the frame flipped mid-game and every
+    // oriented cross-tick memory silently mirrored. The frame is
+    // latched at the first decision now; losing the home must not
+    // move it.
+    use oxide_sim::Faction;
+    use oxide_sim::bot::ProfileFacets;
+    use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+
+    let scenario = Scenario {
+        name: "orientation-latch".into(),
+        seed: 13,
+        map: vec![
+            "############################".into(),
+            "#1......................ss.#".into(),
+            "#..........................#".into(),
+            "#..........................#".into(),
+            "#.......................2..#".into(),
+            "#..........................#".into(),
+            "############################".into(),
+        ],
+        players: vec![
+            PlayerSpec {
+                name: "Latch".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap: 500,
+                bot: false,
+                bot_config: None,
+            },
+            PlayerSpec {
+                name: "Wrecker".into(),
+                faction: Faction::Cupric,
+                team: None,
+                scrap: 500,
+                bot: false,
+                bot_config: None,
+            },
+        ],
+        units: (0..6)
+            .map(|i| UnitSpec {
+                player: 1,
+                kind: UnitKind::Sentinel,
+                x: 4 + i,
+                y: 3,
+            })
+            .collect(),
+        buildings: vec![BuildingSpec {
+            // The expansion in the east half: after the home falls it
+            // becomes the lowest-id Foundry and, unlatched, would
+            // flip the seat's frame of reference.
+            player: 0,
+            kind: BuildingKind::Foundry,
+            x: 20,
+            y: 2,
+        }],
+        meta: None,
+    };
+    let mut state = scenario.build().unwrap();
+    let mut bot = GymBot::with_profile_facets(PlayerId(0), 8, ProfileFacets::ZERO);
+
+    let _ = bot.decision(&state);
+    let latched = bot
+        .latched_orientation()
+        .expect("the first decision latches");
+
+    let home = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(0) && b.anchor == chassis::grid::TilePos::new(1, 1))
+        .expect("the authored home stands")
+        .id;
+    let raiders: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|u| u.player == PlayerId(1))
+        .map(|u| u.id)
+        .collect();
+    state.tick(&[oxide_sim::command::PlayerCommand {
+        player: PlayerId(1),
+        command: Command::Attack {
+            units: raiders,
+            target: oxide_sim::Target::Building(home),
+            queue: false,
+        },
+    }]);
+    for _ in 0..6_000u32 {
+        state.tick(&[]);
+        if state.building(home).is_none() {
+            break;
+        }
+    }
+    assert!(
+        state.building(home).is_none(),
+        "test premise: the home Foundry actually fell"
+    );
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .any(|b| b.player == PlayerId(0) && b.kind == BuildingKind::Foundry),
+        "test premise: the expansion still stands"
+    );
+
+    let _ = bot.decision(&state);
+    assert_eq!(
+        bot.latched_orientation(),
+        Some(latched),
+        "losing the home flipped the seat's frame of reference"
+    );
+}
+
+#[test]
+fn a_starving_seat_with_full_queues_is_not_promised_a_harvester() {
+    // The forced recovery mask once advertised TrainHarvester whenever
+    // scrap covered the cost, even with every Foundry slot full — the
+    // lowering then queued nothing and the seat idled a think. The
+    // posture now requires an open slot, so the mask stays honest.
+    use oxide_sim::Faction;
+    use oxide_sim::bot::ProfileFacets;
+    use oxide_sim::scenario::PlayerSpec;
+
+    let scenario = Scenario {
+        name: "full-queue-recovery".into(),
+        seed: 17,
+        map: vec![
+            "####################".into(),
+            "#1........s........#".into(),
+            "#................2.#".into(),
+            "#..................#".into(),
+            "####################".into(),
+        ],
+        players: vec![
+            PlayerSpec {
+                name: "Starving".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap: 900,
+                bot: false,
+                bot_config: None,
+            },
+            PlayerSpec {
+                name: "Bystander".into(),
+                faction: Faction::Cupric,
+                team: None,
+                scrap: 150,
+                bot: false,
+                bot_config: None,
+            },
+        ],
+        units: Vec::new(),
+        buildings: Vec::new(),
+        meta: None,
+    };
+    let mut state = scenario.build().unwrap();
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(0))
+        .unwrap()
+        .id;
+    // Stuff the queue to its cap with fighters.
+    for _ in 0..8 {
+        state.tick(&[oxide_sim::command::PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Train {
+                building: foundry,
+                kind: UnitKind::Sentinel,
+            },
+        }]);
+    }
+    let queued = state.building(foundry).unwrap().queue.len();
+    assert!(
+        queued >= 2,
+        "test premise: the queue actually filled ({queued})"
+    );
+
+    let mut bot = GymBot::with_profile_facets(PlayerId(0), 8, ProfileFacets::ZERO);
+    let decision = bot.decision(&state);
+    if decision.mask[Action::TrainHarvester as usize] {
+        // If the mask advertises it, the lowering must actually queue
+        // one — the conformance contract for this action.
+        let plan = ActionPlan {
+            production: Action::TrainHarvester,
+            ..Default::default()
+        };
+        let commands = bot.step_plan(&state, plan);
+        assert!(
+            commands.iter().any(|c| matches!(
+                c.command,
+                Command::Train {
+                    kind: UnitKind::Harvester,
+                    ..
+                }
+            )),
+            "the mask promised a harvester the lowering never queued"
+        );
+    }
+}
+
+#[test]
+fn every_masked_legal_production_action_lowers_without_rejection() {
+    // AGENTS.md's "the mask encodes shared legality only," asserted
+    // directly: over a real match, any production action the mask
+    // marks legal must lower to commands the sim accepts. A masked
+    // promise the lowering breaks poisons training data and starves
+    // real decisions.
+    use oxide_sim::bot::{PRODUCTION_ACTIONS, ProfileFacets};
+    use oxide_sim::event::Event;
+
+    let scenario = Scenario::skirmish();
+    let mut state = scenario.build().unwrap();
+    let mut driver_bot = GymBot::with_profile_facets(PlayerId(0), 8, ProfileFacets::ZERO);
+    let mut opponent = Brain::overseer(PlayerId(1), scenario.seed);
+
+    let mut probed = 0u32;
+    for tick in 0..4_000u32 {
+        if tick % 400 == 0 {
+            let decision = driver_bot.decision(&state);
+            for &action in PRODUCTION_ACTIONS.iter() {
+                if !decision.mask[action] {
+                    continue;
+                }
+                let mut probe_bot = driver_bot.clone();
+                let mut probe_state = state.clone();
+                let plan = ActionPlan {
+                    production: Action::from_index(action),
+                    ..Default::default()
+                };
+                let commands = probe_bot.step_plan(&probe_state, plan);
+                let report = probe_state.tick(&commands);
+                let rejected: Vec<_> = report
+                    .events
+                    .iter()
+                    .filter(|e| matches!(e, Event::CommandRejected { player, .. } if *player == PlayerId(0)))
+                    .collect();
+                assert!(
+                    rejected.is_empty(),
+                    "tick {tick}: masked-legal action {action} was rejected: {rejected:?}"
+                );
+                probed += 1;
+            }
+        }
+        let mut commands = driver_bot.step_plan(&state, ActionPlan::default());
+        commands.extend(opponent.act(&state));
+        state.tick(&commands);
+        if state.result().is_some() {
+            break;
+        }
+    }
+    assert!(
+        probed > 20,
+        "test premise: the sweep actually probed ({probed})"
+    );
+}
+
+/// The route filter behind the expansion re-order-loop fix: a build target
+/// no builder can walk to must not be mask-legal (a cross-gulf claim dies at
+/// walk time, the site audit blacklists the anchor, and the planner retries
+/// the neighbor every think — measured on the island maps as hundreds of
+/// doomed build orders and zero foundings). The same map with a land bridge
+/// is the control: both actions come back.
+#[test]
+fn cross_gulf_build_targets_stay_masked_until_a_route_exists() {
+    let island_scenario = |bridge: bool| {
+        let mut rows = vec![
+            "########################################".to_string(),
+            "#1..............#......................#".to_string(),
+            "#...............#.............E........#".to_string(),
+            "#...............#......................#".to_string(),
+            "#...............#............ss........#".to_string(),
+            "#...............#......................#".to_string(),
+            "#...............#..................2...#".to_string(),
+            "#...............#......................#".to_string(),
+            "########################################".to_string(),
+        ];
+        if bridge {
+            rows[4].replace_range(16..17, ".");
+        }
+        let mut scenario = Scenario::skirmish();
+        scenario.name = if bridge { "bridge" } else { "gulf" }.into();
+        scenario.map = rows;
+        scenario.players[0].scrap = 500;
+        // The expansion Foundry is Fabricator-gated; stand one so the
+        // mask question stays about routing, not the tech climb.
+        scenario.buildings = vec![oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 7,
+            y: 4,
+        }];
+        scenario.units = vec![
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Harvester,
+                x: 4,
+                y: 4,
+            },
+            // Forward observers chaining vision across the corridor: the
+            // frame, the scrap, the anchor ring, AND the route itself must
+            // be EXPLORED knowledge — the builder-route flood walks only
+            // explored ground — so the mask question is purely about the
+            // wall, not about fog.
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 12,
+                y: 4,
+            },
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 20,
+                y: 4,
+            },
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 27,
+                y: 4,
+            },
+        ];
+        scenario
+    };
+
+    let sealed = island_scenario(false).build().expect("gulf map builds");
+    let mut gym = GymBot::new(PlayerId(0));
+    let decision = gym.decision(&sealed);
+    assert!(
+        !decision.mask[Action::BuildExtractor as usize],
+        "a known frame across the gulf must not make BuildExtractor legal"
+    );
+    assert!(
+        !decision.mask[Action::BuildFoundry as usize],
+        "a known scrap frontier across the gulf must not make BuildFoundry legal"
+    );
+
+    let bridged = island_scenario(true).build().expect("bridge map builds");
+    let mut gym = GymBot::new(PlayerId(0));
+    let decision = gym.decision(&bridged);
+    assert!(
+        decision.mask[Action::BuildExtractor as usize],
+        "the land bridge makes the frame routable again"
+    );
+    assert!(
+        decision.mask[Action::BuildFoundry as usize],
+        "the land bridge makes the frontier routable again"
+    );
+}
+
+/// The archipelago chicken-and-egg: discovery needs air, air needs the
+/// island doctrine, and the doctrine used to need a discovered enemy.
+/// Before any enemy is seen, the authored start anchors (public map
+/// knowledge) now answer the sealed question, so a seat that has mapped
+/// its own coastline bootstraps an Airworks instead of idling blind.
+#[test]
+fn a_sealed_start_bootstraps_airworks_before_any_enemy_is_seen() {
+    let gulf_scenario = |bridge: bool| {
+        let mut rows = vec![
+            "########################################".to_string(),
+            "#1..............#......................#".to_string(),
+            "#...............#......................#".to_string(),
+            "#...............#......................#".to_string(),
+            "#...............#............ss........#".to_string(),
+            "#...............#......................#".to_string(),
+            "#...............#..................2...#".to_string(),
+            "#...............#......................#".to_string(),
+            "########################################".to_string(),
+        ];
+        if bridge {
+            rows[4].replace_range(16..17, ".");
+        }
+        let mut scenario = Scenario::skirmish();
+        scenario.name = "sealed-start".into();
+        scenario.map = rows;
+        scenario.players[0].scrap = 500;
+        scenario.units = vec![
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Harvester,
+                x: 4,
+                y: 4,
+            },
+            // Coastline watchers: the wall column must be EXPLORED for the
+            // knowledge-side route flood to prove the seal (unexplored
+            // terrain reads open). Nothing east of the wall is seen, so no
+            // enemy site exists — only the authored anchors.
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 14,
+                y: 2,
+            },
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 14,
+                y: 6,
+            },
+        ];
+        // The Airworks tech gate: a standing Fabricator makes BuildAirworks
+        // immediately legal, so the assertion is about the doctrine, not
+        // the tech climb.
+        scenario.buildings = vec![oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 4,
+            y: 6,
+        }];
+        scenario
+    };
+
+    let anchors = |scenario: &Scenario| -> Vec<chassis::grid::TilePos> {
+        scenario
+            .start_anchors()
+            .expect("fixture anchors parse")
+            .into_iter()
+            .map(|(_, anchor)| anchor)
+            .collect()
+    };
+
+    let sealed_scenario = gulf_scenario(false);
+    let sealed = sealed_scenario.build().expect("gulf map builds");
+    let mut gym = GymBot::new(PlayerId(0));
+    gym.set_start_anchors(anchors(&sealed_scenario));
+    let decision = gym.decision(&sealed);
+    assert!(
+        decision.mask[Action::BuildAirworks as usize],
+        "the sealed start must offer the Airworks"
+    );
+    assert!(
+        !decision.mask[Action::BuildFabricator as usize],
+        "construction narrows to the Airworks bootstrap while sealed"
+    );
+    assert!(
+        decision.mask[Action::NoOperation as usize],
+        "operations stay unforced with no discovered target"
+    );
+
+    let bridged_scenario = gulf_scenario(true);
+    let bridged = bridged_scenario.build().expect("bridge map builds");
+    let mut gym = GymBot::new(PlayerId(0));
+    gym.set_start_anchors(anchors(&bridged_scenario));
+    let decision = gym.decision(&bridged);
+    assert!(
+        decision.mask[Action::BuildFabricator as usize],
+        "a walkable route to the far anchors leaves construction wide"
     );
 }

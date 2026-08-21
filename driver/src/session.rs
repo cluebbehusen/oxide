@@ -80,11 +80,11 @@ impl Session {
             "replay spans {total} ticks, beyond the {}-tick load limit",
             runner::MAX_REPLAY_TICKS
         );
-        // Bots carry memory (raid flags, node blacklists), so the
-        // fast-forward lets them *watch* the session back: act() runs
-        // against every tick and its outputs are discarded — the
-        // recorded commands are the truth. The resumed session then
-        // continues exactly as the unsaved one would have.
+        // Bots may carry memory across ticks, so the fast-forward lets
+        // them *watch* the session back: act() runs against every tick
+        // and its outputs are discarded — the recorded commands are the
+        // truth. The resumed session then continues exactly as the
+        // unsaved one would have.
         let mut bots = seat_bots(&scenario);
         let mut cursor = replay.cursor();
         for _ in 0..total {

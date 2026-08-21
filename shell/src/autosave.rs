@@ -322,7 +322,15 @@ fn is_reservation_marker(path: &Path) -> bool {
 /// Version-mismatched files stay on disk (archaeology) but never offer
 /// themselves — replays reproduce only on the sim that wrote them.
 pub fn latest_compatible() -> Option<PathBuf> {
-    let dir = crate::paths::autosave_dir()?;
+    latest_compatible_in(&crate::paths::autosave_dir()?)
+}
+
+/// [`latest_compatible`] over an explicit directory — the injectable
+/// core its siblings already have, so the prefix filter, the version
+/// gate, and above all the newest-first ordering are testable: a
+/// reversed sort here silently resumes an OLD save with no error at
+/// all, and rotation deletes the newer ones soon after.
+fn latest_compatible_in(dir: &std::path::Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     let mut files: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
@@ -362,6 +370,62 @@ mod tests {
         ));
         std::fs::remove_dir_all(&dir).ok();
         dir
+    }
+
+    #[test]
+    fn continue_picks_the_newest_compatible_autosave_only() {
+        // The genuinely silent slice is the ordering: a reversed sort
+        // resumes an OLD save with no error, and rotation deletes the
+        // newer ones shortly after. Prefix and version filters ride
+        // along.
+        let dir = scratch("latest");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(
+            latest_compatible_in(&dir).is_none(),
+            "empty dir offers nothing"
+        );
+
+        let mut game = Game::new(oxide_sim::Scenario::skirmish()).expect("game");
+        game.advance_ticks(1);
+        let Ok(SaveOutcome::Wrote(older)) = write_record(&mut game, &dir) else {
+            panic!("first record writes");
+        };
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // A match- record newer than everything: never offered.
+        let shelf = dir.join("match-shelf.json");
+        std::fs::copy(&older, &shelf).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let mut second = Game::new(oxide_sim::Scenario::skirmish()).expect("game");
+        second.advance_ticks(2);
+        let Ok(SaveOutcome::Wrote(newer)) = write_record(&mut second, &dir) else {
+            panic!("second record writes");
+        };
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // A version-mismatched autosave newer than everything: skipped.
+        let stale = dir.join("autosave-zz-stale.json");
+        let body = std::fs::read_to_string(&newer).unwrap();
+        std::fs::write(
+            &stale,
+            body.replace(oxide_sim::SIM_VERSION, "0.0.1-archaeology"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            latest_compatible_in(&dir),
+            Some(newer.clone()),
+            "the newest compatible autosave wins over older, shelf, and stale"
+        );
+
+        std::fs::remove_file(&newer).unwrap();
+        assert_eq!(
+            latest_compatible_in(&dir),
+            Some(older.clone()),
+            "removing the newest falls back to the older compatible record"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

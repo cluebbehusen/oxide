@@ -136,10 +136,12 @@ pub fn engage(state: &mut oxide_sim::State) {
     ]);
 }
 
-/// Puts a neural Expert in EVERY chair. Scenario benches claim the
-/// heaviest honest shape — all seats thinking — but shipped playable
-/// maps author a human seat (`bot: false`), which `seat_bots` skips:
-/// an eight-seat map silently benched seven minds and an idle base.
+/// Flags EVERY chair as a configured bot seat. Scenario benches claim
+/// the heaviest honest shape — all seats thinking — but shipped
+/// playable maps author a human seat (`bot: false`) that would
+/// otherwise sit idle. The configs are harness data: a bench pairs
+/// this with [`overseer_bots`] when it wants the fixed scripted
+/// commander rather than the shipped actor's dealt personalities.
 pub fn all_bots(scenario: &mut Scenario) {
     for player in &mut scenario.players {
         player.bot = true;
@@ -151,6 +153,20 @@ pub fn all_bots(scenario: &mut Scenario) {
             team_role: None,
         });
     }
+}
+
+/// The Overseer — the scripted QA anchor — in every `bot`-flagged
+/// chair, seeded from the scenario. Benches and probes drive this
+/// command source directly when determinism anchoring or
+/// policy-independent measurement is the point.
+pub fn overseer_bots(scenario: &Scenario) -> Vec<oxide_sim::bot::Brain> {
+    scenario
+        .players
+        .iter()
+        .enumerate()
+        .filter(|(_, player)| player.bot)
+        .map(|(seat, _)| oxide_sim::bot::Brain::overseer(PlayerId(seat as u8), scenario.seed))
+        .collect()
 }
 
 #[cfg(test)]
@@ -174,8 +190,22 @@ mod tests {
         );
         assert_eq!(
             oxide_sim::bot::seat_bots(&scenario).len(),
-            scenario.players.len()
+            scenario.players.iter().filter(|p| p.bot).count(),
+            "the shipped actor fields every configured bot seat"
         );
+        let mut bots = overseer_bots(&scenario);
+        assert_eq!(bots.len(), scenario.players.len());
+        let mut state = scenario.build().expect("skirmish builds");
+        let mut issued = 0usize;
+        for _ in 0..200 {
+            let mut commands = Vec::new();
+            for bot in &mut bots {
+                commands.extend(bot.act(&state));
+            }
+            issued += commands.len();
+            state.tick(&commands);
+        }
+        assert!(issued > 0, "the Overseer actually plays the benched seats");
     }
 
     /// Two identical runs at scale, hash-compared every 50 ticks — the

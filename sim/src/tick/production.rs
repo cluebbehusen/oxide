@@ -40,11 +40,22 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     // Reclaimers trickle first: every built one grinds ambient debris
     // into a scrap each period. Order is building-id order (commutative
     // anyway — the credits are per-player sums).
-    if state.tick.is_multiple_of(crate::stats::RECLAIMER_PERIOD) {
+    for (period, tier) in [
+        (crate::stats::RECLAIMER_PERIOD, 0u8),
+        (crate::stats::REFINERY_PERIOD, 1u8),
+    ] {
+        if !state.tick.is_multiple_of(period) {
+            continue;
+        }
         let credits: Vec<PlayerId> = state
             .buildings
             .iter()
-            .filter(|b| b.built && b.hp > 0 && b.kind == crate::stats::BuildingKind::Reclaimer)
+            .filter(|b| {
+                b.built
+                    && b.hp > 0
+                    && b.kind == crate::stats::BuildingKind::Reclaimer
+                    && b.tier == tier
+            })
             .map(|b| b.player)
             .collect();
         for player in credits {
@@ -53,30 +64,75 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
     }
 
-    // A living player always has a slow way back into the game, even
-    // after the map's salvage is exhausted.
     let completed_ticks = state.tick.saturating_add(1);
-    let baseline_tick = completed_ticks >= crate::stats::FOUNDRY_BASELINE_START_TICK
-        && completed_ticks.is_multiple_of(crate::stats::FOUNDRY_BASELINE_PERIOD);
-    if baseline_tick {
-        let credits: Vec<PlayerId> = state
+    // Restored Extractors grind the deep seams on the escalating
+    // schedule — the visible late-game pressure rule. The applicable
+    // row is the last whose start the clock has passed.
+    let (_, amount, period) = crate::stats::EXTRACTOR_YIELD_SCHEDULE
+        .iter()
+        .rev()
+        .find(|(from, ..)| completed_ticks >= *from)
+        .expect("the schedule's first row starts at zero");
+    if completed_ticks.is_multiple_of(*period) {
+        let credits: Vec<(PlayerId, u32)> = state
             .players
             .iter()
             .enumerate()
             .map(|(index, _)| PlayerId(index as u8))
-            .filter(|player| {
-                !state.player(*player).resigned
-                    && state.buildings.iter().any(|building| {
-                        building.player == *player
+            .filter(|player| !state.player(*player).resigned)
+            .map(|player| {
+                let extractors = state
+                    .buildings
+                    .iter()
+                    .filter(|building| {
+                        building.player == player
+                            && building.hp > 0
+                            && building.built
+                            && building.kind == crate::stats::BuildingKind::Extractor
+                    })
+                    .count() as u32;
+                (player, extractors)
+            })
+            .filter(|(_, extractors)| *extractors > 0)
+            .collect();
+        for (player, extractors) in credits {
+            let bank = &mut state.player_mut(player).scrap;
+            *bank = bank.saturating_add(extractors.saturating_mul(*amount));
+        }
+    }
+
+    // The transparent income floor: every standing Foundry smelts a slow
+    // trickle per works rather than per player, so expansion bases earn
+    // their keep — while the rate keeps income alone from ever paying
+    // for one. A living seat always has a way back into the game, even
+    // with every node exhausted and camped.
+    if completed_ticks >= crate::stats::FOUNDRY_DRIP_START_TICK
+        && completed_ticks.is_multiple_of(crate::stats::FOUNDRY_DRIP_PERIOD)
+    {
+        let credits: Vec<(PlayerId, u32)> = state
+            .players
+            .iter()
+            .enumerate()
+            .map(|(index, _)| PlayerId(index as u8))
+            .filter(|player| !state.player(*player).resigned)
+            .map(|player| {
+                let foundries = state
+                    .buildings
+                    .iter()
+                    .filter(|building| {
+                        building.player == player
                             && building.hp > 0
                             && building.built
                             && building.kind == crate::stats::BuildingKind::Foundry
                     })
+                    .count() as u32;
+                (player, foundries)
             })
+            .filter(|(_, foundries)| *foundries > 0)
             .collect();
-        for player in credits {
+        for (player, foundries) in credits {
             let bank = &mut state.player_mut(player).scrap;
-            *bank = bank.saturating_add(1);
+            *bank = bank.saturating_add(foundries);
         }
     }
 
@@ -134,7 +190,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
         // Ready — look for a doorstep tile (any in-bounds tile serves a
         // flyer; the ground ring can be walled shut).
-        let (anchor, size, player, rally) = (b.anchor, b.kind.stats().size, b.player, b.rally);
+        let (anchor, size, player, rally) = (b.anchor, b.stats().size, b.player, b.rally);
         let domain = kind.stats().domain;
         let spawn = rect_adjacent_tiles(anchor, size).find(|&t| state.passable_for(domain, t));
         let Some(tile) = spawn else {
@@ -181,4 +237,46 @@ fn rally_order(state: &State, owner: PlayerId, kind: UnitKind, rally: TilePos) -
     } else {
         Order::Move { goal }
     })
+}
+
+/// Phase 3.5: abandoned construction sites rust away.
+///
+/// A site with no own harvest-capable machine standing beside its
+/// footprint loses one hp per [`crate::stats::SITE_DECAY_PERIOD`] ticks.
+/// Survival counts Foundry sites exactly like standing Foundries, so an
+/// untended scaffold must eventually die rather than keep a beaten seat
+/// technically alive — and decay burns the cancel refund exactly like
+/// enemy fire does. A site that reaches zero resolves through cleanup
+/// with the ordinary destroyed-building rules the same tick.
+pub(super) fn decay_abandoned_sites(state: &mut State) {
+    if !state
+        .tick
+        .saturating_add(1)
+        .is_multiple_of(crate::stats::SITE_DECAY_PERIOD)
+    {
+        return;
+    }
+    let decays: Vec<crate::ids::BuildingId> = state
+        .buildings
+        .iter()
+        .filter(|building| !building.built && building.hp > 0)
+        .filter(|building| {
+            !state.units.iter().any(|unit| {
+                unit.player == building.player
+                    && unit.hp > 0
+                    && unit.kind.stats().harvest.is_some()
+                    && super::tile_adjacent_to_rect(
+                        unit.tile(),
+                        building.anchor,
+                        building.stats().size,
+                    )
+            })
+        })
+        .map(|building| building.id)
+        .collect();
+    for id in decays {
+        if let Some(building) = state.building_mut(id) {
+            building.hp = building.hp.saturating_sub(1);
+        }
+    }
 }

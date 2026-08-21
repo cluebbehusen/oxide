@@ -35,6 +35,23 @@ def checkpoint_critic_ready(metadata: dict | None) -> bool:
     )
 
 
+# One constant index tensor per (head, device), built once. The rollout
+# rebuilds head distributions on every decision, and allocating four
+# small index tensors per call was pure dispatch cost. Callers only read
+# through these — never mutate a cached row.
+_HEAD_INDICES: dict[tuple[tuple[int, ...], str], torch.Tensor] = {}
+
+
+def head_indices(head: tuple[int, ...], device: torch.device) -> torch.Tensor:
+    """Returns the cached global-index tensor for one action head."""
+    key = (head, str(device))
+    indices = _HEAD_INDICES.get(key)
+    if indices is None:
+        indices = torch.as_tensor(head, device=device)
+        _HEAD_INDICES[key] = indices
+    return indices
+
+
 def _factorized_distributions(
     logits: torch.Tensor,
 ) -> list[torch.distributions.Categorical]:
@@ -45,14 +62,20 @@ def _factorized_distributions(
         )
     distributions = []
     for head_index, head in enumerate(ACTION_HEADS):
-        indices = torch.as_tensor(head, device=logits.device)
+        indices = head_indices(head, logits.device)
         head_logits = logits.index_select(-1, indices)
         invalid = torch.isnan(head_logits) | torch.isposinf(head_logits)
         if bool(invalid.any().item()):
             raise ValueError(f"action head {head_index} contains NaN or +inf logits")
         if not bool(torch.isfinite(head_logits).any(dim=-1).all().item()):
             raise ValueError(f"action head {head_index} has no legal finite action")
-        distributions.append(torch.distributions.Categorical(logits=head_logits))
+        # The checks above are the real guard, and they are stricter than
+        # torch's own parameter validation; asking the distribution to
+        # repeat a weaker version of them costs the rollout a second pass
+        # over every head on every decision.
+        distributions.append(
+            torch.distributions.Categorical(logits=head_logits, validate_args=False)
+        )
     return distributions
 
 
@@ -64,7 +87,7 @@ def _local_actions(actions: torch.Tensor) -> list[torch.Tensor]:
         )
     local_actions = []
     for head_index, head in enumerate(ACTION_HEADS):
-        indices = torch.as_tensor(head, device=actions.device)
+        indices = head_indices(head, actions.device)
         selected = actions[..., head_index]
         matches = selected.unsqueeze(-1) == indices
         valid = matches.any(dim=-1)
@@ -85,9 +108,33 @@ def factorized_sample(logits: torch.Tensor) -> torch.Tensor:
         ACTION_HEADS, _factorized_distributions(logits), strict=True
     ):
         local = distribution.sample()
-        indices = torch.as_tensor(head, device=logits.device)
+        indices = head_indices(head, logits.device)
         choices.append(indices[local])
     return torch.stack(choices, dim=-1)
+
+
+def factorized_sample_with_log_prob(
+    logits: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Samples one plan per row and returns its joint log-probability.
+
+    The collector needs both halves of every decision, and building the
+    head distributions a second time to score the draw was its largest
+    per-decision torch cost. Each head is drawn by the same call in the
+    same order as :func:`factorized_sample`, so the random stream is
+    untouched, and the score is read from the very distribution that
+    produced the draw, so both results are identical to the split path.
+    """
+    choices = []
+    terms = []
+    for head, distribution in zip(
+        ACTION_HEADS, _factorized_distributions(logits), strict=True
+    ):
+        local = distribution.sample()
+        terms.append(distribution.log_prob(local))
+        indices = head_indices(head, logits.device)
+        choices.append(indices[local])
+    return torch.stack(choices, dim=-1), torch.stack(terms, dim=-1).sum(dim=-1)
 
 
 def factorized_greedy(logits: torch.Tensor) -> torch.Tensor:
@@ -95,7 +142,7 @@ def factorized_greedy(logits: torch.Tensor) -> torch.Tensor:
     _factorized_distributions(logits)
     choices = []
     for head in ACTION_HEADS:
-        indices = torch.as_tensor(head, device=logits.device)
+        indices = head_indices(head, logits.device)
         local = logits.index_select(-1, indices).argmax(dim=-1)
         choices.append(indices[local])
     return torch.stack(choices, dim=-1)
@@ -105,7 +152,7 @@ def factorized_joint_log_prob(
     logits: torch.Tensor,
     actions: torch.Tensor,
 ) -> torch.Tensor:
-    """Returns the sum of the three independent head log-probabilities."""
+    """Returns the sum of the independent head log-probabilities."""
     distributions = _factorized_distributions(logits)
     local_actions = _local_actions(actions)
     terms = [
@@ -193,12 +240,6 @@ def load_policy(path: str, device: str = "cpu") -> tuple[Mlp, dict]:
     if isinstance(blob, dict) and "arch" in blob:
         recorded = blob.get("gym_version")
         if recorded is not None and recorded != GYM_VERSION:
-            if recorded == 7 and GYM_VERSION == 8:
-                raise RuntimeError(
-                    f"{path} speaks gym v7, trainer speaks v8; migrate the "
-                    "checkpoint with `uv run widen.py --ckpt --src OLD.pt "
-                    "--out NEW.pt`"
-                )
             raise RuntimeError(
                 f"{path} speaks gym v{recorded}, trainer speaks v{GYM_VERSION}"
             )

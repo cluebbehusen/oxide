@@ -18,6 +18,7 @@ pub mod audit;
 pub mod auto;
 pub mod balance;
 pub mod client;
+pub mod closeout;
 pub mod factorial;
 pub mod gym;
 pub mod pace;
@@ -25,10 +26,12 @@ pub mod pool;
 pub mod profile;
 pub mod repair_probe;
 pub mod replay_inspect;
+pub mod replay_summary;
 pub mod session;
 pub mod shots;
 pub mod smoke;
 pub mod sweep;
+pub mod viability;
 
 // Shared with the shell via oxide-kit; re-exported so the driver's
 // public surface (and its own `crate::render`-style paths) survive

@@ -7,9 +7,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 from lineage import (
     build_lineage,
     checkpoint_metadata,
+    inherited_lineage_id,
     input_identity,
     validate_lineage,
 )
@@ -112,3 +116,90 @@ def test_tampered_lineage_is_rejected() -> None:
     lineage["phase_start_update"] = 76
     with pytest.raises(ValueError, match="does not match"):
         validate_lineage(lineage)
+
+
+def _valid_manifest() -> dict:
+    return build_lineage(
+        phase="league-r1",
+        phase_start_update=5,
+        hyperparameters={"lr": 0.001},
+        inputs={"prior": {"content_sha256": "sha256:" + "a" * 64}},
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda _m: "not a dict", "must be an object"),
+        (lambda m: {1: "x", **m}, "keys must be strings"),
+        (
+            lambda m: {k: v for k, v in m.items() if k != "lineage_id"},
+            "carry a lineage_id",
+        ),
+        (lambda m: {**m, "schema": 2}, "unsupported lineage schema"),
+        (
+            lambda m: {**m, "lineage_id": "sha256:" + "A" * 64},
+            "must be a SHA-256 digest",
+        ),
+        (
+            lambda m: {**m, "lineage_id": "sha256:" + "a" * 63},
+            "must be a SHA-256 digest",
+        ),
+        (lambda m: {**m, "phase": ""}, "non-empty string"),
+        (lambda m: {**m, "phase_start_update": True}, "non-negative integer"),
+        (lambda m: {**m, "phase_start_update": -1}, "non-negative integer"),
+        (lambda m: {**m, "phase_start_update": 1.0}, "non-negative integer"),
+        (lambda m: {**m, "hyperparameters": []}, "hyperparameters must be an object"),
+        (lambda m: {**m, "inputs": []}, "inputs must be an object"),
+        (
+            lambda m: {**m, "inputs": {"": {"content_sha256": "sha256:" + "a" * 64}}},
+            "non-empty strings",
+        ),
+        (lambda m: {**m, "inputs": {"prior": "bytes"}}, "must be an object"),
+        (
+            lambda m: {**m, "inputs": {"prior": {"content_sha256": "not-a-digest"}}},
+            "content digest",
+        ),
+        (
+            lambda m: {
+                **m,
+                "inputs": {
+                    "prior": {
+                        "content_sha256": "sha256:" + "a" * 64,
+                        "lineage_id": "bogus",
+                    }
+                },
+            },
+            "invalid upstream lineage id",
+        ),
+        (lambda m: {**m, "phase": m["phase"] + "-tampered"}, "does not match"),
+    ],
+)
+def test_every_structural_forgery_is_rejected_by_name(
+    mutate: Callable[[dict], object], message: str
+) -> None:
+    # The audit measured every raise in validate_lineage at zero
+    # execution: provenance is the training stack's trust boundary, and
+    # an unexercised rejection is one refactor away from accepting a
+    # forged manifest silently. Each row pins its specific message so a
+    # reordered check cannot quietly swallow a case.
+    forged = mutate(_valid_manifest())
+    with pytest.raises((TypeError, ValueError), match=message):
+        validate_lineage(forged)
+
+
+def test_build_lineage_refuses_degenerate_arguments() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        build_lineage(phase="", phase_start_update=0, hyperparameters={})
+    with pytest.raises(ValueError, match="non-negative"):
+        build_lineage(phase="x", phase_start_update=-1, hyperparameters={})
+
+
+def test_inherited_lineage_id_verifies_before_propagating() -> None:
+    manifest = _valid_manifest()
+    assert inherited_lineage_id({"lineage": manifest}) == manifest["lineage_id"]
+    assert inherited_lineage_id(None) is None
+    assert inherited_lineage_id({}) is None
+    tampered = {**manifest, "phase": "forged-history"}
+    with pytest.raises(ValueError, match="does not match"):
+        inherited_lineage_id({"lineage": tampered})

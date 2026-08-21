@@ -19,7 +19,7 @@ use chassis::fx::{Fx, HALF, Vec2Fx};
 use chassis::grid::{CARDINALS, Grid, TilePos};
 use chassis::path::AstarScratch;
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 /// A remembered enemy building: what its ground looked like the last time
 /// this player saw it. Ghosts are beliefs, not facts — the building may be
@@ -49,7 +49,7 @@ fn ghost_built_default() -> bool {
 
 impl GhostBuilding {
     fn footprint(&self) -> impl Iterator<Item = TilePos> + use<> {
-        let (w, h) = self.kind.stats().size;
+        let (w, h) = self.kind.base_stats().size;
         let anchor = self.anchor;
         (0..h).flat_map(move |dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
     }
@@ -210,15 +210,51 @@ impl Vision {
         self.explored.get(pos).copied().unwrap_or(false)
     }
 
-    fn stamp_disc(&mut self, center: TilePos, radius: i32) {
+    /// Copies `src` into `self` byte-for-byte while reusing this
+    /// view's grid and vector allocations — the team-sight shortcut
+    /// clones a whole view per teammate per tick, and a plain
+    /// clone-assign reallocated four map-sized grids each time. The
+    /// exhaustive destructure makes a future field a compile error
+    /// here instead of silently stale team sight.
+    pub(crate) fn copy_from(&mut self, src: &Vision) {
+        let Vision {
+            visible,
+            explored,
+            ghosts,
+            remembered_scrap,
+            remembered_wreck,
+            contacts,
+            salvage_incidents,
+        } = self;
+        visible.copy_from(&src.visible);
+        explored.copy_from(&src.explored);
+        ghosts.clone_from(&src.ghosts);
+        remembered_scrap.copy_from(&src.remembered_scrap);
+        remembered_wreck.copy_from(&src.remembered_wreck);
+        contacts.clone_from(&src.contacts);
+        salvage_incidents.clone_from(&src.salvage_incidents);
+    }
+
+    /// Row slices for the observation builder's full-map walk — the
+    /// same sequential access `refresh` itself uses, instead of four
+    /// bounds-checked point lookups per tile.
+    pub(crate) fn rows(&self, y: i32) -> Option<VisionRows<'_>> {
+        Some((
+            self.visible.row(y)?,
+            self.explored.row(y)?,
+            self.remembered_scrap.row(y)?,
+            self.remembered_wreck.row(y)?,
+        ))
+    }
+
+    fn stamp_disc(&mut self, center: TilePos, radius: i32, coverage: &mut RowCoverage) {
         let spans = disc_spans(radius);
         for dy in -radius..=radius {
             let span = spans[dy.unsigned_abs() as usize];
             let y = center.y + dy;
             self.visible
                 .fill_row_span(y, center.x - span, center.x + span, true);
-            self.explored
-                .fill_row_span(y, center.x - span, center.x + span, true);
+            coverage.cover(y, center.x - span, center.x + span);
         }
     }
 
@@ -226,7 +262,14 @@ impl Vision {
     /// footprint — the rectangle's Minkowski sum with the sight disc,
     /// written row by row. Cell-identical to stamping each footprint
     /// tile separately, without visiting the overlap four times.
-    fn stamp_rect(&mut self, anchor: TilePos, w: i32, h: i32, radius: i32) {
+    fn stamp_rect(
+        &mut self,
+        anchor: TilePos,
+        w: i32,
+        h: i32,
+        radius: i32,
+        coverage: &mut RowCoverage,
+    ) {
         let spans = disc_spans(radius);
         for dy in -radius..(h + radius) {
             let vdist = (-dy).max(dy - (h - 1)).max(0);
@@ -234,9 +277,46 @@ impl Vision {
             let y = anchor.y + dy;
             self.visible
                 .fill_row_span(y, anchor.x - span, anchor.x + (w - 1) + span, true);
-            self.explored
-                .fill_row_span(y, anchor.x - span, anchor.x + (w - 1) + span, true);
+            coverage.cover(y, anchor.x - span, anchor.x + (w - 1) + span);
         }
+    }
+}
+
+/// Per-refresh record of which cells this team's sight stamps could have
+/// touched: one bounding x-span per row. The memory-reconciliation walk
+/// visits only these spans instead of the whole map. A bounding span may
+/// include cells between two disjoint discs that are not actually visible —
+/// the walk re-checks `visible` per cell, so coverage only ever bounds the
+/// scan, never widens what counts as seen.
+struct RowCoverage {
+    /// `(min_x, max_x)` per row, clamped to the grid; `min > max` = untouched.
+    bounds: Vec<(i32, i32)>,
+    width: i32,
+}
+
+impl RowCoverage {
+    fn new(width: i32, height: i32) -> Self {
+        Self {
+            bounds: vec![(i32::MAX, i32::MIN); height.max(0) as usize],
+            width,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.bounds.fill((i32::MAX, i32::MIN));
+    }
+
+    fn cover(&mut self, y: i32, x0: i32, x1: i32) {
+        let Some(entry) = usize::try_from(y).ok().and_then(|y| self.bounds.get_mut(y)) else {
+            return;
+        };
+        let x0 = x0.max(0);
+        let x1 = x1.min(self.width - 1);
+        if x0 > x1 {
+            return;
+        }
+        entry.0 = entry.0.min(x0);
+        entry.1 = entry.1.max(x1);
     }
 }
 
@@ -267,6 +347,29 @@ struct StaticGroundPressure {
     reach_sq: Fx,
 }
 
+/// One row of a view's four per-tile grids, in (visible, explored,
+/// remembered scrap, remembered wreck) order — the observation
+/// builder's bulk-read unit.
+pub(crate) type VisionRows<'a> = (&'a [bool], &'a [bool], &'a [u32], &'a [u32]);
+
+/// Memo-lane bits for [`GroundSalvageDanger::lanes`].
+mod lane {
+    /// Tile sits inside some incident danger ring (stamped at capture).
+    pub const INCIDENT_NEAR: u8 = 1 << 0;
+    /// The contains verdict has been computed.
+    pub const CONTAINS_SET: u8 = 1 << 1;
+    /// The memoized contains verdict.
+    pub const CONTAINS: u8 = 1 << 2;
+    /// The observed-contains verdict has been computed.
+    pub const OBSERVED_SET: u8 = 1 << 3;
+    /// The memoized observed-contains verdict.
+    pub const OBSERVED: u8 = 1 << 4;
+    /// The known-ground verdict has been computed.
+    pub const GROUND_SET: u8 = 1 << 5;
+    /// The memoized known-ground verdict.
+    pub const GROUND: u8 = 1 << 6;
+}
+
 /// One player's immutable, fog-honest salvage-danger snapshot for the
 /// brain phase. Capturing once makes every A* predicate a walk over compact
 /// threat records instead of repeatedly rescanning the full game state.
@@ -278,8 +381,16 @@ pub(crate) struct GroundSalvageDanger {
     mobile: Vec<MobileGroundPressure>,
     statics: Vec<StaticGroundPressure>,
     building_blocks: Vec<Vec<(i32, i32)>>,
-    cache: RefCell<Vec<Option<bool>>>,
-    observed_cache: RefCell<Vec<Option<bool>>>,
+    /// One byte of memo lanes per tile, replacing three separate
+    /// tables and their RefCell borrow bookkeeping — the A*
+    /// predicates probe these once per neighbor, and a `Cell` read is
+    /// a plain load. The incident-near stamp is set at capture (the
+    /// incident rule depends on the mover's origin, so only the
+    /// outside-every-ring case caches); the contains and observed
+    /// verdicts memoize on first probe; known-ground memoizes except
+    /// its volatile arm (a visible tile with live scrap), which is
+    /// served uncached exactly as before.
+    lanes: Vec<Cell<u8>>,
     path_scratch: RefCell<AstarScratch>,
 }
 
@@ -314,11 +425,11 @@ impl GroundSalvageDanger {
             .iter()
             .filter(|ghost| ghost.built)
             .filter_map(|ghost| {
-                let range = ground_weapon_reach(ghost.kind.stats().weapons)?
+                let range = ground_weapon_reach(ghost.kind.base_stats().weapons)?
                     + crate::stats::HARVEST_STATIC_DANGER_MARGIN;
                 Some(StaticGroundPressure {
                     anchor: ghost.anchor,
-                    size: ghost.kind.stats().size,
+                    size: ghost.kind.base_stats().size,
                     reach_sq: range * range,
                 })
             })
@@ -331,7 +442,7 @@ impl GroundSalvageDanger {
                     &mut building_blocks,
                     state.map.width(),
                     building.anchor,
-                    building.kind.stats().size,
+                    building.stats().size,
                 );
             } else {
                 // A hostile structure placed during this tick's command
@@ -355,28 +466,41 @@ impl GroundSalvageDanger {
                 &mut building_blocks,
                 state.map.width(),
                 ghost.anchor,
-                ghost.kind.stats().size,
+                ghost.kind.base_stats().size,
             );
         }
         for row in &mut building_blocks {
             merge_spans(row);
         }
         let cell_count = (state.map.width() as usize) * (state.map.height() as usize);
+        let incidents: Vec<TilePos> = vision
+            .salvage_incidents()
+            .iter()
+            .filter(|incident| incident.expires_at > state.tick)
+            .map(|incident| incident.tile)
+            .collect();
+        let (width, height) = (state.map.width(), state.map.height());
+        let lanes: Vec<Cell<u8>> = std::iter::repeat_with(|| Cell::new(0))
+            .take(cell_count)
+            .collect();
+        let radius = crate::stats::HARVEST_INCIDENT_DANGER_RADIUS;
+        for incident in &incidents {
+            for y in (incident.y - radius).max(0)..=(incident.y + radius).min(height - 1) {
+                for x in (incident.x - radius).max(0)..=(incident.x + radius).min(width - 1) {
+                    let cell = &lanes[(y * width + x) as usize];
+                    cell.set(cell.get() | lane::INCIDENT_NEAR);
+                }
+            }
+        }
         Self {
-            width: state.map.width(),
-            height: state.map.height(),
+            width,
+            height,
             contacts: vision.contacts().to_vec(),
-            incidents: vision
-                .salvage_incidents()
-                .iter()
-                .filter(|incident| incident.expires_at > state.tick)
-                .map(|incident| incident.tile)
-                .collect(),
+            incidents,
             mobile,
             statics,
             building_blocks,
-            cache: RefCell::new(vec![None; cell_count]),
-            observed_cache: RefCell::new(vec![None; cell_count]),
+            lanes,
             path_scratch: RefCell::new(AstarScratch::default()),
         }
     }
@@ -384,7 +508,7 @@ impl GroundSalvageDanger {
     /// Whether this snapshot marks one tile as too dangerous for
     /// autonomous salvage work.
     pub(crate) fn contains(&self, source: TilePos) -> bool {
-        cached_tile_predicate(&self.cache, self.width, self.height, source, || {
+        self.lane_memo(source, lane::CONTAINS_SET, lane::CONTAINS, || {
             self.compute_contains(source)
         })
     }
@@ -395,16 +519,39 @@ impl GroundSalvageDanger {
     /// move laterally or outward, but never closer to that impact; a worker
     /// outside cannot enter it.
     pub(crate) fn route_safe_from(&self, from: TilePos, tile: TilePos) -> bool {
-        if cached_tile_predicate(&self.observed_cache, self.width, self.height, tile, || {
-            self.compute_observed_contains(tile)
-        }) {
+        // One bounds test and one byte load serve both the observed
+        // memo and the incident-near stamp.
+        let index = self.lane_index(tile);
+        let bits = index.map(|i| self.lanes[i].get()).unwrap_or(0);
+        let observed = self.observed_at(tile, index, bits);
+        if observed {
             return false;
+        }
+        if index.is_some() && bits & lane::INCIDENT_NEAR == 0 {
+            return true;
         }
         !self.incidents.iter().any(|incident| {
             let next_distance = incident.chebyshev(tile);
             next_distance <= crate::stats::HARVEST_INCIDENT_DANGER_RADIUS
                 && next_distance < incident.chebyshev(from)
         })
+    }
+
+    /// Memoized observed-danger test for one tile, given its lane index
+    /// and current lane bits.
+    fn observed_at(&self, tile: TilePos, index: Option<usize>, bits: u8) -> bool {
+        if let Some(i) = index {
+            if bits & lane::OBSERVED_SET != 0 {
+                bits & lane::OBSERVED != 0
+            } else {
+                let value = self.compute_observed_contains(tile);
+                let cell = &self.lanes[i];
+                cell.set(cell.get() | lane::OBSERVED_SET | if value { lane::OBSERVED } else { 0 });
+                value
+            }
+        } else {
+            self.compute_observed_contains(tile)
+        }
     }
 
     /// Whether a building occupies this tile in the viewer's shared
@@ -507,24 +654,53 @@ impl GroundSalvageDanger {
     }
 }
 
-fn cached_tile_predicate(
-    cache: &RefCell<Vec<Option<bool>>>,
-    width: i32,
-    height: i32,
-    tile: TilePos,
-    compute: impl FnOnce() -> bool,
-) -> bool {
-    if tile.x < 0 || tile.y < 0 || tile.x >= width || tile.y >= height {
-        return compute();
+impl GroundSalvageDanger {
+    /// Serves the known-ground probe through the per-tile memo. The
+    /// closure returns `(open, volatile)`; volatile verdicts are
+    /// handed back but never stored, so a visible scrap tile whose
+    /// node can deplete mid-phase re-evaluates on every probe while
+    /// everything else pays the full walk exactly once.
+    pub(crate) fn known_ground_cached(
+        &self,
+        tile: TilePos,
+        compute: impl FnOnce() -> (bool, bool),
+    ) -> bool {
+        let Some(index) = self.lane_index(tile) else {
+            return compute().0;
+        };
+        let cell = &self.lanes[index];
+        let bits = cell.get();
+        if bits & lane::GROUND_SET != 0 {
+            return bits & lane::GROUND != 0;
+        }
+        let (open, volatile) = compute();
+        if !volatile {
+            cell.set(bits | lane::GROUND_SET | if open { lane::GROUND } else { 0 });
+        }
+        open
     }
-    let index = (tile.y as usize) * (width as usize) + tile.x as usize;
-    let cached = cache.borrow()[index];
-    if let Some(value) = cached {
-        return value;
+
+    /// The packed index of an in-bounds tile.
+    fn lane_index(&self, tile: TilePos) -> Option<usize> {
+        ((0..self.width).contains(&tile.x) && (0..self.height).contains(&tile.y))
+            .then(|| (tile.y as usize) * (self.width as usize) + tile.x as usize)
     }
-    let value = compute();
-    cache.borrow_mut()[index] = Some(value);
-    value
+
+    /// Serves one boolean verdict through its memo lane pair; out of
+    /// bounds computes uncached, like the tables it replaces.
+    fn lane_memo(&self, tile: TilePos, set: u8, value: u8, compute: impl FnOnce() -> bool) -> bool {
+        let Some(index) = self.lane_index(tile) else {
+            return compute();
+        };
+        let cell = &self.lanes[index];
+        let bits = cell.get();
+        if bits & set != 0 {
+            return bits & value != 0;
+        }
+        let verdict = compute();
+        cell.set(bits | set | if verdict { value } else { 0 });
+        verdict
+    }
 }
 
 fn stamp_blocked_rect(
@@ -606,6 +782,7 @@ fn disc_spans(radius: i32) -> &'static [i32] {
 /// reconciles their building memory against what is now in sight.
 pub(crate) fn refresh(state: &mut State) {
     let mut vision = std::mem::take(&mut state.vision);
+    let mut coverage = RowCoverage::new(state.map.width(), state.map.height());
     for index in 0..vision.len() {
         // Team sight is seat-symmetric by construction: every teammate
         // stamps the same discs, reconciles the same memories, hears
@@ -613,7 +790,8 @@ pub(crate) fn refresh(state: &mut State) {
         // a byte-for-byte clone — half the refresh on team maps.
         if let Some(src) = (0..index).find(|&j| state.players[j].team == state.players[index].team)
         {
-            vision[index] = vision[src].clone();
+            let (head, tail) = vision.split_at_mut(index);
+            tail[0].copy_from(&head[src]);
             continue;
         }
         let view = &mut vision[index];
@@ -621,9 +799,10 @@ pub(crate) fn refresh(state: &mut State) {
         let my_team = state.players[index].team;
         let allied = |p: PlayerId| state.players[p.0 as usize].team == my_team;
         view.visible.fill(false);
+        coverage.reset();
         // Team sight: every teammate's eyes stamp into this view.
         for unit in state.units.iter().filter(|u| allied(u.player)) {
-            view.stamp_disc(unit.tile(), unit.kind.stats().vision);
+            view.stamp_disc(unit.tile(), unit.kind.stats().vision, &mut coverage);
         }
         // Sites don't see: a pile of parts has no sensors.
         for building in state
@@ -631,8 +810,14 @@ pub(crate) fn refresh(state: &mut State) {
             .iter()
             .filter(|b| allied(b.player) && b.built)
         {
-            let (w, h) = building.kind.stats().size;
-            view.stamp_rect(building.anchor, w, h, building.kind.stats().vision);
+            let (w, h) = building.stats().size;
+            view.stamp_rect(
+                building.anchor,
+                w,
+                h,
+                building.stats().vision,
+                &mut coverage,
+            );
         }
 
         // Memory reconciliation. Wherever we have sight, live state is the
@@ -643,6 +828,12 @@ pub(crate) fn refresh(state: &mut State) {
         let mut ghosts = std::mem::take(&mut view.ghosts);
         ghosts.retain(|ghost| !ghost.footprint().any(|t| view.visible(t)));
         for building in state.buildings.iter().filter(|b| !allied(b.player)) {
+            // An undetected buried charge never enters memory: sight of
+            // its tile alone is not knowledge of it (the one stealth
+            // rule; see `State::building_apparent`).
+            if !state.building_apparent(PlayerId(index as u8), building) {
+                continue;
+            }
             if building.tiles().any(|t| view.visible(t)) {
                 ghosts.push(GhostBuilding {
                     kind: building.kind,
@@ -658,16 +849,29 @@ pub(crate) fn refresh(state: &mut State) {
 
         // Freeze-frame the economy the same way: wherever there is sight,
         // remember the salvage; everywhere else the old numbers stand.
-        // Row slices, not per-cell lookups, and both memories in one
-        // walk — this scan runs over the whole map for every team every
-        // tick, so it gets to run exactly once.
+        // Row slices, not per-cell lookups, both memories in one walk —
+        // and only inside the x-spans this team's stamps could have
+        // touched, since nothing outside them became visible this tick.
+        // The per-cell `seen` check still decides; the coverage bounds
+        // only shrink the walk.
         for y in 0..state.map.height() {
-            let visible = view.visible.row(y).expect("row in range");
-            let tiles = state.map.grid().row(y).expect("row in range");
-            let scrap = view.remembered_scrap.row_mut(y).expect("row in range");
-            let wreck = view.remembered_wreck.row_mut(y).expect("row in range");
+            let (x0, x1) = coverage.bounds[y as usize];
+            if x0 > x1 {
+                continue;
+            }
+            let (x0, x1) = (x0 as usize, x1 as usize);
+            let visible = &view.visible.row(y).expect("row in range")[x0..=x1];
+            let tiles = &state.map.grid().row(y).expect("row in range")[x0..=x1];
+            let scrap = &mut view.remembered_scrap.row_mut(y).expect("row in range")[x0..=x1];
+            let wreck = &mut view.remembered_wreck.row_mut(y).expect("row in range")[x0..=x1];
+            let explored = &mut view.explored.row_mut(y).expect("row in range")[x0..=x1];
             for (x, (&seen, tile)) in visible.iter().zip(tiles).enumerate() {
                 if seen {
+                    // Explored accumulates here instead of in the sight
+                    // stamps: the stamps wrote the same spans to two
+                    // grids per row, and this walk already touches
+                    // every newly visible cell exactly once.
+                    explored[x] = true;
                     scrap[x] = tile.scrap;
                     wreck[x] = tile.wreck;
                 }

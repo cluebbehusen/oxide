@@ -9,13 +9,9 @@ an opponent kind —
           train — the arms race lives here)
   past    a frozen checkpoint from this run's pool (stops cycling:
           you must still beat who you used to be)
-  incumbent
-          the recovered shipped actor, held fixed and played greedily
-  tier    a scripted ladder bot (the anchor that keeps play grounded
-          against sensible opponents, and the eventual yardstick)
-  scrapheap | standard | veteran | prime
-          one exact scripted ladder tier, for targeted consolidation
-          against a specific yardstick without a per-episode tier draw
+  overseer
+          the scripted Overseer commander (the anchor that keeps play
+          grounded against a sensible opponent, and the yardstick)
   rusher  the scripted rush teacher (the known exploit, kept in the
           curriculum forever so the answer to it never fades)
 
@@ -44,7 +40,10 @@ new ``--name`` for the new phase.
 
 import argparse
 import contextlib
+import dataclasses
 import json
+import multiprocessing
+import os
 import pathlib
 import subprocess
 import sys
@@ -56,6 +55,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
+    from multiprocessing.connection import Connection
 
 import numpy as np
 import torch
@@ -70,8 +70,8 @@ from mapgen import generate as _generate
 from models import (
     checkpoint_critic_ready,
     factorized_greedy,
-    factorized_joint_log_prob,
     factorized_sample,
+    factorized_sample_with_log_prob,
     load_policy,
     make_policy,
     save_policy,
@@ -95,19 +95,17 @@ from oxide_gym import (
 )
 from ppo import TRAIN_GAMMA, gae, ppo_update
 
-TIERS = ["scrapheap", "standard", "veteran", "prime"]
-MAP_FAMILIES = ("fixed", "random", "grand")
+MAP_FAMILIES = ("fixed", "random", "grand", "island")
 FACTION_PAIRS = ("ff", "fc", "cf", "cc")
 OPPONENT_KINDS = (
     "self",
     "past",
-    "incumbent",
-    "tier",
-    *TIERS,
+    "overseer",
     "rusher",
     "ffa",
     "team",
     "team2",
+    "team4",
 )
 type AggressionDistribution = tuple[tuple[int, int, float], ...]
 
@@ -289,6 +287,15 @@ class ProfileCurriculum:
 # Per-update phase clocks, drained into every log entry — optimization
 # without a stable meter is guessing. Keys: env_sec (worker RPC),
 # policy_sec (learner forward passes), mapgen_sec, reset_sec, resets.
+#
+# The collector's own Python is metered at the same grain, because the
+# worker RPC clock hides it: a driver that answers instantly still bills
+# its reply's decode to env_sec. wire_wait_sec / wire_parse_sec /
+# wire_send_sec decompose env_sec into the blocking read, the reply
+# decode (JSON plus the numpy seat views), and the request write;
+# obs_sec, lane_sec, act_sec, opp_sec, and frame_sec meter the rollout
+# loop's own stacking, trajectory appends, action assembly, opponent
+# minds, and per-frame bookkeeping.
 TEL: Counter = Counter()
 
 
@@ -466,11 +473,18 @@ BUILD_ARRAY_ACTION = 13
 REPAIR_ACTION = 22
 BUILD_BAY_ACTION = 23
 # Successful completions seeded by --structure-bonus. Fabricators have
-# their established tech bonus, Foundries are not constructible, and the
-# Repair Bay belongs to the repair bonus.
+# their established tech bonus and the Repair Bay belongs to the repair
+# bonus. The 0.15 tree rungs join the set: r1 measured PPO grinding the
+# imitation-taught escalation back out (tier-2/3 share 0.141 -> 0.083
+# across the phase) because the win signal alone never pays for the
+# climb — and escalation is what makes a long match dynamic.
 SEEDED_STRUCTURES = (
     "turret",
     "array",
+    "airworks",
+    "crucible",
+    "extractor",
+    "foundry",
 )
 MAX_STRUCTURE_KIND_BONUS = 0.02
 MAX_RECLAIMER_BONUS = 0.02
@@ -687,7 +701,7 @@ def add_entropy_arguments(ap: argparse.ArgumentParser) -> None:
         default=0.0,
         help="additional production-head entropy coefficient in "
         f"[0, {MAX_ENTROPY_COEFFICIENT}]; its effective head weight also "
-        "includes one third of --entropy-coef (default: 0)",
+        "includes one quarter of --entropy-coef (default: 0)",
     )
 
 
@@ -947,11 +961,13 @@ def generated_map_families(
 ) -> tuple[str, ...]:
     """Generated cache families that active jobs can request."""
     families = [
-        family for family in ("random", "grand") if map_mix.get(family, 0.0) > 0.0
+        family
+        for family in ("random", "grand", "island")
+        if map_mix.get(family, 0.0) > 0.0
     ]
     if opponent_mix.get("ffa", 0.0) > 0.0:
         families.append("ffa")
-    if any(opponent_mix.get(kind, 0.0) > 0.0 for kind in ("team", "team2")):
+    if any(opponent_mix.get(kind, 0.0) > 0.0 for kind in ("team", "team2", "team4")):
         families.append("team")
     return tuple(families)
 
@@ -1015,6 +1031,20 @@ def warm_generated_maps(
                 players=4,
                 teams=True,
                 driver=driver,
+            )
+            _generate(
+                seed % 100_000,
+                cache_dir("oxide-maps-train4v4"),
+                players=8,
+                teams=True,
+                driver=driver,
+            )
+        elif family == "island":
+            _generate(
+                seed % 100_000,
+                cache_dir("oxide-maps-train-island"),
+                driver=driver,
+                pace="island",
             )
         else:
             raise ValueError(f"cannot warm unknown generated map family {family!r}")
@@ -1189,12 +1219,14 @@ def maybe_blunder(
         )
     if hesitation_permille == 0 or int(rng.integers(1000)) >= hesitation_permille:
         return action
-    return (0, 24, 25)
+    return (0, 24, 42, 25)
 
 
-# Rush teacher — the v3 action menu; feature indices resolved by name.
+# Rush teacher — global v9 action indices in the four-head plan order;
+# feature indices resolved by name. The logic mirrors the Rust-side
+# `cup_rusher_plan` (driver/src/gym.rs) so both teachers stay one canary.
 IDLE, TRAIN_H, TRAIN_S, FORM, PUSH, SCOUT = 0, 1, 2, 17, 18, 20
-NO_CONSTRUCTION, NO_OPERATION = 24, 25
+NO_CONSTRUCTION, NO_OPERATION, NO_UPGRADE = 24, 25, 42
 
 
 def rusher(raw: list[int], mask: np.ndarray, tick: int) -> ActionPlan:
@@ -1212,49 +1244,7 @@ def rusher(raw: list[int], mask: np.ndarray, tick: int) -> ActionPlan:
         operation = FORM
     elif mask[SCOUT] and tick % 1024 == 0:
         operation = SCOUT
-    return (production, NO_CONSTRUCTION, operation)
-
-
-def legacy_incumbent_plan(
-    logits: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor:
-    """Arbitrates a recovered v6 actor as its original single flat head.
-
-    The v7 bridge retained rows 0..23 exactly, but factorized greedy
-    evaluation would activate three of those rows at once. Pick one
-    masked winner across the inherited rows, then place only that action
-    into its v7 head while the other heads take their explicit no-op.
-    """
-    if logits.ndim == 0 or logits.shape[-1] != ACTIONS:
-        raise ValueError(
-            f"incumbent logits must end in {ACTIONS} actions, got {tuple(logits.shape)}"
-        )
-    if mask.shape != logits.shape:
-        raise ValueError(
-            "incumbent mask must match logits exactly, got "
-            f"{tuple(mask.shape)} vs {tuple(logits.shape)}"
-        )
-    inherited = logits[..., :24].masked_fill(~mask[..., :24], float("-inf"))
-    invalid = torch.isnan(inherited) | torch.isposinf(inherited)
-    if bool(invalid.any().item()):
-        raise ValueError("incumbent inherited actions contain NaN or +inf logits")
-    if not bool(torch.isfinite(inherited).any(dim=-1).all().item()):
-        raise ValueError("incumbent has no legal inherited action")
-    winners = inherited.argmax(dim=-1)
-    plan = torch.empty((*winners.shape, 3), dtype=torch.int64, device=logits.device)
-    plan[..., 0] = IDLE
-    plan[..., 1] = NO_CONSTRUCTION
-    plan[..., 2] = NO_OPERATION
-    for head_index, head in enumerate(ACTION_HEADS):
-        inherited_head = tuple(action for action in head if action < 24)
-        for action in inherited_head:
-            plan[..., head_index] = torch.where(
-                winners == action,
-                winners,
-                plan[..., head_index],
-            )
-    return plan
+    return (production, NO_CONSTRUCTION, NO_UPGRADE, operation)
 
 
 class Lane:
@@ -1272,12 +1262,34 @@ class Lane:
         self.last_pot = 0.0
 
 
+# Pool checkpoints are written once and never rewritten, so one frozen
+# copy per path serves every past lane that draws it: repeated draws skip
+# the load, and lanes holding the same draw share one opponent forward.
+# The bound keeps a long campaign's growing pool from pinning every
+# checkpoint it ever wrote in memory.
+POOL_POLICY_CACHE_SIZE = 16
+_POOL_POLICIES: dict[tuple[str, str], nn.Module] = {}
+
+
+def load_pool_policy(path: str, device: str) -> nn.Module:
+    """Returns the shared frozen policy for one pool checkpoint."""
+    key = (path, device)
+    cached = _POOL_POLICIES.get(key)
+    if cached is not None:
+        return cached
+    policy, _blob = load_policy(path, device)
+    policy.eval()
+    while len(_POOL_POLICIES) >= POOL_POLICY_CACHE_SIZE:
+        _POOL_POLICIES.pop(next(iter(_POOL_POLICIES)))
+    _POOL_POLICIES[key] = policy
+    return policy
+
+
 class Job:
     """One worker's permanent role. Roles are fixed for the run — the
     lane geometry must never change, because episodes span many rollouts
     and a trajectory stream has to stay contiguous. What varies per
-    episode is the detail: map family, tier, and past checkpoint. The
-    incumbent policy itself stays fixed for the whole run."""
+    episode is the detail: map family and past checkpoint."""
 
     def __init__(
         self,
@@ -1289,7 +1301,6 @@ class Job:
         device: str,
         maps: str = "fixed",
         map_mix: dict[str, float] | None = None,
-        incumbent: nn.Module | None = None,
         faction_mix: dict[str, float] | None = None,
         aggression_range: tuple[int, int] | None = None,
         aggression_mix: AggressionDistribution | None = None,
@@ -1317,9 +1328,7 @@ class Job:
             getattr(worker, "profile_catalog", None),
             use_named_profiles=aggression_range is None and aggression_mix is None,
         )
-        self.tier: str | None = None
         self.past: nn.Module | None = None
-        self.incumbent = incumbent
         self.map_family: str | None = None
         self.faction_code: str | None = None
         self.frame: Frame | None = None
@@ -1347,30 +1356,33 @@ class Job:
         if kind == "self":
             self.learner_seats = [0, 1]
             self.opp_seat = None
-        elif kind == "team":
-            # 2v2: the west column (seats 0 and 2 by the mapgen
-            # convention) learns as one team against scripted tiers.
-            self.learner_seats = [0, 2]
+        elif kind in ("team", "team4"):
+            # Team lanes: the west column (even seats by the mapgen
+            # convention) learns as one team against the Overseer.
+            # The shape IS the kind — team seats four, team4 eight —
+            # so lane geometry follows from the layout alone.
+            self.team_players = team_players_for_kind(kind)
+            self.learner_seats = list(range(0, self.team_players, 2))
             self.opp_seat = None
         elif kind == "team2":
-            # 2v2 beside a scripted ally: the learner holds one west
-            # chair, a tier Brain drives its teammate (and both foes) —
-            # the robustness half of team training, so the policy
-            # learns to fight NEXT TO conventions it doesn't share.
-            self.learner_seats = [seat * 2]  # 0 or 2, the west chairs
+            # A west chair beside scripted allies: the learner holds
+            # one seat, the Overseer drives its teammates and every
+            # foe — the robustness half of team training, so the
+            # policy learns to fight NEXT TO conventions it doesn't
+            # share.
+            self.team_players = team_players_for_kind(kind)
+            self.learner_seats = [seat * 2]  # a west chair
             self.opp_seat = None
-        elif kind in ("tier", "ffa") or kind in TIERS:
+        elif kind in ("overseer", "ffa"):
             self.learner_seats = [seat]
             self.opp_seat = None
-        elif kind in ("past", "rusher", "incumbent"):
+        elif kind in ("past", "rusher"):
             # Both seats are controlled, with the opponent driven
             # locally by a frozen policy or the scripted rush teacher.
             self.learner_seats = [seat]
             self.opp_seat = 1 - seat
         else:
             raise ValueError(f"unknown league opponent kind {kind!r}")
-        if kind == "incumbent" and incumbent is None:
-            raise ValueError("incumbent jobs require an incumbent checkpoint")
         self.episode_dials = {
             learner: EpisodeDials(1000, 500, SHIPPED_EXECUTION_PROFILES[-1])
             for learner in self.learner_seats
@@ -1440,7 +1452,11 @@ class Job:
         self.mix_count = {
             seat: [0.0] * len(ARMY_FEATURES) for seat in self.learner_seats
         }
-        seats = 4 if self.kind in ("ffa", "team", "team2") else 2
+        seats = (
+            self.team_players
+            if self.kind in ("team", "team2", "team4")
+            else (4 if self.kind == "ffa" else 2)
+        )
         pair = sample_faction_pair(self.rng, self.faction_mix)
         self.faction_code = expand_faction_pair(pair, seats)
         faction_knobs = {
@@ -1450,8 +1466,25 @@ class Job:
         learner_factions = {seat: faction_knobs[seat] for seat in self.learner_seats}
         self.episode_dials = self.profile_curriculum.sample(
             learner_factions,
-            specialize_roles=self.kind in ("team", "team2"),
+            specialize_roles=self.kind in ("team", "team2", "team4"),
         )
+        if self.kind == "rusher":
+            # The rush canary gates promotion at EXPERT execution: a
+            # learner that only ever faces the all-in at easy/medium
+            # tempo never learns the fight the cup actually tests
+            # (measured: 70% vs the slow training rush, 33% in the
+            # expert-cadence cup, dying on an identical clock with a
+            # two-unit opening). Rush episodes train at the gate's
+            # tempo.
+            expert = next(
+                profile
+                for profile in SHIPPED_EXECUTION_PROFILES
+                if profile.name == "expert"
+            )
+            self.episode_dials = {
+                seat: dataclasses.replace(dials, execution=expert)
+                for seat, dials in self.episode_dials.items()
+            }
         self.conditions = {
             seat: dials.condition(
                 learner_factions[seat],
@@ -1470,13 +1503,22 @@ class Job:
             )
             TEL[f"profile_{policy}_{dials.execution.name}"] += 1
         scenario = None
-        if self.kind not in ("ffa", "team", "team2"):
+        if self.kind not in ("ffa", "team", "team2", "team4"):
             self.map_family = sample_map_family(self.rng, self.map_mix)
         if self.map_family == "random":
             scenario = generate(
                 seed % 100_000,
                 cache_dir("oxide-maps-train"),
                 driver=self.map_driver,
+            )
+        elif self.map_family == "island":
+            # The severed-quarry curriculum: a guaranteed gulf on a
+            # 1v1 lane, where the only road to the enemy is the sky.
+            scenario = generate(
+                seed % 100_000,
+                cache_dir("oxide-maps-train-island"),
+                driver=self.map_driver,
+                pace="island",
             )
         elif self.map_family == "grand":
             # The pacing curriculum: 1v1 lanes on the big classes only,
@@ -1497,11 +1539,9 @@ class Job:
                 players=4,
                 driver=self.map_driver,
             )
-            self.tier = TIERS[int(self.rng.integers(len(TIERS)))]
             self.frame = self.worker.reset(
                 seed,
                 control=(self.learner_seats[0],),
-                tier=self.tier,
                 conditions=self.conditions,
                 scenario=scenario,
                 factions=self.faction_code,
@@ -1509,20 +1549,23 @@ class Job:
             )
             self._sync_worker_conditions()
             return
-        if self.kind in ("team", "team2"):
+        if self.kind in ("team", "team2", "team4"):
             self.map_family = "team"
+            shape_dir = (
+                "oxide-maps-train2v2"
+                if self.team_players == 4
+                else "oxide-maps-train4v4"
+            )
             scenario = generate(
                 seed % 100_000,
-                cache_dir("oxide-maps-train2v2"),
-                players=4,
+                cache_dir(shape_dir),
+                players=self.team_players,
                 teams=True,
                 driver=self.map_driver,
             )
-            self.tier = TIERS[int(self.rng.integers(len(TIERS)))]
             self.frame = self.worker.reset(
                 seed,
                 control=tuple(self.learner_seats),
-                tier=self.tier,
                 conditions=self.conditions,
                 scenario=scenario,
                 factions=self.faction_code,
@@ -1530,16 +1573,10 @@ class Job:
             )
             self._sync_worker_conditions()
             return
-        if self.kind == "tier" or self.kind in TIERS:
-            self.tier = (
-                TIERS[int(self.rng.integers(len(TIERS)))]
-                if self.kind == "tier"
-                else self.kind
-            )
+        if self.kind == "overseer":
             self.frame = self.worker.reset(
                 seed,
                 control=(self.learner_seats[0],),
-                tier=self.tier,
                 conditions=self.conditions,
                 scenario=scenario,
                 factions=self.faction_code,
@@ -1551,17 +1588,15 @@ class Job:
             pool = sorted(self.pool_dir.glob("ckpt-*.pt"))
             if pool:
                 pick = pool[int(self.rng.integers(len(pool)))]
-                past, _ = load_policy(str(pick), self.device)
-                past.eval()
-                self.past = past
+                self.past = load_pool_policy(str(pick), self.device)
             else:
                 self.past = None  # empty pool: play the rusher instead
         all_conds = dict(self.conditions)
         if self.opp_seat is not None:
-            if self.kind in ("past", "incumbent"):
-                # Frozen learned opponents see the same named policy
-                # profile as the learner, retinted for their own roster.
-                # Otherwise v8 training pits a faceted learner against a
+            if self.kind == "past":
+                # A frozen learned opponent sees the same named policy
+                # profile as the learner, retinted for its own roster.
+                # Otherwise training pits a faceted learner against a
                 # zero-facet version of the same policy.
                 learner_dials = self.episode_dials[self.learner_seats[0]]
                 all_conds[self.opp_seat] = learner_dials.condition(
@@ -1593,54 +1628,102 @@ class Job:
             if seat in corrected:
                 self.conditions[seat] = corrected[seat]
 
-    def opponent_action(self, policy_device: str) -> dict[int, ActionPlan]:
-        """Actions for locally-driven seats (empty for worker-driven roles)."""
+    def opponent_policy(self) -> nn.Module | None:
+        """The frozen network driving this job's opponent seat, if any.
+
+        ``None`` covers every seat the collector answers without torch:
+        worker-driven roles, the scripted rush teacher, and a past lane
+        that drew an empty pool and fell back to the rusher.
+        """
+        if self.opp_seat is None or self.kind == "rusher":
+            return None
+        return self.past
+
+    def scripted_opponent_action(self) -> dict[int, ActionPlan]:
+        """The rush teacher's plan for a locally-driven opponent seat."""
         if self.opp_seat is None:
             return {}
         view = self.view.seats[self.opp_seat]
-        if self.kind == "rusher":
-            return {self.opp_seat: rusher(view.raw, view.mask, self.view.tick)}
-        if self.kind == "incumbent":
-            policy = self.incumbent
-            if policy is None:
-                raise RuntimeError("incumbent job has no frozen policy")
-            with torch.no_grad():
-                logits, _ = policy(
-                    torch.as_tensor(view.obs[None], device=policy_device),
-                    torch.as_tensor(view.mask[None], device=policy_device),
-                )
-            plan = legacy_incumbent_plan(
-                logits,
-                torch.as_tensor(view.mask[None], device=policy_device),
-            )[0].cpu()
-            return {
-                self.opp_seat: (
+        return {self.opp_seat: rusher(view.raw, view.mask, self.view.tick)}
+
+    def opponent_view(self) -> SeatView:
+        """The locally-driven opponent seat's live observation."""
+        if self.opp_seat is None:
+            raise RuntimeError("job has no locally-driven opponent seat")
+        return self.view.seats[self.opp_seat]
+
+    def opponent_action(self, policy_device: str) -> dict[int, ActionPlan]:
+        """Actions for locally-driven seats (empty for worker-driven roles)."""
+        return opponent_actions([self], policy_device)[0]
+
+
+def opponent_actions(jobs: list[Job], device: str) -> list[dict[int, ActionPlan]]:
+    """One opponent-action dict per job, batched by policy identity.
+
+    Jobs whose opponent seat runs the same frozen policy object share a
+    single forward — a pool checkpoint loads once per path, so every past
+    lane holding that draw joins one batch. Scripted opponents never
+    touch torch. Grouping is keyed by object identity but visited in job
+    order, so both the batch's row order and the group order stay
+    deterministic.
+
+    Batching moves how many rows one ``factorized_sample`` draws at a
+    time, so the torch random stream is consumed in a different order
+    than the old per-job forwards consumed it: league runs from before
+    this change do not reproduce decision for decision. The per-seat
+    sampling distribution is unchanged, so this is a lineage boundary
+    between campaigns rather than a change of opponent behavior.
+    """
+    plans: list[dict[int, ActionPlan]] = [{} for _ in jobs]
+    groups: dict[int, tuple[nn.Module, list[int]]] = {}
+    for index, job in enumerate(jobs):
+        policy = job.opponent_policy()
+        if policy is None:
+            plans[index] = job.scripted_opponent_action()
+            continue
+        groups.setdefault(id(policy), (policy, []))[1].append(index)
+    for policy, members in groups.values():
+        views = [jobs[index].opponent_view() for index in members]
+        obs = np.stack([view.obs for view in views])
+        mask = np.stack([view.mask for view in views])
+        with torch.no_grad():
+            logits, _ = policy(
+                torch.as_tensor(obs, device=device),
+                torch.as_tensor(mask, device=device),
+            )
+            sampled = factorized_sample(logits).cpu()
+        for row, index in enumerate(members):
+            seat = jobs[index].opp_seat
+            if seat is None:
+                raise RuntimeError("a learned opponent job lost its opponent seat")
+            plan = sampled[row]
+            plans[index] = {
+                seat: (
                     int(plan[0]),
                     int(plan[1]),
                     int(plan[2]),
+                    int(plan[3]),
                 )
             }
-        if self.past is None:
-            return {self.opp_seat: rusher(view.raw, view.mask, self.view.tick)}
-        policy, device = self.past, policy_device
-        with torch.no_grad():
-            logits, _ = policy(
-                torch.as_tensor(view.obs[None], device=device),
-                torch.as_tensor(view.mask[None], device=device),
-            )
-            plan = factorized_sample(logits)[0].cpu()
-        return {
-            self.opp_seat: (
-                int(plan[0]),
-                int(plan[1]),
-                int(plan[2]),
-            )
-        }
+    return plans
 
 
 def learner_lanes_for_kind(kind: str) -> int:
-    """Learner trajectory columns contributed by one job of this kind."""
+    """Learner trajectory columns contributed by one job of this kind.
+
+    The team family's shape is the KIND — team is 2v2, team4 is 4v4 —
+    so lane geometry is exact from the layout alone, and the parent,
+    the in-process trainer, and every sharded collector agree without
+    sharing an rng stream (lane geometry is job-scoped and must never
+    change mid-run)."""
+    if kind == "team4":
+        return 4
     return 2 if kind in ("self", "team") else 1
+
+
+def team_players_for_kind(kind: str) -> int:
+    """Scenario seats for a team-family job of this kind."""
+    return 8 if kind == "team4" else 4
 
 
 def allocate_role_counts(mix: dict[str, float], workers: int) -> dict[str, int]:
@@ -1663,29 +1746,43 @@ def allocate_role_counts(mix: dict[str, float], workers: int) -> dict[str, int]:
     return {kind: int(count) for kind, count in zip(kinds, counts, strict=True)}
 
 
-def realized_learner_row_mix(
-    jobs: list[Job],
+def lane_kinds_for_layout(layout: list[tuple[str, int]]) -> list[str]:
+    """One opponent kind per learner lane column, in global lane order."""
+    return [kind for kind, _seat in layout for _ in range(learner_lanes_for_kind(kind))]
+
+
+def realized_row_mix_from_lane_kinds(
+    lane_kinds: list[str],
     valid: np.ndarray | None = None,
 ) -> dict[str, float]:
     """Reports assigned lane shares, or actual valid training-row shares."""
-    expected_columns = sum(len(job.learner_seats) for job in jobs)
-    if valid is not None and (valid.ndim != 2 or valid.shape[1] != expected_columns):
+    if valid is not None and (valid.ndim != 2 or valid.shape[1] != len(lane_kinds)):
         raise ValueError(
             "valid rollout mask must have one column per learner lane, got "
-            f"{valid.shape} for {expected_columns} lanes"
+            f"{valid.shape} for {len(lane_kinds)} lanes"
         )
     rows: Counter[str] = Counter()
-    column = 0
-    for job in jobs:
-        for _seat in job.learner_seats:
-            rows[job.kind] += (
-                1 if valid is None else int(np.count_nonzero(valid[:, column]))
-            )
-            column += 1
+    for column, kind in enumerate(lane_kinds):
+        rows[kind] += 1 if valid is None else int(np.count_nonzero(valid[:, column]))
     total = sum(rows.values())
     if total == 0:
         return {}
     return {kind: rows[kind] / total for kind in sorted(rows)}
+
+
+def realized_learner_row_mix(
+    jobs: list[Job],
+    valid: np.ndarray | None = None,
+) -> dict[str, float]:
+    """Reports assigned lane shares, or actual valid training-row shares.
+
+    The lane layout is read from live jobs; the sharded-collection
+    learner reads the layout it planned instead, through
+    :func:`realized_row_mix_from_lane_kinds`, because its jobs live in
+    the collector processes.
+    """
+    lane_kinds = [job.kind for job in jobs for _seat in job.learner_seats]
+    return realized_row_mix_from_lane_kinds(lane_kinds, valid)
 
 
 def assign_roles(
@@ -1696,7 +1793,6 @@ def assign_roles(
     device: str,
     maps: str = "fixed",
     map_mix: dict[str, float] | None = None,
-    incumbent: nn.Module | None = None,
     faction_mix: dict[str, float] | None = None,
     aggression_range: tuple[int, int] | None = None,
     aggression_mix: AggressionDistribution | None = None,
@@ -1709,10 +1805,6 @@ def assign_roles(
     weight. Counts are largest-remainder allocations after dividing
     each requested weight by its learner-lane multiplicity.
     """
-    kinds = list(mix)
-    role_counts = allocate_role_counts(mix, len(workers))
-    jobs = []
-    i = 0
     # One independent stream per job, spawned deterministically from
     # the master: with a SHARED generator, pipelined stepping reordered
     # draws whenever an episode reset interleaved differently than the
@@ -1720,55 +1812,46 @@ def assign_roles(
     # streams make the draw order a per-job fact, immune to completion
     # order.
     streams = rng.spawn(len(workers))
-    for kind in kinds:
-        count = role_counts[kind]
+    return [
+        Job(
+            worker,
+            kind,
+            seat,
+            pool_dir,
+            stream,
+            device,
+            maps,
+            map_mix,
+            faction_mix,
+            aggression_range,
+            aggression_mix,
+            map_driver,
+        )
+        for worker, (kind, seat), stream in zip(
+            workers,
+            role_layout(mix, len(workers)),
+            streams,
+            strict=True,
+        )
+    ]
+
+
+def role_layout(mix: dict[str, float], workers: int) -> list[tuple[str, int]]:
+    """The fixed (kind, seat) role of every global job index.
+
+    Shared by the in-process trainer and the sharded collectors, so a
+    collector rebuilds exactly the jobs the single process would have
+    built at the same global indices.
+    """
+    role_counts = allocate_role_counts(mix, workers)
+    layout: list[tuple[str, int]] = []
+    for kind in mix:
         # team2 alternates its single learner between the two west
         # chairs (k % 2 -> seat 0 or 2 inside the Job), everything else
         # keeps its established seat arithmetic.
         seats = 4 if kind in ("ffa", "team") else 2
-        for k in range(count):
-            jobs.append(
-                Job(
-                    workers[i],
-                    kind,
-                    k % seats,
-                    pool_dir,
-                    streams[i],
-                    device,
-                    maps,
-                    map_mix,
-                    incumbent,
-                    faction_mix,
-                    aggression_range,
-                    aggression_mix,
-                    map_driver,
-                )
-            )
-            i += 1
-    return jobs
-
-
-def load_incumbent_policy(
-    mix: dict[str, float],
-    checkpoint: str | None,
-    device: str,
-) -> nn.Module | None:
-    """Loads the exact recovered Q12 actor when its lane is active."""
-    if mix.get("incumbent", 0.0) <= 0.0:
-        return None
-    if not checkpoint:
-        raise ValueError("an incumbent opponent mix requires --incumbent CHECKPOINT")
-    policy, blob = load_policy(checkpoint, device)
-    if blob.get("q12_recovered") is not True or blob.get("unfloored_actions") not in (
-        None,
-        [],
-    ):
-        raise ValueError(
-            "--incumbent must be an exact Q12-recovered checkpoint "
-            "with no unfloored actions"
-        )
-    policy.eval()
-    return policy
+        layout.extend((kind, k % seats) for k in range(role_counts[kind]))
+    return layout
 
 
 def q12_initialization_provenance(blob: dict | None) -> bool:
@@ -1847,6 +1930,23 @@ def validate_profile_column_mode(
         raise ValueError("--profile-columns-only requires checkpoint initialization")
 
 
+def wire_clocks(jobs: list[Job]) -> tuple[float, float, float]:
+    """Summed client-side wire clocks over each job's distinct worker.
+
+    The workers are stepped one at a time from this process, so summing
+    their counters stays comparable with the rollout's own wall clock.
+    Scripted test doubles carry no counters and read as zero.
+    """
+    workers: dict[int, Worker] = {}
+    for job in jobs:
+        workers.setdefault(id(job.worker), job.worker)
+    return (
+        sum(getattr(worker, "time_wait", 0.0) for worker in workers.values()),
+        sum(getattr(worker, "time_parse", 0.0) for worker in workers.values()),
+        sum(getattr(worker, "time_send", 0.0) for worker in workers.values()),
+    )
+
+
 def rollout(
     policy: nn.Module,
     jobs: list[Job],
@@ -1880,40 +1980,44 @@ def rollout(
 
     active = {id(job) for job in jobs}
     limit = steps if collection == "windows" else episode_max_steps
+    wire_started = wire_clocks(jobs)
     for _ in range(limit):
         if collection == "episodes" and not active:
             break
         step_jobs = [job for job in jobs if id(job) in active]
-        views = []
-        keys = []
-        live = []
-        for j in step_jobs:
-            for s in j.learner_seats:
-                v = j.seat_view(s)
-                views.append(v)
-                keys.append((id(j), s))
-                live.append(s not in j.dead)
-        obs = np.stack([v.obs for v in views])
-        mask = np.stack([v.mask for v in views])
+        with timed("obs_sec"):
+            views = []
+            keys = []
+            live = []
+            for j in step_jobs:
+                for s in j.learner_seats:
+                    v = j.seat_view(s)
+                    views.append(v)
+                    keys.append((id(j), s))
+                    live.append(s not in j.dead)
+            obs = np.stack([v.obs for v in views])
+            mask = np.stack([v.mask for v in views])
         with timed("policy_sec"), torch.no_grad():
             logits, value = policy(
                 torch.as_tensor(obs, device=device),
                 torch.as_tensor(mask, device=device),
             )
-            action = factorized_sample(logits)
-            logp = factorized_joint_log_prob(logits, action).cpu().numpy()
+            # One distribution build serves both the draw and its score.
+            action, logp_t = factorized_sample_with_log_prob(logits)
+            logp = logp_t.cpu().numpy()
         logits_np = logits.cpu().numpy()
         action = action.cpu().numpy()
         value = value.cpu().numpy()
 
-        for k, key in enumerate(keys):
-            lane = lanes[key]
-            lane.obs.append(obs[k])
-            lane.mask.append(mask[k])
-            lane.act.append(action[k])
-            lane.logp.append(logp[k])
-            lane.val.append(value[k])
-            lane.valid.append(live[k])
+        with timed("lane_sec"):
+            for k, key in enumerate(keys):
+                lane = lanes[key]
+                lane.obs.append(obs[k])
+                lane.mask.append(mask[k])
+                lane.act.append(action[k])
+                lane.logp.append(logp[k])
+                lane.val.append(value[k])
+                lane.valid.append(live[k])
 
         row = {key: k for k, key in enumerate(keys)}
         # Pipelined env step: every job's actions — opponent minds
@@ -1923,36 +2027,40 @@ def rollout(
         # concurrently instead of one at a time; the batch is
         # bit-identical to the serial loop because nothing about a
         # job's step depends on another job's reply.
+        with timed("opp_sec"):
+            opponent_plans = opponent_actions(step_jobs, device)
         all_acts = []
-        for j in step_jobs:
+        for j, opponent_plan in zip(step_jobs, opponent_plans, strict=True):
             acts = {}
-            for s in j.learner_seats:
-                if s in j.dead:
-                    continue  # a frozen lane sends nothing to the sim
-                k = row[(id(j), s)]
-                intended: ActionPlan = (
-                    int(action[k, 0]),
-                    int(action[k, 1]),
-                    int(action[k, 2]),
-                )
-                acts[s] = maybe_blunder(
-                    intended,
-                    logits_np[k],
-                    mask[k],
-                    j.episode_dials[s].execution.hesitation_permille,
-                    j.rng,
-                )
-                if acts[s][1] == SALVAGE_ACTION:
-                    TEL["salvage_action_samples"] += 1
-                elif acts[s][1] == BUILD_TURRET_ACTION:
-                    TEL["turret_action_samples"] += 1
-                elif acts[s][1] == BUILD_ARRAY_ACTION:
-                    TEL["array_action_samples"] += 1
-                elif acts[s][1] == REPAIR_ACTION:
-                    TEL["repair_action_samples"] += 1
-                elif acts[s][1] == BUILD_BAY_ACTION:
-                    TEL["bay_action_samples"] += 1
-            acts.update(j.opponent_action(device))
+            with timed("act_sec"):
+                for s in j.learner_seats:
+                    if s in j.dead:
+                        continue  # a frozen lane sends nothing to the sim
+                    k = row[(id(j), s)]
+                    intended: ActionPlan = (
+                        int(action[k, 0]),
+                        int(action[k, 1]),
+                        int(action[k, 2]),
+                        int(action[k, 3]),
+                    )
+                    acts[s] = maybe_blunder(
+                        intended,
+                        logits_np[k],
+                        mask[k],
+                        j.episode_dials[s].execution.hesitation_permille,
+                        j.rng,
+                    )
+                    if acts[s][1] == SALVAGE_ACTION:
+                        TEL["salvage_action_samples"] += 1
+                    elif acts[s][1] == BUILD_TURRET_ACTION:
+                        TEL["turret_action_samples"] += 1
+                    elif acts[s][1] == BUILD_ARRAY_ACTION:
+                        TEL["array_action_samples"] += 1
+                    elif acts[s][1] == REPAIR_ACTION:
+                        TEL["repair_action_samples"] += 1
+                    elif acts[s][1] == BUILD_BAY_ACTION:
+                        TEL["bay_action_samples"] += 1
+            acts.update(opponent_plan)
             all_acts.append(acts)
         with timed("env_sec"):
             for j, acts in zip(step_jobs, all_acts, strict=True):
@@ -1960,6 +2068,9 @@ def rollout(
         for j in step_jobs:
             with timed("env_sec"):
                 frame = j.worker.recv()
+            # frame_sec closes at the end of this body; a truncated
+            # episode's bootstrap forward inside it also bills policy_sec.
+            frame_started = time.perf_counter()
             for s, effects in frame.effects.items():
                 if s not in j.learner_seats:
                     continue
@@ -2116,6 +2227,12 @@ def rollout(
                     lane.done.append(False)
                     lane.last_pot = pot
                 j.frame = frame
+            TEL["frame_sec"] += time.perf_counter() - frame_started
+
+    wire_wait, wire_parse, wire_send = wire_clocks(jobs)
+    TEL["wire_wait_sec"] += wire_wait - wire_started[0]
+    TEL["wire_parse_sec"] += wire_parse - wire_started[1]
+    TEL["wire_send_sec"] += wire_send - wire_started[2]
 
     ordered = list(lanes.values())
     if collection == "episodes":
@@ -2177,7 +2294,7 @@ def evaluate(
 ) -> float:
     """Greedy fixed suite across canonical profiles and both physical seats.
 
-    ``opponent`` is a tier name or ``rusher``. Each seed uses one
+    ``opponent`` is ``overseer`` or ``rusher``. Each seed uses one
     Rust-authored named profile, cycling through the worker's catalog in
     handshake order; both seat assignments therefore test the same
     strategic policy vector under honest faction retinting.
@@ -2210,8 +2327,11 @@ def evaluate(
             if opponent == "rusher":
                 frame = w.reset(seed, control=(0, 1), conditions=straight)
             else:
+                # The scripted opponent consumes no neural conditions;
+                # the wire requires conditions to name exactly the
+                # controlled seats.
                 frame = w.reset(
-                    seed, control=(seat,), tier=opponent, conditions=straight
+                    seed, control=(seat,), conditions={seat: straight[seat]}
                 )
             live.append((i, seat, frame))
         while live:
@@ -2232,6 +2352,7 @@ def evaluate(
                     int(action[k, 0]),
                     int(action[k, 1]),
                     int(action[k, 2]),
+                    int(action[k, 3]),
                 )
                 acts: dict[int, ActionPlan] = {seat: plan}
                 if opponent == "rusher":
@@ -2249,6 +2370,397 @@ def evaluate(
                     still.append((i, seat, nxt))
             live = still
     return wins / games if games else 0.0
+
+
+# Sharded rollout collection. ``--collectors N`` (N > 1) splits the
+# fixed job list into N contiguous shards, each served by a spawned
+# collector process that owns its shard's gym workers, past-policy
+# cache, map warmer, and telemetry counters. The learner broadcasts the
+# current policy weights each update, every collector runs the
+# unchanged ``rollout`` over its shard, and the learner reassembles the
+# shards in fixed shard order, so the batch's lane columns sit exactly
+# where the single process would put them.
+#
+# The determinism story, precisely: within a fixed N every stream is
+# seeded — job RNG streams by global job index, episode seeds by the
+# shard's arithmetic progression, and each collector's torch generator
+# from (torch seed base, collector index, update index) before every
+# rollout — so a rerun with the same N reproduces bit for bit. Across
+# different N the torch sampling streams and the seed partition are
+# consumed in a different order than the single-process stream, so
+# trajectories do NOT reproduce N=1 decision for decision. Like the
+# batched opponent forward, the collector count is a lineage boundary
+# recorded in the run's hyperparameters, not a change of any per-seat
+# sampling distribution.
+
+
+def shard_job_indices(workers: int, collectors: int) -> list[tuple[int, ...]]:
+    """Contiguous, deterministic partition of the global job indices.
+
+    Contiguity keeps the assembled lane order identical to the
+    single-process job order; earlier shards absorb the remainder, so
+    shard sizes differ by at most one and every shard owns a job.
+    """
+    if workers <= 0:
+        raise ValueError("sharding requires at least one worker")
+    if not 1 <= collectors <= workers:
+        raise ValueError(
+            f"collectors must be between 1 and {workers} workers, got {collectors}"
+        )
+    base, extra = divmod(workers, collectors)
+    shards = []
+    start = 0
+    for shard in range(collectors):
+        count = base + (1 if shard < extra else 0)
+        shards.append(tuple(range(start, start + count)))
+        start += count
+    return shards
+
+
+def shard_seed(base: int, shard: int, shards: int, index: int) -> int:
+    """The shard's ``index``-th episode seed.
+
+    Collector ``c`` of ``N`` walks ``base + c, base + c + N, ...``, so
+    the collectors partition the exact seed sequence the in-process
+    trainer walks (``base, base + 1, ...``) with no overlap, and a
+    single shard degenerates to that original sequence.
+    """
+    if shards <= 0 or not 0 <= shard < shards:
+        raise ValueError(f"shard must be in 0..{shards - 1}, got {shard}")
+    if index < 0:
+        raise ValueError(f"seed index must be non-negative, got {index}")
+    return base + shard + shards * index
+
+
+def collector_torch_seed(base: int, shard: int, update: int) -> int:
+    """One well-mixed torch seed per (collector, update) pair."""
+    if base < 0 or shard < 0 or update < 0:
+        raise ValueError("torch seed components must be non-negative")
+    sequence = np.random.SeedSequence((base, shard, update))
+    return int(sequence.generate_state(1, dtype=np.uint64)[0])
+
+
+@dataclass(frozen=True)
+class CollectorConfig:
+    """Everything one collector needs to rebuild its shard of jobs."""
+
+    shard: int
+    shards: int
+    shard_indices: tuple[int, ...]
+    total_workers: int
+    driver: str
+    device: str
+    arch: str
+    mix: dict[str, float]
+    pool_dir: str
+    maps: str
+    map_mix: dict[str, float] | None
+    faction_mix: dict[str, float] | None
+    aggression_range: tuple[int, int] | None
+    aggression_mix: AggressionDistribution | None
+    map_driver: str
+    collection: str
+    steps: int
+    episode_max_steps: int
+    seed_base: int
+    job_stream_seed: int
+    torch_seed_base: int
+    style_coefficient: float
+    require_effect_telemetry: bool
+    warm_families: tuple[str, ...]
+
+
+def _collector_serve(
+    connection: Connection,
+    config: CollectorConfig,
+    workers: list[Worker],
+) -> None:
+    """Answers rollout and evaluation requests for one shard of jobs."""
+    if config.require_effect_telemetry and any(
+        not worker.supports_effect_telemetry for worker in workers
+    ):
+        connection.send(
+            (
+                "error",
+                "effect-seeded training requires a gym driver that advertises "
+                "effect_telemetry",
+            )
+        )
+        return
+    layout = role_layout(config.mix, config.total_workers)
+    streams = np.random.default_rng(config.job_stream_seed).spawn(config.total_workers)
+    jobs = [
+        Job(
+            worker,
+            layout[index][0],
+            layout[index][1],
+            pathlib.Path(config.pool_dir),
+            streams[index],
+            config.device,
+            config.maps,
+            config.map_mix,
+            config.faction_mix,
+            config.aggression_range,
+            config.aggression_mix,
+            config.map_driver,
+        )
+        for worker, index in zip(workers, config.shard_indices, strict=True)
+    ]
+    policy = make_policy(config.arch)
+    consumed = [-1]
+
+    def seed_stream() -> Iterator[int]:
+        index = 0
+        while True:
+            consumed[0] = index
+            yield shard_seed(config.seed_base, config.shard, config.shards, index)
+            index += 1
+
+    seeds = seed_stream()
+    if config.warm_families:
+        # The same daemon warmer the in-process path runs, walking only
+        # this shard's arithmetic seed progression.
+        def warm() -> None:
+            warmed = 0
+            while True:
+                target = consumed[0] + 1 + 2 * len(jobs)
+                while warmed < target:
+                    warmed = max(warmed, consumed[0] + 1)
+                    warm_generated_maps(
+                        shard_seed(
+                            config.seed_base,
+                            config.shard,
+                            config.shards,
+                            warmed,
+                        ),
+                        config.warm_families,
+                        config.driver,
+                    )
+                    warmed += 1
+                time.sleep(0.25)
+
+        threading.Thread(
+            target=warm,
+            daemon=True,
+            name=f"map-warmer-{config.shard}",
+        ).start()
+    connection.send(("ready", config.shard))
+    while True:
+        message = connection.recv()
+        request = message[0]
+        if request == "rollout":
+            _, update, state, bonuses = message
+            policy.load_state_dict(state)
+            torch.manual_seed(
+                collector_torch_seed(config.torch_seed_base, config.shard, update)
+            )
+            TEL.clear()
+            batch, last_val, finals = rollout(
+                policy,
+                jobs,
+                seeds,
+                config.steps,
+                config.device,
+                style_coefficient=config.style_coefficient,
+                collection=config.collection,
+                episode_max_steps=config.episode_max_steps,
+                **bonuses,
+            )
+            connection.send(("batch", batch, last_val, finals, dict(TEL)))
+        elif request == "eval":
+            _, state, opponents = message
+            policy.load_state_dict(state)
+            results = {
+                opponent: evaluate(policy, workers, config.device, opponent)
+                for opponent in opponents
+            }
+            # Evaluation borrowed this shard's workers; the standing
+            # episodes are gone. Fresh ones start next rollout.
+            for job in jobs:
+                job.frame = None
+            connection.send(("eval", results))
+        elif request == "close":
+            return
+        else:
+            raise RuntimeError(f"unknown collector request {request!r}")
+
+
+def collector_main(connection: Connection, config: CollectorConfig) -> None:
+    """One spawned collector process's entry point.
+
+    Module-level state (TEL, the pool-policy cache) is process-local by
+    construction — exactly the per-collector state the shard needs.
+    Torch threads are capped at one because N collectors of tiny
+    forwards oversubscribe cores long before a single forward benefits
+    from intra-op parallelism.
+    """
+    torch.set_num_threads(1)
+    workers: list[Worker] = []
+    try:
+        workers = [Worker(config.driver) for _ in config.shard_indices]
+        _collector_serve(connection, config, workers)
+    except EOFError:
+        pass  # the learner is gone; exit quietly
+    except Exception as err:
+        with contextlib.suppress(OSError):
+            connection.send(("error", f"{type(err).__name__}: {err}"))
+        raise
+    finally:
+        for worker in workers:
+            with contextlib.suppress(Exception):
+                worker.close()
+
+
+def _extend_episode_lanes(
+    batch: tuple[np.ndarray, ...],
+    width: int,
+) -> tuple[np.ndarray, ...]:
+    """Pads one episode shard's lanes to the assembled width.
+
+    The rows follow the in-process episode collector's own padding
+    convention: frozen observations, actions, log-probabilities, and
+    values, zero reward, done, and invalid — GAE-safe rows that train
+    nothing.
+    """
+    obs, mask, act, logp, val, rew, done, valid = batch
+    pad = width - obs.shape[0]
+    if pad < 0:
+        raise ValueError("cannot shrink a shard to the assembled width")
+    if pad == 0:
+        return batch
+
+    def frozen(array: np.ndarray) -> np.ndarray:
+        return np.concatenate([array, np.repeat(array[-1:], pad, axis=0)])
+
+    return (
+        frozen(obs),
+        frozen(mask),
+        frozen(act),
+        frozen(logp),
+        frozen(val),
+        np.concatenate([rew, np.zeros((pad, *rew.shape[1:]), dtype=rew.dtype)]),
+        np.concatenate([done, np.ones((pad, *done.shape[1:]), dtype=done.dtype)]),
+        np.concatenate([valid, np.zeros((pad, *valid.shape[1:]), dtype=valid.dtype)]),
+    )
+
+
+def assemble_shard_batches(
+    shards: list[tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]],
+    collection: str,
+) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]:
+    """Concatenates collector shards along the lane axis in shard order.
+
+    Shard order is the fixed contiguous partition of the global job
+    list, so the assembled lane columns sit exactly where the
+    single-process rollout would put them. Fixed-window shards must
+    agree on width; episode shards each stop at their own slowest
+    episode, so shorter shards extend with the standard frozen padding
+    before concatenation.
+    """
+    if not shards:
+        raise ValueError("assembly requires at least one shard")
+    widths = sorted({batch[0].shape[0] for batch, _last_val, _finals in shards})
+    if collection == "windows" and len(widths) != 1:
+        raise ValueError(f"fixed-window shards disagree on width: {widths}")
+    width = widths[-1]
+    padded = [
+        _extend_episode_lanes(batch, width) for batch, _last_val, _finals in shards
+    ]
+    batch = tuple(
+        np.concatenate([shard[part] for shard in padded], axis=1) for part in range(8)
+    )
+    last_val = np.concatenate([last_val for _batch, last_val, _finals in shards])
+    finals = [final for _batch, _last_val, finals in shards for final in finals]
+    return batch, last_val, finals
+
+
+class CollectorPool:
+    """The learner's handle on N spawned rollout collectors.
+
+    Spawn — never fork — is the start method that coexists safely with
+    torch on macOS. Traffic is strict request/reply per collector, so a
+    pipe never carries two payloads in the same direction at once.
+    """
+
+    def __init__(self, configs: list[CollectorConfig]) -> None:
+        context = multiprocessing.get_context("spawn")
+        self.connections: list[Connection] = []
+        self.processes = []
+        for config in configs:
+            parent, child = context.Pipe()
+            process = context.Process(
+                target=collector_main,
+                args=(child, config),
+                daemon=True,
+                name=f"collector-{config.shard}",
+            )
+            process.start()
+            child.close()
+            self.connections.append(parent)
+            self.processes.append(process)
+        for connection in self.connections:
+            self._expect(connection, "ready")
+
+    @staticmethod
+    def _expect(connection: Connection, expected: str) -> tuple:
+        try:
+            reply = connection.recv()
+        except EOFError as err:
+            raise RuntimeError("a rollout collector died mid-run") from err
+        if reply[0] == "error":
+            raise RuntimeError(f"rollout collector failed: {reply[1]}")
+        if reply[0] != expected:
+            raise RuntimeError(
+                f"rollout collector sent {reply[0]!r}, expected {expected!r}"
+            )
+        return reply
+
+    def rollout(
+        self,
+        update: int,
+        state: dict[str, torch.Tensor],
+        bonuses: dict[str, float],
+        collection: str,
+    ) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float], Counter]:
+        """Runs one sharded collection pass and reassembles the shards."""
+        for connection in self.connections:
+            connection.send(("rollout", update, state, bonuses))
+        shards = []
+        telemetry: Counter = Counter()
+        for connection in self.connections:
+            _, batch, last_val, finals, shard_telemetry = self._expect(
+                connection, "batch"
+            )
+            shards.append((batch, last_val, finals))
+            telemetry.update(shard_telemetry)
+        batch, last_val, finals = assemble_shard_batches(shards, collection)
+        return batch, last_val, finals, telemetry
+
+    def evaluate(
+        self,
+        state: dict[str, torch.Tensor],
+        opponents: tuple[str, ...],
+    ) -> dict[str, float]:
+        """Runs the greedy fixed suite on the first collector's workers.
+
+        Greedy evaluation draws nothing from torch's generator, and its
+        outcomes do not depend on how games chunk across workers, so
+        one shard's workers answer for the whole pool.
+        """
+        connection = self.connections[0]
+        connection.send(("eval", state, opponents))
+        return self._expect(connection, "eval")[1]
+
+    def close(self) -> None:
+        for connection in self.connections:
+            with contextlib.suppress(OSError):
+                connection.send(("close",))
+        for process in self.processes:
+            process.join(timeout=30)
+            if process.is_alive():
+                process.terminate()
+        for connection in self.connections:
+            connection.close()
 
 
 def probe_canary(payload: dict) -> dict:
@@ -2291,9 +2803,11 @@ def probe_canary(payload: dict) -> dict:
     }
 
 
-# Schema 6 adds competitive-lifetime combat metrics without redefining
-# the preserved all-unit diagnostics.
-PROBE_SCHEMA = 6
+# Schema 10 adds the per-kind competitive reach and scrap-destination
+# tables beside the competitive-lifetime combat metrics and the
+# preserved all-unit diagnostics. The canary reads none of them yet;
+# the pin exists so a driver/loop mismatch fails loudly.
+PROBE_SCHEMA = 10
 
 
 def composition_probe(
@@ -2375,6 +2889,16 @@ def main() -> None:
         help="mlp | wide (ignored with checkpoint initialization)",
     )
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument(
+        "--collectors",
+        type=int,
+        default=1,
+        help="rollout collector processes; 1 collects in-process (the "
+        "established path), N>1 shards the job list across N spawned "
+        "collector processes — a recorded lineage boundary: a fixed N "
+        "reproduces exactly, but trajectories differ from the N=1 "
+        "torch sampling stream",
+    )
     ap.add_argument("--steps", type=int, default=384)
     ap.add_argument(
         "--collection",
@@ -2527,14 +3051,9 @@ def main() -> None:
     ap.add_argument(
         "--mix",
         type=parse_opponent_mix,
-        default=parse_opponent_mix("self=0.45,past=0.20,tier=0.20,rusher=0.15"),
-        help="opponent kind weights; tier samples the scripted ladder, "
-        "while scrapheap, standard, veteran, and prime select an exact tier",
-    )
-    ap.add_argument(
-        "--incumbent",
-        default=None,
-        help="exact Q12-recovered checkpoint used by an incumbent opponent lane",
+        default=parse_opponent_mix("self=0.45,past=0.20,overseer=0.20,rusher=0.15"),
+        help="opponent kind weights; overseer seats the scripted Overseer "
+        "commander as the fixed anchor and rusher the scripted rush teacher",
     )
     ap.add_argument(
         "--probe-every",
@@ -2581,7 +3100,7 @@ def main() -> None:
             args.initialize_from is not None or args.resume is not None,
             args.profile_column,
         )
-        incumbent = load_incumbent_policy(mix, args.incumbent, device)
+        shard_job_indices(args.workers, args.collectors)
     except ValueError as err:
         ap.error(str(err))
 
@@ -2635,8 +3154,6 @@ def main() -> None:
         )
     if args.anchor:
         lineage_inputs["anchor"] = input_identity(args.anchor, anchor_blob)
-    if incumbent is not None and args.incumbent:
-        lineage_inputs["incumbent"] = input_identity(args.incumbent)
     run_lineage = build_lineage(
         phase="league",
         phase_start_update=start_update,
@@ -2645,6 +3162,7 @@ def main() -> None:
             "anchor_decay": args.anchor_decay,
             "arch": arch,
             "collection": args.collection,
+            "collectors": args.collectors,
             "entropy_coefficient": args.entropy_coef,
             "eval_every": args.eval_every,
             "execution_profiles": [
@@ -2712,16 +3230,24 @@ def main() -> None:
         pool_dir = claim_fresh_run_directory(run_dir)
     except RuntimeError as err:
         ap.error(str(err))
-    workers = [Worker(args.driver) for _ in range(args.workers)]
-    if (args.repair_bonus or args.reclaimer_bonus or args.structure_bonus) and any(
-        not worker.supports_effect_telemetry for worker in workers
-    ):
-        for worker in workers:
-            worker.close()
-        raise RuntimeError(
-            "effect-seeded training requires a gym driver that advertises "
-            "effect_telemetry"
-        )
+    require_effect_telemetry = bool(
+        args.repair_bonus or args.reclaimer_bonus or args.structure_bonus
+    )
+    layout = role_layout(mix, args.workers)
+    lane_kinds = lane_kinds_for_layout(layout)
+    workers: list[Worker] = []
+    collectors: CollectorPool | None = None
+    if args.collectors == 1:
+        workers = [Worker(args.driver) for _ in range(args.workers)]
+        if require_effect_telemetry and any(
+            not worker.supports_effect_telemetry for worker in workers
+        ):
+            for worker in workers:
+                worker.close()
+            raise RuntimeError(
+                "effect-seeded training requires a gym driver that advertises "
+                "effect_telemetry"
+            )
     rng = np.random.default_rng(0)
     optimizer_rng = np.random.default_rng(1)
 
@@ -2739,7 +3265,44 @@ def main() -> None:
     seeds = seed_stream()
 
     warm_families = generated_map_families(map_mix, mix)
-    if warm_families:
+    if args.collectors > 1:
+        # Collector processes own their shard's workers, jobs, seed
+        # progression, past-policy cache, and map warmer; the learner
+        # keeps the optimizer, checkpoint cadence, journal, and probes.
+        collectors = CollectorPool(
+            [
+                CollectorConfig(
+                    shard=shard,
+                    shards=args.collectors,
+                    shard_indices=indices,
+                    total_workers=args.workers,
+                    driver=args.driver,
+                    device=device,
+                    arch=arch,
+                    mix=mix,
+                    pool_dir=str(pool_dir),
+                    maps=args.maps,
+                    map_mix=map_mix,
+                    faction_mix=faction_mix,
+                    aggression_range=aggression_range,
+                    aggression_mix=args.aggression_mix,
+                    map_driver=args.driver,
+                    collection=args.collection,
+                    steps=args.steps,
+                    episode_max_steps=MAX_EPISODE_DECISIONS,
+                    seed_base=50_000,
+                    job_stream_seed=0,
+                    torch_seed_base=0,
+                    style_coefficient=args.style_coef,
+                    require_effect_telemetry=require_effect_telemetry,
+                    warm_families=warm_families,
+                )
+                for shard, indices in enumerate(
+                    shard_job_indices(args.workers, args.collectors)
+                )
+            ]
+        )
+    elif warm_families:
         # Cold-cache map generation costs a driver subprocess per map
         # (~34% of an update when the cache is empty). A daemon warmer
         # stays a few seeds ahead of the cursor across every active
@@ -2760,21 +3323,24 @@ def main() -> None:
     log = (run_dir / "log.jsonl").open("x")
 
     try:
-        jobs = assign_roles(
-            workers,
-            mix,
-            pool_dir,
-            rng,
-            device,
-            args.maps,
-            map_mix,
-            incumbent,
-            faction_mix,
-            aggression_range,
-            args.aggression_mix,
-            args.driver,
+        jobs = (
+            []
+            if collectors is not None
+            else assign_roles(
+                workers,
+                mix,
+                pool_dir,
+                rng,
+                device,
+                args.maps,
+                map_mix,
+                faction_mix,
+                aggression_range,
+                args.aggression_mix,
+                args.driver,
+            )
         )
-        allocated_learner_row_mix = realized_learner_row_mix(jobs)
+        allocated_learner_row_mix = realized_row_mix_from_lane_kinds(lane_kinds)
         for update in range(start_update + 1, start_update + args.updates + 1):
             t0 = time.time()
             phase_update = update - start_update
@@ -2819,24 +3385,44 @@ def main() -> None:
                 reward_update,
                 args.tech_anneal or args.updates,
             )
-            batch, last_val, finals = rollout(
-                policy,
-                jobs,
-                seeds,
-                args.steps,
-                device,
-                tech_bonus=tb,
-                mix_bonus=mb,
-                salvage_bonus=sb,
-                repair_bonus=rb,
-                reclaimer_bonus=eb,
-                structure_bonus=ub,
-                style_coefficient=args.style_coef,
-                collection=args.collection,
-            )
+            if collectors is not None:
+                weights = {
+                    key: value.detach().cpu()
+                    for key, value in policy.state_dict().items()
+                }
+                batch, last_val, finals, shard_telemetry = collectors.rollout(
+                    update,
+                    weights,
+                    {
+                        "tech_bonus": tb,
+                        "mix_bonus": mb,
+                        "salvage_bonus": sb,
+                        "repair_bonus": rb,
+                        "reclaimer_bonus": eb,
+                        "structure_bonus": ub,
+                    },
+                    args.collection,
+                )
+                TEL.update(shard_telemetry)
+            else:
+                batch, last_val, finals = rollout(
+                    policy,
+                    jobs,
+                    seeds,
+                    args.steps,
+                    device,
+                    tech_bonus=tb,
+                    mix_bonus=mb,
+                    salvage_bonus=sb,
+                    repair_bonus=rb,
+                    reclaimer_bonus=eb,
+                    structure_bonus=ub,
+                    style_coefficient=args.style_coef,
+                    collection=args.collection,
+                )
             rollout_sec = time.time() - t0
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch
-            learner_row_mix = realized_learner_row_mix(jobs, valid_b)
+            learner_row_mix = realized_row_mix_from_lane_kinds(lane_kinds, valid_b)
             adv, ret = gae(
                 rew_b,
                 done_b,
@@ -2852,7 +3438,7 @@ def main() -> None:
             flat = (
                 obs_b.reshape(-1, NET_FEATURES)[rows],
                 mask_b.reshape(-1, ACTIONS)[rows],
-                act_b.reshape(-1, 3)[rows],
+                act_b.reshape(-1, len(ACTION_HEADS))[rows],
                 logp_b.reshape(-1)[rows],
                 adv.reshape(-1)[rows],
                 ret.reshape(-1)[rows],
@@ -2888,7 +3474,7 @@ def main() -> None:
                 "update": update,
                 "phase_update": phase_update,
                 "lineage_id": run_lineage["lineage_id"],
-                "kinds": sorted(j.kind for j in jobs),
+                "kinds": sorted(kind for kind, _seat in layout),
                 "collection": args.collection,
                 "allocated_learner_row_mix": allocated_learner_row_mix,
                 "learner_row_mix": learner_row_mix,
@@ -2992,27 +3578,45 @@ def main() -> None:
                 phase_interval_due(update, start_update, args.pool_every)
                 or final_update
             ):
-                save_policy(
-                    policy,
-                    arch,
-                    pool_dir / f"ckpt-{update:05d}.pt",
-                    checkpoint_metadata(
-                        run_lineage,
-                        {
-                            "critic_ready": critic_ready,
-                            "gym_version": GYM_VERSION,
-                            "update": update,
-                        },
-                    ),
+                pool_path = pool_dir / f"ckpt-{update:05d}.pt"
+                pool_metadata = checkpoint_metadata(
+                    run_lineage,
+                    {
+                        "critic_ready": critic_ready,
+                        "gym_version": GYM_VERSION,
+                        "update": update,
+                    },
                 )
+                if collectors is None:
+                    save_policy(policy, arch, pool_path, pool_metadata)
+                else:
+                    # Collector processes glob the pool between resets;
+                    # a torn torch.save must never be visible under a
+                    # name their ckpt-*.pt glob matches.
+                    staging = pool_path.with_name(pool_path.name + ".tmp")
+                    save_policy(policy, arch, staging, pool_metadata)
+                    os.replace(staging, pool_path)
             if (
                 phase_interval_due(update, start_update, args.eval_every)
                 or final_update
             ):
-                entry["eval"] = {
-                    op: round(evaluate(policy, workers, device, op), 3)
-                    for op in ("veteran", "prime", "rusher")
-                }
+                if collectors is not None:
+                    weights = {
+                        key: value.detach().cpu()
+                        for key, value in policy.state_dict().items()
+                    }
+                    entry["eval"] = {
+                        opponent: round(score, 3)
+                        for opponent, score in collectors.evaluate(
+                            weights,
+                            ("overseer", "rusher"),
+                        ).items()
+                    }
+                else:
+                    entry["eval"] = {
+                        op: round(evaluate(policy, workers, device, op), 3)
+                        for op in ("overseer", "rusher")
+                    }
                 save_policy(
                     policy,
                     arch,
@@ -3061,6 +3665,8 @@ def main() -> None:
     finally:
         for w in workers:
             w.close()
+        if collectors is not None:
+            collectors.close()
 
 
 if __name__ == "__main__":

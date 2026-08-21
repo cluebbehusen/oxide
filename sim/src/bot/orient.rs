@@ -109,7 +109,7 @@ impl Orientation {
             // flips like a building's — the site audit compares it
             // against anchors recorded in oriented space.
             if let Some((kind, anchor)) = u.founding.as_mut() {
-                *anchor = self.anchor(*anchor, kind.stats().size);
+                *anchor = self.anchor(*anchor, kind.base_stats().size);
             }
         }
         for b in o
@@ -119,12 +119,22 @@ impl Orientation {
             .chain(o.enemy_buildings.iter_mut())
         {
             b.anchor = self.anchor(b.anchor, {
-                let (w, h) = b.kind.stats().size;
+                let (w, h) = b.kind.base_stats().size;
                 (w, h)
             });
         }
         for (pos, _) in o.known_scrap.iter_mut().chain(o.known_wrecks.iter_mut()) {
             *pos = self.tile(*pos);
+        }
+        // Frames are 2x2 footprints, so their anchors flip like a
+        // building's, not like a tile — the same rule founding promises
+        // use above. This field was the one positional collection
+        // observe() forgot: flipped seats mixed world-space frame
+        // anchors with oriented everything else, aimed Extractor
+        // claims at mirror-image tiles holding no frame, and fed the
+        // policy a seat-dependent nearest-frame feature.
+        for f in o.known_frames.iter_mut() {
+            *f = self.anchor(*f, (2, 2));
         }
         for pos in o
             .known_rock
@@ -136,6 +146,7 @@ impl Orientation {
             *pos = self.tile(*pos);
         }
         o.known_scrap.sort_by_key(|(p, _)| (p.y, p.x));
+        o.known_frames.sort_by_key(|p| (p.y, p.x));
         o.known_wrecks.sort_by_key(|(p, _)| (p.y, p.x));
         o.known_rock.sort_by_key(|p| (p.y, p.x));
         o.known_peaks.sort_by_key(|p| (p.y, p.x));
@@ -164,7 +175,7 @@ impl Orientation {
                 Intent::Build { kind, anchor } => Intent::Build {
                     kind,
                     anchor: self.anchor(anchor, {
-                        let (w, h) = kind.stats().size;
+                        let (w, h) = kind.base_stats().size;
                         (w, h)
                     }),
                 },
@@ -187,6 +198,10 @@ impl Orientation {
                 Intent::RaidAir { target } => Intent::RaidAir {
                     target: self.tile(target),
                 },
+                Intent::Unload { transport, at } => Intent::Unload {
+                    transport,
+                    at: self.tile(at),
+                },
                 // Positionless intents pass through — and the match stays
                 // exhaustive on purpose: a new positioned intent that
                 // slips through unflipped is a silent seat-bias
@@ -195,7 +210,9 @@ impl Orientation {
                 | Intent::RecallArmy { .. }
                 | Intent::Repair { .. }
                 | Intent::Salvage { .. }
-                | Intent::RepairUnit { .. }) => keep,
+                | Intent::RepairUnit { .. }
+                | Intent::Upgrade { .. }
+                | Intent::Load { .. }) => keep,
             })
             .collect()
     }

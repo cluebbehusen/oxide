@@ -29,7 +29,7 @@ enum Cmd {
         /// Ticks to simulate.
         #[arg(long, default_value_t = 2000)]
         ticks: u64,
-        /// Let scenario-flagged bots play.
+        /// Let scenario-flagged bots play, driven by the shipped actor.
         #[arg(long)]
         bots: bool,
         /// Record and save a replay here.
@@ -73,6 +73,29 @@ enum Cmd {
         #[arg(long)]
         map: bool,
     },
+    /// Digest a replay for review without screenshots: an event timeline
+    /// (battles, expansions, tech firsts, eliminations, lulls), per-seat
+    /// digests at intervals, and a coarse ASCII minimap. Large games read
+    /// tighter with `--every 10000` or `--minimaps none`.
+    ReplaySummary {
+        /// Replay or save JSON path.
+        path: PathBuf,
+        /// Stop after this state tick (tick N is before commands stamped N
+        /// execute); clamped to the replay's recorded duration.
+        #[arg(long)]
+        until: Option<u64>,
+        /// Digest cadence in ticks. Defaults to duration/16, clamped to
+        /// [2000, 10000].
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        every: Option<u64>,
+        /// Emit JSON instead of the text digest.
+        #[arg(long)]
+        json: bool,
+        /// Minimaps on digests: every digest, sparse (every fourth and the
+        /// final), or none.
+        #[arg(long, default_value = "sparse", value_parser = ["all", "sparse", "none"])]
+        minimaps: String,
+    },
     /// Render a scenario state to a PNG (software rasterizer, no window).
     Render {
         /// Scenario path, or "skirmish".
@@ -80,7 +103,8 @@ enum Cmd {
         /// Ticks to simulate first.
         #[arg(long, default_value_t = 0)]
         ticks: u64,
-        /// Let scenario-flagged bots play during those ticks.
+        /// Let scenario-flagged bots play during those ticks, driven by
+        /// the shipped actor.
         #[arg(long)]
         bots: bool,
         /// Output PNG path.
@@ -97,10 +121,6 @@ enum Cmd {
         /// Ladder level to probe ("easy".."expert").
         #[arg(long, default_value = "medium")]
         level: String,
-        /// Probe the scripted utility controller at this tier instead
-        /// ("scrapheap", "standard", "veteran", or "prime").
-        #[arg(long)]
-        scripted_tier: Option<String>,
         /// Raw skill-conditioning override 0-1000 (candidate --weights
         /// probes only). Omission keeps the resolved named profile.
         #[arg(long)]
@@ -114,7 +134,7 @@ enum Cmd {
         #[arg(
             long,
             value_parser = ["turtle", "balanced", "aggressive"],
-            conflicts_with_all = ["scripted_tier", "skill", "aggression", "blunder"]
+            conflicts_with_all = ["skill", "aggression", "blunder"]
         )]
         style: Option<String>,
         /// Fix the curated variant within --style (0, 1, or 2).
@@ -141,24 +161,21 @@ enum Cmd {
         /// Tick cap per match.
         #[arg(long, default_value_t = 20_000, value_parser = clap::value_parser!(u64).range(1..))]
         ticks: u64,
-        /// Candidate weights JSON (defaults to the embedded artifact).
+        /// Candidate weights JSON. Omission probes the scripted
+        /// Overseer instead of a policy artifact.
         #[arg(long)]
         weights: Option<String>,
         /// Raw JSON output path.
         #[arg(long)]
         out: Option<String>,
     },
-    /// Decisiveness seed sweep: N seeds of bot-vs-bot on one 1v1 map,
-    /// each seed played with the complete resolved profiles in both
-    /// orientations. Measures endings and seat lean.
+    /// Decisiveness seed sweep: N seeds of Overseer-vs-Overseer on one
+    /// 1v1 map. Measures endings and seat lean.
     Sweep {
         /// Scenario path, or "skirmish".
         #[arg(long, default_value = "skirmish")]
         scenario: String,
-        /// Ladder level to sweep ("easy".."expert").
-        #[arg(long, default_value = "medium")]
-        level: String,
-        /// Seeds (each played twice: dealt and complete-profile-swapped).
+        /// Seeds (one match per seed).
         #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
         /// Tick cap per match (the 0.11 probes read at 40k).
@@ -179,10 +196,7 @@ enum Cmd {
         /// Scenario directory to sweep (other formats are skipped).
         #[arg(long, default_value = "scenarios")]
         dir: String,
-        /// Ladder level both seats play ("easy".."expert").
-        #[arg(long, default_value = "medium")]
-        level: String,
-        /// Seeds per map (each played in both complete-profile orientations).
+        /// Seeds per map (one Overseer-vs-Overseer match per seed).
         #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
         /// Tick cap per match; every map's slowest tail must fit under
@@ -197,19 +211,17 @@ enum Cmd {
         out: Option<String>,
     },
     /// Factorial fairness probe: every advantage the game binds to the
-    /// seat index — roster, geometry, id range, command order, rng
-    /// stream, complete resolved profile — permuted as a full cross product on one
-    /// seed set. Reports per-factor marginals with Wilson intervals and
-    /// the whole cell table, because the interactions are the finding.
+    /// seat index — roster, geometry, id range, command order —
+    /// permuted as a full cross product on one seed set with the
+    /// Overseer in both chairs. Reports per-factor marginals with
+    /// Wilson intervals and the whole cell table, because the
+    /// interactions are the finding.
     SweepFactorial {
         /// Scenario path, or "skirmish".
         #[arg(long, default_value = "skirmish")]
         scenario: String,
-        /// Ladder level both seats play ("easy".."expert").
-        #[arg(long, default_value = "medium")]
-        level: String,
         /// Factors in the design, comma-separated (default: all of
-        /// personality, faction, spawn, command, geometry, stream).
+        /// faction, spawn, command, geometry).
         #[arg(long)]
         factors: Option<String>,
         /// Seeds per cell.
@@ -225,75 +237,6 @@ enum Cmd {
         #[arg(long)]
         out: Option<String>,
     },
-    /// Head-to-head duel between two resolved ladder profiles. An explicit
-    /// skill dial opts that side into the legacy raw zero-facet profile.
-    Duel {
-        /// Side A level ("easy".."expert").
-        #[arg(long)]
-        a: String,
-        /// Side A raw skill-knob override (drops named profile facets).
-        #[arg(long)]
-        a_skill: Option<u32>,
-        /// Side A cadence override.
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        a_cadence: Option<u64>,
-        /// Side B level ("easy".."expert").
-        #[arg(long)]
-        b: String,
-        /// Side B raw skill-knob override (drops named profile facets).
-        #[arg(long)]
-        b_skill: Option<u32>,
-        /// Side B cadence override.
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        b_cadence: Option<u64>,
-        /// Scenario path, or "skirmish".
-        #[arg(long, default_value = "skirmish")]
-        scenario: String,
-        /// Seeds (each fought from both seats).
-        #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u64).range(1..))]
-        seeds: u64,
-        /// Tick cap per match.
-        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
-        ticks: u64,
-        /// First scenario seed; offsets count up from here.
-        #[arg(long, default_value_t = 7_000)]
-        seed_base: u64,
-        /// Raw JSON output path.
-        #[arg(long)]
-        out: Option<String>,
-    },
-    /// Legacy raw zero-facet yardstick at aggression 500: one profile
-    /// versus all four scripted tiers over N seeds per tier, both seats.
-    Yardstick {
-        /// Profile level ("easy".."expert").
-        #[arg(long, default_value = "medium")]
-        level: String,
-        /// Raw skill-knob override.
-        #[arg(long)]
-        skill: Option<u32>,
-        /// Cadence override.
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        cadence: Option<u64>,
-        /// Scenario path, or "skirmish".
-        #[arg(long, default_value = "skirmish")]
-        scenario: String,
-        /// Measure every 1v1 map in this directory instead of one
-        /// scenario (other formats are skipped).
-        #[arg(long, conflicts_with = "scenario")]
-        dir: Option<String>,
-        /// Seeds per tier (each fought from both seats).
-        #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u64).range(1..))]
-        seeds: u64,
-        /// Tick cap per match.
-        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
-        ticks: u64,
-        /// First scenario seed (the gate's slate starts at 3000).
-        #[arg(long, default_value_t = 3_000)]
-        seed_base: u64,
-        /// Raw JSON output path.
-        #[arg(long)]
-        out: Option<String>,
-    },
     /// Timed mass-battle bench: ticks/second at scale, plus a hash
     /// self-check. Wall-clock stays local; CI asserts only correctness.
     Bench {
@@ -303,9 +246,10 @@ enum Cmd {
         /// Ticks to run.
         #[arg(long, default_value_t = 2_000)]
         ticks: u32,
-        /// Bench a shipped scenario with its bots thinking instead of
-        /// the synthetic mass battle (e.g. "scenarios/compass-grand.json"
-        /// — eight neural minds, the heaviest honest shape).
+        /// Bench a shipped scenario with the Overseer thinking in every
+        /// chair instead of the synthetic mass battle (e.g.
+        /// "scenarios/compass-grand.json" — eight scripted minds, the
+        /// heaviest honest shape until the retrained actor ships).
         #[arg(long)]
         scenario: Option<String>,
     },
@@ -397,8 +341,8 @@ enum Cmd {
     },
     /// Serve training episodes over stdio (newline-delimited JSON).
     Gym,
-    /// Tournament a quantized policy artifact against the scripted
-    /// tiers and rush canary (the gate measures the shipped integer bot).
+    /// Tournament a quantized policy artifact against the Overseer and
+    /// the rush canary (the gate measures the shipped integer bot).
     NeuralCup {
         /// Exported weights JSON (tools/train/export.py).
         #[arg(long)]
@@ -432,6 +376,58 @@ enum Cmd {
         /// Omission preserves the scenario's authored factions.
         #[arg(long)]
         factions: Option<oxide_driver::gym::DuelFactions>,
+    },
+    /// Endgame diagnostic: a dominant army against a bare remnant, with
+    /// and without intel of its base. Measures whether the shipped
+    /// actor can finish a won game. Diagnostic only.
+    CloseoutProbe {
+        /// Exported weights JSON (tools/train/export.py).
+        #[arg(long)]
+        weights: PathBuf,
+        /// Seeds per variant.
+        #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u64).range(1..))]
+        seeds: u64,
+        /// Tick horizon per fixture.
+        #[arg(long, default_value_t = 20_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// Exact hesitation per mille (0 = Expert clean).
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=1000))]
+        blunder: u32,
+        /// Think cadence in ticks.
+        #[arg(long, default_value_t = 34, value_parser = clap::value_parser!(u64).range(1..))]
+        cadence: u64,
+    },
+    /// Forced-doctrine A/B: the same policy plays itself with one seat
+    /// compelled to keep a quota of the probed kind, separating
+    /// "overpriced" from "never learned". Diagnostic only.
+    ViabilityProbe {
+        /// Exported weights JSON (tools/train/export.py).
+        #[arg(long)]
+        weights: PathBuf,
+        /// Seeds per action (each played from both seats).
+        #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u64).range(1..))]
+        seeds: u64,
+        /// Tick cap for each probed game.
+        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// Scenario path, or "skirmish".
+        #[arg(long, default_value = "skirmish")]
+        scenario: String,
+        /// Kinds of the probed unit or structure the doctrine keeps
+        /// pressing toward while below this count.
+        #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u32).range(1..))]
+        quota: u32,
+        /// Tick the doctrine wakes on. Forcing from tick zero measures
+        /// "should you rush X", not composition viability.
+        #[arg(long, default_value_t = 3_000)]
+        start_tick: u64,
+        /// One probe action by CLI name (e.g. "skyhook", "bastion").
+        /// Omission sweeps the full train/build roster.
+        #[arg(long)]
+        action: Option<String>,
+        /// Also write the JSON report here.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Exercise a candidate's repair verbs in deterministic wounded-state
     /// fixtures. Diagnostic only: observed, never rewarded.
@@ -492,16 +488,6 @@ fn parse_level(level: &str) -> Result<oxide_sim::bot::Level> {
     })
 }
 
-fn parse_difficulty(tier: &str) -> Result<oxide_sim::bot::Difficulty> {
-    Ok(match tier {
-        "scrapheap" => oxide_sim::bot::Difficulty::Scrapheap,
-        "standard" => oxide_sim::bot::Difficulty::Standard,
-        "veteran" => oxide_sim::bot::Difficulty::Veteran,
-        "prime" => oxide_sim::bot::Difficulty::Prime,
-        other => anyhow::bail!("unknown scripted tier '{other}'"),
-    })
-}
-
 fn parse_named_style(style: &str) -> Result<oxide_sim::scenario::NamedStyle> {
     Ok(match style {
         "turtle" => oxide_sim::scenario::NamedStyle::Turtle,
@@ -509,6 +495,32 @@ fn parse_named_style(style: &str) -> Result<oxide_sim::scenario::NamedStyle> {
         "aggressive" => oxide_sim::scenario::NamedStyle::Aggressive,
         other => anyhow::bail!("unknown named style '{other}'"),
     })
+}
+
+/// Per-tick latency digest for bench output: mean, median, tail, and the
+/// worst tick with its index — the spike a throughput mean cannot see.
+fn latency_summary(samples_ns: &[u64]) -> String {
+    if samples_ns.is_empty() {
+        return "no samples".to_string();
+    }
+    let mut sorted = samples_ns.to_vec();
+    sorted.sort_unstable();
+    let ms = |ns: u64| ns as f64 / 1_000_000.0;
+    let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
+    let mean = samples_ns.iter().sum::<u64>() / samples_ns.len() as u64;
+    let (worst_tick, worst) = samples_ns
+        .iter()
+        .enumerate()
+        .max_by_key(|(index, ns)| (**ns, std::cmp::Reverse(*index)))
+        .expect("nonempty samples");
+    format!(
+        "mean {:.3}ms p50 {:.3} p99 {:.3} max {:.2} @tick {}",
+        ms(mean),
+        ms(at(0.5)),
+        ms(at(0.99)),
+        ms(*worst),
+        worst_tick,
+    )
 }
 
 fn main() -> Result<()> {
@@ -579,6 +591,31 @@ fn main() -> Result<()> {
             )?;
             println!("{}", serde_json::to_string_pretty(&inspection)?);
         }
+        Cmd::ReplaySummary {
+            path,
+            until,
+            every,
+            json,
+            minimaps,
+        } => {
+            let replay =
+                GameReplay::load(&path).with_context(|| format!("loading {}", path.display()))?;
+            let opts = oxide_driver::replay_summary::SummaryOptions {
+                until,
+                every,
+                minimaps: match minimaps.as_str() {
+                    "all" => oxide_driver::replay_summary::MinimapMode::All,
+                    "none" => oxide_driver::replay_summary::MinimapMode::None,
+                    _ => oxide_driver::replay_summary::MinimapMode::Sparse,
+                },
+            };
+            let report = oxide_driver::replay_summary::summarize(&replay, &opts)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", report.render());
+            }
+        }
         Cmd::Render {
             scenario,
             ticks,
@@ -592,42 +629,24 @@ fn main() -> Result<()> {
         }
         Cmd::Sweep {
             scenario,
-            level,
             seeds,
             ticks,
             seed_base,
             out,
         } => {
-            let level = parse_level(&level)?;
-            oxide_driver::sweep::sweep_report(
-                &scenario,
-                level,
-                seeds,
-                ticks,
-                seed_base,
-                out.as_deref(),
-            )?;
+            oxide_driver::sweep::sweep_report(&scenario, seeds, ticks, seed_base, out.as_deref())?;
         }
         Cmd::PaceSweep {
             dir,
-            level,
             seeds,
             ticks,
             seed_base,
             out,
         } => {
-            oxide_driver::pace::pace_sweep_report(
-                &dir,
-                parse_level(&level)?,
-                seeds,
-                ticks,
-                seed_base,
-                out.as_deref(),
-            )?;
+            oxide_driver::pace::pace_sweep_report(&dir, seeds, ticks, seed_base, out.as_deref())?;
         }
         Cmd::SweepFactorial {
             scenario,
-            level,
             factors,
             seeds,
             ticks,
@@ -644,7 +663,6 @@ fn main() -> Result<()> {
             };
             oxide_driver::factorial::factorial_report(
                 &scenario,
-                parse_level(&level)?,
                 &enabled,
                 seeds,
                 ticks,
@@ -652,78 +670,9 @@ fn main() -> Result<()> {
                 out.as_deref(),
             )?;
         }
-        Cmd::Duel {
-            a,
-            a_skill,
-            a_cadence,
-            b,
-            b_skill,
-            b_cadence,
-            scenario,
-            seeds,
-            ticks,
-            seed_base,
-            out,
-        } => {
-            let a = oxide_driver::sweep::DuelSide {
-                level: parse_level(&a)?,
-                skill: a_skill,
-                cadence: a_cadence,
-            };
-            let b = oxide_driver::sweep::DuelSide {
-                level: parse_level(&b)?,
-                skill: b_skill,
-                cadence: b_cadence,
-            };
-            oxide_driver::sweep::duel_report(
-                &scenario,
-                &a,
-                &b,
-                seeds,
-                ticks,
-                seed_base,
-                out.as_deref(),
-            )?;
-        }
-        Cmd::Yardstick {
-            level,
-            skill,
-            cadence,
-            scenario,
-            dir,
-            seeds,
-            ticks,
-            seed_base,
-            out,
-        } => {
-            let side = oxide_driver::sweep::DuelSide {
-                level: parse_level(&level)?,
-                skill,
-                cadence,
-            };
-            match dir {
-                Some(dir) => oxide_driver::sweep::yardstick_slate_report(
-                    &dir,
-                    &side,
-                    seeds,
-                    ticks,
-                    seed_base,
-                    out.as_deref(),
-                )?,
-                None => oxide_driver::sweep::yardstick_report(
-                    &scenario,
-                    &side,
-                    seeds,
-                    ticks,
-                    seed_base,
-                    out.as_deref(),
-                )?,
-            }
-        }
         Cmd::BalanceProbe {
             dir,
             level,
-            scripted_tier,
             skill,
             aggression,
             style,
@@ -740,7 +689,6 @@ fn main() -> Result<()> {
                 &dir,
                 level,
                 &oxide_driver::balance::ProbeDials {
-                    scripted: scripted_tier.as_deref().map(parse_difficulty).transpose()?,
                     skill,
                     aggression,
                     style: style.as_deref().map(parse_named_style).transpose()?,
@@ -761,30 +709,38 @@ fn main() -> Result<()> {
         } => {
             if let Some(path) = scenario {
                 // Full-session bench: every seat thinks — the heaviest
-                // honest shape (eight neural minds on the 4v4 map),
+                // honest shape (eight Overseer minds on the 4v4 map),
                 // deciding whether a perf window is needed. Shipped
                 // playable maps author a human seat, so every chair is
                 // converted first; benching around an idle seat 0
-                // under-measured the claim.
+                // under-measured the claim. Bot seats proper are inert
+                // until the retrained actor ships, so the bench drives
+                // the Overseer per bot seat by hand.
                 let mut sc = runner::load_scenario(&path)?;
                 oxide_kit::bench::all_bots(&mut sc);
                 let mut state = sc.build()?;
-                let mut bots = oxide_sim::bot::seat_bots(&sc);
+                let mut bots = oxide_kit::bench::overseer_bots(&sc);
                 // The timed loop stops at the decision: post-victory
                 // ticks simulate a world with nothing left to decide
                 // and average as free work, so a long --ticks quietly
                 // inflated ticks/s (the once-recorded 25k+ figures).
                 let start = std::time::Instant::now();
                 let mut ran: u64 = 0;
+                let mut tick_ns: Vec<u64> = Vec::with_capacity(ticks as usize);
+                let mut bot_ns: Vec<u64> = Vec::with_capacity(ticks as usize);
                 for _ in 0..ticks {
                     if state.result().is_some() {
                         break;
                     }
+                    let tick_start = std::time::Instant::now();
                     let mut commands = Vec::new();
                     for bot in &mut bots {
                         commands.extend(bot.act(&state));
                     }
+                    let bots_done = std::time::Instant::now();
                     state.tick(&commands);
+                    bot_ns.push((bots_done - tick_start).as_nanos() as u64);
+                    tick_ns.push(tick_start.elapsed().as_nanos() as u64);
                     ran += 1;
                 }
                 let secs = start.elapsed().as_secs_f64();
@@ -801,6 +757,11 @@ fn main() -> Result<()> {
                     (ran as f64) / secs,
                     state.hash()
                 );
+                println!(
+                    "bench-latency: whole tick {} | bot phase {}",
+                    latency_summary(&tick_ns),
+                    latency_summary(&bot_ns),
+                );
                 return Ok(());
             }
             let scenario = oxide_kit::bench::mass_battle(units, 9);
@@ -808,11 +769,14 @@ fn main() -> Result<()> {
             oxide_kit::bench::engage(&mut state);
             let start = std::time::Instant::now();
             let mut ran: u64 = 0;
+            let mut tick_ns: Vec<u64> = Vec::with_capacity(ticks as usize);
             for _ in 0..ticks {
                 if state.result().is_some() {
                     break;
                 }
+                let tick_start = std::time::Instant::now();
                 state.tick(&[]);
+                tick_ns.push(tick_start.elapsed().as_nanos() as u64);
                 ran += 1;
             }
             let secs = start.elapsed().as_secs_f64();
@@ -828,6 +792,7 @@ fn main() -> Result<()> {
                 (ran as f64) / secs,
                 state.hash(),
             );
+            println!("bench-latency: whole tick {}", latency_summary(&tick_ns));
         }
         Cmd::Matchup {
             a,
@@ -992,6 +957,32 @@ fn main() -> Result<()> {
                 aggression,
                 factions,
             },
+        )?,
+        Cmd::CloseoutProbe {
+            weights,
+            seeds,
+            ticks,
+            blunder,
+            cadence,
+        } => oxide_driver::closeout::closeout_probe(&weights, seeds, ticks, blunder, cadence)?,
+        Cmd::ViabilityProbe {
+            weights,
+            seeds,
+            ticks,
+            scenario,
+            quota,
+            start_tick,
+            action,
+            out,
+        } => oxide_driver::viability::viability_probe(
+            &weights,
+            seeds,
+            ticks,
+            &scenario,
+            quota,
+            start_tick,
+            action.as_deref(),
+            out.as_deref(),
         )?,
         Cmd::RepairProbe {
             weights,

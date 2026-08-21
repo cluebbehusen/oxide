@@ -54,9 +54,9 @@ pub struct ScenarioMeta {
     #[serde(default)]
     pub pace: String,
     /// Measured duration band, e.g. "5-8 min": the p25-p75 decision
-    /// window from `driver pace-sweep` at Medium with the shipped
-    /// artifact. An artifact-stamped measurement, never a gate —
-    /// re-stamp it when a weights or balance bless moves the clock.
+    /// window from `driver pace-sweep`. A bot-stamped measurement,
+    /// never a gate — re-stamp it when a weights or balance bless
+    /// moves the clock (stale until the retrained actor re-measures).
     #[serde(default)]
     pub duration: String,
     /// Mode support, e.g. "1v1" or "2v2".
@@ -65,6 +65,13 @@ pub struct ScenarioMeta {
     /// Resource richness in plain words ("lean", "standard", "rich").
     #[serde(default)]
     pub richness: String,
+    /// Fairness class. Empty (the default) claims exact 180-degree
+    /// paired-seat mirroring, which the map gates verify tile by tile.
+    /// "metric" claims measured fairness instead — equal room, route,
+    /// scrap, and extractor access within tolerance, with no tile
+    /// mirror — the class free-for-all layouts live in.
+    #[serde(default)]
+    pub symmetry: String,
     /// Tileset/theme key for grading and previews.
     #[serde(default)]
     pub theme: String,
@@ -90,12 +97,10 @@ pub struct PlayerSpec {
     /// ignores this — shells and drivers honor it).
     #[serde(default)]
     pub bot: bool,
-    /// How that bot plays: a ladder level and personality. `None` means
-    /// the legacy rule-cascade bot — which is also what keeps replays
-    /// recorded before bot configs existed reproducing, since the
-    /// scenario (and therefore
-    /// this config) rides inside every replay. The legacy bot is
-    /// team-blind: a seat with a `team` must set a config.
+    /// How that bot plays: a ladder level and personality. Authored
+    /// scenario data — it rides inside every replay, and the promoted
+    /// actor reads its difficulty and profile from here. `None` seats
+    /// no bot at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot_config: Option<BotConfig>,
 }
@@ -283,7 +288,7 @@ pub enum ScenarioError {
     #[error(transparent)]
     Map(#[from] MapError),
     /// Player count must be 1..=8.
-    #[error("scenario needs 1 to 8 players, got {0}")]
+    #[error("scenario needs 1 to 16 players, got {0}")]
     PlayerCount(usize),
     /// A player has no Foundry anchor on the map.
     #[error("no map anchor for player {0}")]
@@ -300,18 +305,15 @@ pub enum ScenarioError {
     /// A pre-built structure is misplaced or mis-owned.
     #[error("starting building #{0} is invalid (owner in range? footprint on open ground?)")]
     BadBuilding(usize),
-    /// Two Foundries can't reach each other: the match could never end.
-    #[error("players {0} and {1} are sealed apart; no ground route connects their foundries")]
+    /// Two Foundries can't reach each other by ground or air: the
+    /// match could never end.
+    #[error(
+        "players {0} and {1} are sealed apart; no ground or air route connects their foundries"
+    )]
     Disconnected(PlayerId, PlayerId),
     /// Every seat on one team: nobody to fight, no way to win.
     #[error("all players share one team, so the match could never end")]
     OneTeam,
-    /// A teamed seat asked for the config-less classic bot, which is
-    /// team-blind by design and would spend the match targeting allies.
-    #[error(
-        "player {0} shares a team but fields the classic bot; teamed bot seats need a bot_config"
-    )]
-    TeamBotNeedsConfig(PlayerId),
     /// A bot's personality or team-role selection cannot be resolved.
     #[error(transparent)]
     BotProfile(#[from] crate::bot::BotProfileError),
@@ -354,12 +356,21 @@ impl Scenario {
         }
     }
 
+    /// The map's authored Foundry start anchors, seat order. Public
+    /// map data — the same knowledge a player has from picking the
+    /// map — so a fog-honest bot may know where every base BEGINS
+    /// while fog still governs what stands there now.
+    pub fn start_anchors(&self) -> Result<Vec<(crate::ids::PlayerId, TilePos)>, ScenarioError> {
+        let (_, anchors) = Map::parse(&self.map)?;
+        Ok(anchors)
+    }
+
     /// Validates the scenario and constructs the initial [`State`].
     ///
     /// Building the same scenario twice yields bit-identical states (a test
     /// enforces this).
     pub fn build(&self) -> Result<State, ScenarioError> {
-        if self.players.is_empty() || self.players.len() > 8 {
+        if self.players.is_empty() || self.players.len() > 16 {
             return Err(ScenarioError::PlayerCount(self.players.len()));
         }
         let (map, anchors) = Map::parse(&self.map)?;
@@ -406,6 +417,7 @@ impl Scenario {
                     recovery_target: 0,
                     recovery_ready: true,
                     resigned: false,
+                    eliminated_at: None,
                 }
             })
             .collect();
@@ -413,19 +425,6 @@ impl Scenario {
             let first = players[0].team;
             if players.iter().all(|p| p.team == first) {
                 return Err(ScenarioError::OneTeam);
-            }
-        }
-        // The config-less classic bot is team-blind by design (frozen for
-        // pre-0.7 replay reproduction); on a seat with a genuine teammate
-        // it would spend the match targeting allies. A team of one is
-        // fine — everyone really is its enemy there.
-        for (index, spec) in self.players.iter().enumerate() {
-            let teamed = players
-                .iter()
-                .enumerate()
-                .any(|(j, p)| j != index && p.team == players[index].team);
-            if teamed && spec.bot && spec.bot_config.is_none() {
-                return Err(ScenarioError::TeamBotNeedsConfig(PlayerId(index as u8)));
             }
         }
         let mut state = State::assemble(map, players, self.seed);
@@ -437,7 +436,7 @@ impl Scenario {
                 .find(|(p, _)| *p == player)
                 .map(|(_, a)| *a)
                 .ok_or(ScenarioError::MissingAnchor(player))?;
-            let (w, h) = BuildingKind::Foundry.stats().size;
+            let (w, h) = BuildingKind::Foundry.base_stats().size;
             let footprint_ok = (0..h)
                 .flat_map(|dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
                 .all(|t| state.passable(t));
@@ -453,7 +452,7 @@ impl Scenario {
         // registers its footprint, so the second's ground reads occupied.
         for (index, spec) in self.buildings.iter().enumerate() {
             let anchor = TilePos::new(spec.x, spec.y);
-            let (w, h) = spec.kind.stats().size;
+            let (w, h) = spec.kind.base_stats().size;
             let footprint_ok = (0..h)
                 .flat_map(|dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
                 .all(|t| state.passable(t));
@@ -475,41 +474,56 @@ impl Scenario {
             state.spawn_unit(PlayerId(spec.player), spec.kind, tile.center());
         }
 
-        // Authoring tripwire: every pair of Foundries must share a ground
-        // route, or the victory condition is unreachable by construction.
-        // Flood from the first anchor over terrain (scrap mines out and
-        // buildings — foundries and authored structures alike — can be
-        // demolished, so terrain is the honest floor of reachability).
+        // Authoring tripwire: every pair of Foundries must share a route
+        // some mover can actually take, or the victory condition is
+        // unreachable by construction. Ground connectivity is the
+        // ordinary case; an air route is an honest fallback — the shared
+        // tree reaches the sky at tier two, so a Foundry across a pit
+        // can genuinely be scouted, bombed, and boarded. Only terrain
+        // that seals the sky as well (mesas) makes a true seal. Flood
+        // over terrain (scrap mines out and buildings — foundries and
+        // authored structures alike — can be demolished, so terrain is
+        // the honest floor of reachability).
         if let Some((first, rest)) = anchors.split_first() {
-            let mut open = std::collections::VecDeque::new();
             let width = state.map().width();
             let height = state.map().height();
             let idx = |t: TilePos| (t.y * width + t.x) as usize;
-            let mut seen = vec![false; (width * height) as usize];
-            let walkable = |t: TilePos, state: &State| {
-                t.x >= 0
-                    && t.y >= 0
-                    && t.x < width
-                    && t.y < height
-                    && state
-                        .map()
-                        .tile(t)
-                        .is_some_and(|tile| tile.terrain == crate::map::Terrain::Ground)
-            };
-            let seed = first.1;
-            seen[idx(seed)] = true;
-            open.push_back(seed);
-            while let Some(t) = open.pop_front() {
-                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                    let n = t.offset(dx, dy);
-                    if walkable(n, &state) && !seen[idx(n)] {
-                        seen[idx(n)] = true;
-                        open.push_back(n);
+            let flood = |passable: &dyn Fn(crate::map::Terrain) -> bool| {
+                let mut open = std::collections::VecDeque::new();
+                let mut seen = vec![false; (width * height) as usize];
+                let walkable = |t: TilePos| {
+                    t.x >= 0
+                        && t.y >= 0
+                        && t.x < width
+                        && t.y < height
+                        && state
+                            .map()
+                            .tile(t)
+                            .is_some_and(|tile| passable(tile.terrain))
+                };
+                let seed = first.1;
+                seen[idx(seed)] = true;
+                open.push_back(seed);
+                while let Some(t) = open.pop_front() {
+                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        let n = t.offset(dx, dy);
+                        if walkable(n) && !seen[idx(n)] {
+                            seen[idx(n)] = true;
+                            open.push_back(n);
+                        }
                     }
                 }
-            }
+                seen
+            };
+            let ground = flood(&|terrain| terrain == crate::map::Terrain::Ground);
+            let mut air = None;
             for (player, anchor) in rest {
-                if !seen[idx(*anchor)] {
+                if ground[idx(*anchor)] {
+                    continue;
+                }
+                let air = air
+                    .get_or_insert_with(|| flood(&|terrain| terrain != crate::map::Terrain::Peak));
+                if !air[idx(*anchor)] {
                     return Err(ScenarioError::Disconnected(first.0, *player));
                 }
             }
@@ -587,6 +601,50 @@ mod tests {
     }
 
     #[test]
+    fn player_count_bounds_are_enforced_and_named() {
+        let mut scenario = Scenario::skirmish();
+        scenario.players.clear();
+        let empty = scenario.build();
+        assert!(matches!(empty, Err(ScenarioError::PlayerCount(0))));
+
+        let mut crowded = Scenario::skirmish();
+        while crowded.players.len() < 17 {
+            crowded.players.push(crowded.players[0].clone());
+        }
+        let err = crowded.build().expect_err("seventeen seats must refuse");
+        assert!(matches!(err, ScenarioError::PlayerCount(17)));
+        assert!(
+            err.to_string().contains("1 to 16"),
+            "the message must name the real bound, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_blocked_foundry_footprint_is_an_error() {
+        // The anchor byte sits on open ground but its 2x2 footprint
+        // reaches into border rock: the scenario must refuse rather
+        // than stand a Foundry inside a wall.
+        let mut scenario = Scenario::skirmish();
+        let last = scenario.map.len() - 2;
+        let row = scenario.map[last].clone();
+        let inner = row.trim_matches('#').len() + row.len() - row.trim_start_matches('#').len() - 1;
+        let _ = inner;
+        // Move player 0's anchor to the last interior column, so the
+        // footprint's second column lands on the border.
+        for line in scenario.map.iter_mut() {
+            *line = line.replace('1', ".");
+        }
+        let width = scenario.map[1].len();
+        let mut edge_row: Vec<char> = scenario.map[1].chars().collect();
+        edge_row[width - 2] = '1';
+        scenario.map[1] = edge_row.into_iter().collect();
+        assert!(matches!(
+            scenario.build(),
+            Err(ScenarioError::BadFootprint(PlayerId(0), _))
+        ));
+    }
+
+    #[test]
     fn missing_anchor_is_an_error() {
         let mut scenario = Scenario::skirmish();
         scenario.players.push(PlayerSpec {
@@ -619,7 +677,7 @@ mod tests {
             .find(|b| b.kind == BuildingKind::Turret)
             .expect("the authored turret stands");
         assert!(turret.built, "at full strength from tick zero");
-        assert_eq!(turret.hp, BuildingKind::Turret.stats().max_hp);
+        assert_eq!(turret.hp, BuildingKind::Turret.base_stats().max_hp);
 
         // The same anchor twice: the second footprint reads occupied.
         scenario.buildings.push(BuildingSpec {

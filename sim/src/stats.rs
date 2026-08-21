@@ -43,6 +43,43 @@ pub enum UnitKind {
     Talon,
     /// Cupric air-superiority flyer: a swarm wing — fragile, rapid, cheap.
     Wisp,
+    /// Tier-two line brawler: an upgunned sentinel-class hull. The
+    /// frontline that lets tier two fight as a wall, not a clinic.
+    Warden,
+    /// Armored mobile welder: field sustain for long pushes. No harvest
+    /// gear — its torch is the whole job.
+    Tender,
+    /// Tier-two super-harvester: digs faster, hauls triple, and stands
+    /// works up at twice the pace. The juiciest raid target alive.
+    Excavator,
+    /// Ferrous scout flyer: fast, unarmed, far-sighted.
+    Kestrel,
+    /// Cupric scout flyer: faster still, frailer still.
+    Gnat,
+    /// Ferrous heavy interceptor: the bomber's escort and its answer.
+    Shrike,
+    /// Cupric heavy interceptor: lighter, quicker, hungrier.
+    Sylph,
+    /// Ferrous strategic bomber: one enormous bomb per pass, flown on a
+    /// committed attack run — it cannot stop and strafe.
+    Condor,
+    /// Cupric carpet bomber: a stick of six small bombs laid along its
+    /// flight line each pass.
+    Moth,
+    /// Tier-three assault walker: a slow siege-breaking wall of a
+    /// machine. Shared roster.
+    Breaker,
+    /// Tier-three rocket battery: extreme-reach indirect saturation with
+    /// a blind ring at its feet. Shared roster.
+    Avalanche,
+    /// Air transport: an unarmed lifter with a four-point sling rack.
+    /// Cargo rides sealed — it fights nothing, sees nothing, and dies
+    /// with the airframe. Shared roster.
+    Skyhook,
+    /// A walking demolition charge: presses to its ordered target and
+    /// detonates — enormous against structures, modest splash against
+    /// machines, always fatal to itself. Shared roster.
+    Sapper,
 }
 
 /// Every building type.
@@ -71,6 +108,24 @@ pub enum BuildingKind {
     /// ground and air alike — inside its ring, billed per hp from the
     /// owner's bank at repair pricing.
     RepairBay,
+    /// A restored strip-mining machine from the old rush. Rebuilt only
+    /// on a map-authored derelict frame, it grinds the deep seams for
+    /// the strongest income in the game — and the frame outlives every
+    /// destruction, so the ground it stands on is contested forever.
+    Extractor,
+    /// Air production hall: every flyer trains here. Committing to the
+    /// sky is a visible, snipeable investment.
+    Airworks,
+    /// The tier-three works: trains the heaviest machines and gates the
+    /// deepest upgrades. Expensive, slow, and worth killing.
+    Crucible,
+    /// A cheap standing wall segment: blocks ground movement and
+    /// nothing else. Terrain you can buy.
+    Barricade,
+    /// A buried demolition charge — the game's only stealth. Invisible
+    /// to enemies until a scout flies close or an Array's detection ring
+    /// covers it; detonates under hostile ground machines.
+    ScuttleCharge,
 }
 
 /// A movement medium. Ground units path and collide on the terrain grid;
@@ -142,6 +197,11 @@ pub struct WeaponStats {
     /// Indirect fire arcs over terrain: the line-of-sight trace that lets
     /// rock block direct shots is skipped.
     pub indirect: bool,
+    /// Bombs released per trigger pull, laid in a line along the
+    /// shooter's heading through the aim point (spacing
+    /// [`BOMB_SALVO_SPACING`]). 1 for every conventional weapon; only
+    /// turn-limited bombers carry sticks.
+    pub salvo: u8,
     /// The shot is a real projectile: a Shell entity travels to a fixed
     /// fire-time aim point and resolves on arrival. Artillery may lead an
     /// existing path before launch, but the shell is never guided and a
@@ -184,12 +244,53 @@ pub struct UnitStats {
     pub harvest: Option<HarvestStats>,
     /// Fog-of-war reveal radius, in tiles.
     pub vision: i32,
+    /// Building kinds the owner must have COMPLETED before training this
+    /// unit — the tech tree's production gate, identical for humans and
+    /// bots. Empty means the producer alone decides.
+    pub requires: &'static [BuildingKind],
+    /// Whether this machine carries a welding torch: eligibility for the
+    /// Repair and RepairUnit crews (and construction labor rides with
+    /// `harvest` or a torch).
+    pub welder: bool,
+    /// Construction work applied per adjacent tick (1 for everyone but
+    /// the Excavator).
+    pub build_rate: u32,
+    /// The machine IS its own warhead: an ordered attack ends with the
+    /// unit pressing to contact and detonating (the SAPPER_* constants
+    /// govern the blast). Grants attack legality without weapons.
+    pub demolition: bool,
+    /// Room this machine occupies aboard a transport. 0 means it can
+    /// never be carried — every flyer, and the transport itself.
+    pub transport_size: u8,
+    /// Total cargo room this machine offers as a carrier. 0 for
+    /// everything that is not a transport.
+    pub transport_capacity: u8,
+    /// Maximum compass steps (of 256) this unit may turn per tick.
+    /// 0 means turning is free — the unit is not flight-committed. A
+    /// nonzero rate makes the unit fly heading-first: it steers on a
+    /// bounded arc, attacks on passes, and releases bombs only into its
+    /// forward cone.
+    pub turn_rate: u8,
+}
+
+impl UnitStats {
+    /// The ring inside which a turn-limited flier accepts a waypoint or
+    /// goal. It is the aircraft's own turn radius
+    /// (`speed * 256 / (2*pi*turn_rate)`, with `256/(2*pi)` as the
+    /// literal `40.75`) plus [`BOMBER_ACCEPT_SLACK`] — anything smaller
+    /// is an orbit the aircraft can fly forever without ever crossing
+    /// the ring. Only meaningful when `turn_rate > 0`.
+    pub fn turn_acceptance(&self) -> Fx {
+        debug_assert!(self.turn_rate > 0);
+        self.speed * Fx::lit("40.75") / Fx::from_num(i64::from(self.turn_rate))
+            + BOMBER_ACCEPT_SLACK
+    }
 }
 
 impl UnitStats {
     /// Whether this kind carries any weapon at all.
     pub const fn can_fight(&self) -> bool {
-        !self.weapons.is_empty()
+        !self.weapons.is_empty() || self.demolition
     }
 
     /// Whether any weapon covers the given domain.
@@ -226,6 +327,55 @@ pub struct BuildingStats {
     pub construction: Option<ConstructionStats>,
 }
 
+impl BuildingKind {
+    /// The tier ladder for this kind: index by a building's `tier`.
+    /// Kinds without upgrades ladder alone at tier zero.
+    pub const fn tiers(self) -> &'static [&'static BuildingStats] {
+        match self {
+            BuildingKind::Turret => &[&TURRET, &HEAVY_TURRET, &BULWARK],
+            BuildingKind::FlakTurret => &[&FLAK_TURRET, &BURST_FLAK],
+            BuildingKind::Reclaimer => &[&RECLAIMER, &REFINERY],
+            BuildingKind::Array => &[&ARRAY, &DEEP_ARRAY],
+            BuildingKind::Foundry => &[&FOUNDRY],
+            BuildingKind::Fabricator => &[&FABRICATOR],
+            BuildingKind::Bastion => &[&BASTION],
+            BuildingKind::RepairBay => &[&REPAIR_BAY],
+            BuildingKind::Extractor => &[&EXTRACTOR],
+            BuildingKind::Airworks => &[&AIRWORKS],
+            BuildingKind::Crucible => &[&CRUCIBLE],
+            BuildingKind::Barricade => &[&BARRICADE],
+            BuildingKind::ScuttleCharge => &[&SCUTTLE_CHARGE],
+        }
+    }
+
+    /// Stats at `tier`, clamped to the ladder's top so a forged tier
+    /// can never index past the table (the validator refuses it first).
+    pub fn tier_stats(self, tier: u8) -> &'static BuildingStats {
+        let tiers = self.tiers();
+        tiers[(tier as usize).min(tiers.len() - 1)]
+    }
+
+    /// The upgrade that would lift a building at `tier` one rung, if
+    /// the ladder continues: the next tier's construction row.
+    pub fn upgrade_from(self, tier: u8) -> Option<&'static ConstructionStats> {
+        self.tiers()
+            .get(tier as usize + 1)
+            .and_then(|stats| stats.construction.as_ref())
+    }
+
+    /// A display name per tier, so upgraded works read as what they are.
+    pub const fn tier_name(self, tier: u8) -> &'static str {
+        match (self, tier) {
+            (BuildingKind::Turret, 1) => "heavy turret",
+            (BuildingKind::Turret, 2) => "bulwark",
+            (BuildingKind::FlakTurret, 1) => "burst flak",
+            (BuildingKind::Reclaimer, 1) => "refinery",
+            (BuildingKind::Array, 1) => "deep array",
+            _ => self.name(),
+        }
+    }
+}
+
 impl BuildingStats {
     /// Whether this kind fires on its own.
     pub const fn can_fight(&self) -> bool {
@@ -242,6 +392,10 @@ pub struct ConstructionStats {
     pub cost: u32,
     /// Builder-adjacent ticks from site to standing building.
     pub build_ticks: u32,
+    /// Building kinds the owner must have COMPLETED before placing this
+    /// one — the tech tree's construction gate, identical for humans
+    /// and bots. Empty means always available.
+    pub requires: &'static [BuildingKind],
 }
 
 /// A production role: the slot a unit fills in a roster, independent of
@@ -265,6 +419,26 @@ pub enum Role {
     AirGround,
     /// The air-superiority flyer.
     AirAir,
+    /// Tier-two line brawler (shared).
+    Warden,
+    /// Mobile welder (shared).
+    Tender,
+    /// The attack-run bomber.
+    Bomber,
+    /// Tier-three assault walker (shared).
+    Breaker,
+    /// Tier-three rocket battery (shared).
+    Avalanche,
+    /// The air transport (shared).
+    Skyhook,
+    /// The walking demolition charge (shared).
+    Sapper,
+    /// Super-harvester (shared).
+    Excavator,
+    /// Unarmed far-sighted flyer — faction-varied.
+    Scout,
+    /// Heavy air-superiority flyer — faction-varied.
+    Interceptor,
 }
 
 impl Role {
@@ -282,11 +456,52 @@ impl Role {
             (Role::AirGround, Faction::Cupric) => UnitKind::Darter,
             (Role::AirAir, Faction::Ferrous) => UnitKind::Talon,
             (Role::AirAir, Faction::Cupric) => UnitKind::Wisp,
+            (Role::Warden, _) => UnitKind::Warden,
+            (Role::Tender, _) => UnitKind::Tender,
+            (Role::Excavator, _) => UnitKind::Excavator,
+            (Role::Scout, Faction::Ferrous) => UnitKind::Kestrel,
+            (Role::Scout, Faction::Cupric) => UnitKind::Gnat,
+            (Role::Interceptor, Faction::Ferrous) => UnitKind::Shrike,
+            (Role::Interceptor, Faction::Cupric) => UnitKind::Sylph,
+            (Role::Bomber, Faction::Ferrous) => UnitKind::Condor,
+            (Role::Bomber, Faction::Cupric) => UnitKind::Moth,
+            (Role::Breaker, _) => UnitKind::Breaker,
+            (Role::Avalanche, _) => UnitKind::Avalanche,
+            (Role::Skyhook, _) => UnitKind::Skyhook,
+            (Role::Sapper, _) => UnitKind::Sapper,
         }
     }
 }
 
 impl UnitKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [UnitKind; 24] = [
+        UnitKind::Harvester,
+        UnitKind::Sentinel,
+        UnitKind::Scuttler,
+        UnitKind::Lancer,
+        UnitKind::Bombard,
+        UnitKind::Flakhound,
+        UnitKind::Stinger,
+        UnitKind::Buzzard,
+        UnitKind::Darter,
+        UnitKind::Talon,
+        UnitKind::Wisp,
+        UnitKind::Warden,
+        UnitKind::Tender,
+        UnitKind::Excavator,
+        UnitKind::Kestrel,
+        UnitKind::Gnat,
+        UnitKind::Shrike,
+        UnitKind::Sylph,
+        UnitKind::Condor,
+        UnitKind::Moth,
+        UnitKind::Breaker,
+        UnitKind::Avalanche,
+        UnitKind::Skyhook,
+        UnitKind::Sapper,
+    ];
+
     /// The faction whose roster carries this kind; `None` means shared.
     /// Training a faction-bound kind from the other faction's seat is
     /// rejected at command validation.
@@ -297,8 +512,25 @@ impl UnitKind {
             | UnitKind::Scuttler
             | UnitKind::Lancer
             | UnitKind::Bombard => None,
-            UnitKind::Flakhound | UnitKind::Buzzard | UnitKind::Talon => Some(Faction::Ferrous),
-            UnitKind::Stinger | UnitKind::Darter | UnitKind::Wisp => Some(Faction::Cupric),
+            UnitKind::Warden
+            | UnitKind::Tender
+            | UnitKind::Excavator
+            | UnitKind::Breaker
+            | UnitKind::Avalanche
+            | UnitKind::Skyhook
+            | UnitKind::Sapper => None,
+            UnitKind::Flakhound
+            | UnitKind::Buzzard
+            | UnitKind::Talon
+            | UnitKind::Kestrel
+            | UnitKind::Shrike
+            | UnitKind::Condor => Some(Faction::Ferrous),
+            UnitKind::Stinger
+            | UnitKind::Darter
+            | UnitKind::Wisp
+            | UnitKind::Gnat
+            | UnitKind::Sylph
+            | UnitKind::Moth => Some(Faction::Cupric),
         }
     }
 
@@ -316,6 +548,88 @@ impl UnitKind {
             UnitKind::Darter => "darter",
             UnitKind::Talon => "talon",
             UnitKind::Wisp => "wisp",
+            UnitKind::Warden => "warden",
+            UnitKind::Tender => "tender",
+            UnitKind::Excavator => "excavator",
+            UnitKind::Kestrel => "kestrel",
+            UnitKind::Gnat => "gnat",
+            UnitKind::Shrike => "shrike",
+            UnitKind::Sylph => "sylph",
+            UnitKind::Condor => "condor",
+            UnitKind::Moth => "moth",
+            UnitKind::Breaker => "breaker",
+            UnitKind::Avalanche => "avalanche",
+            UnitKind::Skyhook => "skyhook",
+            UnitKind::Sapper => "sapper",
+        }
+    }
+
+    /// The player-facing description: what the machine is for and what
+    /// it dies to, in one or two sentences. The codex and the training
+    /// tooltip read this; the enum's doc comments are the same copy for
+    /// readers of the source.
+    pub const fn blurb(self) -> &'static str {
+        match self {
+            UnitKind::Harvester => {
+                "Gathers scrap from nodes and hauls it to a Foundry. Also the crew that raises buildings and welds wounded machines."
+            }
+            UnitKind::Sentinel => {
+                "The line combat unit: short-ranged, sturdy, expendable. A weak skyward poke keeps a pure air ball honest."
+            }
+            UnitKind::Scuttler => {
+                "Fast, cheap, fragile raider: a contact-range shredder that eats harvest lines and dies to anything that fights back in time."
+            }
+            UnitKind::Lancer => {
+                "Slow long-range artillery: outranges everything it can see, melts to anything that reaches it."
+            }
+            UnitKind::Bombard => {
+                "Heavy siege piece: arcing splash shells that reach beyond its own eyes. Someone else must hold sight on the target."
+            }
+            UnitKind::Flakhound => {
+                "Ferrous anti-air crawler: tanky flak platform, blind to ground."
+            }
+            UnitKind::Stinger => {
+                "Cupric anti-air crawler: cheap and quick, dies to a stiff breeze."
+            }
+            UnitKind::Buzzard => {
+                "Ferrous ground-attack flyer: slow, heavy strikes, no answer to air."
+            }
+            UnitKind::Darter => {
+                "Cupric ground-attack flyer: fast shallow strafes, no answer to air."
+            }
+            UnitKind::Talon => "Ferrous air-superiority flyer: sees far, hits only other flyers.",
+            UnitKind::Wisp => "Cupric air-superiority flyer: a swarm wing, fragile, rapid, cheap.",
+            UnitKind::Warden => {
+                "Tier-two line brawler: an upgunned sentinel-class hull. The frontline that lets tier two fight as a wall, not a clinic."
+            }
+            UnitKind::Tender => {
+                "Armored mobile welder: field sustain for long pushes. No harvest gear; its torch is the whole job."
+            }
+            UnitKind::Excavator => {
+                "Tier-two super-harvester: digs faster, hauls triple, and stands works up at twice the pace. The juiciest raid target alive."
+            }
+            UnitKind::Kestrel => "Ferrous scout flyer: fast, unarmed, far-sighted.",
+            UnitKind::Gnat => "Cupric scout flyer: faster still, frailer still.",
+            UnitKind::Shrike => "Ferrous heavy interceptor: the bomber's escort and its answer.",
+            UnitKind::Sylph => "Cupric heavy interceptor: lighter, quicker, hungrier.",
+            UnitKind::Condor => {
+                "Ferrous strategic bomber: one enormous bomb per pass, flown on a committed attack run. It cannot stop and strafe."
+            }
+            UnitKind::Moth => {
+                "Cupric carpet bomber: a stick of six small bombs laid along its flight line each pass."
+            }
+            UnitKind::Breaker => {
+                "Tier-three assault walker: a slow siege-breaking wall of a machine."
+            }
+            UnitKind::Avalanche => {
+                "Tier-three rocket battery: extreme-reach indirect saturation with a blind ring at its feet."
+            }
+            UnitKind::Skyhook => {
+                "Air transport: an unarmed lifter with a four-point sling rack. Cargo rides sealed; it fights nothing, sees nothing, and dies with the airframe."
+            }
+            UnitKind::Sapper => {
+                "A walking demolition charge: presses to its ordered target and detonates. Enormous against structures, modest splash against machines, always fatal to itself."
+            }
         }
     }
 
@@ -330,6 +644,16 @@ impl UnitKind {
             UnitKind::Flakhound | UnitKind::Stinger => Role::AntiAir,
             UnitKind::Buzzard | UnitKind::Darter => Role::AirGround,
             UnitKind::Talon | UnitKind::Wisp => Role::AirAir,
+            UnitKind::Warden => Role::Warden,
+            UnitKind::Tender => Role::Tender,
+            UnitKind::Excavator => Role::Excavator,
+            UnitKind::Kestrel | UnitKind::Gnat => Role::Scout,
+            UnitKind::Shrike | UnitKind::Sylph => Role::Interceptor,
+            UnitKind::Condor | UnitKind::Moth => Role::Bomber,
+            UnitKind::Breaker => Role::Breaker,
+            UnitKind::Avalanche => Role::Avalanche,
+            UnitKind::Skyhook => Role::Skyhook,
+            UnitKind::Sapper => Role::Sapper,
         }
     }
 }
@@ -352,6 +676,13 @@ const HARVESTER: UnitStats = UnitStats {
         ticks_per_scrap: 10, // 2 scrap/s while extracting
     }),
     vision: 6,
+    requires: &[],
+    welder: true,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 1,
+    transport_capacity: 0,
+    turn_rate: 0,
 };
 
 const SENTINEL: UnitStats = UnitStats {
@@ -365,8 +696,9 @@ const SENTINEL: UnitStats = UnitStats {
     radius: Fx::lit("0.35"),
     cost: 90, // 0.10 balance: spam pays — four campaign rounds proved 75 optimal-by-flooding
     // 0.13 balance: 7.5 s, and load-bearing twice over despite the kind
-    // being faction-shared. Measured at 160 under the 0.13 economy:
-    // classic-bot long-haul stalls past the liveness horizon (8,245
+    // being faction-shared. Measured at 160 under the 0.13 economy
+    // (yardstick: the since-deleted classic bot): long-haul stalls past
+    // the liveness horizon (8,245
     // ticks of zero progress), and the mixed-roster marginal reads
     // ferrous 37.3% [34.9, 39.8] against 48.5% at 150 — Ferrous fields
     // the heavier Sentinel share, so the shared cadence is not
@@ -382,6 +714,7 @@ const SENTINEL: UnitStats = UnitStats {
             targets: DomainMask::GROUND,
             splash: None,
             indirect: false,
+            salvo: 1,
             projectile: false,
         },
         // A weak skyward poke: the tier-0 reason a pure air ball cannot
@@ -394,12 +727,20 @@ const SENTINEL: UnitStats = UnitStats {
             targets: DomainMask::AIR,
             splash: None,
             indirect: false,
+            salvo: 1,
             projectile: false,
         },
     ],
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7, // strictly wider than aggro, so acquired targets are seen
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 1,
+    transport_capacity: 0,
+    turn_rate: 0,
 };
 
 const SCUTTLER: UnitStats = UnitStats {
@@ -417,11 +758,19 @@ const SCUTTLER: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 6,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 1,
+    transport_capacity: 0,
+    turn_rate: 0,
 };
 
 const LANCER: UnitStats = UnitStats {
@@ -443,11 +792,19 @@ const LANCER: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 2,
+    transport_capacity: 0,
+    turn_rate: 0,
 };
 
 const BOMBARD: UnitStats = UnitStats {
@@ -465,11 +822,19 @@ const BOMBARD: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.4")),
         indirect: true,
+        salvo: 1,
         projectile: true,
     }],
     aggro_range: Fx::lit("9.5"), // its whole spotter-enabled firing envelope
     harvest: None,
     vision: 5, // it cannot see as far as it shoots — on purpose
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 3,
+    transport_capacity: 0,
+    turn_rate: 0,
 };
 
 const FLAKHOUND: UnitStats = UnitStats {
@@ -487,11 +852,19 @@ const FLAKHOUND: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1.2")),
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 2,
+    transport_capacity: 0,
+    turn_rate: 0,
 };
 
 const STINGER: UnitStats = UnitStats {
@@ -509,11 +882,19 @@ const STINGER: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1")),
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 1,
+    transport_capacity: 0,
+    turn_rate: 0,
 };
 
 const BUZZARD: UnitStats = UnitStats {
@@ -535,11 +916,19 @@ const BUZZARD: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 0,
+    transport_capacity: 0,
+    turn_rate: 0,
 };
 
 const DARTER: UnitStats = UnitStats {
@@ -561,11 +950,19 @@ const DARTER: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 0,
+    transport_capacity: 0,
+    turn_rate: 0,
 };
 
 const TALON: UnitStats = UnitStats {
@@ -583,11 +980,19 @@ const TALON: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 8,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 0,
+    transport_capacity: 0,
+    turn_rate: 0,
 };
 
 const WISP: UnitStats = UnitStats {
@@ -605,11 +1010,373 @@ const WISP: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 8,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 0,
+    transport_capacity: 0,
+    turn_rate: 0,
+};
+
+const WARDEN: UnitStats = UnitStats {
+    // 0.15 balance lab: at 240hp/24dmg the Lancer didn't counter the
+    // Warden, it deleted it (cost-normalized arena: 0-550 wipe both
+    // seats) while the Lancer also carried 2.6x the damage-per-scrap —
+    // so learned play rationally never left tier one. The line brawler
+    // now trades into massed rails instead of evaporating; the Lancer
+    // keeps the per-cost edge as the dedicated answer.
+    max_hp: 260,
+    speed: Fx::lit("0.09"),
+    radius: Fx::lit("0.45"),
+    cost: 280,
+    train_ticks: 400,
+    domain: Domain::Ground,
+    weapons: &[WeaponStats {
+        damage: 32,
+        range: Fx::lit("3"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 25,
+        targets: DomainMask::GROUND,
+        splash: None,
+        indirect: false,
+        salvo: 1,
+        projectile: false,
+    }],
+    aggro_range: Fx::lit("5"),
+    harvest: None,
+    vision: 7,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 2,
+    transport_capacity: 0,
+    turn_rate: 0,
+};
+
+const TENDER: UnitStats = UnitStats {
+    max_hp: 150,
+    speed: Fx::lit("0.11"),
+    radius: Fx::lit("0.38"),
+    // 0.15.3 balance lab: 0.2% reach at 180 — the mobile welder lost
+    // every pricing comparison to the static Repair Bay and to simply
+    // rebuilding. Priced as a line attachment, not an investment.
+    cost: 130,
+    train_ticks: 300,
+    domain: Domain::Ground,
+    weapons: &[],
+    aggro_range: Fx::ZERO,
+    harvest: None,
+    vision: 7,
+    requires: &[],
+    welder: true,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 2,
+    transport_capacity: 0,
+    turn_rate: 0,
+};
+
+const EXCAVATOR: UnitStats = UnitStats {
+    max_hp: 160,
+    speed: Fx::lit("0.11"),
+    radius: Fx::lit("0.42"),
+    cost: 200,
+    train_ticks: 350,
+    domain: Domain::Ground,
+    weapons: &[],
+    aggro_range: Fx::ZERO,
+    harvest: Some(HarvestStats {
+        capacity: 30,
+        ticks_per_scrap: 5,
+    }),
+    vision: 6,
+    requires: &[BuildingKind::Fabricator],
+    welder: true,
+    build_rate: 2,
+    demolition: false,
+    transport_size: 2,
+    transport_capacity: 0,
+    turn_rate: 0,
+};
+
+const KESTREL: UnitStats = UnitStats {
+    max_hp: 60,
+    speed: Fx::lit("0.2"),
+    radius: Fx::lit("0.3"),
+    cost: 60,
+    train_ticks: 120,
+    domain: Domain::Air,
+    weapons: &[],
+    aggro_range: Fx::ZERO,
+    harvest: None,
+    vision: 10,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 0,
+    transport_capacity: 0,
+    turn_rate: 0,
+};
+
+const GNAT: UnitStats = UnitStats {
+    max_hp: 45,
+    speed: Fx::lit("0.22"),
+    radius: Fx::lit("0.26"),
+    cost: 50,
+    train_ticks: 100,
+    domain: Domain::Air,
+    weapons: &[],
+    aggro_range: Fx::ZERO,
+    harvest: None,
+    vision: 10,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 0,
+    transport_capacity: 0,
+    turn_rate: 0,
+};
+
+const SHRIKE: UnitStats = UnitStats {
+    max_hp: 160,
+    speed: Fx::lit("0.16"),
+    radius: Fx::lit("0.38"),
+    cost: 260,
+    train_ticks: 300,
+    domain: Domain::Air,
+    weapons: &[WeaponStats {
+        damage: 30,
+        range: Fx::lit("4"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 30,
+        targets: DomainMask::AIR,
+        splash: None,
+        indirect: false,
+        salvo: 1,
+        projectile: false,
+    }],
+    aggro_range: Fx::lit("6"),
+    harvest: None,
+    vision: 8,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 0,
+    transport_capacity: 0,
+    turn_rate: 0,
+};
+
+const SYLPH: UnitStats = UnitStats {
+    max_hp: 100,
+    speed: Fx::lit("0.21"),
+    radius: Fx::lit("0.3"),
+    cost: 200,
+    train_ticks: 240,
+    domain: Domain::Air,
+    weapons: &[WeaponStats {
+        damage: 16,
+        range: Fx::lit("3.5"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 20,
+        targets: DomainMask::AIR,
+        splash: None,
+        indirect: false,
+        salvo: 1,
+        projectile: false,
+    }],
+    aggro_range: Fx::lit("6"),
+    harvest: None,
+    vision: 8,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 0,
+    transport_capacity: 0,
+    turn_rate: 0,
+};
+
+const CONDOR: UnitStats = UnitStats {
+    max_hp: 260,
+    speed: Fx::lit("0.11"),
+    radius: Fx::lit("0.45"),
+    cost: 700,
+    train_ticks: 800,
+    domain: Domain::Air,
+    weapons: &[WeaponStats {
+        damage: 100,
+        range: Fx::lit("2.5"), // release point, not a standoff gun
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 150, // one bomb per pass; the loop IS the reload
+        targets: DomainMask::GROUND,
+        splash: Some(Fx::lit("2.2")),
+        indirect: true,
+        salvo: 1,
+        projectile: true,
+    }],
+    aggro_range: Fx::lit("5"),
+    harvest: None,
+    vision: 6,
+    requires: &[BuildingKind::Crucible],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 0,
+    transport_capacity: 0,
+    turn_rate: 2, // ~2.2-tile turn radius: every run is a commitment
+};
+
+const MOTH: UnitStats = UnitStats {
+    max_hp: 140,
+    speed: Fx::lit("0.15"),
+    radius: Fx::lit("0.4"),
+    cost: 550,
+    train_ticks: 700,
+    domain: Domain::Air,
+    weapons: &[WeaponStats {
+        damage: 25,
+        range: Fx::lit("2.5"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 130,
+        targets: DomainMask::GROUND,
+        splash: Some(Fx::lit("1.2")),
+        indirect: true,
+        salvo: 6, // the stick, laid along the flight line
+        projectile: true,
+    }],
+    aggro_range: Fx::lit("5"),
+    harvest: None,
+    vision: 6,
+    requires: &[BuildingKind::Crucible],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 0,
+    transport_capacity: 0,
+    turn_rate: 3, // tighter loops than the Condor, weaker punch
+};
+
+const BREAKER: UnitStats = UnitStats {
+    // 0.15 balance lab: the tier-crusher coin-flipped cost-equal
+    // Lancer mass (verdict flipped on seat swap) — a 900-scrap unit
+    // behind a Crucible that trades evenly with tier one is a climb
+    // nobody should make. One shell now deletes a rail and its splash
+    // punishes the clump; bombers, artillery, and economy remain the
+    // honest answers.
+    max_hp: 900,
+    speed: Fx::lit("0.055"),
+    radius: Fx::lit("0.55"),
+    cost: 900,
+    train_ticks: 1200,
+    domain: Domain::Ground,
+    weapons: &[WeaponStats {
+        damage: 115,
+        range: Fx::lit("4.5"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 60,
+        targets: DomainMask::GROUND,
+        splash: Some(Fx::lit("1.5")),
+        indirect: false,
+        salvo: 1,
+        projectile: false,
+    }],
+    aggro_range: Fx::lit("6"),
+    harvest: None,
+    vision: 6,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 4,
+    transport_capacity: 0,
+    turn_rate: 0,
+};
+
+const AVALANCHE: UnitStats = UnitStats {
+    max_hp: 300,
+    speed: Fx::lit("0.045"),
+    radius: Fx::lit("0.5"),
+    cost: 700,
+    train_ticks: 900,
+    domain: Domain::Ground,
+    weapons: &[WeaponStats {
+        // 0.15 balance lab: at 70/140t the superheavy needed TWO
+        // seven-second shots per Bombard and lost the cost-normalized
+        // artillery duel outright (0-800 both seats) — tier-one
+        // artillery obsoleted its own successor. One shell now deletes
+        // a Bombard on the drop; rushes inside the blind ring and the
+        // sky it cannot answer stay lethal.
+        damage: 110,
+        range: Fx::lit("14"),        // far past its own eyes: a spotter weapon
+        minimum_range: Fx::lit("4"), // blind at its feet — close the gap
+        cooldown_ticks: 120,
+        targets: DomainMask::GROUND,
+        splash: Some(Fx::lit("1.6")),
+        indirect: true,
+        salvo: 1,
+        projectile: true,
+    }],
+    aggro_range: Fx::lit("14"),
+    harvest: None,
+    vision: 5,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 4,
+    transport_capacity: 0,
+    turn_rate: 0,
+};
+
+const SKYHOOK: UnitStats = UnitStats {
+    max_hp: 200,
+    speed: Fx::lit("0.13"),
+    radius: Fx::lit("0.45"),
+    cost: 250,
+    train_ticks: 400,
+    domain: Domain::Air,
+    weapons: &[],
+    aggro_range: Fx::ZERO,
+    harvest: None,
+    vision: 6,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: false,
+    transport_size: 0,
+    transport_capacity: 4,
+    turn_rate: 0,
+};
+
+const SAPPER: UnitStats = UnitStats {
+    max_hp: 50,
+    speed: Fx::lit("0.15"),
+    radius: Fx::lit("0.3"),
+    cost: 120,
+    train_ticks: 180,
+    domain: Domain::Ground,
+    weapons: &[],
+    aggro_range: Fx::ZERO, // it never picks its own grave
+    harvest: None,
+    vision: 5,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: true,
+    transport_size: 1,
+    transport_capacity: 0,
+    turn_rate: 0,
 };
 
 const FOUNDRY: BuildingStats = BuildingStats {
@@ -618,9 +1385,26 @@ const FOUNDRY: BuildingStats = BuildingStats {
     max_hp: 1600,
     size: (2, 2),
     vision: 8,
-    produces: &[UnitKind::Harvester, UnitKind::Sentinel],
+    produces: &[
+        UnitKind::Harvester,
+        UnitKind::Sentinel,
+        UnitKind::Scuttler,
+        UnitKind::Excavator,
+    ],
     weapons: &[],
-    construction: None,
+    // 0.15: buildable — the expansion base and the comeback path. Gated
+    // on a Fabricator so a proxy Foundry is a committed tech play.
+    // 0.15.3 balance lab: with the passive drip removed a Foundry is a
+    // pure production, drop-off, and survivability purchase — and at
+    // 400/800t the measured meta bought one in 0.6% of competitive
+    // lifetimes. Priced to be a real mid-game decision instead of a
+    // luxury; victory counts sites too, so a dying main can be
+    // answered by ground already claimed.
+    construction: Some(ConstructionStats {
+        cost: 300,
+        build_ticks: 600,
+        requires: &[BuildingKind::Fabricator],
+    }),
 };
 
 const TURRET: BuildingStats = BuildingStats {
@@ -636,11 +1420,13 @@ const TURRET: BuildingStats = BuildingStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     construction: Some(ConstructionStats {
         cost: 100,
         build_ticks: 300, // 15 s of builder attention
+        requires: &[],
     }),
 };
 
@@ -651,20 +1437,19 @@ const FABRICATOR: BuildingStats = BuildingStats {
     // Both factions' variants are listed; the train gate deals each seat
     // only its own. Order groups the roles for the HUD's slot labels.
     produces: &[
-        UnitKind::Scuttler,
         UnitKind::Lancer,
         UnitKind::Bombard,
         UnitKind::Flakhound,
         UnitKind::Stinger,
-        UnitKind::Buzzard,
-        UnitKind::Darter,
-        UnitKind::Talon,
-        UnitKind::Wisp,
+        UnitKind::Warden,
+        UnitKind::Tender,
+        UnitKind::Sapper,
     ],
     weapons: &[],
     construction: Some(ConstructionStats {
         cost: 120,
         build_ticks: 280, // 14 s — the tech window must fit inside the rush window
+        requires: &[],
     }),
 };
 
@@ -681,11 +1466,13 @@ const FLAK_TURRET: BuildingStats = BuildingStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1.2")),
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     construction: Some(ConstructionStats {
         cost: 90,
         build_ticks: 250,
+        requires: &[],
     }),
 };
 
@@ -702,23 +1489,34 @@ const BASTION: BuildingStats = BuildingStats {
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.3")),
         indirect: true,
+        salvo: 1,
         projectile: true,
     }],
+    // 0.15.3 balance lab: 2.8% reach — the fortress gun competes with
+    // a 200-scrap mobile Bombard and was losing on price alone.
     construction: Some(ConstructionStats {
-        cost: 250,
+        cost: 210,
         build_ticks: 500,
+        requires: &[],
     }),
 };
 
 const ARRAY: BuildingStats = BuildingStats {
+    // 0.15 balance lab: at 120 scrap the mast was dominated by the
+    // 60-scrap scout flyer (mobile, vision 10, identifies what it
+    // sees); candidates trained against the mine-laying yardstick won
+    // 80% while abandoning radar entirely. Priced against the scout's
+    // benchmark the mast sells what the flyer cannot: a permanent
+    // sentry that never needs a pilot's attention.
     max_hp: 250,
     size: (1, 1),
     vision: 9, // the inner ring: true sight
     produces: &[],
     weapons: &[],
     construction: Some(ConstructionStats {
-        cost: 120,
+        cost: 90,
         build_ticks: 300,
+        requires: &[],
     }),
 };
 
@@ -731,6 +1529,7 @@ const RECLAIMER: BuildingStats = BuildingStats {
     construction: Some(ConstructionStats {
         cost: 150,
         build_ticks: 350,
+        requires: &[],
     }),
 };
 
@@ -743,6 +1542,200 @@ const REPAIR_BAY: BuildingStats = BuildingStats {
     construction: Some(ConstructionStats {
         cost: 200,
         build_ticks: 350,
+        requires: &[],
+    }),
+};
+
+const AIRWORKS: BuildingStats = BuildingStats {
+    max_hp: 500,
+    size: (2, 2),
+    vision: 6,
+    // Both factions' wings are listed; the train gate deals each seat
+    // only its own.
+    produces: &[
+        UnitKind::Buzzard,
+        UnitKind::Darter,
+        UnitKind::Talon,
+        UnitKind::Wisp,
+        UnitKind::Kestrel,
+        UnitKind::Gnat,
+        UnitKind::Shrike,
+        UnitKind::Sylph,
+        UnitKind::Condor,
+        UnitKind::Moth,
+        UnitKind::Skyhook,
+    ],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 200,
+        build_ticks: 350,
+        requires: &[BuildingKind::Fabricator],
+    }),
+};
+
+const CRUCIBLE: BuildingStats = BuildingStats {
+    max_hp: 900,
+    size: (2, 2),
+    vision: 6,
+    produces: &[UnitKind::Breaker, UnitKind::Avalanche],
+    weapons: &[],
+    // 0.15.3 balance lab: the whole tier-three era hid behind this
+    // gate — 7.6% Crucible reach at expert execution meant Breakers,
+    // Avalanches, and bombers barely existed in the shipped meta, and
+    // buffing the units behind an unbuilt gate moved nothing. The gate
+    // itself cheapens instead.
+    construction: Some(ConstructionStats {
+        cost: 400,
+        build_ticks: 550,
+        requires: &[BuildingKind::Fabricator],
+    }),
+};
+
+const BARRICADE: BuildingStats = BuildingStats {
+    max_hp: 400,
+    size: (1, 1),
+    vision: 1,
+    produces: &[],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 40,
+        build_ticks: 120,
+        requires: &[],
+    }),
+};
+
+const SCUTTLE_CHARGE: BuildingStats = BuildingStats {
+    max_hp: 20,
+    size: (1, 1),
+    vision: 1,
+    produces: &[],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 30,
+        build_ticks: 60,
+        requires: &[BuildingKind::Fabricator],
+    }),
+};
+
+const EXTRACTOR: BuildingStats = BuildingStats {
+    max_hp: 600,
+    size: (2, 2),
+    vision: 4,
+    produces: &[],
+    weapons: &[],
+    // Cheap to restore, brutal to hold: the price buys the strongest
+    // income in the game on ground everyone can read from the map.
+    construction: Some(ConstructionStats {
+        cost: 100,
+        build_ticks: 300,
+        requires: &[],
+    }),
+};
+
+// ---- Upgrade tiers ----------------------------------------------------
+//
+// Each upgradeable kind carries an array of tier structs; a building's
+// `tier` indexes it. A tier's `construction` row is the price of the
+// UPGRADE that produced it (tier 0 keeps the ordinary build price), so
+// repair pricing and refund logic read the tier they are welding.
+// `BuildingStats.upgrade` names the next tier's row where one exists.
+
+const HEAVY_TURRET: BuildingStats = BuildingStats {
+    max_hp: 500,
+    size: (1, 1),
+    vision: 6,
+    produces: &[],
+    weapons: &[WeaponStats {
+        damage: 20,
+        range: Fx::lit("6"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 25,
+        targets: DomainMask::GROUND,
+        splash: None,
+        indirect: false,
+        salvo: 1,
+        projectile: false,
+    }],
+    construction: Some(ConstructionStats {
+        cost: 150,
+        build_ticks: 300,
+        requires: &[BuildingKind::Fabricator],
+    }),
+};
+
+const BULWARK: BuildingStats = BuildingStats {
+    max_hp: 900,
+    size: (1, 1),
+    vision: 7,
+    produces: &[],
+    weapons: &[WeaponStats {
+        damage: 60,
+        range: Fx::lit("7.5"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 50,
+        targets: DomainMask::GROUND,
+        splash: None,
+        indirect: false,
+        salvo: 1,
+        projectile: false,
+    }],
+    construction: Some(ConstructionStats {
+        cost: 300,
+        build_ticks: 500,
+        requires: &[BuildingKind::Crucible],
+    }),
+};
+
+const BURST_FLAK: BuildingStats = BuildingStats {
+    max_hp: 400,
+    size: (1, 1),
+    vision: 7,
+    produces: &[],
+    weapons: &[WeaponStats {
+        damage: 12,
+        range: Fx::lit("6"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 10,
+        targets: DomainMask::AIR,
+        splash: Some(Fx::lit("1.5")),
+        indirect: false,
+        salvo: 1,
+        projectile: false,
+    }],
+    construction: Some(ConstructionStats {
+        cost: 120,
+        build_ticks: 250,
+        requires: &[BuildingKind::Fabricator],
+    }),
+};
+
+const REFINERY: BuildingStats = BuildingStats {
+    max_hp: 400,
+    size: (1, 1),
+    vision: 4,
+    produces: &[],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 150,
+        build_ticks: 300,
+        requires: &[BuildingKind::Fabricator],
+    }),
+};
+
+const DEEP_ARRAY: BuildingStats = BuildingStats {
+    max_hp: 300,
+    size: (1, 1),
+    vision: 11,
+    produces: &[],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 150,
+        build_ticks: 300,
+        // The forge gate: both deepest rungs (this and the Bulwark)
+        // stand behind the Crucible, which itself requires the
+        // Fabricator — the smelter's immediate utility is what makes
+        // that climb pay before its first tier-three unit.
+        requires: &[BuildingKind::Crucible],
     }),
 };
 
@@ -761,6 +1754,19 @@ impl UnitKind {
             UnitKind::Darter => &DARTER,
             UnitKind::Talon => &TALON,
             UnitKind::Wisp => &WISP,
+            UnitKind::Warden => &WARDEN,
+            UnitKind::Tender => &TENDER,
+            UnitKind::Excavator => &EXCAVATOR,
+            UnitKind::Kestrel => &KESTREL,
+            UnitKind::Gnat => &GNAT,
+            UnitKind::Shrike => &SHRIKE,
+            UnitKind::Sylph => &SYLPH,
+            UnitKind::Condor => &CONDOR,
+            UnitKind::Moth => &MOTH,
+            UnitKind::Breaker => &BREAKER,
+            UnitKind::Avalanche => &AVALANCHE,
+            UnitKind::Skyhook => &SKYHOOK,
+            UnitKind::Sapper => &SAPPER,
         }
     }
 
@@ -777,6 +1783,23 @@ impl UnitKind {
 }
 
 impl BuildingKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [BuildingKind; 13] = [
+        BuildingKind::Foundry,
+        BuildingKind::Turret,
+        BuildingKind::Fabricator,
+        BuildingKind::FlakTurret,
+        BuildingKind::Bastion,
+        BuildingKind::Array,
+        BuildingKind::Reclaimer,
+        BuildingKind::RepairBay,
+        BuildingKind::Extractor,
+        BuildingKind::Airworks,
+        BuildingKind::Crucible,
+        BuildingKind::Barricade,
+        BuildingKind::ScuttleCharge,
+    ];
+
     /// Lowercase display name.
     pub const fn name(self) -> &'static str {
         match self {
@@ -788,11 +1811,65 @@ impl BuildingKind {
             BuildingKind::Array => "array",
             BuildingKind::Reclaimer => "reclaimer",
             BuildingKind::RepairBay => "repair bay",
+            BuildingKind::Extractor => "extractor",
+            BuildingKind::Airworks => "airworks",
+            BuildingKind::Crucible => "crucible",
+            BuildingKind::Barricade => "barricade",
+            BuildingKind::ScuttleCharge => "scuttle charge",
         }
     }
 
-    /// Static stats for this kind.
-    pub const fn stats(self) -> &'static BuildingStats {
+    /// The player-facing description: what the works does and what it
+    /// costs you to lose. The codex and the build-palette tooltip read
+    /// this; the enum's doc comments are the same copy for readers of
+    /// the source.
+    pub const fn blurb(self) -> &'static str {
+        match self {
+            BuildingKind::Foundry => {
+                "HQ, unit factory, and scrap drop-off. Lose all of them, lose the game."
+            }
+            BuildingKind::Turret => {
+                "Static defense: fires on its own at anything in range and line of sight. Holds ground; loses to patient siege."
+            }
+            BuildingKind::Fabricator => {
+                "Second factory: trains the advanced roster. The tech gate."
+            }
+            BuildingKind::FlakTurret => "Anti-air emplacement: flak bursts that only ever look up.",
+            BuildingKind::Bastion => {
+                "Artillery emplacement: arcing splash shells beyond its own sight. Punishes lazy siege lines, but needs a spotter at full reach."
+            }
+            BuildingKind::Array => {
+                "Radar: a tall mast of true sight, and a wider ring of blips, contacts without identity that never satisfy a targeted attack."
+            }
+            BuildingKind::Reclaimer => {
+                "Grinds ambient debris into a scrap trickle. Slow to repay itself; the reason a match can outlive its scrap patches."
+            }
+            BuildingKind::RepairBay => {
+                "Field workshop: an unarmed aura that welds own wounded machines, ground and air alike, inside its ring. Billed per hp from the owner's bank at repair pricing."
+            }
+            BuildingKind::Extractor => {
+                "A restored strip-mining machine from the old rush. Rebuilt only on a map-authored derelict frame, it grinds the deep seams for the strongest income in the game. The frame outlives every destruction, so the ground it stands on is contested forever."
+            }
+            BuildingKind::Airworks => {
+                "Air production hall: every flyer trains here. Committing to the sky is a visible, snipeable investment."
+            }
+            BuildingKind::Crucible => {
+                "The tier-three works: trains the heaviest machines and gates the deepest upgrades. Expensive, slow, and worth killing."
+            }
+            BuildingKind::Barricade => {
+                "A cheap standing wall segment: blocks ground movement and nothing else. Terrain you can buy."
+            }
+            BuildingKind::ScuttleCharge => {
+                "A buried demolition charge, the game's only stealth. Invisible to enemies until a scout flies close or an Array's detection ring covers it; detonates under hostile ground machines."
+            }
+        }
+    }
+
+    /// Tier-zero stats for this kind. Most callers want a live
+    /// building's [`crate::state::Building::stats`], which follows the
+    /// upgrade ladder; this base row is for costs, footprints, and
+    /// other tier-invariant questions.
+    pub const fn base_stats(self) -> &'static BuildingStats {
         match self {
             BuildingKind::Foundry => &FOUNDRY,
             BuildingKind::Turret => &TURRET,
@@ -802,7 +1879,26 @@ impl BuildingKind {
             BuildingKind::Array => &ARRAY,
             BuildingKind::Reclaimer => &RECLAIMER,
             BuildingKind::RepairBay => &REPAIR_BAY,
+            BuildingKind::Extractor => &EXTRACTOR,
+            BuildingKind::Airworks => &AIRWORKS,
+            BuildingKind::Crucible => &CRUCIBLE,
+            BuildingKind::Barricade => &BARRICADE,
+            BuildingKind::ScuttleCharge => &SCUTTLE_CHARGE,
         }
+    }
+
+    /// Whether harvesters can deliver their cargo here. The one funnel
+    /// every drop-off decision consults — deliveries, retirement homes,
+    /// and route planning alike.
+    pub const fn is_drop_off(self) -> bool {
+        matches!(self, BuildingKind::Foundry)
+    }
+
+    /// Whether this kind hides from enemies until actively detected
+    /// (see `State::building_apparent`). The Scuttle Charge is the
+    /// game's only stealth.
+    pub const fn is_stealthy(self) -> bool {
+        matches!(self, BuildingKind::ScuttleCharge)
     }
 }
 
@@ -827,8 +1923,11 @@ pub const WRECK_DECAY_TICKS: u64 = 300;
 
 /// Outer detection ring of the Array, in tiles: hostile units inside it
 /// but out of true sight appear as blips — a tile, no kind, no owner.
-/// Blips never satisfy targeted-attack visibility.
-pub const RADAR_DETECT_RADIUS: i32 = 16;
+/// Blips never satisfy targeted-attack visibility. Widened from 16 in
+/// the 0.15 balance lab so one mast covers a whole approach corridor:
+/// the ring is the product scouts cannot replicate, standing early
+/// warning that outlives any patrol.
+pub const RADAR_DETECT_RADIUS: i32 = 20;
 
 /// Shell flight speed in tiles per tick. A full-range 9.5-tile lob takes
 /// about 32 ticks: path-aware aim catches a straight commitment, while a
@@ -839,6 +1938,28 @@ pub const SHELL_SPEED: Fx = Fx::lit("0.30");
 /// building repays its own price in roughly three minutes — insurance and
 /// a stalemate valve, never an opening.
 pub const RECLAIMER_PERIOD: u64 = 24;
+
+/// Ticks per scrap smelted by each standing, completed Foundry — the
+/// transparent income floor.
+///
+/// This is the economy's guarantee: exhausted nodes, lost Reclaimers,
+/// and camped salvage can make progress slow, but never leave a seat
+/// with no income at all. Credit is per Foundry so expansion bases are
+/// worth their keep, but the rate is tuned so income alone never pays
+/// for one (20/min against a 300 cost: production, drop-off reach,
+/// and survivability are the reasons to expand). Watched in training
+/// telemetry for foundry-farm degeneracy; the fallback design is a
+/// flat per-player floor at this same period.
+pub const FOUNDRY_DRIP_PERIOD: u64 = 60;
+
+/// First completed tick eligible for the drip: a two-minute warm-up.
+/// The floor exists for mid- and late-game lockouts; openings stay
+/// exactly as tuned without it. Measured (against the since-deleted
+/// 0.14 scripted bots): a from-tick-zero drip handed an omniscient
+/// anchor a decisive edge over a fog-honest brain (13/40 -> passing)
+/// purely on perfectly-converted
+/// early free scrap — the floor should never be an opening build order.
+pub const FOUNDRY_DRIP_START_TICK: u64 = 2_400;
 
 /// Ticks per emergency scrap credited by a surviving Foundry after its
 /// owner's last Harvester is gone. Each real deposit arms one finite
@@ -851,19 +1972,99 @@ pub const FOUNDRY_RECOVERY_PERIOD: u64 = 10;
 /// ground screen captures only the Harvester-sized deficit.
 pub const FOUNDRY_RECOVERY_RESERVE: u32 = SENTINEL.cost + HARVESTER.cost;
 
-/// Ticks per baseline scrap credited by a living player's Foundry.
-///
-/// This is the economy's last-resort clock: exhausted nodes and a destroyed
-/// Reclaimer may make progress slow, but can never make the match
-/// unrecoverable. Credit is per player rather than per Foundry, so extra
-/// bases add resilience without multiplying the free income.
-pub const FOUNDRY_BASELINE_PERIOD: u64 = 60;
+/// Release gate for turn-limited bombers: the target must sit inside
+/// the forward cone, `dot(heading, to_target) >= |to_target| * CONE`.
+/// 0.92 is a half-angle of about 23 degrees — wide enough that a clean
+/// pass releases, narrow enough that a bomber circling its target must
+/// straighten out before the bay opens.
+pub const BOMBER_CONE_DOT: Fx = Fx::lit("0.92");
 
-/// The baseline Foundry income begins only after the normal opening and
-/// midgame economy have had time to matter. Reclaimers remain the efficient
-/// insurance investment; this late floor exists only to make a long match
-/// recoverable.
-pub const FOUNDRY_BASELINE_START_TICK: u64 = 12_000;
+/// Distance between consecutive bombs of a stick along the flight line.
+pub const BOMB_SALVO_SPACING: Fx = Fx::lit("0.8");
+
+/// Acceptance slack added to a turn-limited flier's computed turn
+/// radius: the ring inside which a waypoint or goal counts as reached.
+/// The radius itself must dominate — an acceptance ring smaller than
+/// the turn radius is an orbit trap the aircraft can circle forever.
+pub const BOMBER_ACCEPT_SLACK: Fx = Fx::lit("0.4");
+
+/// How close a boarding machine must stand to its transport before the
+/// sling takes it.
+pub const LOAD_REACH: Fx = Fx::lit("1.5");
+
+/// Ring-scan radius when a transport sets its cargo down: the farthest
+/// tile from the drop point a disgorged machine may appear on.
+pub const UNLOAD_SCAN_RADIUS: i32 = 4;
+
+/// A hostile ground machine inside this radius of a buried charge sets
+/// it off.
+pub const CHARGE_TRIGGER_RADIUS: Fx = Fx::lit("0.8");
+
+/// Damage a detonating charge deals to every hostile ground machine in
+/// its blast ring.
+pub const CHARGE_DAMAGE: u32 = 60;
+
+/// The charge's blast ring.
+pub const CHARGE_BLAST_RADIUS: Fx = Fx::lit("1.5");
+
+/// A scout-role flyer within this many tiles reveals buried charges to
+/// its team.
+pub const CHARGE_SCOUT_DETECT_RADIUS: i32 = 4;
+
+/// A built base-tier Array reveals buried charges inside this closer
+/// ring (euclidean, like radar contacts). Detection is two-tiered: the
+/// base mast is fixed anti-stealth infrastructure covering the ground it
+/// stands on, the Deep Array upgrade buys the wide ring below, and scout
+/// flyers remain the mobile channel that goes where no mast stands.
+///
+/// Priced in 0.15.2 by the same razor that repriced the mast itself: the
+/// 0.15.1 harvester replan stagger cut how much a blip is worth to a
+/// working economy, and fine-tuned policies answered by shedding arrays
+/// monotonically — a seeded recovery run drove reach down rather than
+/// back up. Standing detection is the mast's one product the stagger
+/// cannot touch, so it carries more of the building's worth.
+pub const CHARGE_BASE_ARRAY_DETECT_RADIUS: i32 = 12;
+
+/// A built Deep Array (Array tier 1) reveals buried charges anywhere
+/// inside its radar ring (euclidean, like radar contacts) — the wide
+/// ring the upgrade pays for, over the base mast's close one.
+pub const CHARGE_ARRAY_DETECT_RADIUS: i32 = 22;
+
+/// A Sapper reaching contact with its ordered target detonates: this
+/// lands on a building target directly...
+pub const SAPPER_STRUCTURE_DAMAGE: u32 = 250;
+
+/// ...while every hostile ground machine in the blast ring (the
+/// building's occupants aside) takes the splash.
+pub const SAPPER_SPLASH_DAMAGE: u32 = 60;
+
+/// The Sapper's blast ring.
+pub const SAPPER_BLAST_RADIUS: Fx = Fx::lit("1.5");
+
+/// How close the Sapper must press to its target before the charge
+/// fires (measured to the target's closest point).
+pub const SAPPER_CONTACT_RANGE: Fx = Fx::lit("0.9");
+
+/// Ticks per scrap ground by a tier-one Reclaimer (the Refinery) — two
+/// and a half times the base drum, the roadmap's "improved Reclaimer".
+pub const REFINERY_PERIOD: u64 = 10;
+
+/// Extractor yield: `(first eligible completed tick, scrap, per ticks)`
+/// rows, later rows superseding earlier ones. The escalation is the
+/// visible late-game pressure rule: map control compounds, so turtling
+/// on the drip against a seat holding restored Extractors is a legible
+/// death spiral rather than a stalemate. Base 120 scrap/min, +50% from
+/// ten minutes, doubled from twenty.
+pub const EXTRACTOR_YIELD_SCHEDULE: [(u64, u32, u64); 3] =
+    [(0, 1, 10), (12_000, 3, 20), (24_000, 2, 10)];
+
+/// Ticks between decay steps on an unattended construction site (one hp
+/// per step, applied while no own harvest-capable machine stands beside
+/// the footprint). Sites count for survival exactly like standing
+/// Foundries, so abandoned scaffolds must rust away rather than keep a
+/// beaten seat technically alive forever — and an untended half-built
+/// anything is a melting asset, not a free land claim.
+pub const SITE_DECAY_PERIOD: u64 = 8;
 
 /// Per-mille of a building's cost billed per hp welded (against max_hp).
 /// The three economy verbs price strictly build > repair > salvage:
@@ -912,6 +2113,20 @@ pub const REPAIR_BAY_RADIUS: Fx = Fx::lit("4.0");
 /// fire; its value is breadth (every wounded machine in the ring heals
 /// at once) and never needing a harvester's torch time.
 pub const REPAIR_BAY_PERIOD: u64 = 8;
+
+/// Reach of the Crucible's smelter, in tiles from the nearest point of
+/// its footprint. Wider than the Repair Bay's base ring: the smelter's
+/// fuel is battlefield debris, so the works wants to stand near where
+/// fights happened, not huddle at home.
+pub const CRUCIBLE_SMELT_RADIUS: Fx = Fx::lit("6.0");
+
+/// Ticks between smelter pulses; each pulse melts one wreck unit into
+/// one scrap. 1 / 40 sits below a dedicated harvester working the same
+/// field and near the Foundry drip's order of magnitude — the point is
+/// that a standing Crucible pays for itself over a mid-game's debris,
+/// not that it replaces the harvest line. This is the amortization
+/// that makes the tier-three climb a purchase instead of dead spend.
+pub const CRUCIBLE_SMELT_PERIOD: u64 = 40;
 
 /// Hp each aura pulse offers each patient in the ring.
 pub const REPAIR_BAY_STEP: u32 = 1;
@@ -1047,5 +2262,6 @@ pub const LEASH_REACQUIRE_COOLDOWN: u16 = 60;
 /// a stationed machine's self-acquired fights tether. A unit cycling
 /// through idle mid-battle (its target fell, the next is a tick away)
 /// re-acquires unleashed: tethering those turned army fights into
-/// seat-parity coin flips and collapsed the scripted tier ladder.
+/// seat-parity coin flips (measured against the since-deleted scripted
+/// tier ladder, which it collapsed).
 pub const LEASH_STATION_TICKS: u16 = 40;

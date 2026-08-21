@@ -43,8 +43,8 @@ def _bridge_artifact(
 
 
 class TestExactRecovery:
-    def test_v7_artifact_rejection_names_the_json_migration(self) -> None:
-        with pytest.raises(ValueError, match=r"widen\.py --src OLD\.json"):
+    def test_a_stale_artifact_version_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="speak gym v7, trainer speaks v9"):
             dequantize.recover_actor({"gym_version": 7})
 
     def test_the_recovered_actor_round_trips_exactly_and_the_critic_is_zero(
@@ -184,3 +184,31 @@ class TestUnflooring:
             dequantize.parse_action_indices("24,24")
         with pytest.raises(argparse.ArgumentTypeError, match="must be in"):
             dequantize.parse_action_indices(str(ACTIONS))
+
+
+class TestDriftRefusal:
+    # The audit measured the drift branch at zero execution: the
+    # round-trip equality gate is what makes recovered actors safe to
+    # continue training from, and only its passing direction had tests.
+    def _tampered(self, tmp_path: pathlib.Path, field: str) -> dict:
+        weights = _bridge_artifact(tmp_path)
+        artifact = json.loads(weights.read_text())
+        column = artifact[field]
+        while isinstance(column, list):
+            parent, column = column, column[0]
+        parent[0] = parent[0] + 3
+        return artifact
+
+    @pytest.mark.parametrize("field", ["recips", "tanh_lut"])
+    def test_a_perturbed_field_is_refused_by_name(
+        self, tmp_path: pathlib.Path, field: str
+    ) -> None:
+        tampered = self._tampered(tmp_path, field)
+        with pytest.raises(ValueError, match=f"round-trip.*{field}") as err:
+            dequantize.recover_actor(tampered)
+        drifted = str(err.value).split(": ")[-1].split(", ")
+        assert drifted == [field], (
+            "exactly the tampered field must be named — a broader list "
+            "means the comparison conflates fields, a shorter one means "
+            f"{field} is only incidentally compared"
+        )

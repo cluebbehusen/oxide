@@ -80,7 +80,7 @@ fn shift_click_selects_and_toggles_same_owner_buildings() {
     assert_eq!(own.len(), 2);
     let center = |game: &Game, id| {
         let building = game.state.building(id).unwrap();
-        let size = building.kind.stats().size;
+        let size = building.stats().size;
         game.camera.to_screen(vec2(
             building.anchor.x as f32 + size.0 as f32 * 0.5,
             building.anchor.y as f32 + size.1 as f32 * 0.5,
@@ -317,7 +317,10 @@ fn training_uses_the_first_selected_factory_that_supports_the_slot() {
         .id;
     game.selection.buildings = vec![foundry, fabricator];
 
-    super::orders::train(&mut game, 2);
+    // Slot 4 sits past the Foundry's four-card roster, so only the
+    // Fabricator can serve it — a slot both producers serve would
+    // legitimately land on the first selected producer instead.
+    super::orders::train(&mut game, 4);
 
     assert!(matches!(
         game.pending.as_slice(),
@@ -915,7 +918,7 @@ fn every_build_palette_entry_costs_scrap_to_raise() {
     // ghost the sim can never accept.
     for kind in BUILD_PALETTE {
         let cost = kind
-            .stats()
+            .base_stats()
             .construction
             .unwrap_or_else(|| panic!("{} is in the palette but not constructable", kind.name()))
             .cost;
@@ -1093,10 +1096,7 @@ fn a_shift_click_on_the_wounded_wall_queues_the_weld_not_the_rat() {
         game.state.tick(&[]);
     }
     let wall = game.state.building(foundry).unwrap();
-    assert!(
-        wall.hp < wall.kind.stats().max_hp,
-        "premise: the rat left scars"
-    );
+    assert!(wall.hp < wall.stats().max_hp, "premise: the rat left scars");
     // Click a footprint tile close enough to the rat that the enemy
     // pick would win if radius still outranked footprint.
     let rat_pos = {
@@ -1852,7 +1852,7 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
 
     // The panel is read-only: no command cards; a single ally shows
     // static combat capability and its order chips.
-    let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
+    let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on an ally panel");
     assert!(panel.sub.contains("Easy"), "bot difficulty stays visible");
     assert!(
@@ -1910,7 +1910,7 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
 
     // Static kind-level combat facts are safe to inspect. Command cards
     // and order chips stay absent because order state reveals intent.
-    let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
+    let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
     assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
     assert!(panel.sub.contains("Hard"), "enemy difficulty stays visible");
@@ -2850,9 +2850,7 @@ fn a_minimap_right_click_sets_every_selected_producer_rally() {
         .state
         .buildings()
         .iter()
-        .filter(|building| {
-            building.player == game.human && !building.kind.stats().produces.is_empty()
-        })
+        .filter(|building| building.player == game.human && !building.stats().produces.is_empty())
         .map(|building| building.id)
         .collect();
     producers.sort_unstable();
@@ -3144,7 +3142,7 @@ fn the_roster_strip_cuts_a_mixed_selection_both_ways() {
         .map(|u| u.id)
         .collect();
     game.selection.units = mine.clone();
-    let panel = crate::panel::build(&game, &input.bindings).expect("panel");
+    let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("panel");
     let strip: Vec<_> = panel
         .roster
         .iter()
@@ -3912,7 +3910,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
 
     let harvester_cost = UnitKind::Harvester.stats().cost;
     let turret_cost = BUILD_PALETTE[0]
-        .stats()
+        .base_stats()
         .construction
         .expect("palette structures are constructable")
         .cost;
@@ -4160,7 +4158,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     let first = TilePos::new(18, 4);
     let replacement = TilePos::new(19, 4);
     let cost = kind
-        .stats()
+        .base_stats()
         .construction
         .expect("fabricator is constructible")
         .cost;
@@ -4183,7 +4181,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     walk(&mut game, TilePos::new(19, 6));
     for _ in 0..600 {
         if [first, replacement].iter().all(|anchor| {
-            let (w, h) = kind.stats().size;
+            let (w, h) = kind.base_stats().size;
             (0..h).all(|dy| (0..w).all(|dx| game.state.can_see(game.human, anchor.offset(dx, dy))))
         }) {
             break;
@@ -4193,7 +4191,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     walk(&mut game, TilePos::new(7, 5));
     for _ in 0..600 {
         if [first, replacement].iter().all(|anchor| {
-            let (w, h) = kind.stats().size;
+            let (w, h) = kind.base_stats().size;
             (0..h).all(|dy| (0..w).all(|dx| !game.state.can_see(game.human, anchor.offset(dx, dy))))
         }) {
             break;
@@ -4201,7 +4199,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
         game.state.tick(&[]);
     }
     for anchor in [first, replacement] {
-        let (w, h) = kind.stats().size;
+        let (w, h) = kind.base_stats().size;
         for dy in 0..h {
             for dx in 0..w {
                 let tile = anchor.offset(dx, dy);
@@ -4331,7 +4329,7 @@ fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
     let kind = oxide_sim::BuildingKind::Turret;
     let anchor = TilePos::new(4, 2);
     let cost = kind
-        .stats()
+        .base_stats()
         .construction
         .expect("turret is constructible")
         .cost;
@@ -4438,7 +4436,7 @@ fn a_paid_site_does_not_reserve_its_surviving_deferred_claim_again() {
     let kind = oxide_sim::BuildingKind::Turret;
     let anchor = TilePos::new(10, 4);
     let cost = kind
-        .stats()
+        .base_stats()
         .construction
         .expect("turret is constructible")
         .cost;
@@ -4702,4 +4700,92 @@ fn a_plain_placement_replaces_the_selected_claim_while_shift_preserves_it() {
             ..
         } if anchor == new_spot
     ));
+}
+
+#[test]
+fn the_upgrade_card_drafts_the_nearest_crew() {
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Turret,
+        x: 9,
+        y: 3,
+    });
+    let mut game =
+        Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("upgrade fixture builds");
+    let mut input = InputState::new();
+    let turret = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == oxide_sim::BuildingKind::Turret)
+        .unwrap()
+        .id;
+    game.selection.buildings = vec![turret];
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::Upgrade(turret),
+    );
+    let staged: Vec<_> = game
+        .pending
+        .iter()
+        .filter_map(|c| match &c.command {
+            oxide_sim::Command::UpgradeBuilding {
+                units, building, ..
+            } => Some((units.clone(), *building)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(staged.len(), 1, "one upgrade command staged");
+    let (units, building) = &staged[0];
+    assert_eq!(*building, turret);
+    assert!(
+        !units.is_empty() && units.len() <= 3,
+        "a small nearby crew is drafted: {units:?}"
+    );
+    for id in units {
+        let u = game.state.unit(*id).expect("crew member lives");
+        assert!(
+            u.kind.stats().harvest.is_some(),
+            "only construction-capable machines are drafted"
+        );
+    }
+}
+
+#[test]
+fn the_build_palette_cycles_through_its_pages() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let worker = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .unwrap()
+        .id;
+    game.selection.units = vec![worker];
+    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(input.build_menu && input.build_page == 0, "opens on page 0");
+    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(
+        input.build_menu && input.build_page == 1,
+        "the second press turns the page"
+    );
+    // A digit now arms the tech page's kind, not the classic one.
+    super::orders::digit_action(&mut game, &mut input, 1);
+    assert_eq!(
+        input.placing,
+        Some(oxide_sim::BuildingKind::Airworks),
+        "digit 2 on page 1 arms the Airworks"
+    );
+    // Reopen and close on the third press.
+    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(
+        input.build_menu && input.build_page == 0,
+        "reopens on page 0"
+    );
+    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(!input.build_menu, "the cycle ends closed");
 }

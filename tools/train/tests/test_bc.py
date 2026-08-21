@@ -1,4 +1,4 @@
-"""Focused tests for the factorized v7 behavior-cloning teachers."""
+"""Focused tests for the factorized behavior-cloning teachers."""
 
 import json
 from typing import TYPE_CHECKING
@@ -36,10 +36,11 @@ def test_every_teacher_emits_one_legal_global_index_per_head() -> None:
 def test_teacher_reconciles_a_masked_noop_to_the_legal_head_action() -> None:
     raw = _raw()
     mask = np.zeros(ACTIONS, dtype=bool)
-    mask[[bc.IDLE, bc.NO_CONSTRUCTION, bc.RECALL]] = True
+    mask[[bc.IDLE, bc.NO_CONSTRUCTION, bc.NO_UPGRADE, bc.RECALL]] = True
     assert bc.teacher("industry", raw, mask, 1_024) == (
         bc.IDLE,
         bc.NO_CONSTRUCTION,
+        bc.NO_UPGRADE,
         bc.RECALL,
     )
 
@@ -47,8 +48,8 @@ def test_teacher_reconciles_a_masked_noop_to_the_legal_head_action() -> None:
 def test_teacher_refuses_an_action_head_without_a_legal_target() -> None:
     raw = _raw()
     mask = np.zeros(ACTIONS, dtype=bool)
-    mask[[bc.IDLE, bc.NO_CONSTRUCTION]] = True
-    with pytest.raises(ValueError, match="action head 2 has no legal"):
+    mask[[bc.IDLE, bc.NO_CONSTRUCTION, bc.NO_UPGRADE]] = True
+    with pytest.raises(ValueError, match="action head 3 has no legal"):
         bc.teacher("industry", raw, mask, 1_024)
 
 
@@ -79,11 +80,32 @@ def test_masked_head_loss_retains_masking_and_class_weights() -> None:
 
 
 def test_production_teaches_intent_without_reading_affordability() -> None:
+    # Tier-one wants stay affordability-blind: intent is the lesson and
+    # the lowering owns the bank. The one scout flyer comes first on the
+    # v9 surface (it is the only scout an island map allows), so the
+    # fixture already fields it.
     raw = _raw()
     raw[bc.F["scrap"]] = 0
     raw[bc.F["my_sentinels"]] = 4
+    raw[bc.F["my_scout_flyers"]] = 1
     mask = np.ones(ACTIONS, dtype=bool)
     assert bc.production_teacher("combined", raw, mask) == bc.TRAIN_LANCER
+
+
+def test_tier_wants_wait_for_the_bank() -> None:
+    # The deliberate exception: an unaffordable tier-two want would
+    # label half the corpus with purchases the lowering cannot make.
+    raw = _raw()
+    raw[bc.F["my_sentinels"]] = 4
+    raw[bc.F["my_lancers"]] = 3
+    raw[bc.F["my_bombards"]] = 2
+    raw[bc.F["my_scout_flyers"]] = 1
+    mask = np.ones(ACTIONS, dtype=bool)
+    raw[bc.F["scrap"]] = 0
+    poor = bc.production_teacher("combined", raw, mask)
+    assert poor != bc.TRAIN_WARDEN
+    raw[bc.F["scrap"]] = 300
+    assert bc.production_teacher("combined", raw, mask) == bc.TRAIN_WARDEN
 
 
 def test_an_existing_capital_plan_is_preserved() -> None:
@@ -133,17 +155,18 @@ def test_pressure_commits_earlier_than_fortify() -> None:
 def test_global_plans_map_to_the_correct_noncontiguous_local_classes() -> None:
     targets = bc.local_action_targets(
         [
-            (0, 24, 25),
-            (8, 9, 20),
-            (1, 23, 16),
+            (0, 24, 42, 25),
+            (8, 9, 40, 20),
+            (1, 23, 42, 16),
         ]
     )
     np.testing.assert_array_equal(targets[0], [0, 8, 1])
     np.testing.assert_array_equal(targets[1], [0, 1, 10])
-    np.testing.assert_array_equal(targets[2], [0, 5, 1])
+    np.testing.assert_array_equal(targets[2], [0, 1, 0])
+    np.testing.assert_array_equal(targets[3], [0, 5, 1])
 
     with pytest.raises(ValueError, match="head 1"):
-        bc.local_action_targets([(0, 8, 25)])
+        bc.local_action_targets([(0, 8, 42, 25)])
 
 
 def test_the_demonstration_slate_keeps_only_duel_maps(
@@ -159,12 +182,12 @@ def test_the_demonstration_slate_keeps_only_duel_maps(
 
 
 def test_the_128_episode_schedule_crosses_maps_without_faction_aliasing() -> None:
-    cases = [bc.episode_assignment(ep, 16, 3) for ep in range(128)]
+    cases = [bc.episode_assignment(ep, 16) for ep in range(128)]
     for strategy in bc.STRATEGIES:
         for seat in (0, 1):
             maps = {
                 map_index
-                for assigned, assigned_seat, map_index, _factions, _tier in cases
+                for assigned, assigned_seat, map_index, _factions in cases
                 if assigned == strategy and assigned_seat == seat
             }
             assert maps == set(range(16))
@@ -172,22 +195,108 @@ def test_the_128_episode_schedule_crosses_maps_without_faction_aliasing() -> Non
     for map_index in range(16):
         pairs = {
             factions
-            for _strategy, _seat, assigned_map, factions, _tier in cases
+            for _strategy, _seat, assigned_map, factions in cases
             if assigned_map == map_index
         }
         assert pairs == set(bc.FACTION_PAIRS)
 
 
 def test_a_second_schedule_pass_rotates_each_exact_map_cell() -> None:
-    cases = [bc.episode_assignment(ep, 16, 3) for ep in range(256)]
+    cases = [bc.episode_assignment(ep, 16) for ep in range(256)]
     for strategy in bc.STRATEGIES:
         for seat in (0, 1):
             for map_index in range(16):
                 pairs = {
                     factions
-                    for assigned, assigned_seat, assigned_map, factions, _tier in cases
+                    for assigned, assigned_seat, assigned_map, factions in cases
                     if assigned == strategy
                     and assigned_seat == seat
                     and assigned_map == map_index
                 }
                 assert len(pairs) == 2
+
+
+def _capital_ready(strategy: str) -> tuple[list[int], np.ndarray]:
+    # Clears the economy gate (harvesters and screen) with the tree
+    # standing, no plan, and no live site — the state the audit found
+    # every per-strategy capital branch untested in. The expansion
+    # Foundry arm outranks the capital ladder, so its action is masked
+    # off exactly as the lowering does when no anchor fits.
+    raw = _raw()
+    raw[bc.F["my_harvesters"]] = 5
+    raw[bc.F["my_strength"]] = 150
+    raw[bc.F["fab_built"]] = 1
+    raw[bc.F["tick"]] = 6_000
+    mask = np.ones(ACTIONS, dtype=bool)
+    # The deep-tech prefix (Airworks, Crucible, expansion Foundry,
+    # Extractor) outranks the capital ladder; masked off exactly as
+    # the lowering does when no anchor or prerequisite fits.
+    for action in (
+        bc.BUILD_AIRWORKS,
+        bc.BUILD_CRUCIBLE,
+        bc.BUILD_FOUNDRY,
+        bc.BUILD_EXTRACTOR,
+    ):
+        mask[action] = False
+    _ = strategy
+    return raw, mask
+
+
+def test_each_strategy_leads_with_its_own_capital_pick() -> None:
+    for strategy in ("fortify", "industry", "combined"):
+        raw, mask = _capital_ready(strategy)
+        assert bc.construction_teacher(strategy, raw, mask) == bc.BUILD_TURRET
+    raw, mask = _capital_ready("pressure")
+    assert bc.construction_teacher("pressure", raw, mask) == bc.BUILD_ARRAY, (
+        "pressure builds eyes before walls"
+    )
+
+
+def test_the_economy_gate_holds_each_strategy_to_its_screen() -> None:
+    for strategy, floor in (
+        ("fortify", 100),
+        ("industry", 90),
+        ("combined", 100),
+        ("pressure", 80),
+    ):
+        raw, mask = _capital_ready(strategy)
+        raw[bc.F["my_strength"]] = floor - 1
+        assert bc.construction_teacher(strategy, raw, mask) == bc.NO_CONSTRUCTION, (
+            f"{strategy} must hold below its screen floor"
+        )
+
+
+def test_strategies_walk_their_candidate_ladders_in_order() -> None:
+    fortify, mask = _capital_ready("fortify")
+    fortify[bc.F["my_turrets_built"]] = 2
+    assert bc.construction_teacher("fortify", fortify, mask) == bc.BUILD_ARRAY
+    fortify[bc.F["my_arrays_built"]] = 1
+    assert bc.construction_teacher("fortify", fortify, mask) == bc.BUILD_FLAK
+
+    industry, _ = _capital_ready("industry")
+    industry[bc.F["my_turrets_built"]] = 1
+    industry[bc.F["near_home_salvage_value"]] = 100
+    assert bc.construction_teacher("industry", industry, mask) == bc.BUILD_RECLAIMER
+
+    pressure, _ = _capital_ready("pressure")
+    pressure[bc.F["my_arrays_built"]] = 1
+    assert bc.construction_teacher("pressure", pressure, mask) == bc.NO_CONSTRUCTION, (
+        "an unthreatened pressure seat banks for the push"
+    )
+    pressure[bc.F["blip_count"]] = 2
+    assert bc.construction_teacher("pressure", pressure, mask) == bc.BUILD_TURRET, (
+        "a threatened pressure seat answers with the one turret"
+    )
+
+
+def test_a_broke_and_barren_seat_salvages() -> None:
+    raw, mask = _capital_ready("fortify")
+    raw[bc.F["my_turrets_built"]] = 2
+    raw[bc.F["my_arrays_built"]] = 1
+    raw[bc.F["my_flak_built"]] = 1
+    raw[bc.F["my_bastions_built"]] = 1
+    raw[bc.F["my_repair_bays_built"]] = 1
+    raw[bc.F["near_home_salvage_value"]] = 900
+    raw[bc.F["known_salvage_value"]] = 0
+    raw[bc.F["scrap"]] = 20
+    assert bc.construction_teacher("fortify", raw, mask) == bc.SALVAGE

@@ -153,6 +153,8 @@ pub struct InputState {
     pub(crate) rallying: Vec<oxide_sim::BuildingId>,
     /// Whether the build palette is open (`B`; digits pick a structure).
     pub(crate) build_menu: bool,
+    /// Which palette page the open build menu shows (0 or 1).
+    pub(crate) build_page: usize,
     /// This frame's chrome scale (dpi x user), injected by the frame
     /// loop so hit math never queries the window.
     pub(crate) ui: f32,
@@ -199,7 +201,7 @@ pub(crate) fn build_defer_needed(
     kind: oxide_sim::BuildingKind,
     anchor: TilePos,
 ) -> bool {
-    let (w, h) = kind.stats().size;
+    let (w, h) = kind.base_stats().size;
     (0..h).any(|dy| (0..w).any(|dx| !game.state.vision(game.human).visible(anchor.offset(dx, dy))))
 }
 
@@ -277,7 +279,7 @@ fn pending_build_projection_for(
         }
         let reserved = claims
             .iter()
-            .filter_map(|(kind, _)| kind.stats().construction.map(|stats| stats.cost))
+            .filter_map(|(kind, _)| kind.base_stats().construction.map(|stats| stats.cost))
             .fold(0_u32, u32::saturating_add);
         let crew: Vec<_> = state
             .units()
@@ -335,7 +337,34 @@ pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 7] = [
     oxide_sim::BuildingKind::Fabricator,
 ];
 
+/// The second palette page: the 0.15 expansion works. The palette key
+/// cycles closed -> page 0 -> page 1 -> closed, and digits pick from
+/// whichever page is open.
+pub(crate) const BUILD_PALETTE_TECH: [oxide_sim::BuildingKind; 6] = [
+    oxide_sim::BuildingKind::Foundry,
+    oxide_sim::BuildingKind::Airworks,
+    oxide_sim::BuildingKind::Crucible,
+    oxide_sim::BuildingKind::Extractor,
+    oxide_sim::BuildingKind::Barricade,
+    oxide_sim::BuildingKind::ScuttleCharge,
+];
+
+/// The open palette page's kinds.
+pub(crate) fn build_page(page: usize) -> &'static [oxide_sim::BuildingKind] {
+    if page == 0 {
+        &BUILD_PALETTE
+    } else {
+        &BUILD_PALETTE_TECH
+    }
+}
+
 impl InputState {
+    /// The palette page the panel should render: the live page while
+    /// the menu is open, the classic first page otherwise.
+    pub(crate) fn active_build_page(&self) -> usize {
+        if self.build_menu { self.build_page } else { 0 }
+    }
+
     /// Fresh input state.
     pub fn new() -> Self {
         Self {
@@ -355,6 +384,7 @@ impl InputState {
             attacking: false,
             rallying: Vec::new(),
             build_menu: false,
+            build_page: 0,
             ui: 1.0,
             now: 0.0,
             camera_prefs: crate::config::CameraPrefs::default(),
@@ -841,12 +871,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 {
                     let world = game.camera.to_world(vec2(x, y));
                     let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-                    let (w, h) = kind.stats().size;
+                    let (w, h) = kind.base_stats().size;
                     let overlaps = stroke
                         .anchors
                         .iter()
                         .any(|a| (a.x - anchor.x).abs() < w && (a.y - anchor.y).abs() < h);
-                    let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+                    let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
                     let projection = pending_build_projection(game, kind, anchor, true);
                     // The projected bank already reflects every paid
                     // pending command; only surviving deferred claims
@@ -1292,6 +1322,11 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                         "can't build there: an enemy machine is holding that ground"
                     }
                     PlaceRefusal::NotConstructible => "that can't be built",
+                    PlaceRefusal::Prerequisite => "can't build that yet: needs its tech building",
+                    PlaceRefusal::FrameRequired => "an extractor rebuilds only on a derelict frame",
+                    PlaceRefusal::FrameBlocked => {
+                        "can't build there: that ground belongs to a derelict frame"
+                    }
                 });
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
@@ -1301,7 +1336,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // phase, with future prices held for surviving deferred
             // claims. A broke click gets the honest toast, not an
             // acknowledgment ping followed by a sim rejection.
-            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+            let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
             if projection.funds.available() < cost {
                 game.toast(format!("not enough scrap for a {}", kind.name()));
                 game.sounds_pending
@@ -1411,12 +1446,13 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // ping — refuse honestly at arm time instead.
             let has_other_welder = game.selection.units.iter().any(|id| {
                 *id != target
-                    && game.state.unit(*id).is_some_and(|u| {
-                        u.kind == oxide_sim::UnitKind::Harvester && u.player == game.human
-                    })
+                    && game
+                        .state
+                        .unit(*id)
+                        .is_some_and(|u| u.kind.stats().welder && u.player == game.human)
             });
             if !has_other_welder {
-                game.toast("weld needs another harvester in hand");
+                game.toast("weld needs another welder in hand");
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
@@ -1493,7 +1529,7 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             input.build_menu = false;
             input.disarm_click_verbs();
             input.placing = Some(kind);
-            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+            let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
             game.toast(format!(
                 "placing {} ({} scrap): click to build, Shift chains, Esc to cancel",
                 kind.name(),
@@ -1517,6 +1553,46 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
         }
         crate::panel::CardAction::CancelFound(kind, anchor) => {
             game.issue(Command::CancelFound { kind, anchor });
+        }
+        crate::panel::CardAction::Upgrade(building) => {
+            // Draft the nearest own construction-capable machines as
+            // the crew — the same convenience a build click gives, so
+            // upgrading never demands a separate selection dance.
+            let Some(target) = game.state.building(building) else {
+                return;
+            };
+            let center = target.center();
+            let mut crew: Vec<(chassis::fx::Fx, oxide_sim::UnitId)> = game
+                .state
+                .units()
+                .iter()
+                .filter(|u| u.player == game.human && u.hp > 0 && u.kind.stats().harvest.is_some())
+                .map(|u| (u.pos.dist_sq(center), u.id))
+                .collect();
+            crew.sort();
+            let units: Vec<oxide_sim::UnitId> =
+                crew.into_iter().take(3).map(|(_, id)| id).collect();
+            if units.is_empty() {
+                game.toast("the upgrade needs a harvest-capable crew");
+                game.sounds_pending
+                    .push((crate::game::SoundKind::Denied, None));
+                return;
+            }
+            game.issue(Command::UpgradeBuilding {
+                units,
+                building,
+                queue: false,
+            });
+        }
+        crate::panel::CardAction::UnloadHere(transport) => {
+            if let Some(t) = game.state.unit(transport) {
+                let at = t.tile();
+                game.issue(Command::Unload {
+                    transport,
+                    at,
+                    queue: false,
+                });
+            }
         }
         crate::panel::CardAction::ClearRally => {
             for building in orders::selected_producers(game) {
@@ -1572,10 +1648,12 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     let on_entity = game.state.units().iter().any(|u| {
         let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
         p.distance(world) <= PICK_RADIUS && (u.player == game.human || sees(u.tile()))
-    }) || game
-        .state
-        .building_at(tile)
-        .is_some_and(|b| b.player == game.human || sees(tile));
+    }) || game.state.building_at(tile).is_some_and(|b| {
+        // Same rule as fog, for stealth: an undetected buried charge
+        // must not flip a rally into a select, or taps would scan for
+        // occupancy the fog view denies.
+        b.player == game.human || (sees(tile) && game.state.building_apparent(game.human, b))
+    });
     if on_entity && game.selection.units.is_empty() {
         select::click_select(game, tp.at, false, input.ui);
     } else {

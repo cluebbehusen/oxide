@@ -856,14 +856,22 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
     if let Some(cost) = card.cost {
         lines.push((format!("{cost} scrap"), SCRAP_COLOR));
     }
+    let size = 15.0 * s;
+    let pad = 8.0 * s;
+    // Descriptions run to two sentences; the box wraps them at a
+    // reading width instead of growing to the longest line, which
+    // once put a Skyhook tooltip wider than the window.
+    let wrap_w = 340.0 * s;
     for d in &card.desc {
-        lines.push((d.clone(), TEXT_BODY));
+        for line in
+            crate::render::wrap_words(d, |t| measure_text(t, None, size as u16, 1.0).width, wrap_w)
+        {
+            lines.push((line, TEXT_BODY));
+        }
     }
     if let Some(why) = &card.why {
         lines.push((why.clone(), DANGER));
     }
-    let size = 15.0 * s;
-    let pad = 8.0 * s;
     let width = lines
         .iter()
         .map(|(l, _)| measure_text(l, None, size as u16, 1.0).width)

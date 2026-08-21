@@ -8,7 +8,7 @@ fn identical_inputs_think_identical_intents() {
     let scenario = Scenario::skirmish();
     let state = scenario.build().unwrap();
     let obs = Observation::omniscient(&state, PlayerId(0));
-    let dials = Dials::full_omniscient();
+    let dials = Dials::full();
     let mut first = UtilityPolicy::new();
     let mut second = UtilityPolicy::new();
     assert_eq!(
@@ -26,12 +26,12 @@ fn a_think_never_plans_past_the_bank() {
         let me = PlayerId(player);
         let obs = Observation::omniscient(&state, me);
         let mut policy = UtilityPolicy::new();
-        let intents = policy.think(&Dials::full_omniscient(), &obs, &[], &[]);
+        let intents = policy.think(&Dials::full(), &obs, &[], &[]);
         let planned: u32 = intents
             .iter()
             .map(|i| match i {
                 Intent::TrainAt { kind, .. } => kind.stats().cost,
-                Intent::Build { kind, .. } => kind.stats().construction.map_or(0, |c| c.cost),
+                Intent::Build { kind, .. } => kind.base_stats().construction.map_or(0, |c| c.cost),
                 _ => 0,
             })
             .sum();
@@ -44,7 +44,7 @@ fn a_think_never_plans_past_the_bank() {
 }
 
 #[test]
-fn a_starved_tier_liquidates_its_walls_for_one_more_wave() {
+fn a_starved_commander_liquidates_its_walls_for_one_more_wave() {
     // The scripted salvage doctrine: bank starved, nothing known left
     // to mine or strip, a standing defense — the policy sells
     // cheapest-first. The learner meets the mechanic from the

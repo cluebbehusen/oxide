@@ -7,7 +7,7 @@ use std::process::Command;
 #[test]
 fn faction_cup_reports_the_pair_and_each_physical_seat() {
     let weights =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sim/src/bot/ladder_weights.json");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny_policy_v9.json");
     let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
         .args([
             "neural-cup",
@@ -36,15 +36,12 @@ fn faction_cup_reports_the_pair_and_each_physical_seat() {
         .lines()
         .map(|line| serde_json::from_str(line).expect("cup JSON row"))
         .collect();
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), 2);
     let opponents: Vec<_> = rows
         .iter()
         .map(|row| row["opponent"].as_str().expect("opponent name"))
         .collect();
-    assert_eq!(
-        opponents,
-        ["Scrapheap", "Standard", "Veteran", "Prime", "Rusher"]
-    );
+    assert_eq!(opponents, ["Overseer", "Rusher"]);
     for row in rows {
         assert_eq!(row["profile"], "canonical-slate");
         assert_eq!(row["factions"], "cf");
@@ -80,7 +77,7 @@ fn faction_cup_reports_the_pair_and_each_physical_seat() {
         .lines()
         .map(|line| serde_json::from_str(line).expect("cup JSON row"))
         .collect();
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), 2);
     assert!(
         rows.iter().all(|row| row["profile"] == "raw"),
         "an explicitly supplied zero is an exact raw override"

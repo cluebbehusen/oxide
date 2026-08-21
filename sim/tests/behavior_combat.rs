@@ -1158,7 +1158,7 @@ fn turret_fires_at_its_stated_cadence() {
             break;
         }
     }
-    let cooldown = u64::from(BuildingKind::Turret.stats().weapons[0].cooldown_ticks);
+    let cooldown = u64::from(BuildingKind::Turret.base_stats().weapons[0].cooldown_ticks);
     assert!(fire_ticks.len() >= 3, "not enough shots observed");
     assert_eq!(
         fire_ticks[1] - fire_ticks[0],
@@ -1170,7 +1170,7 @@ fn turret_fires_at_its_stated_cadence() {
 
 #[test]
 fn bastion_has_artillery_reach_and_a_real_close_pressure_dead_zone() {
-    let bastion_weapon = BuildingKind::Bastion.stats().weapons[0];
+    let bastion_weapon = BuildingKind::Bastion.base_stats().weapons[0];
     assert_eq!(
         bastion_weapon.range,
         UnitKind::Bombard.stats().weapons[0].range,

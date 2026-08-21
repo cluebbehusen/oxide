@@ -65,11 +65,36 @@ def test_the_handshake_and_one_masked_step() -> None:
             next(action for action in ACTION_HEADS[0] if view.mask[action]),
             next(action for action in ACTION_HEADS[1] if view.mask[action]),
             next(action for action in ACTION_HEADS[2] if view.mask[action]),
+            next(action for action in ACTION_HEADS[3] if view.mask[action]),
         )
         after = worker.step({seat: plan})
         assert after.tick > frame.tick
         assert after.done or seat in after.seats
         assert seat in after.effects
+    finally:
+        worker.close()
+
+
+def test_a_recorded_episode_returns_its_replay() -> None:
+    worker = Worker(os.environ["OXIDE_DRIVER_BIN"])
+    try:
+        assert worker.supports_episode_replay
+        frame = worker.reset(seed=7, max_ticks=32, cadence=16, record=True)
+        assert frame.replay is None, "the replay arrives only with the terminal frame"
+        (seat,) = worker.control
+        while not frame.done:
+            view = frame.seats[seat]
+            plan = (
+                next(action for action in ACTION_HEADS[0] if view.mask[action]),
+                next(action for action in ACTION_HEADS[1] if view.mask[action]),
+                next(action for action in ACTION_HEADS[2] if view.mask[action]),
+                next(action for action in ACTION_HEADS[3] if view.mask[action]),
+            )
+            frame = worker.step({seat: plan})
+        assert isinstance(frame.replay, dict)
+        assert frame.replay["meta"]["ticks"] == frame.tick
+        assert "setup" in frame.replay
+        assert isinstance(frame.replay["commands"], list)
     finally:
         worker.close()
 
@@ -99,5 +124,34 @@ def test_reset_retints_every_faction_pair_and_conditions_follow_rust() -> None:
                 assert view.faction_knob == knob
                 assert worker.conditions[seat][2] == knob
                 assert view.obs[FEATURES + 2] == knob / 1000
+    finally:
+        worker.close()
+
+
+def test_timing_stats_report_a_full_rollout_split() -> None:
+    worker = Worker(os.environ["OXIDE_DRIVER_BIN"])
+    try:
+        assert worker.supports_timing_stats
+        frame = worker.reset(seed=11, max_ticks=64, cadence=16)
+        (seat,) = worker.control
+        while not frame.done:
+            view = frame.seats[seat]
+            plan = (
+                next(action for action in ACTION_HEADS[0] if view.mask[action]),
+                next(action for action in ACTION_HEADS[1] if view.mask[action]),
+                next(action for action in ACTION_HEADS[2] if view.mask[action]),
+                next(action for action in ACTION_HEADS[3] if view.mask[action]),
+            )
+            frame = worker.step({seat: plan})
+        stats = worker.timing_stats()
+        assert stats["ticks"] == frame.tick
+        assert stats["decisions"] > 0
+        assert stats["resets"] == 1
+        assert stats["sim_us"] > 0
+        assert stats["client_wait_us"] > 0
+        assert stats["client_bytes_received"] > 0
+        # A stats round-trip is not a frame: the episode keeps working.
+        again = worker.reset(seed=12, max_ticks=32, cadence=16)
+        assert not again.done or again.tick <= 32
     finally:
         worker.close()

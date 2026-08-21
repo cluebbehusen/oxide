@@ -7,6 +7,7 @@ use crate::GameReplay;
 use anyhow::{Context, Result};
 use oxide_sim::{Event, PlayerId, State};
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 /// One player's sampled series and totals.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -17,6 +18,10 @@ pub struct PlayerStats {
     pub scrap: Vec<u32>,
     /// Standing army value (sum of living units' costs) per sample.
     pub army_value: Vec<u32>,
+    /// Living units by kind name at each sample point — the
+    /// composition timeline a viewer can band-chart. BTreeMap keys keep
+    /// the serialization deterministic.
+    pub kinds: Vec<BTreeMap<&'static str, u16>>,
     /// Scrap brought home by Harvesters across the whole match.
     pub scrap_collected: u32,
     /// Units completed across the whole match.
@@ -105,6 +110,7 @@ fn blank_players(seats: usize) -> Vec<PlayerStats> {
             seat: seat as u8,
             scrap: Vec::new(),
             army_value: Vec::new(),
+            kinds: Vec::new(),
             scrap_collected: 0,
             units_trained: 0,
             buildings_completed: 0,
@@ -119,14 +125,18 @@ fn sample(state: &State, stats: &mut [PlayerStats], ticks: &mut Vec<u64>) {
     ticks.push(state.current_tick());
     for (seat, entry) in stats.iter_mut().enumerate() {
         entry.scrap.push(state.players()[seat].scrap);
-        entry.army_value.push(
-            state
-                .units()
-                .iter()
-                .filter(|unit| unit.player == PlayerId(seat as u8))
-                .map(|unit| unit.kind.stats().cost)
-                .sum(),
-        );
+        let mut value = 0u32;
+        let mut counts: BTreeMap<&'static str, u16> = BTreeMap::new();
+        for unit in state
+            .units()
+            .iter()
+            .filter(|unit| unit.player == PlayerId(seat as u8))
+        {
+            value = value.saturating_add(unit.kind.stats().cost);
+            *counts.entry(unit.kind.name()).or_default() += 1;
+        }
+        entry.army_value.push(value);
+        entry.kinds.push(counts);
     }
 }
 
@@ -172,6 +182,10 @@ fn thin_samples(stats: &mut MatchStats, every: u64) {
     for player in &mut stats.players {
         player.scrap = keep.iter().map(|index| player.scrap[*index]).collect();
         player.army_value = keep.iter().map(|index| player.army_value[*index]).collect();
+        player.kinds = keep
+            .iter()
+            .map(|index| player.kinds[*index].clone())
+            .collect();
     }
 }
 
@@ -234,6 +248,34 @@ mod tests {
     use crate::runner;
     use oxide_sim::Scenario;
 
+    /// Plays `scenario` with the Overseer driving every bot seat and
+    /// records the run — a scripted, deterministic activity fixture.
+    /// `opening` commands are injected (and recorded) on the first
+    /// tick, ahead of the bots' own.
+    fn record_overseer_match(
+        scenario: &Scenario,
+        ticks: u64,
+        opening: Vec<oxide_sim::PlayerCommand>,
+    ) -> GameReplay {
+        let mut state = scenario.build().expect("scenario builds");
+        let mut bots = crate::bench::overseer_bots(scenario);
+        let mut replay: GameReplay =
+            chassis::replay::Replay::new(oxide_sim::SIM_VERSION, scenario.clone());
+        let mut opening = Some(opening);
+        for _ in 0..ticks {
+            let mut commands = opening.take().unwrap_or_default();
+            for bot in &mut bots {
+                commands.extend(bot.act(&state));
+            }
+            for command in &commands {
+                replay.record(state.current_tick(), command.clone());
+            }
+            state.tick(&commands);
+        }
+        replay.meta.ticks = Some(state.current_tick());
+        replay
+    }
+
     fn track_replay(replay: &GameReplay) -> MatchStats {
         let total = replay.meta.ticks.expect("recorded duration");
         let mut state = replay.setup.build().expect("scenario builds");
@@ -254,9 +296,7 @@ mod tests {
     #[test]
     fn a_claimed_billion_ticks_is_an_error_not_a_hang() {
         let mut scenario = Scenario::skirmish();
-        for p in scenario.players.iter_mut() {
-            p.bot = true;
-        }
+        crate::bench::all_bots(&mut scenario);
         let outcome = runner::run_scenario(&scenario, 60, true, true).unwrap();
         let mut replay = outcome.replay.unwrap();
         replay.meta.ticks = Some(1_000_000_000);
@@ -266,9 +306,7 @@ mod tests {
     #[test]
     fn the_final_state_is_always_sampled() {
         let mut scenario = Scenario::skirmish();
-        for p in scenario.players.iter_mut() {
-            p.bot = true;
-        }
+        crate::bench::all_bots(&mut scenario);
         // 100 ticks with stride 41: without the closing sample the last
         // column would sit at tick 82 and closing numbers would be stale.
         let outcome = runner::run_scenario(&scenario, 100, true, true).unwrap();
@@ -290,8 +328,7 @@ mod tests {
                 team_role: None,
             });
         }
-        let outcome = runner::run_scenario(&scenario, 600, true, true).unwrap();
-        let replay = outcome.replay.unwrap();
+        let replay = record_overseer_match(&scenario, 600, Vec::new());
         let a = compute(&replay, 100).unwrap();
         let b = compute(&replay, 100).unwrap();
         assert_eq!(a.final_tick, 600);
@@ -327,8 +364,7 @@ mod tests {
         for player in &mut scenario.players {
             player.bot = true;
         }
-        let outcome = runner::run_scenario(&scenario, 40, true, true).unwrap();
-        let replay = outcome.replay.unwrap();
+        let replay = record_overseer_match(&scenario, 40, Vec::new());
         assert_eq!(track_replay(&replay), compute(&replay, 1).unwrap());
     }
 
@@ -354,10 +390,28 @@ mod tests {
         for player in &mut scenario.players {
             player.bot = true;
         }
-        let replay = runner::run_scenario(&scenario, 2_000, true, true)
-            .unwrap()
-            .replay
-            .unwrap();
+        // The Overseer harvests and trains but never constructs on this
+        // map, so one scripted Turret keeps the fixture's construction
+        // totals real.
+        let built = scenario
+            .build()
+            .expect("scenario builds")
+            .units()
+            .iter()
+            .find(|u| u.player == PlayerId(0) && u.kind == oxide_sim::UnitKind::Harvester)
+            .map(|u| u.id)
+            .expect("skirmish starts seat 0 with a harvester");
+        let opening = vec![oxide_sim::PlayerCommand {
+            player: PlayerId(0),
+            command: oxide_sim::Command::Build {
+                units: vec![built],
+                kind: oxide_sim::BuildingKind::Turret,
+                anchor: chassis::grid::TilePos::new(10, 4),
+                queue: false,
+                defer: false,
+            },
+        }];
+        let replay = record_overseer_match(&scenario, 2_000, opening);
         let live = track_replay(&replay);
         let recomputed = compute(&replay, 200).unwrap();
 

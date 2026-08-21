@@ -37,14 +37,17 @@ fn command_tag(command: &Command) -> usize {
         Command::Advance { .. } => 15,
         Command::FocusFire { .. } => 16,
         Command::CancelFound { .. } => 17,
+        Command::UpgradeBuilding { .. } => 18,
+        Command::Load { .. } => 19,
+        Command::Unload { .. } => 20,
     }
 }
 
-const COMMAND_VARIANTS: usize = 18;
+const COMMAND_VARIANTS: usize = 21;
 
 /// The verbs that carry a unit list — every one of them owes this file a
 /// duplicate-id row.
-const UNIT_BEARING_TAGS: [usize; 11] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 14, 15];
+const UNIT_BEARING_TAGS: [usize; 13] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 14, 15, 18, 19];
 
 /// The verbs that address a building alone, with no list to canonicalize.
 const BUILDING_ONLY_TAGS: [usize; 4] = [6, 10, 11, 12];
@@ -54,6 +57,9 @@ const BUILDING_BEARING_TAGS: [usize; 1] = [16];
 
 /// The one verb that addresses a logical site, with no entity list to canonicalize.
 const SITE_ONLY_TAGS: [usize; 1] = [17];
+
+/// The one verb that addresses a single unit, with no list to canonicalize.
+const UNIT_ONLY_TAGS: [usize; 1] = [20];
 
 /// The verbs that name no entity at all — nothing to canonicalize.
 const OPERANDLESS_TAGS: [usize; 1] = [13];
@@ -67,6 +73,7 @@ struct Stage {
     state: State,
     guard: UnitId,
     worker: UnitId,
+    transport: UnitId,
     enemy: Target,
     turret: BuildingId,
     patient: UnitId,
@@ -116,13 +123,25 @@ fn stage() -> Stage {
             // with a scuttler it beats — wounded, still standing.
             unit(0, UnitKind::Sentinel, 3, 11),
             unit(1, UnitKind::Scuttler, 4, 12),
+            // The load family's carrier, hovering out of every fight.
+            unit(0, UnitKind::Skyhook, 8, 3),
         ],
-        buildings: vec![BuildingSpec {
-            player: 0,
-            kind: BuildingKind::Turret,
-            x: 14,
-            y: 10,
-        }],
+        buildings: vec![
+            BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Turret,
+                x: 14,
+                y: 10,
+            },
+            // The upgrade family's tech gate: Heavy Turret requires a
+            // standing Fabricator.
+            BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Fabricator,
+                x: 1,
+                y: 7,
+            },
+        ],
         meta: None,
     }
     .build()
@@ -134,6 +153,7 @@ fn stage() -> Stage {
     let raider = state.units()[3].id;
     let patient = state.units()[4].id;
     let biter = state.units()[5].id;
+    let transport = state.units()[6].id;
     let turret = state
         .buildings()
         .iter()
@@ -161,7 +181,7 @@ fn stage() -> Stage {
     });
     let hp = state.building(turret).unwrap().hp;
     assert!(
-        hp < BuildingKind::Turret.stats().max_hp,
+        hp < BuildingKind::Turret.base_stats().max_hp,
         "test premise: the raid must leave the turret weldable (hp {hp})"
     );
     let patient_hp = state.unit(patient).unwrap().hp;
@@ -179,6 +199,7 @@ fn stage() -> Stage {
         state,
         guard,
         worker,
+        transport,
         enemy,
         turret,
         patient,
@@ -200,6 +221,7 @@ fn families(stage: &Stage) -> Vec<Family> {
     let Stage {
         guard,
         worker,
+        transport,
         enemy,
         turret,
         patient,
@@ -301,6 +323,24 @@ fn families(stage: &Stage) -> Vec<Family> {
                 queue,
             }),
         },
+        Family {
+            name: "upgrade-building",
+            actor: worker,
+            make: Box::new(move |units, queue| Command::UpgradeBuilding {
+                units,
+                building: turret,
+                queue,
+            }),
+        },
+        Family {
+            name: "load",
+            actor: guard,
+            make: Box::new(move |units, queue| Command::Load {
+                units,
+                transport,
+                queue,
+            }),
+        },
     ]
 }
 
@@ -321,6 +361,7 @@ fn every_verb_is_sorted_into_a_tag_list() {
         .chain(BUILDING_ONLY_TAGS)
         .chain(BUILDING_BEARING_TAGS)
         .chain(SITE_ONLY_TAGS)
+        .chain(UNIT_ONLY_TAGS)
         .chain(OPERANDLESS_TAGS)
         .collect();
     all.sort_unstable();

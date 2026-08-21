@@ -66,6 +66,12 @@ pub struct Player {
     /// Defaulted so records that predate the field deserialize.
     #[serde(default)]
     pub resigned: bool,
+    /// The tick this seat first stopped counting — resigned, or holding
+    /// no Foundry at all — recorded once and never cleared. The FFA
+    /// scoreboard's placement key: later elimination places higher.
+    /// Defaulted so records that predate the field deserialize.
+    #[serde(default)]
+    pub eliminated_at: Option<crate::Tick>,
 }
 
 /// How the match ended.
@@ -167,11 +173,22 @@ pub enum Order {
     },
     /// Move to a tile without chasing or stopping, taking only
     /// primary-weapon shots that are already in range and visible.
-    /// (Last variant by appending discipline: earlier discriminants
-    /// keep their serialized bytes.)
     Advance {
         /// Destination (always passable — commands snap it).
         goal: TilePos,
+    },
+    /// Walk within [`crate::stats::LOAD_REACH`] of an own transport and
+    /// board it: the machine leaves the world and rides as cargo.
+    Board {
+        /// The carrier to climb onto.
+        transport: crate::ids::UnitId,
+    },
+    /// Fly to a tile and set every carried machine down on open ground
+    /// around it. (Last variant by appending discipline: earlier
+    /// discriminants keep their serialized bytes.)
+    Unload {
+        /// The drop point.
+        at: TilePos,
     },
 }
 
@@ -262,6 +279,18 @@ pub struct Unit {
     /// once collapsed the scripted tier ladder to a seat-parity coin.
     #[serde(default, skip_serializing_if = "is_zero_u16")]
     pub settled: u16,
+    /// Compass step (of 256, see [`chassis::compass`]) this body faces.
+    /// Only turn-limited kinds (`stats().turn_rate > 0`) steer by it;
+    /// everyone else leaves it wherever it spawned. Every `u8` is a
+    /// valid heading, so deserialization needs no extra validation row.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub heading: u8,
+    /// Machines riding aboard this transport. Cargo lives OUTSIDE the
+    /// world's unit list: nothing can see, target, collide with, or
+    /// command a carried machine, and it contributes no vision. It
+    /// keeps its id (ids are never reused) and dies with the carrier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cargo: Vec<Unit>,
 }
 
 impl Unit {
@@ -331,6 +360,11 @@ pub struct Building {
         skip_serializing_if = "core::clone::Clone::clone"
     )]
     pub built: bool,
+    /// Position on the kind's upgrade ladder (zero = base). Set only by
+    /// a completed [`crate::Command::UpgradeBuilding`]; every stats read
+    /// on a live building follows it through [`Building::stats`].
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub tier: u8,
     /// Ticks until this building may fire again (turrets).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub cooldown: u32,
@@ -357,17 +391,28 @@ fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
+fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
+}
+
 impl Building {
+    /// This building's stats at its current tier — the accessor every
+    /// live read goes through; [`crate::stats::BuildingKind::base_stats`]
+    /// answers only tier-invariant questions.
+    pub fn stats(&self) -> &'static crate::stats::BuildingStats {
+        self.kind.tier_stats(self.tier)
+    }
+
     /// Iterates the footprint tiles row-major.
     pub fn tiles(&self) -> impl Iterator<Item = TilePos> + use<> {
-        let (w, h) = self.kind.stats().size;
+        let (w, h) = self.stats().size;
         let anchor = self.anchor;
         (0..h).flat_map(move |dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
     }
 
     /// Whether `pos` lies inside the footprint.
     pub fn contains(&self, pos: TilePos) -> bool {
-        let (w, h) = self.kind.stats().size;
+        let (w, h) = self.stats().size;
         pos.x >= self.anchor.x
             && pos.y >= self.anchor.y
             && pos.x < self.anchor.x + w
@@ -376,7 +421,7 @@ impl Building {
 
     /// Center of the footprint in world coordinates.
     pub fn center(&self) -> Vec2Fx {
-        let (w, h) = self.kind.stats().size;
+        let (w, h) = self.stats().size;
         let far = self.anchor.offset(w - 1, h - 1);
         (self.anchor.center() + far.center()) * chassis::fx::HALF
     }
@@ -384,7 +429,7 @@ impl Building {
     /// The point of the footprint rectangle closest to `from` — what range
     /// checks measure against, so big buildings don't get phantom reach.
     pub fn closest_point_to(&self, from: Vec2Fx) -> Vec2Fx {
-        let (w, h) = self.kind.stats().size;
+        let (w, h) = self.stats().size;
         let min = self.anchor.center() - Vec2Fx::new(chassis::fx::HALF, chassis::fx::HALF);
         let max = min + Vec2Fx::new(chassis::fx::Fx::from_num(w), chassis::fx::Fx::from_num(h));
         Vec2Fx::new(from.x.clamp(min.x, max.x), from.y.clamp(min.y, max.y))
@@ -411,12 +456,22 @@ pub struct State {
     pub(crate) result: Option<GameResult>,
     next_unit_id: u32,
     next_building_id: u32,
+    /// Derived: one flag per tile, set while a non-stealthy building
+    /// covers it. Never serialized — rebuilt on assembly and load, and
+    /// maintained at the placement/removal funnels — so wire bytes and
+    /// state hashes are exactly what they were before the cache
+    /// existed. Route searches ask "is this tile blocked" thousands of
+    /// times per tick; the linear building scan this replaces was the
+    /// hottest pair of functions in match profiles.
+    #[serde(skip)]
+    building_occupancy: Vec<u8>,
 }
 
 impl State {
     /// Assembles a state from parts; [`crate::Scenario::build`] is the public
     /// entry point.
     pub(crate) fn assemble(map: Map, players: Vec<Player>, seed: u64) -> Self {
+        let (map_width, map_height) = (map.width().max(0), map.height().max(0));
         let vision = players
             .iter()
             .map(|_| crate::vision::Vision::new(map.width(), map.height()))
@@ -433,6 +488,7 @@ impl State {
             result: None,
             next_unit_id: 0,
             next_building_id: 0,
+            building_occupancy: vec![0; (map_width as usize) * (map_height as usize)],
         }
     }
 
@@ -469,23 +525,10 @@ impl State {
             return false;
         }
 
-        let reclaimer = self.buildings.iter().any(|building| {
-            building.player == player
-                && building.hp > 0
-                && building.built
-                && building.kind == BuildingKind::Reclaimer
-        });
-        let baseline = self.tick.saturating_add(1) >= crate::stats::FOUNDRY_BASELINE_START_TICK;
-        let seat = self.player(player);
-        let target = if seat.recovery_ready {
-            self.recovery_package_target(player)
-        } else {
-            u32::from(seat.recovery_target)
-        };
-        let emergency = self.harvester_recovery_needed(player)
-            && seat.scrap < target
-            && (seat.recovery_ready || seat.recovery_allowance > 0);
-        reclaimer || baseline || emergency
+        // The Foundry drip is the always-on floor: any seat that passed
+        // the completed-Foundry check above has passive income coming,
+        // at worst after the drip's warm-up.
+        true
     }
 
     /// Whether a living Foundry owns neither a live Harvester nor a prepaid
@@ -713,6 +756,19 @@ impl State {
         if self.tick > TICK_ENVELOPE {
             return Err(E::TickBeyondEnvelope);
         }
+        for (index, player) in self.players.iter().enumerate() {
+            if player.eliminated_at.is_some_and(|at| at > TICK_ENVELOPE) {
+                return Err(E::EliminationBeyondEnvelope(crate::ids::PlayerId(
+                    index as u8,
+                )));
+            }
+            // Victory treats the stamp as immutable history, so a stamp
+            // later than the present would flow to placement and views
+            // as an elimination that never happened.
+            if player.eliminated_at.is_some_and(|at| at > self.tick) {
+                return Err(E::EliminationInTheFuture(crate::ids::PlayerId(index as u8)));
+            }
+        }
         if self.next_unit_id > ID_COUNTER_ENVELOPE || self.next_building_id > ID_COUNTER_ENVELOPE {
             return Err(E::IdCounterBeyondEnvelope);
         }
@@ -758,16 +814,87 @@ impl State {
                     return Err(E::UnmintedOrderTarget(u.id));
                 }
             }
+            // Cargo is a trusted enclave: nothing in the tick pipeline
+            // re-examines a rider until it is set down, so a forged
+            // save must not smuggle in anything the sling could never
+            // have taken — the wrong carrier, the wrong rider kind, an
+            // overfull hold, live orders, or an aliased id.
+            let stats = u.kind.stats();
+            if !u.cargo.is_empty() && stats.transport_capacity == 0 {
+                return Err(E::CargoOnNonTransport(u.id));
+            }
+            let hold: u32 = u
+                .cargo
+                .iter()
+                .map(|r| u32::from(r.kind.stats().transport_size))
+                .sum();
+            if hold > u32::from(stats.transport_capacity) {
+                return Err(E::CargoBeyondCapacity(u.id));
+            }
+            for rider in &u.cargo {
+                let rstats = rider.kind.stats();
+                if rstats.transport_size == 0 {
+                    return Err(E::UncarriableCargo(u.id));
+                }
+                if rider.hp == 0 || rider.hp > rstats.max_hp {
+                    return Err(E::CargoHpOutOfRange(u.id));
+                }
+                if rider.player != u.player {
+                    return Err(E::CargoOwnerMismatch(u.id));
+                }
+                // Dormancy is exactly what boarding normalizes: order,
+                // queue, looping, path, leash, settled, and cargo all
+                // reset at the sling door, so any survivor is forged.
+                if rider.order != Order::Idle
+                    || !rider.queue.is_empty()
+                    || rider.looping
+                    || rider.path.is_some()
+                    || rider.leash.is_some()
+                    || rider.settled != 0
+                    || !rider.cargo.is_empty()
+                {
+                    return Err(E::CargoNotDormant(u.id));
+                }
+                // Boarding zeroes the progress meter too; any nonzero
+                // value is unreachable, not merely oversized.
+                if rider.progress != 0 {
+                    return Err(E::CargoProgressOutOfRange(u.id));
+                }
+                // Cooldowns are the one scalar boarding does NOT reset —
+                // a machine slung mid-cooldown keeps it frozen — so the
+                // bound is the walking unit's weapon table, and a
+                // smuggled oversize would silence a weapon for its life.
+                if rider.cooldowns.iter().enumerate().any(|(i, cd)| {
+                    *cd > rstats
+                        .weapons
+                        .get(i)
+                        .map_or(0, |weapon| weapon.cooldown_ticks)
+                }) {
+                    return Err(E::CargoCooldownOutOfRange(u.id));
+                }
+                if rider.id.0 >= self.next_unit_id {
+                    return Err(E::StaleUnitCounter);
+                }
+            }
+        }
+        // Every id in the world — walking or riding — is minted once.
+        {
+            let mut ids: Vec<u32> = self
+                .units
+                .iter()
+                .flat_map(|u| std::iter::once(u.id.0).chain(u.cargo.iter().map(|r| r.id.0)))
+                .collect();
+            ids.sort_unstable();
+            if ids.windows(2).any(|w| w[0] == w[1]) {
+                return Err(E::AliasedCargoId);
+            }
         }
 
         for b in &self.buildings {
             if usize::from(b.player.0) >= players {
                 return Err(E::ForeignBuildingOwner(b.id));
             }
-            let stats = b.kind.stats();
-            if !b.built && stats.construction.is_none() {
-                return Err(E::UnconstructibleSite(b.id));
-            }
+            let stats = b.stats();
             if b.hp == 0 || b.hp > stats.max_hp {
                 return Err(E::BuildingHpOutOfRange(b.id));
             }
@@ -818,6 +945,9 @@ impl State {
             }
             if !salvage_ledger_coherent(b) {
                 return Err(E::IncoherentSalvageLedger(b.id));
+            }
+            if usize::from(b.tier) >= b.kind.tiers().len() {
+                return Err(E::TierBeyondLadder(b.id));
             }
             if b.salvaged {
                 return Err(E::LiveBuildingMarkedSalvaged(b.id));
@@ -947,7 +1077,8 @@ impl State {
             Target::Building(id) => self.building(id).and_then(|building| {
                 (building.hp > 0
                     && self.hostile(viewer, building.player)
-                    && building.tiles().any(|tile| self.can_see(viewer, tile)))
+                    && building.tiles().any(|tile| self.can_see(viewer, tile))
+                    && self.building_apparent(viewer, building))
                 .then_some(crate::stats::Domain::Ground)
             }),
         }
@@ -987,7 +1118,7 @@ impl State {
             .map(|building| {
                 building.focus.is_none_or(|target| {
                     building.built
-                        && building.kind.stats().weapons.first().is_some_and(|weapon| {
+                        && building.stats().weapons.first().is_some_and(|weapon| {
                             self.visible_hostile_target_domain(building.player, target)
                                 .is_some_and(|domain| weapon.targets.covers(domain))
                         })
@@ -1061,9 +1192,67 @@ impl State {
 
     /// Whether a unit may stand on `pos`: ground terrain, no live scrap, no
     /// building. Units never block tiles — overlap is resolved by the
-    /// separation phase instead.
+    /// separation phase instead. A buried charge blocks nothing: a mine
+    /// that closed its tile could never be stepped on, and worse, enemy
+    /// pathfinding routing around it would leak its position through
+    /// movement — the stealth would tell on itself.
     pub fn passable(&self, pos: TilePos) -> bool {
-        self.map.terrain_passable(pos) && self.building_at(pos).is_none()
+        self.map.terrain_passable(pos) && !self.building_blocks(pos)
+    }
+
+    /// Whether a non-stealthy building covers `pos`, by the derived
+    /// occupancy grid. Equivalent to scanning every building's
+    /// footprint; the grid is maintained at the single placement
+    /// funnel and every removal site.
+    fn building_blocks(&self, pos: TilePos) -> bool {
+        let width = self.map.width();
+        if pos.x < 0 || pos.y < 0 || pos.x >= width || pos.y >= self.map.height() {
+            return false;
+        }
+        let idx = (pos.y as usize) * (width as usize) + (pos.x as usize);
+        self.building_occupancy.get(idx).copied().unwrap_or(0) != 0
+    }
+
+    /// Marks or clears one building's footprint in the occupancy grid.
+    /// Stealthy kinds never mark: a buried charge blocks nothing.
+    pub(crate) fn stamp_building_occupancy(&mut self, building_index: usize, present: bool) {
+        let b = &self.buildings[building_index];
+        if b.kind.is_stealthy() {
+            return;
+        }
+        let (anchor, kind) = (b.anchor, b.kind);
+        let width = self.map.width();
+        let height = self.map.height();
+        let (w, h) = kind.base_stats().size;
+        for dy in 0..h {
+            for dx in 0..w {
+                // Checked: this runs on deserialized bytes BEFORE the
+                // trust boundary rejects them, so a forged anchor near
+                // i32::MAX must fall out of bounds, not overflow.
+                let (Some(x), Some(y)) = (anchor.x.checked_add(dx), anchor.y.checked_add(dy))
+                else {
+                    continue;
+                };
+                if x < 0 || y < 0 || x >= width || y >= height {
+                    continue;
+                }
+                let idx = (y as usize) * (width as usize) + (x as usize);
+                if let Some(cell) = self.building_occupancy.get_mut(idx) {
+                    *cell = u8::from(present);
+                }
+            }
+        }
+    }
+
+    /// Rebuilds the whole occupancy grid from the building list — the
+    /// deserialization path's one-shot recovery of derived state.
+    pub(crate) fn rebuild_building_occupancy(&mut self) {
+        let cells = (self.map.width().max(0) as usize) * (self.map.height().max(0) as usize);
+        self.building_occupancy.clear();
+        self.building_occupancy.resize(cells, 0);
+        for index in 0..self.buildings.len() {
+            self.stamp_building_occupancy(index, true);
+        }
     }
 
     /// Whether a unit of the given movement domain may stand on `pos`.
@@ -1073,11 +1262,52 @@ impl State {
     pub fn passable_for(&self, domain: crate::stats::Domain, pos: TilePos) -> bool {
         match domain {
             crate::stats::Domain::Ground => self.passable(pos),
-            crate::stats::Domain::Air => self
-                .map
-                .tile(pos)
-                .is_some_and(|t| t.terrain != crate::map::Terrain::Peak),
+            crate::stats::Domain::Air => {
+                self.map.tile(pos).is_some_and(|t| !t.terrain.blocks_air())
+            }
         }
+    }
+
+    /// Whether `viewer` is allowed to KNOW this building exists, over
+    /// and above ordinary tile sight. True for everything except an
+    /// enemy [`BuildingKind::is_stealthy`] charge, which must be
+    /// actively detected: an allied scout-role flyer within
+    /// [`crate::stats::CHARGE_SCOUT_DETECT_RADIUS`] tiles, or an allied
+    /// built Array whose detection ring covers it —
+    /// [`crate::stats::CHARGE_BASE_ARRAY_DETECT_RADIUS`] at base tier,
+    /// widening to [`crate::stats::CHARGE_ARRAY_DETECT_RADIUS`] once the
+    /// mast is upgraded to a Deep Array (tier 1+). A mast still under
+    /// construction sees nothing.
+    /// Every fog-honest surface — ghosts, targeting, views, rendering —
+    /// must consult this before showing a hostile building.
+    pub fn building_apparent(&self, viewer: PlayerId, building: &Building) -> bool {
+        if !building.kind.is_stealthy() || !self.hostile(viewer, building.player) {
+            return true;
+        }
+        let anchor = building.anchor;
+        let scout_r = crate::stats::CHARGE_SCOUT_DETECT_RADIUS;
+        let scouted = self.units.iter().any(|u| {
+            u.hp > 0
+                && !self.hostile(viewer, u.player)
+                && u.kind.role() == crate::stats::Role::Scout
+                && u.tile().chebyshev(anchor) <= scout_r
+        });
+        if scouted {
+            return true;
+        }
+        let deep_r = crate::stats::CHARGE_ARRAY_DETECT_RADIUS;
+        let base_r = crate::stats::CHARGE_BASE_ARRAY_DETECT_RADIUS;
+        self.buildings.iter().any(|b| {
+            b.hp > 0
+                && b.built
+                && b.kind == BuildingKind::Array
+                && !self.hostile(viewer, b.player)
+                && {
+                    let r = if b.tier >= 1 { deep_r } else { base_r };
+                    let (dx, dy) = (anchor.x - b.anchor.x, anchor.y - b.anchor.y);
+                    dx * dx + dy * dy <= r * r
+                }
+        })
     }
 
     /// Spawns a unit at full health. Position is the caller's problem to
@@ -1100,6 +1330,11 @@ impl State {
             path: None,
             leash: None,
             settled: 0,
+            // Spawn facing is derived from position parity rather than
+            // fixed so a wing leaving one factory doesn't share one
+            // heading forever; any constant would be equally legal.
+            heading: (TilePos::containing(pos).x as u8).wrapping_mul(64),
+            cargo: Vec::new(),
         });
         id
     }
@@ -1119,17 +1354,19 @@ impl State {
             player,
             kind,
             anchor,
-            hp: kind.stats().max_hp,
+            hp: kind.base_stats().max_hp,
             queue: std::collections::VecDeque::new(),
             progress: 0,
             rally: None,
             focus: None,
             built: true,
+            tier: 0,
             cooldown: 0,
             salvage_drained: 0,
             salvage_credited: 0,
             salvaged: false,
         });
+        self.stamp_building_occupancy(self.buildings.len() - 1, true);
         id
     }
 
@@ -1145,7 +1382,7 @@ impl State {
         let id = self.place_building(player, kind, anchor);
         let b = self.building_mut(id).expect("just placed");
         b.built = false;
-        b.hp = kind.stats().max_hp / 5;
+        b.hp = kind.base_stats().max_hp / 5;
         id
     }
 
@@ -1158,6 +1395,9 @@ impl State {
             self.next_building_id,
             "only the newest site retracts"
         );
+        if let Some(index) = self.buildings.iter().position(|b| b.id == id) {
+            self.stamp_building_occupancy(index, false);
+        }
         self.buildings.retain(|b| b.id != id);
         self.next_building_id = id.0;
     }
@@ -1183,16 +1423,42 @@ impl State {
     /// toast's vocabulary. The first blocking reason in footprint scan
     /// order wins; every check is fog-safe by construction (it reads
     /// only what `player` currently sees, exactly like the predicate).
+    ///
+    /// One deliberate exception: occupancy reads TRUE occupancy, hidden
+    /// charges included, because this is the final word on actual
+    /// ground claims and the sim cannot let two buildings share ground
+    /// whatever the issuer knows. The intent path stays fog-honest
+    /// instead; a claim over a hidden charge dies here, at arrival.
     pub fn place_refusal(
         &self,
         player: PlayerId,
         kind: BuildingKind,
         anchor: TilePos,
     ) -> Option<PlaceRefusal> {
-        if kind.stats().construction.is_none() {
+        if kind.base_stats().construction.is_none() {
             return Some(PlaceRefusal::NotConstructible);
         }
-        let (w, h) = kind.stats().size;
+        if !self.prerequisites_met(player, kind) {
+            return Some(PlaceRefusal::Prerequisite);
+        }
+        if kind == BuildingKind::Extractor {
+            // The machine exists only where the old rush left its frame.
+            if !self.map.is_extractor_frame(anchor) {
+                return Some(PlaceRefusal::FrameRequired);
+            }
+        } else {
+            // Nothing else may pave over a frame: the ground under a
+            // derelict Extractor stays contestable forever.
+            let (w, h) = kind.base_stats().size;
+            for dy in 0..h {
+                for dx in 0..w {
+                    if self.map.tile_in_extractor_frame(anchor.offset(dx, dy)) {
+                        return Some(PlaceRefusal::FrameBlocked);
+                    }
+                }
+            }
+        }
+        let (w, h) = kind.base_stats().size;
         for dy in 0..h {
             for dx in 0..w {
                 let t = anchor.offset(dx, dy);
@@ -1223,6 +1489,24 @@ impl State {
                 }
         });
         hostile_in_footprint.then_some(PlaceRefusal::Unit)
+    }
+
+    /// Whether `player` owns a completed building of every kind that
+    /// `kind`'s construction requires — the tech tree's construction
+    /// gate, shared verbatim by command validation, the armed placement
+    /// ghost, and every bot. An unconstructible kind trivially passes
+    /// (its own refusal arm answers first).
+    pub fn prerequisites_met(&self, player: PlayerId, kind: BuildingKind) -> bool {
+        kind.base_stats().construction.is_none_or(|construction| {
+            construction.requires.iter().all(|required| {
+                self.buildings.iter().any(|building| {
+                    building.player == player
+                        && building.hp > 0
+                        && building.built
+                        && building.kind == *required
+                })
+            })
+        })
     }
 
     /// Whether `player` may *intend* to build `kind` at `anchor` — the
@@ -1262,12 +1546,32 @@ impl State {
         anchor: TilePos,
         units: &[UnitId],
     ) -> Option<PlaceRefusal> {
-        if kind.stats().construction.is_none() {
+        if kind.base_stats().construction.is_none() {
             return Some(PlaceRefusal::NotConstructible);
+        }
+        if !self.prerequisites_met(player, kind) {
+            return Some(PlaceRefusal::Prerequisite);
+        }
+        if kind == BuildingKind::Extractor {
+            // The machine exists only where the old rush left its frame.
+            if !self.map.is_extractor_frame(anchor) {
+                return Some(PlaceRefusal::FrameRequired);
+            }
+        } else {
+            // Nothing else may pave over a frame: the ground under a
+            // derelict Extractor stays contestable forever.
+            let (w, h) = kind.base_stats().size;
+            for dy in 0..h {
+                for dx in 0..w {
+                    if self.map.tile_in_extractor_frame(anchor.offset(dx, dy)) {
+                        return Some(PlaceRefusal::FrameBlocked);
+                    }
+                }
+            }
         }
         let vision = self.vision(player);
         let my_team = self.players[player.0 as usize].team;
-        let (w, h) = kind.stats().size;
+        let (w, h) = kind.base_stats().size;
         let covers = |a: TilePos, size: (i32, i32), t: TilePos| {
             t.x >= a.x && t.x < a.x + size.0 && t.y >= a.y && t.y < a.y + size.1
         };
@@ -1278,7 +1582,15 @@ impl State {
                     if !self.map.terrain_passable(t) {
                         return Some(PlaceRefusal::Terrain);
                     }
-                    if self.building_at(t).is_some() {
+                    // The intent verdict reads only what the issuer
+                    // knows: an undetected buried charge is not
+                    // knowledge, so it neither reds a preview ghost nor
+                    // refuses the intent — the claim dies honestly at
+                    // arrival, where truth re-proves the ground.
+                    if self
+                        .building_at(t)
+                        .is_some_and(|b| self.building_apparent(player, b))
+                    {
                         return Some(PlaceRefusal::Building);
                     }
                     continue;
@@ -1293,10 +1605,10 @@ impl State {
                 let ghosted = vision
                     .ghosts()
                     .iter()
-                    .any(|g| covers(g.anchor, g.kind.stats().size, t));
+                    .any(|g| covers(g.anchor, g.kind.base_stats().size, t));
                 let allied_building = self.buildings.iter().any(|b| {
                     self.players[b.player.0 as usize].team == my_team
-                        && covers(b.anchor, b.kind.stats().size, t)
+                        && covers(b.anchor, b.stats().size, t)
                 });
                 if ghosted || allied_building {
                     return Some(PlaceRefusal::Building);
@@ -1313,7 +1625,7 @@ impl State {
                 && std::iter::once(&u.order).chain(u.queue.iter()).any(|o| {
                     matches!(o, Order::Found { kind: k, anchor: a }
                     if (0..h).any(|dy| (0..w).any(|dx| {
-                        covers(*a, k.stats().size, anchor.offset(dx, dy))
+                        covers(*a, k.base_stats().size, anchor.offset(dx, dy))
                     })))
                 })
         });
@@ -1407,6 +1719,8 @@ fn order_inside_envelope(order: &Order) -> bool {
         }
         Order::Attack { resume, .. } => resume.is_none_or(tile_inside_envelope),
         Order::Found { anchor, .. } => tile_inside_envelope(*anchor),
+        Order::Board { .. } => true,
+        Order::Unload { at } => tile_inside_envelope(*at),
     }
 }
 
@@ -1440,6 +1754,8 @@ fn order_reference(order: &Order) -> Option<Target> {
             Some(Target::Building(*building))
         }
         Order::RepairUnit { unit } => Some(Target::Unit(*unit)),
+        Order::Board { transport } => Some(Target::Unit(*transport)),
+        Order::Unload { .. } => None,
     }
 }
 
@@ -1463,7 +1779,7 @@ fn salvage_ledger_coherent(b: &Building) -> bool {
     if b.salvage_drained > SALVAGE_LEDGER_CEILING {
         return false;
     }
-    let stats = b.kind.stats();
+    let stats = b.stats();
     let basis = stats.construction.map_or(0, |c| c.cost);
     let target =
         u64::from(b.salvage_drained) * u64::from(basis) * crate::stats::SALVAGE_REFUND_PERMILLE
@@ -1487,6 +1803,13 @@ pub enum PlaceRefusal {
     /// A hostile machine holds a footprint tile (friendly machines
     /// make way instead of blocking).
     Unit,
+    /// The owner has not completed the kind's required tech buildings.
+    Prerequisite,
+    /// An Extractor rebuilds only on a map-authored derelict frame.
+    FrameRequired,
+    /// The footprint overlaps a derelict frame, which no other kind may
+    /// pave over.
+    FrameBlocked,
 }
 
 #[cfg(test)]
@@ -1507,6 +1830,7 @@ mod tests {
                 recovery_target: 0,
                 recovery_ready: true,
                 resigned: false,
+                eliminated_at: None,
             }],
             7,
         )
@@ -1567,7 +1891,7 @@ mod tests {
             BuildingKind::Reclaimer,
         ];
         for kind in KINDS {
-            let stats = kind.stats();
+            let stats = kind.base_stats();
             let ramp = u64::from(stats.max_hp - stats.max_hp / 5);
             assert!(
                 ramp * (u64::from(PROGRESS_ENVELOPE) + 1) <= u64::from(u32::MAX),
@@ -1682,6 +2006,12 @@ pub enum StateIntegrityError {
     /// increment tolerates.
     #[error("tick beyond the sanity envelope")]
     TickBeyondEnvelope,
+    /// A recorded elimination stamp past the same sanity envelope.
+    #[error("player {0}'s elimination stamp lies beyond the sanity envelope")]
+    EliminationBeyondEnvelope(PlayerId),
+    /// A recorded elimination stamp later than the state's own tick.
+    #[error("player {0}'s elimination stamp lies in the future")]
+    EliminationInTheFuture(PlayerId),
     /// An id counter is past the envelope spawning tolerates.
     #[error("an id counter is beyond the sanity envelope")]
     IdCounterBeyondEnvelope,
@@ -1715,8 +2045,6 @@ pub enum StateIntegrityError {
     #[error("building {0} is owned by a player outside the table")]
     ForeignBuildingOwner(BuildingId),
     /// An unfinished building kind has no construction definition.
-    #[error("building {0} is unfinished but its kind cannot be constructed")]
-    UnconstructibleSite(BuildingId),
     /// A building's hit points sit outside `(0, max_hp]`.
     #[error("building {0} carries hit points its kind cannot hold")]
     BuildingHpOutOfRange(BuildingId),
@@ -1748,10 +2076,41 @@ pub enum StateIntegrityError {
     /// stripped from it.
     #[error("building {0} carries an incoherent salvage ledger")]
     IncoherentSalvageLedger(BuildingId),
+    /// A tier index past the kind's upgrade ladder.
+    #[error("building {0} claims a tier its kind's ladder does not reach")]
+    TierBeyondLadder(BuildingId),
     /// A live building carries the transient marker cleanup uses to
     /// distinguish a completed salvage from combat destruction.
     #[error("building {0} is still live but marked salvaged")]
     LiveBuildingMarkedSalvaged(BuildingId),
+    /// A machine with no sling claims to carry cargo.
+    #[error("unit {0} carries cargo without being a transport")]
+    CargoOnNonTransport(UnitId),
+    /// A transport's riders total more room than its sling offers.
+    #[error("unit {0} carries more cargo than its sling holds")]
+    CargoBeyondCapacity(UnitId),
+    /// A rider of a kind no sling can take (a flyer, or a transport).
+    #[error("unit {0} carries a rider that can never be carried")]
+    UncarriableCargo(UnitId),
+    /// A rider outside the living hp range.
+    #[error("unit {0} carries a rider with impossible hp")]
+    CargoHpOutOfRange(UnitId),
+    /// A rider owned by someone other than the carrier.
+    #[error("unit {0} carries another player's machine")]
+    CargoOwnerMismatch(UnitId),
+    /// A rider holding live orders, paths, tethers, or its own cargo.
+    #[error("unit {0} carries a rider that is not dormant")]
+    CargoNotDormant(UnitId),
+    /// A rider whose progress meter exceeds the envelope walking units
+    /// are held to.
+    #[error("unit {0} carries a rider with an impossible progress meter")]
+    CargoProgressOutOfRange(UnitId),
+    /// A rider whose weapon cooldowns exceed its own weapon table.
+    #[error("unit {0} carries a rider with impossible weapon cooldowns")]
+    CargoCooldownOutOfRange(UnitId),
+    /// The same unit id appears twice across the world and every hold.
+    #[error("a unit id is aliased between the world and a cargo hold")]
+    AliasedCargoId,
     /// A shell in flight is owned by a player outside the table.
     #[error("shell {0} is owned by a player outside the table")]
     ForeignShellOwner(usize),
@@ -1863,6 +2222,7 @@ impl From<StateWire> for State {
             next_building_id,
         } = w;
         State {
+            building_occupancy: Vec::new(),
             tick,
             rng,
             map,
@@ -1880,7 +2240,8 @@ impl From<StateWire> for State {
 
 impl<'de> Deserialize<'de> for State {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let state: State = StateWire::deserialize(deserializer)?.into();
+        let mut state: State = StateWire::deserialize(deserializer)?.into();
+        state.rebuild_building_occupancy();
         state
             .validate_invariants()
             .map_err(serde::de::Error::custom)?;

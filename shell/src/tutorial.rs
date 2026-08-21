@@ -164,7 +164,7 @@ impl Tutorial {
         match self.step {
             0 => Some(oxide_sim::UnitKind::Harvester.stats().cost),
             2 => crate::input::BUILD_PALETTE[0]
-                .stats()
+                .base_stats()
                 .construction
                 .map(|c| c.cost),
             3 => Some(oxide_sim::UnitKind::Sentinel.stats().cost),

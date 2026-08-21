@@ -111,6 +111,27 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             Command::CancelFound { kind, anchor } => {
                 apply_cancel_found(state, pc.player, *kind, *anchor)
             }
+            Command::UpgradeBuilding {
+                units,
+                building,
+                queue,
+            } => apply_upgrade(state, pc.player, &canonical_units(units), *building, *queue),
+            Command::Load {
+                units,
+                transport,
+                queue,
+            } => apply_load(
+                state,
+                pc.player,
+                &canonical_units(units),
+                *transport,
+                *queue,
+            ),
+            Command::Unload {
+                transport,
+                at,
+                queue,
+            } => apply_unload(state, pc.player, *transport, *at, *queue),
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -167,9 +188,9 @@ fn for_owned_units(
     applied
 }
 
-/// [`for_owned_units`] narrowed to the labor crew — the three economy
-/// verbs all address the same harvesters, and each reports `NoValidUnits`
-/// when the selection holds none.
+/// [`for_owned_units`] narrowed to the gathering crew — Harvest and
+/// Salvage address machines with cargo gear, and each reports
+/// `NoValidUnits` when the selection holds none.
 fn for_owned_workers(
     state: &mut State,
     player: PlayerId,
@@ -181,6 +202,28 @@ fn for_owned_workers(
         if let Some(unit) = state.unit_mut(id)
             && unit.player == player
             && unit.kind.stats().harvest.is_some()
+        {
+            f(unit);
+            applied += 1;
+        }
+    }
+    applied
+}
+
+/// [`for_owned_units`] narrowed to the welding crew: the Repair verbs
+/// take anyone carrying a torch — harvesters, Excavators, and the
+/// Tender alike.
+fn for_owned_welders(
+    state: &mut State,
+    player: PlayerId,
+    ids: &[UnitId],
+    mut f: impl FnMut(&mut crate::state::Unit),
+) -> usize {
+    let mut applied = 0;
+    for &id in ids {
+        if let Some(unit) = state.unit_mut(id)
+            && unit.player == player
+            && unit.kind.stats().welder
         {
             f(unit);
             applied += 1;
@@ -367,7 +410,10 @@ fn apply_attack(
         Target::Building(id) => state
             .building(id)
             .map(|b| {
-                let seen = b.tiles().any(|t| state.can_see(player, t));
+                // Sight of the ground is not knowledge of a buried
+                // charge: stealth gates targeting exactly like fog.
+                let seen = b.tiles().any(|t| state.can_see(player, t))
+                    && state.building_apparent(player, b);
                 (b.player, b.anchor, seen)
             })
             .ok_or(RejectReason::InvalidTarget)?,
@@ -391,7 +437,11 @@ fn apply_attack(
     let mut landed = 0;
     let applied = for_owned_units(state, player, units, |u| {
         let stats = u.kind.stats();
-        if stats.can_target(victim_domain) {
+        // A demolition machine carries no gun, but its charge covers
+        // ground the same way a weapon would.
+        let covers = stats.can_target(victim_domain)
+            || (stats.demolition && victim_domain == Domain::Ground);
+        if covers {
             if assign(
                 u,
                 Order::Attack {
@@ -647,6 +697,13 @@ fn apply_build(
         }
         return (landed > 0).then_some(()).ok_or(RejectReason::QueueFull);
     }
+    // Tech gating answers before site questions, with its own reason —
+    // "you can't build this yet" and "not there" are different words.
+    // Resuming an existing site above deliberately skips this: losing
+    // the Fabricator does not orphan work already claimed.
+    if !state.prerequisites_met(player, kind) {
+        return Err(RejectReason::MissingPrerequisite);
+    }
     if defer {
         // The deferred mode: validate against the issuer's KNOWLEDGE,
         // then hand out intent. No site, no charge, no route demand —
@@ -711,7 +768,11 @@ pub(super) fn found_site(
     anchor: TilePos,
     commit_builder: impl FnOnce(&mut State, crate::ids::BuildingId) -> bool,
 ) -> Result<crate::ids::BuildingId, RejectReason> {
-    let cost = kind.stats().construction.ok_or(RejectReason::BadSite)?.cost;
+    let cost = kind
+        .base_stats()
+        .construction
+        .ok_or(RejectReason::BadSite)?
+        .cost;
     if state.player(player).scrap < cost {
         return Err(RejectReason::NotEnoughScrap);
     }
@@ -724,7 +785,7 @@ pub(super) fn found_site(
     // claimed ground.)
     let site = state.place_site(player, kind, anchor);
     let from = state.unit(builder).expect("caller checked").tile();
-    let size = kind.stats().size;
+    let size = kind.base_stats().size;
     let reachable = super::rect_adjacent_tiles(anchor, size)
         .filter(|&t| state.passable(t))
         .any(|t| from == t || super::astar_for(state, from, t).is_some());
@@ -804,12 +865,21 @@ fn apply_cancel(
         if b.built {
             return Err(RejectReason::BadSite);
         }
-        let stats = b.kind.stats();
+        // An upgrading works (tier already lifted, offline) is committed:
+        // cancelling would demolish a standing machine for its site
+        // refund. Only fresh tier-zero sites can be scrapped.
+        if b.tier > 0 {
+            return Err(RejectReason::InvalidTarget);
+        }
+        let stats = b.stats();
         let cost = stats.construction.expect("sites are buildable kinds").cost;
         cost * b.hp / stats.max_hp
     };
     let bank = &mut state.player_mut(player).scrap;
     *bank = bank.saturating_add(refund);
+    if let Some(index) = state.buildings.iter().position(|b| b.id == building) {
+        state.stamp_building_occupancy(index, false);
+    }
     state.buildings.retain(|b| b.id != building);
     for unit in state.units.iter_mut().filter(|unit| unit.player == player) {
         unit.queue
@@ -841,11 +911,11 @@ fn apply_repair(
     if b.player != player {
         return Err(RejectReason::NotYourBuilding);
     }
-    if !b.built || b.hp >= b.kind.stats().max_hp {
+    if !b.built || b.hp >= b.stats().max_hp {
         return Err(RejectReason::InvalidTarget);
     }
     let mut landed = 0;
-    let applied = for_owned_workers(state, player, units, |unit| {
+    let applied = for_owned_welders(state, player, units, |unit| {
         if assign(unit, Order::Repair { building }, queue) {
             landed += 1;
         }
@@ -921,7 +991,7 @@ fn apply_repair_unit(
     }
     let crew: Vec<UnitId> = units.iter().copied().filter(|&id| id != target).collect();
     let mut landed = 0;
-    let applied = for_owned_workers(state, player, &crew, |unit| {
+    let applied = for_owned_welders(state, player, &crew, |unit| {
         if assign(unit, Order::RepairUnit { unit: target }, queue) {
             landed += 1;
         }
@@ -933,6 +1003,80 @@ fn apply_repair_unit(
         return Err(RejectReason::QueueFull);
     }
     Ok(())
+}
+
+/// Sends carriable ground machines to climb aboard an own transport.
+/// Capacity is checked at the sling, not here — contents change while
+/// the boarders walk.
+fn apply_load(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    transport: UnitId,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    let t = state.unit(transport).ok_or(RejectReason::InvalidTarget)?;
+    if t.player != player || t.hp == 0 || t.kind.stats().transport_capacity == 0 {
+        return Err(RejectReason::InvalidTarget);
+    }
+    let mut landed = 0;
+    let mut applied = 0;
+    for &id in units {
+        if id == transport {
+            continue;
+        }
+        if let Some(unit) = state.unit_mut(id)
+            && unit.player == player
+            && unit.hp > 0
+            && unit.kind.stats().transport_size > 0
+        {
+            applied += 1;
+            if assign(unit, Order::Board { transport }, queue) {
+                landed += 1;
+            }
+        }
+    }
+    if applied == 0 {
+        return Err(RejectReason::NoValidUnits);
+    }
+    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+}
+
+/// Flies a transport to a drop point and disgorges there. An empty
+/// sling still flies — the order is a movement with intent.
+fn apply_unload(
+    state: &mut State,
+    player: PlayerId,
+    transport: UnitId,
+    at: TilePos,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    if !in_envelope(state, at) {
+        return Err(RejectReason::OutOfBounds);
+    }
+    let t = state.unit(transport).ok_or(RejectReason::InvalidTarget)?;
+    if t.player != player || t.hp == 0 || t.kind.stats().transport_capacity == 0 {
+        return Err(RejectReason::InvalidTarget);
+    }
+    // Lower the destination through the same goal snap every air route
+    // takes. Storing a raw peak (or off-map) goal would leave the order
+    // pointing at ground the flyer can never occupy: routing snaps the
+    // flight, arrival never matches the order, and the transport orbits
+    // its endpoint without unloading.
+    let domain = t.kind.stats().domain;
+    let at = if state.passable_for(domain, at) {
+        at
+    } else if domain == crate::stats::Domain::Air {
+        super::snap_air_goal(state, at).ok_or(RejectReason::OutOfBounds)?
+    } else {
+        return Err(RejectReason::OutOfBounds);
+    };
+    let unit = state.unit_mut(transport).expect("just seen");
+    if assign(unit, Order::Unload { at }, queue) {
+        Ok(())
+    } else {
+        Err(RejectReason::QueueFull)
+    }
 }
 
 /// The verb a repair/salvage command evicts from its target: the two
@@ -1045,7 +1189,7 @@ fn apply_train(
         if b.player != player {
             return Err(RejectReason::NotYourBuilding);
         }
-        if !b.built || !b.kind.stats().produces.contains(&kind) {
+        if !b.built || !b.stats().produces.contains(&kind) {
             return Err(RejectReason::CannotProduce);
         }
         // The produces lists carry every faction's variant of a role; the
@@ -1057,6 +1201,18 @@ fn apply_train(
         }
         if b.queue.len() >= QUEUE_CAP {
             return Err(RejectReason::QueueFull);
+        }
+        // The tree's production gate: some machines wait on completed
+        // tech works beyond their producer (the same rule for every
+        // command source).
+        let met = kind.stats().requires.iter().all(|required| {
+            state
+                .buildings
+                .iter()
+                .any(|owned| owned.player == player && owned.kind == *required && owned.built)
+        });
+        if !met {
+            return Err(RejectReason::MissingPrerequisite);
         }
     }
     let bank = &mut state.player_mut(player).scrap;
@@ -1103,7 +1259,7 @@ fn apply_set_rally(
     if b.player != player {
         return Err(RejectReason::NotYourBuilding);
     }
-    if !b.built || b.kind.stats().produces.is_empty() {
+    if !b.built || b.stats().produces.is_empty() {
         return Err(RejectReason::InvalidTarget);
     }
     // Any tile is a legal rally — spawns snap to walkable ground later, and
@@ -1136,7 +1292,7 @@ fn apply_focus_fire(
         }
         let weapon = building
             .kind
-            .stats()
+            .base_stats()
             .weapons
             .first()
             .copied()
@@ -1154,5 +1310,95 @@ fn apply_focus_fire(
     for &id in buildings {
         state.building_mut(id).expect("validated above").focus = Some(target);
     }
+    Ok(())
+}
+
+/// Lifts a completed own building one rung up its ladder: full price
+/// charged now, the works goes offline as a site on the NEW tier's row,
+/// and the accepted harvester crew takes the ordinary Build order — the
+/// whole construction machinery (resume, relief, stacking) serves
+/// upgrades unchanged. There is no cancel: upgrading is committed.
+fn apply_upgrade(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    building: BuildingId,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    let Some(b) = state.building(building) else {
+        return Err(RejectReason::NotYourBuilding);
+    };
+    if b.player != player {
+        return Err(RejectReason::NotYourBuilding);
+    }
+    if !b.built {
+        return Err(RejectReason::InvalidTarget);
+    }
+    let kind = b.kind;
+    let tier = b.tier;
+    let Some(upgrade) = kind.upgrade_from(tier) else {
+        return Err(RejectReason::InvalidTarget);
+    };
+    let met = upgrade.requires.iter().all(|required| {
+        state
+            .buildings
+            .iter()
+            .any(|owned| owned.player == player && owned.kind == *required && owned.built)
+    });
+    if !met {
+        return Err(RejectReason::MissingPrerequisite);
+    }
+    let crew: Vec<UnitId> = accepted_units(state, player, units)
+        .into_iter()
+        .filter(|id| {
+            state
+                .unit(*id)
+                .is_some_and(|u| u.kind.stats().harvest.is_some())
+        })
+        .collect();
+    if crew.is_empty() {
+        return Err(RejectReason::NoValidUnits);
+    }
+    if state.players[player.0 as usize].scrap < upgrade.cost {
+        return Err(RejectReason::NotEnoughScrap);
+    }
+    // Assign before paying, like Build: a crew whose every queue is full
+    // must reject the whole command with nothing spent.
+    let mut landed = 0;
+    for id in &crew {
+        if let Some(unit) = state.unit_mut(*id)
+            && assign(unit, Order::Build { site: building }, queue)
+        {
+            landed += 1;
+        }
+    }
+    if landed == 0 {
+        return Err(RejectReason::QueueFull);
+    }
+    state.players[player.0 as usize].scrap -= upgrade.cost;
+    let b = state.building_mut(building).expect("validated above");
+    let old_max = b.stats().max_hp;
+    b.tier += 1;
+    b.built = false;
+    b.progress = 0;
+    // The commitment re-founds the machine as a fresh site of the new
+    // tier: hp restarts at the new tier's construction floor, scaled by
+    // the old hull's condition, so an undamaged input completes exactly
+    // at the new maximum and battle damage carries through the rebuild.
+    // Retaining the old hp would double-count it against the new ramp —
+    // a full base hull would cap out mid-construction while a wounded
+    // one finished short of maximum.
+    let start_hp = b.stats().max_hp / 5;
+    b.hp = (b.hp.saturating_mul(start_hp) / old_max.max(1)).max(1);
+    // Combat state is the old machine's, and the offline site neither
+    // fires nor cools: a stale cooldown can exceed the new tier's
+    // ceiling and a focus on an unbuilt works fails validation.
+    b.cooldown = 0;
+    b.focus = None;
+    // The strip ledger is a record against the OLD tier's price basis;
+    // the rebuilt machine starts a clean one (and any crew mid-salvage
+    // finds an unbuilt patient next tick and stands down).
+    b.salvage_drained = 0;
+    b.salvage_credited = 0;
     Ok(())
 }

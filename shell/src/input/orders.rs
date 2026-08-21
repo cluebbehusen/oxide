@@ -3,11 +3,11 @@
 //! re-validates everything — this module only shapes intent, and its
 //! fog checks exist so a click cannot *probe* what the player can't see.
 
-use super::{BUILD_PALETTE, InputState, PICK_RADIUS};
+use super::{InputState, PICK_RADIUS};
 use crate::game::{Game, PingKind};
 use chassis::grid::TilePos;
 use macroquad::prelude::{Vec2, vec2};
-use oxide_sim::{Command, Target, UnitId, UnitKind};
+use oxide_sim::{Command, Target, UnitId};
 
 pub(super) fn selected_producers(game: &Game) -> Vec<oxide_sim::BuildingId> {
     game.selection
@@ -18,7 +18,7 @@ pub(super) fn selected_producers(game: &Game) -> Vec<oxide_sim::BuildingId> {
             game.state.building(*id).is_some_and(|building| {
                 building.player == game.human
                     && building.built
-                    && !building.kind.stats().produces.is_empty()
+                    && !building.stats().produces.is_empty()
             })
         })
         .collect()
@@ -75,6 +75,7 @@ fn visible_hostile_target_at(
                 && building
                     .tiles()
                     .any(|footprint| game.my_vision().visible(footprint))
+                && game.state.building_apparent(game.human, building)
         })
         .map(|building| {
             (
@@ -90,11 +91,11 @@ fn visible_hostile_target_at(
 /// otherwise the first five are control groups.
 pub(super) fn digit_action(game: &mut Game, input: &mut InputState, slot: usize) {
     if input.build_menu {
-        if let Some(&kind) = BUILD_PALETTE.get(slot) {
+        if let Some(&kind) = crate::input::build_page(input.build_page).get(slot) {
             input.build_menu = false;
             input.disarm_click_verbs();
             input.placing = Some(kind);
-            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+            let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
             game.toast(format!(
                 "placing {} ({} scrap): click to build, Esc to cancel",
                 kind.name(),
@@ -164,7 +165,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                             && building.built
                             && building
                                 .kind
-                                .stats()
+                                .base_stats()
                                 .weapons
                                 .first()
                                 .is_some_and(|weapon| weapon.targets.covers(domain))
@@ -190,37 +191,46 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         return;
     }
     let units = game.selection.units.clone();
-    let has_harvester = units.iter().any(|id| {
+    // Each verb crews by its own capability, mirroring the sim's crew
+    // filters exactly: workers (harvest kit) carry build and harvest
+    // labor, welders carry the torch. A coarser union here would stage
+    // commands the sim rejects with an empty crew.
+    let has_worker = units.iter().any(|id| {
         game.state
             .unit(*id)
-            .is_some_and(|u| u.kind == UnitKind::Harvester)
+            .is_some_and(|u| u.kind.stats().harvest.is_some())
     });
+    let has_welder = units
+        .iter()
+        .any(|id| game.state.unit(*id).is_some_and(|u| u.kind.stats().welder));
 
     // Own-FOOTPRINT hits outrank enemy-RADIUS hits: a raider gnawing a
     // wall sits inside the pick radius of a click on that wall, and the
     // click's plain meaning is the building under the cursor, not the
     // rat beside it. No visibility condition on own targets — ownership
     // cannot probe fog, and own buildings always draw.
-    if has_harvester
+    if (has_worker || has_welder)
         && let Some(building) = game.state.building_at(tile)
         && building.player == game.human
     {
         if !building.built {
-            // Resume the site: the sim commits every accepted
-            // harvester (builders stack). Send the building's own
-            // anchor and kind — the cursor may be on any footprint
-            // tile of a 2x2.
-            game.issue(Command::Build {
-                units,
-                kind: building.kind,
-                anchor: building.anchor,
-                queue,
-                defer: false,
-            });
-            game.ping(world, PingKind::Harvest);
-            return;
-        }
-        if building.hp < building.kind.stats().max_hp {
+            if has_worker {
+                // Resume the site: the sim commits every accepted
+                // worker (builders stack). Send the building's own
+                // anchor and kind — the cursor may be on any footprint
+                // tile of a 2x2.
+                game.issue(Command::Build {
+                    units,
+                    kind: building.kind,
+                    anchor: building.anchor,
+                    queue,
+                    defer: false,
+                });
+                game.ping(world, PingKind::Harvest);
+                return;
+            }
+            // Welders alone cannot lay construction: fall through.
+        } else if building.hp < building.stats().max_hp && has_welder {
             game.issue(Command::Repair {
                 units,
                 building: building.id,
@@ -229,9 +239,49 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             game.ping(world, PingKind::Harvest);
             return;
         }
-        // A healthy built own building: fall through (ground order).
+        // A healthy built own building — or a site without a worker, or
+        // a wound without a torch — falls through to the ground order.
     }
 
+    // Carriable ground machines right-clicked onto an own transport
+    // climb aboard — before the hostile check reads the ground under
+    // the hovering airframe.
+    let carriable: Vec<oxide_sim::UnitId> = units
+        .iter()
+        .copied()
+        .filter(|id| {
+            game.state
+                .unit(*id)
+                .is_some_and(|u| u.kind.stats().transport_size > 0)
+        })
+        .collect();
+    if !carriable.is_empty() {
+        let sling = game
+            .state
+            .units()
+            .iter()
+            .filter(|u| {
+                u.player == game.human
+                    && u.hp > 0
+                    && u.kind.stats().transport_capacity > 0
+                    && !game.selection.units.contains(&u.id)
+            })
+            .map(|u| {
+                let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
+                (p.distance(world), u.id)
+            })
+            .filter(|(d, _)| *d <= PICK_RADIUS)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, transport)) = sling {
+            game.issue(Command::Load {
+                units: carriable,
+                transport,
+                queue,
+            });
+            game.ping(world, PingKind::Move);
+            return;
+        }
+    }
     // Fog rules what right-click may target: unseen enemies aren't there
     // as far as the player is concerned (the sim enforces this too).
     if let Some((target, at, _)) = visible_hostile_target_at(game, world, tile) {
@@ -249,7 +299,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     // never for a machine in the current selection, so ordering a
     // group that contains its own wounded still reads as a move. The
     // armed verb (the Weld card) reaches those.
-    if has_harvester {
+    if has_welder {
         let patient = game
             .state
             .units()
@@ -281,7 +331,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     // probing fog with right-clicks must not reveal hidden scrap. Wreck
     // memory counts the same as node memory.
     if (game.my_vision().remembered_scrap(tile) > 0 || game.my_vision().remembered_wreck(tile) > 0)
-        && has_harvester
+        && has_worker
     {
         game.issue(Command::Harvest {
             units,
@@ -312,7 +362,7 @@ pub(super) fn train(game: &mut Game, slot: usize) {
         game.state.building(building).and_then(|building| {
             building
                 .kind
-                .stats()
+                .base_stats()
                 .produces
                 .iter()
                 .filter(|k| k.faction().is_none_or(|f| f == faction))

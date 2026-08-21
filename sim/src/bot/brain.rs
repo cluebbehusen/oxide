@@ -1,13 +1,13 @@
 //! The composed rule-based bot: observation builder + policy + executive.
 //!
-//! A [`Brain`] is a command source exactly like [`super::classic::Bot`]:
-//! it reads [`State`], emits [`crate::PlayerCommand`]s, and its commands
-//! are recorded into replays like anyone else's. Internally each think
-//! runs the three layers in order — build the observation the dials
-//! allow, let the executive do its housekeeping, ask the policy for
-//! intents, lower them to commands.
+//! A [`Brain`] is an ordinary command source: it reads [`State`], emits
+//! [`crate::PlayerCommand`]s, and its commands are recorded into
+//! replays like anyone else's. Internally each think runs the three
+//! layers in order — build the observation the dials allow, let the
+//! executive do its housekeeping, ask the policy for intents, lower
+//! them to commands.
 
-use super::executive::{Doctrine, Executive};
+use super::executive::Executive;
 use super::observation::Observation;
 use super::orient::Orientation;
 use super::utility::{Dials, UtilityPolicy};
@@ -24,27 +24,19 @@ pub struct Brain {
     dials: Dials,
     policy: UtilityPolicy,
     exec: Executive,
+    /// The seat's frame of reference, latched at the first act and
+    /// kept for the match — the policy's bot-local tile memory
+    /// (blacklists, pending sites, scout rotation) lives in oriented
+    /// space, and a mid-game flip when the home Foundry changes would
+    /// silently mirror all of it.
+    orientation: Option<Orientation>,
 }
 
 impl Brain {
     /// Creates the brain for `player`. The scenario seed jitters the
     /// army-size threshold (±1) so mirror matches don't march in
-    /// lockstep forever — the same trick the classic bot uses.
-    pub fn new(player: PlayerId, scenario_seed: u64, dials: Dials) -> Self {
-        Self::with_doctrine(player, scenario_seed, dials, Doctrine::default())
-    }
-
-    /// Creates the brain for a difficulty tier.
-    pub fn for_tier(player: PlayerId, scenario_seed: u64, tier: super::Difficulty) -> Self {
-        Self::with_doctrine(player, scenario_seed, tier.dials(), tier.doctrine())
-    }
-
-    fn with_doctrine(
-        player: PlayerId,
-        scenario_seed: u64,
-        mut dials: Dials,
-        doctrine: Doctrine,
-    ) -> Self {
+    /// lockstep forever.
+    pub fn new(player: PlayerId, scenario_seed: u64, mut dials: Dials) -> Self {
         let mut rng = Pcg32::new(scenario_seed, 2000 + u64::from(player.0));
         dials.army_size = (dials.army_size + rng.next_below(3))
             .saturating_sub(1)
@@ -53,8 +45,18 @@ impl Brain {
             player,
             dials,
             policy: UtilityPolicy::new(),
-            exec: Executive::with_doctrine(doctrine),
+            exec: Executive::default(),
+            orientation: None,
         }
+    }
+
+    /// The Overseer: the scripted commander with the whole 0.15 tree
+    /// switched on. Training infrastructure ONLY — it bootstraps the
+    /// gym-v9 retrain as demonstration source, league anchor, and
+    /// yardstick, and is deliberately not reachable from any player
+    /// surface (no scenario field, no wizard dial, no SeatBot arm).
+    pub fn overseer(player: PlayerId, scenario_seed: u64) -> Self {
+        Self::new(player, scenario_seed, Dials::overseer())
     }
 
     /// The player this brain drives.
@@ -100,7 +102,9 @@ impl Brain {
         // The policy thinks in seat-oriented space (see [`Orientation`]):
         // the same logic runs for both seats, so its compass-flavored
         // tie-breaks cannot systematically favor either one.
-        let orientation = Orientation::for_home(&obs, rear);
+        let orientation = *self
+            .orientation
+            .get_or_insert_with(|| Orientation::for_home(&obs, rear));
         let oriented = orientation.observe(&obs);
         let armies: Vec<_> = self
             .exec

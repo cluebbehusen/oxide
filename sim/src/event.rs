@@ -38,6 +38,36 @@ pub enum Event {
         /// Where it died (for shell effects).
         pos: Vec2Fx,
     },
+    /// A machine climbed aboard a transport and left the world's unit
+    /// list until it is set down again.
+    UnitBoarded {
+        /// The carrier.
+        transport: UnitId,
+        /// The rider.
+        unit: UnitId,
+        /// Their shared owner.
+        player: PlayerId,
+    },
+    /// A transport set a carried machine down on open ground.
+    UnitUnloaded {
+        /// The carrier.
+        transport: UnitId,
+        /// The rider.
+        unit: UnitId,
+        /// Their shared owner.
+        player: PlayerId,
+        /// The tile it stands on now.
+        at: TilePos,
+    },
+    /// A buried charge went off under a hostile machine.
+    ChargeDetonated {
+        /// The charge that fired.
+        building: BuildingId,
+        /// Its owner.
+        player: PlayerId,
+        /// The blast center.
+        at: Vec2Fx,
+    },
     /// A building was destroyed.
     BuildingDestroyed {
         /// The casualty.
@@ -249,4 +279,15 @@ pub enum StallReason {
     /// sees, so it reports the founder's own discovery, never a fact
     /// fog still hides.
     GroundTaken,
+    /// The transport's sling is full; the boarder stands down where it
+    /// stopped.
+    TransportFull,
+    /// No open ground within the unload scan around the drop point; the
+    /// stranded cargo stays aboard.
+    NoOpenGround,
+    /// A loaded worker has a route home but every safe one is blocked by
+    /// known danger, so it is standing and waiting for a window.
+    /// Reported periodically while the wait lasts; the order itself is
+    /// kept. Own-state only: it names no threat.
+    DangerHold,
 }

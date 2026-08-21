@@ -26,6 +26,7 @@ from league import (
     DEFAULT_VALUE_WARMUP,
     FAB_BUILT,
     MAX_STYLE_BONUS,
+    POOL_POLICY_CACHE_SIZE,
     SHAPE_GAMMA,
     SHAPE_K,
     SHIPPED_AGGRESSION_DISTRIBUTION,
@@ -54,9 +55,11 @@ from league import (
     expand_faction_pair,
     faction_knob,
     generated_map_families,
-    legacy_incumbent_plan,
-    load_incumbent_policy,
+    lane_kinds_for_layout,
+    learner_lanes_for_kind,
+    load_pool_policy,
     maybe_blunder,
+    opponent_actions,
     parse_aggression_mix,
     parse_faction_mix,
     parse_map_mix,
@@ -81,6 +84,7 @@ from league import (
     sample_map_family,
     style_alignment,
     style_bonus,
+    team_players_for_kind,
     tech_bonus_at,
     training_world_inputs,
     unit_interval,
@@ -101,7 +105,6 @@ from oxide_gym import (
     CONDITION_NAMES,
     FEATURE_NAMES,
     FEATURES,
-    GYM_VERSION,
     NET_FEATURES,
     ActionPlan,
     CanonicalProfile,
@@ -492,7 +495,7 @@ class TestProfileCurriculum:
 
 class TestMaybeBlunder:
     def test_uses_the_exact_hesitation_permille(self) -> None:
-        action = (3, 24, 25)
+        action = (3, 24, 42, 25)
         logits = np.zeros(ACTIONS)
         mask = np.ones(ACTIONS, dtype=bool)
         actual = np.random.default_rng(17)
@@ -504,10 +507,10 @@ class TestMaybeBlunder:
         expected_hesitations = sum(
             int(control.integers(1000)) < 190 for _ in range(1000)
         )
-        assert outcomes.count((0, 24, 25)) == expected_hesitations
+        assert outcomes.count((0, 24, 42, 25)) == expected_hesitations
 
     def test_zero_hesitation_spends_no_rng_draw(self) -> None:
-        action = (3, 24, 25)
+        action = (3, 24, 42, 25)
         actual = np.random.default_rng(17)
         control = np.random.default_rng(17)
 
@@ -527,7 +530,7 @@ class TestMaybeBlunder:
     def test_rejects_invalid_hesitation(self, hesitation: int) -> None:
         with pytest.raises(ValueError, match="hesitation"):
             maybe_blunder(
-                (3, 24, 25),
+                (3, 24, 42, 25),
                 np.zeros(ACTIONS),
                 np.ones(ACTIONS, dtype=bool),
                 hesitation,
@@ -568,6 +571,40 @@ class TestMaybeBlunder:
         )
 
         assert seen == [350, 190]
+
+
+class TestTeamShapes:
+    def test_the_shape_is_the_kind(self) -> None:
+        assert team_players_for_kind("team") == 4
+        assert team_players_for_kind("team2") == 4
+        assert team_players_for_kind("team4") == 8
+
+    def test_lane_kinds_follow_the_kind_shapes(self) -> None:
+        # The g1m2 crash: a 4v4 team job contributes four learner
+        # lanes, and the parent's lane accounting must know it without
+        # holding the Job objects (collectors build them elsewhere).
+        # Making the shape the KIND keeps the geometry a pure function
+        # of the layout.
+        layout = [
+            ("team", 0),
+            ("self", 0),
+            ("team4", 0),
+            ("team2", 1),
+            ("past", 0),
+        ]
+        lanes = lane_kinds_for_layout(layout)
+        assert lanes == [
+            *["team", "team"],
+            *["self", "self"],
+            *["team4", "team4", "team4", "team4"],
+            *["team2"],
+            "past",
+        ]
+
+    def test_allocation_divides_by_exact_lanes(self) -> None:
+        assert learner_lanes_for_kind("team") == 2
+        assert learner_lanes_for_kind("team4") == 4
+        assert learner_lanes_for_kind("team2") == 1
 
 
 class TestMapMix:
@@ -632,18 +669,20 @@ class TestMapMix:
         monkeypatch.setattr(league, "_generate", fake_generate)
         monkeypatch.setattr(league, "cache_dir", lambda name: name)
         families = generated_map_families(
-            parse_map_mix("fixed=.25,random=.25,grand=.50"),
+            parse_map_mix("fixed=.25,random=.20,grand=.40,island=.15"),
             {"self": 0.5, "ffa": 0.2, "team2": 0.3},
         )
-        assert families == ("random", "grand", "ffa", "team")
+        assert families == ("random", "grand", "island", "ffa", "team")
 
         warm_generated_maps(100_007, families, "candidate-driver")
 
         assert calls == [
             (7, "oxide-maps-train", 2, False, "candidate-driver", None),
             (7, "oxide-maps-train-grand", 2, False, "candidate-driver", "grand"),
+            (7, "oxide-maps-train-island", 2, False, "candidate-driver", "island"),
             (7, "oxide-maps-train4", 4, False, "candidate-driver", None),
             (7, "oxide-maps-train2v2", 4, True, "candidate-driver", None),
+            (7, "oxide-maps-train4v4", 8, True, "candidate-driver", None),
         ]
 
     def test_lineage_covers_every_consumed_world_source(
@@ -661,7 +700,7 @@ class TestMapMix:
         fixed_inputs = training_world_inputs(
             driver,
             {"fixed": 1.0},
-            {"tier": 1.0},
+            {"overseer": 1.0},
             fixed_scenario=fixed,
             map_generator=generator,
             environment_lock=environment,
@@ -769,21 +808,17 @@ class _ResetRecorder:
         return Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
 
 
-@pytest.mark.parametrize("kind", ["past", "incumbent"])
 def test_frozen_learned_opponents_share_the_learners_named_profile(
-    kind: str,
     tmp_path: pathlib.Path,
 ) -> None:
     worker = _ResetRecorder()
-    incumbent = make_policy("mlp") if kind == "incumbent" else None
     job = Job(
         cast("Worker", worker),
-        kind,
+        "past",
         0,
         tmp_path,
         np.random.default_rng(23),
         "cpu",
-        incumbent=incumbent,
         faction_mix={"fc": 1.0},
     )
 
@@ -833,7 +868,7 @@ def test_default_evaluation_rotates_through_rust_canonical_profiles() -> None:
         policy,
         [cast("Worker", worker)],
         "cpu",
-        "prime",
+        "overseer",
         seeds=range(60_000, 60_000 + len(profiles)),
     )
 
@@ -847,16 +882,19 @@ def test_default_evaluation_rotates_through_rust_canonical_profiles() -> None:
                 "dict[int, tuple[int, ...]]",
                 reset["conditions"],
             )
-            for conditioned_seat, faction in ((0, "ferrous"), (1, "cupric")):
-                assert conditions[conditioned_seat] == (
-                    worker.profile_catalog.condition(
-                        profile.style,
-                        profile.variant,
-                        worker.profile_catalog.default_role,
-                        faction,
-                    )
+            # The wire requires conditions to name exactly the
+            # controlled seats; the scripted opponent takes none.
+            assert set(conditions) == {seat}
+            faction = "ferrous" if seat == 0 else "cupric"
+            assert conditions[seat] == (
+                worker.profile_catalog.condition(
+                    profile.style,
+                    profile.variant,
+                    worker.profile_catalog.default_role,
+                    faction,
                 )
-                assert any(conditions[conditioned_seat][7:])
+            )
+            assert any(conditions[seat][7:])
 
 
 class TestPerEpisodeAggressionSampling:
@@ -895,7 +933,7 @@ class TestPerEpisodeAggressionSampling:
         worker = _ResetRecorder()
         job = Job(
             cast("Worker", worker),
-            "tier",
+            "overseer",
             0,
             pathlib.Path("."),
             np.random.default_rng(31),
@@ -959,12 +997,12 @@ class TestPerEpisodeMapSampling:
         assert set(left_families) == {"fixed", "random", "grand"}
 
 
-class TestFixedTierRoles:
-    def test_prime_role_keeps_the_exact_tier_and_requested_seat(self) -> None:
+class TestOverseerRole:
+    def test_overseer_role_keeps_the_requested_seat_and_tierless_reset(self) -> None:
         worker = _ResetRecorder()
         job = Job(
             cast("Worker", worker),
-            "prime",
+            "overseer",
             1,
             pathlib.Path("."),
             np.random.default_rng(19),
@@ -976,15 +1014,12 @@ class TestFixedTierRoles:
             job.reset(seed)
 
         assert job.learner_seats == [1]
-        assert job.tier == "prime"
         assert job.map_family == "fixed"
-        assert [
-            (reset["control"], reset["tier"], reset["scenario"])
-            for reset in worker.resets
-        ] == [
-            ((1,), "prime", None),
-            ((1,), "prime", None),
+        assert [(reset["control"], reset["scenario"]) for reset in worker.resets] == [
+            ((1,), None),
+            ((1,), None),
         ]
+        assert all("tier" not in reset for reset in worker.resets)
         assert all(reset["factions"] == "fc" for reset in worker.resets)
 
 
@@ -997,7 +1032,7 @@ class TestPerEpisodeFactionSampling:
             ("team", 0, "cf", "cfcf", {0: 1000, 2: 1000}),
             ("team2", 1, "fc", "fcfc", {2: 0}),
             ("ffa", 3, "fc", "fcfc", {3: 1000}),
-            ("prime", 1, "fc", "fc", {1: 1000}),
+            ("overseer", 1, "fc", "fc", {1: 1000}),
         ],
     )
     def test_reset_passes_full_roster_and_faction_correct_conditions(
@@ -1068,11 +1103,11 @@ class TestPerEpisodeFactionSampling:
 
 class TestRoleAllocation:
     def test_equivalent_cli_mix_order_has_one_role_and_rng_order(self) -> None:
-        first = parse_opponent_mix("tier=2,self=1,rusher=1")
-        second = parse_opponent_mix("rusher=.5,self=.5,tier=1")
+        first = parse_opponent_mix("overseer=2,self=1,rusher=1")
+        second = parse_opponent_mix("rusher=.5,self=.5,overseer=1")
 
-        assert first == second == {"self": 0.25, "tier": 0.5, "rusher": 0.25}
-        assert list(first) == ["self", "tier", "rusher"]
+        assert first == second == {"self": 0.25, "overseer": 0.5, "rusher": 0.25}
+        assert list(first) == ["self", "overseer", "rusher"]
 
     @pytest.mark.parametrize(
         "text",
@@ -1082,7 +1117,7 @@ class TestRoleAllocation:
             "self=1,self=2",
             "self=-1",
             "self=nan",
-            "self=0,tier=0",
+            "self=0,overseer=0",
         ],
     )
     def test_invalid_cli_mix_is_refused(self, text: str) -> None:
@@ -1090,26 +1125,26 @@ class TestRoleAllocation:
             parse_opponent_mix(text)
 
     def test_requested_mix_is_allocated_by_learner_rows_not_jobs(self) -> None:
-        mix = {"self": 0.25, "team": 0.25, "tier": 0.5}
+        mix = {"self": 0.25, "team": 0.25, "overseer": 0.5}
 
         counts = allocate_role_counts(mix, 12)
 
-        assert counts == {"self": 2, "team": 2, "tier": 8}
+        assert counts == {"self": 2, "team": 2, "overseer": 8}
 
     def test_realized_mix_counts_both_learner_lanes(self) -> None:
         workers = [cast("Worker", object()) for _ in range(12)]
         jobs = assign_roles(
             workers,
-            {"self": 0.25, "team": 0.25, "tier": 0.5},
+            {"self": 0.25, "team": 0.25, "overseer": 0.5},
             pathlib.Path("."),
             np.random.default_rng(0),
             "cpu",
         )
 
         assert realized_learner_row_mix(jobs) == {
+            "overseer": 0.5,
             "self": 0.25,
             "team": 0.25,
-            "tier": 0.5,
         }
 
     def test_realized_mix_can_measure_actual_valid_training_rows(self) -> None:
@@ -1122,9 +1157,9 @@ class TestRoleAllocation:
             np.random.default_rng(0),
             "cpu",
         )
-        tier_job = Job(
+        overseer_job = Job(
             workers[1],
-            "tier",
+            "overseer",
             0,
             pathlib.Path("."),
             np.random.default_rng(1),
@@ -1138,15 +1173,15 @@ class TestRoleAllocation:
             ]
         )
 
-        assert realized_learner_row_mix([self_job, tier_job], valid) == {
+        assert realized_learner_row_mix([self_job, overseer_job], valid) == {
+            "overseer": 0.5,
             "self": 0.5,
-            "tier": 0.5,
         }
 
     @pytest.mark.parametrize(
         "mix",
         [
-            {"self": -0.1, "tier": 1.1},
+            {"self": -0.1, "overseer": 1.1},
             {"self": float("nan")},
             {"self": 0.0},
         ],
@@ -1166,7 +1201,7 @@ class TestRollout:
         # (seat 0) is the surviving teammate, column 1 (seat 1) died.
         obs_b, _mask_b, act_b, *_rest, valid_b = death_batch
         assert obs_b.shape == (4, 2, NET_FEATURES)
-        assert act_b.shape == (4, 2, 3)
+        assert act_b.shape == (4, 2, 4)
         assert valid_b.shape == (4, 2)
 
     def test_rows_collected_while_dead_flag_invalid(
@@ -1235,121 +1270,7 @@ class TestJobSeatView:
         assert job.seat_view(0) is live  # frozen, not a KeyError
 
 
-class TestIncumbentOpponent:
-    @pytest.mark.parametrize(
-        ("winner", "expected"),
-        [
-            (7, (7, 24, 25)),
-            (13, (0, 13, 25)),
-            (20, (0, 24, 20)),
-        ],
-    )
-    def test_legacy_arbitration_activates_only_the_winning_head(
-        self,
-        winner: int,
-        expected: tuple[int, int, int],
-    ) -> None:
-        logits = torch.zeros(1, ACTIONS)
-        logits[0, winner] = 5.0
-        mask = torch.ones(1, ACTIONS, dtype=torch.bool)
-
-        assert tuple(legacy_incumbent_plan(logits, mask)[0].tolist()) == expected
-
-    def test_legacy_arbitration_uses_the_mask_and_lowest_index_tie_break(self) -> None:
-        logits = torch.zeros(1, ACTIONS)
-        logits[0, 5] = 4.0
-        logits[0, 13] = 9.0
-        logits[0, 20] = 4.0
-        logits[0, 24:] = 100.0
-        mask = torch.ones(1, ACTIONS, dtype=torch.bool)
-        mask[0, 13] = False
-
-        plan = legacy_incumbent_plan(logits, mask)
-
-        assert tuple(plan[0].tolist()) == (5, 24, 25)
-
-    def test_legacy_arbitration_rejects_an_empty_inherited_mask(self) -> None:
-        logits = torch.zeros(1, ACTIONS)
-        mask = torch.zeros(1, ACTIONS, dtype=torch.bool)
-        mask[0, 24:] = True
-
-        with pytest.raises(ValueError, match="no legal inherited"):
-            legacy_incumbent_plan(logits, mask)
-
-    def test_active_lane_requires_an_exact_recovered_checkpoint(
-        self, tmp_path: pathlib.Path
-    ) -> None:
-        with pytest.raises(ValueError, match="requires --incumbent"):
-            load_incumbent_policy({"incumbent": 0.25}, None, "cpu")
-
-        policy = make_policy("mlp")
-        ordinary = tmp_path / "ordinary.pt"
-        save_policy(
-            policy,
-            "mlp",
-            ordinary,
-            {"gym_version": GYM_VERSION, "update": 10},
-        )
-        with pytest.raises(ValueError, match="exact Q12-recovered"):
-            load_incumbent_policy({"incumbent": 0.25}, str(ordinary), "cpu")
-
-        unfloored = tmp_path / "unfloored.pt"
-        save_policy(
-            policy,
-            "mlp",
-            unfloored,
-            {
-                "gym_version": GYM_VERSION,
-                "update": 10,
-                "q12_recovered": True,
-                "unfloored_actions": [24, 25],
-            },
-        )
-        with pytest.raises(ValueError, match="no unfloored actions"):
-            load_incumbent_policy({"incumbent": 0.25}, str(unfloored), "cpu")
-
-        recovered = tmp_path / "recovered.pt"
-        save_policy(
-            policy,
-            "mlp",
-            recovered,
-            {
-                "gym_version": GYM_VERSION,
-                "update": 10,
-                "q12_recovered": True,
-                "unfloored_actions": [],
-            },
-        )
-        loaded = load_incumbent_policy(
-            {"incumbent": 0.25},
-            str(recovered),
-            "cpu",
-        )
-        assert loaded is not None
-        assert not loaded.training
-
-    def test_incumbent_plays_the_frozen_actor_greedily(self) -> None:
-        policy = make_policy("mlp")
-        with torch.no_grad():
-            for parameter in policy.parameters():
-                parameter.zero_()
-            policy.pi.bias[7] = 3.0
-        policy.eval()
-        job = Job(
-            cast("Worker", _ScriptedWorker([])),
-            "incumbent",
-            0,
-            pathlib.Path("."),
-            np.random.default_rng(0),
-            "cpu",
-            incumbent=policy,
-        )
-        job.frame = Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
-
-        for seed in range(20):
-            torch.manual_seed(seed)
-            assert job.opponent_action("cpu") == {1: (7, 24, 25)}
-
+class TestPastOpponentAndInitialization:
     def test_past_lane_still_samples_its_checkpoint(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1369,11 +1290,118 @@ class TestIncumbentOpponent:
 
         def fake_sample(_distribution: object) -> torch.Tensor:
             sampled.append(True)
-            return torch.tensor([5])
+            return torch.tensor([1])
 
         monkeypatch.setattr(torch.distributions.Categorical, "sample", fake_sample)
-        assert job.opponent_action("cpu") == {1: (5, 13, 20)}
-        assert sampled == [True, True, True]
+        assert job.opponent_action("cpu") == {1: (1, 9, 40, 16)}
+        assert sampled == [True, True, True, True]
+
+    def test_lanes_sharing_a_policy_take_one_batched_forward(self) -> None:
+        # The collector's cost per decision is dispatch, not arithmetic:
+        # past lanes holding the same frozen checkpoint must ride one
+        # forward, and a scripted opponent must not reach torch at all.
+        inner = make_policy("mlp")
+        inner.eval()
+        batches: list[int] = []
+
+        class Counting(torch.nn.Module):
+            def forward(
+                self,
+                obs: torch.Tensor,
+                mask: torch.Tensor,
+            ) -> tuple[torch.Tensor, torch.Tensor]:
+                batches.append(int(obs.shape[0]))
+                return inner(obs, mask)
+
+        shared = Counting()
+
+        def job(kind: str, seat: int) -> Job:
+            made = Job(
+                cast("Worker", _ScriptedWorker([])),
+                kind,
+                seat,
+                pathlib.Path("."),
+                np.random.default_rng(0),
+                "cpu",
+            )
+            made.frame = Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
+            return made
+
+        first, second, scripted = job("past", 0), job("past", 1), job("rusher", 0)
+        first.past = shared
+        second.past = shared
+
+        plans = opponent_actions([first, second, scripted], "cpu")
+
+        assert batches == [2]
+        assert list(plans[0]) == [1]
+        assert list(plans[1]) == [0]
+        assert list(plans[2]) == [1]
+
+    def test_separate_policies_keep_separate_forwards(self) -> None:
+        jobs = []
+        for seat in (0, 1):
+            made = Job(
+                cast("Worker", _ScriptedWorker([])),
+                "past",
+                seat,
+                pathlib.Path("."),
+                np.random.default_rng(0),
+                "cpu",
+            )
+            made.past = make_policy("mlp")
+            made.past.eval()
+            made.frame = Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
+            jobs.append(made)
+
+        plans = opponent_actions(jobs, "cpu")
+
+        assert [list(plan) for plan in plans] == [[1], [0]]
+
+    def test_an_empty_pool_lane_answers_with_the_rush_teacher(self) -> None:
+        made = Job(
+            cast("Worker", _ScriptedWorker([])),
+            "past",
+            0,
+            pathlib.Path("."),
+            np.random.default_rng(0),
+            "cpu",
+        )
+        made.frame = Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
+
+        assert made.opponent_policy() is None
+        assert opponent_actions([made], "cpu") == [made.scripted_opponent_action()]
+
+    def test_one_pool_checkpoint_loads_once_for_every_lane(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        # Sharing the loaded object is what lets two lanes that drew the
+        # same checkpoint batch their forwards together.
+        checkpoint = tmp_path / "ckpt-00025.pt"
+        save_policy(make_policy("mlp"), "mlp", checkpoint)
+
+        first = load_pool_policy(str(checkpoint), "cpu")
+        second = load_pool_policy(str(checkpoint), "cpu")
+
+        assert first is second
+        assert not first.training
+
+    def test_the_pool_cache_stays_bounded(self, tmp_path: pathlib.Path) -> None:
+        # A campaign keeps writing pool checkpoints; the oldest draw is
+        # dropped rather than pinned for the rest of the run.
+        checkpoints = []
+        for index in range(POOL_POLICY_CACHE_SIZE + 1):
+            checkpoint = tmp_path / f"ckpt-{index:05d}.pt"
+            save_policy(make_policy("mlp"), "mlp", checkpoint)
+            checkpoints.append(str(checkpoint))
+        oldest = load_pool_policy(checkpoints[0], "cpu")
+        for checkpoint in checkpoints[1:]:
+            load_pool_policy(checkpoint, "cpu")
+
+        assert load_pool_policy(checkpoints[0], "cpu") is not oldest
+        assert load_pool_policy(checkpoints[-1], "cpu") is load_pool_policy(
+            checkpoints[-1], "cpu"
+        )
 
     def test_initialization_provenance_distinguishes_reconstructed_critics(
         self,
@@ -1970,7 +1998,7 @@ class TestCreditAndEntropyControls:
         assert effective_production_entropy_coefficient(
             configured.entropy_coef,
             configured.production_entropy_coef,
-        ) == pytest.approx(0.042)
+        ) == pytest.approx(0.0415)
 
     def test_production_entropy_help_explains_the_effective_weight(self) -> None:
         parser = argparse.ArgumentParser()
@@ -1979,7 +2007,7 @@ class TestCreditAndEntropyControls:
         help_text = parser.format_help()
         assert "--production-entropy-coef" in help_text
         assert "effective head weight" in help_text
-        assert "third of --entropy-coef" in help_text
+        assert "quarter of --entropy-coef" in help_text
 
 
 def _tech_view(fab: int) -> SeatView:
@@ -2485,7 +2513,7 @@ class TestMixBonus:
 def _forced_view(action: int | ActionPlan) -> SeatView:
     """A view whose mask permits exactly one action in each head."""
     if isinstance(action, int):
-        selected = [0, 24, 25]
+        selected = [0, 24, 42, 25]
         for head_index, head in enumerate(ACTION_HEADS):
             if action in head:
                 selected[head_index] = action
@@ -2901,7 +2929,7 @@ _PROBE_COHORT = {
     },
 }
 _PROBE_PAYLOAD = {
-    "schema": 6,
+    "schema": 10,
     "overall": {
         "matches": 50,
         "decided": 41,
@@ -3021,11 +3049,11 @@ class TestCompositionProbe:
 
     def test_a_future_probe_schema_is_refused(self, tmp_path: pathlib.Path) -> None:
         future = json.loads(json.dumps(_PROBE_PAYLOAD))
-        future["schema"] = 7
+        future["schema"] = 11
         driver = self._fake_driver(tmp_path, future)
         torch.manual_seed(0)
         policy = make_policy("mlp")
-        with pytest.raises(RuntimeError, match="schema 7"):
+        with pytest.raises(RuntimeError, match="schema 11"):
             composition_probe(policy, "mlp", 5, tmp_path, str(driver), "s", "medium", 1)
 
 

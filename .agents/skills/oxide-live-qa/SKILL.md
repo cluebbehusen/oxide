@@ -67,7 +67,15 @@ Use the record as the source of truth:
 driver replay replays/session.json
 driver replay-inspect replays/session.json --tick 3000,6000 --fog-seat 1 --map
 driver replay-stats replays/session.json
+driver replay-summary replays/session.json --minimaps sparse
 ```
+
+Start bot-conduct review with `replay-summary`: it narrates the whole match
+as text — first contact, battles, expansions, eliminations, lulls, per-seat
+digests (including command-rejection and stall counts), and coarse ASCII
+minimaps — for a fraction of a screenshot's cost. `--until T` summarizes a
+prefix, `--every N` sets digest cadence, `--json` is the stable contract.
+Reserve schematic screenshots for confirming what the summary surfaces.
 
 Interpret snapshot tick `N` as state before commands stamped `N` execute.
 Compare the reproduced final hash with the live hash. Respect replay version

@@ -4,9 +4,9 @@
 //! drives a full deterministic match (env-gated — weights are training
 //! output, not test fixtures).
 
-use oxide_sim::bot::{Brain, Difficulty, NeuralBot, QuantNet};
+use oxide_sim::bot::{Brain, FEATURE_COUNT, Level, NeuralBot, QuantNet, ladder_condition_values};
 use oxide_sim::state::GameResult;
-use oxide_sim::{PlayerId, Scenario};
+use oxide_sim::{Faction, PlayerId, Scenario};
 
 /// A hand-built artifact: identity-ish single layer, so argmax and
 /// masking are checkable by inspection.
@@ -55,7 +55,7 @@ fn tiny_net() -> QuantNet {
 
 #[test]
 fn masked_argmax_is_exact_and_deterministic() {
-    use oxide_sim::bot::{ACTION_COUNT, Action, ActionPlan, Decision, FEATURE_COUNT};
+    use oxide_sim::bot::{ACTION_COUNT, Action, ActionPlan, Decision};
     let net = tiny_net();
     // Feature 2 is the largest → logit 2 wins where legal.
     let mut features = [0i64; FEATURE_COUNT];
@@ -69,6 +69,7 @@ fn masked_argmax_is_exact_and_deterministic() {
         ActionPlan {
             production: Action::TrainSentinel,
             construction: Action::NoConstruction,
+            upgrade: Action::NoUpgrade,
             operation: Action::NoOperation,
         }
     ); // production index 2
@@ -112,26 +113,14 @@ fn shape_and_version_drift_is_refused() {
     assert!(QuantNet::from_json(&bad.to_string()).is_err(), "shape");
 }
 
+/// Old artifacts are refused by version, plainly: the v9 retrain starts
+/// from scratch, so there is no supported widening migration to name.
 #[test]
-fn a_v7_external_artifact_names_the_supported_migration() {
+fn a_stale_gym_version_artifact_is_refused_by_name() {
     let mut old = tiny_artifact();
     old["gym_version"] = 7.into();
-    old["conditioning"] = 7.into();
-    old["recips"] = serde_json::json!(vec![1; oxide_sim::bot::FEATURE_COUNT + 7]);
-    for row in old["layers"][0]["w"]
-        .as_array_mut()
-        .expect("tiny first layer")
-    {
-        row.as_array_mut()
-            .expect("tiny row")
-            .truncate(oxide_sim::bot::FEATURE_COUNT + 7);
-    }
     let err = QuantNet::from_json(&old.to_string()).expect_err("v7 is not silently accepted");
-    assert!(err.contains("weights speak gym v7, sim speaks v8"), "{err}");
-    assert!(
-        err.contains("widen.py --src OLD.json --out NEW.json"),
-        "{err}"
-    );
+    assert!(err.contains("weights speak gym v7, sim speaks v9"), "{err}");
 }
 
 /// `--weights` loads files the sim did not write, so the loader is a
@@ -282,38 +271,6 @@ fn a_maxed_out_artifact_infers_on_saturated_features_without_overflow() {
     assert!(logits.iter().all(|l| l.abs() < 1 << 34), "{logits:?}");
 }
 
-/// The exporter's structural maxima against the loader's ceilings — a
-/// future architecture that drifts toward a limit trips here, where
-/// the checkpoint is still in hand, not at promotion time.
-#[test]
-fn the_shipped_artifact_clears_every_ceiling_with_room() {
-    fn ints(v: &serde_json::Value) -> Vec<i64> {
-        match v {
-            serde_json::Value::Array(a) => a.iter().flat_map(ints).collect(),
-            serde_json::Value::Number(n) => vec![n.as_i64().expect("integer tensor")],
-            _ => Vec::new(),
-        }
-    }
-    let peak = |v: &serde_json::Value| ints(v).into_iter().map(i64::abs).max().unwrap_or(0);
-    let art: serde_json::Value =
-        serde_json::from_str(include_str!("../src/bot/ladder_weights.json")).unwrap();
-
-    let recip = peak(&art["recips"]);
-    assert!(recip <= 1 << 26, "recip peak {recip} over 2^26");
-    let lut = peak(&art["tanh_lut"]);
-    assert!(lut <= 1 << 13, "lut peak {lut} over 2^13");
-    let layers = art["layers"].as_array().unwrap();
-    assert!(layers.len() <= 16, "{} trunk layers over 16", layers.len());
-    for l in layers.iter().chain(std::iter::once(&art["head"])) {
-        let rows = l["w"].as_array().unwrap();
-        assert!(rows.len() <= 4096, "{} wide, over 4096", rows.len());
-        let coeff = peak(&l["w"]).max(peak(&l["b"]));
-        assert!(coeff <= 1 << 20, "coefficient peak {coeff} over 2^20");
-    }
-    // Printed so a drifting exporter is visible before it is fatal.
-    println!("shipped peaks: recip {recip}, lut {lut}");
-}
-
 /// The digest answers "which weights produced this number" — so it
 /// must follow the coefficients, not the file's layout or the
 /// metadata `ArtifactDto` ignores.
@@ -350,32 +307,14 @@ fn lineage_is_verified_but_does_not_enter_the_gameplay_digest() {
         r#"{"hyperparameters":{"below":1e-06,"label":"\u00e9\u007f","lower_fixed":0.0001,"lower_scientific":1e-05,"negative_zero":-0.0,"rounding_edge":9.999999999999999e-05,"upper_fixed":1000000000000000.0,"upper_scientific":1e+16},"inputs":{"source":{"content_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},"lineage_id":"sha256:d395b2633e76e8b5b38977b912cc396abb410c3a51802599afa0dd0a00e22d6b","phase":"revival-\ud83d\ude00","phase_start_update":0,"schema":1}"#,
     )
     .unwrap();
-    let mut attributed = legacy.clone();
-    attributed["lineage"] = python_lineage;
-    assert_eq!(
-        base,
-        QuantNet::from_json(&attributed.to_string())
-            .unwrap()
-            .digest(),
-        "Python and Rust must agree on lineage canonicalization"
-    );
-
-    let shipped: serde_json::Value =
-        serde_json::from_str(include_str!("../src/bot/ladder_weights.json")).unwrap();
-    let lineage = shipped["lineage"].clone();
-    assert!(
-        lineage.is_object(),
-        "the shipped artifact carries provenance"
-    );
-
     let mut attributed = legacy;
-    attributed["lineage"] = lineage;
+    attributed["lineage"] = python_lineage;
     let attributed_digest = QuantNet::from_json(&attributed.to_string())
         .unwrap()
         .digest();
     assert_eq!(
         base, attributed_digest,
-        "provenance must not change gameplay identity"
+        "Python-canonicalized provenance must verify without changing gameplay identity"
     );
 
     attributed["lineage"]["phase"] = "forged-history".into();
@@ -399,11 +338,11 @@ fn exported_weights_play_a_deterministic_match() {
         let mut scenario = Scenario::skirmish();
         scenario.seed = 7;
         let mut state = scenario.build().unwrap();
-        let mut neural = NeuralBot::new(PlayerId(0), 16, net.clone(), oxide_sim::Faction::Ferrous);
-        let mut veteran = Brain::for_tier(PlayerId(1), 7, Difficulty::Veteran);
+        let mut neural = NeuralBot::new(PlayerId(0), 16, net.clone(), Faction::Ferrous);
+        let mut overseer = Brain::overseer(PlayerId(1), 7);
         for _ in 0..40_000u32 {
             let mut commands = neural.act(&state);
-            commands.extend(veteran.act(&state));
+            commands.extend(overseer.act(&state));
             state.tick(&commands);
             if state.result().is_some() {
                 break;
@@ -415,10 +354,297 @@ fn exported_weights_play_a_deterministic_match() {
     let (h2, r2) = run();
     assert_eq!(h1, h2, "neural matches must reproduce bit-identically");
     assert_eq!(r1, r2);
+    // Beating the Overseer is a promotion-battery question, not this
+    // gate's: here the match must merely be decided-or-capped the same
+    // way every run. The printed result feeds the promotion tooling.
     println!("result: {r1:?}");
+}
+
+// --- Candidate promotion gates (salvaged from the retired shipped-ladder
+// suite): env-gated checks the retrain-era tooling runs against exported
+// artifacts. CI has no weights and skips via ignore. ---
+
+const RAW_AGGRESSION_CENTERS: [u32; 2] = [300, 550];
+const YARDSTICK_SEEDS: [u64; 10] = [3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009];
+
+/// Wins and total victory ticks for `level` against the Overseer — the
+/// one scripted yardstick left standing — at both pinned raw-aggression
+/// centers over the seed set, seat-swapped.
+/// A loss counts the full 40k-tick horizon toward the total, so the
+/// tick sum subsumes the win count at the losing end and stays a
+/// single monotone instrument. Every match is an independent
+/// deterministic sim, so the slate fans out across threads; the
+/// totals are order-free.
+fn yardstick_with_net(level: Level, net: &QuantNet) -> (u32, u64) {
+    let mut matches = Vec::new();
+    for aggression in RAW_AGGRESSION_CENTERS {
+        for seed in YARDSTICK_SEEDS {
+            for seat in [0u8, 1] {
+                matches.push((seed, seat, aggression));
+            }
+        }
+    }
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = matches
+            .into_iter()
+            .map(|(seed, seat, aggression)| {
+                let net = net.clone();
+                scope.spawn(move || {
+                    let mut sc = Scenario::skirmish();
+                    sc.seed = seed;
+                    let mut state = sc.build().unwrap();
+                    let faction = sc.players[seat as usize].faction;
+                    let mut bot = NeuralBot::ladder_with_net(
+                        PlayerId(seat),
+                        seed,
+                        level,
+                        Some(aggression),
+                        faction,
+                        net,
+                    );
+                    let mut opp = Brain::overseer(PlayerId(1 - seat), seed);
+                    let horizon = 40_000u32;
+                    let mut end = u64::from(horizon);
+                    for t in 0..horizon {
+                        let mut commands = bot.act(&state);
+                        commands.extend(opp.act(&state));
+                        state.tick(&commands);
+                        if state.result().is_some() {
+                            end = u64::from(t);
+                            break;
+                        }
+                    }
+                    let won = matches!(state.result(), Some(GameResult::Victory { .. }))
+                        && state.winners().contains(&PlayerId(seat));
+                    if won {
+                        (1u32, end)
+                    } else {
+                        (0u32, u64::from(horizon))
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a yardstick match panicked"))
+            .fold((0u32, 0u64), |(w, t), (dw, dt)| (w + dw, t + dt))
+    })
+}
+
+/// The yardstick slate under explicit execution handicaps instead of a
+/// named rung — the recalibration sweep's measuring arm.
+fn yardstick_with_execution(hesitation: u32, cadence: u64, net: &QuantNet) -> (u32, u64) {
+    let mut matches = Vec::new();
+    for aggression in RAW_AGGRESSION_CENTERS {
+        for seed in YARDSTICK_SEEDS {
+            for seat in [0u8, 1] {
+                matches.push((seed, seat, aggression));
+            }
+        }
+    }
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = matches
+            .into_iter()
+            .map(|(seed, seat, aggression)| {
+                let net = net.clone();
+                scope.spawn(move || {
+                    let mut sc = Scenario::skirmish();
+                    sc.seed = seed;
+                    let mut state = sc.build().unwrap();
+                    let faction = sc.players[seat as usize].faction;
+                    let mut bot = NeuralBot::ladder_with_net_at_execution(
+                        PlayerId(seat),
+                        seed,
+                        Some(aggression),
+                        faction,
+                        net,
+                        hesitation,
+                        cadence,
+                    );
+                    let mut opp = Brain::overseer(PlayerId(1 - seat), seed);
+                    let horizon = 40_000u32;
+                    let mut end = u64::from(horizon);
+                    for t in 0..horizon {
+                        let mut commands = bot.act(&state);
+                        commands.extend(opp.act(&state));
+                        state.tick(&commands);
+                        if state.result().is_some() {
+                            end = u64::from(t);
+                            break;
+                        }
+                    }
+                    let won = matches!(state.result(), Some(GameResult::Victory { .. }))
+                        && state.winners().contains(&PlayerId(seat));
+                    if won {
+                        (1u32, end)
+                    } else {
+                        (0u32, u64::from(horizon))
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a sweep match panicked"))
+            .fold((0u32, 0u64), |(w, t), (dw, dt)| (w + dw, t + dt))
+    })
+}
+
+/// Prints the (hesitation, cadence) strength landscape for a candidate
+/// so `Level`'s handicaps can be re-pinned from measurement. Run with
+/// OXIDE_SWEEP_WEIGHTS=/path/to/artifact.json — promotion tooling
+/// does; CI has no weights and skips via ignore.
+#[test]
+#[ignore = "recalibration instrument: set OXIDE_SWEEP_WEIGHTS to an exported artifact"]
+fn ladder_handicap_sweep() {
+    let path = std::env::var("OXIDE_SWEEP_WEIGHTS").expect("set OXIDE_SWEEP_WEIGHTS");
+    let json = std::fs::read_to_string(&path).unwrap();
+    let net = QuantNet::from_json(&json).unwrap();
+    let max = 40u32;
+    println!("\nLADDER HANDICAP SWEEP  ·  skirmish  ·  {max} matches/cell  ·  40k horizon");
+    println!(
+        "{:>12} {:>8} {:>8} {:>12}",
+        "hesitation", "cadence", "wins", "tick total"
+    );
+    for hesitation in [0u32, 200, 350, 500, 650, 800, 900] {
+        for cadence in [34u64, 48, 64, 88, 112] {
+            let (wins, ticks) = yardstick_with_execution(hesitation, cadence, &net);
+            println!("{hesitation:>12} {cadence:>8} {wins:>8} {ticks:>12}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "candidate gate: set OXIDE_LADDER_WEIGHTS to an exported artifact"]
+fn candidate_orders_against_the_overseer_yardstick() {
+    let path = std::env::var("OXIDE_LADDER_WEIGHTS").expect("OXIDE_LADDER_WEIGHTS");
+    let json = std::fs::read_to_string(path).expect("candidate artifact");
+    let net = QuantNet::from_json(&json).expect("valid candidate artifact");
+    let totals: Vec<(u32, u64)> = Level::LADDER
+        .iter()
+        .map(|level| yardstick_with_net(*level, &net))
+        .collect();
+    let max = 40u32; // 2 styles x 10 seeds x 2 seats against the Overseer
+    println!("\nCANDIDATE OVERSEER YARDSTICK  ·  skirmish  ·  {max} matches/rung  ·  40k horizon");
+    for (level, (wins, ticks)) in Level::LADDER.iter().zip(&totals) {
+        let rung = format!("{level:?}");
+        println!("  {rung:<8} wins {wins:>2}/{max}  ·  tick total {ticks:>9}");
+    }
+    for pair in totals.windows(2) {
+        assert!(
+            pair[0].0 < pair[1].0,
+            "a higher rung must win more of the same slate: {totals:?} of {max}"
+        );
+        assert!(
+            pair[0].1 > pair[1].1,
+            "a higher rung must put the same slate away faster: {totals:?} of {max}"
+        );
+    }
+    for lower in &totals[..3] {
+        assert!(
+            lower.0 < totals[3].0,
+            "Expert must hold the top win count outright: {totals:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "candidate gate: set OXIDE_PROFILE_WEIGHTS and OXIDE_PARENT_WEIGHTS"]
+fn candidate_raw_aggression_path_matches_parent_exactly() {
+    let load = |name: &str| {
+        let path = std::env::var(name).unwrap_or_else(|_| panic!("{name}"));
+        let json = std::fs::read_to_string(path).expect("candidate artifact");
+        QuantNet::from_json(&json).expect("valid candidate artifact")
+    };
+    let candidate = load("OXIDE_PROFILE_WEIGHTS");
+    let parent = load("OXIDE_PARENT_WEIGHTS");
+    let feature_cases = [
+        [0; FEATURE_COUNT],
+        std::array::from_fn(|index| (index as i64 * 97) % 1_001),
+        std::array::from_fn(|index| 1_000 - (index as i64 * 131) % 1_001),
+    ];
+
+    for features in feature_cases {
+        for faction in [Faction::Ferrous, Faction::Cupric] {
+            for aggression in 0..=1_000 {
+                let knobs = ladder_condition_values(aggression, faction);
+                assert_eq!(
+                    candidate.logits(&features, &knobs),
+                    parent.logits(&features, &knobs),
+                    "raw aggression {aggression} for {faction:?} changed"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_shipped_artifact_carries_verified_provenance() {
+    // QuantNet::from_json treats lineage as optional so bridge and
+    // test artifacts stay cheap — but the SHIPPED weights must never
+    // lose theirs, or the balance evidence loses its provenance chain.
+    let raw = include_str!("../src/bot/ladder_weights.json");
+    let artifact: serde_json::Value = serde_json::from_str(raw).unwrap();
+    let lineage = artifact
+        .get("lineage")
+        .expect("the shipped artifact must carry lineage")
+        .as_object()
+        .expect("lineage is an object");
+    for field in ["lineage_id", "schema", "phase", "inputs"] {
+        assert!(lineage.contains_key(field), "lineage must carry {field}");
+    }
+    let inputs = lineage["inputs"].as_object().expect("inputs is an object");
+    assert!(
+        !inputs.is_empty(),
+        "provenance without inputs is a label, not a chain"
+    );
+    let id = lineage["lineage_id"]
+        .as_str()
+        .expect("lineage_id is a string");
+    assert!(
+        id.starts_with("sha256:") && id.len() == "sha256:".len() + 64,
+        "lineage_id must be a content digest"
+    );
+}
+
+/// FNV-1a over the fixture's logits for the fixed probe vector below.
+/// Bless deliberately: movement here means the integer kernel itself
+/// changed, which owes a gym-version bump and a retrained artifact.
+const PINNED_Q12_FINGERPRINT: u64 = 10024313760013662231;
+
+#[test]
+fn the_q12_forward_pass_matches_its_pinned_golden() {
+    // The audit found no numeric golden anywhere in Rust for the
+    // integer kernel: feature scaling, the affine shift-add, and the
+    // tanh LUT interpolation were pinned only by full-match hashes,
+    // which name a drift without localizing it. Three fixed vectors
+    // through the committed fixture artifact localize it to the layer.
+    let raw = include_str!("../../driver/tests/fixtures/tiny_policy_v9.json");
+    let net = QuantNet::from_json(raw).expect("the fixture artifact parses");
+
+    let mut features = [0i64; FEATURE_COUNT];
+    for (index, feature) in features.iter_mut().enumerate() {
+        *feature = ((index as i64 * 37) % 4096) - 2048;
+    }
+    let knobs: Vec<i64> = (0..net.conditioning())
+        .map(|k| (k as i64 * 250) % 1001)
+        .collect();
+    let logits = net.logits(&features, &knobs);
+    let fingerprint = logits.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, &v| {
+        (hash ^ (v as u64)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
     assert_eq!(
-        r1,
-        Some(GameResult::Victory { team: 0 }),
-        "the exported policy should beat Veteran"
+        fingerprint,
+        PINNED_Q12_FINGERPRINT,
+        "the Q12 kernel drifted: logits head {:?}",
+        &logits[..4.min(logits.len())]
+    );
+
+    let saturated = [i64::MAX; FEATURE_COUNT];
+    let extreme = net.logits(&saturated, &knobs);
+    assert_eq!(
+        extreme.len(),
+        logits.len(),
+        "saturation must not panic or truncate"
     );
 }

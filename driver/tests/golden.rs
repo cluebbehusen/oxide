@@ -9,7 +9,7 @@
 //! 3. commit them together with the change and say why.
 
 use chassis::grid::TilePos;
-use oxide_driver::{render, runner};
+use oxide_driver::render;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::{
     BuildingKind, Command, Faction, PlayerCommand, PlayerId, Scenario, State, Target, UnitId,
@@ -56,12 +56,23 @@ fn skirmish_opening_matches_golden() {
 
 #[test]
 fn skirmish_midgame_matches_golden() {
+    // The Overseer — the scripted QA anchor — drives both seats by
+    // hand: bot seats proper are inert until the retrained actor
+    // ships, and an idle world would be a vacuous midgame picture.
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
         player.bot = true;
     }
-    let outcome = runner::run_scenario(&scenario, 1200, true, false).unwrap();
-    golden_check("skirmish-t1200", &outcome.state);
+    let mut state = scenario.build().unwrap();
+    let mut bots: Vec<oxide_sim::bot::Brain> = (0..scenario.players.len())
+        .map(|seat| oxide_sim::bot::Brain::overseer(PlayerId(seat as u8), scenario.seed))
+        .collect();
+    for _ in 0..1200 {
+        let commands: Vec<PlayerCommand> =
+            bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
+        state.tick(&commands);
+    }
+    golden_check("skirmish-t1200", &state);
 }
 
 // ---------------------------------------------------------------------------
@@ -98,9 +109,9 @@ const SHOWCASE_MAP: [&str; 30] = [
     "#..,,,,,..####..^^^^^...s.S....................#",
     "#..,,,,,..####..^^^^^..........................#",
     "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
+    "#................................~~~~~.........#",
+    "#................................~~~~~.........#",
+    "#................................~~~~~.........#",
     "#..............................................#",
     "#..............................................#",
     "#..............................................#",
@@ -133,6 +144,10 @@ const SHOWCASE_TICKS: u64 = 400;
 /// The crew steps off the node before the picture is taken — eight
 /// harvesters ringing a tile would hide the very thing they mined.
 const CREW_STEPS_OFF: u64 = SHOWCASE_TICKS - 30;
+
+/// The buried-charge site is founded just before the picture: at a
+/// fifth of 20 hp it survives only a couple of abandonment-decay beats.
+const CHARGE_FOUNDS: u64 = SHOWCASE_TICKS - 12;
 
 /// Collects unit specs while handing back the id each one will get:
 /// `Scenario::build` spawns them in list order, so the index *is* the id.
@@ -174,6 +189,12 @@ struct Cast {
     interloper: UnitId,
     /// The two Bombards, shelling each other across open ground.
     guns: (UnitId, UnitId),
+    /// Seat 0's tier-three annex: Condor, Flakhound wounder, Breaker.
+    annex_f: Vec<UnitId>,
+    /// Seat 1's tier-three annex: Moth, Stinger wounder, Breaker.
+    annex_c: Vec<UnitId>,
+    /// The Avalanche pair, trading one volley across their blind rings.
+    avalanches: (UnitId, UnitId),
 }
 
 fn showcase_scenario() -> (Scenario, Cast) {
@@ -214,6 +235,16 @@ fn showcase_scenario() -> (Scenario, Cast) {
             UnitKind::Sentinel,
             UnitKind::Sentinel,
             UnitKind::Sentinel,
+            // 0.15 additions, interleaved so every victim's shooter
+            // stands one column over (2.24 tiles, inside every range).
+            UnitKind::Warden,
+            UnitKind::Tender,
+            UnitKind::Sentinel,
+            UnitKind::Excavator,
+            UnitKind::Sentinel,
+            oxide_sim::stats::Role::Scout.unit_for(faction),
+            oxide_sim::stats::Role::Interceptor.unit_for(faction),
+            oxide_sim::stats::Role::AntiAir.unit_for(faction),
         ]
     };
     let west: Vec<UnitId> = line(Faction::Ferrous)
@@ -227,11 +258,43 @@ fn showcase_scenario() -> (Scenario, Cast) {
         .map(|(i, kind)| roster.add(1, kind, 8 + i as i32, 22))
         .collect();
     let interloper = roster.add(2, UnitKind::Sentinel, 20, 20);
+    // The same-faction-foes pin must not depend on the interloper
+    // surviving its cameo among thirty-eight hostiles: a second South
+    // Ferrous machine idles in the far corner where nothing ever walks.
+    roster.add(2, UnitKind::Harvester, 44, 2);
 
     // Artillery: far enough off the line that the splash reaches only
     // the other gun, close enough that each is its own spotter.
-    let gun_west = roster.add(0, UnitKind::Bombard, 23, 20);
-    let gun_east = roster.add(1, UnitKind::Bombard, 23, 22);
+    let gun_west = roster.add(0, UnitKind::Bombard, 29, 20);
+    let gun_east = roster.add(1, UnitKind::Bombard, 29, 22);
+
+    // The tier-three annex, northeast of the pit and clear of every
+    // march lane: each new 0.15 kind stands next to (or five tiles
+    // from) the thing that wounds it inside the 24-tick fight window.
+    // Bombers are victims here, not shooters — a released bomb's 2.2
+    // splash would rewrite the carefully bounded wounds around it.
+    let condor = roster.add(0, UnitKind::Condor, 39, 12);
+    let stinger_annex = roster.add(1, UnitKind::Stinger, 40, 12);
+    let flakhound_annex = roster.add(0, UnitKind::Flakhound, 43, 12);
+    let moth = roster.add(1, UnitKind::Moth, 44, 12);
+    let breaker_w = roster.add(0, UnitKind::Breaker, 40, 9);
+    let breaker_e = roster.add(1, UnitKind::Breaker, 43, 9);
+    // Five tiles apart: outside both blind rings, inside both reaches,
+    // spotted for each seat by its annex flak sitting four tiles off.
+    let avalanche_w = roster.add(0, UnitKind::Avalanche, 39, 16);
+    let avalanche_e = roster.add(1, UnitKind::Avalanche, 44, 16);
+    // The unarmed slings, each with its own flak wounder, two tiles
+    // below the Avalanche exchange (outside its 1.6 splash).
+    let skyhook_w = roster.add(0, UnitKind::Skyhook, 39, 18);
+    let stinger_sling = roster.add(1, UnitKind::Stinger, 40, 18);
+    let flakhound_sling = roster.add(0, UnitKind::Flakhound, 43, 18);
+    let skyhook_e = roster.add(1, UnitKind::Skyhook, 44, 18);
+    // The sapper pair, each nicked by a line sentinel; sappers have no
+    // aggro of their own and stand their wounds passively.
+    let sapper_w = roster.add(0, UnitKind::Sapper, 40, 20);
+    let sentinel_sapper_e = roster.add(1, UnitKind::Sentinel, 41, 20);
+    let sentinel_sapper_w = roster.add(0, UnitKind::Sentinel, 42, 20);
+    let sapper_e = roster.add(1, UnitKind::Sapper, 43, 20);
 
     // Seat 0's standing structures: one of every kind the build palette
     // offers, whole. Its Foundry comes from the map anchor.
@@ -278,6 +341,20 @@ fn showcase_scenario() -> (Scenario, Cast) {
             x: 22,
             y: 2,
         },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Barricade,
+            x: 25,
+            y: 2,
+        },
+        // The owner sees its own buried charge; the omniscient CPU
+        // renderer draws it regardless.
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::ScuttleCharge,
+            x: 29,
+            y: 2,
+        },
     ];
 
     let scenario = Scenario {
@@ -285,7 +362,7 @@ fn showcase_scenario() -> (Scenario, Cast) {
         seed: 20_130,
         map: SHOWCASE_MAP.iter().map(|r| (*r).to_string()).collect(),
         players: vec![
-            seat("West Ferrous", Faction::Ferrous, 100),
+            seat("West Ferrous", Faction::Ferrous, 700),
             seat("East Cupric", Faction::Cupric, 2000),
             seat("South Ferrous", Faction::Ferrous, 100),
         ],
@@ -302,6 +379,25 @@ fn showcase_scenario() -> (Scenario, Cast) {
             east,
             interloper,
             guns: (gun_west, gun_east),
+            annex_f: vec![
+                condor,
+                flakhound_annex,
+                breaker_w,
+                skyhook_w,
+                flakhound_sling,
+                sapper_w,
+                sentinel_sapper_w,
+            ],
+            annex_c: vec![
+                moth,
+                stinger_annex,
+                breaker_e,
+                skyhook_e,
+                stinger_sling,
+                sapper_e,
+                sentinel_sapper_e,
+            ],
+            avalanches: (avalanche_w, avalanche_e),
         },
     )
 }
@@ -328,6 +424,55 @@ fn walk(player: u8, units: Vec<UnitId>, x: i32, y: i32) -> PlayerCommand {
     }
 }
 
+/// The tick the construction yard founds its seven scaffolds. Late
+/// enough that abandonment decay (one hp per SITE_DECAY_PERIOD) cannot
+/// finish off even the frailest site before the picture is taken.
+const YARD_FOUNDS: u64 = 200;
+
+/// Seven sites, founded and then abandoned: the builder's order is
+/// replaced each time, but the ground is claimed on placement.
+fn yard_orders(cast: &Cast) -> Vec<PlayerCommand> {
+    [
+        (BuildingKind::Turret, 33, 23),
+        (BuildingKind::FlakTurret, 35, 23),
+        (BuildingKind::Array, 37, 23),
+        (BuildingKind::Reclaimer, 39, 23),
+        (BuildingKind::Fabricator, 32, 25),
+        (BuildingKind::Bastion, 38, 25),
+        (BuildingKind::RepairBay, 41, 25),
+    ]
+    .into_iter()
+    .map(|(kind, x, y)| PlayerCommand {
+        player: PlayerId(1),
+        command: Command::Build {
+            units: vec![cast.builder],
+            kind,
+            anchor: TilePos::new(x, y),
+            queue: false,
+            defer: false,
+        },
+    })
+    .collect()
+}
+
+/// The western field kit, founded by a crew harvester and then
+/// abandoned with the same shrug as the eastern yard.
+fn field_kit_orders(cast: &Cast) -> Vec<PlayerCommand> {
+    [(BuildingKind::Barricade, 2, 10)]
+        .into_iter()
+        .map(|(kind, x, y)| PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Build {
+                units: vec![cast.crew[2]],
+                kind,
+                anchor: TilePos::new(x, y),
+                queue: false,
+                defer: false,
+            },
+        })
+        .collect()
+}
+
 /// The opening orders: dig, found, and pair every machine off against one
 /// it can actually shoot.
 fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
@@ -339,29 +484,19 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
             queue: false,
         },
     }];
-    // Seven sites, founded and then abandoned: the builder's order is
-    // replaced each time, but the ground is claimed on placement.
-    for (kind, x, y) in [
-        (BuildingKind::Turret, 33, 23),
-        (BuildingKind::FlakTurret, 35, 23),
-        (BuildingKind::Array, 37, 23),
-        (BuildingKind::Reclaimer, 39, 23),
-        (BuildingKind::Fabricator, 32, 25),
-        (BuildingKind::Bastion, 38, 25),
-        (BuildingKind::RepairBay, 41, 25),
-    ] {
-        commands.push(PlayerCommand {
-            player: PlayerId(1),
-            command: Command::Build {
-                units: vec![cast.builder],
-                kind,
-                anchor: TilePos::new(x, y),
-                queue: false,
-                defer: false,
-            },
-        });
-    }
-
+    // Seat 0's Foundry expansion: the 0.15 buildable base, founded by a
+    // crew harvester behind the standing Fabricator's tech gate. Its
+    // builder stays on the site, so it renders as attended construction.
+    commands.push(PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Build {
+            units: vec![cast.crew[1]],
+            kind: BuildingKind::Foundry,
+            anchor: TilePos::new(9, 5),
+            queue: false,
+            defer: false,
+        },
+    });
     let (w, e) = (&cast.west, &cast.east);
     // Every machine that must show a health bar gets a shooter one slot
     // away that covers its movement domain; the harvesters take fire and
@@ -388,8 +523,34 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
         attack(1, e[9], w[9]),
         attack(1, e[10], w[10]),
         attack(2, cast.interloper, w[10]),
+        // The 0.15 roster's wounds: Wardens trade, the flanking
+        // sentinels wound the labor machines, the interceptors clip the
+        // scouts, and the anti-air rear clips the interceptors.
+        attack(0, w[11], e[11]),
+        attack(1, e[11], w[11]),
+        attack(0, w[13], e[12]),
+        attack(1, e[13], w[12]),
+        attack(0, w[15], e[14]),
+        attack(1, e[15], w[14]),
+        attack(0, w[17], e[16]),
+        attack(1, e[17], w[16]),
+        attack(0, w[18], e[17]),
+        attack(1, e[18], w[17]),
         attack(0, cast.guns.0, cast.guns.1),
         attack(1, cast.guns.1, cast.guns.0),
+        // The annex wounds: Breakers trade one 90-point blow, the
+        // Avalanches trade one spotter-lit volley, and each seat's flak
+        // clips the other's bomber.
+        attack(0, cast.annex_f[2], cast.annex_c[2]),
+        attack(1, cast.annex_c[2], cast.annex_f[2]),
+        attack(0, cast.annex_f[1], cast.annex_c[0]),
+        attack(1, cast.annex_c[1], cast.annex_f[0]),
+        attack(0, cast.avalanches.0, cast.avalanches.1),
+        attack(1, cast.avalanches.1, cast.avalanches.0),
+        attack(0, cast.annex_f[4], cast.annex_c[3]),
+        attack(1, cast.annex_c[4], cast.annex_f[3]),
+        attack(0, cast.annex_f[6], cast.annex_c[5]),
+        attack(1, cast.annex_c[6], cast.annex_f[5]),
     ]);
     commands
 }
@@ -400,9 +561,15 @@ fn disengage(cast: &Cast) -> Vec<PlayerCommand> {
     vec![
         walk(0, cast.west.clone(), 6, 14),
         walk(1, cast.east.clone(), 14, 27),
-        walk(2, vec![cast.interloper], 19, 14),
+        // Clear of the widened west column's march lane (idle aggro
+        // killed it at its old post once the line grew eight slots).
+        walk(2, vec![cast.interloper], 36, 6),
         walk(0, vec![cast.guns.0], 30, 13),
         walk(1, vec![cast.guns.1], 30, 27),
+        walk(0, cast.annex_f.clone(), 32, 15),
+        walk(1, cast.annex_c.clone(), 47, 27),
+        walk(0, vec![cast.avalanches.0], 10, 10),
+        walk(1, vec![cast.avalanches.1], 46, 27),
     ]
 }
 
@@ -412,16 +579,46 @@ fn showcase_state() -> State {
     for tick in 0..SHOWCASE_TICKS {
         let commands = match tick {
             0 => opening_orders(&cast),
-            // Calling the builder off leaves all seven sites orphaned at a
-            // fifth of their hp — scaffolding, for as long as we like.
-            1 => vec![PlayerCommand {
-                player: PlayerId(1),
-                command: Command::Stop {
-                    units: vec![cast.builder],
+            // The construction yard founds late and is then abandoned:
+            // orphaned scaffolds decay now, and the frailest (the Array,
+            // a fifth of 250 hp) must still be standing at the picture.
+            t if t == YARD_FOUNDS => {
+                let mut commands = yard_orders(&cast);
+                commands.extend(field_kit_orders(&cast));
+                commands
+            }
+            t if t == YARD_FOUNDS + 1 => vec![
+                PlayerCommand {
+                    player: PlayerId(1),
+                    command: Command::Stop {
+                        units: vec![cast.builder],
+                    },
                 },
-            }],
+                PlayerCommand {
+                    player: PlayerId(0),
+                    command: Command::Stop {
+                        units: vec![cast.crew[2]],
+                    },
+                },
+            ],
             t if t == FIGHT_TICKS => disengage(&cast),
             t if t == CREW_STEPS_OFF => vec![walk(0, cast.crew.clone(), 2, 6)],
+            t if t == CHARGE_FOUNDS => vec![PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Build {
+                    units: vec![cast.crew[2]],
+                    kind: BuildingKind::ScuttleCharge,
+                    anchor: TilePos::new(6, 10),
+                    queue: false,
+                    defer: false,
+                },
+            }],
+            t if t == CHARGE_FOUNDS + 1 => vec![PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Stop {
+                    units: vec![cast.crew[2]],
+                },
+            }],
             _ => Vec::new(),
         };
         state.tick(&commands);
@@ -431,7 +628,7 @@ fn showcase_state() -> State {
 
 /// Every kind, on every roster that can field it.
 fn every_kind_and_faction() -> impl Iterator<Item = (UnitKind, Faction)> {
-    const KINDS: [UnitKind; 11] = [
+    const KINDS: [UnitKind; 24] = [
         UnitKind::Harvester,
         UnitKind::Sentinel,
         UnitKind::Scuttler,
@@ -443,6 +640,19 @@ fn every_kind_and_faction() -> impl Iterator<Item = (UnitKind, Faction)> {
         UnitKind::Darter,
         UnitKind::Talon,
         UnitKind::Wisp,
+        UnitKind::Warden,
+        UnitKind::Tender,
+        UnitKind::Excavator,
+        UnitKind::Kestrel,
+        UnitKind::Gnat,
+        UnitKind::Shrike,
+        UnitKind::Sylph,
+        UnitKind::Condor,
+        UnitKind::Moth,
+        UnitKind::Breaker,
+        UnitKind::Avalanche,
+        UnitKind::Skyhook,
+        UnitKind::Sapper,
     ];
     KINDS.into_iter().flat_map(|kind| {
         [Faction::Ferrous, Faction::Cupric]
@@ -465,7 +675,7 @@ fn showcase_covers_every_rendered_feature() {
         state.result().is_none(),
         "the showcase pictures a live match; a decided one freezes production"
     );
-    for terrain in [Terrain::Ground, Terrain::Rock, Terrain::Peak] {
+    for terrain in [Terrain::Ground, Terrain::Rock, Terrain::Peak, Terrain::Pit] {
         assert!(
             tiles().any(|t| t.terrain == terrain),
             "no {terrain:?} tile on the showcase map"
@@ -502,15 +712,17 @@ fn showcase_covers_every_rendered_feature() {
         BuildingKind::Array,
         BuildingKind::Reclaimer,
         BuildingKind::RepairBay,
+        BuildingKind::Barricade,
+        BuildingKind::ScuttleCharge,
     ] {
         assert!(
             state.buildings().iter().any(|b| b.kind == kind && b.built),
             "no standing {kind:?}"
         );
-        // The Foundry is placed, never constructed, so it has no site
-        // form to draw. Anything the build palette offers must show one.
+        // Anything constructible must show a site form — the Foundry
+        // included, now that expansions are buildable.
         assert_eq!(
-            kind.stats().construction.is_some(),
+            kind.base_stats().construction.is_some(),
             state.buildings().iter().any(|b| b.kind == kind && !b.built),
             "{kind:?}'s scaffolding coverage disagrees with whether it can be built"
         );

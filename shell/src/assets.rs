@@ -20,6 +20,16 @@ pub struct Sprites {
     rock: [Rect; 23],
     /// Full-tile exclusion barriers, indexed `neighbor_mask * 2 + variant`.
     peak_barriers: [Rect; 32],
+    /// Bottomless-pit edge tiles, indexed like the peak barriers.
+    pit_edges: [Rect; 32],
+    /// The derelict 2x2 Extractor frame bed, drawn on unclaimed frames.
+    extractor_frame: Rect,
+    /// Tier hulls, keyed by (kind, tier-1) through [`Sprites::building_tiered`].
+    turret_t1: [Rect; 3],
+    turret_t2: [Rect; 3],
+    flak_turret_t1: [Rect; 3],
+    reclaimer_t1: [Rect; 3],
+    array_t1: [Rect; 3],
     turret_barrel: [Rect; 3],
     flak_mount: [Rect; 3],
     bastion_mount: [Rect; 3],
@@ -49,12 +59,20 @@ pub struct Sprites {
     bastion: [Rect; 3],
     array: [Rect; 3],
     reclaimer: [Rect; 3],
+    extractor: [Rect; 3],
+    airworks: [Rect; 3],
+    crucible: [Rect; 3],
+    barricade: [Rect; 3],
+    scuttle_charge: [Rect; 3],
     repair_bay: [Rect; 3],
     bastion_action: [[Rect; 3]; 9],
     foundry_work: [[Rect; 3]; 4],
     fabricator_work: [[Rect; 3]; 4],
     array_work: [[Rect; 3]; 6],
     reclaimer_work: [[Rect; 3]; 3],
+    extractor_work: [[Rect; 3]; 3],
+    airworks_work: [[Rect; 3]; 3],
+    crucible_work: [[Rect; 3]; 3],
     repair_bay_work: [[Rect; 3]; 4],
     construction: [[Rect; 3]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT],
     harvester: [Rect; 3],
@@ -94,6 +112,39 @@ pub struct Sprites {
     wisp: [Rect; 3],
     wisp_move: [[Rect; 3]; 2],
     wisp_action: [[Rect; 3]; 4],
+    warden: [Rect; 3],
+    warden_move: [[Rect; 3]; 2],
+    warden_action: [[Rect; 3]; 4],
+    shrike: [Rect; 3],
+    shrike_move: [[Rect; 3]; 2],
+    shrike_action: [[Rect; 3]; 4],
+    sylph: [Rect; 3],
+    sylph_move: [[Rect; 3]; 2],
+    sylph_action: [[Rect; 3]; 4],
+    tender: [Rect; 3],
+    tender_move: [[Rect; 3]; 2],
+    excavator: [Rect; 3],
+    excavator_move: [[Rect; 3]; 2],
+    kestrel: [Rect; 3],
+    kestrel_move: [[Rect; 3]; 2],
+    gnat: [Rect; 3],
+    gnat_move: [[Rect; 3]; 2],
+    condor: [Rect; 3],
+    condor_move: [[Rect; 3]; 2],
+    condor_action: [[Rect; 3]; 4],
+    moth: [Rect; 3],
+    moth_move: [[Rect; 3]; 2],
+    moth_action: [[Rect; 3]; 4],
+    breaker: [Rect; 3],
+    breaker_move: [[Rect; 3]; 2],
+    breaker_action: [[Rect; 3]; 4],
+    avalanche: [Rect; 3],
+    avalanche_move: [[Rect; 3]; 2],
+    avalanche_action: [[Rect; 3]; 4],
+    skyhook: [Rect; 3],
+    skyhook_move: [[Rect; 3]; 2],
+    sapper: [Rect; 3],
+    sapper_move: [[Rect; 3]; 2],
 }
 
 fn faction_index(faction: Faction) -> usize {
@@ -111,8 +162,9 @@ const ACCENT: usize = 2;
 type Manifest = std::collections::HashMap<String, [f32; 4]>;
 
 /// Sprites with no faction variants: one region, one name.
-const SINGLE_KEYS: [&str; 10] = [
+const SINGLE_KEYS: [&str; 11] = [
     "rock_skirt",
+    "extractor_frame",
     "scrap_full",
     "scrap_mid",
     "scrap_low",
@@ -196,6 +248,44 @@ const GROUND_BLOCKER_KEYS: [&str; 9] = [
 ];
 
 /// Full-tile barriers, ordered `neighbor_mask * 2 + variant`. The mask is
+/// north/east/south/west in bits 0 through 3.
+const PIT_EDGE_KEYS: [&str; 32] = [
+    "pit_edge_00_0",
+    "pit_edge_00_1",
+    "pit_edge_01_0",
+    "pit_edge_01_1",
+    "pit_edge_02_0",
+    "pit_edge_02_1",
+    "pit_edge_03_0",
+    "pit_edge_03_1",
+    "pit_edge_04_0",
+    "pit_edge_04_1",
+    "pit_edge_05_0",
+    "pit_edge_05_1",
+    "pit_edge_06_0",
+    "pit_edge_06_1",
+    "pit_edge_07_0",
+    "pit_edge_07_1",
+    "pit_edge_08_0",
+    "pit_edge_08_1",
+    "pit_edge_09_0",
+    "pit_edge_09_1",
+    "pit_edge_0a_0",
+    "pit_edge_0a_1",
+    "pit_edge_0b_0",
+    "pit_edge_0b_1",
+    "pit_edge_0c_0",
+    "pit_edge_0c_1",
+    "pit_edge_0d_0",
+    "pit_edge_0d_1",
+    "pit_edge_0e_0",
+    "pit_edge_0e_1",
+    "pit_edge_0f_0",
+    "pit_edge_0f_1",
+];
+
+/// Atlas keys for the terraced pit rims, indexed exactly like
+/// [`PEAK_BARRIER_KEYS`]:
 /// north/east/south/west in bits 0 through 3.
 const PEAK_BARRIER_KEYS: [&str; 32] = [
     "peak_barrier_00_0",
@@ -318,7 +408,7 @@ const HARVESTER_CARGO_LEVELS: usize = 5;
 const SITE_STAGES: usize = 3;
 const SITE_PHASES: usize = 2;
 const SITE_FRAME_COUNT: usize = SITE_STAGES * SITE_PHASES;
-const BUILDING_KIND_COUNT: usize = 8;
+const BUILDING_KIND_COUNT: usize = 13;
 
 /// One complete Harvester pose at a particular visible cargo level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -352,6 +442,11 @@ fn building_stem(kind: BuildingKind) -> &'static str {
         BuildingKind::Array => "array",
         BuildingKind::Reclaimer => "reclaimer",
         BuildingKind::RepairBay => "repair_bay",
+        BuildingKind::Extractor => "extractor",
+        BuildingKind::Airworks => "airworks",
+        BuildingKind::Crucible => "crucible",
+        BuildingKind::Barricade => "barricade",
+        BuildingKind::ScuttleCharge => "scuttle_charge",
     }
 }
 
@@ -365,6 +460,11 @@ fn building_index(kind: BuildingKind) -> usize {
         BuildingKind::Array => 5,
         BuildingKind::Reclaimer => 6,
         BuildingKind::RepairBay => 7,
+        BuildingKind::Extractor => 8,
+        BuildingKind::Airworks => 9,
+        BuildingKind::Crucible => 10,
+        BuildingKind::Barricade => 11,
+        BuildingKind::ScuttleCharge => 12,
     }
 }
 
@@ -450,6 +550,19 @@ fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
         | UnitKind::Wisp => &ACTION_SUFFIXES_4,
         UnitKind::Lancer | UnitKind::Bombard => &ACTION_SUFFIXES_6,
         UnitKind::Flakhound => &ACTION_SUFFIXES_9,
+        UnitKind::Warden
+        | UnitKind::Shrike
+        | UnitKind::Sylph
+        | UnitKind::Condor
+        | UnitKind::Moth
+        | UnitKind::Breaker
+        | UnitKind::Avalanche => &ACTION_SUFFIXES_4,
+        UnitKind::Tender
+        | UnitKind::Excavator
+        | UnitKind::Kestrel
+        | UnitKind::Gnat
+        | UnitKind::Skyhook
+        | UnitKind::Sapper => &[],
     }
 }
 
@@ -460,14 +573,21 @@ fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
             &WORK_SUFFIXES_4
         }
         BuildingKind::Array => &WORK_SUFFIXES_6,
-        BuildingKind::Reclaimer => &WORK_SUFFIXES_3,
-        BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => &[],
+        BuildingKind::Reclaimer
+        | BuildingKind::Extractor
+        | BuildingKind::Airworks
+        | BuildingKind::Crucible => &WORK_SUFFIXES_3,
+        BuildingKind::Turret
+        | BuildingKind::FlakTurret
+        | BuildingKind::Bastion
+        | BuildingKind::Barricade
+        | BuildingKind::ScuttleCharge => &[],
     }
 }
 
 /// Every kind the shell must find art for.
 #[cfg(test)]
-const ALL_UNIT_KINDS: [UnitKind; 11] = [
+const ALL_UNIT_KINDS: [UnitKind; 24] = [
     UnitKind::Harvester,
     UnitKind::Sentinel,
     UnitKind::Scuttler,
@@ -479,9 +599,22 @@ const ALL_UNIT_KINDS: [UnitKind; 11] = [
     UnitKind::Darter,
     UnitKind::Talon,
     UnitKind::Wisp,
+    UnitKind::Warden,
+    UnitKind::Tender,
+    UnitKind::Excavator,
+    UnitKind::Kestrel,
+    UnitKind::Gnat,
+    UnitKind::Shrike,
+    UnitKind::Sylph,
+    UnitKind::Condor,
+    UnitKind::Moth,
+    UnitKind::Breaker,
+    UnitKind::Avalanche,
+    UnitKind::Skyhook,
+    UnitKind::Sapper,
 ];
 
-const ALL_BUILDING_KINDS: [BuildingKind; 8] = [
+const ALL_BUILDING_KINDS: [BuildingKind; 13] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
     BuildingKind::Fabricator,
@@ -490,15 +623,23 @@ const ALL_BUILDING_KINDS: [BuildingKind; 8] = [
     BuildingKind::Array,
     BuildingKind::Reclaimer,
     BuildingKind::RepairBay,
+    BuildingKind::Extractor,
+    BuildingKind::Airworks,
+    BuildingKind::Crucible,
+    BuildingKind::Barricade,
+    BuildingKind::ScuttleCharge,
 ];
 
 #[cfg(test)]
-const WORK_BUILDING_KINDS: [BuildingKind; 5] = [
+const WORK_BUILDING_KINDS: [BuildingKind; 8] = [
     BuildingKind::Foundry,
     BuildingKind::Fabricator,
     BuildingKind::Array,
     BuildingKind::Reclaimer,
     BuildingKind::RepairBay,
+    BuildingKind::Extractor,
+    BuildingKind::Airworks,
+    BuildingKind::Crucible,
 ];
 
 fn construction_rows(
@@ -529,6 +670,7 @@ fn atlas_keys() -> Vec<String> {
         .chain(GROUND_KEYS.iter())
         .chain(ROCK_KEYS.iter())
         .chain(PEAK_BARRIER_KEYS.iter())
+        .chain(PIT_EDGE_KEYS.iter())
         .chain(DECAL_KEYS.iter())
         .chain(THEME_PROP_KEYS.iter())
         .chain(FIELD_DEBRIS_KEYS.iter())
@@ -538,6 +680,15 @@ fn atlas_keys() -> Vec<String> {
         .map(|key| (*key).to_string())
         .collect();
     keys.extend(variant_keys(TURRET_BARREL_STEM, ""));
+    for stem in [
+        "turret_t1",
+        "turret_t2",
+        "flak_turret_t1",
+        "reclaimer_t1",
+        "array_t1",
+    ] {
+        keys.extend(variant_keys(stem, ""));
+    }
     keys.extend(variant_keys(FLAK_MOUNT_STEM, ""));
     keys.extend(variant_keys(BASTION_MOUNT_STEM, ""));
     for suffix in ACTION_SUFFIXES_4 {
@@ -574,6 +725,19 @@ fn atlas_keys() -> Vec<String> {
         UnitKind::Darter,
         UnitKind::Talon,
         UnitKind::Wisp,
+        UnitKind::Warden,
+        UnitKind::Tender,
+        UnitKind::Excavator,
+        UnitKind::Kestrel,
+        UnitKind::Gnat,
+        UnitKind::Shrike,
+        UnitKind::Sylph,
+        UnitKind::Condor,
+        UnitKind::Moth,
+        UnitKind::Breaker,
+        UnitKind::Avalanche,
+        UnitKind::Skyhook,
+        UnitKind::Sapper,
     ] {
         for suffix in MOVE_SUFFIXES {
             keys.extend(variant_keys(unit_stem(kind), suffix));
@@ -649,6 +813,7 @@ impl Sprites {
         let rects: Manifest = serde_json::from_str(&manifest).context("parsing atlas manifest")?;
         let [
             rock_skirt,
+            extractor_frame,
             scrap_full,
             scrap_mid,
             scrap_low,
@@ -667,6 +832,13 @@ impl Sprites {
             ground: pick(&rects, GROUND_KEYS)?,
             rock: pick(&rects, ROCK_KEYS)?,
             peak_barriers: pick(&rects, PEAK_BARRIER_KEYS)?,
+            pit_edges: pick(&rects, PIT_EDGE_KEYS)?,
+            extractor_frame,
+            turret_t1: variant_row(&rects, "turret_t1", "")?,
+            turret_t2: variant_row(&rects, "turret_t2", "")?,
+            flak_turret_t1: variant_row(&rects, "flak_turret_t1", "")?,
+            reclaimer_t1: variant_row(&rects, "reclaimer_t1", "")?,
+            array_t1: variant_row(&rects, "array_t1", "")?,
             turret_barrel: variant_row(&rects, TURRET_BARREL_STEM, "")?,
             flak_mount: variant_row(&rects, FLAK_MOUNT_STEM, "")?,
             bastion_mount: variant_row(&rects, BASTION_MOUNT_STEM, "")?,
@@ -693,12 +865,20 @@ impl Sprites {
             bastion: building(BuildingKind::Bastion)?,
             array: building(BuildingKind::Array)?,
             reclaimer: building(BuildingKind::Reclaimer)?,
+            extractor: building(BuildingKind::Extractor)?,
+            airworks: building(BuildingKind::Airworks)?,
+            crucible: building(BuildingKind::Crucible)?,
+            barricade: building(BuildingKind::Barricade)?,
+            scuttle_charge: building(BuildingKind::ScuttleCharge)?,
             repair_bay: building(BuildingKind::RepairBay)?,
             bastion_action: variant_rows(&rects, "bastion", ACTION_SUFFIXES_9)?,
             foundry_work: variant_rows(&rects, "foundry", WORK_SUFFIXES_4)?,
             fabricator_work: variant_rows(&rects, "fabricator", WORK_SUFFIXES_4)?,
             array_work: variant_rows(&rects, "array", WORK_SUFFIXES_6)?,
             reclaimer_work: variant_rows(&rects, "reclaimer", WORK_SUFFIXES_3)?,
+            extractor_work: variant_rows(&rects, "extractor", WORK_SUFFIXES_3)?,
+            airworks_work: variant_rows(&rects, "airworks", WORK_SUFFIXES_3)?,
+            crucible_work: variant_rows(&rects, "crucible", WORK_SUFFIXES_3)?,
             repair_bay_work: variant_rows(&rects, "repair_bay", WORK_SUFFIXES_4)?,
             construction: construction_rows(&rects)?,
             harvester: unit(UnitKind::Harvester)?,
@@ -750,6 +930,43 @@ impl Sprites {
             wisp: unit(UnitKind::Wisp)?,
             wisp_move: variant_rows(&rects, unit_stem(UnitKind::Wisp), MOVE_SUFFIXES)?,
             wisp_action: variant_rows(&rects, unit_stem(UnitKind::Wisp), ACTION_SUFFIXES_4)?,
+            warden: unit(UnitKind::Warden)?,
+            warden_move: variant_rows(&rects, unit_stem(UnitKind::Warden), MOVE_SUFFIXES)?,
+            warden_action: variant_rows(&rects, unit_stem(UnitKind::Warden), ACTION_SUFFIXES_4)?,
+            shrike: unit(UnitKind::Shrike)?,
+            shrike_move: variant_rows(&rects, unit_stem(UnitKind::Shrike), MOVE_SUFFIXES)?,
+            shrike_action: variant_rows(&rects, unit_stem(UnitKind::Shrike), ACTION_SUFFIXES_4)?,
+            sylph: unit(UnitKind::Sylph)?,
+            sylph_move: variant_rows(&rects, unit_stem(UnitKind::Sylph), MOVE_SUFFIXES)?,
+            sylph_action: variant_rows(&rects, unit_stem(UnitKind::Sylph), ACTION_SUFFIXES_4)?,
+            tender: unit(UnitKind::Tender)?,
+            tender_move: variant_rows(&rects, unit_stem(UnitKind::Tender), MOVE_SUFFIXES)?,
+            excavator: unit(UnitKind::Excavator)?,
+            excavator_move: variant_rows(&rects, unit_stem(UnitKind::Excavator), MOVE_SUFFIXES)?,
+            kestrel: unit(UnitKind::Kestrel)?,
+            kestrel_move: variant_rows(&rects, unit_stem(UnitKind::Kestrel), MOVE_SUFFIXES)?,
+            gnat: unit(UnitKind::Gnat)?,
+            gnat_move: variant_rows(&rects, unit_stem(UnitKind::Gnat), MOVE_SUFFIXES)?,
+            condor: unit(UnitKind::Condor)?,
+            condor_move: variant_rows(&rects, unit_stem(UnitKind::Condor), MOVE_SUFFIXES)?,
+            condor_action: variant_rows(&rects, unit_stem(UnitKind::Condor), ACTION_SUFFIXES_4)?,
+            moth: unit(UnitKind::Moth)?,
+            moth_move: variant_rows(&rects, unit_stem(UnitKind::Moth), MOVE_SUFFIXES)?,
+            moth_action: variant_rows(&rects, unit_stem(UnitKind::Moth), ACTION_SUFFIXES_4)?,
+            breaker: unit(UnitKind::Breaker)?,
+            breaker_move: variant_rows(&rects, unit_stem(UnitKind::Breaker), MOVE_SUFFIXES)?,
+            breaker_action: variant_rows(&rects, unit_stem(UnitKind::Breaker), ACTION_SUFFIXES_4)?,
+            avalanche: unit(UnitKind::Avalanche)?,
+            avalanche_move: variant_rows(&rects, unit_stem(UnitKind::Avalanche), MOVE_SUFFIXES)?,
+            avalanche_action: variant_rows(
+                &rects,
+                unit_stem(UnitKind::Avalanche),
+                ACTION_SUFFIXES_4,
+            )?,
+            skyhook: unit(UnitKind::Skyhook)?,
+            skyhook_move: variant_rows(&rects, unit_stem(UnitKind::Skyhook), MOVE_SUFFIXES)?,
+            sapper: unit(UnitKind::Sapper)?,
+            sapper_move: variant_rows(&rects, unit_stem(UnitKind::Sapper), MOVE_SUFFIXES)?,
         })
     }
 
@@ -839,6 +1056,16 @@ impl Sprites {
         self.peak_barriers[usize::from(neighbor_mask & 0x0f) * 2 + variant % 2]
     }
 
+    /// A pit tile's rim art for its same-terrain neighbor mask.
+    pub fn pit_edge(&self, neighbor_mask: u8, variant: usize) -> Rect {
+        self.pit_edges[usize::from(neighbor_mask & 0x0f) * 2 + variant % 2]
+    }
+
+    /// The derelict Extractor frame bed (2x2 tiles).
+    pub fn extractor_frame(&self) -> Rect {
+        self.extractor_frame
+    }
+
     /// The soft shadow a rock casts on a neighboring ground tile
     /// (authored falling from the top edge; rotate toward the rock).
     pub fn rock_skirt(&self) -> Rect {
@@ -901,11 +1128,46 @@ impl Sprites {
             oxide_sim::BuildingKind::Array => &self.array,
             oxide_sim::BuildingKind::Reclaimer => &self.reclaimer,
             oxide_sim::BuildingKind::RepairBay => &self.repair_bay,
+            oxide_sim::BuildingKind::Extractor => &self.extractor,
+            oxide_sim::BuildingKind::Airworks => &self.airworks,
+            oxide_sim::BuildingKind::Crucible => &self.crucible,
+            oxide_sim::BuildingKind::Barricade => &self.barricade,
+            oxide_sim::BuildingKind::ScuttleCharge => &self.scuttle_charge,
         }
     }
 
     pub fn building(&self, kind: oxide_sim::BuildingKind, faction: Faction) -> Rect {
         self.building_row(kind)[faction_index(faction)]
+    }
+
+    /// A tier's hull row, when the ladder rung has authored art;
+    /// otherwise the base hull carries every rung.
+    fn tier_row(&self, kind: BuildingKind, tier: u8) -> Option<&[Rect; 3]> {
+        match (kind, tier) {
+            (BuildingKind::Turret, 1) => Some(&self.turret_t1),
+            (BuildingKind::Turret, 2) => Some(&self.turret_t2),
+            (BuildingKind::FlakTurret, 1) => Some(&self.flak_turret_t1),
+            (BuildingKind::Reclaimer, 1) => Some(&self.reclaimer_t1),
+            (BuildingKind::Array, 1) => Some(&self.array_t1),
+            _ => None,
+        }
+    }
+
+    /// The hull for a building at its upgrade-ladder rung.
+    pub fn building_tiered(
+        &self,
+        kind: oxide_sim::BuildingKind,
+        tier: u8,
+        faction: Faction,
+    ) -> Rect {
+        self.tier_row(kind, tier)
+            .unwrap_or_else(|| self.building_row(kind))[faction_index(faction)]
+    }
+
+    /// The allegiance mask matched to [`Self::building_tiered`].
+    pub fn building_tiered_accent(&self, kind: oxide_sim::BuildingKind, tier: u8) -> Rect {
+        self.tier_row(kind, tier)
+            .unwrap_or_else(|| self.building_row(kind))[ACCENT]
     }
 
     /// The allegiance-accent mask over a building's faction-colored
@@ -969,6 +1231,9 @@ impl Sprites {
             BuildingKind::Array => &self.array_work,
             BuildingKind::Reclaimer => &self.reclaimer_work,
             BuildingKind::RepairBay => &self.repair_bay_work,
+            BuildingKind::Extractor => &self.extractor_work,
+            BuildingKind::Airworks => &self.airworks_work,
+            BuildingKind::Crucible => &self.crucible_work,
             _ => return None,
         };
         frame.checked_sub(1).and_then(|index| rows.get(index))
@@ -1045,6 +1310,19 @@ impl Sprites {
             UnitKind::Darter => &self.darter_move,
             UnitKind::Talon => &self.talon_move,
             UnitKind::Wisp => &self.wisp_move,
+            UnitKind::Warden => &self.warden_move,
+            UnitKind::Tender => &self.tender_move,
+            UnitKind::Excavator => &self.excavator_move,
+            UnitKind::Kestrel => &self.kestrel_move,
+            UnitKind::Gnat => &self.gnat_move,
+            UnitKind::Shrike => &self.shrike_move,
+            UnitKind::Sylph => &self.sylph_move,
+            UnitKind::Condor => &self.condor_move,
+            UnitKind::Moth => &self.moth_move,
+            UnitKind::Breaker => &self.breaker_move,
+            UnitKind::Avalanche => &self.avalanche_move,
+            UnitKind::Skyhook => &self.skyhook_move,
+            UnitKind::Sapper => &self.sapper_move,
         };
         frame
             .checked_sub(1)
@@ -1086,6 +1364,19 @@ impl Sprites {
             UnitKind::Darter => &self.darter,
             UnitKind::Talon => &self.talon,
             UnitKind::Wisp => &self.wisp,
+            UnitKind::Warden => &self.warden,
+            UnitKind::Tender => &self.tender,
+            UnitKind::Excavator => &self.excavator,
+            UnitKind::Kestrel => &self.kestrel,
+            UnitKind::Gnat => &self.gnat,
+            UnitKind::Shrike => &self.shrike,
+            UnitKind::Sylph => &self.sylph,
+            UnitKind::Condor => &self.condor,
+            UnitKind::Moth => &self.moth,
+            UnitKind::Breaker => &self.breaker,
+            UnitKind::Avalanche => &self.avalanche,
+            UnitKind::Skyhook => &self.skyhook,
+            UnitKind::Sapper => &self.sapper,
         }
     }
 
@@ -1102,6 +1393,21 @@ impl Sprites {
             UnitKind::Darter => &self.darter_action,
             UnitKind::Talon => &self.talon_action,
             UnitKind::Wisp => &self.wisp_action,
+            UnitKind::Warden => &self.warden_action,
+            UnitKind::Shrike => &self.shrike_action,
+            UnitKind::Sylph => &self.sylph_action,
+            UnitKind::Condor => &self.condor_action,
+            UnitKind::Moth => &self.moth_action,
+            UnitKind::Breaker => &self.breaker_action,
+            UnitKind::Avalanche => &self.avalanche_action,
+            UnitKind::Tender
+            | UnitKind::Excavator
+            | UnitKind::Kestrel
+            | UnitKind::Gnat
+            | UnitKind::Skyhook
+            | UnitKind::Sapper => {
+                return None;
+            }
         };
         rows.get(frame)
     }
@@ -1181,6 +1487,18 @@ pub struct Sounds {
     pub attack_talon: Sound,
     /// A Wisp's compact interceptor burst.
     pub attack_wisp: Sound,
+    /// The Warden's fork cannon.
+    pub attack_warden: Sound,
+    /// The Breaker's siege mortar.
+    pub attack_breaker: Sound,
+    /// The Avalanche bank leaving its tubes.
+    pub avalanche_launch: Sound,
+    /// A bomber's bay opening and its load dropping away.
+    pub bomb_release: Sound,
+    /// A buried charge or Sapper going up.
+    pub demolition_boom: Sound,
+    /// A works coming back online one rung higher.
+    pub upgrade_done: Sound,
     /// A Bastion's emplaced artillery report.
     pub attack_bastion: Sound,
     /// A Flak Turret's paired-yoke burst.
@@ -1234,6 +1552,12 @@ impl Sounds {
             attack_darter: clip("attack_darter").await?,
             attack_talon: clip("attack_talon").await?,
             attack_wisp: clip("attack_wisp").await?,
+            attack_warden: clip("attack_warden").await?,
+            attack_breaker: clip("attack_breaker").await?,
+            avalanche_launch: clip("avalanche_launch").await?,
+            bomb_release: clip("bomb_release").await?,
+            demolition_boom: clip("demolition_boom").await?,
+            upgrade_done: clip("upgrade_done").await?,
             attack_bastion: clip("attack_bastion").await?,
             attack_flak_turret: clip("attack_flak_turret").await?,
             music_menu: clip("music_menu").await?,
@@ -1258,13 +1582,14 @@ impl Sounds {
 mod tests {
     use super::*;
 
-    const SOUND_NAMES: [&str; 34] = [
+    const SOUND_NAMES: [&str; 40] = [
         "ack",
         "alert",
         "artillery_boom",
         "artillery_launch",
         "attack_bastion",
         "attack_bombard",
+        "attack_breaker",
         "attack_buzzard",
         "attack_darter",
         "attack_flak_turret",
@@ -1274,10 +1599,14 @@ mod tests {
         "attack_sentinel",
         "attack_stinger",
         "attack_talon",
+        "attack_warden",
         "attack_wisp",
+        "avalanche_launch",
+        "bomb_release",
         "building_boom",
         "click",
         "defeat",
+        "demolition_boom",
         "denied",
         "deposit",
         "flak",
@@ -1292,6 +1621,7 @@ mod tests {
         "rail_fire",
         "train_done",
         "unit_death",
+        "upgrade_done",
         "victory",
     ];
 

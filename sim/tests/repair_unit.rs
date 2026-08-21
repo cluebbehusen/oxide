@@ -192,7 +192,8 @@ fn departure_case(work: DepartingWork, tick: u64) -> (State, UnitId, UnitId, Pla
             .iter()
             .position(|b| b["id"] == serde_json::json!(building))
             .unwrap();
-        json["buildings"][slot]["hp"] = serde_json::json!(BuildingKind::Turret.stats().max_hp - 10);
+        json["buildings"][slot]["hp"] =
+            serde_json::json!(BuildingKind::Turret.base_stats().max_hp - 10);
     }
     let state: State = serde_json::from_value(json).unwrap();
 

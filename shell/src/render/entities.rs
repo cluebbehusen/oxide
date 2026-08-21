@@ -15,7 +15,7 @@ pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &Input
     let world = game.camera.to_world(input.mouse);
     let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     let zoom = game.camera.zoom;
-    let (w, h) = kind.stats().size;
+    let (w, h) = kind.base_stats().size;
     let queue = input.placing_stroke.is_some() || input.resolver.shift_held();
     let ok = crate::input::placement_refusal(game, kind, anchor, queue).is_none();
     let screen = game
@@ -59,7 +59,7 @@ pub(crate) fn draw_pending_founds(game: &Game, sprites: &Sprites) {
                 continue;
             }
             drawn.push((*kind, *anchor));
-            let (w, h) = kind.stats().size;
+            let (w, h) = kind.base_stats().size;
             let screen = game
                 .camera
                 .to_screen(vec2(anchor.x as f32, anchor.y as f32));
@@ -107,6 +107,7 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
         | oxide_sim::Order::Salvage { .. }
         | oxide_sim::Order::RepairUnit { .. }
         | oxide_sim::Order::Found { .. } => Color::new(0.25, 0.58, 0.51, 0.55),
+        oxide_sim::Order::Board { .. } | oxide_sim::Order::Unload { .. } => BONE_FAINT,
         oxide_sim::Order::Idle => BONE_FAINT,
     };
     let goal_of = |order: &oxide_sim::Order| {
@@ -122,6 +123,8 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
             }
             // A weld patient is the viewer's own machine — always seen.
             oxide_sim::Order::RepairUnit { unit } => game.state.unit(*unit)?.tile(),
+            oxide_sim::Order::Board { transport } => game.state.unit(*transport)?.tile(),
+            oxide_sim::Order::Unload { at } => *at,
             oxide_sim::Order::Attack { target, .. } => {
                 // A chase target draws only while its ground is
                 // seen — the victim may have slipped back into fog.
@@ -261,7 +264,7 @@ fn draw_defense_mount(
     let screen = game
         .camera
         .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
-    let (width, height) = building.kind.stats().size;
+    let (width, height) = building.stats().size;
     let dest = vec2(
         width as f32 * game.camera.zoom,
         height as f32 * game.camera.zoom,
@@ -321,7 +324,7 @@ fn draw_bastion_charge_overlay(
     let screen = game
         .camera
         .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
-    let (width, height) = building.kind.stats().size;
+    let (width, height) = building.stats().size;
     let footprint = vec2(
         width as f32 * game.camera.zoom,
         height as f32 * game.camera.zoom,
@@ -357,7 +360,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
     // cover explored-but-unseen ground (skipped in the omniscient overlay).
     if !game.all_seeing() {
         for ghost in game.my_vision().ghosts() {
-            let (w, h) = ghost.kind.stats().size;
+            let (w, h) = ghost.kind.base_stats().size;
             let visible = (0..h)
                 .flat_map(|dy| (0..w).map(move |dx| ghost.anchor.offset(dx, dy)))
                 .any(|t| game.my_vision().visible(t));
@@ -447,18 +450,29 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             }
         }
     }
+    // Frustum cull by anchor with a margin covering the widest footprint
+    // plus bars and site dressing — off-camera works cost nothing.
+    let (view_lo, view_hi) = game.camera.world_rect();
+    const BUILDING_CULL_MARGIN: f32 = 4.5;
     for building in game.state.buildings() {
         if building.player != game.human
             && !game.all_seeing()
-            && !building.tiles().any(|t| game.my_vision().visible(t))
+            && (!building.tiles().any(|t| game.my_vision().visible(t))
+                || !game.state.building_apparent(game.human, building))
+        {
+            continue;
+        }
+        let anchor = vec2(building.anchor.x as f32, building.anchor.y as f32);
+        if anchor.x < view_lo.x - BUILDING_CULL_MARGIN
+            || anchor.y < view_lo.y - BUILDING_CULL_MARGIN
+            || anchor.x > view_hi.x + BUILDING_CULL_MARGIN
+            || anchor.y > view_hi.y + BUILDING_CULL_MARGIN
         {
             continue;
         }
         let faction = game.state.player(building.player).faction;
-        let screen = game
-            .camera
-            .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
-        let (w, h) = building.kind.stats().size;
+        let screen = game.camera.to_screen(anchor);
+        let (w, h) = building.stats().size;
         let dest = vec2(w as f32 * zoom, h as f32 * zoom);
         let animation = game.animations.building_state(
             crate::presentation_animation::BuildingAnimationFacts::capture(&game.state, building),
@@ -473,12 +487,19 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         let frame = super::motion::building_frame(building.kind, animation);
         let (source, accent_source) = match frame.body {
             super::motion::BuildingBodyFrame::Idle => (
-                sprites.building(building.kind, faction),
-                sprites.building_accent(building.kind),
+                sprites.building_tiered(building.kind, building.tier, faction),
+                sprites.building_tiered_accent(building.kind, building.tier),
             ),
-            super::motion::BuildingBodyFrame::Work(work) => (
+            super::motion::BuildingBodyFrame::Work(work) if building.tier == 0 => (
                 sprites.building_working(building.kind, faction, work + 1),
                 sprites.building_working_accent(building.kind, work + 1),
+            ),
+            // The atlas carries work rows only for base hulls; an
+            // upgraded works keeps its tier identity rather than
+            // animating as its old self forever.
+            super::motion::BuildingBodyFrame::Work(_) => (
+                sprites.building_tiered(building.kind, building.tier, faction),
+                sprites.building_tiered_accent(building.kind, building.tier),
             ),
             super::motion::BuildingBodyFrame::Construction { stage, phase } => (
                 sprites.construction(building.kind, faction, stage, phase),
@@ -530,7 +551,6 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         if !building.built {
             // Construction progress in bone, distinct from training amber.
             let ticks = building
-                .kind
                 .stats()
                 .construction
                 .map(|c| c.build_ticks)
@@ -561,7 +581,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         // The check mirrors the sim's integer ramp exactly (a float
         // restatement flickers), and gates on !built because progress
         // doubles as the train counter on finished producers.
-        let max_hp = building.kind.stats().max_hp;
+        let max_hp = building.stats().max_hp;
         let under_own_salvage = building.built && salvaging.contains(&building.id);
         let wounded = if under_own_salvage {
             // The gold teardown bar below carries the fraction; a
@@ -572,7 +592,6 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             building.hp < max_hp
         } else {
             let ticks = building
-                .kind
                 .stats()
                 .construction
                 .map(|c| c.build_ticks)
@@ -632,7 +651,7 @@ fn shell_visual_origin(launch: Vec2, impact: Vec2, shooter: oxide_sim::Target) -
     let reach = match shooter {
         oxide_sim::Target::Unit(_) => 0.46,
         oxide_sim::Target::Building(_) => {
-            oxide_sim::BuildingKind::Bastion.stats().size.0 as f32 * 0.49
+            oxide_sim::BuildingKind::Bastion.base_stats().size.0 as f32 * 0.49
         }
     };
     launch + direction.normalize() * reach
@@ -1273,9 +1292,10 @@ fn rounded_footprint_path(min: Vec2, max: Vec2, radius: f32) -> Vec<Vec2> {
 fn visit_building_ranges(
     anchor: Vec2,
     kind: oxide_sim::BuildingKind,
+    tier: u8,
     mut visit: impl FnMut(BuildingRange),
 ) {
-    let stats = kind.stats();
+    let stats = kind.tier_stats(tier);
     let size = vec2(stats.size.0 as f32, stats.size.1 as f32);
     let center = anchor + size * 0.5;
     if let Some(weapon) = stats.weapons.first() {
@@ -1427,8 +1447,8 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
             );
         }
     };
-    let building_rings = |anchor: Vec2, kind: oxide_sim::BuildingKind| {
-        visit_building_ranges(anchor, kind, |range| {
+    let building_rings = |anchor: Vec2, kind: oxide_sim::BuildingKind, tier: u8| {
+        visit_building_ranges(anchor, kind, tier, |range| {
             let color = match range.kind {
                 BuildingRangeKind::Weapon => weapon_color,
                 BuildingRangeKind::DeadZone => dead_zone_color,
@@ -1477,6 +1497,7 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
                 building_rings(
                     vec2(building.anchor.x as f32, building.anchor.y as f32),
                     building.kind,
+                    building.tier,
                 );
             }
         }
@@ -1486,7 +1507,7 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
     if let Some(kind) = input.placing {
         let world = game.camera.to_world(input.mouse);
         let anchor = vec2(world.x.floor(), world.y.floor());
-        building_rings(anchor, kind);
+        building_rings(anchor, kind, 0);
     }
 }
 
@@ -1533,8 +1554,8 @@ pub(crate) fn draw_rally_marker(game: &Game) {
         .filter_map(|building| building.rally.map(|rally| (building, rally)))
     {
         let a = game.camera.to_screen(vec2(
-            building.anchor.x as f32 + building.kind.stats().size.0 as f32 * 0.5,
-            building.anchor.y as f32 + building.kind.stats().size.1 as f32 * 0.5,
+            building.anchor.x as f32 + building.stats().size.0 as f32 * 0.5,
+            building.anchor.y as f32 + building.stats().size.1 as f32 * 0.5,
         ));
         let b = game
             .camera
@@ -1643,7 +1664,7 @@ mod tests {
     fn repair_bay_uses_the_exact_footprint_offset_aura() {
         let anchor = vec2(10.0, 20.0);
         let mut ranges = Vec::new();
-        visit_building_ranges(anchor, oxide_sim::BuildingKind::RepairBay, |range| {
+        visit_building_ranges(anchor, oxide_sim::BuildingKind::RepairBay, 0, |range| {
             ranges.push(range);
         });
 
@@ -1652,7 +1673,7 @@ mod tests {
         };
         assert_eq!(range.kind, BuildingRangeKind::Repair);
         let radius = oxide_sim::stats::REPAIR_BAY_RADIUS.to_num::<f32>();
-        let size = oxide_sim::BuildingKind::RepairBay.stats().size;
+        let size = oxide_sim::BuildingKind::RepairBay.base_stats().size;
         let footprint_max = anchor + vec2(size.0 as f32, size.1 as f32);
         assert_eq!(
             range.shape,
@@ -1676,18 +1697,18 @@ mod tests {
         let anchor = vec2(10.0, 20.0);
         let kind = oxide_sim::BuildingKind::Turret;
         let mut ranges = Vec::new();
-        visit_building_ranges(anchor, kind, |range| ranges.push(range));
+        visit_building_ranges(anchor, kind, 0, |range| ranges.push(range));
 
         let weapon = ranges
             .iter()
             .find(|range| range.kind == BuildingRangeKind::Weapon)
             .expect("a Turret exposes its weapon range");
-        let size = kind.stats().size;
+        let size = kind.base_stats().size;
         assert_eq!(
             weapon.shape,
             BuildingRangeShape::Circle {
                 center: anchor + vec2(size.0 as f32, size.1 as f32) * 0.5,
-                radius: kind.stats().weapons[0].range.to_num::<f32>(),
+                radius: kind.base_stats().weapons[0].range.to_num::<f32>(),
             }
         );
         assert!(
@@ -1703,18 +1724,18 @@ mod tests {
         let anchor = vec2(10.0, 20.0);
         let kind = oxide_sim::BuildingKind::Bastion;
         let mut ranges = Vec::new();
-        visit_building_ranges(anchor, kind, |range| ranges.push(range));
+        visit_building_ranges(anchor, kind, 0, |range| ranges.push(range));
 
         let dead_zone = ranges
             .iter()
             .find(|range| range.kind == BuildingRangeKind::DeadZone)
             .expect("a Bastion exposes its close-pressure counter");
-        let size = kind.stats().size;
+        let size = kind.base_stats().size;
         assert_eq!(
             dead_zone.shape,
             BuildingRangeShape::Circle {
                 center: anchor + vec2(size.0 as f32, size.1 as f32) * 0.5,
-                radius: kind.stats().weapons[0].minimum_range.to_num::<f32>(),
+                radius: kind.base_stats().weapons[0].minimum_range.to_num::<f32>(),
             }
         );
         assert_eq!(

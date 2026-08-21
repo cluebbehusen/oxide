@@ -2,8 +2,8 @@
 ``GYM_VERSION`` below and re-verified at every worker's hello).
 
 Each worker is one driver process serving sequential episodes over
-stdio. `control` picks the externally-driven seats: `(0,)` against a
-scripted tier, or `(0, 1)` for self-play/league — each frame then
+stdio. `control` picks the externally-driven seats: `(0,)` against the
+scripted Overseer, or `(0, 1)` for self-play/league — each frame then
 carries features and a mask per controlled seat. Features arrive as
 raw integers (the Rust side is the source of truth for their meaning);
 `normalize` scales them to roughly [-1, 1] for the network.
@@ -11,12 +11,13 @@ raw integers (the Rust side is the source of truth for their meaning);
 Named-profile resets send the five Rust-authored condition facets back to
 the server so action masks and lowering use the same bounded doctrine as the
 shipped bot. ``PROFILED_DOCTRINE_VERSION`` pins that rollout behavior without
-changing the v8 tensor shape.
+changing the v9 tensor shape.
 """
 
 import contextlib
 import json
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -35,6 +36,11 @@ type BuildingName = Literal[
     "array",
     "reclaimer",
     "repair_bay",
+    "extractor",
+    "airworks",
+    "crucible",
+    "barricade",
+    "scuttle_charge",
 ]
 BUILDING_NAMES = frozenset(
     {
@@ -46,25 +52,32 @@ BUILDING_NAMES = frozenset(
         "array",
         "reclaimer",
         "repair_bay",
+        "extractor",
+        "airworks",
+        "crucible",
+        "barricade",
+        "scuttle_charge",
     }
 )
 
-FEATURES = 81
-ACTIONS = 26
-GYM_VERSION = 8
+FEATURES = 107
+ACTIONS = 43
+GYM_VERSION = 9
 # Wire capability for applying named-profile facets to the Rust executive.
 # It is versioned independently because it changes rollout semantics without
 # changing the actor tensor shape described by ``GYM_VERSION``.
 PROFILED_DOCTRINE_VERSION = 1
 # Each decision is one independent choice from each action head. The
 # indices remain global flat-head rows so checkpoints and exported
-# artifacts still carry one 26-row affine policy head.
-PRODUCTION_HEAD = (0, 1, 2, 3, 4, 5, 6, 7, 8)
-CONSTRUCTION_HEAD = (24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23)
-OPERATION_HEAD = (25, 16, 17, 18, 19, 20)
-ACTION_HEADS = (PRODUCTION_HEAD, CONSTRUCTION_HEAD, OPERATION_HEAD)
+# artifacts still carry one 43-row affine policy head. The partition is
+# a wire contract with sim/src/bot/gym.rs `ACTION_HEADS`.
+PRODUCTION_HEAD = (0, 1, 2, 3, 4, 5, 6, 7, 8, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35)
+CONSTRUCTION_HEAD = (24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23, 36, 37, 38, 39)
+UPGRADE_HEAD = (42, 40)
+OPERATION_HEAD = (25, 16, 17, 18, 19, 20, 41)
+ACTION_HEADS = (PRODUCTION_HEAD, CONSTRUCTION_HEAD, UPGRADE_HEAD, OPERATION_HEAD)
 ACTION_PLAN_DIMS = len(ACTION_HEADS)
-type ActionPlan = tuple[int, int, int]
+type ActionPlan = tuple[int, int, int, int]
 # Conditioning dims appended to the gym features as network input:
 # skill (0-1000; 1000 = full strength), aggression (0-1000; 500 =
 # balanced), faction (0 = ferrous, 1000 = cupric), and a four-way
@@ -196,6 +209,36 @@ SCALE_BY_NAME: dict[str, float] = {
     "nearest_enemy_distance": 200,
     "construction_plan": 7,
     "construction_reserve": 250,
+    # v9: the 0.15 roster, tree state, and frame intel. Counts scale like
+    # the established roster columns; frame coordinates are raw tile
+    # positions (map dims cap near 100), unlike the 0-1000 relative
+    # coordinate columns above.
+    "my_wardens": 6,
+    "my_tenders": 4,
+    "my_excavators": 4,
+    "my_scout_flyers": 4,
+    "my_interceptors": 8,
+    "my_bombers": 6,
+    "my_transports": 4,
+    "my_sappers": 6,
+    "my_breakers": 4,
+    "my_avalanches": 2,
+    "enemy_interceptors": 8,
+    "enemy_bombers": 6,
+    "enemy_heavies": 6,
+    "airworks_built": 1,
+    "crucible_built": 1,
+    "my_foundries_built": 3,
+    "my_extractors_built": 3,
+    "known_frames": 8,
+    "nearest_frame_x": 100,
+    "nearest_frame_y": 100,
+    "nearest_frame_distance": 100,
+    "my_upgraded_works": 3,
+    "upgrade_candidates": 4,
+    "tech_tier": 3,
+    "transport_cargo": 8,
+    "enemy_foundries_known": 3,
 }
 FEATURE_NAMES = list(SCALE_BY_NAME.keys())
 SCALES = np.array([SCALE_BY_NAME[n] for n in FEATURE_NAMES], dtype=np.float32)
@@ -290,7 +333,7 @@ def condition_from_profile(
     aggression: int,
     faction: int,
 ) -> tuple[int, ...]:
-    """Builds a raw-aggression v8 condition with no named profile lean."""
+    """Builds a raw-aggression v9 condition with no named profile lean."""
     if skill < 0 or skill > 1000:
         raise ValueError(f"skill must be in 0..1000, got {skill}")
     if faction not in (0, 1000):
@@ -324,7 +367,7 @@ def honest_condition(
 
 
 def with_condition(obs: np.ndarray, condition: tuple[int, ...]) -> np.ndarray:
-    """Appends the normalized v8 policy condition."""
+    """Appends the normalized v9 policy condition."""
     if len(condition) != CONDITION_DIMS:
         raise ValueError(f"expected {CONDITION_DIMS} knobs, got {condition}")
     knobs = np.asarray(condition, dtype=np.float32) / 1000.0
@@ -502,7 +545,7 @@ class ProfileCatalog:
 
 
 def validate_action_plan(plan: tuple[int, ...] | list[int]) -> ActionPlan:
-    """Validates one plan of global indices against its three heads."""
+    """Validates one plan of global indices against its four heads."""
     if len(plan) != ACTION_PLAN_DIMS:
         raise ValueError(
             f"action plan must contain {ACTION_PLAN_DIMS} global indices, got {plan}"
@@ -523,6 +566,9 @@ class SeatView:
     obs: np.ndarray
     mask: np.ndarray
     raw: list[int]
+    # Executive census from the Rust bot (armies by state, membership) —
+    # QA sampling only; absent on frames from older drivers.
+    exec: dict | None = None
 
     @property
     def faction(self) -> FactionName:
@@ -565,6 +611,10 @@ class Frame:
     seats: dict[int, SeatView] = field(default_factory=dict)
     factions: list[FactionName] | None = None  # every scenario seat, in order
     effects: dict[int, SeatEffects] = field(default_factory=dict)
+    # Full replay JSON of a `record=True` episode — present only on the
+    # terminal frame, in the same shape `driver run --save-replay`
+    # writes, so a campaign can dump it to disk and eyeball the match.
+    replay: dict | None = None
 
     def reward(self, seat: int) -> float:
         """Terminal reward for `seat` (call when done). A team win pays
@@ -652,6 +702,14 @@ class Worker:
         self.profile_catalog = ProfileCatalog.from_hello(hello)
         self._supports_reset_factions = hello.get("reset_factions") is True
         self._supports_effect_telemetry = hello.get("effect_telemetry") is True
+        self._supports_episode_replay = hello.get("episode_replay") is True
+        self._supports_timing_stats = hello.get("timing_stats") is True
+        # Client-side wall-time counters, the wire half of the rollout
+        # time split (the driver half arrives via ``timing_stats``).
+        self.time_wait = 0.0
+        self.time_parse = 0.0
+        self.time_send = 0.0
+        self.bytes_received = 0
 
     def named_condition(
         self,
@@ -668,6 +726,11 @@ class Worker:
         """Whether replies carry the optional successful-effect sideband."""
         return self._supports_effect_telemetry
 
+    @property
+    def supports_episode_replay(self) -> bool:
+        """Whether ``reset(record=True)`` can attach a terminal replay."""
+        return self._supports_episode_replay
+
     def _rpc(self, request: dict) -> Frame:
         self.send(request)
         return self.recv()
@@ -679,11 +742,18 @@ class Worker:
         before collecting from any turns N blocking round-trips into N
         concurrent simulations. The pipelined loops in league.py exist
         because of this split."""
+        started = time.perf_counter()
         self._stdin.write(json.dumps(request) + "\n")
+        self.time_send += time.perf_counter() - started
 
     def recv(self) -> Frame:
         """Blocks for the reply to the outstanding request."""
-        reply = json.loads(self._stdout.readline())
+        started = time.perf_counter()
+        line = self._stdout.readline()
+        waited = time.perf_counter()
+        self.time_wait += waited - started
+        self.bytes_received += len(line)
+        reply = json.loads(line)
         if "error" in reply:
             raise RuntimeError(reply["error"])
         self.factions = validate_reported_factions(
@@ -700,6 +770,7 @@ class Worker:
                 alive=reply.get("alive"),
                 factions=self.factions,
                 effects=parse_effects(reply),
+                replay=reply.get("replay"),
             )
             # v5: terminal frames carry observations for living
             # controlled seats — evidence for terminal shaping (the
@@ -708,6 +779,7 @@ class Worker:
             for s in reply.get("seats", []):
                 seat, view = self._seat_view(s)
                 frame.seats[seat] = view
+            self.time_parse += time.perf_counter() - waited
             return frame
         frame = Frame(
             False,
@@ -718,7 +790,31 @@ class Worker:
         for s in reply["seats"]:
             seat, view = self._seat_view(s)
             frame.seats[seat] = view
+        self.time_parse += time.perf_counter() - waited
         return frame
+
+    @property
+    def supports_timing_stats(self) -> bool:
+        """Whether the driver answers the ``stats`` timing request."""
+        return self._supports_timing_stats
+
+    def timing_stats(self) -> dict:
+        """One merged rollout time split: the driver's cumulative
+        wall-time counters plus this client's wire counters. Call it
+        between episodes — the driver is a strict read-compute-reply
+        loop, so the request must not race an outstanding step."""
+        if not self._supports_timing_stats:
+            raise RuntimeError("gym driver does not advertise timing stats")
+        self._stdin.write(json.dumps({"cmd": "stats"}) + "\n")
+        reply = json.loads(self._stdout.readline())
+        if "error" in reply:
+            raise RuntimeError(reply["error"])
+        merged = dict(reply["stats"])
+        merged["client_wait_us"] = int(self.time_wait * 1e6)
+        merged["client_parse_us"] = int(self.time_parse * 1e6)
+        merged["client_send_us"] = int(self.time_send * 1e6)
+        merged["client_bytes_received"] = self.bytes_received
+        return merged
 
     def _seat_view(self, reply: dict) -> tuple[int, SeatView]:
         """Builds one seat row and makes its condition faction honest."""
@@ -734,6 +830,7 @@ class Worker:
             obs,
             np.asarray(reply["mask"], dtype=bool),
             raw,
+            exec=reply.get("exec"),
         )
         if self.factions is not None:
             try:
@@ -753,19 +850,24 @@ class Worker:
         self,
         seed: int,
         control: tuple[int, ...] = (0,),
-        tier: str = "veteran",
         max_ticks: int = 40_000,
         cadence: int = CADENCE,
         scenario: str | None = None,
         conditions: dict[int, tuple[int, ...]] | None = None,
         factions: str | Sequence[FactionName] | None = None,
+        record: bool = False,
     ) -> Frame:
-        """Starts an episode. ``factions`` optionally names every
+        """Starts an episode. Every uncontrolled seat is driven by the
+        Rust-side Overseer. ``factions`` optionally names every
         scenario seat in order, either as a compact code such as ``fc``
         or as full names. The returned Rust observation is authoritative
         for the condition's faction knob. Profile facets are extracted by
         their advertised condition names and sent to the Rust executive;
-        raw zero-facet conditions retain its historical doctrine."""
+        raw zero-facet conditions retain its historical doctrine.
+        ``record=True`` asks the driver to keep a command log; the
+        terminal frame then carries the full replay JSON in
+        ``Frame.replay``, ready to dump to a file for the replay
+        viewer."""
         if conditions is not None and set(conditions) != set(control):
             raise ValueError(
                 "conditions must name exactly the controlled seats: "
@@ -779,7 +881,6 @@ class Worker:
             "cmd": "reset",
             "seed": seed,
             "control": list(control),
-            "tier": tier,
             "max_ticks": max_ticks,
             "cadence": cadence,
         }
@@ -796,6 +897,12 @@ class Worker:
                 )
             self.requested_factions = normalize_factions(factions)
             req["factions"] = self.requested_factions
+        if record:
+            if not self._supports_episode_replay:
+                raise RuntimeError(
+                    "gym driver does not advertise episode-replay support"
+                )
+            req["record"] = True
         return self._rpc(req)
 
     def step(self, actions: dict[int, ActionPlan]) -> Frame:

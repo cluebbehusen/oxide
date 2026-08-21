@@ -268,6 +268,7 @@ pub(crate) struct BuildingAnimationState {
 pub(crate) struct BuildingAnimationFacts {
     id: BuildingId,
     kind: BuildingKind,
+    tier: u8,
     built: bool,
     progress: u32,
     construction_total: Option<u32>,
@@ -286,14 +287,14 @@ impl BuildingAnimationFacts {
             .and_then(|()| building.queue.front().copied())
             .filter(|kind| building.progress < kind.stats().train_ticks)
             .map(|kind| (kind, building.progress, kind.stats().train_ticks));
-        let construction_total = building
-            .kind
-            .stats()
-            .construction
-            .map(|stats| stats.build_ticks);
+        // The active tier's clock: a committed upgrade rebuilds on the
+        // NEW tier's labor budget, and a base denominator would show the
+        // scaffold complete early.
+        let construction_total = building.stats().construction.map(|stats| stats.build_ticks);
         Self {
             id: building.id,
             kind: building.kind,
+            tier: building.tier,
             built: building.built,
             progress: building.progress,
             construction_total,
@@ -507,10 +508,12 @@ impl AnimationController {
                 _ => BuildingActivity::Idle,
             }
         };
-        let weapon =
-            facts.kind.stats().weapons.first().map(|weapon| {
-                weapon_cycle(facts.cooldown, weapon.cooldown_ticks, clock.tick_fraction)
-            });
+        let weapon = facts
+            .kind
+            .tier_stats(facts.tier)
+            .weapons
+            .first()
+            .map(|weapon| weapon_cycle(facts.cooldown, weapon.cooldown_ticks, clock.tick_fraction));
         BuildingAnimationState {
             construction,
             activity,
@@ -596,6 +599,31 @@ fn unit_attack_timing(kind: UnitKind) -> AttackTiming {
         UnitKind::Buzzard => AttackTiming {
             report_ticks: 2.0,
             recover_ticks: 4.0,
+        },
+        UnitKind::Warden => AttackTiming {
+            report_ticks: 2.0,
+            recover_ticks: 4.0,
+        },
+        UnitKind::Shrike | UnitKind::Sylph => AttackTiming {
+            report_ticks: 2.0,
+            recover_ticks: 3.0,
+        },
+        UnitKind::Condor | UnitKind::Moth => AttackTiming {
+            report_ticks: 3.0,
+            recover_ticks: 5.0,
+        },
+        UnitKind::Breaker | UnitKind::Avalanche => AttackTiming {
+            report_ticks: 3.0,
+            recover_ticks: 6.0,
+        },
+        UnitKind::Tender
+        | UnitKind::Excavator
+        | UnitKind::Kestrel
+        | UnitKind::Gnat
+        | UnitKind::Skyhook
+        | UnitKind::Sapper => AttackTiming {
+            report_ticks: 1.0,
+            recover_ticks: 1.0,
         },
         UnitKind::Darter | UnitKind::Talon | UnitKind::Wisp => AttackTiming {
             report_ticks: 2.0,
@@ -714,7 +742,7 @@ fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
             (patient.player == unit.player
                 && patient.built
                 && patient.hp > 0
-                && patient.hp < patient.kind.stats().max_hp
+                && patient.hp < patient.stats().max_hp
                 && tile_adjacent_to_building(unit.tile(), patient))
             .then_some(patient.center())
         }),
@@ -762,7 +790,7 @@ fn active_site_construction(state: &State, building: &Building) -> bool {
 }
 
 fn tile_adjacent_to_building(tile: chassis::grid::TilePos, building: &Building) -> bool {
-    let (width, height) = building.kind.stats().size;
+    let (width, height) = building.stats().size;
     let anchor = building.anchor;
     let inside = tile.x >= anchor.x
         && tile.y >= anchor.y
@@ -800,9 +828,13 @@ mod tests {
         BuildingAnimationFacts {
             id: BuildingId(9),
             kind,
+            tier: 0,
             built: true,
             progress: 0,
-            construction_total: kind.stats().construction.map(|stats| stats.build_ticks),
+            construction_total: kind
+                .base_stats()
+                .construction
+                .map(|stats| stats.build_ticks),
             construction_active: false,
             production: None,
             cooldown: 0,
@@ -1056,6 +1088,7 @@ mod tests {
             rally: None,
             focus: None,
             built: false,
+            tier: 0,
             cooldown: 0,
             salvage_drained: 0,
             salvage_credited: 0,
@@ -1076,6 +1109,8 @@ mod tests {
             path: None,
             leash: None,
             settled: 0,
+            heading: 0,
+            cargo: Vec::new(),
         };
         assert!(tile_adjacent_to_building(builder.tile(), &site));
         assert!(matches!(builder.order, Order::Build { site: id } if id == site.id));

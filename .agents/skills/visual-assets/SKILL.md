@@ -46,12 +46,17 @@ and mining debris break up the quarry floor.
 
 ## Explore without losing the product
 
-For a new or open visual direction, use ImageGen to explore silhouettes,
-mechanisms, and material ideas before authoring candidates. ImageGen is not
-required when promoting an already approved design or making a tightly bounded
-edit whose direction is already fixed. Use generated imagery as reference, not
-as the shipping raster. Reduce the useful idea into Oxide's authored pixel
-geometry and production palette.
+For a new or open visual direction, use ImageGen or a similar image-generation
+tool — if your session actually has one — to explore silhouettes, mechanisms,
+and material ideas before authoring candidates. Check your tool registry
+rather than assuming: Codex sessions have ImageGen; Claude sessions currently
+do not. Without such a tool, do the same exploration by authoring materially
+distinct silhouette archetypes directly in code — vary the body plan and
+mechanism per option, not the palette. Image generation is not required when
+promoting an already approved design or making a tightly bounded edit whose
+direction is already fixed. Use generated imagery as reference, not as the
+shipping raster. Reduce the useful idea into Oxide's authored pixel geometry
+and production palette.
 
 When direction is open, generate several materially distinct options in an
 untracked batch script or temporary review workspace. Do not accumulate

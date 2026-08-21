@@ -212,13 +212,50 @@ pub enum Command {
     /// because a multi-builder command gives the whole crew one copy of the
     /// same unpaid intent. Paid sites use [`Command::Cancel`] and its refund
     /// rules instead.
-    /// (Last variant by appending discipline: earlier discriminants keep
-    /// their serialized bytes.)
     CancelFound {
         /// The promised structure.
         kind: crate::stats::BuildingKind,
         /// The promised top-left footprint tile.
         anchor: TilePos,
+    },
+    /// Lifts a completed building one rung up its kind's upgrade ladder.
+    /// The full price is charged now, the works goes offline (a site
+    /// again, on the new tier's row), and the accepted harvester crew
+    /// takes the same Build order ordinary construction uses — resume,
+    /// relief builders, and stacking all behave identically. Upgrades
+    /// cannot be cancelled: the machine is committed until it stands.
+    UpgradeBuilding {
+        /// The working crew (harvesters).
+        units: Vec<UnitId>,
+        /// The building to lift.
+        building: BuildingId,
+        /// Append to order queues instead of replacing.
+        queue: bool,
+    },
+    /// Send ground machines to climb aboard an own transport. Each walks
+    /// within [`crate::stats::LOAD_REACH`] and embarks if room remains;
+    /// a full sling stalls the stragglers where they stand. The sim
+    /// reads `units` as a sorted set.
+    Load {
+        /// The machines to carry (ground, carriable kinds only).
+        units: Vec<UnitId>,
+        /// The carrier.
+        transport: UnitId,
+        /// Append to order queues instead of replacing.
+        queue: bool,
+    },
+    /// Fly a transport to a tile and set every carried machine down on
+    /// open ground around it. Machines that find no open tile within
+    /// [`crate::stats::UNLOAD_SCAN_RADIUS`] stay aboard.
+    /// (Last variant by appending discipline: earlier discriminants keep
+    /// their serialized bytes.)
+    Unload {
+        /// The carrier.
+        transport: UnitId,
+        /// The drop point.
+        at: TilePos,
+        /// Append to order queues instead of replacing.
+        queue: bool,
     },
 }
 
@@ -263,4 +300,7 @@ pub enum RejectReason {
     QueueFull,
     /// The unit kind belongs to the other faction's roster.
     WrongFaction,
+    /// The issuer has not completed the tech buildings this kind
+    /// requires — the tree gates humans and bots identically.
+    MissingPrerequisite,
 }

@@ -3,9 +3,9 @@
 //! bot's Build reaching remembered ground exactly like the human's
 //! armed click — and a walking founder is spoken for: the labor
 //! choosers keep off it, and the Scout arm honors the think's claims
-//! on the gym path. The scripted `Brain` tiers keep the strict instant
-//! claim and the unconditional Scout arm — they are the ladder's
-//! anchors and yardsticks, and their lowering must not move.
+//! on the gym path. The scripted `Brain` (today the Overseer) keeps
+//! the strict instant claim and the unconditional Scout arm — the
+//! per-path split below pins that divergence on purpose.
 
 use chassis::grid::TilePos;
 use oxide_sim::bot::{Action, GymBot};
@@ -307,8 +307,8 @@ fn the_scout_never_strips_a_walking_founder() {
 
 /// Executive-level pins for the per-path lowering rules: the gym path
 /// guards the Scout arm against the think's claims and keeps labor
-/// choosers off walking founders; the scripted path keeps the exact
-/// unconditional lowering the ladder anchors were measured under.
+/// choosers off walking founders; the scripted path keeps its exact
+/// measured unconditional lowering.
 mod lowering_rules {
     use super::*;
     use oxide_sim::UnitId;
@@ -333,6 +333,7 @@ mod lowering_rules {
             explored: vec![true; 32 * 20],
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
+            known_frames: Vec::new(),
             known_peaks: Vec::new(),
             known_wrecks: Vec::new(),
             blips: Vec::new(),
@@ -351,6 +352,7 @@ mod lowering_rules {
             hp: UnitKind::Harvester.stats().max_hp,
             idle: true,
             carrying: 0,
+            cargo: 0,
             site: None,
             salvaging: None,
             founding: None,
@@ -360,8 +362,8 @@ mod lowering_rules {
     /// The labor-claims trap, pinned from both sides: a Scout naming
     /// the machine an earlier Build just bought is dropped under the
     /// gym rules and emitted verbatim under the scripted baseline —
-    /// the one-line shared guard measurably inverts both ladder gates,
-    /// which is why the paths differ on purpose.
+    /// the paths differ on purpose, and a shared guard would silently
+    /// move the scripted commander's measured behavior.
     #[test]
     fn the_scout_arm_honors_claims_on_the_gym_path_only() {
         let obs = obs_with(vec![harvester(0, 5, 5)]);
@@ -377,8 +379,13 @@ mod lowering_rules {
         ];
 
         let never = |_: BuildingKind, _: TilePos| false;
-        let commands =
-            Executive::new().apply_with(PlayerId(0), &obs, &intents, &LoweringRules::gym(&never));
+        let everywhere = |_: TilePos| vec![true; (obs.map_width * obs.map_height) as usize];
+        let commands = Executive::new().apply_with(
+            PlayerId(0),
+            &obs,
+            &intents,
+            &LoweringRules::gym(&never, &everywhere),
+        );
         assert!(
             commands
                 .iter()
@@ -391,7 +398,7 @@ mod lowering_rules {
             commands
                 .iter()
                 .any(|pc| matches!(pc.command, Command::Move { .. })),
-            "the scripted Scout arm changed: the ladder anchors were \
+            "the scripted Scout arm changed: the scripted baseline was \
              measured under the unconditional emission"
         );
     }

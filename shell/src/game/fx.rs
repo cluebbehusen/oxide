@@ -84,6 +84,18 @@ pub enum SoundKind {
     BastionFire,
     /// A Flak Turret's paired-yoke burst.
     FlakTurretFire,
+    /// The Warden's fork cannon report.
+    WardenFire,
+    /// The Breaker's siege mortar.
+    BreakerFire,
+    /// The Avalanche bank launching.
+    AvalancheFire,
+    /// A bomber releasing its load.
+    BombRelease,
+    /// A buried charge or Sapper detonating.
+    DemolitionBoom,
+    /// A works coming back online one rung higher.
+    UpgradeDone,
 }
 
 /// What an order-acknowledgment ping means (decides its color).
@@ -179,7 +191,10 @@ fn unit_shot_style(kind: oxide_sim::UnitKind, weapon: usize) -> ShotStyle {
 
 fn defense_shot_style(kind: oxide_sim::BuildingKind) -> ShotStyle {
     debug_assert!(
-        kind.stats().weapons.iter().all(|weapon| !weapon.projectile),
+        kind.base_stats()
+            .weapons
+            .iter()
+            .all(|weapon| !weapon.projectile),
         "real shell weapons must arrive through ShellLaunched"
     );
     match kind {
@@ -210,7 +225,7 @@ fn unit_muzzle_reach(kind: oxide_sim::UnitKind) -> f32 {
 
 fn defense_muzzle_reach(kind: oxide_sim::BuildingKind) -> f32 {
     match kind {
-        oxide_sim::BuildingKind::Bastion => kind.stats().size.0 as f32 * 0.49,
+        oxide_sim::BuildingKind::Bastion => kind.base_stats().size.0 as f32 * 0.49,
         oxide_sim::BuildingKind::FlakTurret => 0.47,
         _ => 0.44,
     }
@@ -229,6 +244,19 @@ fn unit_fire_sound(kind: oxide_sim::UnitKind) -> SoundKind {
         UnitKind::Darter => SoundKind::DarterFire,
         UnitKind::Talon => SoundKind::TalonFire,
         UnitKind::Wisp => SoundKind::WispFire,
+        UnitKind::Warden => SoundKind::WardenFire,
+        // Interceptors share the air-superiority zap family on purpose.
+        UnitKind::Shrike => SoundKind::TalonFire,
+        UnitKind::Sylph => SoundKind::WispFire,
+        UnitKind::Condor | UnitKind::Moth => SoundKind::BombRelease,
+        UnitKind::Avalanche => SoundKind::AvalancheFire,
+        UnitKind::Breaker => SoundKind::BreakerFire,
+        UnitKind::Tender
+        | UnitKind::Excavator
+        | UnitKind::Kestrel
+        | UnitKind::Gnat
+        | UnitKind::Skyhook => SoundKind::Laser,
+        UnitKind::Sapper => SoundKind::DemolitionBoom,
         UnitKind::Harvester => SoundKind::Laser,
     }
 }
@@ -497,7 +525,7 @@ impl Game {
                     // deserves the right report and burst.
                     let sound = defense_fire_sound(*kind);
                     let splash = kind
-                        .stats()
+                        .base_stats()
                         .weapons
                         .iter()
                         .find_map(|w| w.splash)
@@ -523,9 +551,21 @@ impl Game {
                         self.state.current_tick(),
                     );
                 }
-                Event::BuildingCompleted { player, kind, .. } if *player == self.human => {
-                    self.sounds_pending.push((SoundKind::TrainDone, None));
-                    self.toast(format!("{} online", kind.name()));
+                Event::BuildingCompleted {
+                    building,
+                    player,
+                    kind,
+                } if *player == self.human => {
+                    // A completion at a nonzero tier is an upgrade
+                    // finishing: its own cue, its own name.
+                    let tier = self.state.building(*building).map_or(0, |b| b.tier);
+                    if tier > 0 {
+                        self.sounds_pending.push((SoundKind::UpgradeDone, None));
+                        self.toast(format!("{} online", kind.tier_name(tier)));
+                    } else {
+                        self.sounds_pending.push((SoundKind::TrainDone, None));
+                        self.toast(format!("{} online", kind.name()));
+                    }
                 }
                 Event::BuildCancelled { player, refund, .. } if *player == self.human => {
                     self.toast(format!("site salvaged (+{refund} scrap)"));
@@ -627,6 +667,9 @@ impl Game {
                         }
                         oxide_sim::command::RejectReason::OutOfBounds => "outside the map",
                         oxide_sim::command::RejectReason::Eliminated => "you are eliminated",
+                        oxide_sim::command::RejectReason::MissingPrerequisite => {
+                            "needs its tech building first"
+                        }
                     };
                     self.toast(why);
                     self.sounds_pending.push((SoundKind::Denied, None));
@@ -680,6 +723,19 @@ impl Game {
                         self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
                 }
+                Event::ChargeDetonated { at, .. } => {
+                    // A mine going off is loud and unmistakable whoever
+                    // owned it.
+                    self.fx.push(Effect {
+                        kind: EffectKind::Burst {
+                            at: world_vec(*at),
+                            radius: oxide_sim::stats::CHARGE_BLAST_RADIUS.to_num::<f32>(),
+                        },
+                        age: 0.0,
+                    });
+                    self.sounds_pending
+                        .push((SoundKind::DemolitionBoom, Some(world_vec(*at))));
+                }
                 Event::ShellLanded {
                     player,
                     targets,
@@ -731,12 +787,15 @@ impl Game {
                         age: 0.0,
                     });
                 }
+                // A spectator inherits a nominal seat but owns no
+                // orders; a bot's private stall feedback must not read
+                // as "your order failed" in the replay viewer.
                 Event::OrderStalled {
                     player,
                     pos,
                     reason,
                     ..
-                } if *player == self.human => {
+                } if *player == self.human && !self.spectate => {
                     // Own-state facts only — a stall reason must never
                     // whisper about what fog hides.
                     self.toast(match reason {
@@ -745,6 +804,11 @@ impl Game {
                         oxide_sim::StallReason::InsufficientScrap => "out of scrap",
                         oxide_sim::StallReason::GroundTaken => {
                             "that ground was taken before the founder arrived"
+                        }
+                        oxide_sim::StallReason::TransportFull => "the transport is full",
+                        oxide_sim::StallReason::NoOpenGround => "no open ground to unload there",
+                        oxide_sim::StallReason::DangerHold => {
+                            "worker waiting for a safe route home"
                         }
                     });
                     self.fx.push(Effect {
@@ -1017,7 +1081,12 @@ mod tests {
         ];
         let building_shells: Vec<_> = buildings
             .into_iter()
-            .filter(|kind| kind.stats().weapons.iter().any(|weapon| weapon.projectile))
+            .filter(|kind| {
+                kind.base_stats()
+                    .weapons
+                    .iter()
+                    .any(|weapon| weapon.projectile)
+            })
             .collect();
         assert_eq!(building_shells, vec![BuildingKind::Bastion]);
     }

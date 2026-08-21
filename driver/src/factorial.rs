@@ -1,14 +1,13 @@
 //! The factorial fairness probe: every advantage the shipped game binds
 //! to the seat index, permuted one lever at a time and all together.
 //!
-//! `sweep` exchanges exactly one factor — the complete resolved profile — so
-//! a lean that survives it is "the map or the engine" and the instrument
-//! stops there. This probe unbundles the rest: which roster a seat
-//! plays, which end of the map it starts from, which id range its
-//! starting units claim, where its commands land in the tick's command
-//! slice, and which rng stream its hesitations come off. Each is a
-//! factor with its own levels; the design is their full cross product,
-//! every cell played on the same seed set.
+//! `sweep` seats the same commander in both chairs and reads the
+//! aggregate lean; this probe unbundles what the chair itself carries:
+//! which roster a seat plays, which end of the map it starts from,
+//! which id range its starting units claim, and where its commands land
+//! in the tick's command slice. Each is a factor with its own levels;
+//! the design is their full cross product, every cell played on the
+//! same seed set.
 //!
 //! The response is seat 0's win rate over decided matches, reported per
 //! factor level with a 95% Wilson interval, alongside decision-tick
@@ -19,26 +18,24 @@
 //!
 //! Nothing in the probe changes the sim: every cell is a transform of
 //! the scenario or of how the harness assembles the tick, and the
-//! all-baseline cell reproduces the shipped resolved-profile path bit for
-//! bit (a test pins that against `runner::step` + `seat_bots`).
+//! all-baseline cell reproduces a direct Overseer-vs-Overseer run bit
+//! for bit (a test pins that against the sim stepped by hand).
 
-use crate::sweep::{SweepOutcome, configure_named_pair, orient_profiles, resolve_named_pair};
+use crate::sweep::SweepOutcome;
 use anyhow::{Context, Result};
-use oxide_sim::bot::{DECISION_STREAM_BASE, Level, NeuralBot, QuantNet};
+use oxide_sim::bot::Brain;
 use oxide_sim::scenario::Scenario;
 use oxide_sim::{BuildingKind, Faction, GameResult, PlayerId, State};
 use serde::Serialize;
 
 /// How many levers the design carries.
-pub const FACTOR_COUNT: usize = 6;
+pub const FACTOR_COUNT: usize = 4;
 
 /// One lever of the design. Every factor is something the shipped game
 /// ties to the seat number; a marginal that moves when the lever flips
 /// is an edge the chair carries, not the player sitting in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Factor {
-    /// The complete dealt profile pair, kept or exchanged between the seats.
-    Personality,
     /// Which roster each seat plays, all four combinations.
     Faction,
     /// Which seat's starting units claim the low unit-id range.
@@ -48,44 +45,35 @@ pub enum Factor {
     /// Whether the map is played as authored or rotated 180 degrees, so
     /// a player index changes ends without changing terrain.
     Geometry,
-    /// Whether each seat's hesitation rng runs on its own stream or the
-    /// other seat's.
-    Stream,
 }
 
 impl Factor {
     /// Every factor, in report order.
     pub const ALL: [Factor; FACTOR_COUNT] = [
-        Factor::Personality,
         Factor::Faction,
         Factor::Spawn,
         Factor::Command,
         Factor::Geometry,
-        Factor::Stream,
     ];
 
     /// The `--factors` key.
     pub fn key(self) -> &'static str {
         match self {
-            Factor::Personality => "personality",
             Factor::Faction => "faction",
             Factor::Spawn => "spawn",
             Factor::Command => "command",
             Factor::Geometry => "geometry",
-            Factor::Stream => "stream",
         }
     }
 
     /// This factor's levels, baseline first.
     pub fn levels(self) -> &'static [&'static str] {
         match self {
-            Factor::Personality => &["dealt", "exchanged"],
             // First letter is seat 0's roster.
             Factor::Faction => &["FC", "CF", "FF", "CC"],
             Factor::Spawn => &["seat0-first", "seat1-first"],
             Factor::Command => &["seat0-first", "seat1-first"],
             Factor::Geometry => &["authored", "rot180"],
-            Factor::Stream => &["seat", "crossed"],
         }
     }
 
@@ -141,8 +129,6 @@ pub struct FactorialMatch {
     pub levels: Vec<String>,
     /// The roster each seat actually played.
     pub factions: [String; 2],
-    /// The legacy aggression component of each complete profile.
-    pub aggression: [u32; 2],
     /// Final tick: the decision tick, or the cap.
     pub ticks: u64,
     /// How it ended.
@@ -235,8 +221,6 @@ pub struct RosterRecord {
 pub struct FactorialReport {
     /// Scenario name.
     pub scenario: String,
-    /// Ladder level both seats played.
-    pub level: String,
     /// Seeds each cell was played on.
     pub seeds: u64,
     /// First scenario seed.
@@ -309,7 +293,7 @@ pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
     // its rotation lands a footprint in from the rotated corner. That
     // target sits inside the original footprint and is therefore open
     // ground the symmetry check already cleared.
-    let (fw, fh) = BuildingKind::Foundry.stats().size;
+    let (fw, fh) = BuildingKind::Foundry.base_stats().size;
     let (fw, fh) = (fw as usize, fh as usize);
     for (y, row) in rows.iter().enumerate() {
         for (x, &c) in row.iter().enumerate() {
@@ -337,7 +321,7 @@ pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
         unit.y = h - 1 - unit.y;
     }
     for building in &mut out.buildings {
-        let (bw, bh) = building.kind.stats().size;
+        let (bw, bh) = building.kind.base_stats().size;
         building.x = w - building.x - bw;
         building.y = h - building.y - bh;
     }
@@ -394,7 +378,6 @@ fn labels(enabled: &[Factor], cell: &Cell) -> Vec<String> {
 /// sim, so the report is a function of the design and the seed set.
 pub fn run_factorial(
     scenario: &str,
-    level: Level,
     enabled: &[Factor],
     seeds: u64,
     max_ticks: u64,
@@ -436,7 +419,7 @@ pub fn run_factorial(
         .flat_map(|cell| (0..seeds).map(move |offset| (*cell, seed_base + offset)))
         .collect();
     let matches = crate::pool::fan_out(&jobs, |&(cell, seed)| {
-        let played = play(&base, level, seed, cell, max_ticks)?;
+        let played = play(&base, seed, cell, max_ticks)?;
         eprintln!(
             "  {} · seed {} · {} ticks · {:?}",
             labels(enabled, &cell).join(" "),
@@ -492,7 +475,6 @@ pub fn run_factorial(
     let overall = Tally::of(&matches.iter().collect::<Vec<_>>());
     Ok(FactorialReport {
         scenario: base.name.clone(),
-        level: format!("{level:?}"),
         seeds,
         seed_base,
         max_ticks,
@@ -616,16 +598,10 @@ fn wilson(wins: u32, n: u32) -> [f64; 2] {
     [(centre - half).max(0.0), (centre + half).min(1.0)]
 }
 
-/// Plays one cell on one seed. The all-baseline cell is the shipped
-/// game: the scenario as authored, named profiles as resolved,
-/// seat-derived streams, and seat-order commands.
-fn play(
-    base: &Scenario,
-    level: Level,
-    seed: u64,
-    cell: Cell,
-    max_ticks: u64,
-) -> Result<FactorialMatch> {
+/// Plays one cell on one seed. The all-baseline cell is a plain
+/// Overseer-vs-Overseer match: the scenario as authored and seat-order
+/// commands.
+fn play(base: &Scenario, seed: u64, cell: Cell, max_ticks: u64) -> Result<FactorialMatch> {
     let mut sc = if cell[Factor::Geometry.index()] == 1 {
         rotate_180(base)?
     } else {
@@ -638,25 +614,9 @@ fn play(
     }
     permute_spawn_order(&mut sc, cell[Factor::Spawn.index()]);
 
-    configure_named_pair(&mut sc, [level; 2]);
-    let dealt = resolve_named_pair(&sc)?;
-    let profiles = orient_profiles(dealt, cell[Factor::Personality.index()] == 1);
-    let aggression = profiles.map(|profile| profile.aggression);
-    let crossed = cell[Factor::Stream.index()] == 1;
-
     let mut state: State = sc.build().context("building scenario")?;
-    let mut bots: Vec<NeuralBot> = (0u8..2)
-        .map(|seat| {
-            let stream_seat = if crossed { 1 - seat } else { seat };
-            NeuralBot::ladder_resolved_with_net_at_stream(
-                PlayerId(seat),
-                seed,
-                profiles[usize::from(seat)],
-                sc.players[usize::from(seat)].faction,
-                QuantNet::ladder().clone(),
-                DECISION_STREAM_BASE + u64::from(stream_seat),
-            )
-        })
+    let mut bots: Vec<Brain> = (0u8..2)
+        .map(|seat| Brain::overseer(PlayerId(seat), seed))
         .collect();
     let order: [usize; 2] = if cell[Factor::Command.index()] == 1 {
         [1, 0]
@@ -689,7 +649,6 @@ fn play(
         cell: cell.to_vec(),
         levels: Vec::new(),
         factions: factions.map(|f| roster(f).to_string()),
-        aggression,
         ticks: state.current_tick(),
         outcome,
         hash: state.hash(),
@@ -700,22 +659,16 @@ fn play(
 /// JSON for the record — the CLI entry.
 pub fn factorial_report(
     scenario: &str,
-    level: Level,
     enabled: &[Factor],
     seeds: u64,
     max_ticks: u64,
     seed_base: u64,
     out: Option<&str>,
 ) -> Result<()> {
-    let report = run_factorial(scenario, level, enabled, seeds, max_ticks, seed_base)?;
+    let report = run_factorial(scenario, enabled, seeds, max_ticks, seed_base)?;
     println!(
-        "\nFACTORIAL FAIRNESS  ·  {}  ·  level {}  ·  {} cells x {} seeds = {} matches  ·  cap {}",
-        report.scenario,
-        report.level,
-        report.cells,
-        report.seeds,
-        report.matches_played,
-        report.max_ticks
+        "\nFACTORIAL FAIRNESS  ·  {}  ·  Overseer both seats  ·  {} cells x {} seeds = {} matches  ·  cap {}",
+        report.scenario, report.cells, report.seeds, report.matches_played, report.max_ticks
     );
     println!(
         "factors: {}\ndecided {} ({} victories, {} draws)  ·  undecided {} ({:.1}% censored)",
@@ -807,8 +760,116 @@ pub fn factorial_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_sim::bot::seat_bots;
-    use oxide_sim::scenario::{BotConfig, NamedStyle};
+
+    fn synthetic(factions: [&str; 2], outcome: SweepOutcome, ticks: u64) -> FactorialMatch {
+        FactorialMatch {
+            seed: 7,
+            cell: vec![0],
+            levels: vec!["roster:base".into()],
+            factions: [factions[0].into(), factions[1].into()],
+            ticks,
+            outcome,
+            hash: 0,
+        }
+    }
+
+    /// The audit measured every `.then(...)` in the record builders at
+    /// zero execution: no test ever produced a victory, so win rates,
+    /// intervals, and quartiles were unverifiable. Hand-built matches
+    /// exercise the full response surface without a simulation.
+    #[test]
+    fn level_records_compute_rates_intervals_and_quartiles() {
+        let matches = [
+            synthetic(
+                ["ferrous", "cupric"],
+                SweepOutcome::Victory { seat: 0 },
+                100,
+            ),
+            synthetic(
+                ["ferrous", "cupric"],
+                SweepOutcome::Victory { seat: 0 },
+                200,
+            ),
+            synthetic(
+                ["ferrous", "cupric"],
+                SweepOutcome::Victory { seat: 0 },
+                300,
+            ),
+            synthetic(
+                ["ferrous", "cupric"],
+                SweepOutcome::Victory { seat: 1 },
+                400,
+            ),
+            synthetic(["ferrous", "cupric"], SweepOutcome::Draw, 250),
+            synthetic(["ferrous", "cupric"], SweepOutcome::Undecided, 999),
+        ];
+        let refs: Vec<&FactorialMatch> = matches.iter().collect();
+        let record = level_record("roster:base", &refs);
+        assert_eq!(record.matches, 6);
+        assert_eq!(record.victories, 4);
+        assert_eq!(record.draws, 1);
+        assert_eq!(record.undecided, 1);
+        assert_eq!(record.seat_wins, [3, 1]);
+        assert_eq!(record.seat0_win_rate, Some(0.75));
+        let [lo, hi] = record.wilson.expect("victories imply an interval");
+        assert!(lo < 0.75 && 0.75 < hi);
+        assert!((0.0..=1.0).contains(&lo) && (0.0..=1.0).contains(&hi));
+        let quartiles = record
+            .decision_ticks
+            .expect("decided matches imply quartiles");
+        assert!(quartiles.p25 <= quartiles.median && quartiles.median <= quartiles.p75);
+
+        let empty = level_record("roster:base", &[]);
+        assert_eq!(empty.seat0_win_rate, None);
+        assert_eq!(empty.wilson, None);
+        assert!(empty.decision_ticks.is_none());
+    }
+
+    /// Roster attribution is by the WINNING seat's faction, not the
+    /// seat index — a CF cell's seat-0 win is a Cupric win.
+    #[test]
+    fn roster_records_attribute_wins_to_factions_not_seats() {
+        let matches = vec![
+            synthetic(
+                ["ferrous", "cupric"],
+                SweepOutcome::Victory { seat: 0 },
+                100,
+            ),
+            synthetic(
+                ["ferrous", "cupric"],
+                SweepOutcome::Victory { seat: 1 },
+                100,
+            ),
+            synthetic(
+                ["cupric", "ferrous"],
+                SweepOutcome::Victory { seat: 0 },
+                100,
+            ),
+            synthetic(
+                ["ferrous", "ferrous"],
+                SweepOutcome::Victory { seat: 0 },
+                100,
+            ),
+            synthetic(["ferrous", "cupric"], SweepOutcome::Draw, 100),
+        ];
+        let record = roster_record(&matches).expect("cross-faction victories exist");
+        assert_eq!(record.ferrous_wins, 1, "only the FC seat-0 win is Ferrous");
+        assert_eq!(
+            record.cupric_wins, 2,
+            "the FC seat-1 and CF seat-0 wins are Cupric"
+        );
+        assert_eq!(record.ferrous_win_rate, 1.0 / 3.0);
+
+        assert!(
+            roster_record(&[synthetic(
+                ["ferrous", "ferrous"],
+                SweepOutcome::Victory { seat: 0 },
+                100
+            )])
+            .is_none(),
+            "mirror matches carry no roster signal"
+        );
+    }
 
     /// Rotating twice is the identity — the transform that would
     /// silently hand the seats different worlds is exactly the one a
@@ -877,86 +938,42 @@ mod tests {
         }
     }
 
-    /// The all-baseline cell must be the shipped game across distinct
-    /// deterministic named-profile slates. Comparing the complete
-    /// resolved records keeps this proof aligned with style, variant,
-    /// role facets, and any later named-profile fields.
+    /// The all-baseline cell must reproduce, bit for bit, a reference
+    /// run that seats [`Brain::overseer`] per seat and steps the sim
+    /// directly — proof that the harness transforms are neutral when
+    /// every lever sits at its baseline.
     #[test]
-    fn the_baseline_cell_reproduces_the_shipped_bot_path() {
+    fn the_baseline_cell_reproduces_a_direct_overseer_run() {
         let base = crate::runner::load_scenario("skirmish").unwrap();
-        let mut slates = Vec::new();
-        for seed in 0..10_000 {
+        for seed in [0u64, 17, 4_242] {
             let mut sc = base.clone();
             sc.seed = seed;
-            configure_named_pair(&mut sc, [Level::Medium; 2]);
-            let profiles = resolve_named_pair(&sc).unwrap();
-            if slates.iter().all(|(_, previous)| previous != &profiles) {
-                slates.push((seed, profiles));
-            }
-            if slates.len() == 3 {
-                break;
-            }
-        }
-        assert_eq!(
-            slates.len(),
-            3,
-            "the deterministic deal spans profile slates"
-        );
-
-        for level in Level::LADDER {
-            for &(seed, _) in &slates {
-                let mut sc = base.clone();
-                sc.seed = seed;
-                configure_named_pair(&mut sc, [level; 2]);
-                let profiles = resolve_named_pair(&sc).unwrap();
-                let mut state = sc.build().unwrap();
-                let mut bots = seat_bots(&sc);
-                for _ in 0..200 {
-                    crate::runner::step(&mut state, &mut bots, None);
+            let mut state = sc.build().unwrap();
+            let mut bots: Vec<Brain> = (0u8..2)
+                .map(|seat| Brain::overseer(PlayerId(seat), seed))
+                .collect();
+            for _ in 0..200 {
+                let mut commands = Vec::new();
+                for bot in &mut bots {
+                    commands.extend(bot.act(&state));
                 }
-                let probed = play(&base, level, seed, [0; FACTOR_COUNT], 200).unwrap();
-                assert_eq!(
-                    probed.hash,
-                    state.hash(),
-                    "{level:?} at resolved profiles {profiles:?}"
-                );
-                assert_eq!(probed.ticks, state.current_tick());
+                state.tick(&commands);
+                if state.result().is_some() {
+                    break;
+                }
             }
+            let probed = play(&base, seed, [0; FACTOR_COUNT], 200).unwrap();
+            assert_eq!(probed.hash, state.hash(), "seed {seed}");
+            assert_eq!(probed.ticks, state.current_tick(), "seed {seed}");
         }
-    }
-
-    #[test]
-    fn personality_factor_exchanges_the_complete_resolved_profiles() {
-        let mut scenario = crate::runner::load_scenario("skirmish").unwrap();
-        scenario.players[0].bot_config = Some(BotConfig {
-            level: Level::Medium,
-            aggression: None,
-            style: Some(NamedStyle::Turtle),
-            variant: Some(1),
-            team_role: None,
-        });
-        scenario.players[1].bot_config = Some(BotConfig {
-            level: Level::Medium,
-            aggression: None,
-            style: Some(NamedStyle::Balanced),
-            variant: Some(2),
-            team_role: None,
-        });
-        configure_named_pair(&mut scenario, [Level::Hard; 2]);
-        let dealt = resolve_named_pair(&scenario).unwrap();
-        assert_ne!(dealt[0].style, dealt[1].style);
-        assert_ne!(dealt[0].facets, dealt[1].facets);
-
-        assert_eq!(orient_profiles(dealt, false), dealt);
-        assert_eq!(orient_profiles(dealt, true), [dealt[1], dealt[0]]);
     }
 
     /// Every cell is played on every seed, every match lands in exactly
     /// one cell, and the marginals account for all of them.
     #[test]
     fn the_design_accounts_for_every_cell() {
-        let report = run_factorial("skirmish", Level::Medium, &Factor::ALL, 1, 30, 7_000).unwrap();
-        assert_eq!(report.cells, 2 * 4 * 2 * 2 * 2 * 2);
+        let report = run_factorial("skirmish", &Factor::ALL, 1, 30, 7_000).unwrap();
+        assert_eq!(report.cells, 4 * 2 * 2 * 2);
         assert_eq!(report.matches_played as usize, report.cells);
         assert_eq!(report.per_cell.len(), report.cells);
         assert!(report.per_cell.iter().all(|c| c.matches == 1));
@@ -978,18 +995,17 @@ mod tests {
     fn a_subset_design_pins_the_disabled_factors() {
         let report = run_factorial(
             "skirmish",
-            Level::Medium,
-            &[Factor::Command, Factor::Stream],
+            &[Factor::Command, Factor::Geometry],
             1,
             20,
             7_000,
         )
         .unwrap();
         assert_eq!(report.cells, 4);
-        assert_eq!(report.factors, ["command", "stream"]);
+        assert_eq!(report.factors, ["command", "geometry"]);
         for m in &report.matches {
             assert_eq!(m.cell[Factor::Faction.index()], 0);
-            assert_eq!(m.cell[Factor::Geometry.index()], 0);
+            assert_eq!(m.cell[Factor::Spawn.index()], 0);
             assert_eq!(m.levels.len(), 2);
         }
     }
@@ -1002,22 +1018,20 @@ mod tests {
     fn the_design_normalizes_its_factor_order_and_refuses_repeats() {
         let report = run_factorial(
             "skirmish",
-            Level::Medium,
-            &[Factor::Stream, Factor::Personality],
+            &[Factor::Geometry, Factor::Faction],
             1,
             20,
             7_000,
         )
         .unwrap();
-        assert_eq!(report.factors, ["personality", "stream"]);
+        assert_eq!(report.factors, ["faction", "geometry"]);
         assert_eq!(
-            report.per_factor[0].factor, "personality",
+            report.per_factor[0].factor, "faction",
             "the marginals follow the same order as the columns"
         );
         let err = run_factorial(
             "skirmish",
-            Level::Medium,
-            &[Factor::Stream, Factor::Stream],
+            &[Factor::Geometry, Factor::Geometry],
             1,
             20,
             7_000,
@@ -1042,9 +1056,6 @@ mod tests {
     #[test]
     fn an_unknown_factor_lists_the_known_ones() {
         let err = Factor::parse("weather").unwrap_err().to_string();
-        assert!(
-            err.contains("personality") && err.contains("geometry"),
-            "{err}"
-        );
+        assert!(err.contains("faction") && err.contains("geometry"), "{err}");
     }
 }

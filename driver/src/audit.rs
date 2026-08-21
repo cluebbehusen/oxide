@@ -20,8 +20,13 @@ pub struct SeatAudit {
     pub reachable_tiles: usize,
     /// Straight-line distance to the nearest scrap node, in tiles.
     pub nearest_scrap: f64,
-    /// Shortest ground route to any enemy Foundry doorstep, in steps.
+    /// Shortest route to any enemy Foundry by the cheapest mover:
+    /// ground steps, or the air detour (rounded up) when no ground
+    /// route exists — the island case.
     pub nearest_enemy_route: Option<usize>,
+    /// Straight-line distance to the nearest derelict extractor frame,
+    /// in tiles; None on maps without frames.
+    pub nearest_extractor: Option<f64>,
 }
 
 /// A Foundry-to-Foundry route measured both ways of moving.
@@ -38,6 +43,17 @@ pub struct RouteAudit {
     /// The longest artillery reach as a fraction of the ground route —
     /// past ~0.5 the map is a siege range, not a battlefield.
     pub artillery_pressure: Option<f64>,
+}
+
+impl RouteAudit {
+    /// The distance the cheapest mover actually pays: ground steps
+    /// when a ground route exists, else the air detour rounded up.
+    /// `None` never survives a built scenario — the sim's connectivity
+    /// gate refuses a pair no mover can reach.
+    pub fn effective_steps(&self) -> Option<usize> {
+        self.ground_steps
+            .or_else(|| self.air_tiles.map(|tiles| tiles.ceil() as usize))
+    }
 }
 
 /// Everything the audit measures for one scenario.
@@ -64,8 +80,10 @@ pub struct MapAudit {
 /// kind joins this list.
 fn longest_reach() -> f64 {
     let bombard = oxide_sim::UnitKind::Bombard.stats().weapons.iter();
-    let bastion = BuildingKind::Bastion.stats().weapons.iter();
+    let avalanche = oxide_sim::UnitKind::Avalanche.stats().weapons.iter();
+    let bastion = BuildingKind::Bastion.base_stats().weapons.iter();
     bombard
+        .chain(avalanche)
         .chain(bastion)
         .map(|w| w.range.to_num::<f64>())
         .fold(0.0, f64::max)
@@ -194,7 +212,7 @@ fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize
 /// detour the sim's air router would actually take.
 fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) -> Option<f64> {
     let center = |f: &oxide_sim::Building| {
-        let (w, h) = f.kind.stats().size;
+        let (w, h) = f.stats().size;
         (
             f.anchor.x as f64 + w as f64 / 2.0,
             f.anchor.y as f64 + h as f64 / 2.0,
@@ -210,7 +228,7 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
             state
                 .map()
                 .tile(t)
-                .is_none_or(|tile| tile.terrain != oxide_sim::map::Terrain::Peak)
+                .is_none_or(|tile| !tile.terrain.blocks_air())
         },
     );
     if !blocked {
@@ -222,7 +240,7 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
         state
             .map()
             .tile(t)
-            .is_some_and(|tile| tile.terrain != oxide_sim::map::Terrain::Peak)
+            .is_some_and(|tile| !tile.terrain.blocks_air())
     };
     // Uniform-cost search with diagonals at sqrt(2), so the detour
     // branch reports the same Euclidean-ish tile unit as the straight
@@ -322,7 +340,7 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
         steps.push((
             i as u8,
             foundry,
-            doorsteps(&state, foundry.anchor, foundry.kind.stats().size),
+            doorsteps(&state, foundry.anchor, foundry.stats().size),
         ));
     }
 
@@ -338,7 +356,8 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
             let ground_steps = ground_route(&state, &steps[i].2, &steps[j].2);
             let air_tiles = air_route(&state, steps[i].1, steps[j].1);
             let artillery_pressure = ground_steps.map(|s| reach / s.max(1) as f64);
-            for (seat, slot) in [(i, ground_steps), (j, ground_steps)] {
+            let effective = ground_steps.or_else(|| air_tiles.map(|tiles| tiles.ceil() as usize));
+            for (seat, slot) in [(i, effective), (j, effective)] {
                 nearest_enemy[seat] = match (nearest_enemy[seat], slot) {
                     (Some(cur), Some(new)) => Some(cur.min(new)),
                     (None, new) => new,
@@ -366,7 +385,7 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
                 .iter()
                 .find(|b| b.player.0 == *seat && b.kind == BuildingKind::Foundry)
                 .map(|b| {
-                    let size = b.kind.stats().size;
+                    let size = b.stats().size;
                     (
                         b.anchor.x as f64 + size.0 as f64 / 2.0,
                         b.anchor.y as f64 + size.1 as f64 / 2.0,
@@ -380,11 +399,23 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
                     (dx * dx + dy * dy).sqrt()
                 })
                 .fold(f64::INFINITY, f64::min);
+            let nearest_extractor = state
+                .map()
+                .extractor_frames()
+                .iter()
+                .map(|f| {
+                    let (dx, dy) = (f.x as f64 + 1.0 - center.0, f.y as f64 + 1.0 - center.1);
+                    (dx * dx + dy * dy).sqrt()
+                })
+                .fold(None, |best: Option<f64>, d| {
+                    Some(best.map_or(d, |b| b.min(d)))
+                });
             SeatAudit {
                 seat: *seat,
                 reachable_tiles: reachable_from(&state, doorstep),
                 nearest_scrap,
                 nearest_enemy_route: nearest_enemy[idx],
+                nearest_extractor,
             }
         })
         .collect();

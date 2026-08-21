@@ -3,7 +3,7 @@
 //! `oxide-driver gym` speaks newline-delimited JSON on stdin/stdout so
 //! a trainer (see `tools/train/`) can drive [`GymBot`] episodes without
 //! linking Rust. `control` names the externally-driven seats: one seat
-//! against a scripted tier for curriculum and evaluation, or both
+//! against the Overseer for curriculum and evaluation, or both
 //! seats for self-play and league play — every decision tick then
 //! carries features and masks for each controlled seat, and `step`
 //! takes one production/construction/operation action triple per
@@ -13,17 +13,19 @@
 //! Determinism holds the whole way down: same seed and same actions
 //! replay the same match, which is what makes rollouts auditable.
 
+use crate::runner::GameReplay;
 use anyhow::{Context, Result, bail};
 use oxide_sim::bot::{
     ACTION_COUNT, ACTION_HEADS, Action, ActionPlan, Brain, CONDITION_NAMES, CONDITIONING_COUNT,
-    CanonicalProfile, Decision, Difficulty, FEATURE_COUNT, FEATURE_NAMES, GYM_VERSION, GymBot,
+    CanonicalProfile, Decision, FEATURE_COUNT, FEATURE_NAMES, GYM_VERSION, GymBot,
     PROFILE_CONDITION_COUNT, PROFILE_TEAM_ROLES, ProfileFacets, ResolvedBotProfile,
     canonical_profiles, ladder_condition_values_with_facets,
 };
 use oxide_sim::scenario::{Scenario, TeamRole};
 use oxide_sim::state::GameResult;
 use oxide_sim::{
-    BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, State, UnitRepairSource,
+    BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, SIM_VERSION, State,
+    UnitRepairSource,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
@@ -154,14 +156,14 @@ fn prepare_cup_scenario(
 
 #[derive(Clone, Copy)]
 enum CupOpponent {
-    Tier(Difficulty),
+    Overseer,
     Rusher,
 }
 
 impl CupOpponent {
     fn name(self) -> String {
         match self {
-            Self::Tier(tier) => format!("{tier:?}"),
+            Self::Overseer => "Overseer".to_string(),
             Self::Rusher => "Rusher".to_string(),
         }
     }
@@ -204,12 +206,10 @@ fn cup_rusher_plan(decision: &Decision, tick: u64) -> ActionPlan {
 enum Request {
     Reset {
         seed: u64,
-        /// Externally-driven seats (default `[0]`).
+        /// Externally-driven seats (default `[0]`). Every uncontrolled
+        /// seat is played by the Overseer.
         #[serde(default = "default_control")]
         control: Vec<u8>,
-        /// Scripted opponent tier for any uncontrolled seat.
-        #[serde(default = "default_tier")]
-        tier: Difficulty,
         #[serde(default = "default_max_ticks")]
         max_ticks: u64,
         #[serde(default)]
@@ -225,20 +225,26 @@ enum Request {
         /// Omission and all-zero rows preserve the historical gym doctrine.
         #[serde(default)]
         profile_facets: Option<Vec<[u32; PROFILE_CONDITION_COUNT]>>,
+        /// Keep a command log and attach the full replay JSON (the same
+        /// shape `driver run --save-replay` writes) to the terminal
+        /// reply, so a campaign can eyeball mid-training play. Missing
+        /// means false — the wire stays backward-compatible.
+        #[serde(default)]
+        record: bool,
     },
     Step {
         /// One action triple per controlled seat, in `control` order.
-        actions: Vec<[usize; 3]>,
+        actions: Vec<[usize; 4]>,
     },
+    /// Cumulative wall-time counters for this server process: where a
+    /// training rollout's driver-side time actually goes. Diagnostics
+    /// only — wall clocks never touch the simulation.
+    Stats,
     Quit,
 }
 
 fn default_control() -> Vec<u8> {
     vec![0]
-}
-
-fn default_tier() -> Difficulty {
-    Difficulty::Veteran
 }
 
 fn default_max_ticks() -> u64 {
@@ -286,6 +292,12 @@ struct Episode {
     opponents: Vec<Brain>,
     max_ticks: u64,
     effects: Vec<SeatEffects>,
+    /// The command log kept for a `record: true` reset — attached to
+    /// the terminal reply as full replay JSON.
+    recorder: Option<GameReplay>,
+    /// Diagnostics-only wall time spent inside the in-process
+    /// opponents' thinking, a sub-slice of the serve loop's sim time.
+    opponent_ns: u128,
 }
 
 #[derive(Clone, Copy)]
@@ -293,6 +305,7 @@ struct EpisodeOptions<'a> {
     factions: Option<&'a [Faction]>,
     cadence: u64,
     profile_facets: Option<&'a [[u32; PROFILE_CONDITION_COUNT]]>,
+    record: bool,
 }
 
 impl<'a> EpisodeOptions<'a> {
@@ -301,11 +314,17 @@ impl<'a> EpisodeOptions<'a> {
             factions,
             cadence,
             profile_facets: None,
+            record: false,
         }
     }
 
     fn with_profile_facets(mut self, profile_facets: &'a [[u32; PROFILE_CONDITION_COUNT]]) -> Self {
         self.profile_facets = Some(profile_facets);
+        self
+    }
+
+    fn with_record(mut self, record: bool) -> Self {
+        self.record = record;
         self
     }
 }
@@ -314,7 +333,6 @@ impl Episode {
     fn new(
         seed: u64,
         control: &[u8],
-        tier: Difficulty,
         max_ticks: u64,
         scenario: Option<&str>,
         options: EpisodeOptions<'_>,
@@ -323,6 +341,7 @@ impl Episode {
             factions,
             cadence,
             profile_facets,
+            record,
         } = options;
         let mut scenario = crate::runner::load_scenario(scenario.unwrap_or("skirmish"))?;
         scenario.seed = seed;
@@ -359,14 +378,21 @@ impl Episode {
                 bail!("profile facets must be in 0..=1000");
             }
         }
+        // The recorder captures the scenario AFTER seeding and retint:
+        // rebuilding the replay's setup must reproduce this episode.
+        let recorder = record.then(|| GameReplay::new(SIM_VERSION, scenario.clone()));
         let state = scenario.build().context("scenario build")?;
+        let anchors: Vec<chassis::grid::TilePos> = scenario
+            .start_anchors()
+            .map(|list| list.into_iter().map(|(_, tile)| tile).collect())
+            .unwrap_or_default();
         let gyms: Vec<GymBot> = control
             .iter()
             .enumerate()
             .map(|(index, seat)| {
                 let facets =
                     profile_facets.map_or([0; PROFILE_CONDITION_COUNT], |rows| rows[index]);
-                if facets == [0; PROFILE_CONDITION_COUNT] {
+                let mut bot = if facets == [0; PROFILE_CONDITION_COUNT] {
                     GymBot::with_cadence(PlayerId(*seat), cadence)
                 } else {
                     GymBot::with_profile_facets(
@@ -374,12 +400,14 @@ impl Episode {
                         cadence,
                         ProfileFacets::from_conditions(facets),
                     )
-                }
+                };
+                bot.set_start_anchors(anchors.clone());
+                bot
             })
             .collect();
         let opponents: Vec<Brain> = (0..players)
             .filter(|s| !control.contains(s))
-            .map(|s| Brain::for_tier(PlayerId(s), seed, tier))
+            .map(|s| Brain::overseer(PlayerId(s), seed))
             .collect();
         let effects = control
             .iter()
@@ -391,6 +419,8 @@ impl Episode {
             opponents,
             max_ticks,
             effects,
+            recorder,
+            opponent_ns: 0,
         })
     }
 
@@ -494,6 +524,11 @@ impl Episode {
                 effect.repair_unit_commands += 1;
             }
         }
+        if let Some(recorder) = &mut self.recorder {
+            for command in commands {
+                recorder.record(self.state.current_tick(), command.clone());
+            }
+        }
 
         let report = self.state.tick(commands);
         self.note_events(&report.events);
@@ -501,7 +536,7 @@ impl Episode {
 
     /// Applies the trainer's actions at the current decision tick, then
     /// advances to the next decision tick (or the end).
-    fn step(&mut self, actions: &[[usize; 3]]) -> Result<()> {
+    fn step(&mut self, actions: &[[usize; 4]]) -> Result<()> {
         // One action triple per *living* controlled seat, in seat order
         // — dead learners dropped out of the frame's seats list and send
         // none.
@@ -523,15 +558,19 @@ impl Episode {
             commands
                 .extend(self.gyms[idx].step_plan(&self.state, ActionPlan::from_indices(*action)));
         }
+        let started = std::time::Instant::now();
         for op in self.opponents.iter_mut() {
             commands.extend(op.act(&self.state));
         }
+        self.opponent_ns += started.elapsed().as_nanos();
         self.tick_with_effects(&commands);
         while self.live() && !self.state.current_tick().is_multiple_of(self.cadence()) {
             let mut commands = Vec::new();
+            let started = std::time::Instant::now();
             for op in self.opponents.iter_mut() {
                 commands.extend(op.act(&self.state));
             }
+            self.opponent_ns += started.elapsed().as_nanos();
             self.tick_with_effects(&commands);
         }
         Ok(())
@@ -569,6 +608,7 @@ impl Episode {
                         "seat": gym.player().0,
                         "features": d.features.to_vec(),
                         "mask": d.mask.to_vec(),
+                        "exec": gym.exec_census(),
                     })
                 })
                 .collect();
@@ -617,10 +657,11 @@ impl Episode {
                         "seat": gym.player().0,
                         "features": d.features.to_vec(),
                         "mask": d.mask.to_vec(),
+                        "exec": gym.exec_census(),
                     })
                 })
                 .collect();
-            serde_json::json!({
+            let mut reply = serde_json::json!({
                 "done": true,
                 "truncated": truncated,
                 "tick": self.state.current_tick(),
@@ -630,7 +671,13 @@ impl Episode {
                 "seats": seats,
                 "factions": factions,
                 "effects": &self.effects,
-            })
+            });
+            if let Some(recorder) = &mut self.recorder {
+                recorder.meta.ticks = Some(self.state.current_tick());
+                reply["replay"] =
+                    serde_json::to_value(&*recorder).expect("replay serializes to JSON");
+            }
+            reply
         }
     }
 }
@@ -710,6 +757,8 @@ fn hello() -> serde_json::Value {
         "profiled_doctrine": PROFILED_DOCTRINE_VERSION,
         "reset_factions": true,
         "effect_telemetry": true,
+        "episode_replay": true,
+        "timing_stats": true,
     })
 }
 
@@ -721,6 +770,20 @@ pub fn serve() -> Result<()> {
     writeln!(out, "{}", hello())?;
     out.flush()?;
 
+    // Diagnostics-only wall clocks: where driver-side rollout time
+    // goes. `sim` is state ticking plus the in-process Overseer and
+    // gym executives; `reply` is observation building plus JSON
+    // construction; `write` is the pipe. The simulation itself never
+    // reads a clock.
+    let mut sim_ns: u128 = 0;
+    let mut reply_ns: u128 = 0;
+    let mut write_ns: u128 = 0;
+    let mut reset_ns: u128 = 0;
+    let mut opponent_ns_retired: u128 = 0;
+    let mut ticks: u64 = 0;
+    let mut decisions: u64 = 0;
+    let mut resets: u64 = 0;
+
     let mut episode: Option<Episode> = None;
     for line in stdin.lock().lines() {
         let line = line?;
@@ -731,55 +794,103 @@ pub fn serve() -> Result<()> {
             Ok(Request::Reset {
                 seed,
                 control,
-                tier,
                 max_ticks,
                 scenario,
                 factions,
                 cadence,
                 profile_facets,
+                record,
             }) => {
-                let options = EpisodeOptions::new(factions.as_deref(), cadence);
+                let options = EpisodeOptions::new(factions.as_deref(), cadence).with_record(record);
                 let options = match profile_facets.as_deref() {
                     Some(facets) => options.with_profile_facets(facets),
                     None => options,
                 };
-                match Episode::new(
-                    seed,
-                    &control,
-                    tier,
-                    max_ticks,
-                    scenario.as_deref(),
-                    options,
-                ) {
+                let started = std::time::Instant::now();
+                match Episode::new(seed, &control, max_ticks, scenario.as_deref(), options) {
                     Ok(mut e) => {
+                        reset_ns += started.elapsed().as_nanos();
+                        resets += 1;
+                        let started = std::time::Instant::now();
                         let reply = e.reply();
-                        episode = Some(e);
+                        reply_ns += started.elapsed().as_nanos();
+                        if let Some(retired) = episode.replace(e) {
+                            opponent_ns_retired += retired.opponent_ns;
+                        }
                         reply
                     }
                     Err(err) => serde_json::json!({ "error": format!("{err:#}") }),
                 }
             }
             Ok(Request::Step { actions }) => match episode.as_mut() {
-                Some(e) if e.live() => match e.step(&actions) {
-                    Ok(()) => e.reply(),
-                    Err(err) => serde_json::json!({ "error": format!("{err:#}") }),
-                },
+                Some(e) if e.live() => {
+                    let before = e.state.current_tick();
+                    let started = std::time::Instant::now();
+                    match e.step(&actions) {
+                        Ok(()) => {
+                            sim_ns += started.elapsed().as_nanos();
+                            ticks += e.state.current_tick() - before;
+                            decisions += 1;
+                            let started = std::time::Instant::now();
+                            let reply = e.reply();
+                            reply_ns += started.elapsed().as_nanos();
+                            reply
+                        }
+                        Err(err) => serde_json::json!({ "error": format!("{err:#}") }),
+                    }
+                }
                 Some(_) => serde_json::json!({ "error": "episode is over; reset first" }),
                 None => serde_json::json!({ "error": "no episode; reset first" }),
             },
+            Ok(Request::Stats) => {
+                let opponent_ns =
+                    opponent_ns_retired + episode.as_ref().map_or(0, |e| e.opponent_ns);
+                serde_json::json!({
+                    "stats": {
+                        "sim_us": (sim_ns / 1_000) as u64,
+                        "opponent_us": (opponent_ns / 1_000) as u64,
+                        "reply_us": (reply_ns / 1_000) as u64,
+                        "write_us": (write_ns / 1_000) as u64,
+                        "reset_us": (reset_ns / 1_000) as u64,
+                        "ticks": ticks,
+                        "decisions": decisions,
+                        "resets": resets,
+                    }
+                })
+            }
             Ok(Request::Quit) => break,
             Err(err) => serde_json::json!({ "error": format!("bad request: {err}") }),
         };
+        let started = std::time::Instant::now();
         writeln!(out, "{reply}")?;
         out.flush()?;
+        write_ns += started.elapsed().as_nanos();
     }
     Ok(())
 }
 
-/// Runs the promotion tournament for a quantized artifact: every
-/// scripted tier plus the rush canary, `seeds` seeds x both seats,
-/// printed as JSON lines. This measures the shipped integer bot — the
-/// float checkpoint it came from is a different (unshippable) player.
+/// One sampled cup match's scoring row: (won, draw, capped, active
+/// cap). Scored by seat membership, not team id — a team number only
+/// coincides with the seat index on default-team maps. `winners` is
+/// empty for BOTH a mutual-destruction draw and an undecided tick
+/// cap (kit reports a cap as `capped` with no result), so a draw is
+/// only claimed when the match actually ended: conflating the two
+/// once inflated every cup's draw column by its censoring rate.
+fn cup_outcome(
+    winners: &[u8],
+    seat: u8,
+    capped: bool,
+    recent_activity: bool,
+) -> (bool, bool, bool, bool) {
+    let won = winners.contains(&seat);
+    let draw = winners.is_empty() && !capped;
+    (won, draw, capped, capped && recent_activity)
+}
+
+/// Runs the promotion tournament for a quantized artifact: the
+/// Overseer plus the rush canary, `seeds` seeds x both seats, printed
+/// as JSON lines. This measures the shipped integer bot — the float
+/// checkpoint it came from is a different (unshippable) player.
 pub fn neural_cup(
     weights: &std::path::Path,
     seeds: u64,
@@ -822,13 +933,7 @@ pub fn neural_cup(
         weights.display(),
         actual_factions.code()
     );
-    for opponent_kind in [
-        CupOpponent::Tier(Difficulty::Scrapheap),
-        CupOpponent::Tier(Difficulty::Standard),
-        CupOpponent::Tier(Difficulty::Veteran),
-        CupOpponent::Tier(Difficulty::Prime),
-        CupOpponent::Rusher,
-    ] {
+    for opponent_kind in [CupOpponent::Overseer, CupOpponent::Rusher] {
         // Every (seed, seat) game is an independent deterministic sim, so
         // they run across threads; aggregation folds a pre-ordered result
         // vector, keeping the printed numbers identical to the serial
@@ -873,11 +978,11 @@ pub fn neural_cup(
                 }
             };
             let mut opponent = match opponent_kind {
-                CupOpponent::Tier(tier) => Some(Brain::for_tier(PlayerId(1 - seat), seed, tier)),
+                CupOpponent::Overseer => Some(Brain::overseer(PlayerId(1 - seat), seed)),
                 CupOpponent::Rusher => None,
             };
             let mut rusher = match opponent_kind {
-                CupOpponent::Tier(_) => None,
+                CupOpponent::Overseer => None,
                 CupOpponent::Rusher => {
                     Some(GymBot::with_cadence(PlayerId(1 - seat), effective_cadence))
                 }
@@ -897,16 +1002,13 @@ pub fn neural_cup(
                 state.tick(&commands)
             })
             .context("sampling cup match")?;
-            // Score by seat membership, not team id — a team number
-            // only coincides with the seat index on default-team maps.
-            let won = sampled.winners.contains(&seat);
-            let draw = sampled.winners.is_empty();
             let recent = |tick| sampled.ticks.saturating_sub(tick) <= 2_000;
-            let active_cap = sampled.capped
-                && (recent(sampled.activity.last_combat_tick)
-                    || recent(sampled.activity.last_economy_tick)
-                    || recent(sampled.last_progress_tick));
-            Ok((won, draw, sampled.capped, active_cap, sampled.ticks))
+            let recent_activity = recent(sampled.activity.last_combat_tick)
+                || recent(sampled.activity.last_economy_tick)
+                || recent(sampled.last_progress_tick);
+            let (won, draw, capped, active_cap) =
+                cup_outcome(&sampled.winners, seat, sampled.capped, recent_activity);
+            Ok((won, draw, capped, active_cap, sampled.ticks))
         };
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -994,15 +1096,8 @@ mod tests {
     use oxide_sim::state::Order;
 
     fn episode(factions: Option<&[Faction]>) -> Episode {
-        Episode::new(
-            17,
-            &[0, 1],
-            Difficulty::Veteran,
-            100,
-            None,
-            EpisodeOptions::new(factions, 8),
-        )
-        .expect("skirmish episode")
+        Episode::new(17, &[0, 1], 100, None, EpisodeOptions::new(factions, 8))
+            .expect("skirmish episode")
     }
 
     #[test]
@@ -1035,6 +1130,7 @@ mod tests {
             ActionPlan {
                 production: Action::TrainHarvester,
                 construction: Action::NoConstruction,
+                upgrade: Action::NoUpgrade,
                 operation: Action::FormArmy,
             }
         );
@@ -1046,6 +1142,7 @@ mod tests {
             ActionPlan {
                 production: Action::TrainSentinel,
                 construction: Action::NoConstruction,
+                upgrade: Action::NoUpgrade,
                 operation: Action::Push,
             }
         );
@@ -1156,6 +1253,7 @@ mod tests {
     fn hello_and_reset_reply_advertise_zeroed_effect_telemetry() {
         let hello = hello();
         assert_eq!(hello["effect_telemetry"], true);
+        assert_eq!(hello["episode_replay"], true);
         assert_eq!(hello["version"], GYM_VERSION);
         assert_eq!(hello["features"], FEATURE_COUNT);
         assert_eq!(hello["actions"], ACTION_COUNT);
@@ -1185,9 +1283,12 @@ mod tests {
         assert_eq!(
             hello["action_heads"],
             serde_json::json!([
-                [0, 1, 2, 3, 4, 5, 6, 7, 8],
-                [24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23],
-                [25, 16, 17, 18, 19, 20],
+                [
+                    0, 1, 2, 3, 4, 5, 6, 7, 8, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35
+                ],
+                [24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23, 36, 37, 38, 39],
+                [42, 40],
+                [25, 16, 17, 18, 19, 20, 41],
             ])
         );
 
@@ -1253,7 +1354,6 @@ mod tests {
         let mut episode = Episode::new(
             17,
             &[0],
-            Difficulty::Veteran,
             100,
             None,
             EpisodeOptions::new(None, 8).with_profile_facets(&rows),
@@ -1269,20 +1369,12 @@ mod tests {
 
     #[test]
     fn zero_profile_facets_select_the_historical_gym_path() {
-        let mut omitted = Episode::new(
-            17,
-            &[0],
-            Difficulty::Veteran,
-            100,
-            None,
-            EpisodeOptions::new(None, 8),
-        )
-        .expect("unprofiled skirmish episode");
+        let mut omitted = Episode::new(17, &[0], 100, None, EpisodeOptions::new(None, 8))
+            .expect("unprofiled skirmish episode");
         let zero_rows = [[0; PROFILE_CONDITION_COUNT]];
         let mut explicit_zero = Episode::new(
             17,
             &[0],
-            Difficulty::Veteran,
             100,
             None,
             EpisodeOptions::new(None, 8).with_profile_facets(&zero_rows),
@@ -1306,7 +1398,6 @@ mod tests {
         let misaligned = Episode::new(
             17,
             &[0, 1],
-            Difficulty::Veteran,
             100,
             None,
             EpisodeOptions::new(None, 8).with_profile_facets(&[[0; PROFILE_CONDITION_COUNT]]),
@@ -1325,7 +1416,6 @@ mod tests {
         let out_of_range = Episode::new(
             17,
             &[0],
-            Difficulty::Veteran,
             100,
             None,
             EpisodeOptions::new(None, 8).with_profile_facets(&[invalid]),
@@ -1342,15 +1432,8 @@ mod tests {
 
     #[test]
     fn terminal_reply_distinguishes_tick_cap_from_a_game_result() {
-        let mut capped = Episode::new(
-            17,
-            &[0, 1],
-            Difficulty::Veteran,
-            0,
-            None,
-            EpisodeOptions::new(None, 8),
-        )
-        .expect("capped skirmish episode");
+        let mut capped = Episode::new(17, &[0, 1], 0, None, EpisodeOptions::new(None, 8))
+            .expect("capped skirmish episode");
         let capped_reply = capped.reply();
         assert_eq!(capped_reply["done"], true);
         assert_eq!(capped_reply["truncated"], true);
@@ -1369,15 +1452,8 @@ mod tests {
 
     #[test]
     fn repair_effects_accumulate_across_the_whole_decision_interval() {
-        let mut episode = Episode::new(
-            17,
-            &[0],
-            Difficulty::Veteran,
-            300,
-            None,
-            EpisodeOptions::new(None, 64),
-        )
-        .expect("skirmish episode");
+        let mut episode = Episode::new(17, &[0], 300, None, EpisodeOptions::new(None, 64))
+            .expect("skirmish episode");
         wound_sentinel(&mut episode, PlayerId(0));
         let reset = episode.reply();
         assert_eq!(reset["effects"][0]["unit_hp_restored"], 0);
@@ -1386,6 +1462,7 @@ mod tests {
             .step(&[[
                 Action::Idle as usize,
                 Action::RepairUnit as usize,
+                Action::NoUpgrade as usize,
                 Action::NoOperation as usize,
             ]])
             .expect("legal repair action");
@@ -1716,7 +1793,12 @@ mod tests {
         )
         .expect("old reset request");
         match old {
-            Request::Reset { factions, .. } => assert!(factions.is_none()),
+            Request::Reset {
+                factions, record, ..
+            } => {
+                assert!(factions.is_none());
+                assert!(!record, "a reset without the field must not record");
+            }
             _ => panic!("parsed the wrong request"),
         }
 
@@ -1730,17 +1812,83 @@ mod tests {
             }
             _ => panic!("parsed the wrong request"),
         }
+
+        let recorded = serde_json::from_str::<Request>(
+            r#"{"cmd":"reset","seed":1,"control":[0],"max_ticks":4,"record":true}"#,
+        )
+        .expect("recorded reset request");
+        match recorded {
+            Request::Reset { record, .. } => assert!(record),
+            _ => panic!("parsed the wrong request"),
+        }
     }
 
     #[test]
-    fn step_wire_requires_one_three_head_plan_per_seat() {
-        let request =
-            serde_json::from_str::<Request>(r#"{"cmd":"step","actions":[[2,13,18],[0,24,25]]}"#)
-                .expect("factorized step request");
+    fn a_recorded_episode_returns_a_replay_that_reproduces() {
+        let mut episode = Episode::new(
+            17,
+            &[0],
+            2,
+            None,
+            EpisodeOptions::new(None, 1).with_record(true),
+        )
+        .expect("recorded skirmish episode");
+        let idle = [
+            Action::Idle as usize,
+            Action::NoConstruction as usize,
+            Action::NoUpgrade as usize,
+            Action::NoOperation as usize,
+        ];
+        while episode.live() {
+            episode.step(&[idle]).expect("idle step");
+        }
+        let reply = episode.reply();
+        assert_eq!(reply["done"], true);
+        let replay: GameReplay = serde_json::from_value(reply["replay"].clone()).expect(
+            "terminal reply carries a \
+                 parseable replay",
+        );
+        replay
+            .validate(Some(SIM_VERSION))
+            .expect("the recording passes replay validation");
+        assert!(
+            !replay.commands.is_empty(),
+            "the Overseer opponent's commands were recorded"
+        );
+        let reproduced =
+            crate::runner::run_replay(&replay, None, false).expect("the recording re-executes");
+        assert_eq!(reproduced.current_tick(), episode.state.current_tick());
+        assert_eq!(
+            reproduced.hash(),
+            episode.state.hash(),
+            "playback must land on the exact episode state"
+        );
+
+        // An unrecorded episode's terminal reply carries no replay.
+        let mut bare = Episode::new(17, &[0], 0, None, EpisodeOptions::new(None, 1))
+            .expect("bare skirmish episode");
+        let reply = bare.reply();
+        assert_eq!(reply["done"], true);
+        assert!(reply.get("replay").is_none());
+    }
+
+    #[test]
+    fn step_wire_requires_one_four_head_plan_per_seat() {
+        let request = serde_json::from_str::<Request>(
+            r#"{"cmd":"step","actions":[[2,13,42,18],[0,24,42,25]]}"#,
+        )
+        .expect("factorized step request");
         match request {
-            Request::Step { actions } => assert_eq!(actions, vec![[2, 13, 18], [0, 24, 25]]),
+            Request::Step { actions } => {
+                assert_eq!(actions, vec![[2, 13, 42, 18], [0, 24, 42, 25]])
+            }
             _ => panic!("parsed the wrong request"),
         }
+        assert!(
+            serde_json::from_str::<Request>(r#"{"cmd":"step","actions":[[2,13,18],[0,24,25]]}"#)
+                .is_err(),
+            "the three-head v8 wire shape must fail at the contract boundary"
+        );
         assert!(
             serde_json::from_str::<Request>(r#"{"cmd":"step","actions":[2,13]}"#).is_err(),
             "the flat v6 wire shape must fail at the contract boundary"
@@ -1795,7 +1943,6 @@ mod tests {
         let err = Episode::new(
             17,
             &[0],
-            Difficulty::Veteran,
             100,
             None,
             EpisodeOptions::new(Some(&[Faction::Cupric]), 8),
@@ -1807,5 +1954,37 @@ mod tests {
                 .contains("factions must name exactly 2 seats, got 1"),
             "{err:#}"
         );
+    }
+}
+
+#[cfg(test)]
+mod cup_outcome_tests {
+    use super::cup_outcome;
+
+    #[test]
+    fn a_tick_capped_game_is_not_a_draw() {
+        // winners is empty on a cap too; only a finished match with no
+        // victor is a draw. The old accounting inflated draw columns
+        // by exactly the censoring rate.
+        let (won, draw, capped, active) = cup_outcome(&[], 0, true, false);
+        assert!(!won && !draw && capped && !active);
+    }
+
+    #[test]
+    fn a_mutual_destruction_is_a_draw() {
+        let (won, draw, capped, active) = cup_outcome(&[], 0, false, false);
+        assert!(!won && draw && !capped && !active);
+    }
+
+    #[test]
+    fn seat_membership_scores_the_win() {
+        assert!(cup_outcome(&[1], 1, false, false).0);
+        assert!(!cup_outcome(&[1], 0, false, false).0);
+    }
+
+    #[test]
+    fn an_active_cap_needs_recent_activity() {
+        assert!(cup_outcome(&[], 0, true, true).3);
+        assert!(!cup_outcome(&[], 0, false, true).3);
     }
 }

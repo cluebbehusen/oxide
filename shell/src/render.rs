@@ -489,6 +489,32 @@ pub fn viewport() -> macroquad::prelude::Vec2 {
     macroquad::prelude::vec2(view_width(), view_height())
 }
 
+/// Breaks `text` into lines no wider than `max_w` under `measure`,
+/// splitting only at spaces; a single word wider than the limit gets
+/// its own line rather than being cut. Presentation-only text layout
+/// for tooltips and the codex.
+pub fn wrap_words(text: &str, measure: impl Fn(&str) -> f32, max_w: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{line} {word}")
+        };
+        if !line.is_empty() && measure(&candidate) > max_w {
+            lines.push(std::mem::take(&mut line));
+            line = word.to_string();
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 #[cfg(not(test))]
 fn view_bits() -> (u32, u32) {
     (
@@ -522,6 +548,7 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     environment::draw_backdrop(game);
     let alpha = game.render_alpha();
     draw_tiles(game, sprites);
+    crate::render::world::draw_extractor_frames(game, sprites);
     environment::draw_boundary(game);
     draw_scorches(game, sprites);
     draw_buildings(game, sprites);
@@ -613,6 +640,10 @@ fn unit_selection_radius(kind: oxide_sim::UnitKind, zoom: f32, padding: f32) -> 
 fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim::stats::Domain) {
     let zoom = game.camera.zoom;
     let airborne = domain == oxide_sim::stats::Domain::Air;
+    // Frustum cull with a margin covering the sprite, its shadow, rings,
+    // and bars — off-camera machines cost nothing on grand maps.
+    let (view_lo, view_hi) = game.camera.world_rect();
+    const CULL_MARGIN: f32 = 2.5;
     for unit in game.state.units() {
         if unit.kind.stats().domain != domain {
             continue;
@@ -623,6 +654,13 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         }
         let faction = game.state.player(unit.player).faction;
         let pos = game.draw_pos(unit.id, unit.pos, alpha);
+        if pos.x < view_lo.x - CULL_MARGIN
+            || pos.y < view_lo.y - CULL_MARGIN
+            || pos.x > view_hi.x + CULL_MARGIN
+            || pos.y > view_hi.y + CULL_MARGIN
+        {
+            continue;
+        }
         let mut screen = game.camera.to_screen(pos);
         let dest = zoom * UNIT_DRAW_SCALE;
         let current = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());

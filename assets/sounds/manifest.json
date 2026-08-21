@@ -163,6 +163,54 @@
       "paired_animation": "01-flak-turret-paired-yokes.gif"
     },
     {
+      "category": "generic-weapon",
+      "filename": "attack_warden.wav",
+      "min_gap": 0.1,
+      "mixer_volume": 0.3,
+      "name": "attack_warden",
+      "paired_animation": null
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "attack_breaker.wav",
+      "min_gap": 0.15,
+      "mixer_volume": 0.55,
+      "name": "attack_breaker",
+      "paired_animation": null
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "avalanche_launch.wav",
+      "min_gap": 0.15,
+      "mixer_volume": 0.5,
+      "name": "avalanche_launch",
+      "paired_animation": null
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "bomb_release.wav",
+      "min_gap": 0.15,
+      "mixer_volume": 0.45,
+      "name": "bomb_release",
+      "paired_animation": null
+    },
+    {
+      "category": "destruction",
+      "filename": "demolition_boom.wav",
+      "min_gap": 0.2,
+      "mixer_volume": 0.8,
+      "name": "demolition_boom",
+      "paired_animation": null
+    },
+    {
+      "category": "economy",
+      "filename": "upgrade_done.wav",
+      "min_gap": 0.1,
+      "mixer_volume": 0.55,
+      "name": "upgrade_done",
+      "paired_animation": null
+    },
+    {
       "category": "signature-weapon",
       "filename": "attack_bombard.wav",
       "min_gap": 0.2,

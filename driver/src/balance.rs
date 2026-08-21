@@ -12,19 +12,17 @@
 
 use anyhow::{Context, Result};
 use oxide_kit::composition::{self, Aggregate, MatchComposition};
-use oxide_sim::bot::{Difficulty, Level, NAMED_VARIANT_COUNT, resolve_bot_profiles};
+use oxide_sim::bot::{Level, NAMED_VARIANT_COUNT, resolve_bot_profiles};
 use oxide_sim::scenario::{BotConfig, NamedStyle};
 
 /// Candidate-probe overrides for conditioning, hesitation, and think
 /// cadence. Without a raw conditioning or hesitation override,
 /// candidates use the same resolved named profile and level handicap
-/// as the shipped ladder.
+/// a shipped match would. Without `--weights` at all, the probe runs
+/// the Overseer — the scripted QA anchor — in every seat.
 pub struct ProbeDials {
-    /// Run the scripted utility controller at this tier instead of the
-    /// neural ladder.
-    pub scripted: Option<Difficulty>,
-    /// Raw conditioning override. `None` keeps the ladder's resolved
-    /// named profile.
+    /// Raw conditioning override. `None` keeps the resolved named
+    /// profile.
     pub skill: Option<u32>,
     /// Raw aggression override. `None` keeps the seed-resolved named
     /// style and variant.
@@ -53,10 +51,6 @@ impl ProbeDials {
             self.variant
                 .is_none_or(|variant| variant < NAMED_VARIANT_COUNT),
             "--variant must be 0, 1, or 2"
-        );
-        anyhow::ensure!(
-            self.style.is_none() || self.scripted.is_none(),
-            "--style and --scripted-tier are mutually exclusive"
         );
         anyhow::ensure!(
             self.style.is_none()
@@ -126,13 +120,8 @@ pub fn balance_probe(
     out: Option<&str>,
 ) -> Result<()> {
     dials.validate()?;
-    anyhow::ensure!(
-        dials.scripted.is_none() || weights.is_none(),
-        "--scripted-tier and --weights are mutually exclusive"
-    );
-    // A candidate artifact probes exactly like the embedded one, just
-    // with its net loaded from disk — the fun gate runs this before a
-    // campaign checkpoint is ever embedded.
+    // A candidate artifact probes with its net loaded from disk — the
+    // fun gate runs this before a campaign checkpoint is ever promoted.
     let net = weights
         .map(|path| -> Result<oxide_sim::bot::QuantNet> {
             let json =
@@ -171,29 +160,13 @@ pub fn balance_probe(
                 team_role: None,
             });
         }
-        let m = match (dials.scripted, &net) {
-            (Some(tier), _) => {
-                use oxide_sim::bot::Brain;
-                let mut bots: Vec<Brain> = sc
-                    .players
-                    .iter()
-                    .enumerate()
-                    .map(|(seat, _)| {
-                        Brain::for_tier(oxide_sim::PlayerId(seat as u8), sc.seed, tier)
-                    })
-                    .collect();
-                composition::sample_driven(&sc, max_ticks, 20, |state| {
-                    let mut commands = Vec::new();
-                    for bot in bots.iter_mut() {
-                        commands.extend(bot.act(state));
-                    }
-                    state.tick(&commands)
-                })
-                .with_context(|| format!("sampling {}", sc.name))?
-            }
-            (None, None) => composition::sample_match(&sc, max_ticks, 20)
+        let m = match &net {
+            // No candidate weights: the Overseer plays every seat —
+            // `sample_match` seats it per bot seat, and the probe just
+            // flipped every seat to a bot.
+            None => composition::sample_match(&sc, max_ticks, 20)
                 .with_context(|| format!("sampling {}", sc.name))?,
-            (None, Some(net)) => {
+            Some(net) => {
                 let profiles = resolve_bot_profiles(&sc)
                     .with_context(|| format!("resolving bot profiles for {}", sc.name))?;
                 let mut bots: Vec<oxide_sim::bot::NeuralBot> = sc
@@ -239,17 +212,14 @@ pub fn balance_probe(
 
     // Provenance: a composition table is evidence about ONE artifact,
     // and a candidate's file name outlives neither the campaign nor
-    // the run directory. The digest does.
-    let (artifact, digest) = match (dials.scripted, &net, weights) {
-        (Some(tier), _, _) => (format!("scripted {tier:?}"), "scripted".to_string()),
-        (None, Some(net), Some(path)) => (path.to_string(), format!("{:016x}", net.digest())),
-        _ => (
-            "embedded ladder".to_string(),
-            format!("{:016x}", oxide_sim::bot::QuantNet::ladder().digest()),
-        ),
+    // the run directory. The digest does. A weights-less run is the
+    // scripted Overseer and says so.
+    let (artifact, digest) = match (&net, weights) {
+        (Some(net), Some(path)) => (path.to_string(), format!("{:016x}", net.digest())),
+        _ => ("scripted overseer".to_string(), "overseer".to_string()),
     };
-    let profile = if dials.scripted.is_some() {
-        "scripted"
+    let profile = if net.is_none() {
+        "overseer"
     } else if dials.uses_raw_profile() {
         "raw"
     } else {
@@ -365,6 +335,20 @@ pub fn balance_probe(
         println!("  {kind:<12} {mean:>5.2} · {:>5.1}%", reach * 100.0);
     }
 
+    // Two readings the share tables structurally cannot give. Reach:
+    // a kind built once and a kind never built both show up as a share
+    // near zero, and only one of those is a design problem. Scrap
+    // destination: presence-weighted shares never see the money that
+    // went into defenses, tech, and expansion, because those never
+    // take a body-time sample.
+    println!("\ncompetitive-lifetime kind reach (diagnostic):");
+    print_ranked(&overall.competitive_kind_reach);
+    println!(
+        "\nscrap destination share of {} scrap (diagnostic):",
+        overall.competitive_spend_total
+    );
+    print_ranked(&overall.competitive_spend_share);
+
     // Promotion judges every seat's competitive lifetime. Losing seats
     // keep their pre-defeat history; the sampler stops their combat
     // clock once they resign or lose their completed Foundry.
@@ -403,9 +387,11 @@ pub fn balance_probe(
 
     if let Some(path) = out {
         let payload = serde_json::json!({
-            // Bumped whenever a consumer (tools/train/fun_gate.py) would
-            // need to read this file differently.
-            "schema": 7,
+            // Bumped whenever a consumer (tools/train/fun_gate.py,
+            // tools/train/league.py) would need to read this file
+            // differently. Schema 10 adds the per-kind competitive
+            // reach and scrap-destination tables to every cohort.
+            "schema": 10,
             "level": format!("{level:?}"),
             "artifact": artifact,
             "digest": digest,
@@ -413,7 +399,6 @@ pub fn balance_probe(
             "seeds": seeds,
             "max_ticks": max_ticks,
             "dials": {
-                "scripted": dials.scripted.map(|tier| format!("{tier:?}")),
                 "skill": dials.skill,
                 "aggression": dials.aggression,
                 "style": dials.style.map(style_slug),
@@ -435,6 +420,16 @@ pub fn balance_probe(
         println!("\nraw record: {path}");
     }
     Ok(())
+}
+
+/// A share table biggest first, name-ordered within a tie so two runs
+/// of the same record print the same page.
+fn print_ranked(shares: &std::collections::BTreeMap<String, f64>) {
+    let mut rows: Vec<(&String, &f64)> = shares.iter().collect();
+    rows.sort_by(|a, b| b.1.total_cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    for (kind, share) in rows {
+        println!("  {kind:<14} {:>5.1}%", share * 100.0);
+    }
 }
 
 fn style_slug(style: NamedStyle) -> &'static str {
@@ -528,7 +523,6 @@ mod tests {
 
     fn empty_dials() -> ProbeDials {
         ProbeDials {
-            scripted: None,
             skill: None,
             aggression: None,
             style: None,
@@ -642,6 +636,8 @@ mod tests {
             cadence: Some(11),
             ..empty_dials()
         };
+        let net = QuantNet::from_json(include_str!("../tests/fixtures/tiny_policy_v9.json"))
+            .expect("the committed fixture artifact parses");
         let player = oxide_sim::PlayerId(seat as u8);
         let faction = scenario.players[seat].faction;
         let mut actual = candidate_bot(
@@ -651,14 +647,14 @@ mod tests {
             scenario.seed,
             profile,
             faction,
-            QuantNet::ladder().clone(),
+            net.clone(),
         );
         let mut expected = NeuralBot::ladder_resolved_with_net_at_cadence(
             player,
             scenario.seed,
             profile,
             faction,
-            QuantNet::ladder().clone(),
+            net,
             11,
         );
         let mut state = scenario.build().unwrap();
@@ -671,11 +667,101 @@ mod tests {
     }
 
     #[test]
+    fn manual_override_dials_build_the_exact_raw_bot() {
+        // The audit found the raw/manual branch of candidate_bot dead
+        // in tests: every closure inside it (dealt aggression, ladder
+        // cadence, ladder skill fallbacks) was unexecuted, so a probe
+        // asked for exact raw dials could silently measure a different
+        // commander than the one it reports.
+        let scenario = oxide_sim::Scenario::skirmish();
+        let net = QuantNet::from_json(include_str!("../tests/fixtures/tiny_policy_v9.json"))
+            .expect("the committed fixture artifact parses");
+        let player = oxide_sim::PlayerId(0);
+        let faction = scenario.players[0].faction;
+        let profile = oxide_sim::bot::ResolvedBotProfile {
+            level: Level::Medium,
+            style: None,
+            variant: None,
+            aggression: 500,
+            team_role: TeamRole::Generalist,
+            facets: oxide_sim::bot::ProfileFacets::ZERO,
+        };
+
+        let dials = ProbeDials {
+            skill: Some(700),
+            aggression: Some(550),
+            blunder: Some(0),
+            cadence: Some(11),
+            ..empty_dials()
+        };
+        let mut actual = candidate_bot(
+            &dials,
+            Level::Medium,
+            player,
+            scenario.seed,
+            profile,
+            faction,
+            net.clone(),
+        );
+        let mut expected = NeuralBot::with_profile_hesitation(
+            player,
+            11,
+            net.clone(),
+            700,
+            550,
+            faction,
+            Some(0),
+            scenario.seed,
+        );
+        let mut state = scenario.build().unwrap();
+        for _ in 0..200 {
+            let actual_commands = actual.act(&state);
+            let expected_commands = expected.act(&state);
+            assert_eq!(actual_commands, expected_commands);
+            state.tick(&expected_commands);
+        }
+
+        // The fallback closures: a lone skill override trips the manual
+        // branch and leaves aggression to the seat's dealt hand, with
+        // cadence from the ladder level's own number.
+        let sparse = ProbeDials {
+            skill: Some(700),
+            ..empty_dials()
+        };
+        let mut sparse_actual = candidate_bot(
+            &sparse,
+            Level::Medium,
+            player,
+            scenario.seed,
+            profile,
+            faction,
+            net.clone(),
+        );
+        let mut sparse_expected = NeuralBot::with_profile_hesitation(
+            player,
+            Level::Medium.cadence(),
+            net,
+            700,
+            oxide_sim::bot::deal_aggression(scenario.seed, player),
+            faction,
+            None,
+            scenario.seed,
+        );
+        let mut state = scenario.build().unwrap();
+        for _ in 0..200 {
+            let actual_commands = sparse_actual.act(&state);
+            let expected_commands = sparse_expected.act(&state);
+            assert_eq!(actual_commands, expected_commands);
+            state.tick(&expected_commands);
+        }
+    }
+
+    #[test]
     fn candidate_probe_accepts_the_scenario_resolved_named_profile_slate() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios");
         let weights = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../sim/src/bot/ladder_weights.json"
+            "/tests/fixtures/tiny_policy_v9.json"
         );
         let out =
             std::env::temp_dir().join(format!("oxide-candidate-probe-{}.json", std::process::id()));
@@ -683,7 +769,6 @@ mod tests {
             dir,
             Level::Easy,
             &ProbeDials {
-                scripted: None,
                 skill: None,
                 aggression: None,
                 style: Some(NamedStyle::Balanced),
@@ -701,12 +786,12 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         std::fs::remove_file(&out).ok();
 
-        assert_eq!(payload["schema"], 7);
+        assert_eq!(payload["schema"], 10);
         assert_eq!(payload["profile"], "ladder");
         assert_eq!(payload["dials"]["style"], "balanced");
         assert_eq!(payload["dials"]["variant"], 1);
         assert_eq!(payload["dials"]["cadence"], 11);
-        assert_ne!(payload["digest"], "scripted");
+        assert_ne!(payload["digest"], "overseer");
     }
 
     /// The `--out` payload is a contract with `tools/train/fun_gate.py`,
@@ -720,18 +805,10 @@ mod tests {
         balance_probe(
             dir,
             Level::Easy,
-            &ProbeDials {
-                // This is a payload-shape test, so use the scripted
-                // controller and keep it independent of whichever
-                // generated ladder artifact is mid-regeneration.
-                scripted: Some(Difficulty::Scrapheap),
-                skill: None,
-                aggression: None,
-                style: None,
-                variant: None,
-                blunder: None,
-                cadence: None,
-            },
+            // This is a payload-shape test: no weights and no dials
+            // selects the scripted Overseer default, which keeps it
+            // independent of any candidate artifact.
+            &empty_dials(),
             1,
             40,
             None,
@@ -741,8 +818,18 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         std::fs::remove_file(&out).ok();
-        assert_eq!(payload["schema"], 7);
-        assert!(payload["overall"]["matches"].as_u64().unwrap() >= 25);
+        assert_eq!(payload["schema"], 10);
+        // One match per shipped map: the roster is mid-rework for 0.15,
+        // so the floor tracks the roster instead of pinning a count.
+        let shipped = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios"))
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .is_ok_and(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+            })
+            .count() as u64;
+        assert!(payload["overall"]["matches"].as_u64().unwrap() >= shipped);
         // Nothing decides in 40 ticks, so the diagnostic decided cohort
         // is empty — which consumers must be able to see, not infer.
         assert_eq!(payload["decided"]["seats"], 0);
@@ -764,6 +851,36 @@ mod tests {
         assert!(payload["overall"]["seat_combat_count_entropy"]["p10"].is_number());
         assert!(payload["overall"]["seat_combat_count_dominance"]["p90"].is_number());
         assert!(payload["overall"]["competitive_seats_with_building"].is_object());
+        // Schema 10: per-kind reach and scrap destination, on every
+        // cohort the gate can read, plus the raw per-seat rows they
+        // fold out of.
+        for cohort in [&payload["overall"], &payload["decided"]] {
+            assert!(cohort["competitive_kind_reach"].is_object());
+            assert!(cohort["competitive_spend_share"].is_object());
+            assert!(cohort["competitive_spend_total"].is_u64());
+        }
+        let reach = payload["overall"]["competitive_kind_reach"]
+            .as_object()
+            .expect("reach is a kind-keyed table");
+        assert!(
+            reach.values().all(|share| share
+                .as_f64()
+                .is_some_and(|share| (0.0..=1.0).contains(&share))),
+            "reach is a fraction of competitive lifetimes"
+        );
+        let spend: f64 = payload["overall"]["competitive_spend_share"]
+            .as_object()
+            .expect("spend share is a kind-keyed table")
+            .values()
+            .filter_map(serde_json::Value::as_f64)
+            .sum();
+        assert!(
+            payload["overall"]["competitive_spend_total"]
+                .as_u64()
+                .is_some_and(|total| total == 0)
+                || (spend - 1.0).abs() < 1e-9,
+            "a non-empty scrap bill divides into shares that sum to one"
+        );
         assert!(payload["dials"]["aggression"].is_null());
         assert!(payload["dials"]["style"].is_null());
         assert!(payload["dials"]["variant"].is_null());
@@ -774,7 +891,10 @@ mod tests {
                 "{cohort} cohort is reported"
             );
         }
-        assert_eq!(payload["cohorts"]["faction"]["ferrous"]["capped"], 25);
+        assert_eq!(
+            payload["cohorts"]["faction"]["ferrous"]["capped"], shipped,
+            "every map's single probe match caps at 40 ticks"
+        );
         let first = &payload["matches"][0];
         assert!(first["capped"].as_bool().unwrap() && first["result"].is_null());
         assert!(first["last_progress_tick"].as_u64().unwrap() > 0);
@@ -791,6 +911,20 @@ mod tests {
         ] {
             assert!(first["activity"][key].is_u64(), "{key} is reported");
         }
+        // The fun-metric fields the retrain campaign reads: fight
+        // rhythm, the decided moment, and contested-economy tenure.
+        assert!(first["fight_windows"].is_u64());
+        assert!(first["fight_share"].is_number());
+        assert!(first["longest_lull_ticks"].is_u64());
+        assert!(first["advantage_tick"].is_null() || first["advantage_tick"].is_u64());
+        assert!(first["advantage_team"].is_null() || first["advantage_team"].is_u64());
+        assert!(
+            first["extractor_hold_share"].as_array().is_some_and(|per| {
+                per.len() == first["factions"].as_array().unwrap().len()
+                    && per.iter().all(serde_json::Value::is_number)
+            }),
+            "extractor hold share is per-seat"
+        );
         assert!(
             first["final_economy"]["remaining_map_salvage"]
                 .as_u64()
@@ -818,5 +952,33 @@ mod tests {
         }
         assert!(first["seats"][0]["harvester"].is_number());
         assert!(first["combat_seats"][0]["harvester"].is_null());
+        // The per-seat rows the cohort tables fold: reach is a sorted
+        // name array, spend a sorted name -> scrap map. 40 ticks buys
+        // nothing, so both are legitimately empty here — the shape is
+        // what this test pins.
+        for seat in first["competitive_kind_reach"]
+            .as_array()
+            .expect("reach is reported per seat")
+        {
+            let kinds: Vec<&str> = seat
+                .as_array()
+                .expect("one seat's reach is an array")
+                .iter()
+                .map(|kind| kind.as_str().expect("kinds are canonical names"))
+                .collect();
+            assert!(
+                kinds.windows(2).all(|pair| pair[0] < pair[1]),
+                "reach names are sorted and distinct"
+            );
+        }
+        for seat in first["competitive_spend"]
+            .as_array()
+            .expect("spend is reported per seat")
+        {
+            assert!(
+                seat.as_object()
+                    .is_some_and(|kinds| kinds.values().all(serde_json::Value::is_u64))
+            );
+        }
     }
 }

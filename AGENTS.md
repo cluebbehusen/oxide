@@ -254,9 +254,9 @@ audio principles live in the visual-assets and sound-design skills.
 
 ## Bots and the level-playing-field contract
 
-The shipped opponent is a quantized neural policy embedded in `oxide-sim` and
-evaluated with deterministic integer math. Difficulty changes execution cadence
-and hesitation around one strategic policy. Personality changes deterministic
+The shipped opponent is a quantized neural policy evaluated with
+deterministic integer math. Difficulty changes execution cadence and
+hesitation around one strategic policy. Personality changes deterministic
 preferences and team role; it does not grant information or legal actions.
 
 The level-playing-field contract is non-negotiable: **a bot is a command source,
@@ -273,30 +273,31 @@ pathological, fix shared balance or training rather than concealing it from the
 bot. Difficulty can degrade execution; personality can alter preferences;
 neither changes the strategy surface.
 
-### Temporary 0.14 exception
+### 0.15 status: the promoted actor ships
 
-The 0.14 actor still runs behind inherited bot-only action masks, including
-per-kind caps, a private production-queue threshold, and a hard Fabricator
-screen gate. These are a known temporary violation, retained only because the
-current weights were trained within that surface and naive removal caused a
-policy collapse. Do not add more restrictions, present these as acceptable
-balance, bless their uncapped drift, or remove them independently.
+The shipped opponent is the es-1 evolution champion (promoted under
+the 0.15.4 rules; its predecessor was the auto-2 autopilot champion),
+embedded at `sim/src/bot/ladder_weights.json` and seated by
+`seat_bots` for every configured bot seat. The gym v9 surface is parity-clean by
+construction: the mask encodes shared legality only. `BotConfig`
+(level, personality) is the authored scenario data it consumes; the
+Level ladder's execution handicaps are re-measured for each promoted
+actor with the `ladder_handicap_sweep` instrument. Provenance,
+battery results, and known residuals live in
+`.agents/skills/bot-training/references/artifact-lineage.md`.
 
-Cap removal and retraining are one coordinated 0.15 change. The local,
-intentionally uncommitted `roadmap-0.14.0-0.15.0.md` records the evidence and
-promotion requirements. If that working note is absent, this section remains
-the durable decision: do not change the masks outside the coordinated 0.15
-migration.
+The Overseer (`Brain::overseer`) remains the only scripted commander:
+demonstration source, curriculum anchor, evaluation yardstick, and the
+anchor for liveness, determinism, and hash gates. It is training and
+QA infrastructure only, deliberately unreachable from any player-facing
+surface (no scenario field, no wizard dial, no `SeatBot` arm). Keep it
+that way.
 
-Any action-surface expansion must first evaluate current weights unchanged,
-then retrain when the evidence requires it, and finally pass the complete
-native-Q12, faction/seat, composition, profile, liveness, ladder, and
-determinism battery before promotion. Never bless a new actor merely because it
-runs. See `.agents/skills/bot-training/SKILL.md` for the gym contract, current
-artifact lineage, training commands, and promotion procedure.
-
-Scenarios without `PlayerSpec.bot_config` intentionally reproduce the legacy
-rule-cascade bot for old replays. Do not silently migrate that path.
+A replacement actor must pass the complete native-Q12, faction/seat,
+composition, profile, liveness, ladder, and determinism battery before
+promotion. Never bless a new actor merely because it runs. See
+`.agents/skills/bot-training/SKILL.md` for the gym contract, training
+commands, and promotion procedure.
 
 ## Cross-cutting gotchas
 

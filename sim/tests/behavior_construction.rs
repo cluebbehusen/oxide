@@ -17,7 +17,7 @@ fn construction_ramps_and_completes() {
     let builder = state.units()[0].id;
     let anchor = TilePos::new(5, 6);
     let scrap_before = state.player(PlayerId(0)).scrap;
-    let cost = BuildingKind::Turret.stats().construction.unwrap().cost;
+    let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
     state.tick(&[cmd(
         0,
         Command::Build {
@@ -38,7 +38,7 @@ fn construction_ramps_and_completes() {
         .id;
     let b = state.building(site).unwrap();
     assert!(!b.built);
-    assert_eq!(b.hp, BuildingKind::Turret.stats().max_hp / 5);
+    assert_eq!(b.hp, BuildingKind::Turret.base_stats().max_hp / 5);
     assert!(!state.passable(anchor), "sites block their footprint");
 
     let events = run_until(&mut state, 600, |_, events| {
@@ -49,7 +49,11 @@ fn construction_ramps_and_completes() {
     assert!(!events.is_empty());
     let b = state.building(site).unwrap();
     assert!(b.built);
-    assert_eq!(b.hp, BuildingKind::Turret.stats().max_hp, "ramped to full");
+    assert_eq!(
+        b.hp,
+        BuildingKind::Turret.base_stats().max_hp,
+        "ramped to full"
+    );
     // Completion is buffered; the builder learns the site is done on the
     // next tick, through the built-site branch.
     state.tick(&[]);
@@ -191,7 +195,7 @@ fn cancel_refunds_by_health_and_damage_burns_it() {
     for _ in 0..120 {
         state.tick(&[]);
     }
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     let b = state.building(site).unwrap();
     let expected = stats.construction.unwrap().cost * b.hp / stats.max_hp;
     let scrap_before = state.player(PlayerId(0)).scrap;
@@ -210,16 +214,18 @@ fn cancel_refunds_by_health_and_damage_burns_it() {
 #[test]
 fn sealed_apart_scenarios_refuse_to_build() {
     use oxide_sim::scenario::ScenarioError;
+    // A mesa wall: rock alone would leave the sky open, and an
+    // air-connected map is legal since the island relaxation.
     let scenario = Scenario {
         name: "sealed".into(),
         seed: 1,
         map: vec![
-            "############".into(),
-            "#1...#.....#".into(),
-            "#....#.....#".into(),
-            "#....#..2..#".into(),
-            "#....#.....#".into(),
-            "############".into(),
+            "#####^######".into(),
+            "#1...^.....#".into(),
+            "#....^.....#".into(),
+            "#....^..2..#".into(),
+            "#....^.....#".into(),
+            "#####^######".into(),
         ],
         players: arena(vec![]).players,
         units: vec![],
@@ -307,7 +313,7 @@ fn scouted_sites_are_remembered_as_sites() {
 
 #[test]
 fn bot_sends_a_relief_builder_to_an_orphaned_site() {
-    use oxide_sim::bot::Bot;
+    use oxide_sim::bot::Brain;
     use oxide_sim::stats::BuildingKind;
     // Manufacture the orphan directly: a scripted Build, then Stop the
     // builder on the spot. Hand the seat to a bot — its relief loop must
@@ -345,7 +351,7 @@ fn bot_sends_a_relief_builder_to_an_orphaned_site() {
         .id;
     assert!(!state.building(site).unwrap().built);
 
-    let mut bot = Bot::new(PlayerId(1), 42);
+    let mut bot = Brain::overseer(PlayerId(1), 42);
     for _ in 0..3000u32 {
         let commands = bot.act(&state);
         state.tick(&commands);
@@ -954,7 +960,7 @@ fn a_doomed_site_never_comes_online() {
     let (builder, s1, s2, l1, l2, l3) = (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]);
     let anchor = TilePos::new(9, 5);
     let build_ticks = BuildingKind::Turret
-        .stats()
+        .base_stats()
         .construction
         .unwrap()
         .build_ticks;
@@ -1280,10 +1286,11 @@ fn place_refusal_names_the_actual_blocker() {
     // The enemy Foundry's ground is fogged — and fog must win before
     // the building underneath can leak through the reason.
     assert_eq!(refusal(13, 6), Some(PlaceRefusal::Fog));
-    // Scenario-only kinds are never placeable.
+    // A Foundry without a completed Fabricator names the missing tech
+    // (0.15: Foundries are buildable expansions behind the tree's gate).
     assert_eq!(
         state.place_refusal(p, BuildingKind::Foundry, TilePos::new(5, 6)),
-        Some(PlaceRefusal::NotConstructible)
+        Some(PlaceRefusal::Prerequisite)
     );
 }
 
@@ -1388,7 +1395,7 @@ fn friendly_machines_make_way_for_foundations() {
             prev[i] = now;
         }
     }
-    let (w, h) = BuildingKind::Fabricator.stats().size;
+    let (w, h) = BuildingKind::Fabricator.base_stats().size;
     let inside =
         |t: TilePos| t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h;
     assert!(
@@ -1492,7 +1499,7 @@ fn an_allied_machine_makes_way_like_your_own() {
         );
         prev = now;
     }
-    let (w, h) = BuildingKind::Fabricator.stats().size;
+    let (w, h) = BuildingKind::Fabricator.base_stats().size;
     let t = state.unit(ally).unwrap().tile();
     assert!(
         !(t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h),
@@ -1604,7 +1611,7 @@ fn a_walled_in_machine_takes_the_instant_deal() {
         state.buildings().iter().any(|b| b.anchor == anchor),
         "the pocketed footprint still accepts the site"
     );
-    let (w, h) = BuildingKind::Fabricator.stats().size;
+    let (w, h) = BuildingKind::Fabricator.base_stats().size;
     let inside =
         |t: TilePos| t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h;
     let t = state.unit(sealed).unwrap().tile();
@@ -1682,6 +1689,22 @@ fn a_fresh_placement_commits_the_whole_crew() {
 /// nothing and places nothing at accept, hands the founder
 /// [`Order::Found`], and founds — site, payment, Build order — only
 /// when the founder stands beside ground it can see again.
+/// Foundry drip credits a single-Foundry seat has earned by `state`'s
+/// current tick — exact-bank assertions add this so passive income and
+/// spend accounting stay separately verifiable.
+fn drip_credits(state: &oxide_sim::State) -> u32 {
+    let period = oxide_sim::stats::FOUNDRY_DRIP_PERIOD;
+    let start = oxide_sim::stats::FOUNDRY_DRIP_START_TICK;
+    let credits_by = |tick: u64| {
+        if tick < start {
+            0
+        } else {
+            tick / period - (start / period - 1)
+        }
+    };
+    u32::try_from(credits_by(state.current_tick())).unwrap()
+}
+
 #[test]
 fn a_deferred_build_founds_on_arrival() {
     use oxide_sim::stats::BuildingKind;
@@ -1743,11 +1766,11 @@ fn a_deferred_build_founds_on_arrival() {
     run_until(&mut state, 600, |s, _| {
         s.buildings().iter().any(|b| b.anchor == spot)
     });
-    let cost = BuildingKind::Turret.stats().construction.unwrap().cost;
+    let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
     assert_eq!(
         state.player(PlayerId(0)).scrap,
-        scrap_before - cost,
-        "paid in full when the ground was claimed"
+        scrap_before - cost + drip_credits(&state),
+        "paid in full when the ground was claimed (plus the passive drip)"
     );
     let site = state
         .buildings()
@@ -2159,7 +2182,7 @@ fn cancelling_a_paid_queued_site_removes_only_its_build_leg() {
         },
     )]);
     let second_site = state.building(second).unwrap();
-    let stats = second_site.kind.stats();
+    let stats = second_site.kind.base_stats();
     let expected_refund = stats.construction.unwrap().cost * second_site.hp / stats.max_hp;
     let scrap_before = state.player(PlayerId(0)).scrap;
 
@@ -2460,8 +2483,8 @@ fn a_deferred_claim_on_taken_ground_stalls_without_spending() {
     );
     assert_eq!(
         state.player(PlayerId(0)).scrap,
-        scrap_before,
-        "a claim that never landed cost nothing"
+        scrap_before + drip_credits(&state),
+        "a claim that never landed cost nothing (the drip still runs)"
     );
     assert_eq!(
         state.unit(founder).unwrap().order,
@@ -2521,8 +2544,8 @@ fn a_stopped_pending_found_spends_nothing() {
     }
     assert_eq!(
         state.player(PlayerId(0)).scrap,
-        scrap_before,
-        "no charge ever landed"
+        scrap_before + drip_credits(&state),
+        "no charge ever landed (only the passive drip accrued)"
     );
     assert!(
         state.buildings().iter().all(|b| b.anchor != spot),
@@ -2787,10 +2810,11 @@ fn cancelling_a_paid_deferred_site_clears_every_crewmates_promise() {
             .all(|building| building.anchor != anchor),
         "a delayed crewmate cannot resurrect the cancelled site"
     );
-    assert_eq!(
-        state.player(PlayerId(0)).scrap,
-        scrap_after_cancel,
-        "a stale founding promise cannot charge the player again"
+    assert!(
+        state.player(PlayerId(0)).scrap >= scrap_after_cancel
+            && state.player(PlayerId(0)).scrap <= scrap_after_cancel + drip_credits(&state),
+        "a stale founding promise cannot charge the player again \
+         (only drip credits may accrue past the cancel point)"
     );
 }
 
@@ -2857,7 +2881,7 @@ fn a_broke_founder_stalls_on_arrival() {
     use oxide_sim::event::StallReason;
     use oxide_sim::stats::BuildingKind;
     let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 12, 2)]);
-    let cost = BuildingKind::Turret.stats().construction.unwrap().cost;
+    let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
     scenario.players[0].scrap = cost;
     let mut state = scenario.build().unwrap();
     let builder = state.units()[0].id;

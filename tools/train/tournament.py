@@ -2,10 +2,10 @@
 
 Determinism means a single seed proves nothing, so every matchup runs
 a fixed seed suite x both seat assignments, and the table reports
-Wilson 95% intervals. Opponents: every scripted tier plus the rush
-teacher (the known exploit). This is the gate the 0.7 plan defines —
-the learned policy ships as the top difficulty only if it clears the
-bar here with no degenerate stall games.
+Wilson 95% intervals. Opponents: the scripted Overseer commander (the
+fixed yardstick) plus the rush teacher (the known exploit). The
+learned policy ships only if it clears the bar here with no degenerate
+stall games.
 
 Usage (from tools/train/):
     uv run tournament.py --ckpt runs/league1/latest.pt
@@ -24,7 +24,6 @@ import torch
 from torch import nn
 
 from league import (
-    TIERS,
     faction_knob,
     maybe_blunder,
     policy_skill_for_aggression,
@@ -54,7 +53,6 @@ class TournamentWorker(Protocol):
         self,
         seed: int,
         control: tuple[int, ...] = (0,),
-        tier: str = "veteran",
         max_ticks: int = 40_000,
         cadence: int = 16,
         scenario: str | None = None,
@@ -72,7 +70,9 @@ def wilson(wins: int, games: int, z: float = 1.96) -> tuple[float, float]:
     denom = 1 + z * z / games
     center = (p + z * z / (2 * games)) / denom
     half = z * math.sqrt(p * (1 - p) / games + z * z / (4 * games * games)) / denom
-    return (center - half, center + half)
+    # Clamped: at the boundaries the arithmetic can shed a few ulps
+    # below zero or above one, and a probability interval must not.
+    return (max(0.0, center - half), min(1.0, center + half))
 
 
 def play(
@@ -122,6 +122,8 @@ def play(
             s: condition_from_profile(*condition, faction_knob(s)) for s in range(8)
         }
     rusher_seat = None
+    # The wire requires conditions to name exactly the controlled
+    # seats; scripted opponents take none.
     if opponent == "rusher":
         # The rusher is driven locally, so its seat must be controlled
         # too — whichever seat the learner isn't (any of them in FFA).
@@ -130,16 +132,15 @@ def play(
             seed,
             control=(seat, rusher_seat),
             scenario=scenario,
-            conditions=conds,
+            conditions={s: conds[s] for s in (seat, rusher_seat)},
             cadence=cadence,
         )
     else:
         frame = worker.reset(
             seed,
             control=(seat,),
-            tier=opponent,
             scenario=scenario,
-            conditions=conds,
+            conditions={seat: conds[seat]},
             cadence=cadence,
         )
     rng = np.random.default_rng(seed * 2 + seat)
@@ -165,6 +166,7 @@ def play(
                 int(plan[0]),
                 int(plan[1]),
                 int(plan[2]),
+                int(plan[3]),
             )
             acts = {
                 seat: maybe_blunder(
@@ -195,7 +197,7 @@ def main() -> None:
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--driver", default="../../target/release/oxide-driver")
     ap.add_argument("--seeds", type=int, default=30)
-    ap.add_argument("--opponents", default=",".join([*TIERS, "rusher"]))
+    ap.add_argument("--opponents", default="overseer,rusher")
     ap.add_argument(
         "--scenario", default=None, help="map (default: the built-in skirmish)"
     )
@@ -240,7 +242,7 @@ def main() -> None:
         type=int,
         default=0,
         help="evaluate on N generated 2v2 maps: the learner takes one "
-        "west seat, a scripted tier drives its teammate and both foes",
+        "west seat, the Overseer drives its teammate and both foes",
     )
     args = ap.parse_args()
 

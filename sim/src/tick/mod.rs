@@ -167,10 +167,16 @@ impl State {
             production::capture_recovery_entitlements(self);
             commands::apply(self, commands, &mut events);
             production::run(self, &mut events);
-            brain::run(self, &mut index, &mut events);
+            production::decay_abandoned_sites(self);
+            let boardings = brain::run(self, &mut index, &mut events);
+            // Embarkations and landings mutate the unit list, which must
+            // hold still under the brains; they land here, between the
+            // last decision and the first movement.
+            brain::logistics::resolve(self, boardings, &mut events);
             movement::evict_claimed_ground(self);
             let travel = movement::run(self);
             movement::resolve_collisions(self, &travel, &mut index);
+            detonate_charges(self, &mut events);
             cleanup(self, &mut events);
             if self.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
                 self.map.decay_wrecks();
@@ -180,6 +186,64 @@ impl State {
         }
         self.tick += 1;
         TickReport { tick, events }
+    }
+}
+
+/// Buried charges under hostile treads go off — after movement, so the
+/// step onto the trigger and the blast share a tick. Charges detonate
+/// in id order against post-movement positions; a charge zeroed by
+/// combat (or by an earlier blast — mines never sympathetically
+/// detonate, they are simply destroyed) no longer fires. The blast
+/// hits every hostile ground machine in the ring and every hostile
+/// buried charge (the splash-vulnerability rule), and cleanup sweeps
+/// the casualties in the same tick.
+fn detonate_charges(state: &mut State, events: &mut Vec<Event>) {
+    use crate::stats::{BuildingKind, CHARGE_BLAST_RADIUS, CHARGE_DAMAGE, CHARGE_TRIGGER_RADIUS};
+    let trigger_sq = CHARGE_TRIGGER_RADIUS * CHARGE_TRIGGER_RADIUS;
+    let blast_sq = CHARGE_BLAST_RADIUS * CHARGE_BLAST_RADIUS;
+    for slot in 0..state.buildings.len() {
+        let b = &state.buildings[slot];
+        if b.kind != BuildingKind::ScuttleCharge || !b.built || b.hp == 0 {
+            continue;
+        }
+        let (id, owner, center) = (b.id, b.player, b.center());
+        let tripped = state.units.iter().any(|u| {
+            u.hp > 0
+                && state.hostile(owner, u.player)
+                && u.kind.stats().domain == crate::stats::Domain::Ground
+                && u.pos.dist_sq(center) <= trigger_sq
+        });
+        if !tripped {
+            continue;
+        }
+        state.buildings[slot].hp = 0;
+        events.push(Event::ChargeDetonated {
+            building: id,
+            player: owner,
+            at: center,
+        });
+        for u in state.units.iter_mut() {
+            if u.hp > 0
+                && state.players[owner.0 as usize].team != state.players[u.player.0 as usize].team
+                && u.kind.stats().domain == crate::stats::Domain::Ground
+                && u.pos.dist_sq(center) <= blast_sq
+            {
+                u.hp = u.hp.saturating_sub(CHARGE_DAMAGE);
+            }
+        }
+        for other in 0..state.buildings.len() {
+            if other == slot {
+                continue;
+            }
+            let ob = &state.buildings[other];
+            if ob.hp > 0
+                && ob.kind.is_stealthy()
+                && state.players[owner.0 as usize].team != state.players[ob.player.0 as usize].team
+                && ob.center().dist_sq(center) <= blast_sq
+            {
+                state.buildings[other].hp = ob.hp.saturating_sub(CHARGE_DAMAGE);
+            }
+        }
     }
 }
 
@@ -199,6 +263,20 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
         let value =
             unit.kind.stats().cost * crate::stats::WRECK_VALUE_NUM / crate::stats::WRECK_VALUE_DEN;
         deposits.push((unit.tile(), value));
+        // Cargo dies with the airframe, and its price falls at the
+        // crash tile with everything else (a crash over the Pit is
+        // swallowed by the standing wreck rule).
+        for rider in &unit.cargo {
+            events.push(Event::UnitDied {
+                unit: rider.id,
+                kind: rider.kind,
+                player: rider.player,
+                pos: unit.pos,
+            });
+            let value = rider.kind.stats().cost * crate::stats::WRECK_VALUE_NUM
+                / crate::stats::WRECK_VALUE_DEN;
+            deposits.push((unit.tile(), value));
+        }
     }
     state.units.retain(|u| u.hp > 0);
 
@@ -226,7 +304,7 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
             player: building.player,
             pos: building.center(),
         });
-        let stats = building.kind.stats();
+        let stats = building.stats();
         let price = stats
             .construction
             .map_or(crate::stats::FOUNDRY_WRECK_VALUE, |c| c.cost);
@@ -234,6 +312,11 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
         let tiles = (stats.size.0 * stats.size.1) as u32;
         for tile in building.tiles() {
             deposits.push((tile, value / tiles));
+        }
+    }
+    for index in 0..state.buildings.len() {
+        if state.buildings[index].hp == 0 {
+            state.stamp_building_occupancy(index, false);
         }
     }
     state.buildings.retain(|b| b.hp > 0);
@@ -281,6 +364,23 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
 fn victory(state: &mut State, events: &mut Vec<Event>) {
     if state.result.is_some() {
         return;
+    }
+    // Stamp each seat's first tick out of the match — resigned, or
+    // holding no Foundry at all (sites count). Recorded once, never
+    // cleared: the FFA scoreboard's placement key.
+    for index in 0..state.players.len() {
+        if state.players[index].eliminated_at.is_some() {
+            continue;
+        }
+        let seat = crate::ids::PlayerId(index as u8);
+        let out = state.players[index].resigned
+            || !state
+                .buildings
+                .iter()
+                .any(|b| b.player == seat && b.kind == crate::stats::BuildingKind::Foundry);
+        if out {
+            state.players[index].eliminated_at = Some(state.tick);
+        }
     }
     let mut teams: Vec<u8> = state.players.iter().map(|p| p.team).collect();
     teams.sort_unstable();
@@ -339,13 +439,13 @@ pub(crate) fn route_for(
             } else {
                 snap_air_goal(state, to)?
             };
-            let peak_free = |t: TilePos| {
+            let sky_open = |t: TilePos| {
                 state
                     .map
                     .tile(t)
-                    .is_none_or(|tile| tile.terrain != crate::map::Terrain::Peak)
+                    .is_none_or(|tile| !tile.terrain.blocks_air())
             };
-            if !chassis::path::line_blocked(from.center(), to.center(), peak_free) {
+            if !chassis::path::line_blocked(from.center(), to.center(), sky_open) {
                 return Some(vec![to]);
             }
             astar(
@@ -485,7 +585,7 @@ mod tests {
         let kind = crate::BuildingKind::Turret;
         let anchor = TilePos::new(10, 4);
         let cost = kind
-            .stats()
+            .base_stats()
             .construction
             .expect("turret is constructible")
             .cost;

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["chassis", "sim", "protocol", "kit", "shell", "driver"]
 
 [workspace.package]
-version = "0.14.0"
+version = "0.15.8"
 edition = "2024"
 rust-version = "1.93"
 publish = false
@@ -28,6 +28,12 @@ oxide-kit = { path = "kit" }
 # keeps debug builds honest without hurting incremental compiles.
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
+
+# Release keeps line tables permanently: sampling profilers stay usable
+# without env-toggled rebuilds, and a toggle invalidates the entire
+# release fingerprint set — the artifact churn that inflates target/.
+[profile.release]
 debug = "line-tables-only"
 
 [profile.dev.package."*"]

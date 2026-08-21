@@ -30,13 +30,18 @@ fn weight_class(kind: SoundKind) -> WeightClass {
         | SoundKind::Artillery
         | SoundKind::ArtilleryLaunch
         | SoundKind::BombardFire
-        | SoundKind::BastionFire => WeightClass::Heavy,
+        | SoundKind::BastionFire
+        | SoundKind::BreakerFire
+        | SoundKind::AvalancheFire
+        | SoundKind::BombRelease
+        | SoundKind::DemolitionBoom => WeightClass::Heavy,
         SoundKind::UnitDeath
         | SoundKind::LancerFire
         | SoundKind::FlakhoundFire
         | SoundKind::BuzzardFire
         | SoundKind::FlakTurretFire => WeightClass::Standard,
         SoundKind::Laser
+        | SoundKind::WardenFire
         | SoundKind::ScuttlerFire
         | SoundKind::SentinelFire
         | SoundKind::StingerFire
@@ -44,6 +49,7 @@ fn weight_class(kind: SoundKind) -> WeightClass {
         | SoundKind::TalonFire
         | SoundKind::WispFire => WeightClass::Detail,
         SoundKind::Deposit
+        | SoundKind::UpgradeDone
         | SoundKind::TrainDone
         | SoundKind::Click
         | SoundKind::Denied

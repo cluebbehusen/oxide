@@ -1,10 +1,14 @@
 """Action-balanced behavior cloning for the factorized policy.
 
 The old two-teacher corpus was 89% Idle and omitted most of the roster
-and every new v6 verb. V7 demonstrates four coherent match strategies
-through independent production, capital/maintenance, and operations
-heads. Per-head class weighting keeps rare strategic labels from being
-buried under no-ops.
+and every new v6 verb. The teachers demonstrate four coherent match
+strategies through independent production, capital/maintenance,
+upgrade, and operations heads across the WHOLE v9 surface: the tier
+ladder (Airworks, Crucible, tier-two and tier-three rosters), derelict
+Extractor restoration, expansion Foundries, in-place upgrades, and
+airlifts. Per-head class weighting keeps rare strategic labels from
+being buried under no-ops. Every uncontrolled seat is the Rust-side
+Overseer.
 
 Usage (from tools/train/):
     uv run bc.py --episodes 40 --out runs/bc.pt
@@ -49,7 +53,12 @@ BUILD_TURRET, BUILD_FLAK, BUILD_BASTION, BUILD_ARRAY = 10, 11, 12, 13
 BUILD_RECLAIMER, REPAIR, AIR_RAID = 14, 15, 16
 FORM, PUSH, RECALL, SCOUT = 17, 18, 19, 20
 SALVAGE, REPAIR_UNIT, BUILD_BAY = 21, 22, 23
-NO_CONSTRUCTION, NO_OPERATION = 24, 25
+NO_CONSTRUCTION, NO_OPERATION, NO_UPGRADE = 24, 25, 42
+TRAIN_WARDEN, TRAIN_TENDER, TRAIN_EXCAVATOR = 26, 27, 28
+TRAIN_SCOUT_FLYER, TRAIN_INTERCEPTOR, TRAIN_BOMBER = 29, 30, 31
+TRAIN_TRANSPORT, TRAIN_SAPPER, TRAIN_BREAKER, TRAIN_AVALANCHE = 32, 33, 34, 35
+BUILD_AIRWORKS, BUILD_CRUCIBLE, BUILD_FOUNDRY, BUILD_EXTRACTOR = 36, 37, 38, 39
+UPGRADE, AIRLIFT = 40, 41
 
 STRATEGIES = ("fortify", "industry", "combined", "pressure")
 AGGRESSION_RANGES = {
@@ -96,6 +105,15 @@ def production_teacher(
     if enemy_air > raw[F["my_antiair"]] and mask[TRAIN_AA]:
         return TRAIN_AA
 
+    # Intel first: one scout flyer keeps the fog honest about the
+    # enemy's half of the map, and it is the only scout an island
+    # map allows at all.
+    if raw[F["my_scout_flyers"]] < 1 and mask[TRAIN_SCOUT_FLYER]:
+        return TRAIN_SCOUT_FLYER
+    enemy_sky = raw[F["enemy_interceptors"]] + raw[F["enemy_bombers"]]
+    if enemy_sky > raw[F["my_interceptors"]] and mask[TRAIN_INTERCEPTOR]:
+        return TRAIN_INTERCEPTOR
+
     counts = {
         TRAIN_SCUTTLER: raw[F["my_scuttlers"]],
         TRAIN_LANCER: raw[F["my_lancers"]],
@@ -103,39 +121,83 @@ def production_teacher(
         TRAIN_AA: raw[F["my_antiair"]],
         TRAIN_WING: raw[F["my_airground"]],
         TRAIN_AIR_AA: raw[F["my_airair"]],
+        TRAIN_WARDEN: raw[F["my_wardens"]],
+        TRAIN_TENDER: raw[F["my_tenders"]],
+        TRAIN_EXCAVATOR: raw[F["my_excavators"]],
+        TRAIN_INTERCEPTOR: raw[F["my_interceptors"]],
+        TRAIN_BOMBER: raw[F["my_bombers"]],
+        TRAIN_TRANSPORT: raw[F["my_transports"]],
+        TRAIN_SAPPER: raw[F["my_sappers"]],
+        TRAIN_BREAKER: raw[F["my_breakers"]],
+        TRAIN_AVALANCHE: raw[F["my_avalanches"]],
     }
     targets = {
         "fortify": (
             (TRAIN_BOMBARD, 2),
             (TRAIN_AA, 2),
+            (TRAIN_WARDEN, 2),
             (TRAIN_LANCER, 3),
+            (TRAIN_TENDER, 1),
             (TRAIN_AIR_AA, 1),
+            (TRAIN_AVALANCHE, 1),
+            (TRAIN_BREAKER, 1),
         ),
         "industry": (
+            (TRAIN_EXCAVATOR, 2),
             (TRAIN_LANCER, 3),
             (TRAIN_BOMBARD, 1),
+            (TRAIN_WARDEN, 1),
             (TRAIN_WING, 2),
             (TRAIN_AA, 1),
             (TRAIN_AIR_AA, 1),
+            (TRAIN_BREAKER, 1),
         ),
         "combined": (
             (TRAIN_LANCER, 3),
             (TRAIN_BOMBARD, 2),
+            (TRAIN_WARDEN, 2),
             (TRAIN_AA, 2),
             (TRAIN_WING, 3),
+            (TRAIN_TENDER, 1),
+            (TRAIN_EXCAVATOR, 1),
             (TRAIN_AIR_AA, 1),
             (TRAIN_SCUTTLER, 2),
+            (TRAIN_TRANSPORT, 1),
+            (TRAIN_BOMBER, 2),
+            (TRAIN_BREAKER, 1),
         ),
         "pressure": (
             (TRAIN_SCUTTLER, 4),
             (TRAIN_WING, 3),
+            (TRAIN_SAPPER, 2),
             (TRAIN_LANCER, 2),
             (TRAIN_AIR_AA, 1),
             (TRAIN_BOMBARD, 1),
+            (TRAIN_TRANSPORT, 1),
+            (TRAIN_BOMBER, 2),
         ),
     }[strategy]
+    # The mask gates legality, not affordability: wanting a Warden all
+    # opening long would label half the corpus with a purchase the
+    # lowering cannot pay. Tier wants wait for the bank to cover them.
+    tier_floor = {
+        TRAIN_WARDEN: 250,
+        TRAIN_TENDER: 220,
+        TRAIN_EXCAVATOR: 220,
+        TRAIN_TRANSPORT: 260,
+        TRAIN_BOMBER: 380,
+        TRAIN_BREAKER: 420,
+        TRAIN_AVALANCHE: 420,
+        TRAIN_SAPPER: 180,
+        TRAIN_INTERCEPTOR: 240,
+    }
+    scrap = raw[F["scrap"]]
     for action, target in targets:
-        if counts[action] < target and mask[action]:
+        if (
+            counts[action] < target
+            and mask[action]
+            and scrap >= tier_floor.get(action, 0)
+        ):
             return action
 
     if strategy == "pressure":
@@ -190,6 +252,54 @@ def construction_teacher(
 
     if raw[F["fab_built"]] == 0 and mask[BUILD_FAB]:
         return BUILD_FAB
+
+    # A known derelict frame is the cheapest income on the board;
+    # restore it the moment one is reachable and the bank breathes.
+    if (
+        raw[F["known_frames"]] > raw[F["my_extractors_built"]]
+        and raw[F["scrap"]] >= 200
+        and mask[BUILD_EXTRACTOR]
+    ):
+        return BUILD_EXTRACTOR
+
+    # The tier ladder: sky first, then the tier-three hub. Industry
+    # climbs later (economy first); pressure climbs for the bombers.
+    airworks_at = {
+        "fortify": 3_000,
+        "industry": 4_500,
+        "combined": 2_500,
+        "pressure": 2_000,
+    }[strategy]
+    if (
+        raw[F["airworks_built"]] == 0
+        and raw[F["tick"]] >= airworks_at
+        and mask[BUILD_AIRWORKS]
+    ):
+        return BUILD_AIRWORKS
+    crucible_at = {
+        "fortify": 5_000,
+        "industry": 7_000,
+        "combined": 5_500,
+        "pressure": 6_000,
+    }[strategy]
+    if (
+        raw[F["crucible_built"]] == 0
+        and raw[F["airworks_built"]] > 0
+        and raw[F["tick"]] >= crucible_at
+        and mask[BUILD_CRUCIBLE]
+    ):
+        return BUILD_CRUCIBLE
+
+    # Expansion: a second Foundry once the economy is rich and the
+    # midgame is real — forward production and one more victory token.
+    if (
+        strategy in ("industry", "combined")
+        and raw[F["my_foundries_built"]] < 2
+        and raw[F["scrap"]] >= 550
+        and raw[F["tick"]] >= 6_000
+        and mask[BUILD_FOUNDRY]
+    ):
+        return BUILD_FOUNDRY
 
     # The capital head has first claim on the shared bank. Chaining an
     # Array or Bastion immediately after the Fabricator therefore blocks
@@ -261,6 +371,30 @@ def construction_teacher(
     return NO_CONSTRUCTION
 
 
+def upgrade_teacher(
+    strategy: str,
+    raw: list[int],
+    mask: np.ndarray,
+) -> int:
+    """Lift a works when candidates stand and the bank can spare it.
+    Fortify upgrades earliest and most; pressure barely bothers."""
+    floor = {
+        "fortify": 250,
+        "industry": 300,
+        "combined": 350,
+        "pressure": 500,
+    }[strategy]
+    cap = {"fortify": 3, "industry": 2, "combined": 2, "pressure": 1}[strategy]
+    if (
+        raw[F["upgrade_candidates"]] > 0
+        and raw[F["my_upgraded_works"]] < cap
+        and raw[F["scrap"]] >= floor
+        and mask[UPGRADE]
+    ):
+        return UPGRADE
+    return NO_UPGRADE
+
+
 def operations_teacher(
     strategy: str,
     raw: list[int],
@@ -278,6 +412,8 @@ def operations_teacher(
         raw[F["incoming_shells"]] > 1 or raw[F["damaged_unit_value"]] > 250
     ):
         return RECALL
+    if mask[AIRLIFT] and raw[F["my_transports"]] > 0:
+        return AIRLIFT
     if mask[AIR_RAID] and raw[F["my_airground"]] >= 3:
         return AIR_RAID
     if mask[PUSH] and staging_size >= push_size:
@@ -300,6 +436,7 @@ def teacher(
         (
             production_teacher(strategy, raw, mask),
             construction_teacher(strategy, raw, mask),
+            upgrade_teacher(strategy, raw, mask),
             operations_teacher(strategy, raw, mask, tick),
         )
     )
@@ -366,17 +503,16 @@ def duel_scenarios(directory: pathlib.Path) -> list[pathlib.Path]:
 def episode_assignment(
     episode: int,
     scenario_count: int,
-    tier_count: int,
-) -> tuple[str, int, int, str, int]:
-    """Returns strategy, seat, map, faction pair, and tier indices.
+) -> tuple[str, int, int, str]:
+    """Returns strategy, seat, map index, and faction pair.
 
     One 128-episode pass crosses every strategy/seat pair with every
     shipped duel map. Faction pairs vary within each map instead of
     aliasing map index; subsequent 128-episode passes rotate the pair
     for the same strategy/seat/map cell.
     """
-    if scenario_count <= 0 or tier_count <= 0:
-        raise ValueError("scenario and tier counts must be positive")
+    if scenario_count <= 0:
+        raise ValueError("scenario count must be positive")
     local = episode % (2 * len(STRATEGIES))
     block = episode // (2 * len(STRATEGIES))
     strategy = STRATEGIES[local // 2]
@@ -384,21 +520,13 @@ def episode_assignment(
     scenario_index = (block * 5 + local) % scenario_count
     faction_rotation = block // scenario_count
     faction_index = (block + 2 * local + faction_rotation) % len(FACTION_PAIRS)
-    tier_index = (block + local) % tier_count
-    return strategy, seat, scenario_index, FACTION_PAIRS[faction_index], tier_index
+    return strategy, seat, scenario_index, FACTION_PAIRS[faction_index]
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--driver", default="../../target/release/oxide-driver")
     ap.add_argument("--episodes", type=int, default=64)
-    ap.add_argument("--tier", default="scrapheap")
-    ap.add_argument(
-        "--tiers",
-        default=None,
-        help="optional comma-separated opponent curriculum, such as "
-        "scrapheap,standard,veteran",
-    )
     ap.add_argument(
         "--scenario-dir",
         default="../../scenarios",
@@ -416,16 +544,13 @@ def main() -> None:
     ap.add_argument(
         "--resume",
         default=None,
-        help="initialize from a widened v8 checkpoint instead of fresh weights",
+        help="initialize from an existing checkpoint instead of fresh weights",
     )
     ap.add_argument("--out", default="runs/bc.pt")
     args = ap.parse_args()
 
     torch.manual_seed(0)
     scenarios = duel_scenarios(pathlib.Path(args.scenario_dir))
-    tiers = tuple(entry.strip() for entry in (args.tiers or args.tier).split(","))
-    if not all(tiers):
-        ap.error("--tiers must be a non-empty comma-separated list")
     driver_identity = input_identity(args.driver)
     worker = Worker(args.driver)
     obs_all, mask_all, act_all = [], [], []
@@ -433,19 +558,15 @@ def main() -> None:
     try:
         strategy_wins = dict.fromkeys(STRATEGIES, 0)
         scenario_wins = dict.fromkeys((path.stem for path in scenarios), 0)
-        tier_wins = dict.fromkeys(tiers, 0)
         for ep in range(args.episodes):
-            strategy, seat, scenario_index, factions, tier_index = episode_assignment(
+            strategy, seat, scenario_index, factions = episode_assignment(
                 ep,
                 len(scenarios),
-                len(tiers),
             )
             scenario = scenarios[scenario_index]
-            tier = tiers[tier_index]
             frame = worker.reset(
                 20_000 + ep,
                 control=(seat,),
-                tier=tier,
                 scenario=str(scenario),
                 factions=factions,
             )
@@ -472,10 +593,8 @@ def main() -> None:
                 wins += 1
                 strategy_wins[strategy] += 1
                 scenario_wins[scenario.stem] += 1
-                tier_wins[tier] += 1
         print(f"per-strategy wins: {strategy_wins}")
         print(f"per-scenario wins: {scenario_wins}")
-        print(f"per-tier wins: {tier_wins}")
         print(f"teacher: {wins}/{args.episodes} wins")
     finally:
         worker.close()
@@ -541,7 +660,6 @@ def main() -> None:
             "strategy_aggression_ranges": {
                 strategy: list(bounds) for strategy, bounds in AGGRESSION_RANGES.items()
             },
-            "tiers": list(tiers),
             "torch_seed": 0,
         },
         inputs=lineage_inputs,

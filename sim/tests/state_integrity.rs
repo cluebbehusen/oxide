@@ -13,7 +13,7 @@
 //! exercises the verbs the bots rarely reach and is checked every single
 //! tick, and a ticked state makes the full round trip through JSON.
 
-use oxide_sim::bot::{Brain, Difficulty, Level, NeuralBot};
+use oxide_sim::bot::Brain;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::stats::{BuildingKind, QUEUE_CAP};
 use oxide_sim::{
@@ -34,7 +34,7 @@ fn arena() -> Scenario {
             "#..................#".into(),
             "#....s.............#".into(),
             "#..................#".into(),
-            "#..................#".into(),
+            "#.........E........#".into(),
             "#..................#".into(),
             "#..................#".into(),
             "#................2.#".into(),
@@ -241,17 +241,17 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::StaleUnitCounter => 11,
         E::StaleBuildingCounter => 12,
         E::TickBeyondEnvelope => 13,
-        E::IdCounterBeyondEnvelope => 14,
-        E::ForeignUnitOwner(_) => 15,
-        E::UnitHpOutOfRange(_) => 16,
-        E::UnitProgressOutOfRange(_) => 17,
-        E::UnitCooldownOutOfRange(_) => 18,
-        E::OverlongUnitQueue(_) => 19,
-        E::UnitOutsideEnvelope(_) => 20,
-        E::HarvestSourceOutsideZone(_) => 21,
-        E::UnmintedOrderTarget(_) => 22,
-        E::ForeignBuildingOwner(_) => 23,
-        E::UnconstructibleSite(_) => 24,
+        E::EliminationBeyondEnvelope(_) => 14,
+        E::IdCounterBeyondEnvelope => 15,
+        E::ForeignUnitOwner(_) => 16,
+        E::UnitHpOutOfRange(_) => 17,
+        E::UnitProgressOutOfRange(_) => 18,
+        E::UnitCooldownOutOfRange(_) => 19,
+        E::OverlongUnitQueue(_) => 20,
+        E::UnitOutsideEnvelope(_) => 21,
+        E::HarvestSourceOutsideZone(_) => 22,
+        E::UnmintedOrderTarget(_) => 23,
+        E::ForeignBuildingOwner(_) => 24,
         E::BuildingHpOutOfRange(_) => 25,
         E::BuildingProgressOutOfRange(_) => 26,
         E::BuildingCooldownOutOfRange(_) => 27,
@@ -261,25 +261,36 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::UnproducibleQueueEntry(_) => 31,
         E::BuildingOutsideEnvelope(_) => 32,
         E::IncoherentSalvageLedger(_) => 33,
-        E::LiveBuildingMarkedSalvaged(_) => 34,
-        E::ForeignShellOwner(_) => 35,
-        E::ShellOutsideEnvelope(_) => 36,
-        E::UnmintedShellShooter(_) => 37,
-        E::ForeignGhostOwner(_) => 38,
-        E::FriendlyGhost(_) => 39,
-        E::GhostOutsideEnvelope(_) => 40,
-        E::UnsortedGhosts(_) => 41,
-        E::ContactOutsideEnvelope(_) => 42,
-        E::UnsortedContacts(_) => 43,
-        E::OverlongSalvageIncidentMemory(_) => 44,
-        E::SalvageIncidentOutsideEnvelope(_) => 45,
-        E::ExpiredSalvageIncident(_) => 46,
-        E::SalvageIncidentExpiryBeyondHorizon(_) => 47,
-        E::UnsortedSalvageIncidents(_) => 48,
+        E::TierBeyondLadder(_) => 34,
+        E::LiveBuildingMarkedSalvaged(_) => 35,
+        E::CargoOnNonTransport(_) => 50,
+        E::CargoBeyondCapacity(_) => 51,
+        E::UncarriableCargo(_) => 52,
+        E::CargoHpOutOfRange(_) => 53,
+        E::CargoOwnerMismatch(_) => 54,
+        E::CargoNotDormant(_) => 55,
+        E::AliasedCargoId => 56,
+        E::ForeignShellOwner(_) => 36,
+        E::ShellOutsideEnvelope(_) => 37,
+        E::UnmintedShellShooter(_) => 38,
+        E::ForeignGhostOwner(_) => 39,
+        E::FriendlyGhost(_) => 40,
+        E::GhostOutsideEnvelope(_) => 41,
+        E::UnsortedGhosts(_) => 42,
+        E::ContactOutsideEnvelope(_) => 43,
+        E::UnsortedContacts(_) => 44,
+        E::OverlongSalvageIncidentMemory(_) => 45,
+        E::SalvageIncidentOutsideEnvelope(_) => 46,
+        E::ExpiredSalvageIncident(_) => 47,
+        E::SalvageIncidentExpiryBeyondHorizon(_) => 48,
+        E::UnsortedSalvageIncidents(_) => 49,
+        E::EliminationInTheFuture(_) => 57,
+        E::CargoProgressOutOfRange(_) => 58,
+        E::CargoCooldownOutOfRange(_) => 59,
     }
 }
 
-const ROWS: usize = 49;
+const ROWS: usize = 60;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -306,6 +317,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::StaleUnitCounter,
         E::StaleBuildingCounter,
         E::TickBeyondEnvelope,
+        E::EliminationBeyondEnvelope(PlayerId(0)),
         E::IdCounterBeyondEnvelope,
         E::ForeignUnitOwner(UnitId(0)),
         E::UnitHpOutOfRange(UnitId(0)),
@@ -316,7 +328,6 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::HarvestSourceOutsideZone(UnitId(0)),
         E::UnmintedOrderTarget(UnitId(0)),
         E::ForeignBuildingOwner(BuildingId(0)),
-        E::UnconstructibleSite(BuildingId(0)),
         E::BuildingHpOutOfRange(BuildingId(0)),
         E::BuildingProgressOutOfRange(BuildingId(0)),
         E::BuildingCooldownOutOfRange(BuildingId(0)),
@@ -326,6 +337,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::UnproducibleQueueEntry(BuildingId(0)),
         E::BuildingOutsideEnvelope(BuildingId(0)),
         E::IncoherentSalvageLedger(BuildingId(0)),
+        E::TierBeyondLadder(BuildingId(0)),
         E::LiveBuildingMarkedSalvaged(BuildingId(0)),
         E::ForeignShellOwner(0),
         E::ShellOutsideEnvelope(0),
@@ -341,12 +353,56 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::ExpiredSalvageIncident(PlayerId(0)),
         E::SalvageIncidentExpiryBeyondHorizon(PlayerId(0)),
         E::UnsortedSalvageIncidents(PlayerId(0)),
+        E::CargoOnNonTransport(UnitId(0)),
+        E::CargoBeyondCapacity(UnitId(0)),
+        E::UncarriableCargo(UnitId(0)),
+        E::CargoHpOutOfRange(UnitId(0)),
+        E::CargoOwnerMismatch(UnitId(0)),
+        E::CargoNotDormant(UnitId(0)),
+        E::AliasedCargoId,
+        E::EliminationInTheFuture(PlayerId(0)),
+        E::CargoProgressOutOfRange(UnitId(0)),
+        E::CargoCooldownOutOfRange(UnitId(0)),
     ]
 }
 
 /// One forgery: what it is called, the single poke that makes it, and
 /// the fragment of the refusal it must earn.
 type Forgery = (&'static str, fn(&mut Value), &'static str);
+
+/// A dormant, well-formed Sentinel rider cut from the enemy Sentinel's
+/// serialized shape: fresh id below the counter, idle, owner seat 0.
+fn well_formed_rider(d: &Value) -> Value {
+    let mut rider = d["units"][2].clone();
+    let next = d["next_unit_id"].as_u64().expect("counter serialized");
+    rider["id"] = json!(next - 1);
+    rider["player"] = json!(0);
+    rider["hp"] = json!(10);
+    rider["order"] = json!({"order": "idle"});
+    rider.as_object_mut().expect("unit is a map").remove("path");
+    rider
+        .as_object_mut()
+        .expect("unit is a map")
+        .remove("leash");
+    rider
+        .as_object_mut()
+        .expect("unit is a map")
+        .remove("queue");
+    rider
+}
+
+/// Rewrites units[0] (the working Harvester) into a plausible Skyhook
+/// so cargo clauses past the transport gate can be probed one at a time.
+fn make_transport(d: &mut Value) {
+    d["units"][0]["kind"] = json!("skyhook");
+    d["units"][0]["hp"] = json!(150);
+    d["units"][0]["order"] = json!({"order": "idle"});
+    d["units"][0]["carrying"] = json!(0);
+    let unit = d["units"][0].as_object_mut().expect("unit is a map");
+    unit.remove("path");
+    unit.remove("leash");
+    unit.remove("queue");
+}
 
 /// Every checklist row, one forgery each. The expectation is the
 /// message fragment the row names its victim with, so a row that stops
@@ -394,10 +450,30 @@ fn every_checklist_row_refuses_its_forgery() {
             "map grid dimensions disagree with its cells",
         ),
         (
+            "an extractor frame parked on a scrap node",
+            |d| {
+                // Parse would refuse this shape outright; the wire
+                // must too, or restoration and harvesting stack on
+                // one tile. Plant scrap under the first frame anchor.
+                let frame = d["map"]["extractor_frames"][0].clone();
+                let (x, y) = (
+                    frame["x"].as_i64().unwrap() as usize,
+                    frame["y"].as_i64().unwrap() as usize,
+                );
+                let width = d["map"]["grid"]["width"].as_u64().unwrap() as usize;
+                d["map"]["grid"]["cells"][y * width + x]["scrap"] = json!(40);
+            },
+            "map grid dimensions disagree with its cells",
+        ),
+        (
             "a map wider than the supported maximum",
             |d| {
                 let cell = d["map"]["grid"]["cells"][0].clone();
                 d["map"]["grid"] = json!({"width": 300, "height": 1, "cells": vec![cell; 300]});
+                // A coherent forgery: frames from the real map would
+                // trip the consistency gate first and mask the size
+                // gate this row exists to prove.
+                d["map"]["extractor_frames"] = json!([]);
             },
             "the supported maximum is 256 per side",
         ),
@@ -442,6 +518,11 @@ fn every_checklist_row_refuses_its_forgery() {
             "a tick past the envelope",
             |d| d["tick"] = json!(u64::MAX),
             "tick beyond the sanity envelope",
+        ),
+        (
+            "an elimination stamp past the envelope",
+            |d| d["players"][0]["eliminated_at"] = json!(u64::MAX),
+            "elimination stamp lies beyond the sanity envelope",
         ),
         (
             "an id counter past the envelope",
@@ -517,11 +598,10 @@ fn every_checklist_row_refuses_its_forgery() {
             |d| d["buildings"][0]["player"] = json!(9),
             "building b0 is owned by a player outside the table",
         ),
-        (
-            "an unfinished Foundry",
-            |d| d["buildings"][0]["built"] = json!(false),
-            "building b0 is unfinished but its kind cannot be constructed",
-        ),
+        // "An unfinished Foundry" left this checklist in 0.15: Foundries
+        // are buildable expansions now, so a Foundry site is a legal,
+        // reachable state. The unconstructible-site invariant remains in
+        // the validator for any future scenario-only kind.
         (
             "a building healthier than its kind can be",
             |d| d["buildings"][0]["hp"] = json!(999_999),
@@ -558,12 +638,12 @@ fn every_checklist_row_refuses_its_forgery() {
         ),
         (
             "a Foundry queuing a unit only the Fabricator trains",
-            |d| d["buildings"][0]["queue"] = json!(["scuttler"]),
+            |d| d["buildings"][0]["queue"] = json!(["lancer"]),
             "building b0 queues a unit it could never train",
         ),
         (
             "a Ferrous Fabricator queuing the Cupric roster",
-            |d| d["buildings"][2]["queue"] = json!(["wisp"]),
+            |d| d["buildings"][2]["queue"] = json!(["stinger"]),
             "building b2 queues a unit it could never train",
         ),
         (
@@ -582,9 +662,131 @@ fn every_checklist_row_refuses_its_forgery() {
             "building b0 carries an incoherent salvage ledger",
         ),
         (
+            "a tier past the kind's ladder",
+            |d| d["buildings"][0]["tier"] = json!(9),
+            "claims a tier its kind's ladder does not reach",
+        ),
+        (
             "a live building marked as already salvaged",
             |d| d["buildings"][0]["salvaged"] = json!(true),
             "building b0 is still live but marked salvaged",
+        ),
+        (
+            "cargo aboard a machine with no sling",
+            |d| {
+                let rider = well_formed_rider(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries cargo without being a transport",
+        ),
+        (
+            "a sling packed past its capacity",
+            |d| {
+                let rider = well_formed_rider(d);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!(vec![rider; 5]);
+            },
+            "carries more cargo than its sling holds",
+        ),
+        (
+            "a rider no sling can take",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["kind"] = json!("kestrel");
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider that can never be carried",
+        ),
+        (
+            "a dead rider in the hold",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["hp"] = json!(0);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider with impossible hp",
+        ),
+        (
+            "an elimination stamped later than the present",
+            |d| {
+                d["players"][0]["eliminated_at"] = json!(1_000_000);
+            },
+            "elimination stamp lies in the future",
+        ),
+        (
+            "a rider smuggling a progress meter boarding zeroes",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                // The smallest possible forgery: boarding resets the
+                // meter, so even one tick of progress is unreachable.
+                rider["progress"] = json!(1);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider with an impossible progress meter",
+        ),
+        (
+            "a rider still armed with a looping program",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["looping"] = json!(true);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider that is not dormant",
+        ),
+        (
+            "a rider smuggling an oversized weapon cooldown",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["cooldowns"] = json!([4_000_000_000u32, 0]);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider with impossible weapon cooldowns",
+        ),
+        (
+            "extractor frames out of canonical order",
+            |d| {
+                // A duplicated anchor is the smallest ordering forgery:
+                // fog views copy this list as canon and the gym counts
+                // it, so one semantic map must not get two shapes.
+                let frame = d["map"]["extractor_frames"][0].clone();
+                d["map"]["extractor_frames"] = json!([frame.clone(), frame]);
+            },
+            "map grid dimensions disagree with its cells",
+        ),
+        (
+            "another player's machine in the hold",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["player"] = json!(1);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries another player's machine",
+        ),
+        (
+            "a rider still holding live orders",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["order"] = json!({"order": "move", "goal": {"x": 3, "y": 3}});
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider that is not dormant",
+        ),
+        (
+            "a rider whose id walks the world too",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["id"] = d["units"][1]["id"].clone();
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "aliased between the world and a cargo hold",
         ),
         (
             "a shell fired by a seat off the table",
@@ -824,7 +1026,7 @@ fn a_full_verb_run_stays_valid_every_tick() {
                     0,
                     Command::Train {
                         building: fabricator,
-                        kind: UnitKind::Scuttler,
+                        kind: UnitKind::Lancer,
                     },
                 ),
             ],
@@ -911,31 +1113,17 @@ fn a_full_verb_run_stays_valid_every_tick() {
     );
 }
 
-/// A seat's command source for the sweep. The two families reach
-/// different shapes — the shipped ladder builds and techs, the scripted
-/// tiers scout hard and leave memories behind them — so the sweep runs
-/// both and insists on seeing both.
-enum Mind {
-    Scripted(Box<Brain>),
-    Ladder(Box<NeuralBot>),
-}
-
-impl Mind {
-    fn act(&mut self, state: &State) -> Vec<PlayerCommand> {
-        match self {
-            Mind::Scripted(brain) => brain.act(state),
-            Mind::Ladder(bot) => bot.act(state),
-        }
-    }
-}
-
 /// The bring-up gate, broad half: every shipped map, every seat driven,
 /// thousands of ticks, the checklist sampled along the way. Independent
 /// deterministic sims, so the sweep fans across threads like the other
 /// map sweeps.
 #[test]
 fn every_shipped_map_stays_valid_under_bot_play() {
-    const TICKS: u32 = 2_000;
+    // Re-anchored on the all-Overseer sweep: its first construction
+    // lands around tick 1,100-3,600 depending on the map (the deleted
+    // 0.14 actors built earlier), and at 8,000 ticks every shipped map
+    // measures both built-up (34/34) and remembered (34/34).
+    const TICKS: u32 = 8_000;
     /// How often the checklist runs directly (cheap: entities, not tiles).
     const SAMPLE: u32 = 100;
     /// How often the state makes the full trip through the deserializer,
@@ -955,7 +1143,7 @@ fn every_shipped_map_stays_valid_under_bot_play() {
     let built_up = std::sync::atomic::AtomicUsize::new(0);
     let remembered = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|scope| {
-        for (index, path) in paths.iter().enumerate() {
+        for path in &paths {
             let (built_up, remembered) = (&built_up, &remembered);
             scope.spawn(move || {
                 let name = path.file_stem().unwrap().to_string_lossy().into_owned();
@@ -968,24 +1156,10 @@ fn every_shipped_map_stays_valid_under_bot_play() {
                     (state.units().len(), state.buildings().len());
                 // Every chair thinks: the widest spread of live orders,
                 // construction, and battle the shipped maps can produce.
-                let mut brains: Vec<Mind> = state
-                    .players()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| {
-                        let seat = PlayerId(i as u8);
-                        if index.is_multiple_of(2) {
-                            Mind::Ladder(Box::new(NeuralBot::ladder(
-                                seat,
-                                seed,
-                                Level::Expert,
-                                None,
-                                p.faction,
-                            )))
-                        } else {
-                            Mind::Scripted(Box::new(Brain::for_tier(seat, seed, Difficulty::Prime)))
-                        }
-                    })
+                // The Overseer is the one commander left standing while
+                // bot seats await the retrained actor.
+                let mut brains: Vec<Brain> = (0..state.players().len())
+                    .map(|i| Brain::overseer(PlayerId(i as u8), seed))
                     .collect();
                 let mut saw_ghost = false;
                 for tick in 0..TICKS {
@@ -1027,6 +1201,10 @@ fn every_shipped_map_stays_valid_under_bot_play() {
         built_up.load(std::sync::atomic::Ordering::Relaxed),
         remembered.load(std::sync::atomic::Ordering::Relaxed),
     );
+    eprintln!(
+        "sweep tallies: built_up {built_up}, remembered {remembered}, maps {}",
+        paths.len()
+    );
     assert!(
         built_up * 3 >= paths.len(),
         "the sweep must reach built-up worlds, not idle openings ({built_up} of {})",
@@ -1057,4 +1235,27 @@ fn a_dangling_order_target_is_not_a_forgery() {
     run(&mut state, 5);
     state.validate_invariants().expect("still coherent");
     assert!(state.unit(UnitId(live)).is_some());
+}
+
+#[test]
+fn parse_refuses_a_map_beyond_the_edge_bound() {
+    use oxide_sim::map::{MAX_MAP_EDGE, Map, MapError};
+
+    let wide = vec!["#".repeat(MAX_MAP_EDGE + 1)];
+    assert!(matches!(
+        Map::parse(&wide),
+        Err(MapError::TooLarge { width, height: 1 }) if width == MAX_MAP_EDGE + 1
+    ));
+
+    let tall: Vec<String> = std::iter::repeat_n("#".to_string(), MAX_MAP_EDGE + 1).collect();
+    assert!(matches!(
+        Map::parse(&tall),
+        Err(MapError::TooLarge { width: 1, height }) if height == MAX_MAP_EDGE + 1
+    ));
+
+    let square: Vec<String> = std::iter::repeat_n("#".repeat(MAX_MAP_EDGE), MAX_MAP_EDGE).collect();
+    assert!(
+        Map::parse(&square).is_ok(),
+        "the bound is inclusive: exactly the maximum still parses"
+    );
 }

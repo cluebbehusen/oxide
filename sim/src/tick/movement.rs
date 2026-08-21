@@ -36,7 +36,12 @@ fn early_advance_safe(
     map: &Map,
     buildings: &[crate::state::Building],
 ) -> bool {
-    let open = |t: TilePos| map.terrain_passable(t) && !buildings.iter().any(|b| b.contains(t));
+    let open = |t: TilePos| {
+        map.terrain_passable(t)
+            && !buildings
+                .iter()
+                .any(|b| b.contains(t) && !b.kind.is_stealthy())
+    };
     let (dx, dy) = (nxt.x - cur.x, nxt.y - cur.y);
     if dx == 0 || dy == 0 {
         return true;
@@ -89,7 +94,9 @@ pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Op
     if unit.hp == 0
         || unit.kind.stats().domain != crate::stats::Domain::Ground
         || unit.path.is_some()
-        || state.building_at(unit.tile()).is_none()
+        || state
+            .building_at(unit.tile())
+            .is_none_or(|b| b.kind.is_stealthy())
     {
         return None;
     }
@@ -139,6 +146,11 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
         }
         let before = unit.pos;
         let stats = unit.kind.stats();
+        if stats.turn_rate > 0 {
+            steer_turn_limited(unit, map, stats);
+            travel[slot] = unit.pos - before;
+            continue;
+        }
         let airborne = stats.domain == crate::stats::Domain::Air;
         let mut budget = stats.speed;
         while budget > Fx::ZERO {
@@ -156,7 +168,10 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             // it binds a flyer: air routes never close.
             if !airborne {
                 let open = |t: TilePos| {
-                    map.terrain_passable(t) && !buildings.iter().any(|b| b.contains(t))
+                    map.terrain_passable(t)
+                        && !buildings
+                            .iter()
+                            .any(|b| b.contains(t) && !b.kind.is_stealthy())
                 };
                 let here = TilePos::containing(unit.pos);
                 let (dx, dy) = (waypoint.x - here.x, waypoint.y - here.y);
@@ -193,6 +208,71 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
         travel[slot] = unit.pos - before;
     }
     travel
+}
+
+/// Turn-limited flight: the body advances along its heading and only
+/// the heading steers, at most `turn_rate` compass steps per tick.
+/// Waypoints are accepted inside the kind's turn-acceptance ring — a
+/// bounded arc cannot promise an exact center, and a ring tighter than
+/// the turn radius is an orbit trap — and a step whose tile
+/// is closed to air (a mesa) is simply not taken: the flier holds
+/// position against the wall while its nose keeps swinging, and next
+/// tick's heading carries it along or away. Pathless means hovering.
+fn steer_turn_limited(
+    unit: &mut crate::state::Unit,
+    map: &Map,
+    stats: &'static crate::stats::UnitStats,
+) {
+    let accept = stats.turn_acceptance();
+    let arrive_sq = accept * accept;
+    // Accept every waypoint the arc has already effectively reached.
+    loop {
+        let Some(path) = &mut unit.path else { return };
+        let Some(&waypoint) = path.waypoints.get(path.next as usize) else {
+            unit.path = None;
+            return;
+        };
+        if unit.pos.dist_sq(waypoint.center()) <= arrive_sq {
+            path.next += 1;
+            if path.next as usize >= path.waypoints.len() {
+                unit.path = None;
+                return;
+            }
+            continue;
+        }
+        break;
+    }
+    let target = {
+        let path = unit.path.as_ref().expect("checked above");
+        path.waypoints[path.next as usize].center()
+    };
+    // Steer: rotate one compass step at a time toward the goal ray,
+    // stopping early the moment the nose crosses it. The cross product's
+    // sign picks the turn direction; dead astern breaks the tie toward
+    // +1, and every input is Q32.32, so each platform turns identically.
+    let d = target - unit.pos;
+    for _ in 0..stats.turn_rate {
+        let hv = chassis::compass::dir(unit.heading);
+        let cross = hv.x * d.y - hv.y * d.x;
+        let dot = hv.x * d.x + hv.y * d.y;
+        if cross == Fx::ZERO && dot >= Fx::ZERO {
+            break;
+        }
+        let step: u8 = if cross > Fx::ZERO { 1 } else { 255 };
+        let next = unit.heading.wrapping_add(step);
+        let nhv = chassis::compass::dir(next);
+        let ncross = nhv.x * d.y - nhv.y * d.x;
+        unit.heading = next;
+        if (cross > Fx::ZERO) != (ncross > Fx::ZERO) {
+            break;
+        }
+    }
+    let ahead = unit.pos + chassis::compass::dir(unit.heading) * stats.speed;
+    let tile = TilePos::containing(ahead);
+    let open = map.tile(tile).is_some_and(|t| !t.terrain.blocks_air());
+    if open {
+        unit.pos = ahead;
+    }
 }
 
 /// A unit that is standing still to work — extracting, welding, or

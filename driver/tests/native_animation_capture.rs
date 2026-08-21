@@ -441,7 +441,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         )?;
         let events = harness.capture_schedule(
             &format!("08-defense-fire-reload/{}", kind.name().replace(' ', "-")),
-            &combat_capture_schedule(kind.stats().weapons[0].cooldown_ticks),
+            &combat_capture_schedule(kind.base_stats().weapons[0].cooldown_ticks),
         )?;
         assert!(
             events.iter().any(|event| match event {
@@ -871,7 +871,18 @@ fn unit_duel_scenario(attacker: UnitKind) -> Value {
         UnitKind::Flakhound | UnitKind::Stinger => 4,
         UnitKind::Lancer => 5,
         UnitKind::Bombard => 9,
-        UnitKind::Harvester => unreachable!("the combat roster excludes Harvesters"),
+        UnitKind::Warden => 2,
+        UnitKind::Shrike | UnitKind::Sylph => 3,
+        UnitKind::Condor | UnitKind::Moth => 2,
+        UnitKind::Breaker => 3,
+        UnitKind::Avalanche => 8,
+        UnitKind::Harvester
+        | UnitKind::Tender
+        | UnitKind::Excavator
+        | UnitKind::Kestrel
+        | UnitKind::Gnat
+        | UnitKind::Skyhook
+        | UnitKind::Sapper => unreachable!("the combat roster excludes unarmed machines"),
     };
     let units = vec![
         unit(0, attacker, 15, 10),

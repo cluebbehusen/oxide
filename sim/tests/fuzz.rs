@@ -63,13 +63,16 @@ enum CommandTag {
     Advance,
     FocusFire,
     CancelFound,
+    UpgradeBuilding,
+    Load,
+    Unload,
 }
 
 /// The draw pool. Paired with the exhaustive matches below, the array and
 /// the variant list cannot drift apart — the old `next_below(10)` bound
 /// against nine arms is exactly how `Repair`, `Salvage`, and
 /// `CancelTrain` went unfuzzed.
-const COMMAND_TAGS: [CommandTag; 18] = [
+const COMMAND_TAGS: [CommandTag; 21] = [
     CommandTag::Move,
     CommandTag::Attack,
     CommandTag::AttackMove,
@@ -88,6 +91,9 @@ const COMMAND_TAGS: [CommandTag; 18] = [
     CommandTag::Advance,
     CommandTag::FocusFire,
     CommandTag::CancelFound,
+    CommandTag::UpgradeBuilding,
+    CommandTag::Load,
+    CommandTag::Unload,
 ];
 
 /// How rarely a drawn [`CommandTag::Surrender`] is kept: one landed
@@ -122,6 +128,9 @@ fn tag_index(tag: CommandTag) -> usize {
         CommandTag::Advance => 15,
         CommandTag::FocusFire => 16,
         CommandTag::CancelFound => 17,
+        CommandTag::UpgradeBuilding => 18,
+        CommandTag::Load => 19,
+        CommandTag::Unload => 20,
     }
 }
 
@@ -145,13 +154,16 @@ fn tag_of(command: &Command) -> CommandTag {
         Command::RepairUnit { .. } => CommandTag::RepairUnit,
         Command::Advance { .. } => CommandTag::Advance,
         Command::FocusFire { .. } => CommandTag::FocusFire,
+        Command::UpgradeBuilding { .. } => CommandTag::UpgradeBuilding,
         Command::CancelFound { .. } => CommandTag::CancelFound,
+        Command::Load { .. } => CommandTag::Load,
+        Command::Unload { .. } => CommandTag::Unload,
     }
 }
 
 /// The whole roster, cross-faction kinds included — `apply_train` owes
 /// every one of them a verdict. Exhaustive by the same rule as the verbs.
-const UNIT_KINDS: [UnitKind; 11] = [
+const UNIT_KINDS: [UnitKind; 24] = [
     UnitKind::Harvester,
     UnitKind::Sentinel,
     UnitKind::Scuttler,
@@ -163,6 +175,19 @@ const UNIT_KINDS: [UnitKind; 11] = [
     UnitKind::Darter,
     UnitKind::Talon,
     UnitKind::Wisp,
+    UnitKind::Warden,
+    UnitKind::Tender,
+    UnitKind::Excavator,
+    UnitKind::Kestrel,
+    UnitKind::Gnat,
+    UnitKind::Shrike,
+    UnitKind::Sylph,
+    UnitKind::Condor,
+    UnitKind::Moth,
+    UnitKind::Breaker,
+    UnitKind::Avalanche,
+    UnitKind::Skyhook,
+    UnitKind::Sapper,
 ];
 
 fn unit_kind_index(kind: UnitKind) -> usize {
@@ -178,11 +203,25 @@ fn unit_kind_index(kind: UnitKind) -> usize {
         UnitKind::Darter => 8,
         UnitKind::Talon => 9,
         UnitKind::Wisp => 10,
+        UnitKind::Warden => 11,
+        UnitKind::Tender => 12,
+        UnitKind::Excavator => 13,
+        UnitKind::Kestrel => 14,
+        UnitKind::Gnat => 15,
+        UnitKind::Shrike => 16,
+        UnitKind::Sylph => 17,
+        UnitKind::Condor => 18,
+        UnitKind::Skyhook => 22,
+        UnitKind::Sapper => 23,
+        UnitKind::Moth => 19,
+        UnitKind::Breaker => 20,
+        UnitKind::Avalanche => 21,
     }
 }
 
-/// Every building kind, the unbuildable Foundry included.
-const BUILDING_KINDS: [BuildingKind; 8] = [
+/// Every building kind, frame-bound and tech-gated ones included —
+/// hostile input must aim at all of them.
+const BUILDING_KINDS: [BuildingKind; 13] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
     BuildingKind::Fabricator,
@@ -191,6 +230,11 @@ const BUILDING_KINDS: [BuildingKind; 8] = [
     BuildingKind::Array,
     BuildingKind::Reclaimer,
     BuildingKind::RepairBay,
+    BuildingKind::Extractor,
+    BuildingKind::Airworks,
+    BuildingKind::Crucible,
+    BuildingKind::Barricade,
+    BuildingKind::ScuttleCharge,
 ];
 
 fn building_kind_index(kind: BuildingKind) -> usize {
@@ -203,6 +247,11 @@ fn building_kind_index(kind: BuildingKind) -> usize {
         BuildingKind::Array => 5,
         BuildingKind::Reclaimer => 6,
         BuildingKind::RepairBay => 7,
+        BuildingKind::Extractor => 8,
+        BuildingKind::Airworks => 9,
+        BuildingKind::Crucible => 10,
+        BuildingKind::Barricade => 11,
+        BuildingKind::ScuttleCharge => 12,
     }
 }
 
@@ -419,6 +468,21 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
         CommandTag::CancelFound => Command::CancelFound {
             kind: BUILDING_KINDS[rng.next_below(BUILDING_KINDS.len() as u32) as usize],
             anchor: anchor(rng, state),
+        },
+        CommandTag::UpgradeBuilding => Command::UpgradeBuilding {
+            units: units(rng, state),
+            building: building_id(rng, state),
+            queue: queue(rng),
+        },
+        CommandTag::Load => Command::Load {
+            units: units(rng, state),
+            transport: unit_id(rng, state),
+            queue: queue(rng),
+        },
+        CommandTag::Unload => Command::Unload {
+            transport: unit_id(rng, state),
+            at: tile(rng, state),
+            queue: queue(rng),
         },
     }
 }

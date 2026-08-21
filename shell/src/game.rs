@@ -118,6 +118,10 @@ pub struct Game {
     /// last actually seen, on the fx clock — presentation state behind
     /// the staleness ramp. A `RefCell` because drawing holds `&Game`.
     pub last_seen: std::cell::RefCell<HashMap<(i32, i32), f32>>,
+    /// The minimap's cached terrain-and-fog texture layer. Presentation
+    /// only, lazily created by the first minimap draw (headless sessions
+    /// never touch the GPU). A `RefCell` because drawing holds `&Game`.
+    pub minimap_layer: std::cell::RefCell<Option<crate::render::MinimapLayer>>,
     /// The chrome geometry the renderer computed last frame — the one
     /// model hit-testing reads, so drawn and clickable can never
     /// disagree. A `Cell` because drawing holds `&Game`.
@@ -180,9 +184,8 @@ impl Game {
         // never permutes seats (parity carries factions, teams, and the
         // automation harness), it just moves which chair the human
         // takes. Anything but exactly one non-bot seat is a malformed
-        // PLAYABLE session (a bot seat without a config would fall to
-        // the team-blind classic bot on team maps); the spectator
-        // constructor above is the lenient door.
+        // PLAYABLE session; the spectator constructor above is the
+        // lenient door.
         let humans: Vec<PlayerId> = scenario
             .players
             .iter()
@@ -239,6 +242,7 @@ impl Game {
             sounds_pending: Vec::new(),
             autosave_done: false,
             last_seen: std::cell::RefCell::new(HashMap::new()),
+            minimap_layer: std::cell::RefCell::new(None),
             toasts: Vec::new(),
             scorches: Vec::new(),
             alerts: Vec::new(),
@@ -813,6 +817,42 @@ impl oxide_protocol::DebugSession for Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The resume guarantee the hash check alone cannot see: the
+    /// watch-back loop replays every re-executed tick through the
+    /// seat bots so they rebuild their cross-tick memory (RNG streams,
+    /// raid memory, blacklists). Deleting that loop keeps the resume
+    /// hash identical — the recorded commands carry it — and only the
+    /// FUTURE diverges, which is exactly what this pins.
+    #[test]
+    fn a_resumed_session_plays_the_same_future_as_an_unsaved_one() {
+        // Seat 0 stays human (a session wants exactly one), seat 1
+        // is the shipped bot whose memory the watch-back rebuilds.
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        oxide_kit::bench::all_bots(&mut scenario);
+        scenario.players[0].bot = false;
+        scenario.players[0].bot_config = None;
+        let mut original = Game::new(scenario).expect("game builds");
+        original.advance_ticks(600);
+
+        let mut snapshot = original.recorder.clone();
+        snapshot.meta.ticks = Some(600);
+        let mut resumed = Game::from_replay(snapshot).expect("the snapshot resumes");
+        assert_eq!(
+            original.hash_hex(),
+            resumed.hash_hex(),
+            "premise: the resume point itself matches"
+        );
+
+        original.advance_ticks(1_000);
+        resumed.advance_ticks(1_000);
+        assert_eq!(
+            original.hash_hex(),
+            resumed.hash_hex(),
+            "a resumed session's future diverged from the unsaved one — \
+             bot memory was not rebuilt by the watch-back"
+        );
+    }
     use oxide_sim::{Command, Scenario, UnitKind};
 
     #[test]
@@ -862,10 +902,9 @@ mod tests {
         });
         game.do_tick();
         assert!(game.demo.trained_fighter);
-        // The opponent bot issues commands every think; none of them
-        // may grade the human's homework (flags above already proved
-        // the human path; run a few bot-only ticks and check the
-        // unrelated flags stay cold).
+        // Run a few more ticks with no human commands and check the
+        // unrelated flags stay cold — only the human's own commands
+        // may grade the tutorial.
         for _ in 0..20 {
             game.do_tick();
         }
@@ -1036,8 +1075,8 @@ mod tests {
             team: Some(team),
             scrap: 100,
             bot,
-            // Teamed bot seats need a config (the classic bot is
-            // team-blind by design).
+            // Bot seats carry an explicit config, the shape every
+            // launched scenario declares.
             bot_config: bot.then_some(oxide_sim::scenario::BotConfig {
                 level: oxide_sim::bot::Level::Easy,
                 aggression: Some(500),

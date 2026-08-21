@@ -216,7 +216,7 @@ fn bastion_keeps_a_legal_aim_when_prediction_enters_its_dead_zone() {
     let target = state.units()[0].id;
     let current = state.unit(target).unwrap().pos;
     let center = state.building(bastion).unwrap().center();
-    let minimum = BuildingKind::Bastion.stats().weapons[0].minimum_range;
+    let minimum = BuildingKind::Bastion.base_stats().weapons[0].minimum_range;
     assert!(center.dist_sq(current) >= minimum * minimum);
 
     let report = state.tick(&[cmd(
@@ -294,7 +294,7 @@ fn building_ghosts_and_radar_contacts_do_not_enable_bastion_fire() {
     assert!(!state.can_see(PlayerId(0), radar_tile));
     assert!(state.vision(PlayerId(0)).contacts().contains(&radar_tile));
 
-    for _ in 0..(BuildingKind::Bastion.stats().weapons[0].cooldown_ticks + 30) {
+    for _ in 0..(BuildingKind::Bastion.base_stats().weapons[0].cooldown_ticks + 30) {
         let report = state.tick(&[]);
         assert!(
             bastion_launch(&report.events, bastion).is_none(),

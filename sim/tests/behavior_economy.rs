@@ -52,19 +52,20 @@ fn harvester_gathers_and_deposits() {
 #[test]
 fn bot_economy_progresses_against_an_idle_opponent() {
     // The exact configuration that froze pre-fix: shipped skirmish, human
-    // seat idle, Cupric bot alone. Its bank plus spending must exceed its
+    // seat idle, Cupric bot alone (driven by the Overseer, the surviving
+    // scripted commander). Its bank plus spending must exceed its
     // starting stake — deposits happened — well before 12k ticks.
     let scenario = Scenario::skirmish();
     let mut state = scenario.build().unwrap();
-    let mut bots = oxide_sim::bot::Bot::for_scenario(&scenario);
-    assert_eq!(bots.len(), 1, "skirmish ships with exactly one bot seat");
+    assert!(
+        scenario.players[1].bot,
+        "skirmish ships with exactly one bot seat"
+    );
+    let mut bot = oxide_sim::bot::Brain::overseer(PlayerId(1), scenario.seed);
 
     let mut deposited = 0u32;
     for _ in 0..12_000u64 {
-        let mut commands = Vec::new();
-        for bot in &mut bots {
-            commands.extend(bot.act(&state));
-        }
+        let commands = bot.act(&state);
         let report = state.tick(&commands);
         for event in &report.events {
             if let Event::ScrapDeposited {
@@ -110,6 +111,22 @@ fn train_costs_scrap_and_spawns_after_build_time() {
     )));
 }
 
+/// Foundry drip credits a single-Foundry seat has earned by `state`'s
+/// current tick — recovery-flow assertions add or subtract this so the
+/// always-on floor and the finite fast flows stay separately testable.
+fn drip_credits(state: &oxide_sim::State) -> u32 {
+    let period = oxide_sim::stats::FOUNDRY_DRIP_PERIOD;
+    let start = oxide_sim::stats::FOUNDRY_DRIP_START_TICK;
+    let credits_by = |tick: u64| {
+        if tick < start {
+            0
+        } else {
+            tick / period - (start / period - 1)
+        }
+    };
+    u32::try_from(credits_by(state.current_tick())).unwrap()
+}
+
 #[test]
 fn a_stranded_foundry_trickles_only_the_public_recovery_package() {
     let mut scenario = arena(Vec::new());
@@ -140,8 +157,8 @@ fn a_stranded_foundry_trickles_only_the_public_recovery_package() {
     }
     assert_eq!(
         capped.player(PlayerId(0)).scrap,
-        FOUNDRY_RECOVERY_RESERVE,
-        "the fast recovery stops; baseline income starts only in the late game"
+        FOUNDRY_RECOVERY_RESERVE + drip_credits(&capped),
+        "the fast recovery stops; only the transparent drip keeps running"
     );
 }
 
@@ -175,14 +192,28 @@ fn spending_the_recovery_package_does_not_refill_the_entitlement() {
     for _ in 0..500 {
         state.tick(&[]);
     }
+    let settled = state.player(PlayerId(0)).scrap;
+    assert!(
+        settled >= UnitKind::Harvester.stats().cost
+            && settled <= UnitKind::Harvester.stats().cost + drip_credits(&state),
+        "spending the credited screen cannot wake the finite allowance \
+         back up (only drip credits ride on top; bank {settled})"
+    );
+    // The fast flow stays off: across three full periods the bank grows
+    // by exactly the drip credits that land in the window (zero inside
+    // the warm-up).
+    let credits_at_settle = drip_credits(&state);
+    for _ in 0..3 * oxide_sim::stats::FOUNDRY_DRIP_PERIOD {
+        state.tick(&[]);
+    }
     assert_eq!(
         state.player(PlayerId(0)).scrap,
-        UnitKind::Harvester.stats().cost,
-        "spending the credited screen cannot wake the finite allowance back up"
+        settled + (drip_credits(&state) - credits_at_settle),
+        "after the package is spent, income is the drip alone"
     );
     assert!(
-        !state.recovery_income_active(PlayerId(0)),
-        "the public recovery diagnostic must not promise exhausted income"
+        state.recovery_income_active(PlayerId(0)),
+        "the drip is the always-on floor, so a Foundry seat always reports passive income"
     );
 }
 
@@ -190,19 +221,13 @@ fn spending_the_recovery_package_does_not_refill_the_entitlement() {
 fn first_tick_spending_cannot_expand_a_recovery_entitlement() {
     let mut scenario = arena(Vec::new());
     scenario.players[0].scrap = FOUNDRY_RECOVERY_RESERVE;
-    scenario.buildings.push(BuildingSpec {
-        player: 0,
-        kind: BuildingKind::Fabricator,
-        x: 4,
-        y: 1,
-    });
     let mut state = scenario.build().unwrap();
-    let fabricator = state
+    // The closed tree trains the Scuttler at the Foundry, the only
+    // producer standing on the first tick anyway.
+    let foundry = state
         .buildings()
         .iter()
-        .find(|building| {
-            building.player == PlayerId(0) && building.kind == BuildingKind::Fabricator
-        })
+        .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Foundry)
         .unwrap()
         .id;
 
@@ -210,14 +235,14 @@ fn first_tick_spending_cannot_expand_a_recovery_entitlement() {
         cmd(
             0,
             Command::Train {
-                building: fabricator,
+                building: foundry,
                 kind: UnitKind::Scuttler,
             },
         ),
         cmd(
             0,
             Command::Train {
-                building: fabricator,
+                building: foundry,
                 kind: UnitKind::Scuttler,
             },
         ),
@@ -325,10 +350,23 @@ fn a_prepaid_worker_death_preserves_only_the_unspent_recovery_remainder() {
     for _ in 0..200 {
         state.tick(&[]);
     }
+    let settled = state.player(PlayerId(0)).scrap;
+    assert!(
+        settled >= remainder && settled <= remainder + drip_credits(&state),
+        "a dead prepaid worker resumes the old remainder, not a fresh \
+         package (only drip credits ride on top; bank {settled}, remainder {remainder})"
+    );
+    // The fast 1-per-10-ticks flow is off: across three full periods the
+    // bank grows by exactly the drip credits that land in the window
+    // (zero inside the warm-up).
+    let credits_at_settle = drip_credits(&state);
+    for _ in 0..3 * oxide_sim::stats::FOUNDRY_DRIP_PERIOD {
+        state.tick(&[]);
+    }
     assert_eq!(
         state.player(PlayerId(0)).scrap,
-        remainder,
-        "a dead prepaid worker resumes the old remainder, not a fresh package"
+        settled + (drip_credits(&state) - credits_at_settle),
+        "after the remainder, income is the drip alone"
     );
 }
 
@@ -382,27 +420,37 @@ fn a_real_harvester_deposit_rearms_one_future_recovery_cycle() {
 }
 
 #[test]
-fn live_and_queued_harvest_lines_receive_only_slow_baseline_income() {
+fn every_standing_foundry_smelts_the_drip_after_the_warmup() {
+    use oxide_sim::stats::{FOUNDRY_DRIP_PERIOD, FOUNDRY_DRIP_START_TICK};
+    // The floor waits out its authored warm-up (openings stay exactly as
+    // tuned without free income), then credits one scrap per period per
+    // standing Foundry.
     let mut live = arena(vec![unit(0, UnitKind::Harvester, 3, 2)]);
     live.players[0].scrap = 0;
     let mut live = live.build().unwrap();
-    for _ in 0..oxide_sim::stats::FOUNDRY_BASELINE_START_TICK - 1 {
+    for _ in 0..FOUNDRY_DRIP_START_TICK - 1 {
         live.tick(&[]);
     }
     assert_eq!(
         live.player(PlayerId(0)).scrap,
         0,
-        "the free floor does not distort the opening or midgame"
+        "no credit lands inside the warm-up"
     );
     live.tick(&[]);
-    assert_eq!(live.player(PlayerId(0)).scrap, 1);
-    for _ in 0..oxide_sim::stats::FOUNDRY_BASELINE_PERIOD - 1 {
+    assert_eq!(
+        live.player(PlayerId(0)).scrap,
+        1,
+        "the first credit lands the moment the warm-up ends"
+    );
+    for _ in 0..FOUNDRY_DRIP_PERIOD - 1 {
         live.tick(&[]);
     }
     assert_eq!(live.player(PlayerId(0)).scrap, 1);
     live.tick(&[]);
     assert_eq!(live.player(PlayerId(0)).scrap, 2);
 
+    // A queued prepaid replacement suppresses the fast recovery flow,
+    // never the drip.
     let mut queued = arena(Vec::new());
     queued.players[0].scrap = UnitKind::Harvester.stats().cost;
     let mut queued = queued.build().unwrap();
@@ -420,23 +468,19 @@ fn live_and_queued_harvest_lines_receive_only_slow_baseline_income() {
         },
     )]);
     assert_eq!(queued.player(PlayerId(0)).scrap, 0);
-    for _ in 0..50 {
+    while queued.current_tick() < FOUNDRY_DRIP_START_TICK - 1 {
         queued.tick(&[]);
     }
     assert_eq!(
         queued.player(PlayerId(0)).scrap,
         0,
-        "a prepaid Harvester suppresses fast recovery but not baseline income"
+        "a prepaid Harvester suppresses fast recovery through the warm-up"
     );
-    while queued.current_tick() < oxide_sim::stats::FOUNDRY_BASELINE_START_TICK - 1 {
-        queued.tick(&[]);
-    }
-    assert_eq!(queued.player(PlayerId(0)).scrap, 0);
     queued.tick(&[]);
     assert_eq!(
         queued.player(PlayerId(0)).scrap,
         1,
-        "the queued or completed replacement does not suppress the late floor"
+        "the queued replacement does not suppress the drip"
     );
 
     let mut resigned = arena(Vec::new());
@@ -449,14 +493,14 @@ fn live_and_queued_harvest_lines_receive_only_slow_baseline_income() {
         "a conceded seat cannot bank a comeback"
     );
     let mut value = serde_json::to_value(resigned).unwrap();
-    value["tick"] = (oxide_sim::stats::FOUNDRY_BASELINE_START_TICK - 1).into();
+    value["tick"] = (FOUNDRY_DRIP_START_TICK - 1).into();
     value["result"] = serde_json::Value::Null;
     let mut resigned: oxide_sim::State = serde_json::from_value(value).unwrap();
     resigned.tick(&[]);
     assert_eq!(
         resigned.player(PlayerId(0)).scrap,
         0,
-        "the late floor never credits a resigned seat"
+        "the drip never credits a resigned seat"
     );
 }
 
@@ -651,13 +695,15 @@ fn deposits_saturate_a_full_bank() {
 
 #[test]
 fn foundry_refuses_kinds_it_cannot_produce() {
+    // 0.15: the Scuttler trains at the Foundry now; the Lancer is the
+    // cheapest kind that still needs the tech hall.
     let mut state = arena(vec![]).build().unwrap();
     let foundry = state.buildings()[0].id;
     let report = state.tick(&[cmd(
         0,
         Command::Train {
             building: foundry,
-            kind: UnitKind::Scuttler,
+            kind: UnitKind::Lancer,
         },
     )]);
     assert!(report.events.iter().any(|e| matches!(
@@ -673,9 +719,11 @@ fn foundry_refuses_kinds_it_cannot_produce() {
 #[test]
 fn fabricator_gates_the_advanced_roster() {
     use oxide_sim::stats::BuildingKind;
-    let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 6)])
-        .build()
-        .unwrap();
+    // 0.15: the Scuttler moved to the Foundry, so the Lancer is the
+    // cheapest kind that proves the Fabricator's gate.
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 4, 6)]);
+    scenario.players[0].scrap = 300; // Fabricator (120) plus a Lancer (110)
+    let mut state = scenario.build().unwrap();
     let builder = state.units()[0].id;
     let anchor = TilePos::new(5, 5);
     state.tick(&[cmd(
@@ -699,7 +747,7 @@ fn fabricator_gates_the_advanced_roster() {
         0,
         Command::Train {
             building: fab,
-            kind: UnitKind::Scuttler,
+            kind: UnitKind::Lancer,
         },
     )]);
     assert!(report.events.iter().any(|e| matches!(
@@ -712,13 +760,13 @@ fn fabricator_gates_the_advanced_roster() {
     run_until(&mut state, 900, |s, _| {
         s.building(fab).is_some_and(|b| b.built)
     });
-    // Finished: scuttlers roll out; sentinels are still Foundry-only.
+    // Finished: lancers roll out; sentinels are still Foundry-only.
     let report = state.tick(&[
         cmd(
             0,
             Command::Train {
                 building: fab,
-                kind: UnitKind::Scuttler,
+                kind: UnitKind::Lancer,
             },
         ),
         cmd(
@@ -736,13 +784,13 @@ fn fabricator_gates_the_advanced_roster() {
             ..
         }
     )));
-    run_until(&mut state, 200, |s, events| {
+    run_until(&mut state, 400, |s, events| {
         let _ = s;
         events.iter().any(|e| {
             matches!(
                 e,
                 Event::UnitTrained {
-                    kind: UnitKind::Scuttler,
+                    kind: UnitKind::Lancer,
                     ..
                 }
             )
@@ -752,23 +800,23 @@ fn fabricator_gates_the_advanced_roster() {
 
 #[test]
 fn bot_reaches_its_tech_and_mixes_its_army() {
-    use oxide_sim::bot::Bot;
+    use oxide_sim::bot::Brain;
     use oxide_sim::stats::BuildingKind;
-    // Bot vs an idle opponent: within 12k ticks it should have stood up a
-    // Fabricator and fielded at least one advanced unit — proof the build
-    // and composition logic actually runs, not just compiles.
+    // The Overseer vs an idle opponent: within 12k ticks it should have
+    // stood up a Fabricator and fielded at least one advanced unit —
+    // proof the build and composition logic actually runs, not just
+    // compiles. On the closed tree the Scuttler comes from the Foundry
+    // and the Fabricator serves Lancers and Wardens, so any of those
+    // proves the mixed army.
     let mut scenario = Scenario::skirmish();
     scenario.players[1].bot = true;
     let mut state = scenario.build().unwrap();
-    let mut bots = Bot::for_scenario(&scenario);
+    let mut bot = Brain::overseer(PlayerId(1), scenario.seed);
     for _ in 0..12_000u32 {
         if state.result().is_some() {
             break;
         }
-        let mut commands = Vec::new();
-        for bot in &mut bots {
-            commands.extend(bot.act(&state));
-        }
+        let commands = bot.act(&state);
         state.tick(&commands);
     }
     let me = PlayerId(1);
@@ -779,7 +827,13 @@ fn bot_reaches_its_tech_and_mixes_its_army() {
     let advanced = state
         .units()
         .iter()
-        .filter(|u| u.player == me && matches!(u.kind, UnitKind::Scuttler | UnitKind::Lancer))
+        .filter(|u| {
+            u.player == me
+                && matches!(
+                    u.kind,
+                    UnitKind::Scuttler | UnitKind::Lancer | UnitKind::Warden
+                )
+        })
         .count();
     // The bot may have already razed the idle opponent and won; that is
     // also a pass as long as tech came up first.
@@ -828,7 +882,7 @@ fn harvesters_deposit_only_at_built_foundries() {
         .iter()
         .find(|b| b.player == PlayerId(0) && b.kind == oxide_sim::BuildingKind::Foundry)
         .unwrap();
-    let (f_anchor, f_size) = (foundry.anchor, foundry.kind.stats().size);
+    let (f_anchor, f_size) = (foundry.anchor, foundry.kind.base_stats().size);
     let mut deposit_tile = None;
     for _ in 0..1200u32 {
         let report = state.tick(&[]);

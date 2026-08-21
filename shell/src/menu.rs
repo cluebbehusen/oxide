@@ -50,6 +50,10 @@ pub struct Menu {
     /// Section-label rows: drawn dimmer, skipped by the cursor, never
     /// activated — the map browser's format headings.
     headers: Vec<usize>,
+    /// Horizontal offset of the list as a fraction of the viewport
+    /// width, zero for a centered list: the codex shifts its list left
+    /// to make room for the page beside it.
+    pub shift: f32,
 }
 
 fn view_w() -> f32 {
@@ -79,6 +83,7 @@ impl Menu {
             pressed: None,
             pressed_touch: None,
             headers,
+            shift: 0.0,
         };
         menu.selected = menu.snap_clamped(0, 1);
         menu
@@ -199,7 +204,7 @@ impl Menu {
             return None;
         }
         Some(Rect::new(
-            (view_w() - ITEM_WIDTH * s) * 0.5,
+            (view_w() - ITEM_WIDTH * s) * 0.5 + view_w() * self.shift,
             top + (index - first) as f32 * row,
             ITEM_WIDTH * s,
             row - 6.0 * s,

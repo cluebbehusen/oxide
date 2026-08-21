@@ -20,6 +20,8 @@ pub enum Out {
     Tutorial,
     /// Open the replay shelf.
     Replays,
+    /// Open the codex: every machine and works, with figures.
+    Roster,
     /// Open settings.
     Settings,
     /// Leave the process.
@@ -47,7 +49,9 @@ impl HomeScreen {
         if resumable {
             items.push("Continue".to_string());
         }
-        items.extend(["Play", "Tutorial", "Replays", "Settings", "Quit"].map(str::to_string));
+        items.extend(
+            ["Play", "Tutorial", "Replays", "Roster", "Settings", "Quit"].map(str::to_string),
+        );
         Self {
             menu: Menu::new("OXIDE", items),
             resumable,
@@ -76,7 +80,8 @@ impl HomeScreen {
             1 => Out::Play,
             2 => Out::Tutorial,
             3 => Out::Replays,
-            4 => Out::Settings,
+            4 => Out::Roster,
+            5 => Out::Settings,
             _ => Out::Quit,
         }
     }
@@ -108,12 +113,15 @@ mod tests {
         // once resumed a match instead of opening the map list).
         let mut fresh = HomeScreen::with_resumable(false);
         assert_eq!(pick(&mut fresh, 0), Out::Play);
-        assert_eq!(pick(&mut fresh, 3), Out::Settings);
-        assert_eq!(pick(&mut fresh, 4), Out::Quit);
+        assert_eq!(pick(&mut fresh, 2), Out::Replays);
+        assert_eq!(pick(&mut fresh, 3), Out::Roster);
+        assert_eq!(pick(&mut fresh, 4), Out::Settings);
+        assert_eq!(pick(&mut fresh, 5), Out::Quit);
 
         let mut resumable = HomeScreen::with_resumable(true);
         assert_eq!(pick(&mut resumable, 0), Out::Continue);
         assert_eq!(pick(&mut resumable, 1), Out::Play);
-        assert_eq!(pick(&mut resumable, 5), Out::Quit);
+        assert_eq!(pick(&mut resumable, 4), Out::Roster);
+        assert_eq!(pick(&mut resumable, 6), Out::Quit);
     }
 }

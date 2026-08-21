@@ -9,7 +9,7 @@
 use crate::game::Game;
 use chassis::grid::TilePos;
 use macroquad::prelude::{Vec2, vec2};
-use oxide_sim::{UnitId, UnitKind};
+use oxide_sim::UnitId;
 
 /// Own harvesters with nothing to do, in id order — the cycle key and
 /// the HUD badge both read this.
@@ -19,7 +19,7 @@ pub fn idle_harvesters(game: &Game) -> Vec<UnitId> {
         .iter()
         .filter(|u| {
             u.player == game.human
-                && u.kind == UnitKind::Harvester
+                && u.kind.stats().harvest.is_some()
                 && u.order == oxide_sim::Order::Idle
         })
         .map(|u| u.id)
@@ -73,11 +73,14 @@ fn selectable(game: &Game, unit: &oxide_sim::Unit) -> bool {
         || game.my_vision().visible(unit.tile())
 }
 
-/// Whether the human may select this building without learning through fog.
+/// Whether the human may select this building without learning through
+/// fog — or through stealth: an undetected buried charge must not be
+/// clickable on ground the player merely sees.
 fn selectable_building(game: &Game, building: &oxide_sim::Building) -> bool {
     building.player == game.human
         || game.all_seeing()
-        || building.tiles().any(|tile| game.my_vision().visible(tile))
+        || (building.tiles().any(|tile| game.my_vision().visible(tile))
+            && game.state.building_apparent(game.human, building))
 }
 
 pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f32) {
