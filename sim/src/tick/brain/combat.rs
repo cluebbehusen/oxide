@@ -620,10 +620,30 @@ pub(super) fn acquire_target(
                 weapon.targets.covers(u.kind.stats().domain)
                     && d >= weapon.minimum_range * weapon.minimum_range
             });
-            if d <= aggro_sq && outside_dead_zone && unit_target.is_none_or(|best| (d, u.id) < best)
+            if !(d <= aggro_sq
+                && outside_dead_zone
+                && unit_target.is_none_or(|best| (d, u.id) < best))
             {
-                unit_target = Some((d, u.id));
+                continue;
             }
+            // A victim on ground the chaser cannot stand on needs a
+            // firing position to exist, the same test the chase applies
+            // one tick later: acquiring without it took an order the
+            // unit could only stall, cleared it, and re-acquired the
+            // next tick — one army of lancers on a coast logged 11,588
+            // NoFiringPosition stalls in a single three-minute window.
+            let victim_tile = u.tile();
+            if !state.passable_for(stats.domain, victim_tile) {
+                let range = stats
+                    .weapons
+                    .iter()
+                    .find(|w| w.targets.covers(u.kind.stats().domain))
+                    .map_or(chassis::fx::Fx::ZERO, |w| w.range);
+                if chase_stand_ins(state, stats.domain, victim_tile, range).is_empty() {
+                    continue;
+                }
+            }
+            unit_target = Some((d, u.id));
         }
     }
     if let Some((_, uid)) = unit_target {
@@ -1478,6 +1498,11 @@ pub(super) fn attack(
             return;
         }
         let (player, pos) = (unit.player, unit.pos);
+        // A chase that could not be prosecuted leaves the unit stationed,
+        // so its next idle acquisition tethers and the leash cooldown
+        // paces re-acquisition instead of the same refused chase firing
+        // every tick.
+        unit.settled = crate::stats::LEASH_STATION_TICKS;
         unit.clear_program();
         events.push(Event::OrderStalled {
             unit: id,
