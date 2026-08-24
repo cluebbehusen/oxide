@@ -17,6 +17,7 @@ use oxide_sim::{
     TICKS_PER_SECOND, Target, UnitId,
 };
 use std::collections::HashMap;
+use std::ops::Deref;
 
 /// Seconds per sim tick.
 pub const TICK_DT: f32 = 1.0 / TICKS_PER_SECOND as f32;
@@ -26,6 +27,43 @@ pub const TICK_DT: f32 = 1.0 / TICKS_PER_SECOND as f32;
 const MAX_TICKS_PER_FRAME: u32 = 24;
 
 pub use oxide_kit::GameReplay;
+
+/// Immutable access to the authoritative simulation outside this module.
+pub(crate) struct ReadOnlyState(State);
+
+impl Deref for ReadOnlyState {
+    type Target = State;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for ReadOnlyState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Commands waiting for the next recorded tick.
+#[derive(Debug, Default)]
+pub(crate) struct PendingCommands(Vec<PlayerCommand>);
+
+impl Deref for PendingCommands {
+    type Target = Vec<PlayerCommand>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for PendingCommands {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// What the player currently has selected.
 #[derive(Default)]
@@ -56,14 +94,14 @@ pub struct Toast {
 pub struct Game {
     /// The scenario this session started from.
     pub scenario: Scenario,
-    /// The sim. Touch only through [`Game::do_tick`].
-    pub state: State,
+    /// The sim. Mutable access stays inside `Game` outside test fixtures.
+    pub(crate) state: ReadOnlyState,
     /// Command sources for bot-flagged players.
     pub bots: Vec<SeatBot>,
     /// Every command of the session, tick-stamped — always recording.
     pub recorder: GameReplay,
     /// Commands staged for the next tick (human + debug socket).
-    pub pending: Vec<PlayerCommand>,
+    pub(crate) pending: PendingCommands,
     /// The seat local input controls.
     pub human: PlayerId,
     /// Presentation camera.
@@ -222,10 +260,10 @@ impl Game {
         let camera = Camera::new(focus, state.map().width(), state.map().height(), viewport);
         Ok(Self {
             scenario,
-            state,
+            state: ReadOnlyState(state),
             bots,
             recorder,
-            pending: Vec::new(),
+            pending: PendingCommands(Vec::new()),
             human,
             camera,
             selection: Selection::default(),
@@ -290,11 +328,9 @@ impl Game {
             "replay spans {total} ticks, beyond the {MAX_LOAD_TICKS}-tick interactive load limit \
              (the headless driver replays without one)"
         );
-        // Bots carry memory since 0.5 (raid flags, node blacklists), so
-        // the fast-forward must let them *watch* the session back: act()
-        // runs against every tick to rebuild that memory, and its outputs
-        // are discarded — the recorded commands are the truth. A resumed
-        // session then continues exactly as the unsaved one would have.
+        // The fast-forward lets bots observe every tick to rebuild controller
+        // memory. Their generated commands are discarded because the record
+        // remains authoritative.
         let mut bots = seat_bots(&scenario);
         let mut cursor = replay.cursor();
         let mut live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
@@ -352,7 +388,7 @@ impl Game {
                 .collect();
         }
 
-        let mut commands = std::mem::take(&mut self.pending);
+        let mut commands = std::mem::take(&mut self.pending.0);
         let human_commands: Vec<Command> = commands
             .iter()
             .filter(|pc| pc.player == self.human)
@@ -365,7 +401,7 @@ impl Game {
             self.recorder
                 .record(self.state.current_tick(), command.clone());
         }
-        let report = self.state.tick(&commands);
+        let report = self.state.0.tick(&commands);
         self.live_stats.observe(&self.state, &report.events);
         if self.state.result().is_some() && self.end_stats.is_none() {
             self.end_stats = Some(self.live_stats.snapshot(&self.state));
@@ -501,7 +537,7 @@ impl Game {
             .iter()
             .map(|u| (u.id.0, world_vec(u.pos)))
             .collect();
-        self.state = state.clone();
+        self.state.0 = state.clone();
         for unit in self.state.units() {
             let now = world_vec(unit.pos);
             if let Some(prev) = self.prev_pos.get(&unit.id.0) {
@@ -553,7 +589,7 @@ impl Game {
     /// destination as both interpolation endpoints. Timeline-local facing,
     /// aim, reports, and effects cannot survive across the jump.
     pub fn replace_state_after_jump(&mut self, state: &State) {
-        self.state = state.clone();
+        self.state.0 = state.clone();
         self.drop_presentation();
         self.prev_pos = self
             .state
@@ -681,10 +717,15 @@ impl Game {
 
     /// Stages a command from the local player for the next tick.
     pub fn issue(&mut self, command: Command) {
-        self.pending.push(PlayerCommand {
+        self.stage(PlayerCommand {
             player: self.human,
             command,
         });
+    }
+
+    /// Stages an already attributed command from the debug input surface.
+    pub(crate) fn stage(&mut self, command: PlayerCommand) {
+        self.pending.0.push(command);
     }
 
     /// Drops an order-acknowledgment ping at a world point.
@@ -854,6 +895,126 @@ mod tests {
         );
     }
     use oxide_sim::{Command, Scenario, UnitKind};
+
+    #[test]
+    fn playable_sessions_require_exactly_one_human_but_spectators_do_not() {
+        let viewport = macroquad::prelude::vec2(1280.0, 800.0);
+        let mut all_bots = Scenario::skirmish();
+        for player in &mut all_bots.players {
+            player.bot = true;
+            player.bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
+        }
+        let err = Game::with_viewport(all_bots.clone(), viewport)
+            .err()
+            .expect("an all-bot match has no command seat");
+        assert!(err.to_string().contains("got 0"));
+        assert_eq!(
+            Game::spectator(all_bots).expect("spectator").human,
+            PlayerId(0)
+        );
+
+        let mut two_humans = Scenario::skirmish();
+        for player in &mut two_humans.players {
+            player.bot = false;
+            player.bot_config = None;
+        }
+        let err = Game::with_viewport(two_humans, viewport)
+            .err()
+            .expect("two command seats are ambiguous");
+        assert!(err.to_string().contains("got 2"));
+    }
+
+    #[test]
+    fn replay_without_duration_infers_its_tail_and_restores_finished_stats() {
+        let scenario = Scenario::skirmish();
+        let mut replay = GameReplay::new(SIM_VERSION, scenario);
+        replay.record(
+            0,
+            PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Surrender,
+            },
+        );
+        assert!(replay.meta.ticks.is_none());
+
+        let game = Game::from_replay(replay).expect("legacy duration is inferred");
+        assert_eq!(game.state.current_tick(), 1);
+        assert!(game.state.result().is_some());
+        assert_eq!(
+            game.end_stats.as_ref().map(|stats| stats.final_tick),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn wall_clock_pause_and_hitch_rules_bound_simulation_debt() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("game");
+        game.paused = true;
+        assert!(!game.advance_wall_clock(10.0, None));
+        assert_eq!(game.state.current_tick(), 0);
+        assert_eq!(game.render_alpha(), 1.0);
+
+        game.paused = false;
+        game.speed = 64.0;
+        assert!(!game.advance_wall_clock(1.0, None));
+        assert_eq!(game.state.current_tick(), u64::from(MAX_TICKS_PER_FRAME));
+        assert!(game.tick_fraction() <= 1.0, "excess hitch debt is dropped");
+    }
+
+    #[test]
+    fn toast_history_keeps_only_the_three_newest_messages() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("game");
+        for text in ["one", "two", "three", "four"] {
+            game.toast(text);
+        }
+        assert_eq!(
+            game.toasts
+                .iter()
+                .map(|toast| toast.text.as_str())
+                .collect::<Vec<_>>(),
+            ["two", "three", "four"]
+        );
+    }
+
+    #[test]
+    fn draw_positions_interpolate_known_units_and_fall_back_for_new_ones() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("game");
+        let unit_id = game.state.units()[0].id;
+        let current = game.state.units()[0].pos;
+        let now = world_vec(current);
+        game.prev_pos
+            .insert(unit_id.0, now - macroquad::prelude::vec2(2.0, 4.0));
+        assert_eq!(
+            game.draw_pos(unit_id, current, 0.5),
+            now - macroquad::prelude::vec2(1.0, 2.0)
+        );
+        assert_eq!(game.draw_pos(UnitId(u32::MAX), current, 0.5), now);
+    }
+
+    #[test]
+    fn externally_driven_tick_fractions_are_clamped_to_one_frame() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("game");
+        game.sync_external_tick_fraction(2.0);
+        assert_eq!(game.tick_fraction(), 1.0);
+        game.sync_external_tick_fraction(-1.0);
+        assert_eq!(game.tick_fraction(), 0.0);
+    }
 
     #[test]
     fn admitted_attack_alert_queues_one_protected_audio_cue() {
@@ -1075,15 +1236,7 @@ mod tests {
             team: Some(team),
             scrap: 100,
             bot,
-            // Bot seats carry an explicit config, the shape every
-            // launched scenario declares.
-            bot_config: bot.then_some(oxide_sim::scenario::BotConfig {
-                level: oxide_sim::bot::Level::Easy,
-                aggression: Some(500),
-                style: None,
-                variant: None,
-                team_role: None,
-            }),
+            bot_config: bot.then_some(oxide_sim::scenario::BotConfig::Scripted),
         };
         let scenario = Scenario {
             name: "concede-arena".into(),

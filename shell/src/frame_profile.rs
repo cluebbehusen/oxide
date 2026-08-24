@@ -289,6 +289,18 @@ mod tests {
     }
 
     #[test]
+    fn profiling_windows_require_an_enabled_forward_tick_range() {
+        let mut disabled = FrameProfiler::new(false);
+        assert!(disabled.arm(10, 20).unwrap_err().contains("disabled"));
+
+        let mut profiler = FrameProfiler::new(true);
+        assert!(profiler.arm(10, 10).unwrap_err().contains("greater"));
+        assert!(profiler.arm(20, 10).unwrap_err().contains("greater"));
+        profiler.arm(10, 20).expect("valid window");
+        assert_eq!(profiler.stop_tick(), Some(20));
+    }
+
+    #[test]
     fn exact_window_keeps_contiguous_active_playing_frames_including_tick_waits() {
         let mut profiler = FrameProfiler::new(true);
         profiler.arm(10, 14).unwrap();
@@ -359,6 +371,10 @@ mod tests {
     #[test]
     fn retained_samples_are_bounded() {
         let mut profiler = FrameProfiler::new(true);
+        profiler
+            .arm(0, MAX_SAMPLES as u64 + 10)
+            .expect("long window");
+        assert!(profiler.take_start_barrier());
         for tick in 0..(MAX_SAMPLES as u64 + 5) {
             profiler.record(FrameObservation {
                 mode: "playing",
@@ -374,5 +390,52 @@ mod tests {
         assert_eq!(view.frames, MAX_SAMPLES);
         assert_eq!(view.tick_start, 5);
         assert_eq!(view.tick_end, MAX_SAMPLES as u64 + 5);
+        let window = view.window.expect("armed window");
+        assert!(!window.complete);
+        assert!(window.truncated, "dropping an in-window sample is reported");
+    }
+
+    #[test]
+    fn an_exact_window_ignores_discontinuous_or_overshooting_frames() {
+        let mut profiler = FrameProfiler::new(true);
+        profiler.arm(10, 12).expect("window");
+        assert!(profiler.take_start_barrier());
+        for observation in [
+            FrameObservation {
+                mode: "playing",
+                active_playing: true,
+                tick_start: 9,
+                tick_end: 10,
+                work_ms: 90.0,
+                units: 99,
+                buildings: 99,
+            },
+            FrameObservation {
+                mode: "playing",
+                active_playing: true,
+                tick_start: 10,
+                tick_end: 13,
+                work_ms: 80.0,
+                units: 88,
+                buildings: 88,
+            },
+            FrameObservation {
+                mode: "playing",
+                active_playing: true,
+                tick_start: 10,
+                tick_end: 12,
+                work_ms: 2.0,
+                units: 8,
+                buildings: 4,
+            },
+        ] {
+            profiler.record(observation);
+        }
+        let view = profiler.snapshot(false);
+        assert_eq!(view.frames, 1);
+        assert_eq!(view.tick_start, 10);
+        assert_eq!(view.tick_end, 12);
+        assert_eq!(view.slowest.expect("one sample").units, 8);
+        assert!(view.window.expect("window").complete);
     }
 }

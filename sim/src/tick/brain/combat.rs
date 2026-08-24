@@ -3,7 +3,7 @@
 //! the retaliation contract. Every shot buffers into the tick's volley;
 //! nothing here applies damage directly.
 
-use super::super::route_for;
+use super::super::{route_for, route_for_position};
 use super::PendingHit;
 use super::locomotion::{approach_rect, walk};
 use crate::event::{Event, StallReason};
@@ -575,6 +575,97 @@ fn chase_stand_ins(
     out
 }
 
+/// Routes a mobile artillery unit out of its own dead zone to the nearest
+/// reachable tile from which its primary weapon has a clear, legal shot.
+/// Keeping a still-valid goal avoids rebuilding the route every brain tick.
+fn retreat_to_firing_stand(
+    state: &mut State,
+    id: UnitId,
+    target: Target,
+    victim_domain: Domain,
+    weapon: &WeaponStats,
+) -> bool {
+    let unit = state.unit(id).expect("caller checked");
+    let (from, from_tile, kind, domain) =
+        (unit.pos, unit.tile(), unit.kind, unit.kind.stats().domain);
+    let full = traces_terrain(weapon, domain, victim_domain);
+    let legal = |state: &State, tile: TilePos| {
+        if !state.passable_for(domain, tile) {
+            return false;
+        }
+        let position = tile.center();
+        let aim = match target {
+            Target::Unit(target) => state
+                .unit(target)
+                .filter(|unit| unit.hp > 0)
+                .map(|unit| unit.pos),
+            Target::Building(target) => state
+                .building(target)
+                .filter(|building| building.hp > 0)
+                .map(|building| building.closest_point_to(position)),
+        };
+        let Some(aim) = aim else { return false };
+        let distance_sq = position.dist_sq(aim);
+        if !within_weapon_reach(weapon, distance_sq) {
+            return false;
+        }
+        let shot_open = |tile| shot_crosses(state, tile, full);
+        shot_open(TilePos::containing(aim))
+            && !chassis::path::line_blocked(position, aim, shot_open)
+    };
+
+    if state
+        .unit(id)
+        .expect("caller checked")
+        .path
+        .as_ref()
+        .is_some_and(|path| legal(state, path.goal))
+    {
+        return true;
+    }
+
+    let (min_x, min_y, max_x, max_y) = match target {
+        Target::Unit(target) => {
+            let tile = state.unit(target).expect("resolved target").tile();
+            (tile.x, tile.y, tile.x, tile.y)
+        }
+        Target::Building(target) => {
+            let building = state.building(target).expect("resolved target");
+            let (width, height) = building.stats().size;
+            (
+                building.anchor.x,
+                building.anchor.y,
+                building.anchor.x + width - 1,
+                building.anchor.y + height - 1,
+            )
+        }
+    };
+    let reach = weapon.range.ceil().to_num::<i32>();
+    let mut candidates = Vec::new();
+    for y in (min_y - reach).max(0)..=(max_y + reach).min(state.map().height() - 1) {
+        for x in (min_x - reach).max(0)..=(max_x + reach).min(state.map().width() - 1) {
+            let tile = TilePos::new(x, y);
+            if legal(state, tile) {
+                candidates.push((from.dist_sq(tile.center()), y, x, tile));
+            }
+        }
+    }
+    candidates.sort_unstable_by_key(|candidate| (candidate.0, candidate.1, candidate.2));
+    let routed = candidates.into_iter().find_map(|(_, _, _, goal)| {
+        route_for(state, kind, from_tile, goal).map(|waypoints| (goal, waypoints))
+    });
+    let Some((goal, waypoints)) = routed else {
+        state.unit_mut(id).expect("caller checked").path = None;
+        return false;
+    };
+    state.unit_mut(id).expect("caller checked").path = Some(PathFollow {
+        goal,
+        waypoints,
+        next: 0,
+    });
+    true
+}
+
 /// The nearest enemy this unit's weapons can cover, in its autonomous
 /// acquisition range —
 /// units before buildings, ties to the lowest id. `None` for pacifists,
@@ -981,9 +1072,8 @@ fn bomber_attack(
 ) {
     let unit = state.unit(id).expect("caller checked");
     let stats = unit.kind.stats();
-    let (pos, tile, me, kind, heading, cooldowns) = (
+    let (pos, me, kind, heading, cooldowns) = (
         unit.pos,
-        unit.tile(),
         unit.player,
         unit.kind,
         unit.heading,
@@ -1104,6 +1194,23 @@ fn bomber_attack(
         return;
     }
 
+    // A cold bomber already inside release range may still have the victim
+    // outside its forward cone (or hidden behind terrain). Once its approach
+    // path completes, send it onward along a clear departure leg rather than
+    // leaving it parked at the edge of the waypoint acceptance ring. Keep the
+    // attack tile as PathFollow's semantic goal so the chase retains this leg;
+    // when it completes, the next exact-position route lines up another pass.
+    if cooldowns[pi] == 0 && in_range && state.unit(id).expect("caller checked").path.is_none() {
+        let departure = egress_goal(state, pos, heading, stats.turn_acceptance());
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.path = departure.map(|waypoint| PathFollow {
+            goal: target_tile,
+            waypoints: vec![waypoint],
+            next: 0,
+        });
+        return;
+    }
+
     // Chase: keep a live route on the victim, repathing when it drifts.
     let stale = state
         .unit(id)
@@ -1112,7 +1219,7 @@ fn bomber_attack(
         .as_ref()
         .is_none_or(|p| p.goal != target_tile && p.goal.chebyshev(target_tile) > 1);
     if stale {
-        match route_for(state, kind, tile, target_tile) {
+        match route_for_position(state, kind, pos, target_tile) {
             Some(waypoints) => {
                 let unit = state.unit_mut(id).expect("caller checked");
                 unit.path = Some(PathFollow {
@@ -1155,6 +1262,12 @@ fn egress_goal(state: &State, pos: Vec2Fx, heading: u8, accept: Fx) -> Option<Ti
                 && tile.y < state.map().height()
                 && state.passable_for(Domain::Air, tile)
                 && tile.center().dist_sq(pos) > accept_sq
+                && !chassis::path::line_blocked(pos, tile.center(), |crossed| {
+                    state
+                        .map()
+                        .tile(crossed)
+                        .is_some_and(|terrain| !terrain.terrain.blocks_air())
+                })
             {
                 return Some(tile);
             }
@@ -1374,6 +1487,16 @@ pub(super) fn attack(
     }
     // Opportunist guns don't wait for the march to end.
     fire_sidearms(state, index, id, pi, hits, events);
+
+    // A mobile long gun inside its own dead zone must create space. Folding
+    // minimum and maximum range into the generic "not in range" chase once
+    // sent Avalanches all the way to a target's doorstep, where they could
+    // never fire. If terrain offers no legal stand, hold and retry instead of
+    // making the geometry worse.
+    if pos.dist_sq(aim_point) < weapon.minimum_range * weapon.minimum_range {
+        retreat_to_firing_stand(state, id, target, victim_domain, weapon);
+        return;
+    }
 
     // The tether binds here — the chase, not the trigger and not the
     // firing stand above. It measures the GUARD's own distance from

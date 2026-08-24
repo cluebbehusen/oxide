@@ -47,10 +47,10 @@ const COMMAND_VARIANTS: usize = 21;
 
 /// The verbs that carry a unit list — every one of them owes this file a
 /// duplicate-id row.
-const UNIT_BEARING_TAGS: [usize; 13] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 14, 15, 18, 19];
+const UNIT_BEARING_TAGS: [usize; 12] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 14, 15, 19];
 
 /// The verbs that address a building alone, with no list to canonicalize.
-const BUILDING_ONLY_TAGS: [usize; 4] = [6, 10, 11, 12];
+const BUILDING_ONLY_TAGS: [usize; 5] = [6, 10, 11, 12, 18];
 
 /// The one verb whose building operand is a canonicalized set.
 const BUILDING_BEARING_TAGS: [usize; 1] = [16];
@@ -320,15 +320,6 @@ fn families(stage: &Stage) -> Vec<Family> {
             make: Box::new(move |units, queue| Command::RepairUnit {
                 units,
                 target: patient,
-                queue,
-            }),
-        },
-        Family {
-            name: "upgrade-building",
-            actor: worker,
-            make: Box::new(move |units, queue| Command::UpgradeBuilding {
-                units,
-                building: turret,
                 queue,
             }),
         },

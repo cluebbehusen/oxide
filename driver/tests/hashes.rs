@@ -45,12 +45,9 @@ fn compute_hashes() -> BTreeMap<String, String> {
                     let name = path.file_stem().unwrap().to_string_lossy().into_owned();
                     let scenario = Scenario::load(path)
                         .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-                    // The fixtures pin the Overseer — the scripted QA
-                    // anchor — in every seat, driven by hand: bot seats
-                    // proper are inert until the retrained actor ships,
-                    // and an all-idle run would be a vacuum, not a
-                    // tripwire. Overseer behavior changes now trip this
-                    // exactly like rule changes.
+                    // The fixtures pin the stable Overseer in every
+                    // seat so player-facing bot tuning cannot move this
+                    // rule-and-map tripwire accidentally.
                     let mut state = scenario
                         .build()
                         .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
@@ -215,7 +212,7 @@ fn shipped_scenarios_match_hash_fixtures() {
     });
     let expected: Fixture = serde_json::from_str(&raw).unwrap_or_else(|err| {
         panic!(
-            "fixture {} lacks its sim_version stamp (pre-0.13 shape?): {err} — \
+            "fixture {} lacks its sim_version stamp: {err} — \
              re-bless with `BLESS=1 cargo test -p oxide-driver`",
             fixture.display()
         )

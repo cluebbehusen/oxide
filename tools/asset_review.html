@@ -48,7 +48,7 @@
     <h1>Oxide Asset Review</h1>
     <button id="choose-directory" class="picker" type="button">Choose asset directory</button>
     <input id="directory" type="file" webkitdirectory directory multiple hidden>
-    <p id="status">Choose a directory containing images, GIFs, or audio files.</p>
+    <p id="status">Choose a directory containing images, GIFs, or audio files. Leading filename numbers remain the card IDs.</p>
   </header>
   <main id="grid"><div class="empty">No directory selected.</div></main>
   <div id="lightbox" role="dialog" aria-modal="true" aria-labelledby="lightbox-name" hidden>
@@ -80,6 +80,11 @@
 
     function relativePath(file) {
       return relativePaths.get(file) || file.webkitRelativePath || file.name;
+    }
+
+    function reviewNumber(file, index) {
+      const stableId = file.name.match(/^(\d{2,4})(?=[._ -])/);
+      return stableId ? stableId[1] : String(index + 1).padStart(2, "0");
     }
 
     function objectUrl(file) {
@@ -184,7 +189,7 @@
       head.className = "head";
       const number = document.createElement("span");
       number.className = "number";
-      number.textContent = String(index + 1).padStart(2, "0");
+      number.textContent = reviewNumber(file, index);
       const name = document.createElement("span");
       name.className = "name";
       name.textContent = relativePath(file);

@@ -56,9 +56,8 @@ fn skirmish_opening_matches_golden() {
 
 #[test]
 fn skirmish_midgame_matches_golden() {
-    // The Overseer — the scripted QA anchor — drives both seats by
-    // hand: bot seats proper are inert until the retrained actor
-    // ships, and an idle world would be a vacuous midgame picture.
+    // The stable Overseer drives both seats by hand so this visual
+    // fixture stays independent of player-facing bot tuning.
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
         player.bot = true;
@@ -433,7 +432,7 @@ const YARD_FOUNDS: u64 = 200;
 /// replaced each time, but the ground is claimed on placement.
 fn yard_orders(cast: &Cast) -> Vec<PlayerCommand> {
     [
-        (BuildingKind::Turret, 33, 23),
+        (BuildingKind::Turret, 34, 24),
         (BuildingKind::FlakTurret, 35, 23),
         (BuildingKind::Array, 37, 23),
         (BuildingKind::Reclaimer, 39, 23),

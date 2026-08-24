@@ -348,11 +348,9 @@ impl BindingMap {
             .map(|b| b.chord)
     }
 
-    /// Every pair of bindings sharing an exact chord — a conflict makes
-    /// one row unreachable, and the settings screen must say so.
-    // Consumed by the Phase D settings screens; tests exercise it now.
-    #[allow(dead_code)]
-    pub fn conflicts(&self) -> Vec<(Binding, Binding)> {
+    /// Exact chord duplicates, for binding-map regression tests.
+    #[cfg(test)]
+    pub(crate) fn conflicts(&self) -> Vec<(Binding, Binding)> {
         let mut out = Vec::new();
         for (i, a) in self.bindings.iter().enumerate() {
             for b in self.bindings.iter().skip(i + 1) {

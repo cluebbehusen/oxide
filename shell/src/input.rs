@@ -179,7 +179,7 @@ pub struct InputState {
     /// CUMULATIVE change against this, so a slow pinch (under a pixel
     /// per event) still reads as one instead of committing a box.
     pub(crate) pair_dist: Option<f32>,
-    /// The active binding profile (Classic until settings can edit it).
+    /// The active binding profile.
     pub(crate) bindings: BindingMap,
     /// Chord state: modifier truth and held actions.
     pub(crate) resolver: ActionResolver,
@@ -325,6 +325,24 @@ pub(crate) fn placement_refusal(
     pending_build_projection(game, kind, anchor, queue).refusal
 }
 
+/// The fog-honest anchor shared by the placement ghost and every input path.
+/// A discovered Extractor frame is one 2x2 target, not four unrelated tiles.
+pub(crate) fn placement_anchor(
+    game: &Game,
+    kind: oxide_sim::BuildingKind,
+    clicked: TilePos,
+) -> TilePos {
+    game.state.canonical_build_anchor(game.human, kind, clicked)
+}
+
+fn placement_ping(kind: oxide_sim::BuildingKind, anchor: TilePos) -> Vec2 {
+    let (w, h) = kind.base_stats().size;
+    vec2(
+        anchor.x as f32 + w as f32 * 0.5,
+        anchor.y as f32 + h as f32 * 0.5,
+    )
+}
+
 /// Everything a harvester can put in the ground, in palette order — the
 /// digit keys index straight into this.
 pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 7] = [
@@ -337,9 +355,8 @@ pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 7] = [
     oxide_sim::BuildingKind::Fabricator,
 ];
 
-/// The second palette page: the 0.15 expansion works. The palette key
-/// cycles closed -> page 0 -> page 1 -> closed, and digits pick from
-/// whichever page is open.
+/// The advanced palette page. The palette key cycles closed -> basic ->
+/// advanced -> closed, and digits pick from the open page.
 pub(crate) const BUILD_PALETTE_TECH: [oxide_sim::BuildingKind; 6] = [
     oxide_sim::BuildingKind::Foundry,
     oxide_sim::BuildingKind::Airworks,
@@ -870,7 +887,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     && crate::render::minimap_world_at(game, vec2(x, y)).is_none()
                 {
                     let world = game.camera.to_world(vec2(x, y));
-                    let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+                    let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+                    let anchor = placement_anchor(game, kind, clicked);
                     let (w, h) = kind.base_stats().size;
                     let overlaps = stroke
                         .anchors
@@ -901,7 +919,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             // stamp defers or founds on its own ground.
                             defer: build_defer_needed(game, kind, anchor),
                         });
-                        game.ping(world, PingKind::Rally);
+                        game.ping(placement_ping(kind, anchor), PingKind::Rally);
                         stroke.anchors.push(anchor);
                     }
                 }
@@ -1302,7 +1320,8 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.camera.pan(Vec2::ZERO); // re-clamp
         } else if !click_on_hud(game, p) {
             let world = game.camera.to_world(p);
-            let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let anchor = placement_anchor(game, kind, clicked);
             let queue = input.resolver.shift_held();
             let projection = pending_build_projection(game, kind, anchor, queue);
             // The ghost already showed red; a misclick must not throw
@@ -1368,7 +1387,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 // which this stamp is.
                 defer: build_defer_needed(game, kind, anchor),
             });
-            game.ping(world, PingKind::Rally);
+            game.ping(placement_ping(kind, anchor), PingKind::Rally);
             // The stroke opens: dragging stamps more of the same kind,
             // queued. Whether the MODE survives the release is still
             // Shift's call, decided at MouseUp.
@@ -1536,6 +1555,11 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
                 cost
             ));
         }
+        crate::panel::CardAction::ShowBuildPage(page) => {
+            input.disarm_click_verbs();
+            input.build_menu = true;
+            input.build_page = page;
+        }
         crate::panel::CardAction::ArmRally => {
             let buildings = orders::selected_producers(game);
             if buildings.is_empty() {
@@ -1555,34 +1579,7 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             game.issue(Command::CancelFound { kind, anchor });
         }
         crate::panel::CardAction::Upgrade(building) => {
-            // Draft the nearest own construction-capable machines as
-            // the crew — the same convenience a build click gives, so
-            // upgrading never demands a separate selection dance.
-            let Some(target) = game.state.building(building) else {
-                return;
-            };
-            let center = target.center();
-            let mut crew: Vec<(chassis::fx::Fx, oxide_sim::UnitId)> = game
-                .state
-                .units()
-                .iter()
-                .filter(|u| u.player == game.human && u.hp > 0 && u.kind.stats().harvest.is_some())
-                .map(|u| (u.pos.dist_sq(center), u.id))
-                .collect();
-            crew.sort();
-            let units: Vec<oxide_sim::UnitId> =
-                crew.into_iter().take(3).map(|(_, id)| id).collect();
-            if units.is_empty() {
-                game.toast("the upgrade needs a harvest-capable crew");
-                game.sounds_pending
-                    .push((crate::game::SoundKind::Denied, None));
-                return;
-            }
-            game.issue(Command::UpgradeBuilding {
-                units,
-                building,
-                queue: false,
-            });
+            game.issue(Command::UpgradeBuilding { building });
         }
         crate::panel::CardAction::UnloadHere(transport) => {
             if let Some(t) = game.state.unit(transport) {

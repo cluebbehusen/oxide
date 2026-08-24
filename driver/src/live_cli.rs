@@ -8,7 +8,7 @@ use crate::parse::{
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use oxide_driver::client::Client;
-use oxide_protocol::{Key, RawEvent, Request, StateFilter};
+use oxide_protocol::{Key, RawEvent, Request, RequestEnvelope, StateFilter};
 use oxide_sim::{BuildingId, Command, PlayerId, Target, UnitId};
 
 #[derive(Subcommand)]
@@ -63,7 +63,7 @@ pub(crate) enum LiveCmd {
     Send {
         /// Acting player index.
         player: u8,
-        /// Command JSON, e.g. '{"type":"stop","units":[3]}'.
+        /// Command JSON, e.g. `{"type":"stop","units":[3]}`.
         json: String,
     },
     /// Attack-move units to a tile (engage everything on the way).
@@ -419,10 +419,21 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
         LiveCmd::Pause => Request::Pause,
         LiveCmd::Resume => Request::Resume,
         LiveCmd::Speed { multiplier } => Request::SetSpeed { multiplier },
-        LiveCmd::Send { player, json } => Request::SendCommand {
-            player: PlayerId(player),
-            command: serde_json::from_str(&json).context("parsing command JSON")?,
-        },
+        LiveCmd::Send { player, json } => {
+            let command =
+                serde_json::from_str::<serde_json::Value>(&json).context("parsing command JSON")?;
+            let envelope = serde_json::json!({
+                "id": 0,
+                "method": "send_command",
+                "params": {
+                    "player": player,
+                    "command": command,
+                },
+            });
+            serde_json::from_value::<RequestEnvelope>(envelope)
+                .context("parsing command JSON")?
+                .request
+        }
         LiveCmd::Move {
             player,
             units: ids,
@@ -855,6 +866,34 @@ mod tests {
     }
 
     #[test]
+    fn raw_commands_use_the_strict_debug_wire_boundary() {
+        let request = live_requests(LiveCmd::Send {
+            player: 1,
+            json: r#"{"type":"stop","units":[7,3]}"#.to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            request,
+            vec![Request::SendCommand {
+                player: PlayerId(1),
+                command: Command::Stop {
+                    units: vec![UnitId(7), UnitId(3)],
+                },
+            }]
+        );
+
+        let error = live_requests(LiveCmd::Send {
+            player: 1,
+            json: r#"{"type":"stop","units":[7],"unitz":[3]}"#.to_string(),
+        })
+        .expect_err("unknown command fields must fail before connecting");
+        assert!(
+            format!("{error:#}").contains("unknown field `unitz` in command"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
     fn presented_capture_rejects_an_unbounded_interval_before_connecting() {
         let error = capture_sequence(
             "127.0.0.1:1",
@@ -956,11 +995,126 @@ mod tests {
 
     #[test]
     fn every_protocol_key_is_cli_addressable() {
+        fn canonical_spelling(key: Key) -> &'static str {
+            match key {
+                Key::Up => "up",
+                Key::Down => "down",
+                Key::Left => "left",
+                Key::Right => "right",
+                Key::H => "h",
+                Key::S => "s",
+                Key::A => "a",
+                Key::P => "p",
+                Key::R => "r",
+                Key::B => "b",
+                Key::N => "n",
+                Key::X => "x",
+                Key::Enter => "enter",
+                Key::Escape => "escape",
+                Key::Space => "space",
+                Key::F1 => "f1",
+                Key::Shift => "shift",
+                Key::Ctrl => "ctrl",
+                Key::Num1 => "1",
+                Key::Num2 => "2",
+                Key::Num3 => "3",
+                Key::Num4 => "4",
+                Key::Num5 => "5",
+                Key::Num6 => "6",
+                Key::Num7 => "7",
+                Key::Num8 => "8",
+                Key::Num9 => "9",
+                Key::PageUp => "pageup",
+                Key::PageDown => "pagedown",
+                Key::Home => "home",
+                Key::End => "end",
+                Key::F5 => "f5",
+                Key::F6 => "f6",
+                Key::F7 => "f7",
+                Key::F8 => "f8",
+                Key::C => "c",
+                Key::D => "d",
+                Key::E => "e",
+                Key::F => "f",
+                Key::G => "g",
+                Key::I => "i",
+                Key::J => "j",
+                Key::K => "k",
+                Key::L => "l",
+                Key::M => "m",
+                Key::O => "o",
+                Key::Q => "q",
+                Key::T => "t",
+                Key::U => "u",
+                Key::V => "v",
+                Key::W => "w",
+                Key::Y => "y",
+                Key::Z => "z",
+                Key::Backspace => "backspace",
+            }
+        }
+
         for key in [
-            "up", "down", "left", "right", "h", "s", "a", "p", "r", "b", "n", "x", "enter",
-            "escape", "space", "f1", "shift", "ctrl", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+            Key::Up,
+            Key::Down,
+            Key::Left,
+            Key::Right,
+            Key::H,
+            Key::S,
+            Key::A,
+            Key::P,
+            Key::R,
+            Key::B,
+            Key::N,
+            Key::X,
+            Key::Enter,
+            Key::Escape,
+            Key::Space,
+            Key::F1,
+            Key::Shift,
+            Key::Ctrl,
+            Key::Num1,
+            Key::Num2,
+            Key::Num3,
+            Key::Num4,
+            Key::Num5,
+            Key::Num6,
+            Key::Num7,
+            Key::Num8,
+            Key::Num9,
+            Key::PageUp,
+            Key::PageDown,
+            Key::Home,
+            Key::End,
+            Key::F5,
+            Key::F6,
+            Key::F7,
+            Key::F8,
+            Key::C,
+            Key::D,
+            Key::E,
+            Key::F,
+            Key::G,
+            Key::I,
+            Key::J,
+            Key::K,
+            Key::L,
+            Key::M,
+            Key::O,
+            Key::Q,
+            Key::T,
+            Key::U,
+            Key::V,
+            Key::W,
+            Key::Y,
+            Key::Z,
+            Key::Backspace,
         ] {
-            assert!(parse_key(key).is_ok(), "missing CLI spelling for {key}");
+            assert_eq!(
+                parse_key(canonical_spelling(key)).unwrap(),
+                key,
+                "CLI spelling did not round-trip {key:?}"
+            );
         }
     }
 }

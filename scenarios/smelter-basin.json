@@ -76,7 +76,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   }
  ],
@@ -133,7 +133,6 @@
  "meta": {
   "hook": "The old smelter pits ring a sunken basin; the last rich seam sits at the bottom, and every road down passes a mesa's shadow.",
   "pace": "vast",
-  "duration": "9-12 min",
   "mode": "1v1",
   "richness": "rich",
   "symmetry": "",

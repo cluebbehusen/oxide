@@ -12,6 +12,8 @@
 //!   tick that killed it.
 //! - `result` is set at most once; once set, ticks are frozen no-ops.
 
+mod placement;
+
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::map::{MAX_MAP_EDGE, Map};
 use crate::stats::{BuildingKind, UnitKind};
@@ -360,9 +362,10 @@ pub struct Building {
         skip_serializing_if = "core::clone::Clone::clone"
     )]
     pub built: bool,
-    /// Position on the kind's upgrade ladder (zero = base). Set only by
-    /// a completed [`crate::Command::UpgradeBuilding`]; every stats read
-    /// on a live building follows it through [`Building::stats`].
+    /// Position on the kind's upgrade ladder (zero = base). An accepted
+    /// [`crate::Command::UpgradeBuilding`] advances it immediately while
+    /// setting `built` false; every stats read follows the committed tier
+    /// through [`Building::stats`].
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub tier: u8,
     /// Ticks until this building may fire again (turrets).
@@ -624,16 +627,11 @@ impl State {
         &self.vision[id.0 as usize]
     }
 
-    /// Fallible sibling of [`State::vision`].
-    pub fn try_vision(&self, id: PlayerId) -> Option<&crate::vision::Vision> {
-        self.vision.get(id.0 as usize)
-    }
-
     /// Checks every structural invariant field-level deserialization alone
     /// cannot. This is the sim's trust boundary: [`State`]'s `Deserialize`
     /// impl calls it, there is no unvalidated constructor, and everything
-    /// downstream — the tick pipeline, the renderers, the gym's feature
-    /// builder — is entitled to assume the whole checklist below. In
+    /// downstream — the tick pipeline, renderers, and observation
+    /// builders — is entitled to assume the whole checklist below. In
     /// particular the coordinate envelope is what *licenses* the sim's
     /// unchecked tile arithmetic ([`TilePos::offset`],
     /// [`Building::contains`], the neighborhood scans): a coordinate that
@@ -894,12 +892,23 @@ impl State {
             if usize::from(b.player.0) >= players {
                 return Err(E::ForeignBuildingOwner(b.id));
             }
+            if usize::from(b.tier) >= b.kind.tiers().len() {
+                return Err(E::TierBeyondLadder(b.id));
+            }
             let stats = b.stats();
             if b.hp == 0 || b.hp > stats.max_hp {
                 return Err(E::BuildingHpOutOfRange(b.id));
             }
             if b.progress > PROGRESS_ENVELOPE {
                 return Err(E::BuildingProgressOutOfRange(b.id));
+            }
+            if !b.built
+                && b.tier > 0
+                && stats
+                    .construction
+                    .is_none_or(|construction| b.progress > construction.build_ticks)
+            {
+                return Err(E::UpgradeProgressOutOfRange(b.id));
             }
             // A building fires its first weapon and nothing else.
             if b.cooldown
@@ -945,9 +954,6 @@ impl State {
             }
             if !salvage_ledger_coherent(b) {
                 return Err(E::IncoherentSalvageLedger(b.id));
-            }
-            if usize::from(b.tier) >= b.kind.tiers().len() {
-                return Err(E::TierBeyondLadder(b.id));
             }
             if b.salvaged {
                 return Err(E::LiveBuildingMarkedSalvaged(b.id));
@@ -1401,251 +1407,6 @@ impl State {
         self.buildings.retain(|b| b.id != id);
         self.next_building_id = id.0;
     }
-
-    /// Whether `player` may claim `kind` at `anchor` *this instant*:
-    /// every footprint tile currently visible to them, open ground, and
-    /// free of buildings and standing units. The real invariant is
-    /// narrower than visibility: a placement verdict may only read facts
-    /// the issuer knows — static terrain, own memory, own and allied
-    /// entities. Requiring current sight is how THIS predicate earns the
-    /// right to read live occupancy (`building_at`, the hostile-unit
-    /// scan); [`State::place_intent_refusal`] earns it differently, by
-    /// answering from memory and re-checking here at arrival. This is
-    /// literally [`State::place_refusal`] with the reason thrown away,
-    /// and it stays the final word on every actual ground claim —
-    /// instant builds, bot builds, and the deferred founder's arrival
-    /// all resolve through it.
-    pub fn can_place(&self, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> bool {
-        self.place_refusal(player, kind, anchor).is_none()
-    }
-
-    /// Why a placement is refused, or `None` when it is allowed — the
-    /// toast's vocabulary. The first blocking reason in footprint scan
-    /// order wins; every check is fog-safe by construction (it reads
-    /// only what `player` currently sees, exactly like the predicate).
-    ///
-    /// One deliberate exception: occupancy reads TRUE occupancy, hidden
-    /// charges included, because this is the final word on actual
-    /// ground claims and the sim cannot let two buildings share ground
-    /// whatever the issuer knows. The intent path stays fog-honest
-    /// instead; a claim over a hidden charge dies here, at arrival.
-    pub fn place_refusal(
-        &self,
-        player: PlayerId,
-        kind: BuildingKind,
-        anchor: TilePos,
-    ) -> Option<PlaceRefusal> {
-        if kind.base_stats().construction.is_none() {
-            return Some(PlaceRefusal::NotConstructible);
-        }
-        if !self.prerequisites_met(player, kind) {
-            return Some(PlaceRefusal::Prerequisite);
-        }
-        if kind == BuildingKind::Extractor {
-            // The machine exists only where the old rush left its frame.
-            if !self.map.is_extractor_frame(anchor) {
-                return Some(PlaceRefusal::FrameRequired);
-            }
-        } else {
-            // Nothing else may pave over a frame: the ground under a
-            // derelict Extractor stays contestable forever.
-            let (w, h) = kind.base_stats().size;
-            for dy in 0..h {
-                for dx in 0..w {
-                    if self.map.tile_in_extractor_frame(anchor.offset(dx, dy)) {
-                        return Some(PlaceRefusal::FrameBlocked);
-                    }
-                }
-            }
-        }
-        let (w, h) = kind.base_stats().size;
-        for dy in 0..h {
-            for dx in 0..w {
-                let t = anchor.offset(dx, dy);
-                if !self.vision(player).visible(t) {
-                    return Some(PlaceRefusal::Fog);
-                }
-                if !self.map.terrain_passable(t) {
-                    return Some(PlaceRefusal::Terrain);
-                }
-                if self.building_at(t).is_some() {
-                    return Some(PlaceRefusal::Building);
-                }
-            }
-        }
-        // Hostile machines hold their ground — standing on a tile
-        // denies it to the enemy's foundations. Friendly machines
-        // (allies included) never block: they walk off as the site
-        // claims the ground (only a routeless body is dealt to the
-        // perimeter instantly). A flyer passing overhead blocks
-        // nothing either way.
-        let hostile_in_footprint = self.units.iter().any(|u| {
-            u.hp > 0
-                && self.hostile(player, u.player)
-                && u.kind.stats().domain == crate::stats::Domain::Ground
-                && {
-                    let t = u.tile();
-                    t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h
-                }
-        });
-        hostile_in_footprint.then_some(PlaceRefusal::Unit)
-    }
-
-    /// Whether `player` owns a completed building of every kind that
-    /// `kind`'s construction requires — the tech tree's construction
-    /// gate, shared verbatim by command validation, the armed placement
-    /// ghost, and every bot. An unconstructible kind trivially passes
-    /// (its own refusal arm answers first).
-    pub fn prerequisites_met(&self, player: PlayerId, kind: BuildingKind) -> bool {
-        kind.base_stats().construction.is_none_or(|construction| {
-            construction.requires.iter().all(|required| {
-                self.buildings.iter().any(|building| {
-                    building.player == player
-                        && building.hp > 0
-                        && building.built
-                        && building.kind == *required
-                })
-            })
-        })
-    }
-
-    /// Whether `player` may *intend* to build `kind` at `anchor` — the
-    /// deferred sibling of [`State::place_refusal`], serving
-    /// [`crate::Command::Build`]'s `defer` mode and the shell's ghost
-    /// on remembered ground. Per footprint tile: a currently visible
-    /// tile takes the strict predicate's live checks verbatim; an
-    /// explored-but-unseen tile is judged ONLY on what the issuer
-    /// knows — static terrain (immutable after parse), remembered
-    /// scrap (conservative: nodes only shrink), remembered enemy
-    /// buildings, live own/allied buildings (team-internal facts),
-    /// and the issuer's own pending [`Order::Found`] claims; a
-    /// never-explored tile refuses as [`PlaceRefusal::Fog`]. Live
-    /// hostile units and unremembered enemy buildings on unseen ground
-    /// are deliberately unreadable here — two states differing only in
-    /// what fog hides return identical verdicts, so the amber ghost
-    /// can never be a hidden-enemy detector. The arrival re-check
-    /// through the strict predicate is what catches the collisions
-    /// memory cannot (an allied scaffold on unseen ground included).
-    pub fn place_intent_refusal(
-        &self,
-        player: PlayerId,
-        kind: BuildingKind,
-        anchor: TilePos,
-    ) -> Option<PlaceRefusal> {
-        self.place_intent_refusal_replacing(player, kind, anchor, &[])
-    }
-
-    /// The intent verdict for a non-queued build that replaces the programs
-    /// of `units`. Claims belonging to live own harvesters in that selection
-    /// leave with those programs and therefore do not reserve ground against
-    /// the replacement. Claims from every other unit remain blockers.
-    pub fn place_intent_refusal_replacing(
-        &self,
-        player: PlayerId,
-        kind: BuildingKind,
-        anchor: TilePos,
-        units: &[UnitId],
-    ) -> Option<PlaceRefusal> {
-        if kind.base_stats().construction.is_none() {
-            return Some(PlaceRefusal::NotConstructible);
-        }
-        if !self.prerequisites_met(player, kind) {
-            return Some(PlaceRefusal::Prerequisite);
-        }
-        if kind == BuildingKind::Extractor {
-            // The machine exists only where the old rush left its frame.
-            if !self.map.is_extractor_frame(anchor) {
-                return Some(PlaceRefusal::FrameRequired);
-            }
-        } else {
-            // Nothing else may pave over a frame: the ground under a
-            // derelict Extractor stays contestable forever.
-            let (w, h) = kind.base_stats().size;
-            for dy in 0..h {
-                for dx in 0..w {
-                    if self.map.tile_in_extractor_frame(anchor.offset(dx, dy)) {
-                        return Some(PlaceRefusal::FrameBlocked);
-                    }
-                }
-            }
-        }
-        let vision = self.vision(player);
-        let my_team = self.players[player.0 as usize].team;
-        let (w, h) = kind.base_stats().size;
-        let covers = |a: TilePos, size: (i32, i32), t: TilePos| {
-            t.x >= a.x && t.x < a.x + size.0 && t.y >= a.y && t.y < a.y + size.1
-        };
-        for dy in 0..h {
-            for dx in 0..w {
-                let t = anchor.offset(dx, dy);
-                if vision.visible(t) {
-                    if !self.map.terrain_passable(t) {
-                        return Some(PlaceRefusal::Terrain);
-                    }
-                    // The intent verdict reads only what the issuer
-                    // knows: an undetected buried charge is not
-                    // knowledge, so it neither reds a preview ghost nor
-                    // refuses the intent — the claim dies honestly at
-                    // arrival, where truth re-proves the ground.
-                    if self
-                        .building_at(t)
-                        .is_some_and(|b| self.building_apparent(player, b))
-                    {
-                        return Some(PlaceRefusal::Building);
-                    }
-                    continue;
-                }
-                if !vision.explored(t) {
-                    return Some(PlaceRefusal::Fog);
-                }
-                let terrain = self.map.tile(t).map(|tile| tile.terrain);
-                if terrain != Some(crate::map::Terrain::Ground) || vision.remembered_scrap(t) > 0 {
-                    return Some(PlaceRefusal::Terrain);
-                }
-                let ghosted = vision
-                    .ghosts()
-                    .iter()
-                    .any(|g| covers(g.anchor, g.kind.base_stats().size, t));
-                let allied_building = self.buildings.iter().any(|b| {
-                    self.players[b.player.0 as usize].team == my_team
-                        && covers(b.anchor, b.stats().size, t)
-                });
-                if ghosted || allied_building {
-                    return Some(PlaceRefusal::Building);
-                }
-            }
-        }
-        // The issuer's own outstanding claims: two deferred founds may
-        // not promise the same ground (checked over the whole footprint
-        // so a visible/unseen mix cannot slip a double claim through).
-        let claimed = self.units.iter().any(|u| {
-            u.player == player
-                && u.hp > 0
-                && !(u.kind.stats().harvest.is_some() && units.contains(&u.id))
-                && std::iter::once(&u.order).chain(u.queue.iter()).any(|o| {
-                    matches!(o, Order::Found { kind: k, anchor: a }
-                    if (0..h).any(|dy| (0..w).any(|dx| {
-                        covers(*a, k.base_stats().size, anchor.offset(dx, dy))
-                    })))
-                })
-        });
-        if claimed {
-            return Some(PlaceRefusal::Building);
-        }
-        // Hostile machines deny only ground the issuer can SEE them
-        // holding — exactly the strict rule, restricted to visible
-        // footprint tiles.
-        let hostile_in_sight = self.units.iter().any(|u| {
-            u.hp > 0
-                && self.hostile(player, u.player)
-                && u.kind.stats().domain == crate::stats::Domain::Ground
-                && {
-                    let t = u.tile();
-                    covers(anchor, (w, h), t) && vision.visible(t)
-                }
-        });
-        hostile_in_sight.then_some(PlaceRefusal::Unit)
-    }
 }
 
 /// How far outside the map a coordinate may sit before a snapshot is
@@ -2044,13 +1805,15 @@ pub enum StateIntegrityError {
     /// A building is owned by a player outside the table.
     #[error("building {0} is owned by a player outside the table")]
     ForeignBuildingOwner(BuildingId),
-    /// An unfinished building kind has no construction definition.
     /// A building's hit points sit outside `(0, max_hp]`.
     #[error("building {0} carries hit points its kind cannot hold")]
     BuildingHpOutOfRange(BuildingId),
     /// A building's progress meter is past the ceiling.
     #[error("building {0} carries a progress meter past the ceiling")]
     BuildingProgressOutOfRange(BuildingId),
+    /// An automatic upgrade's progress exceeds its tier-specific timer.
+    #[error("building {0} carries upgrade progress past its construction timer")]
+    UpgradeProgressOutOfRange(BuildingId),
     /// A building's cooldown is longer than its weapon's period.
     #[error("building {0} carries a cooldown its weapon never sets")]
     BuildingCooldownOutOfRange(BuildingId),
@@ -2160,9 +1923,8 @@ pub enum StateIntegrityError {
 }
 
 /// A shell in flight: launched toward a fixed fire-time aim point, unguided
-/// from that instant ("a shell in flight chooses nothing" — literal since
-/// 0.9), resolving on its arrival tick against whatever stands there.
-/// Outlives its shooter.
+/// from that instant, and resolved on its arrival tick against whatever
+/// stands there. It may outlive its shooter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Shell {
     /// Who fired it (may be dead by impact; retaliation copes).

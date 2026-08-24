@@ -62,7 +62,7 @@ mod tests {
 
     fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Pixmap {
         let mut pixmap = Pixmap::new(w, h).unwrap();
-        for px in pixmap.data_mut().chunks_exact_mut(4) {
+        for px in pixmap.data_mut().as_chunks_mut::<4>().0 {
             px.copy_from_slice(&rgba);
         }
         pixmap

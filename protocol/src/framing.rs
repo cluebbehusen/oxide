@@ -408,6 +408,72 @@ mod tests {
     }
 
     #[test]
+    fn malformed_json_is_refused_without_poisoning_the_connection() {
+        let (addr, served) = stub_server(Limits::default());
+        let (mut reader, mut writer) = connect(addr);
+
+        writer
+            .write_all(b"{\"id\":3,\"method\":}\n")
+            .expect("write malformed frame");
+        let line = read_line(&mut reader).expect("refusal line");
+        assert!(error_message(&line).starts_with("bad request"));
+
+        writer
+            .write_all(status(8).as_bytes())
+            .expect("write valid frame");
+        let line = read_line(&mut reader).expect("response line");
+        let envelope: ResponseEnvelope = serde_json::from_str(line.trim()).expect("parse response");
+        assert_eq!(envelope.id, 8);
+        envelope.into_result().expect("ok reply");
+        assert_eq!(served.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_frame_exactly_at_the_payload_limit_is_accepted() {
+        let mut frame = status(12);
+        frame.pop();
+        let limit = frame.len() + 7;
+        frame.extend(std::iter::repeat_n(' ', 7));
+        frame.push('\n');
+
+        let limits = Limits {
+            max_frame_bytes: limit,
+            ..Limits::default()
+        };
+        let (addr, served) = stub_server(limits);
+        let (mut reader, mut writer) = connect(addr);
+        writer
+            .write_all(frame.as_bytes())
+            .expect("write exact frame");
+
+        let line = read_line(&mut reader).expect("response line");
+        let envelope: ResponseEnvelope = serde_json::from_str(line.trim()).expect("parse response");
+        assert_eq!(envelope.id, 12);
+        envelope.into_result().expect("ok reply");
+        assert_eq!(served.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dropping_a_dispatched_reply_closes_only_that_connection() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
+        let addr = listener.local_addr().expect("listener address");
+        let incoming = incoming(listener, Limits::default());
+        let (mut reader, mut writer) = connect(addr);
+        writer
+            .write_all(status(1).as_bytes())
+            .expect("write request");
+
+        let request = incoming
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request reached answering side before the test deadline");
+        drop(request.reply);
+        assert!(
+            read_line(&mut reader).is_none(),
+            "a vanished answering side cannot leave its client hanging"
+        );
+    }
+
+    #[test]
     fn an_abrupt_disconnect_releases_the_connection_it_held() {
         let limits = Limits {
             max_clients: 1,

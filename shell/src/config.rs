@@ -240,8 +240,6 @@ impl Config {
     }
 
     /// Persists atomically (temp + rename), creating the directory.
-    // Wired to the Phase D settings screens; tested directly until then.
-    #[allow(dead_code)]
     pub fn save(&self) -> std::io::Result<()> {
         let Some(path) = config_path() else {
             return Ok(()); // headless CI without HOME: nothing to do
@@ -275,7 +273,7 @@ mod tests {
             "J is free in the classic map"
         );
         config.save_to(&path).expect("save");
-        let loaded = Config::load_from(Some(path.clone()));
+        let loaded = Config::load_from(Some(path));
         assert_eq!(
             loaded.bindings.chord_for(crate::action::Action::Patrol),
             Some(crate::action::Chord::bare(oxide_protocol::Key::J)),
@@ -295,7 +293,7 @@ mod tests {
         config.bindings.unbind(crate::action::Action::Patrol);
         config.unbound.push(crate::action::Action::Patrol);
         config.save_to(&path).expect("save");
-        let loaded = Config::load_from(Some(path.clone()));
+        let loaded = Config::load_from(Some(path));
         assert_eq!(
             loaded.bindings.chord_for(crate::action::Action::Patrol),
             None,
@@ -306,10 +304,9 @@ mod tests {
 
     #[test]
     fn a_config_saved_before_a_new_verb_adopts_its_classic_chord() {
-        // Salvage arrived in 0.11; a config saved before it has no row
-        // for the action at all. Loading must graft the classic chord
-        // in (when free) instead of shipping the verb keyboardless --
-        // and must NOT graft it over a chord the player claimed.
+        // A config saved before an action existed has no row for it.
+        // Loading must graft the classic chord in when free instead of
+        // leaving the verb keyboardless, without stealing a claimed chord.
         let dir = std::env::temp_dir().join(format!("oxide-config-newverb-{}", std::process::id()));
         let path = dir.join("config.json");
         let mut config = Config::default();
@@ -330,7 +327,7 @@ mod tests {
             crate::action::Chord::bare(oxide_protocol::Key::V)
         ));
         config.save_to(&path).expect("save");
-        let loaded = Config::load_from(Some(path.clone()));
+        let loaded = Config::load_from(Some(path));
         assert_eq!(
             loaded.bindings.chord_for(crate::action::Action::Salvage),
             None,
@@ -360,7 +357,7 @@ mod tests {
             crate::action::Chord::bare(oxide_protocol::Key::J)
         ));
         config.save_to(&path).expect("save");
-        let loaded = Config::load_from(Some(path.clone()));
+        let loaded = Config::load_from(Some(path));
         assert_eq!(
             loaded
                 .bindings
@@ -386,7 +383,7 @@ mod tests {
         config.save_to(&path).expect("first save");
         config.ui_scale = 1.5;
         config.save_to(&path).expect("second save replaces");
-        let loaded = Config::load_from(Some(path.clone()));
+        let loaded = Config::load_from(Some(path));
         assert!((loaded.ui_scale - 1.5).abs() < 1e-6, "the newer config won");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -409,7 +406,7 @@ mod tests {
         };
         assert!(changed.save_to(&path).is_err(), "the failure surfaces");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let loaded = Config::load_from(Some(path.clone()));
+        let loaded = Config::load_from(Some(path));
         assert_eq!(loaded, config, "the old config survived the failed save");
         let temps: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
@@ -433,7 +430,7 @@ mod tests {
             ..Config::default()
         };
         config.save_to(&path).unwrap();
-        let back = Config::load_from(Some(path.clone()));
+        let back = Config::load_from(Some(path));
         assert_eq!(back, config);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -456,7 +453,7 @@ mod tests {
         old["volumes"].as_object_mut().unwrap().remove("music");
         std::fs::write(&path, serde_json::to_vec_pretty(&old).unwrap()).unwrap();
 
-        let loaded = Config::load_from(Some(path.clone()));
+        let loaded = Config::load_from(Some(path));
         assert_eq!(loaded.volumes.music, 1.0);
         assert_eq!(loaded.volumes.effects, 0.5);
         assert_eq!(loaded.ui_scale, 1.25);
@@ -480,7 +477,7 @@ mod tests {
             ..Config::default()
         };
         std::fs::write(&path, serde_json::to_string(&future).unwrap()).unwrap();
-        assert_eq!(Config::load_from(Some(path.clone())), Config::default());
+        assert_eq!(Config::load_from(Some(path)), Config::default());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -115,14 +115,6 @@
       "paired_animation": "38-buzzard-quad-fan-carriage-animated.gif"
     },
     {
-      "category": "generic-weapon",
-      "filename": "rail_fire.wav",
-      "min_gap": 0.15,
-      "mixer_volume": 0.32,
-      "name": "rail_fire",
-      "paired_animation": "36-lancer-dark-channel-animated.gif"
-    },
-    {
       "category": "signature-weapon",
       "filename": "attack_lancer.wav",
       "min_gap": 0.15,
@@ -152,14 +144,6 @@
       "min_gap": 0.12,
       "mixer_volume": 0.34,
       "name": "attack_flak_turret",
-      "paired_animation": "01-flak-turret-paired-yokes.gif"
-    },
-    {
-      "category": "signature-weapon",
-      "filename": "flak.wav",
-      "min_gap": 0.12,
-      "mixer_volume": 0.3,
-      "name": "flak",
       "paired_animation": "01-flak-turret-paired-yokes.gif"
     },
     {

@@ -9,9 +9,8 @@
 //! the brain *orients* its world. A policy whose home sits in the
 //! flipped half sees a flipped observation, thinks exactly the logic
 //! its opponent thinks, and its intents are flipped back on the way
-//! out. Policy-level seat-symmetry by construction: measured on mirror
-//! matches, it removed a 20/0 policy-side sweep (what remains is the
-//! sim's own id-order micro, tracked in AGENTS as the open seat issue).
+//! out. This keeps compass-flavored tie-breaks from systematically
+//! favoring one seat.
 //!
 //! The flip is per-axis (x when home is in the east half, y when in the
 //! south half), which also orients the corner seats of future 4-player
@@ -207,10 +206,8 @@ impl Orientation {
                 // slips through unflipped is a silent seat-bias
                 // regression, so adding a variant must break this match.
                 keep @ (Intent::TrainAt { .. }
-                | Intent::RecallArmy { .. }
                 | Intent::Repair { .. }
                 | Intent::Salvage { .. }
-                | Intent::RepairUnit { .. }
                 | Intent::Upgrade { .. }
                 | Intent::Load { .. }) => keep,
             })

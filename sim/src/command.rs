@@ -110,9 +110,9 @@ pub enum Command {
         /// placed, nothing charged, no route demanded until the founder
         /// stands beside ground it can see (an honest stall later, like
         /// a Move into fog). The shell arms this for explored-but-unseen
-        /// ground; the gym bot emits it exactly where the shell
-        /// would (a footprint tile out of current sight); the scripted
-        /// tiers never do, which is what keeps their anchors frozen.
+        /// ground when any footprint tile is outside current sight.
+        /// Command sources that do not support deferred placement leave
+        /// this false.
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         defer: bool,
     },
@@ -219,18 +219,13 @@ pub enum Command {
         anchor: TilePos,
     },
     /// Lifts a completed building one rung up its kind's upgrade ladder.
-    /// The full price is charged now, the works goes offline (a site
-    /// again, on the new tier's row), and the accepted harvester crew
-    /// takes the same Build order ordinary construction uses — resume,
-    /// relief builders, and stacking all behave identically. Upgrades
-    /// cannot be cancelled: the machine is committed until it stands.
+    /// The full price is charged now and the works rebuilds itself on the
+    /// new tier's deterministic timer. It remains offline and vulnerable
+    /// until that work finishes. Upgrades cannot be paused, accelerated,
+    /// or cancelled once committed.
     UpgradeBuilding {
-        /// The working crew (harvesters).
-        units: Vec<UnitId>,
         /// The building to lift.
         building: BuildingId,
-        /// Append to order queues instead of replacing.
-        queue: bool,
     },
     /// Send ground machines to climb aboard an own transport. Each walks
     /// within [`crate::stats::LOAD_REACH`] and embarks if room remains;

@@ -1,6 +1,11 @@
 ---
 name: sound-design
-description: Generate, modify, audition, and productionize explicitly approved Oxide sound effects. Use for weapon reports, alerts, UI cues, destruction, mixer tuning, camera-aware sound, or changes to tools/gen_sounds.py and assets/sounds. This skill preserves approved audio byte-for-byte and keeps experiments out of production commits.
+description:
+  Generate, modify, audition, and productionize explicitly approved Oxide sound
+  effects. Use for weapon reports, alerts, UI cues, destruction, mixer tuning,
+  camera-aware sound, or changes to tools/gen_sounds.py and assets/sounds. This
+  skill preserves approved audio byte-for-byte and keeps experiments out of
+  production commits.
 ---
 
 # Oxide sound design
@@ -32,8 +37,8 @@ substitutes for listening.
 - Center the musical language around D. Reserve a falling tritone for denied,
   defeat, and alert; victory rises D-A-D.
 - Make depth audible on laptop speakers with missing-fundamental voicing. Deep
-  events still need meaningful energy above 180 Hz, especially in the first
-  300 ms.
+  events still need meaningful energy above 180 Hz, especially in the first 300
+  ms.
 - Prefer one decisive gesture. Multi-report audio is valid only when the
   finalized animation visibly fires more than once.
 

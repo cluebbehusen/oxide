@@ -1702,6 +1702,129 @@ mod tests {
     }
 
     #[test]
+    fn first_contact_requires_hostility_and_is_emitted_once_per_team_pair() {
+        let state = Scenario::skirmish().build().expect("skirmish builds");
+        let mut contacted = BTreeSet::new();
+        let mut timeline = Vec::new();
+
+        note_contact(
+            &state,
+            None,
+            Some(1),
+            TilePos::new(1, 1),
+            10,
+            &mut contacted,
+            &mut timeline,
+        );
+        note_contact(
+            &state,
+            Some(0),
+            Some(0),
+            TilePos::new(2, 2),
+            11,
+            &mut contacted,
+            &mut timeline,
+        );
+        note_contact(
+            &state,
+            Some(0),
+            Some(1),
+            TilePos::new(3, 4),
+            12,
+            &mut contacted,
+            &mut timeline,
+        );
+        note_contact(
+            &state,
+            Some(1),
+            Some(0),
+            TilePos::new(9, 9),
+            13,
+            &mut contacted,
+            &mut timeline,
+        );
+
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].tick, 12);
+        match &timeline[0].kind {
+            TimelineKind::FirstContact { teams, at } => {
+                assert_eq!(*teams, (0, 1));
+                assert_eq!(*at, [3, 4]);
+            }
+            other => panic!("expected first contact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tech_firsts_deduplicate_and_only_loud_milestones_enter_the_timeline() {
+        let mut reach = BTreeSet::new();
+        let mut firsts = Vec::new();
+        let mut timeline = Vec::new();
+        note_tech_first(
+            &mut reach,
+            &mut firsts,
+            1u8,
+            "avalanche",
+            true,
+            0,
+            40,
+            &mut timeline,
+        );
+        note_tech_first(
+            &mut reach,
+            &mut firsts,
+            1u8,
+            "avalanche",
+            true,
+            0,
+            60,
+            &mut timeline,
+        );
+        note_tech_first(
+            &mut reach,
+            &mut firsts,
+            2u8,
+            "sentinel",
+            false,
+            0,
+            80,
+            &mut timeline,
+        );
+
+        assert_eq!(firsts.len(), 2);
+        assert_eq!((firsts[0].name.as_str(), firsts[0].tick), ("avalanche", 40));
+        assert_eq!((firsts[1].name.as_str(), firsts[1].tick), ("sentinel", 80));
+        assert_eq!(timeline.len(), 1);
+        assert!(matches!(
+            &timeline[0].kind,
+            TimelineKind::TechFirst { seat: 0, name } if name == "avalanche"
+        ));
+    }
+
+    #[test]
+    fn lulls_begin_only_after_contact_and_need_two_quiet_windows() {
+        let mut quiet = None;
+        let mut timeline = Vec::new();
+        track_lull(&mut quiet, &mut timeline, 0, false, 0, 100);
+        assert!(quiet.is_none(), "opening buildup is not a lull");
+
+        track_lull(&mut quiet, &mut timeline, 0, true, 100, 200);
+        track_lull(&mut quiet, &mut timeline, 1, true, 200, 300);
+        assert!(timeline.is_empty(), "one quiet window is not notable");
+
+        track_lull(&mut quiet, &mut timeline, 0, true, 300, 400);
+        track_lull(&mut quiet, &mut timeline, 0, true, 400, 500);
+        track_lull(&mut quiet, &mut timeline, 2, true, 500, 600);
+        assert_eq!(timeline.len(), 1);
+        match timeline[0].kind {
+            TimelineKind::Lull { from_tick, to_tick } => {
+                assert_eq!((from_tick, to_tick), (300, 500));
+            }
+            ref other => panic!("expected lull, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn nearby_losses_merge_and_distant_losses_split() {
         let mut clusterer = BattleClusterer::default();
         clusterer.note_loss(100, 0, TilePos::new(10, 10), 90, LossKind::Combat);
@@ -1892,6 +2015,29 @@ mod tests {
         );
         assert_eq!(report.scenario.effective_ticks, 12);
         assert_eq!(report.digests.len(), 3);
+    }
+
+    #[test]
+    fn zero_tick_and_legacy_duration_records_keep_an_exact_closing_digest() {
+        let mut empty = fixture();
+        empty.commands.clear();
+        empty.meta.ticks = Some(0);
+        let report = summarize(&empty, &opts(None, Some(5))).expect("empty record summarizes");
+        assert_eq!(report.scenario.effective_ticks, 0);
+        assert_eq!(
+            report.digests.iter().map(|d| d.tick).collect::<Vec<_>>(),
+            vec![0]
+        );
+
+        let mut legacy = fixture();
+        legacy.meta.ticks = None;
+        let expected = legacy.commands.last().unwrap().tick + 1;
+        let report = summarize(&legacy, &opts(None, Some(5))).expect("legacy record summarizes");
+        assert_eq!(report.scenario.effective_ticks, expected);
+        assert_eq!(
+            report.digests.last().map(|digest| digest.tick),
+            Some(expected)
+        );
     }
 
     #[test]

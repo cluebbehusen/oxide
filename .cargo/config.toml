@@ -1,0 +1,3 @@
+[alias]
+cov-unit = "llvm-cov --workspace --lib --bins --locked --fail-under-lines 69.0"
+cov-combined = "llvm-cov --workspace --tests --locked --fail-under-lines 76.5 -- --skip every_shipped_scenario_stays_valid_and_live"

@@ -56,7 +56,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   }
  ],
@@ -113,7 +113,6 @@
  "meta": {
   "hook": "A peak spine splits the field; two passes, and one door only wings can use.",
   "pace": "standard",
-  "duration": "5-13 min",
   "mode": "1v1",
   "richness": "standard",
   "theme": "basalt"

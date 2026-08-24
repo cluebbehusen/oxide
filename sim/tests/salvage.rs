@@ -683,16 +683,14 @@ fn fire_finishing_a_salvage_target_wins_and_forfeits_the_rest() {
     // simply gone), never stalls.
     let mut scenario = arena(vec![
         unit(0, UnitKind::Harvester, 7, 2),
-        unit(1, UnitKind::Scuttler, 11, 1),
-        unit(1, UnitKind::Scuttler, 11, 2),
-        unit(1, UnitKind::Scuttler, 11, 3),
+        unit(1, UnitKind::Lancer, 11, 2),
     ]);
     scenario
         .buildings
         .push(standing(0, BuildingKind::Array, 9, 2));
     let mut state = scenario.build().unwrap();
     let harvester = state.units()[0].id;
-    let raiders: Vec<UnitId> = state.units()[1..4].iter().map(|u| u.id).collect();
+    let raiders: Vec<UnitId> = state.units()[1..].iter().map(|u| u.id).collect();
     let array = state
         .buildings()
         .iter()

@@ -3091,22 +3091,6 @@ def scrap_rich() -> None:
     scrap_pile("scrap_rich", seed=23, pieces=30, spread=19, lift=7)
 
 
-def muzzle_flash() -> None:
-    px = 32
-    img, d = canvas(px)
-    for r, alpha in [(11, 90), (7, 170), (4, 255)]:
-        d.ellipse(
-            [s(16 - r), s(16 - r), s(16 + r), s(16 + r)], fill=(255, 240, 200, alpha)
-        )
-    d.polygon(
-        [(s(16), s(2)), (s(19), s(13)), (s(13), s(13))], fill=(255, 240, 200, 220)
-    )
-    d.polygon(
-        [(s(16), s(30)), (s(19), s(19)), (s(13), s(19))], fill=(255, 240, 200, 220)
-    )
-    finish(img, px, "muzzle_flash")
-
-
 def scorch() -> None:
     px = 128
     img, d = canvas(px)
@@ -3438,7 +3422,6 @@ def generate(output: Path) -> None:
         for variant in range(6):
             theme_prop(theme, variant)
     scrap_rich()
-    muzzle_flash()
     scorch()
     scrap("full", 1.0)
     scrap("mid", 0.55)

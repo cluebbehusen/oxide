@@ -72,7 +72,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   },
   {
@@ -82,7 +82,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   },
   {
@@ -92,7 +92,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   },
   {
@@ -102,7 +102,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   },
   {
@@ -112,7 +112,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   }
  ],

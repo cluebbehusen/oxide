@@ -264,4 +264,21 @@ mod tests {
             .expect_err("1000x is out of range");
         assert!(too_fast.contains("outside 0.05..=64"));
     }
+
+    #[test]
+    fn speed_validation_uses_closed_finite_bounds() {
+        for accepted in [0.05, 1.0, 64.0] {
+            check_speed(accepted).expect("boundary is legal");
+        }
+        for rejected in [
+            0.0,
+            0.049,
+            64.001,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ] {
+            assert!(check_speed(rejected).is_err(), "accepted {rejected:?}");
+        }
+    }
 }

@@ -4,11 +4,10 @@
 //! this tick is recorded and applied only after all brains (and turrets)
 //! have acted, so everyone decides against the same start-of-tick world.
 //! Two machines can kill each other in the same tick — that's the point:
-//! before 0.6, inline damage gave whichever seat held the higher unit ids
-//! a same-tick reaction edge that decided every mirror match. Every
-//! selection a brain makes (targets, doorstep tiles, replacement nodes) is
-//! ordered by an explicit key ending in an id or a position, so there is
-//! exactly one possible choice.
+//! inline damage would give whichever seat held the higher unit ids a
+//! same-tick reaction edge. Every selection a brain makes (targets,
+//! doorstep tiles, replacement nodes) is ordered by an explicit key ending
+//! in an id or a position, so there is exactly one possible choice.
 
 use crate::event::Event;
 use crate::ids::{Target, UnitId};
@@ -189,6 +188,7 @@ pub(super) fn run(
             }
         }
     }
+    advance_upgrades(state, &mut builds);
     commit_unit_welds(state, field_welds, events, &mut heals);
     turret_fire(state, &motion, events, &mut hits, &mut launches);
     repair_bay_aura(state, &mut heals);
@@ -209,7 +209,9 @@ pub(super) mod logistics;
 
 use combat::attack;
 use combat::{MotionSnapshot, advance, land_shells, retaliate, target_standing, turret_fire};
-use economy::{build, commit_unit_welds, found, harvest, repair, repair_unit, salvage};
+use economy::{
+    advance_upgrades, build, commit_unit_welds, found, harvest, repair, repair_unit, salvage,
+};
 use locomotion::{attack_move, idle, walk};
 
 /// The other half of simultaneity: buffered shots land now, in the order
@@ -643,7 +645,13 @@ fn resolve_founds(state: &mut State, mut founds: Vec<PendingFounding>, events: &
         let ours = state
             .buildings
             .iter()
-            .find(|b| b.anchor == f.anchor && b.kind == f.kind && b.player == f.player && !b.built)
+            .find(|b| {
+                b.anchor == f.anchor
+                    && b.kind == f.kind
+                    && b.player == f.player
+                    && !b.built
+                    && b.tier == 0
+            })
             .map(|b| b.id);
         if let Some(site) = ours {
             let unit = state.unit_mut(f.unit).expect("checked above");

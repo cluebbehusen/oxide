@@ -254,4 +254,33 @@ mod tests {
         let order: Vec<_> = grid.iter().map(|(p, &v)| (p.x, p.y, v)).collect();
         assert_eq!(order, vec![(0, 0, 10), (1, 0, 11), (0, 1, 12), (1, 1, 13)]);
     }
+
+    #[test]
+    fn bulk_rows_clamp_spans_and_refuse_rows_outside_the_grid() {
+        let mut grid = Grid::new(4, 3, 0u8);
+        grid.fill_row_span(1, -3, 2, 7);
+        assert_eq!(grid.row(1), Some([7, 7, 7, 0].as_slice()));
+
+        grid.fill_row_span(-1, 0, 3, 9);
+        grid.fill_row_span(2, 8, 10, 9);
+        assert_eq!(grid.row(0), Some([0, 0, 0, 0].as_slice()));
+        assert_eq!(grid.row(2), Some([0, 0, 0, 0].as_slice()));
+        assert!(grid.row(-1).is_none());
+        assert!(grid.row_mut(3).is_none());
+
+        grid.row_mut(2).unwrap().copy_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(grid.row(2), Some([1, 2, 3, 4].as_slice()));
+    }
+
+    #[test]
+    fn copy_from_adopts_the_source_shape_and_cells() {
+        let mut destination = Grid::new(1, 1, 0u8);
+        let source = Grid::from_cells(3, 2, vec![1, 2, 3, 4, 5, 6]);
+        destination.copy_from(&source);
+
+        assert_eq!(destination.width(), 3);
+        assert_eq!(destination.height(), 2);
+        assert_eq!(destination, source);
+        assert!(destination.is_consistent());
+    }
 }

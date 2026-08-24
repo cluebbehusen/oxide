@@ -85,7 +85,7 @@ fn machines_board_ride_and_land() {
     let report = state.tick(&[cmd(
         0,
         Command::Load {
-            units: riders.clone(),
+            units: riders,
             transport: sky,
             queue: false,
         },
@@ -407,4 +407,256 @@ fn unload_over_the_pit_strands_the_cargo_until_open_ground() {
         }
     }
     panic!("the rider never landed on open ground");
+}
+
+#[test]
+fn a_boarder_stands_down_when_the_sling_has_no_ground_route() {
+    let map = vec![
+        "########################".into(),
+        "#1.....................#".into(),
+        "#......................#".into(),
+        "#..........###.........#".into(),
+        "#..........#.#.........#".into(),
+        "#..........###.........#".into(),
+        "#......................#".into(),
+        "#...................2..#".into(),
+        "#......................#".into(),
+        "########################".into(),
+    ];
+    let mut state = arena(
+        map,
+        vec![
+            unit(0, UnitKind::Skyhook, 12, 4),
+            unit(0, UnitKind::Sentinel, 8, 4),
+        ],
+    )
+    .build()
+    .unwrap();
+    let sky = state.units()[0].id;
+    let rider = state.units()[1].id;
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::Load {
+            units: vec![rider],
+            transport: sky,
+            queue: false,
+        },
+    )]);
+
+    assert!(report.events.iter().any(|event| matches!(
+        event,
+        Event::OrderStalled {
+            unit,
+            reason: oxide_sim::event::StallReason::NoRoute,
+            ..
+        } if *unit == rider
+    )));
+    assert_eq!(state.unit(rider).unwrap().order, Order::Idle);
+    assert!(state.unit(sky).unwrap().cargo.is_empty());
+}
+
+#[test]
+fn a_loaded_sling_stands_down_when_peaks_seal_its_air_route() {
+    let map = vec![
+        "########################".into(),
+        "#1.....................#".into(),
+        "#.........^^^^^........#".into(),
+        "#.........^...^........#".into(),
+        "#.........^...^........#".into(),
+        "#.........^...^........#".into(),
+        "#.........^^^^^........#".into(),
+        "#...................2..#".into(),
+        "#......................#".into(),
+        "########################".into(),
+    ];
+    let mut state = arena(
+        map,
+        vec![
+            unit(0, UnitKind::Skyhook, 12, 4),
+            unit(0, UnitKind::Sentinel, 11, 4),
+        ],
+    )
+    .build()
+    .unwrap();
+    let sky = state.units()[0].id;
+    let rider = state.units()[1].id;
+    state.tick(&[cmd(
+        0,
+        Command::Load {
+            units: vec![rider],
+            transport: sky,
+            queue: false,
+        },
+    )]);
+    assert!(state.unit(rider).is_none(), "premise: the rider is aboard");
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::Unload {
+            transport: sky,
+            at: TilePos::new(18, 4),
+            queue: false,
+        },
+    )]);
+    assert!(report.events.iter().any(|event| matches!(
+        event,
+        Event::OrderStalled {
+            unit,
+            reason: oxide_sim::event::StallReason::NoRoute,
+            ..
+        } if *unit == sky
+    )));
+    let transport = state.unit(sky).expect("the airframe survives");
+    assert_eq!(transport.order, Order::Idle);
+    assert_eq!(transport.cargo.len(), 1, "a failed flight loses no cargo");
+}
+
+#[test]
+fn a_rider_survives_when_its_sling_is_destroyed_during_boarding() {
+    let mut scenario = arena(
+        open_map(),
+        vec![
+            unit(0, UnitKind::Skyhook, 10, 4),
+            unit(0, UnitKind::Sentinel, 9, 4),
+        ],
+    );
+    scenario.players[1].faction = Faction::Ferrous;
+    scenario.units.extend(
+        [(8, 2), (10, 2), (12, 2), (8, 4), (12, 4), (9, 6), (11, 6)]
+            .into_iter()
+            .map(|(x, y)| unit(1, UnitKind::Shrike, x, y)),
+    );
+    let mut state = scenario.build().unwrap();
+    let sky = state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Skyhook)
+        .unwrap()
+        .id;
+    let rider = state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Sentinel)
+        .unwrap()
+        .id;
+    let hunters: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.kind == UnitKind::Shrike)
+        .map(|unit| unit.id)
+        .collect();
+
+    let report = state.tick(&[
+        cmd(
+            0,
+            Command::Load {
+                units: vec![rider],
+                transport: sky,
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Attack {
+                units: hunters,
+                target: Target::Unit(sky),
+                queue: false,
+            },
+        ),
+    ]);
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::UnitDied { unit, .. } if *unit == sky))
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::UnitBoarded { unit, .. } if *unit == rider)),
+        "a lethal same-tick volley wins over the buffered embarkation"
+    );
+    assert!(
+        state.unit(rider).is_some(),
+        "the waiting rider stays in the world"
+    );
+
+    state.tick(&[]);
+    assert_eq!(
+        state.unit(rider).unwrap().order,
+        Order::Idle,
+        "the missing transport releases the rider on its next decision"
+    );
+}
+
+#[test]
+fn a_lethally_hit_rider_is_not_entombed_as_cargo() {
+    let mut state = arena(
+        open_map(),
+        vec![
+            unit(0, UnitKind::Skyhook, 10, 4),
+            unit(0, UnitKind::Sentinel, 9, 4),
+            unit(1, UnitKind::Lancer, 8, 2),
+            unit(1, UnitKind::Lancer, 10, 2),
+        ],
+    )
+    .build()
+    .unwrap();
+    let sky = state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Skyhook)
+        .unwrap()
+        .id;
+    let rider = state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Sentinel)
+        .unwrap()
+        .id;
+    let attackers: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.kind == UnitKind::Lancer)
+        .map(|unit| unit.id)
+        .collect();
+
+    let report = state.tick(&[
+        cmd(
+            0,
+            Command::Load {
+                units: vec![rider],
+                transport: sky,
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Attack {
+                units: attackers,
+                target: Target::Unit(rider),
+                queue: false,
+            },
+        ),
+    ]);
+
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::UnitDied { unit, .. } if *unit == rider))
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::UnitBoarded { unit, .. } if *unit == rider))
+    );
+    assert!(state.unit(rider).is_none());
+    assert!(
+        state.unit(sky).unwrap().cargo.is_empty(),
+        "the death pass must still own a rider killed during buffered boarding"
+    );
 }

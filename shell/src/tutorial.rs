@@ -85,23 +85,17 @@ pub const STEPS: [Step; 6] = [
     },
 ];
 
-/// The tutorial's match: the embedded skirmish with pushover bots and
-/// a raised opening bank. The authored 150 exactly ran dry across the
-/// lesson sequence's prepaid spends and left the fighter lesson
-/// unpayable at zero income; the raise is tutorial-only so the
-/// scenario file — and every fixture and replay built on it — stands.
+/// The tutorial's match: the embedded skirmish with the same scripted
+/// opponent as an ordinary match and a raised opening bank. The
+/// authored 150 ran dry after the lesson's prepaid spends and left
+/// the fighter lesson unpayable at zero income. The raise is
+/// tutorial-only, so the scenario file and its fixtures stay unchanged.
 /// The playthrough test in `input::tests` pins the arithmetic.
 pub fn tutorial_scenario() -> oxide_sim::Scenario {
     let mut scenario = oxide_sim::Scenario::skirmish();
     scenario.players[0].scrap = 260;
     for p in scenario.players.iter_mut().skip(1) {
-        p.bot_config = Some(oxide_sim::scenario::BotConfig {
-            level: oxide_sim::bot::Level::Easy,
-            aggression: Some(0),
-            style: None,
-            variant: None,
-            team_role: None,
-        });
+        p.bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
     }
     scenario
 }

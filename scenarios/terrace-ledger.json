@@ -74,7 +74,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   }
  ],
@@ -131,7 +131,6 @@
  "meta": {
   "hook": "Blast terraces stagger the old cut floor; three shelves of open ground, and the ledger settles in the middle.",
   "pace": "vast",
-  "duration": "9-12 min",
   "mode": "1v1",
   "richness": "rich",
   "symmetry": "",

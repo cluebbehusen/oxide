@@ -71,7 +71,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   }
  ],
@@ -128,7 +128,6 @@
  "meta": {
   "hook": "The floor gave way along the deep seams; four spans of load-bearing ground decide every march.",
   "pace": "vast",
-  "duration": "9-12 min",
   "mode": "1v1",
   "richness": "rich",
   "symmetry": "",

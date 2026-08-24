@@ -24,6 +24,49 @@ fn metered(progress: u32) -> u32 {
     progress.min(crate::state::PROGRESS_ENVELOPE - 1)
 }
 
+/// Advance every committed building upgrade exactly once on the simulation
+/// clock. The gain joins ordinary construction in the buffered resolver, so a
+/// lethal hit on the completion tick still destroys the offline works instead
+/// of letting it stand up through fire.
+pub(super) fn advance_upgrades(state: &mut State, builds: &mut Vec<PendingHpGain>) {
+    let sites: Vec<BuildingId> = state
+        .buildings
+        .iter()
+        .filter(|building| !building.built && building.tier > 0 && building.hp > 0)
+        .map(|building| building.id)
+        .collect();
+
+    for site in sites {
+        let building = state.building(site).expect("upgrade id came from state");
+        let (player, kind, progress) = (building.player, building.kind, building.progress);
+        let stats = building.stats();
+        let build_ticks = stats
+            .construction
+            .expect("an upgrade tier is constructible")
+            .build_ticks;
+        let start_hp = stats.max_hp / 5;
+        let ramp = stats.max_hp - start_hp;
+        let advanced = progress.saturating_add(1).min(build_ticks);
+        let step = (ramp * advanced / build_ticks) - (ramp * progress / build_ticks);
+
+        state
+            .building_mut(site)
+            .expect("upgrade id came from state")
+            .progress = advanced;
+        let completes = advanced >= build_ticks;
+        if step > 0 || completes {
+            builds.push(PendingHpGain {
+                site,
+                step,
+                completes,
+                player,
+                kind,
+                paid: 0,
+            });
+        }
+    }
+}
+
 /// Stand up an own unfinished site: walk adjacent, then feed it progress.
 /// One built tick raises hp along a linear ramp to full at completion
 /// (damage taken meanwhile is simply kept — nobody rebuilds for free).
@@ -40,16 +83,13 @@ pub(super) fn build(
     // swallow the destruction event, so the guard stays.
     let Some(b) = state
         .building(site)
-        .filter(|b| b.player == me && !b.built && b.hp > 0)
+        .filter(|b| b.player == me && !b.built && b.tier == 0 && b.hp > 0)
     else {
         // Finished, cancelled, or destroyed: the job is over either way.
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     };
     let (anchor, kind) = (b.anchor, b.kind);
-    // Tier stats: an upgrading building (tier already bumped, built
-    // false) ramps on the NEW tier's price row; a fresh site's tier is
-    // zero, so this is the ordinary construction row there.
     let stats = b.stats();
     let size = stats.size;
     let build_ticks = stats
@@ -122,7 +162,14 @@ pub(super) fn found(
     let ours = state
         .buildings
         .iter()
-        .find(|b| b.anchor == anchor && b.kind == kind && b.player == me && !b.built && b.hp > 0)
+        .find(|b| {
+            b.anchor == anchor
+                && b.kind == kind
+                && b.player == me
+                && !b.built
+                && b.tier == 0
+                && b.hp > 0
+        })
         .map(|b| b.id);
     if let Some(site) = ours {
         let unit = state.unit_mut(id).expect("caller checked");
@@ -1718,7 +1765,7 @@ mod harvest_zone_tests {
             buildings: Vec::new(),
             meta: None,
         };
-        let clear = scenario.clone().build().unwrap();
+        let clear = scenario.build().unwrap();
         let mut obscured_scenario = scenario;
         let hidden_anchor = TilePos::new(12, 2);
         obscured_scenario.buildings.push(BuildingSpec {

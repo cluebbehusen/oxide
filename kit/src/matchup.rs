@@ -994,4 +994,33 @@ mod tests {
         assert!(wall("bastion", 1, 1).is_err());
         assert!(wall("bastion", 1, 2).is_ok());
     }
+
+    #[test]
+    fn an_empty_side_is_refused_unless_side_b_has_a_garrison() {
+        let units = parse_army("sentinel:1").unwrap();
+        let no_units: Army = Vec::new();
+
+        let missing_a = duel(&no_units, &units, &Arena::default()).unwrap_err();
+        assert!(missing_a.to_string().contains("side A needs units"));
+        let missing_b = duel(&units, &no_units, &Arena::default()).unwrap_err();
+        assert!(
+            missing_b
+                .to_string()
+                .contains("side B needs units or a garrison")
+        );
+
+        let wall = parse_garrison("turret:1").unwrap();
+        assert!(
+            siege(
+                &units,
+                &no_units,
+                &wall,
+                &Arena {
+                    max_ticks: 1,
+                    ..Arena::default()
+                },
+            )
+            .is_ok()
+        );
+    }
 }

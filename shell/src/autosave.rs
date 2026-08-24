@@ -28,9 +28,9 @@ const RESERVATION_MARKER_PREFIX: &str = "oxide-save-reservation:";
 /// What a successful [`save`] call actually did.
 #[derive(Debug)]
 pub enum SaveOutcome {
-    /// A record landed at this path. The quit flows only need the
-    /// success; the path is the explicit-save UX's payload.
-    #[allow(dead_code)]
+    /// A record landed at this path. Runtime quit flows need only the
+    /// success; filesystem contract tests inspect the exact destination.
+    #[cfg_attr(not(test), allow(dead_code))]
     Wrote(PathBuf),
     /// An unstarted game has nothing worth a file.
     NothingToSave,
@@ -422,7 +422,7 @@ mod tests {
         std::fs::remove_file(&newer).unwrap();
         assert_eq!(
             latest_compatible_in(&dir),
-            Some(older.clone()),
+            Some(older),
             "removing the newest falls back to the older compatible record"
         );
         std::fs::remove_dir_all(&dir).ok();

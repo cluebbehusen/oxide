@@ -2,6 +2,7 @@
 .DS_Store
 __pycache__/
 *.py[cod]
+/.pytest_cache/
 .playwright-cli/
 
 # Local product-direction workspace. Production approvals live in docs/.
@@ -9,7 +10,8 @@ __pycache__/
 /roadmap-0.14.0-0.15.0.md
 /bot-retraining-deadlock-report.md
 /plan-0.15.0.md
-/review-0.15.0/
+/review-*/
+/map-review/
 
 # Runtime output — never commit; test fixtures live in driver/tests/.
 /screenshots/
@@ -20,5 +22,4 @@ dist/
 !.claude/skills/
 !.claude/skills/**
 origin-0.15.0.md
-review-0.15.0/
 todo-0.15.0.md

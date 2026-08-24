@@ -309,4 +309,31 @@ mod tests {
         pb.seek(2_000);
         assert_eq!(pb.position(), 900);
     }
+
+    #[test]
+    fn missing_duration_uses_the_tick_after_the_last_command() {
+        let mut inferred = recorded_match();
+        inferred.meta.ticks = None;
+        let total = inferred
+            .commands
+            .last()
+            .expect("the bot fixture issues commands")
+            .tick
+            + 1;
+
+        let mut explicit = inferred.clone();
+        explicit.meta.ticks = Some(total);
+        let mut inferred_playback = Playback::load(inferred).unwrap();
+        let mut explicit_playback = Playback::load(explicit).unwrap();
+        assert_eq!(inferred_playback.total(), total);
+
+        inferred_playback.seek(u64::MAX);
+        explicit_playback.seek(total);
+        assert_eq!(inferred_playback.position(), total);
+        assert_eq!(
+            inferred_playback.state.hash(),
+            explicit_playback.state.hash(),
+            "legacy records without duration reproduce the same inferred span"
+        );
+    }
 }

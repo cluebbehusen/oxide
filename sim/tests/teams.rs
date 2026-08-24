@@ -300,9 +300,8 @@ fn victory_takes_every_enemy_foundry_and_spectators_stay_muted() {
 
 #[test]
 fn a_2v2_scenario_reproduces_bit_identically() {
-    // Bot seats are inert until the retrained actor ships, so the
-    // Overseer drives every bot chair — the determinism claim needs
-    // real commands, not empty streams.
+    // The stable Overseer drives every bot chair so the determinism
+    // claim stays independent of player-facing bot tuning.
     let scenario = Scenario::load("../scenarios/twin-forges.json").unwrap();
     let run = || {
         let mut state = scenario.build().unwrap();

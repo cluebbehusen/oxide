@@ -59,7 +59,7 @@
    "bot": true,
    "team": 1,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   },
   {
@@ -69,7 +69,7 @@
    "bot": true,
    "team": 0,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   },
   {
@@ -79,7 +79,7 @@
    "bot": true,
    "team": 1,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   }
  ],

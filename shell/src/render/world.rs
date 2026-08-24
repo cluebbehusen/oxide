@@ -571,11 +571,14 @@ pub(crate) fn draw_extractor_frames(game: &Game, sprites: &Sprites) {
         if !known {
             continue;
         }
-        let claimed = game
-            .state
-            .buildings()
-            .iter()
-            .any(|b| b.hp > 0 && b.anchor == frame);
+        let claimed = if game.all_seeing() {
+            game.state
+                .buildings()
+                .iter()
+                .any(|building| building.hp > 0 && building.anchor == frame)
+        } else {
+            game.state.extractor_frame_claim_known(game.human, frame)
+        };
         if claimed {
             continue;
         }

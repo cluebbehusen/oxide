@@ -1,16 +1,6 @@
-//! Shared engine-side toolkit for Oxide's shell and driver.
-//!
-//! Everything here serves both the game (`oxide-shell`) and the dev
-//! harness (`oxide-driver`) without belonging to either: the headless
-//! [`runner`] that executes scenarios and replays at full speed, the
-//! replay [`playback`] engine behind the viewer and the CLI, the
-//! [`stats`] extractor behind post-match screens and `replay-stats`,
-//! and the CPU [`render`]er (tiny-skia, pixel-identical on every
-//! machine) behind golden-image tests and map previews. The split
-//! exists so the shell never depends on the dev harness.
+#![doc = include_str!("../README.md")]
 
 pub mod bench;
-pub mod composition;
 pub mod matchup;
 pub mod perceptual;
 pub mod playback;

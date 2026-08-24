@@ -470,9 +470,7 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
             anchor: anchor(rng, state),
         },
         CommandTag::UpgradeBuilding => Command::UpgradeBuilding {
-            units: units(rng, state),
             building: building_id(rng, state),
-            queue: queue(rng),
         },
         CommandTag::Load => Command::Load {
             units: units(rng, state),

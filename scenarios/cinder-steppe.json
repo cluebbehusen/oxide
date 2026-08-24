@@ -69,7 +69,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   }
  ],
@@ -126,7 +126,6 @@
  "meta": {
   "hook": "A lean steppe where every node is a march and every march is a bet.",
   "pace": "large",
-  "duration": "9-13 min",
   "mode": "1v1",
   "richness": "lean",
   "theme": "verdigris"

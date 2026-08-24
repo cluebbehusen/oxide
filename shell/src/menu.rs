@@ -23,9 +23,9 @@ fn ui() -> f32 {
 ///
 /// Three independent pieces of state, deliberately: `selected` is the
 /// keyboard cursor and activation target, `scroll` is which window of
-/// rows is shown, and `hover` is only a highlight. The 0.8 widget fused
-/// them — hover moved selection, the window derived from selection —
-/// and a stationary pointer could walk the whole list by itself.
+/// rows is shown, and `hover` is only a highlight. If hover moves the
+/// selection or the window follows it, a stationary pointer can walk the
+/// whole list by itself.
 pub struct Menu {
     /// Heading above the list.
     pub title: String,
@@ -331,7 +331,9 @@ impl Menu {
                     self.selected = self.snap_clamped(self.items.len().saturating_sub(1), -1);
                     self.ensure_visible();
                 }
-                RawEvent::KeyDown { key: Key::Enter } => return Some(self.selected),
+                RawEvent::KeyDown { key: Key::Enter } if !self.is_header(self.selected) => {
+                    return Some(self.selected);
+                }
                 _ => {}
             }
         }
@@ -589,6 +591,75 @@ mod empty_tests {
         );
         assert_eq!(menu.selected, 1);
     }
+
+    #[test]
+    fn a_touch_gesture_belongs_to_its_first_finger_and_armed_row() {
+        crate::render::set_viewport(1280.0, 800.0);
+        let mut menu = Menu::new(
+            "TOUCH",
+            vec!["one".to_string(), "two".to_string(), "three".to_string()],
+        );
+        let first = menu.item_rect(0).expect("first row").center();
+        let second = menu.item_rect(1).expect("second row").center();
+        let mut mouse = vec2(0.0, 0.0);
+
+        assert_eq!(
+            menu.handle(
+                &[RawEvent::TouchDown {
+                    id: 7,
+                    x: second.x,
+                    y: second.y,
+                }],
+                &mut mouse,
+            ),
+            None
+        );
+        assert_eq!(menu.pressed_touch, Some((7, 1)));
+
+        // A second finger cannot steal or resolve the first finger's press.
+        assert_eq!(
+            menu.handle(
+                &[
+                    RawEvent::TouchDown {
+                        id: 8,
+                        x: first.x,
+                        y: first.y,
+                    },
+                    RawEvent::TouchUp {
+                        id: 8,
+                        x: first.x,
+                        y: first.y,
+                    },
+                ],
+                &mut mouse,
+            ),
+            None
+        );
+        assert_eq!(menu.pressed_touch, Some((7, 1)));
+        assert_eq!(menu.selected, 0);
+
+        // The owning finger resolves on another row, so the gesture cancels.
+        assert_eq!(
+            menu.handle(
+                &[
+                    RawEvent::TouchMove {
+                        id: 7,
+                        x: first.x,
+                        y: first.y,
+                    },
+                    RawEvent::TouchUp {
+                        id: 7,
+                        x: first.x,
+                        y: first.y,
+                    },
+                ],
+                &mut mouse,
+            ),
+            None
+        );
+        assert_eq!(menu.pressed_touch, None);
+        assert_eq!(menu.selected, 0);
+    }
 }
 
 #[cfg(test)]
@@ -640,6 +711,18 @@ mod header_tests {
     }
 
     #[test]
+    fn an_all_header_menu_refuses_keyboard_activation() {
+        let mut menu = Menu::with_headers(
+            "HEADERS",
+            vec!["one".to_string(), "two".to_string()],
+            vec![0, 1],
+        );
+
+        assert!(menu.is_header(menu.selected));
+        assert_eq!(press(&mut menu, Key::Enter), None);
+    }
+
+    #[test]
     fn wheel_scroll_cannot_pin_the_cursor_onto_a_header() {
         // A short window forces the riding clamp; the ride must snap
         // off headers or Enter activates a section label (the wizard
@@ -656,5 +739,97 @@ mod header_tests {
                 menu.selected
             );
         }
+    }
+
+    #[test]
+    fn mouse_activation_requires_a_release_on_the_armed_row() {
+        crate::render::set_viewport(1280.0, 800.0);
+        let mut menu = sectioned();
+        let first = menu.item_rect(1).expect("first item").center();
+        let second = menu.item_rect(2).expect("second item").center();
+        let mut mouse = vec2(0.0, 0.0);
+
+        assert_eq!(
+            menu.handle(
+                &[RawEvent::MouseMove {
+                    x: second.x,
+                    y: second.y,
+                }],
+                &mut mouse,
+            ),
+            None
+        );
+        assert_eq!(menu.hover(), Some(2));
+        assert_eq!(menu.selected, 1, "hover is not keyboard selection");
+
+        assert_eq!(
+            menu.handle(
+                &[
+                    RawEvent::MouseDown {
+                        button: oxide_protocol::MouseButton::Left,
+                        x: first.x,
+                        y: first.y,
+                    },
+                    RawEvent::MouseUp {
+                        button: oxide_protocol::MouseButton::Left,
+                        x: second.x,
+                        y: second.y,
+                    },
+                ],
+                &mut mouse,
+            ),
+            None,
+            "dragging to another row cancels the press"
+        );
+        assert_eq!(
+            menu.handle(
+                &[
+                    RawEvent::MouseDown {
+                        button: oxide_protocol::MouseButton::Left,
+                        x: second.x,
+                        y: second.y,
+                    },
+                    RawEvent::MouseUp {
+                        button: oxide_protocol::MouseButton::Left,
+                        x: second.x,
+                        y: second.y,
+                    },
+                ],
+                &mut mouse,
+            ),
+            Some(2)
+        );
+        assert_eq!(menu.selected, 2);
+    }
+
+    #[test]
+    fn paging_keeps_the_keyboard_target_visible_and_off_section_headers() {
+        crate::render::set_viewport(1280.0, 400.0);
+        let mut menu = sectioned();
+        let mut mouse = vec2(0.0, 0.0);
+        for key in [Key::PageDown, Key::PageDown, Key::PageUp, Key::PageUp] {
+            menu.handle(&[RawEvent::KeyDown { key }], &mut mouse);
+            let [first, end] = menu.visible_range();
+            assert!((first..end).contains(&menu.selected));
+            assert!(!menu.is_header(menu.selected));
+        }
+    }
+
+    #[test]
+    fn fractional_trackpad_motion_accumulates_before_scrolling_a_row() {
+        crate::render::set_viewport(1280.0, 400.0);
+        let mut menu = sectioned();
+        let mut mouse = vec2(0.0, 0.0);
+        let start = menu.visible_range();
+        for _ in 0..2 {
+            menu.handle(&[RawEvent::Wheel { delta: -0.4 }], &mut mouse);
+            assert_eq!(menu.visible_range(), start);
+        }
+        menu.handle(&[RawEvent::Wheel { delta: -0.4 }], &mut mouse);
+        assert_ne!(
+            menu.visible_range(),
+            start,
+            "three partial notches cross one row"
+        );
     }
 }

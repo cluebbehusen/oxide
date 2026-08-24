@@ -326,7 +326,6 @@ fn the_deep_array_upgrade_buys_the_wide_ring() {
     )
     .build()
     .unwrap();
-    let builder = state.units()[0].id;
     let mast_id = state
         .buildings()
         .iter()
@@ -339,14 +338,7 @@ fn the_deep_array_upgrade_buys_the_wide_ring() {
         "{CHARGE_ARRAY_DETECT_RADIUS} tiles is past the base mast's reach"
     );
 
-    state.tick(&[cmd(
-        0,
-        Command::UpgradeBuilding {
-            units: vec![builder],
-            building: mast_id,
-            queue: false,
-        },
-    )]);
+    state.tick(&[cmd(0, Command::UpgradeBuilding { building: mast_id })]);
     {
         let b = state
             .building(mast_id)

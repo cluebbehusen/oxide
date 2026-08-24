@@ -779,8 +779,13 @@ fn active_unit_salvage(state: &State, unit: &Unit) -> Option<Vec2Fx> {
 }
 
 fn active_site_construction(state: &State, building: &Building) -> bool {
-    !building.built
-        && building.progress > 0
+    if building.built {
+        return false;
+    }
+    if building.tier > 0 {
+        return true;
+    }
+    building.progress > 0
         && state.units().iter().any(|unit| {
             unit.player == building.player
                 && unit.kind == UnitKind::Harvester
@@ -1299,6 +1304,52 @@ mod tests {
                 machinery_cycle: 0.0,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn an_automatic_upgrade_animates_without_a_builder() {
+        let mut scenario = Scenario::skirmish();
+        scenario.players[0].scrap = 500;
+        scenario.units.clear();
+        scenario.buildings.extend([
+            oxide_sim::scenario::BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Fabricator,
+                x: 9,
+                y: 3,
+            },
+            oxide_sim::scenario::BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Turret,
+                x: 12,
+                y: 3,
+            },
+        ]);
+        let mut state = scenario.build().expect("upgrade fixture builds");
+        let turret = state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == BuildingKind::Turret)
+            .expect("fixture has a turret")
+            .id;
+        state.tick(&[oxide_sim::PlayerCommand {
+            player: PlayerId(0),
+            command: oxide_sim::Command::UpgradeBuilding { building: turret },
+        }]);
+
+        let building = state.building(turret).expect("upgrade lives");
+        let facts = BuildingAnimationFacts::capture(&state, building);
+        assert!(facts.construction_active);
+        assert!(matches!(
+            AnimationController::default()
+                .building_state(
+                    facts,
+                    AnimationClock::new(state.current_tick(), 0.5),
+                    AnimationOptions::default(),
+                )
+                .construction,
+            Some(ConstructionState { active: true, .. })
         ));
     }
 

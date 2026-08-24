@@ -277,6 +277,32 @@ mod tests {
     }
 
     #[test]
+    fn shelf_skips_oversized_records_without_hiding_valid_neighbors() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide-shelf-bounds-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let valid: GameReplay =
+            chassis::replay::Replay::new(SIM_VERSION, oxide_sim::Scenario::skirmish());
+        valid.save(dir.join("valid.json")).unwrap();
+        std::fs::File::create(dir.join("oversized.json"))
+            .unwrap()
+            .set_len(chassis::replay::MAX_REPLAY_BYTES as u64 + 1)
+            .unwrap();
+
+        let mut out = Vec::new();
+        scan(&dir, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1.path.file_stem().unwrap(), "valid");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn the_calendar_is_honest_without_a_time_crate() {
         assert_eq!(civil_date(0), "1970-01-01");
         assert_eq!(civil_date(86_399), "1970-01-01", "last second of day one");
@@ -298,5 +324,57 @@ mod tests {
         // the byte-sliced version panicked exactly here.
         let multibyte = format!("{}ééééé", "a".repeat(22));
         assert_eq!(elide(&multibyte), format!("{}é...", "a".repeat(22)));
+    }
+
+    #[test]
+    fn scan_uses_record_metadata_without_trusting_malformed_neighbors() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide-shelf-metadata-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp directory");
+        let scenario = oxide_sim::Scenario::skirmish();
+        let mut save: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario);
+        save.meta.kind = Some("save".to_string());
+        save.meta.description = Some("before the push".to_string());
+        save.meta.sim_version = "0.0.1".to_string();
+        save.meta.saved_at = Some(u64::MAX);
+        save.record(
+            42,
+            oxide_sim::PlayerCommand {
+                player: oxide_sim::PlayerId(0),
+                command: oxide_sim::Command::Surrender,
+            },
+        );
+        save.save(dir.join("neutral.json")).expect("save record");
+        std::fs::write(dir.join("broken.json"), b"not json").expect("bad neighbor");
+        std::fs::write(dir.join("ignored.txt"), b"not a replay").expect("other extension");
+
+        let mut out = Vec::new();
+        scan(&dir, &mut out);
+        assert_eq!(out.len(), 1, "bad neighbors do not hide the good record");
+        let entry = &out[0].1;
+        assert_eq!(entry.kind, RecordKind::Save, "the metadata tag wins");
+        assert!(!entry.compatible);
+        assert!(entry.label.starts_with("before the push |"));
+        assert!(
+            entry.label.contains("| t43 |"),
+            "duration comes from the command tail"
+        );
+        assert!(
+            entry.blurb.contains("unloadable"),
+            "saves are loaded, not watched"
+        );
+        assert_ne!(
+            out[0].0,
+            std::time::UNIX_EPOCH,
+            "overflowing saved_at falls back to mtime"
+        );
+
+        std::fs::remove_dir_all(dir).ok();
     }
 }

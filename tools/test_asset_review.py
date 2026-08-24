@@ -34,6 +34,12 @@ class AssetReviewTests(unittest.TestCase):
         self.assertIn('event.key === "Escape"', self.source)
         self.assertIn("closeLightbox()", self.source)
 
+    def test_leading_numeric_filename_is_a_stable_review_id(self) -> None:
+        self.assertIn("function reviewNumber(file, index)", self.source)
+        self.assertIn(r"file.name.match(/^(\d{2,4})(?=[._ -])/)", self.source)
+        self.assertIn('String(index + 1).padStart(2, "0")', self.source)
+        self.assertIn("number.textContent = reviewNumber(file, index)", self.source)
+
     def test_gif_controls_start_stop_and_freeze_the_preview(self) -> None:
         self.assertIn('button.textContent = "Start GIF"', self.source)
         self.assertIn('button.textContent = "Stop GIF"', self.source)

@@ -4,12 +4,14 @@
 //! scenario file and see the level. Legend:
 //!
 //! ```text
-//! .    ground
-//! #    rock (impassable)
+//! . ,  ground, plain or cosmetically rubble-strewn
+//! #    rock (blocks ground and direct ground fire)
 //! ^    peak (blocks ground, air, and all fire)
 //! ~    bottomless pit (blocks ground; air and fire cross)
-//! s    scrap node (impassable until mined out, then ground)
-//! 1-8  Foundry anchor (top-left tile) for player N-1; the tile is ground
+//! s S  normal or rich scrap node (ground after depletion)
+//! E    derelict Extractor frame's top-left tile
+//! 1-8  Foundry anchors for seats 1-8
+//! a-h  Foundry anchors for seats 9-16
 //! ```
 
 use crate::ids::PlayerId;
@@ -279,9 +281,9 @@ impl Map {
     /// [`chassis::grid::Grid::is_consistent`]).
     pub fn is_consistent(&self) -> bool {
         self.grid.is_consistent()
-            // Frames are a canonical row-major list: fog views copy it
-            // in order and the gym counts it, so a reordered or
-            // duplicated list would give one semantic map two hashes.
+            // Frames are a canonical row-major list. Fog views copy it
+            // in order, so a reordered or duplicated list would give one
+            // semantic map two hashes.
             && self
                 .extractor_frames
                 .windows(2)

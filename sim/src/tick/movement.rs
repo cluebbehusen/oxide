@@ -1,13 +1,11 @@
 //! Phases 4–5: footprint eviction, path following, and collision
 //! resolution.
 //!
-//! Movement is per-unit work. Since 0.5, ground can close *during* a walk —
-//! a construction site claims its footprint the moment the command lands —
-//! so each step revalidates the waypoint it is about to move toward and
-//! drops the path when the ground has closed (the brain repaths around the
-//! new obstacle next tick). Since 0.13 a pathless ground body left
-//! standing on claimed ground walks itself off (see
-//! [`evict_claimed_ground`]) instead of being relocated instantly.
+//! Movement is per-unit work. Ground can close *during* a walk because a
+//! construction site claims its footprint when the command lands, so each
+//! step revalidates its next waypoint and drops a blocked path for the brain
+//! to plan again next tick. A pathless ground body left on claimed ground
+//! walks itself off through [`evict_claimed_ground`] rather than teleporting.
 //! Collision resolution then pushes overlapping
 //! bodies apart until they fit — units are solid to each other, but tiles
 //! are only ever blocked by terrain and buildings, so pathfinding stays
@@ -47,6 +45,19 @@ fn early_advance_safe(
         return true;
     }
     open(cur.offset(dx, 0)) && open(cur.offset(0, dy))
+}
+
+/// Whether a body deflected around traffic has already crossed an
+/// intermediate waypoint toward the following leg. The bounded reach keeps
+/// an unrelated point in the onward half-plane from skipping part of a route;
+/// the caller still applies [`early_advance_safe`] and revalidates the next
+/// step before moving.
+fn passed_intermediate_waypoint(pos: Vec2Fx, waypoint: TilePos, next: TilePos, radius: Fx) -> bool {
+    let center = waypoint.center();
+    let offset = pos - center;
+    let onward = next.center() - center;
+    let reach = radius.max(WAYPOINT_ACCEPT) + COLLISION_MAX_STEP;
+    offset.length_sq() <= reach * reach && offset.x * onward.x + offset.y * onward.y > Fx::ZERO
 }
 
 /// The nearest walkable escape from a body's own (possibly blocked)
@@ -127,10 +138,10 @@ pub(super) fn evict_claimed_ground(state: &mut State) {
 /// Advances every unit along its path by its speed, returning each
 /// unit's displacement this tick (indexed like `state.units`) — the
 /// collision resolver reads travel to slide movers around each other
-/// instead of grinding them head-on. Intermediate waypoints are
-/// accepted within [`WAYPOINT_ACCEPT`] (when geometry allows) so a
-/// unit shoved off the line flows forward instead of re-seeking each
-/// exact center; final waypoints are still landed exactly.
+/// instead of grinding them head-on. Intermediate waypoints are accepted
+/// within [`WAYPOINT_ACCEPT`], or after a nearby collision deflection has
+/// carried the body across the onward plane, so a unit does not turn back
+/// toward a center it already passed. Final waypoints are landed exactly.
 pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
     // Disjoint field borrows: units move, terrain is read-only.
     let State {
@@ -186,7 +197,8 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             let center = waypoint.center();
             let dist = unit.pos.dist(center);
             if let Some(&next_wp) = path.waypoints.get(path.next as usize + 1)
-                && dist <= WAYPOINT_ACCEPT
+                && (dist <= WAYPOINT_ACCEPT
+                    || passed_intermediate_waypoint(unit.pos, waypoint, next_wp, stats.radius))
                 && (airborne || early_advance_safe(waypoint, next_wp, map, buildings))
             {
                 path.next += 1;
@@ -214,10 +226,10 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
 /// the heading steers, at most `turn_rate` compass steps per tick.
 /// Waypoints are accepted inside the kind's turn-acceptance ring — a
 /// bounded arc cannot promise an exact center, and a ring tighter than
-/// the turn radius is an orbit trap — and a step whose tile
-/// is closed to air (a mesa) is simply not taken: the flier holds
-/// position against the wall while its nose keeps swinging, and next
-/// tick's heading carries it along or away. Pathless means hovering.
+/// the turn radius is an orbit trap. A step whose tile is closed to air
+/// invalidates the route so the owning brain can plan again from the
+/// aircraft's actual position instead of steering into the same mountain
+/// forever. Pathless means hovering.
 fn steer_turn_limited(
     unit: &mut crate::state::Unit,
     map: &Map,
@@ -225,22 +237,35 @@ fn steer_turn_limited(
 ) {
     let accept = stats.turn_acceptance();
     let arrive_sq = accept * accept;
-    // Accept every waypoint the arc has already effectively reached.
+    // Accept every waypoint the arc has already effectively reached. A
+    // terrain-routing waypoint is not disposable merely because the wide
+    // acceptance ring overlaps it: only skip it when the direct air segment
+    // to the following waypoint is also clear. Otherwise a bomber can erase
+    // the one waypoint that would have turned it around a peak, then keep
+    // replanning the same impossible shortcut.
     loop {
-        let Some(path) = &mut unit.path else { return };
+        let Some(path) = &unit.path else { return };
         let Some(&waypoint) = path.waypoints.get(path.next as usize) else {
             unit.path = None;
             return;
         };
-        if unit.pos.dist_sq(waypoint.center()) <= arrive_sq {
-            path.next += 1;
-            if path.next as usize >= path.waypoints.len() {
-                unit.path = None;
-                return;
-            }
-            continue;
+        if unit.pos.dist_sq(waypoint.center()) > arrive_sq {
+            break;
         }
-        break;
+        if let Some(&next) = path.waypoints.get(path.next as usize + 1)
+            && chassis::path::line_blocked(unit.pos, next.center(), |tile| {
+                map.tile(tile)
+                    .is_some_and(|map_tile| !map_tile.terrain.blocks_air())
+            })
+        {
+            break;
+        }
+        let path = unit.path.as_mut().expect("checked above");
+        path.next += 1;
+        if path.next as usize >= path.waypoints.len() {
+            unit.path = None;
+            return;
+        }
     }
     let target = {
         let path = unit.path.as_ref().expect("checked above");
@@ -272,6 +297,8 @@ fn steer_turn_limited(
     let open = map.tile(tile).is_some_and(|t| !t.terrain.blocks_air());
     if open {
         unit.pos = ahead;
+    } else {
+        unit.path = None;
     }
 }
 
@@ -329,14 +356,12 @@ pub(super) fn resolve_collisions(
 /// Correction candidates for one body of an overlapping pair, best
 /// first. `away` is its radial escape (unit length). A body that
 /// traveled INTO the contact slides: the correction blends a reduced
-/// radial share with a lateral share picked toward the body's own
-/// travel — a head-on pair provably picks opposite world sides, which
-/// converts the grind (radial pushback exactly cancelling path speed;
-/// the measured permanent freeze at exactly touching distance) into a
-/// pass-by. Parked and non-closing bodies keep the pure radial push.
-/// The side pick is geometric (the travel's sign against the
-/// perpendicular, ties to +perp), so the rule is 180-degree
-/// rotation-equivariant — mirror seats slide mirror ways.
+/// radial share with a lateral share. For a head-on pair the caller derives
+/// one body's candidates by exact negation of the other's, producing stable
+/// opposite world sides. Other contacts pick the side toward the body's own
+/// travel. Both rules are geometric and 180-degree rotation-equivariant, so
+/// mirror seats slide mirror ways. Parked and non-closing bodies keep the
+/// pure radial push.
 ///
 /// A slide candidate the terrain rejects degrades in order: against a
 /// head-on partner the lateral is DROPPED, never reversed — the
@@ -349,8 +374,12 @@ fn correction_dirs(away: Vec2Fx, travel: Vec2Fx, partner_head_on: bool) -> [Opti
         return [Some(away), None, None];
     }
     let perp = Vec2Fx::new(-away.y, away.x);
-    let lat = travel.x * perp.x + travel.y * perp.y;
-    let side = if lat >= Fx::ZERO { perp } else { -perp };
+    let side = if partner_head_on {
+        perp
+    } else {
+        let lat = travel.x * perp.x + travel.y * perp.y;
+        if lat >= Fx::ZERO { perp } else { -perp }
+    };
     let blended = away * SLIDE_RADIAL_SHARE + side * SLIDE_LATERAL_SHARE;
     if partner_head_on {
         [Some(blended), Some(away), None]
@@ -460,6 +489,8 @@ fn relaxation_pass(
                 };
                 let dirs_i = if stacked {
                     [Some(away_i), None, None]
+                } else if closing_i && closing_j {
+                    dirs_j.map(|direction| direction.map(|direction| -direction))
                 } else {
                     correction_dirs(away_i, travel[i], closing_j)
                 };
@@ -608,5 +639,134 @@ mod tests {
                 unit.id
             );
         }
+    }
+
+    #[test]
+    fn coordinated_head_on_slide_is_rotation_equivariant() {
+        let away = Vec2Fx::new(Fx::lit("0.6"), Fx::lit("0.8"));
+        let travel = -away;
+        let original = correction_dirs(away, travel, true);
+        let rotated = correction_dirs(-away, -travel, true);
+
+        for (original, rotated) in original.into_iter().zip(rotated) {
+            let (Some(original), Some(rotated)) = (original, rotated) else {
+                assert_eq!(original, rotated);
+                continue;
+            };
+            let error = original + rotated;
+            let tolerance = Fx::DELTA * 2;
+            assert!(error.x.abs() <= tolerance);
+            assert!(error.y.abs() <= tolerance);
+        }
+    }
+
+    #[test]
+    fn passed_waypoint_still_rejects_a_blocked_next_step() {
+        let mut state = Scenario {
+            name: "blocked-next-waypoint".into(),
+            seed: 2,
+            map: vec![
+                "............".into(),
+                "............".into(),
+                "......#.....".into(),
+                "1.........2.".into(),
+                "............".into(),
+                "............".into(),
+                "............".into(),
+                "............".into(),
+            ],
+            players: vec![
+                seat("North", Faction::Ferrous),
+                seat("South", Faction::Cupric),
+            ],
+            units: vec![UnitSpec {
+                player: 0,
+                kind: UnitKind::Avalanche,
+                x: 5,
+                y: 2,
+            }],
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .expect("blocked waypoint state builds");
+        let unit = &mut state.units[0];
+        unit.pos = Vec2Fx::new(Fx::lit("5.9"), Fx::lit("2.5"));
+        unit.order = Order::Move {
+            goal: TilePos::new(6, 2),
+        };
+        unit.path = Some(PathFollow {
+            goal: TilePos::new(6, 2),
+            waypoints: vec![TilePos::new(5, 2), TilePos::new(6, 2)],
+            next: 0,
+        });
+        let before = unit.pos;
+
+        run(&mut state);
+
+        assert_eq!(state.units[0].pos, before);
+        assert!(state.units[0].path.is_none());
+        assert!(state.map.terrain_passable(state.units[0].tile()));
+    }
+
+    #[test]
+    fn diagonal_head_on_pair_passes_shared_waypoint() {
+        let mut state = boundary_pair();
+        state.tick = 21_549;
+        let shared = TilePos::new(5, 3);
+        let paths = [
+            PathFollow {
+                goal: TilePos::new(2, 1),
+                waypoints: vec![
+                    shared,
+                    TilePos::new(4, 2),
+                    TilePos::new(3, 1),
+                    TilePos::new(2, 1),
+                ],
+                next: 0,
+            },
+            PathFollow {
+                goal: TilePos::new(9, 6),
+                waypoints: vec![
+                    shared,
+                    TilePos::new(6, 4),
+                    TilePos::new(7, 5),
+                    TilePos::new(8, 6),
+                    TilePos::new(9, 6),
+                ],
+                next: 0,
+            },
+        ];
+        let positions = [
+            Vec2Fx::new(Fx::lit("5.922209162"), Fx::lit("3.837034112")),
+            Vec2Fx::new(Fx::lit("5.236790039"), Fx::lit("3.125446076")),
+        ];
+        for ((unit, pos), path) in state.units.iter_mut().zip(positions).zip(paths) {
+            unit.kind = UnitKind::Avalanche;
+            unit.hp = UnitKind::Avalanche.stats().max_hp;
+            unit.pos = pos;
+            unit.order = Order::Move { goal: path.goal };
+            unit.path = Some(path);
+        }
+
+        let mut index = UnitIndex::new();
+        for _ in 0..20 {
+            let travel = run(&mut state);
+            resolve_collisions(&mut state, &travel, &mut index);
+            state.tick += 1;
+        }
+
+        assert!(
+            state
+                .units
+                .iter()
+                .all(|unit| { unit.path.as_ref().is_none_or(|path| path.next > 0) }),
+            "both Avalanches must pass the shared waypoint instead of oscillating: {:?}",
+            state
+                .units
+                .iter()
+                .map(|unit| (unit.id, unit.pos, unit.path.as_ref().map(|path| path.next)))
+                .collect::<Vec<_>>()
+        );
     }
 }

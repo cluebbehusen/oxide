@@ -160,6 +160,27 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_rewrite_preserves_the_previous_record() {
+        let dir = scratch("preserve-on-error");
+        let path = dir.join("record.json");
+        std::fs::write(&path, b"complete old record").unwrap();
+
+        let result = write_atomic::<std::io::Error, _>(&path, |writer| {
+            writer.write_all(b"truncated replacement")?;
+            Err(std::io::Error::other("serialization refused"))
+        });
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"complete old record",
+            "a failed save must not damage the last durable record"
+        );
+        assert!(temps_in(&dir).is_empty(), "the failed temp was removed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_failed_rename_leaves_no_temp_behind() {
         // The destination exists as a directory, so the final rename
         // fails after the temp was fully written.

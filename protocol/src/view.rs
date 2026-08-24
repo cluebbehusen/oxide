@@ -586,6 +586,22 @@ mod tests {
         assert!(slim.map.is_none());
         assert!(!slim.hash.is_empty() && slim.hash.starts_with("0x"));
         assert_eq!(slim.hash, full.hash, "views never perturb state");
+
+        let identity_only = StateView::capture(
+            &state,
+            StateFilter {
+                players: false,
+                units: false,
+                buildings: false,
+                map: false,
+            },
+        );
+        assert!(identity_only.players.is_empty());
+        assert!(identity_only.units.is_empty());
+        assert!(identity_only.buildings.is_empty());
+        assert!(identity_only.map.is_none());
+        assert_eq!(identity_only.tick, full.tick);
+        assert_eq!(identity_only.hash, full.hash);
     }
 
     #[test]

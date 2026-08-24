@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oxide Agent Notes"
+  short_description: "Maintain durable Oxide workstream notes"
+  default_prompt: "Use $agent-notes to create or update an Oxide workstream note through Kladde."

@@ -1,13 +1,14 @@
 //! In-place building upgrades: the tier ladder. An upgrade charges its
 //! full price, takes the works offline as a site on the new tier's row,
-//! ramps under ordinary harvester labor, and stands back up with the new
-//! tier's numbers. Upgrades cannot be cancelled, and the deepest rungs
-//! sit behind the Crucible.
+//! rebuilds itself on a deterministic timer, and stands back up with the
+//! new tier's numbers. Workers cannot pause or accelerate that timer,
+//! upgrades cannot be cancelled, and the deepest rungs sit behind the
+//! Crucible.
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
-use oxide_sim::stats::{BuildingKind, RECLAIMER_PERIOD};
+use oxide_sim::stats::{BuildingKind, RECLAIMER_PERIOD, SITE_DECAY_PERIOD};
 use oxide_sim::{Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, UnitKind};
 
 fn players(scrap: u32) -> Vec<PlayerSpec> {
@@ -106,15 +107,8 @@ fn cmd(player: u8, command: Command) -> PlayerCommand {
     }
 }
 
-fn upgrade(builder: oxide_sim::UnitId, building: oxide_sim::BuildingId) -> PlayerCommand {
-    cmd(
-        0,
-        Command::UpgradeBuilding {
-            units: vec![builder],
-            building,
-            queue: false,
-        },
-    )
+fn upgrade(building: oxide_sim::BuildingId) -> PlayerCommand {
+    cmd(0, Command::UpgradeBuilding { building })
 }
 
 fn find(state: &State, kind: BuildingKind) -> oxide_sim::BuildingId {
@@ -137,14 +131,161 @@ fn run_until_built(state: &mut State, building: oxide_sim::BuildingId, cap: u64)
 }
 
 #[test]
+fn a_self_upgrade_uses_the_exact_timer_without_workers() {
+    let mut scenario = arena(2_000, false, false);
+    scenario.units.clear();
+    let mut state = scenario.build().unwrap();
+    let turret = find(&state, BuildingKind::Turret);
+    let ticks = BuildingKind::Turret
+        .upgrade_from(0)
+        .expect("the Heavy Turret rung exists")
+        .build_ticks;
+
+    let report = state.tick(&[upgrade(turret)]);
+    assert!(report.events.iter().all(
+        |event| !matches!(event, Event::BuildingCompleted { building, .. } if *building == turret)
+    ));
+    assert_eq!(state.building(turret).unwrap().progress, 1);
+    for expected in 2..ticks {
+        let report = state.tick(&[]);
+        let building = state.building(turret).unwrap();
+        assert!(!building.built, "the works stood one tick too soon");
+        assert_eq!(building.progress, expected);
+        assert!(report.events.iter().all(
+            |event| !matches!(event, Event::BuildingCompleted { building, .. } if *building == turret)
+        ));
+    }
+
+    let report = state.tick(&[]);
+    let building = state.building(turret).unwrap();
+    assert!(building.built);
+    assert_eq!(building.progress, 0);
+    assert!(report.events.iter().any(
+        |event| matches!(event, Event::BuildingCompleted { building, .. } if *building == turret)
+    ));
+}
+
+#[test]
+fn buying_an_upgrade_does_not_touch_worker_programs() {
+    let mut state = arena(2_000, false, false).build().unwrap();
+    let turret = find(&state, BuildingKind::Turret);
+    let worker = state.units()[0].id;
+    state.tick(&[
+        cmd(
+            0,
+            Command::Move {
+                units: vec![worker],
+                goal: TilePos::new(4, 3),
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Move {
+                units: vec![worker],
+                goal: TilePos::new(4, 6),
+                queue: true,
+            },
+        ),
+    ]);
+    assert!(
+        !state.unit(worker).unwrap().queue.is_empty(),
+        "premise: the worker carries active and queued work"
+    );
+    let mut control = state.clone();
+
+    state.tick(&[upgrade(turret)]);
+    control.tick(&[]);
+
+    assert_eq!(
+        state.units(),
+        control.units(),
+        "the purchase must not draft, clear, reroute, or advance a worker"
+    );
+}
+
+#[test]
+fn workers_cannot_join_or_accelerate_a_self_upgrade() {
+    let mut state = arena(2_000, false, false).build().unwrap();
+    let turret = find(&state, BuildingKind::Turret);
+    let worker = state.units()[0].id;
+    let target = state.building(turret).unwrap();
+    let (kind, anchor) = (target.kind, target.anchor);
+    state.tick(&[upgrade(turret)]);
+    let mut control = state.clone();
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![worker],
+            kind,
+            anchor,
+            queue: false,
+            defer: false,
+        },
+    )]);
+    control.tick(&[]);
+
+    assert!(report.events.iter().any(|event| matches!(
+        event,
+        Event::CommandRejected {
+            reason: RejectReason::BadSite,
+            ..
+        }
+    )));
+    assert_eq!(state.building(turret), control.building(turret));
+    assert_eq!(state.units(), control.units());
+}
+
+#[test]
+fn a_stale_builder_order_cannot_speed_up_the_next_tier() {
+    let mut scenario = arena(2_000, false, false);
+    scenario
+        .buildings
+        .retain(|building| building.kind != BuildingKind::Turret);
+    let mut state = scenario.build().unwrap();
+    let worker = state.units()[0].id;
+    let anchor = TilePos::new(8, 3);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![worker],
+            kind: BuildingKind::Turret,
+            anchor,
+            queue: false,
+            defer: false,
+        },
+    )]);
+    let turret = find(&state, BuildingKind::Turret);
+    run_until_built(&mut state, turret, 2_000);
+    assert_eq!(
+        state.unit(worker).unwrap().order,
+        oxide_sim::Order::Build { site: turret },
+        "the builder observes completion on its next brain tick"
+    );
+
+    state.tick(&[upgrade(turret)]);
+
+    assert_eq!(
+        state.building(turret).unwrap().progress,
+        1,
+        "only the building's automatic clock advances"
+    );
+    assert_ne!(
+        state.unit(worker).unwrap().order,
+        oxide_sim::Order::Build { site: turret },
+        "the stale ordinary-site job is finished, not an upgrade crew"
+    );
+}
+
+#[test]
 fn the_ladder_lifts_and_the_numbers_follow() {
     let mut state = arena(2_000, true, false).build().unwrap();
     let turret = find(&state, BuildingKind::Turret);
-    let builder = state.units()[0].id;
 
     let bank = state.player(PlayerId(0)).scrap;
     let heavy = BuildingKind::Turret.upgrade_from(0).unwrap();
-    state.tick(&[upgrade(builder, turret)]);
+    state.tick(&[upgrade(turret)]);
     assert_eq!(
         state.player(PlayerId(0)).scrap,
         bank - heavy.cost,
@@ -164,7 +305,7 @@ fn the_ladder_lifts_and_the_numbers_follow() {
     }
 
     // The second rung: Bulwark, behind the Crucible (present here).
-    state.tick(&[upgrade(builder, turret)]);
+    state.tick(&[upgrade(turret)]);
     run_until_built(&mut state, turret, 3_000);
     let b = state.building(turret).unwrap();
     assert_eq!(b.tier, 2);
@@ -177,11 +318,10 @@ fn the_ladder_lifts_and_the_numbers_follow() {
 fn the_deepest_rung_waits_for_the_crucible() {
     let mut state = arena(2_000, false, false).build().unwrap();
     let turret = find(&state, BuildingKind::Turret);
-    let builder = state.units()[0].id;
-    state.tick(&[upgrade(builder, turret)]);
+    state.tick(&[upgrade(turret)]);
     run_until_built(&mut state, turret, 2_000);
 
-    let report = state.tick(&[upgrade(builder, turret)]);
+    let report = state.tick(&[upgrade(turret)]);
     assert!(
         report.events.iter().any(|e| matches!(
             e,
@@ -200,10 +340,9 @@ fn upgrades_refuse_the_broke_the_topped_out_and_the_cancel() {
     let mut state = arena(60, true, false).build().unwrap();
     let turret = find(&state, BuildingKind::Turret);
     let fabricator = find(&state, BuildingKind::Fabricator);
-    let builder = state.units()[0].id;
 
     // Too poor for the 150-scrap Heavy Turret.
-    let report = state.tick(&[upgrade(builder, turret)]);
+    let report = state.tick(&[upgrade(turret)]);
     assert!(report.events.iter().any(|e| matches!(
         e,
         Event::CommandRejected {
@@ -213,7 +352,7 @@ fn upgrades_refuse_the_broke_the_topped_out_and_the_cancel() {
     )));
 
     // A kind with no ladder refuses as an invalid target.
-    let report = state.tick(&[upgrade(builder, fabricator)]);
+    let report = state.tick(&[upgrade(fabricator)]);
     assert!(report.events.iter().any(|e| matches!(
         e,
         Event::CommandRejected {
@@ -228,26 +367,14 @@ fn an_upgrading_works_is_committed_offline_and_mortal() {
     let mut scenario = arena(2_000, false, false);
     scenario.units.push(UnitSpec {
         player: 1,
-        kind: UnitKind::Sentinel,
-        x: 12,
-        y: 3,
+        kind: UnitKind::Sapper,
+        x: 8,
+        y: 2,
     });
     let mut state = scenario.build().unwrap();
     let turret = find(&state, BuildingKind::Turret);
-    let builder = state.units()[0].id;
     let raider = state.units()[2].id;
-    state.tick(&[upgrade(builder, turret)]);
-    // Call the crew off: the works stays an offline site for the whole
-    // fight (attended, it would legitimately finish mid-battle and
-    // shoot back — that race is the defender's gamble, not this test).
-    state.tick(&[cmd(
-        0,
-        Command::Move {
-            units: vec![builder],
-            goal: TilePos::new(2, 2),
-            queue: false,
-        },
-    )]);
+    state.tick(&[upgrade(turret)]);
 
     // No cancel: the machine is committed until it stands.
     let report = state.tick(&[cmd(0, Command::Cancel { building: turret })]);
@@ -260,7 +387,7 @@ fn an_upgrading_works_is_committed_offline_and_mortal() {
     );
 
     // Offline: the site never fires while the raider grinds it down.
-    state.tick(&[cmd(
+    let mut report = state.tick(&[cmd(
         1,
         Command::Attack {
             units: vec![raider],
@@ -268,9 +395,10 @@ fn an_upgrading_works_is_committed_offline_and_mortal() {
             queue: false,
         },
     )]);
-    let mut destroyed = false;
-    for _ in 0..4_000 {
-        let report = state.tick(&[]);
+    let mut destroyed = report.events.iter().any(
+        |event| matches!(event, Event::BuildingDestroyed { building, .. } if *building == turret),
+    );
+    for _ in 0..100 {
         assert!(
             !report
                 .events
@@ -278,24 +406,95 @@ fn an_upgrading_works_is_committed_offline_and_mortal() {
                 .any(|e| matches!(e, Event::TurretFired { turret: t, .. } if *t == turret)),
             "an upgrading works must not fire"
         );
-        if report
-            .events
-            .iter()
-            .any(|e| matches!(e, Event::BuildingDestroyed { building, .. } if *building == turret))
-        {
-            destroyed = true;
+        if destroyed {
             break;
         }
+        report = state.tick(&[]);
+        destroyed = report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::BuildingDestroyed { building, .. } if *building == turret));
     }
     assert!(destroyed, "the vulnerability window is real");
+}
+
+#[test]
+fn lethal_fire_wins_an_upgrades_completion_tick() {
+    let mut scenario = arena(2_000, false, false);
+    scenario.units.extend([
+        UnitSpec {
+            player: 1,
+            kind: UnitKind::Sapper,
+            x: 8,
+            y: 2,
+        },
+        UnitSpec {
+            player: 1,
+            kind: UnitKind::Sapper,
+            x: 9,
+            y: 3,
+        },
+    ]);
+    let mut state = scenario.build().unwrap();
+    let turret = find(&state, BuildingKind::Turret);
+    let sappers: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(1) && unit.kind == UnitKind::Sapper)
+        .map(|unit| unit.id)
+        .collect();
+    let ticks = BuildingKind::Turret.upgrade_from(0).unwrap().build_ticks;
+    state.tick(&[upgrade(turret)]);
+    for _ in 0..ticks - 2 {
+        state.tick(&[]);
+    }
+    assert_eq!(state.building(turret).unwrap().progress, ticks - 1);
+
+    let report = state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: sappers,
+            target: oxide_sim::Target::Building(turret),
+            queue: false,
+        },
+    )]);
+
+    assert!(report.events.iter().any(
+        |event| matches!(event, Event::BuildingDestroyed { building, .. } if *building == turret)
+    ));
+    assert!(report.events.iter().all(
+        |event| !matches!(event, Event::BuildingCompleted { building, .. } if *building == turret)
+    ));
+    assert!(state.building(turret).is_none());
+}
+
+#[test]
+fn a_self_upgrading_building_does_not_decay_without_workers() {
+    let mut scenario = arena(2_000, false, false);
+    scenario.units.clear();
+    let mut state = scenario.build().unwrap();
+    let turret = find(&state, BuildingKind::Turret);
+    assert!(state.units().is_empty(), "premise: there are no workers");
+    state.tick(&[upgrade(turret)]);
+
+    let mut previous_hp = state.building(turret).unwrap().hp;
+    for _ in 0..SITE_DECAY_PERIOD * 20 {
+        state.tick(&[]);
+        let building = state.building(turret).expect("the upgrade survives");
+        assert!(
+            building.hp >= previous_hp,
+            "active self-upgrade hp must never fall ({previous_hp} -> {})",
+            building.hp
+        );
+        previous_hp = building.hp;
+    }
 }
 
 #[test]
 fn a_refinery_grinds_faster_than_its_reclaimer() {
     let mut state = arena(2_000, false, true).build().unwrap();
     let reclaimer = find(&state, BuildingKind::Reclaimer);
-    let builder = state.units()[1].id;
-    state.tick(&[upgrade(builder, reclaimer)]);
+    state.tick(&[upgrade(reclaimer)]);
     run_until_built(&mut state, reclaimer, 2_000);
     assert_eq!(state.building(reclaimer).unwrap().tier, 1);
 
@@ -327,9 +526,8 @@ fn the_deep_array_waits_for_the_crucible_too() {
     });
     let mut state = scenario.build().unwrap();
     let array = find(&state, BuildingKind::Array);
-    let builder = state.units()[0].id;
 
-    let report = state.tick(&[upgrade(builder, array)]);
+    let report = state.tick(&[upgrade(array)]);
     assert!(
         report.events.iter().any(|e| matches!(
             e,
@@ -351,8 +549,7 @@ fn the_deep_array_waits_for_the_crucible_too() {
     });
     let mut state = scenario.build().unwrap();
     let array = find(&state, BuildingKind::Array);
-    let builder = state.units()[0].id;
-    state.tick(&[upgrade(builder, array)]);
+    state.tick(&[upgrade(array)]);
     run_until_built(&mut state, array, 2_000);
     let b = state.building(array).unwrap();
     assert_eq!(b.tier, 1);

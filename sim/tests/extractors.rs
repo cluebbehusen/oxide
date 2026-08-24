@@ -90,6 +90,32 @@ fn harvester(player: u8, x: i32, y: i32) -> UnitSpec {
 
 const FRAME: TilePos = TilePos { x: 9, y: 4 };
 
+const FOG_FRAME: TilePos = TilePos { x: 16, y: 4 };
+
+/// A wider field where the frame begins outside seat zero's Foundry sight.
+fn fog_arena(units: Vec<UnitSpec>) -> Scenario {
+    Scenario {
+        name: "extractor-fog-arena".into(),
+        seed: 11,
+        map: vec![
+            "################################".into(),
+            "#1..........................2..#".into(),
+            "#..............................#".into(),
+            "#..............................#".into(),
+            "#...............E..............#".into(),
+            "#..............................#".into(),
+            "#..............................#".into(),
+            "#..............................#".into(),
+            "#..............................#".into(),
+            "################################".into(),
+        ],
+        players: players(1_000),
+        units,
+        buildings: vec![],
+        meta: None,
+    }
+}
+
 #[test]
 fn the_frame_parses_stays_walkable_and_renders() {
     let state = arena(100, vec![], vec![]).build().unwrap();
@@ -105,6 +131,119 @@ fn the_frame_parses_stays_walkable_and_renders() {
     }
     let rows = state.map().ascii_rows();
     assert_eq!(rows[4].chars().nth(9), Some('E'));
+}
+
+#[test]
+fn a_known_frame_snaps_every_visible_tile_without_revealing_an_unknown_one() {
+    let unseen = fog_arena(vec![]).build().unwrap();
+    let bottom_right = FOG_FRAME.offset(1, 1);
+    assert_eq!(
+        unseen.canonical_build_anchor(PlayerId(0), BuildingKind::Extractor, bottom_right),
+        bottom_right,
+        "an undiscovered frame must not pull the cursor toward itself"
+    );
+
+    let known = fog_arena(vec![harvester(0, FOG_FRAME.x - 2, FOG_FRAME.y)])
+        .build()
+        .unwrap();
+    for dy in 0..2 {
+        for dx in 0..2 {
+            assert_eq!(
+                known.canonical_build_anchor(
+                    PlayerId(0),
+                    BuildingKind::Extractor,
+                    FOG_FRAME.offset(dx, dy),
+                ),
+                FOG_FRAME,
+                "every tile painted as one frame snaps to its authored anchor"
+            );
+        }
+    }
+    assert_eq!(
+        known.canonical_build_anchor(PlayerId(0), BuildingKind::Turret, bottom_right),
+        bottom_right,
+        "ordinary buildings keep ordinary tile anchors"
+    );
+}
+
+#[test]
+fn placement_reasons_do_not_disclose_frames_in_unexplored_ground() {
+    let state = fog_arena(vec![]).build().unwrap();
+    let unknown_elsewhere = TilePos::new(23, 4);
+
+    for anchor in [FOG_FRAME, FOG_FRAME.offset(1, 1), unknown_elsewhere] {
+        assert_eq!(
+            state.place_refusal(PlayerId(0), BuildingKind::Extractor, anchor),
+            Some(oxide_sim::PlaceRefusal::Fog),
+            "strict placement says only that the ground is unseen at {anchor:?}"
+        );
+        assert_eq!(
+            state.place_intent_refusal(PlayerId(0), BuildingKind::Extractor, anchor),
+            Some(oxide_sim::PlaceRefusal::Fog),
+            "deferred placement says only that the ground is unexplored at {anchor:?}"
+        );
+    }
+    assert_eq!(
+        state.place_refusal(PlayerId(0), BuildingKind::Turret, FOG_FRAME),
+        Some(oxide_sim::PlaceRefusal::Fog),
+        "strict placement cannot reveal that a normal footprint overlaps the hidden frame"
+    );
+    assert_eq!(
+        state.place_intent_refusal(PlayerId(0), BuildingKind::Turret, FOG_FRAME),
+        Some(oxide_sim::PlaceRefusal::Fog),
+        "deferred placement cannot reveal that a normal footprint overlaps the hidden frame"
+    );
+}
+
+#[test]
+fn an_unseen_enemy_claim_does_not_replace_the_remembered_frame() {
+    let mut state = fog_arena(vec![
+        harvester(0, FOG_FRAME.x - 2, FOG_FRAME.y),
+        harvester(1, FOG_FRAME.x + 3, FOG_FRAME.y),
+    ])
+    .build()
+    .unwrap();
+    let scout = state.units()[0].id;
+    let enemy_builder = state.units()[1].id;
+    assert!(state.vision(PlayerId(0)).explored(FOG_FRAME));
+    assert!(state.vision(PlayerId(0)).visible(FOG_FRAME));
+
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![scout],
+            goal: TilePos::new(3, 7),
+            queue: false,
+        },
+    )]);
+    for _ in 0..1_000 {
+        if !state.vision(PlayerId(0)).visible(FOG_FRAME) {
+            break;
+        }
+        state.tick(&[]);
+    }
+    assert!(state.vision(PlayerId(0)).explored(FOG_FRAME));
+    assert!(!state.vision(PlayerId(0)).visible(FOG_FRAME));
+    assert!(
+        state
+            .vision(PlayerId(0))
+            .ghosts()
+            .iter()
+            .all(|ghost| ghost.anchor != FOG_FRAME)
+    );
+
+    state.tick(&[build(1, enemy_builder, BuildingKind::Extractor, FOG_FRAME)]);
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .any(|building| building.player == PlayerId(1) && building.anchor == FOG_FRAME),
+        "the hidden opponent really claimed the frame"
+    );
+    assert!(
+        !state.extractor_frame_claim_known(PlayerId(0), FOG_FRAME),
+        "an unobserved hostile claim must not erase the frame from memory"
+    );
 }
 
 #[test]

@@ -1,5 +1,4 @@
-//! The `oxide-driver` CLI. Run with `--help` for the full tree; AGENTS.md
-//! has the guided tour.
+#![doc = include_str!("../README.md")]
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -29,9 +28,14 @@ enum Cmd {
         /// Ticks to simulate.
         #[arg(long, default_value_t = 2000)]
         ticks: u64,
-        /// Let scenario-flagged bots play, driven by the shipped actor.
+        /// Let scenario-configured bots play.
         #[arg(long)]
         bots: bool,
+        /// Hand every seat to the scripted Balanced AI. This is the
+        /// complete-match evaluation path for shipped scenarios whose
+        /// first chair is normally human.
+        #[arg(long, conflicts_with = "bots")]
+        all_bots: bool,
         /// Record and save a replay here.
         #[arg(long)]
         save_replay: Option<PathBuf>,
@@ -103,71 +107,15 @@ enum Cmd {
         /// Ticks to simulate first.
         #[arg(long, default_value_t = 0)]
         ticks: u64,
-        /// Let scenario-flagged bots play during those ticks, driven by
-        /// the shipped actor.
+        /// Let scenario-configured bots play during those ticks.
         #[arg(long)]
         bots: bool,
+        /// Hand every seat to the scripted Balanced AI before rendering.
+        #[arg(long, conflicts_with = "bots")]
+        all_bots: bool,
         /// Output PNG path.
         #[arg(short, long)]
         out: PathBuf,
-    },
-    /// Bot-vs-bot composition probe across the shipped maps: what the
-    /// armies were made of, cost-weighted, with a spam-detecting
-    /// entropy — the balance review's measuring stick.
-    BalanceProbe {
-        /// Scenario directory.
-        #[arg(long, default_value = "scenarios")]
-        dir: String,
-        /// Ladder level to probe ("easy".."expert").
-        #[arg(long, default_value = "medium")]
-        level: String,
-        /// Raw skill-conditioning override 0-1000 (candidate --weights
-        /// probes only). Omission keeps the resolved named profile.
-        #[arg(long)]
-        skill: Option<u32>,
-        /// Raw aggression override 0-1000. Omission uses the same
-        /// named style, variant, and team role as a shipped match.
-        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000))]
-        aggression: Option<u32>,
-        /// Fix the named style ("turtle", "balanced", or "aggressive").
-        /// Omission keeps the deterministic scenario-seed deal.
-        #[arg(
-            long,
-            value_parser = ["turtle", "balanced", "aggressive"],
-            conflicts_with_all = ["skill", "aggression", "blunder"]
-        )]
-        style: Option<String>,
-        /// Fix the curated variant within --style (0, 1, or 2).
-        /// Omission keeps the deterministic named-variant deal.
-        #[arg(
-            long,
-            requires = "style",
-            value_parser = clap::value_parser!(u8).range(0..=2)
-        )]
-        variant: Option<u8>,
-        /// Exact hesitation rate per mille (candidate probes only).
-        /// Supplying zero explicitly means no hesitation; omission uses
-        /// the named level's handicap.
-        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000))]
-        blunder: Option<u32>,
-        /// Think cadence in ticks (candidate probes only; defaults to
-        /// the probed level's own cadence so a candidate measures the
-        /// profile it would actually ship at).
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        cadence: Option<u64>,
-        /// Seeds per map.
-        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u64).range(1..))]
-        seeds: u64,
-        /// Tick cap per match.
-        #[arg(long, default_value_t = 20_000, value_parser = clap::value_parser!(u64).range(1..))]
-        ticks: u64,
-        /// Candidate weights JSON. Omission probes the scripted
-        /// Overseer instead of a policy artifact.
-        #[arg(long)]
-        weights: Option<String>,
-        /// Raw JSON output path.
-        #[arg(long)]
-        out: Option<String>,
     },
     /// Decisiveness seed sweep: N seeds of Overseer-vs-Overseer on one
     /// 1v1 map. Measures endings and seat lean.
@@ -178,7 +126,7 @@ enum Cmd {
         /// Seeds (one match per seed).
         #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
-        /// Tick cap per match (the 0.11 probes read at 40k).
+        /// Tick cap per match.
         #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
         ticks: u64,
         /// First scenario seed; offsets count up from here.
@@ -248,8 +196,7 @@ enum Cmd {
         ticks: u32,
         /// Bench a shipped scenario with the Overseer thinking in every
         /// chair instead of the synthetic mass battle (e.g.
-        /// "scenarios/compass-grand.json" — eight scripted minds, the
-        /// heaviest honest shape until the retrained actor ships).
+        /// "scenarios/compass-grand.json" — eight scripted minds).
         #[arg(long)]
         scenario: Option<String>,
     },
@@ -339,109 +286,6 @@ enum Cmd {
         #[arg(long, default_value_t = 30 * 60, value_parser = clap::value_parser!(u64).range(1..))]
         idle_timeout: u64,
     },
-    /// Serve training episodes over stdio (newline-delimited JSON).
-    Gym,
-    /// Tournament a quantized policy artifact against the Overseer and
-    /// the rush canary (the gate measures the shipped integer bot).
-    NeuralCup {
-        /// Exported weights JSON (tools/train/export.py).
-        #[arg(long)]
-        weights: PathBuf,
-        /// Seeds per matchup (each played from both seats).
-        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
-        seeds: u64,
-        /// Tick cap for each tournament game.
-        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
-        ticks: u64,
-        /// Raw decision-cadence override. Omission uses Expert's named
-        /// cadence while keeping the candidate on the ladder profile.
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        cadence: Option<u64>,
-        /// Scenario path, or "skirmish".
-        #[arg(long, default_value = "skirmish")]
-        scenario: String,
-        /// Exact hesitation rate per mille. Supplying this, including
-        /// zero, selects a raw profile; omission uses Expert's handicap.
-        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000))]
-        blunder: Option<u32>,
-        /// Raw skill conditioning 0-1000. Supplying it selects a raw
-        /// profile; omission uses the measured strategy condition.
-        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000))]
-        skill: Option<u32>,
-        /// Raw aggression conditioning input. Omission exercises the
-        /// deterministic canonical named-profile slate.
-        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000))]
-        aggression: Option<u32>,
-        /// Override both duel rosters in west/east order (ff|fc|cf|cc).
-        /// Omission preserves the scenario's authored factions.
-        #[arg(long)]
-        factions: Option<oxide_driver::gym::DuelFactions>,
-    },
-    /// Endgame diagnostic: a dominant army against a bare remnant, with
-    /// and without intel of its base. Measures whether the shipped
-    /// actor can finish a won game. Diagnostic only.
-    CloseoutProbe {
-        /// Exported weights JSON (tools/train/export.py).
-        #[arg(long)]
-        weights: PathBuf,
-        /// Seeds per variant.
-        #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u64).range(1..))]
-        seeds: u64,
-        /// Tick horizon per fixture.
-        #[arg(long, default_value_t = 20_000, value_parser = clap::value_parser!(u64).range(1..))]
-        ticks: u64,
-        /// Exact hesitation per mille (0 = Expert clean).
-        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=1000))]
-        blunder: u32,
-        /// Think cadence in ticks.
-        #[arg(long, default_value_t = 34, value_parser = clap::value_parser!(u64).range(1..))]
-        cadence: u64,
-    },
-    /// Forced-doctrine A/B: the same policy plays itself with one seat
-    /// compelled to keep a quota of the probed kind, separating
-    /// "overpriced" from "never learned". Diagnostic only.
-    ViabilityProbe {
-        /// Exported weights JSON (tools/train/export.py).
-        #[arg(long)]
-        weights: PathBuf,
-        /// Seeds per action (each played from both seats).
-        #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u64).range(1..))]
-        seeds: u64,
-        /// Tick cap for each probed game.
-        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
-        ticks: u64,
-        /// Scenario path, or "skirmish".
-        #[arg(long, default_value = "skirmish")]
-        scenario: String,
-        /// Kinds of the probed unit or structure the doctrine keeps
-        /// pressing toward while below this count.
-        #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u32).range(1..))]
-        quota: u32,
-        /// Tick the doctrine wakes on. Forcing from tick zero measures
-        /// "should you rush X", not composition viability.
-        #[arg(long, default_value_t = 3_000)]
-        start_tick: u64,
-        /// One probe action by CLI name (e.g. "skyhook", "bastion").
-        /// Omission sweeps the full train/build roster.
-        #[arg(long)]
-        action: Option<String>,
-        /// Also write the JSON report here.
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
-    /// Exercise a candidate's repair verbs in deterministic wounded-state
-    /// fixtures. Diagnostic only: observed, never rewarded.
-    RepairProbe {
-        /// Exported weights JSON (tools/train/export.py).
-        #[arg(long)]
-        weights: PathBuf,
-        /// Tick cap for each deterministic seat/faction/seed case.
-        #[arg(long, default_value_t = 4_000, value_parser = clap::value_parser!(u64).range(1..))]
-        ticks: u64,
-        /// Also write the JSON report here.
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
     /// Automated end-to-end check against a live shell.
     Smoke {
         /// Shell debug-server address.
@@ -478,25 +322,6 @@ mod parse;
 
 use live_cli::{LiveCmd, capture_sequence, live_requests};
 
-fn parse_level(level: &str) -> Result<oxide_sim::bot::Level> {
-    Ok(match level {
-        "easy" => oxide_sim::bot::Level::Easy,
-        "medium" => oxide_sim::bot::Level::Medium,
-        "hard" => oxide_sim::bot::Level::Hard,
-        "expert" => oxide_sim::bot::Level::Expert,
-        other => anyhow::bail!("unknown level '{other}'"),
-    })
-}
-
-fn parse_named_style(style: &str) -> Result<oxide_sim::scenario::NamedStyle> {
-    Ok(match style {
-        "turtle" => oxide_sim::scenario::NamedStyle::Turtle,
-        "balanced" => oxide_sim::scenario::NamedStyle::Balanced,
-        "aggressive" => oxide_sim::scenario::NamedStyle::Aggressive,
-        other => anyhow::bail!("unknown named style '{other}'"),
-    })
-}
-
 /// Per-tick latency digest for bench output: mean, median, tail, and the
 /// worst tick with its index — the spike a throughput mean cannot see.
 fn latency_summary(samples_ns: &[u64]) -> String {
@@ -529,11 +354,16 @@ fn main() -> Result<()> {
             scenario,
             ticks,
             bots,
+            all_bots,
             save_replay,
             map,
         } => {
-            let scenario = runner::load_scenario(&scenario)?;
-            let outcome = runner::run_scenario(&scenario, ticks, bots, save_replay.is_some())?;
+            let mut scenario = runner::load_scenario(&scenario)?;
+            if all_bots {
+                oxide_kit::bench::all_bots(&mut scenario);
+            }
+            let outcome =
+                runner::run_scenario(&scenario, ticks, bots || all_bots, save_replay.is_some())?;
             if let (Some(path), Some(replay)) = (&save_replay, &outcome.replay) {
                 replay.save(path)?;
                 eprintln!(
@@ -620,10 +450,14 @@ fn main() -> Result<()> {
             scenario,
             ticks,
             bots,
+            all_bots,
             out,
         } => {
-            let scenario = runner::load_scenario(&scenario)?;
-            let outcome = runner::run_scenario(&scenario, ticks, bots, false)?;
+            let mut scenario = runner::load_scenario(&scenario)?;
+            if all_bots {
+                oxide_kit::bench::all_bots(&mut scenario);
+            }
+            let outcome = runner::run_scenario(&scenario, ticks, bots || all_bots, false)?;
             render::save_png(&outcome.state, &out)?;
             eprintln!("wrote {}", out.display());
         }
@@ -670,38 +504,6 @@ fn main() -> Result<()> {
                 out.as_deref(),
             )?;
         }
-        Cmd::BalanceProbe {
-            dir,
-            level,
-            skill,
-            aggression,
-            style,
-            variant,
-            blunder,
-            cadence,
-            seeds,
-            ticks,
-            weights,
-            out,
-        } => {
-            let level = parse_level(&level)?;
-            oxide_driver::balance::balance_probe(
-                &dir,
-                level,
-                &oxide_driver::balance::ProbeDials {
-                    skill,
-                    aggression,
-                    style: style.as_deref().map(parse_named_style).transpose()?,
-                    variant,
-                    blunder,
-                    cadence,
-                },
-                seeds,
-                ticks,
-                weights.as_deref(),
-                out.as_deref(),
-            )?;
-        }
         Cmd::Bench {
             units,
             ticks,
@@ -713,9 +515,8 @@ fn main() -> Result<()> {
                 // deciding whether a perf window is needed. Shipped
                 // playable maps author a human seat, so every chair is
                 // converted first; benching around an idle seat 0
-                // under-measured the claim. Bot seats proper are inert
-                // until the retrained actor ships, so the bench drives
-                // the Overseer per bot seat by hand.
+                // under-measured the claim. The stable Overseer keeps
+                // this performance fixture independent of bot tuning.
                 let mut sc = runner::load_scenario(&path)?;
                 oxide_kit::bench::all_bots(&mut sc);
                 let mut state = sc.build()?;
@@ -934,61 +735,6 @@ fn main() -> Result<()> {
             &scenario,
             std::time::Duration::from_secs(idle_timeout),
         )?,
-        Cmd::Gym => oxide_driver::gym::serve()?,
-        Cmd::NeuralCup {
-            weights,
-            seeds,
-            ticks,
-            cadence,
-            scenario,
-            blunder,
-            skill,
-            aggression,
-            factions,
-        } => oxide_driver::gym::neural_cup(
-            &weights,
-            seeds,
-            &scenario,
-            oxide_driver::gym::NeuralCupProfile {
-                cadence,
-                max_ticks: ticks,
-                blunder,
-                skill,
-                aggression,
-                factions,
-            },
-        )?,
-        Cmd::CloseoutProbe {
-            weights,
-            seeds,
-            ticks,
-            blunder,
-            cadence,
-        } => oxide_driver::closeout::closeout_probe(&weights, seeds, ticks, blunder, cadence)?,
-        Cmd::ViabilityProbe {
-            weights,
-            seeds,
-            ticks,
-            scenario,
-            quota,
-            start_tick,
-            action,
-            out,
-        } => oxide_driver::viability::viability_probe(
-            &weights,
-            seeds,
-            ticks,
-            &scenario,
-            quota,
-            start_tick,
-            action.as_deref(),
-            out.as_deref(),
-        )?,
-        Cmd::RepairProbe {
-            weights,
-            ticks,
-            out,
-        } => oxide_driver::repair_probe::repair_probe(&weights, ticks, out.as_deref())?,
         Cmd::Smoke { addr, spawn } => smoke::run(&addr, spawn)?,
         Cmd::Shots {
             port,
@@ -1005,50 +751,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn balance_probe_accepts_an_exact_named_style_variant() {
-        let cli = Cli::try_parse_from([
-            "oxide-driver",
-            "balance-probe",
-            "--style",
-            "turtle",
-            "--variant",
-            "1",
-        ])
-        .unwrap();
-        let Cmd::BalanceProbe { style, variant, .. } = cli.cmd else {
-            panic!("balance-probe parsed as another command")
+    fn run_all_bots_is_an_explicit_complete_match_mode() {
+        let cli = Cli::try_parse_from(["oxide-driver", "run", "skirmish", "--all-bots"])
+            .expect("all-bots run parses");
+        let Cmd::Run { bots, all_bots, .. } = cli.cmd else {
+            panic!("run parsed as another command")
         };
-        assert_eq!(style.as_deref(), Some("turtle"));
-        assert_eq!(variant, Some(1));
-    }
-
-    #[test]
-    fn balance_probe_named_style_refuses_raw_profile_controls() {
-        for raw in ["--skill", "--aggression", "--blunder"] {
-            let error = Cli::try_parse_from([
-                "oxide-driver",
-                "balance-probe",
-                "--style",
-                "balanced",
-                "--variant",
-                "1",
-                raw,
-                "550",
-            ])
-            .err()
-            .expect("named and raw profile selectors conflict");
-            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
-        }
-    }
-
-    #[test]
-    fn balance_probe_variant_requires_a_named_style() {
-        let error = Cli::try_parse_from(["oxide-driver", "balance-probe", "--variant", "1"])
-            .err()
-            .expect("variant without style is rejected");
-        assert_eq!(
-            error.kind(),
-            clap::error::ErrorKind::MissingRequiredArgument
+        assert!(!bots);
+        assert!(all_bots);
+        assert!(
+            Cli::try_parse_from(["oxide-driver", "run", "skirmish", "--bots", "--all-bots",])
+                .is_err(),
+            "scenario-configured and all-seat modes are mutually exclusive"
         );
     }
 

@@ -3,7 +3,7 @@
 //! without a window.
 
 use oxide_driver::{pool, runner};
-use oxide_sim::Scenario;
+use oxide_sim::{Scenario, State};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -62,9 +62,9 @@ impl MatchActivity {
 }
 
 /// Plays `scenario` for `ticks` bot-vs-bot ticks, tallying per-seat
-/// activity out of the tick reports. The Overseer — the scripted QA
-/// anchor — drives every `bot`-flagged seat directly, since bot seats
-/// proper are inert until the retrained actor ships.
+/// activity out of the tick reports. The stable Overseer drives every
+/// `bot`-flagged seat directly so this liveness gate does not drift
+/// with player-facing bot tuning.
 ///
 /// Events name a shooter by id and the shooter may be dead by the time
 /// the report is read, so ownership is tracked in a ledger seeded from
@@ -138,6 +138,30 @@ fn play_and_tally(scenario: &Scenario, ticks: u64) -> anyhow::Result<MatchActivi
                 seats[seat].last_progress = Some(report.tick);
             }
         }
+
+        let tick = state.current_tick();
+        if tick.is_multiple_of(STATE_VALIDATION_INTERVAL) {
+            state.validate_invariants().map_err(|err| {
+                anyhow::anyhow!(
+                    "{}: tick {tick} produced a state the validator refuses: {err}",
+                    scenario.name
+                )
+            })?;
+        }
+        if tick.is_multiple_of(STATE_ROUND_TRIP_INTERVAL) {
+            let encoded = serde_json::to_string(&state)?;
+            let restored: State = serde_json::from_str(&encoded).map_err(|err| {
+                anyhow::anyhow!(
+                    "{}: tick {tick} is refused at the deserialization boundary: {err}",
+                    scenario.name
+                )
+            })?;
+            anyhow::ensure!(
+                restored.hash() == state.hash(),
+                "{}: tick {tick} changed across a JSON round trip",
+                scenario.name
+            );
+        }
     }
 
     let holds_foundry = (0..seats.len())
@@ -176,8 +200,8 @@ fn shipped_scenarios() -> Vec<PathBuf> {
 
 /// A shipped map with every seat flipped to a configured bot seat, the
 /// shape every launched match declares. The sweep itself fields the
-/// Overseer per bot seat — bot seats proper are inert until the
-/// retrained actor ships.
+/// Overseer per bot seat so it remains anchored to the stable QA
+/// controller rather than the player-facing bot.
 fn all_bots(path: &std::path::Path) -> Scenario {
     let mut scenario =
         Scenario::load(path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
@@ -185,13 +209,7 @@ fn all_bots(path: &std::path::Path) -> Scenario {
         player.bot = true;
         player
             .bot_config
-            .get_or_insert(oxide_sim::scenario::BotConfig {
-                level: oxide_sim::bot::Level::Medium,
-                aggression: None,
-                style: None,
-                variant: None,
-                team_role: None,
-            });
+            .get_or_insert(oxide_sim::scenario::BotConfig::Scripted);
     }
     scenario
 }
@@ -200,13 +218,7 @@ fn bot_skirmish() -> Scenario {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
         player.bot = true;
-        player.bot_config = Some(oxide_sim::scenario::BotConfig {
-            level: oxide_sim::bot::Level::Medium,
-            aggression: None,
-            style: None,
-            variant: None,
-            team_role: None,
-        });
+        player.bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
     }
     scenario
 }
@@ -222,7 +234,7 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
     let scenario = bot_skirmish();
     let mut state = scenario.build().unwrap();
     let mut bots = oxide_kit::bench::overseer_bots(&scenario);
-    let mut replay: Replay<Scenario, PlayerCommand> = Replay::new(SIM_VERSION, scenario.clone());
+    let mut replay: Replay<Scenario, PlayerCommand> = Replay::new(SIM_VERSION, scenario);
     for _ in 0..900 {
         let mut commands = Vec::new();
         for bot in &mut bots {
@@ -245,19 +257,22 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
 /// Ticks of bot-vs-bot play every shipped map must survive.
 const LIVENESS_TICKS: u64 = 12_000;
 
-/// The vast maps get a longer leash before the combat floor applies:
-/// their measured decision medians sit at 18-22k ticks (`driver
-/// pace-sweep`, 12 seeds x 2, Medium), so 12k is march-and-buildup time
-/// on a 100+ tile route and first contact landing after it is the map
-/// working, not a stall. The economy floors and the staleness detector
-/// still bind over the whole horizon.
+/// Vast maps get a longer leash before the combat floor applies. On a
+/// 100-plus-tile ground route, 12k ticks can be ordinary buildup and
+/// marching rather than a stall. Economy and staleness floors still
+/// bind over the full horizon.
 const VAST_LIVENESS_TICKS: u64 = 24_000;
+
+/// Cadence for proving naturally reached states remain valid.
+const STATE_VALIDATION_INTERVAL: u64 = 100;
+
+/// Cadence for exercising the serialized-state trust boundary.
+const STATE_ROUND_TRIP_INTERVAL: u64 = 500;
 
 /// The gate's horizon for one map: the pace label picks the leash.
 fn liveness_horizon(scenario: &Scenario) -> u64 {
-    // 0.15 recalibration: the large band now reaches 90 weighted steps
-    // (Long Nine marches 73 before first contact), so large maps share
-    // the long horizon the vast class always had.
+    // Large, vast, and grand maps all admit routes long enough to need
+    // the extended buildup horizon.
     match scenario.meta.as_ref().map(|m| m.pace.as_str()) {
         Some("vast" | "large" | "grand") => VAST_LIVENESS_TICKS,
         _ => LIVENESS_TICKS,
@@ -363,7 +378,7 @@ fn liveness_verdict(map: &str, activity: &MatchActivity) -> Result<(), String> {
 }
 
 #[test]
-fn every_shipped_scenario_builds_and_plays() {
+fn every_shipped_scenario_stays_valid_and_live() {
     // Playable means *alive*, not merely parseable. The old proxy — a
     // surviving unit id past the starting roster — was satisfied at tick
     // zero on every map that spawns 17 or more units, so a total economy
@@ -722,9 +737,7 @@ fn overriding_the_tick_count_below_the_commands_is_rejected() {
 #[test]
 fn every_shipped_scenario_names_its_seats_uniquely() {
     // The banner, panel, and stats all address seats by name, and the
-    // shell's launch refuses collisions — a duplicate authored name
-    // crashed match setup in 0.11 (Trident and Compass shipped two
-    // "West Ferrous" seats each).
+    // shell's launch refuses collisions.
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
     for entry in std::fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();

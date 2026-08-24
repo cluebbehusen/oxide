@@ -1,33 +1,11 @@
-//! The debug protocol: how anything outside the process drives a running
-//! shell — or the windowless `oxide-driver session` speaking the same
-//! vocabulary.
-//!
-//! Wire format is JSON Lines over TCP — one request object per line, one
-//! response object per line, correlated by `id`:
-//!
-//! ```text
-//! → {"id":1,"method":"advance_ticks","params":{"ticks":10}}
-//! ← {"id":1,"ok":{"kind":"advanced","ticks":10,"tick":52,"hash":"0x9c…"}}
-//! → {"id":2,"method":"nonsense"}
-//! ← {"id":2,"err":"unknown method"}
-//! ```
-//!
-//! Design intent: everything here is data an agent can read raw. Positions
-//! come as floats (presentation precision is fine — exactness lives in the
-//! sim and is fingerprinted by the state hash), hashes come as hex strings
-//! (u64s don't survive every JSON tool), and the map comes back as ASCII.
-//!
-//! This crate is the wire contract whole: the types AND the framed
-//! transport loop ([`framing`]) every server runs. The shell serves it,
-//! the driver speaks it (and serves it headless), and all of them stay in
-//! lockstep by construction.
+#![doc = include_str!("../README.md")]
 
 pub mod framing;
 pub mod input;
 pub mod session;
 pub mod view;
 
-use oxide_sim::{Command, Event, PlayerCommand, PlayerId};
+use oxide_sim::{Command, Event, PlayerId};
 use serde::{Deserialize, Serialize};
 
 pub use input::{Key, MouseButton, RawEvent};
@@ -59,8 +37,8 @@ pub const ADVANCE_TICKS_PER_BUDGET_SECOND: u64 = 1_000;
 /// legitimate request comes within three orders of magnitude of this.
 pub const MAX_FRAME_BYTES: usize = 1 << 20;
 
-/// Ceiling on a RESPONSE line a client should accept. Requests are
-/// hand-sized and [`MAX_FRAME_BYTES`] bounds them; replies scale with
+/// Ceiling on a RESPONSE line a client should accept, newline excluded.
+/// Requests are hand-sized and [`MAX_FRAME_BYTES`] bounds them; replies scale with
 /// the world (a deep `query_state`, a long presented-event drain), so
 /// the client's ceiling is generous rather than symmetric — a server
 /// never refuses its own legal reply.
@@ -68,7 +46,12 @@ pub const MAX_RESPONSE_BYTES: usize = 64 << 20;
 
 /// Everything a client can ask of a running shell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "method", content = "params", rename_all = "snake_case")]
+#[serde(
+    tag = "method",
+    content = "params",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum Request {
     /// Who are you, what tick is it, are we paused.
     Status,
@@ -358,13 +341,186 @@ pub struct SavedView {
 }
 
 /// A request with its correlation id.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RequestEnvelope {
     /// Client-chosen id, echoed in the response.
     pub id: u64,
     /// The request itself.
     #[serde(flatten)]
     pub request: Request,
+}
+
+#[derive(Default)]
+enum WireParams {
+    #[default]
+    Missing,
+    Present(serde_json::Value),
+}
+
+impl<'de> Deserialize<'de> for WireParams {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        serde_json::Value::deserialize(deserializer).map(Self::Present)
+    }
+}
+
+impl<'de> Deserialize<'de> for RequestEnvelope {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WireEnvelope {
+            id: u64,
+            method: String,
+            #[serde(default)]
+            params: WireParams,
+        }
+
+        let raw = WireEnvelope::deserialize(deserializer)?;
+        let mut request = serde_json::Map::from_iter([(
+            "method".to_string(),
+            serde_json::Value::String(raw.method),
+        )]);
+        if let WireParams::Present(params) = raw.params {
+            request.insert("params".to_string(), params);
+        }
+        let wire = serde_json::Value::Object(request);
+        let request = serde_json::from_value(wire.clone()).map_err(D::Error::custom)?;
+        reject_unknown_nested_fields(&request, &wire).map_err(D::Error::custom)?;
+        Ok(Self {
+            id: raw.id,
+            request,
+        })
+    }
+}
+
+fn reject_unknown_nested_fields(request: &Request, wire: &serde_json::Value) -> Result<(), String> {
+    let (field, allowed): (&str, &[&str]) = match request {
+        Request::SendCommand { command, .. } => ("command", command_wire_fields(command)),
+        Request::InjectEvent { event } => ("event", event_wire_fields(event)),
+        _ => return Ok(()),
+    };
+    let Some(object) = wire
+        .get("params")
+        .and_then(|params| params.get(field))
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Ok(());
+    };
+    if let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(format!("unknown field `{unknown}` in {field}"));
+    }
+    Ok(())
+}
+
+fn command_wire_fields(command: &Command) -> &'static [&'static str] {
+    match command {
+        Command::Move {
+            units: _,
+            goal: _,
+            queue: _,
+        }
+        | Command::AttackMove {
+            units: _,
+            goal: _,
+            queue: _,
+        }
+        | Command::Advance {
+            units: _,
+            goal: _,
+            queue: _,
+        } => &["type", "units", "goal", "queue"],
+        Command::Attack {
+            units: _,
+            target: _,
+            queue: _,
+        } => &["type", "units", "target", "queue"],
+        Command::Harvest {
+            units: _,
+            node: _,
+            queue: _,
+        } => &["type", "units", "node", "queue"],
+        Command::Patrol {
+            units: _,
+            waypoints: _,
+        } => &["type", "units", "waypoints"],
+        Command::Stop { units: _ } => &["type", "units"],
+        Command::Train {
+            building: _,
+            kind: _,
+        } => &["type", "building", "kind"],
+        Command::Build {
+            units: _,
+            kind: _,
+            anchor: _,
+            queue: _,
+            defer: _,
+        } => &["type", "units", "kind", "anchor", "queue", "defer"],
+        Command::Cancel { building: _ } | Command::UpgradeBuilding { building: _ } => {
+            &["type", "building"]
+        }
+        Command::Repair {
+            units: _,
+            building: _,
+            queue: _,
+        }
+        | Command::Salvage {
+            units: _,
+            building: _,
+            queue: _,
+        } => &["type", "units", "building", "queue"],
+        Command::CancelTrain {
+            building: _,
+            index: _,
+        } => &["type", "building", "index"],
+        Command::SetRally {
+            building: _,
+            rally: _,
+        } => &["type", "building", "rally"],
+        Command::Surrender => &["type"],
+        Command::RepairUnit {
+            units: _,
+            target: _,
+            queue: _,
+        } => &["type", "units", "target", "queue"],
+        Command::FocusFire {
+            buildings: _,
+            target: _,
+        } => &["type", "buildings", "target"],
+        Command::CancelFound { kind: _, anchor: _ } => &["type", "kind", "anchor"],
+        Command::Load {
+            units: _,
+            transport: _,
+            queue: _,
+        } => &["type", "units", "transport", "queue"],
+        Command::Unload {
+            transport: _,
+            at: _,
+            queue: _,
+        } => &["type", "transport", "at", "queue"],
+    }
+}
+
+fn event_wire_fields(event: &RawEvent) -> &'static [&'static str] {
+    match event {
+        RawEvent::MouseMove { x: _, y: _ } => &["type", "x", "y"],
+        RawEvent::MouseDown {
+            button: _,
+            x: _,
+            y: _,
+        }
+        | RawEvent::MouseUp {
+            button: _,
+            x: _,
+            y: _,
+        } => &["type", "button", "x", "y"],
+        RawEvent::Wheel { delta: _ } => &["type", "delta"],
+        RawEvent::KeyDown { key: _ } | RawEvent::KeyUp { key: _ } => &["type", "key"],
+        RawEvent::TouchDown { id: _, x: _, y: _ }
+        | RawEvent::TouchMove { id: _, x: _, y: _ }
+        | RawEvent::TouchUp { id: _, x: _, y: _ } => &["type", "id", "x", "y"],
+        RawEvent::Text { ch: _ } => &["type", "ch"],
+    }
 }
 
 /// A response with its correlation id. Internally an enum, so "both ok and
@@ -446,16 +602,6 @@ impl<'de> Deserialize<'de> for ResponseEnvelope {
 /// Formats a state hash the way the protocol expects it.
 pub fn hash_hex(hash: u64) -> String {
     format!("{hash:#018x}")
-}
-
-/// Convenience: a [`Request::SendCommand`] for `player`.
-pub fn send_command(player: PlayerId, command: Command) -> Request {
-    Request::SendCommand { player, command }
-}
-
-/// Re-associates a send-command request with sim types.
-pub fn to_player_command(player: PlayerId, command: Command) -> PlayerCommand {
-    PlayerCommand { player, command }
 }
 
 #[cfg(test)]
@@ -787,9 +933,7 @@ mod tests {
                 anchor: TilePos::new(7, 5),
             },
             Command::UpgradeBuilding {
-                units: vec![UnitId(4)],
                 building: BuildingId(2),
-                queue: true,
             },
             Command::Load {
                 units: vec![UnitId(5), UnitId(6)],
@@ -952,11 +1096,26 @@ mod tests {
             r#"{"method":"status"}"#,                     // missing id
             r#"{"id":"not-a-number","method":"status"}"#, // id wrong type
             r#"{"id":4,"method":"advance_ticks"}"#,       // required params absent
+            r#"{"id":3,"id":4,"method":"status"}"#,       // duplicate id
         ] {
             assert!(
                 serde_json::from_str::<RequestEnvelope>(line).is_err(),
                 "expected a parse error for {line:?}"
             );
+        }
+    }
+
+    #[test]
+    fn request_typos_are_rejected_instead_of_silently_ignored() {
+        for line in [
+            r#"{"id":4,"method":"advance_ticks","params":{"ticks":10,"tcks":20}}"#,
+            r#"{"id":5,"method":"status","methdo":"pause"}"#,
+            r#"{"id":6,"method":"send_command","params":{"player":0,"command":{"type":"stop","units":[],"unitz":[1]}}}"#,
+            r#"{"id":7,"method":"inject_event","params":{"event":{"type":"mouse_move","x":1,"y":2,"why":"typo"}}}"#,
+        ] {
+            let error = serde_json::from_str::<RequestEnvelope>(line)
+                .expect_err("a misspelled request field must fail closed");
+            assert!(error.to_string().contains("unknown field"), "{error}");
         }
     }
 

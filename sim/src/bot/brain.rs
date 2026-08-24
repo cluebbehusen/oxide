@@ -50,11 +50,14 @@ impl Brain {
         }
     }
 
-    /// The Overseer: the scripted commander with the whole 0.15 tree
-    /// switched on. Training infrastructure ONLY — it bootstraps the
-    /// gym-v9 retrain as demonstration source, league anchor, and
-    /// yardstick, and is deliberately not reachable from any player
-    /// surface (no scenario field, no wizard dial, no SeatBot arm).
+    /// The fair, fog-honest rules-based opponent used by normal matches.
+    pub fn balanced(player: PlayerId, scenario_seed: u64) -> Self {
+        Self::new(player, scenario_seed, Dials::balanced())
+    }
+
+    /// The stable full-tree QA controller. Keep it separate from the
+    /// player-facing constructor so bot tuning cannot silently move
+    /// deterministic probes and fairness measurements.
     pub fn overseer(player: PlayerId, scenario_seed: u64) -> Self {
         Self::new(player, scenario_seed, Dials::overseer())
     }
