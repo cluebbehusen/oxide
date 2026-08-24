@@ -3,6 +3,28 @@
 use oxide_sim::bot::{Brain, Dials, seat_bots};
 use oxide_sim::scenario::BotConfig;
 use oxide_sim::{GameResult, PlayerId, Scenario};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_SCENARIO: AtomicU64 = AtomicU64::new(0);
+
+struct TempScenario(PathBuf);
+
+impl Drop for TempScenario {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn write_scenario(json: &str) -> TempScenario {
+    let id = NEXT_SCENARIO.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "oxide-scripted-scenario-{}-{id}.json",
+        std::process::id()
+    ));
+    std::fs::write(&path, json).expect("scenario fixture is written");
+    TempScenario(path)
+}
 
 #[test]
 fn seating_keeps_scripted_and_empty_chairs_distinct() {
@@ -28,7 +50,7 @@ fn seating_keeps_scripted_and_empty_chairs_distinct() {
 }
 
 #[test]
-fn bot_config_writes_one_current_shape_and_reads_known_legacy_shapes() {
+fn bot_config_writes_and_reads_only_the_current_shape() {
     let json = serde_json::to_string(&BotConfig::Scripted).expect("scripted config serializes");
     assert_eq!(json, r#"{"controller":"scripted"}"#);
     assert_eq!(
@@ -39,40 +61,22 @@ fn bot_config_writes_one_current_shape_and_reads_known_legacy_shapes() {
         serde_json::from_str::<BotConfig>(r#"{"controller":"scripted","level":"hard"}"#).is_err(),
         "retired controller settings are not silently ignored"
     );
-    assert_eq!(
-        serde_json::from_str::<BotConfig>(r#"{"level":"medium"}"#)
-            .expect("the minimal legacy shape remains readable"),
-        BotConfig::Scripted
-    );
-    assert_eq!(
-        serde_json::from_str::<BotConfig>(
-            r#"{"level":"expert","style":"aggressive","variant":2,"team_role":"vanguard"}"#
-        )
-        .expect("the complete legacy shape remains readable"),
-        BotConfig::Scripted
-    );
     assert!(
-        serde_json::from_str::<BotConfig>(r#"{"level":"medium","mystery":1}"#).is_err(),
-        "legacy compatibility does not admit unknown fields"
+        serde_json::from_str::<BotConfig>(r#"{"level":"medium"}"#).is_err(),
+        "retired settings belong only to the versioned replay loader"
     );
+}
+
+#[test]
+fn scenario_load_rejects_a_legacy_bot_config() {
+    let mut document = serde_json::to_value(Scenario::skirmish()).expect("scenario serializes");
+    document["players"][1]["bot_config"] = serde_json::json!({"level": "expert"});
+    let json = serde_json::to_string(&document).expect("scenario document serializes");
+    let fixture = write_scenario(&json);
+
     assert!(
-        serde_json::from_str::<BotConfig>(r#"{"level":"impossible"}"#).is_err(),
-        "legacy compatibility accepts only historical levels"
-    );
-    assert!(
-        serde_json::from_str::<BotConfig>(
-            r#"{"level":"medium","aggression":500,"style":"balanced"}"#
-        )
-        .is_err(),
-        "mutually exclusive historical personality fields remain invalid"
-    );
-    assert!(
-        serde_json::from_str::<BotConfig>(r#"{"level":"medium","variant":1}"#).is_err(),
-        "a historical variant still requires its style"
-    );
-    assert!(
-        serde_json::from_str::<BotConfig>(r#"{"level":"medium","aggression":1001}"#).is_err(),
-        "historical aggression remains bounded"
+        Scenario::load(&fixture.0).is_err(),
+        "an authored scenario must not silently select a different controller"
     );
 }
 

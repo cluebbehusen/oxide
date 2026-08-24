@@ -490,6 +490,83 @@ fn island_obs() -> Observation {
 }
 
 #[test]
+fn a_routeless_ground_scout_yields_to_a_purpose_built_flyer() {
+    let mut obs = obs_with_home();
+    obs.scrap = 1_000;
+    obs.my_buildings.extend([
+        building_obs(1, 0, BuildingKind::Fabricator, 5, 2),
+        building_obs(2, 0, BuildingKind::Airworks, 8, 2),
+    ]);
+    obs.my_queues = vec![
+        vec![UnitKind::Sentinel, UnitKind::Sentinel],
+        vec![UnitKind::Lancer, UnitKind::Lancer],
+        Vec::new(),
+    ];
+    obs.my_units = (0..5)
+        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
+        .collect();
+    obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(12, y)).collect();
+    let mut policy = UtilityPolicy::new();
+    let dials = Dials::full();
+
+    let first = policy.think(&dials, &obs, &[], &[]);
+    let ground_scout = first.iter().find_map(|intent| match intent {
+        Intent::Scout { unit, .. } => Some(*unit),
+        _ => None,
+    });
+    assert_eq!(
+        ground_scout,
+        Some(UnitId(0)),
+        "without an aircraft, the first sweep borrows the lowest-id Harvester"
+    );
+
+    // The simulation reports an unreachable Move by returning the unit
+    // to idle where it started. On the next think, that is direct route
+    // testimony rather than a reason to cycle the same ground scout.
+    obs.tick = dials.cadence;
+    let bounced = policy.think(&dials, &obs, &[], &[]);
+    assert!(
+        bounced
+            .iter()
+            .all(|intent| !matches!(intent, Intent::Scout { .. })),
+        "a bounced ground scout must be released: {bounced:?}"
+    );
+
+    obs.tick += dials.cadence;
+    let replacement = policy.think(&dials, &obs, &[], &[]);
+    assert!(
+        replacement.iter().any(|intent| matches!(
+            intent,
+            Intent::TrainAt {
+                building: BuildingId(2),
+                kind: UnitKind::Kestrel,
+            }
+        )),
+        "a known need for air reconnaissance buys one faction scout: {replacement:?}"
+    );
+    assert!(
+        replacement
+            .iter()
+            .all(|intent| !matches!(intent, Intent::Scout { .. })),
+        "ground units stay free while the airborne replacement is being built"
+    );
+
+    obs.my_units.push(unit_obs(99, 0, UnitKind::Kestrel, 8, 3));
+    obs.tick += dials.cadence;
+    let airborne = policy.think(&dials, &obs, &[], &[]);
+    assert!(
+        airborne.iter().any(|intent| matches!(
+            intent,
+            Intent::Scout {
+                unit: UnitId(99),
+                ..
+            }
+        )),
+        "the completed scout flyer takes over the sweep: {airborne:?}"
+    );
+}
+
+#[test]
 fn the_ferry_lifts_a_squad_over_a_severed_gulf() {
     let mut obs = island_obs();
     obs.my_units = vec![

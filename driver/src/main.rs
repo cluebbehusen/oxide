@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use oxide_driver::client::Client;
-use oxide_driver::runner::{self, GameReplay};
+use oxide_driver::runner;
 use oxide_driver::{render, smoke};
 use oxide_protocol::{Reply, StateFilter, hash_hex};
 use std::path::PathBuf;
@@ -386,7 +386,7 @@ fn main() -> Result<()> {
             allow_version_mismatch,
             allow_long,
         } => {
-            let replay = GameReplay::load(&path)?;
+            let replay = oxide_kit::load_replay(&path)?;
             let state =
                 runner::run_replay_bounded(&replay, ticks, allow_version_mismatch, allow_long)?;
             let hash = hash_hex(state.hash());
@@ -411,8 +411,8 @@ fn main() -> Result<()> {
             fog_seat,
             map,
         } => {
-            let replay =
-                GameReplay::load(&path).with_context(|| format!("loading {}", path.display()))?;
+            let replay = oxide_kit::load_replay(&path)
+                .with_context(|| format!("loading {}", path.display()))?;
             let inspection = oxide_driver::replay_inspect::inspect(
                 &replay,
                 &ticks,
@@ -428,8 +428,8 @@ fn main() -> Result<()> {
             json,
             minimaps,
         } => {
-            let replay =
-                GameReplay::load(&path).with_context(|| format!("loading {}", path.display()))?;
+            let replay = oxide_kit::load_replay(&path)
+                .with_context(|| format!("loading {}", path.display()))?;
             let opts = oxide_driver::replay_summary::SummaryOptions {
                 until,
                 every,
@@ -681,8 +681,8 @@ fn main() -> Result<()> {
             }
         }
         Cmd::ReplayStats { path, every } => {
-            let replay =
-                GameReplay::load(&path).with_context(|| format!("loading {}", path.display()))?;
+            let replay = oxide_kit::load_replay(&path)
+                .with_context(|| format!("loading {}", path.display()))?;
             let stats = oxide_driver::stats::compute(&replay, every)?;
             println!("{}", serde_json::to_string_pretty(&stats)?);
         }

@@ -567,6 +567,7 @@ dependencies = [
  "chassis",
  "oxide-sim",
  "serde",
+ "serde_json",
  "tiny-skia",
 ]
 

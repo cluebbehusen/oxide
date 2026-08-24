@@ -109,17 +109,8 @@ pub enum BotConfig {
 }
 
 // Internally tagged unit variants accept sibling fields even when the enum
-// asks Serde to deny them. Struct-shaped wire types keep current input strict
-// while allowing versioned replays to carry their historical setup metadata
-// as far as replay validation. Historical settings select no retired runtime;
-// they normalize to the sole maintained controller.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum BotConfigWire {
-    Current(CurrentBotConfigWire),
-    Legacy(LegacyBotConfigWire),
-}
-
+// asks Serde to deny them. A struct-shaped wire type keeps authored scenarios
+// strict; replay-only compatibility is handled at the versioned replay loader.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CurrentBotConfigWire {
@@ -132,80 +123,15 @@ enum BotController {
     Scripted,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyBotConfigWire {
-    #[serde(rename = "level")]
-    _level: LegacyBotLevel,
-    #[serde(default)]
-    aggression: Option<u32>,
-    #[serde(default)]
-    style: Option<LegacyNamedStyle>,
-    #[serde(default)]
-    variant: Option<u8>,
-    #[serde(default, rename = "team_role")]
-    _team_role: Option<LegacyTeamRole>,
-}
-
-impl LegacyBotConfigWire {
-    fn validate(&self) -> Result<(), &'static str> {
-        if self.aggression.is_some() && self.style.is_some() {
-            return Err("aggression and style are mutually exclusive");
-        }
-        if self.variant.is_some() && self.style.is_none() {
-            return Err("variant requires a named style");
-        }
-        if self.variant.is_some_and(|variant| variant > 2) {
-            return Err("variant must be 0, 1, or 2");
-        }
-        if self.aggression.is_some_and(|aggression| aggression > 1_000) {
-            return Err("aggression must be at most 1000");
-        }
-        Ok(())
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum LegacyBotLevel {
-    Easy,
-    Medium,
-    Hard,
-    Expert,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum LegacyNamedStyle {
-    Turtle,
-    Balanced,
-    Aggressive,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum LegacyTeamRole {
-    Generalist,
-    Vanguard,
-    Industry,
-    Support,
-    Siege,
-}
-
 impl<'de> Deserialize<'de> for BotConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        match BotConfigWire::deserialize(deserializer)? {
-            BotConfigWire::Current(CurrentBotConfigWire {
-                controller: BotController::Scripted,
-            }) => Ok(Self::Scripted),
-            BotConfigWire::Legacy(wire) => {
-                wire.validate().map_err(serde::de::Error::custom)?;
-                Ok(Self::Scripted)
-            }
-        }
+        let CurrentBotConfigWire {
+            controller: BotController::Scripted,
+        } = CurrentBotConfigWire::deserialize(deserializer)?;
+        Ok(Self::Scripted)
     }
 }
 

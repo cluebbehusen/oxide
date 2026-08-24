@@ -18,7 +18,7 @@ mod screen_flow;
 
 use crate::debug_server::IncomingRequest;
 use crate::frame_profile::{FrameObservation, FrameProfiler};
-use crate::game::{Game, GameReplay, SoundKind};
+use crate::game::{Game, SoundKind};
 use crate::menu::{Menu, PreviewCache};
 use crate::screens::codex::CodexScreen;
 use crate::screens::final_map::FinalMapScreen;
@@ -479,7 +479,8 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     };
 
     let mut game = if let Some(path) = &args.replay {
-        let replay = GameReplay::load(path).with_context(|| format!("loading replay {path}"))?;
+        let replay =
+            oxide_kit::load_replay(path).with_context(|| format!("loading replay {path}"))?;
         Game::from_replay(replay)?
     } else {
         let scenario = match &args.scenario {
@@ -810,8 +811,8 @@ pub(crate) async fn run(args: Args) -> Result<()> {
 /// A resume IS a replay load; validation and the tick-count cap live in
 /// [`Game::from_replay`].
 fn resume(path: &std::path::Path) -> Result<Game> {
-    let replay =
-        GameReplay::load(path).with_context(|| format!("loading record {}", path.display()))?;
+    let replay = oxide_kit::load_replay(path)
+        .with_context(|| format!("loading record {}", path.display()))?;
     Game::from_replay(replay)
 }
 
@@ -1275,7 +1276,7 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
                     app.input.reset_session();
                     Reply::Ok
                 }),
-            Request::LoadReplay { path } => GameReplay::load(&path)
+            Request::LoadReplay { path } => oxide_kit::load_replay(&path)
                 .map_err(|err| format!("loading replay {path}: {err}"))
                 .and_then(|replay| {
                     Game::from_replay(replay).map_err(|err| format!("resuming replay: {err:#}"))

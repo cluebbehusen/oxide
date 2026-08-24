@@ -1,6 +1,6 @@
 ---
 created: 2026-08-23T08:49:35
-updated: 2026-08-24T09:20:33
+updated: 2026-08-24T18:18:26
 ---
 
 # Oxide Repository Reset
@@ -39,6 +39,9 @@ player-facing scripted opponent.
 - Treat coverage as a discovery tool rather than a target: prioritize externally
   observable contracts, deterministic edge cases, and error paths; do not add
   tests that merely execute lines or mirror implementation details.
+- Treat a ground scout that returns idle at its dispatch point as no-route
+  testimony; recover through a legally trained faction scout rather than hidden
+  map knowledge.
 
 ## Findings
 
@@ -102,6 +105,10 @@ player-facing scripted opponent.
 - The later coverage and native QA cycle regenerated another 7.7 GiB of Cargo
   artifacts; the final clean removed them, bringing the reset's cumulative
   artifact cleanup to 32.4 GiB.
+- All four repository-reset review findings were valid: nested debug values
+  ignored typos, legacy bot compatibility leaked into standalone scenarios,
+  dropped build intents poisoned anchors, and island scouts could loop without
+  discovering an opponent.
 
 ## Actions
 
@@ -322,12 +329,20 @@ player-facing scripted opponent.
   - Much of screen flow remains interleaved with Macroquad drawing, autosaves,
     process exit, and live-session ownership. A focused reducer seam would
     permit meaningful transition and request tests without mocking the renderer.
+- [x] Verify and address the repository-reset PR review findings.
+  - Made nested debug command values fail closed and moved retired bot-config
+    normalization into a typed, version-aware replay loader while preserving
+    replay limits and strict current input.
+  - Recorded build sites only from emitted commands and added legal airborne
+    scout recovery after route failure.
+  - Added exact regressions plus strict replay, duplicate-field, converse
+    build-feedback, and end-to-end island-discovery coverage; all repository
+    gates passed.
+  - Removed 7.3 GiB of regenerated Cargo artifacts after final coverage
+    validation.
 
 ## Open Questions
 
 - Does the Balanced AI feel coherent and fun in human play?
 - How should large-map unreachable-route and invalid-build-site loops be
   addressed before broad-map bot tuning?
-- Should Balanced maintain one faction scout after Airworks and replace a
-  stranded ground scout, so future island maps do not require a special starting
-  roster?

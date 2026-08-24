@@ -164,7 +164,7 @@ impl Session {
                     *self = fresh;
                     Reply::Ok
                 }),
-            Request::LoadReplay { path } => GameReplay::load(&path)
+            Request::LoadReplay { path } => oxide_kit::load_replay(&path)
                 .map_err(|err| format!("loading replay {path}: {err}"))
                 .and_then(|replay| {
                     Session::resume(replay).map_err(|err| format!("resuming replay: {err:#}"))

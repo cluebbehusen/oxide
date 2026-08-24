@@ -11,7 +11,7 @@ use super::executive::Executive;
 use super::observation::Observation;
 use super::orient::Orientation;
 use super::utility::{Dials, UtilityPolicy};
-use crate::command::PlayerCommand;
+use crate::command::{Command, PlayerCommand};
 use crate::ids::PlayerId;
 use crate::state::State;
 use chassis::grid::TilePos;
@@ -120,7 +120,15 @@ impl Brain {
             .policy
             .think(&self.dials, &oriented, &armies, &enlisted);
         let intents = orientation.emit(intents);
-        commands.extend(self.exec.apply(self.player, &obs, &intents));
+        let lowered = self.exec.apply(self.player, &obs, &intents);
+        for command in &lowered {
+            if let Command::Build { kind, anchor, .. } = command.command {
+                let oriented_anchor = orientation.anchor(anchor, kind.base_stats().size);
+                self.policy
+                    .record_dispatched_build(&oriented, kind, oriented_anchor);
+            }
+        }
+        commands.extend(lowered);
         commands
     }
 }

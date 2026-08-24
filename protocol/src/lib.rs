@@ -410,6 +410,76 @@ fn reject_unknown_nested_fields(request: &Request, wire: &serde_json::Value) -> 
     if let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
         return Err(format!("unknown field `{unknown}` in {field}"));
     }
+    match request {
+        Request::SendCommand { command, .. } => {
+            reject_unknown_command_value_fields(command, object)
+        }
+        Request::InjectEvent { .. } => Ok(()),
+        _ => unreachable!("only requests with nested wire values reach this point"),
+    }
+}
+
+fn reject_unknown_command_value_fields(
+    command: &Command,
+    wire: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    match command {
+        Command::Move { .. } | Command::AttackMove { .. } | Command::Advance { .. } => {
+            reject_unknown_object_fields(wire.get("goal"), "command.goal", &["x", "y"])
+        }
+        Command::Attack { .. } | Command::FocusFire { .. } => {
+            reject_unknown_object_fields(wire.get("target"), "command.target", &["kind", "id"])
+        }
+        Command::Harvest { .. } => {
+            reject_unknown_object_fields(wire.get("node"), "command.node", &["x", "y"])
+        }
+        Command::Patrol { .. } => {
+            let Some(waypoints) = wire.get("waypoints").and_then(serde_json::Value::as_array)
+            else {
+                return Ok(());
+            };
+            for (index, waypoint) in waypoints.iter().enumerate() {
+                reject_unknown_object_fields(
+                    Some(waypoint),
+                    &format!("command.waypoints[{index}]"),
+                    &["x", "y"],
+                )?;
+            }
+            Ok(())
+        }
+        Command::Build { .. } | Command::CancelFound { .. } => {
+            reject_unknown_object_fields(wire.get("anchor"), "command.anchor", &["x", "y"])
+        }
+        Command::SetRally { .. } => {
+            reject_unknown_object_fields(wire.get("rally"), "command.rally", &["x", "y"])
+        }
+        Command::Unload { .. } => {
+            reject_unknown_object_fields(wire.get("at"), "command.at", &["x", "y"])
+        }
+        Command::Stop { .. }
+        | Command::Train { .. }
+        | Command::Cancel { .. }
+        | Command::Repair { .. }
+        | Command::Salvage { .. }
+        | Command::CancelTrain { .. }
+        | Command::Surrender
+        | Command::RepairUnit { .. }
+        | Command::UpgradeBuilding { .. }
+        | Command::Load { .. } => Ok(()),
+    }
+}
+
+fn reject_unknown_object_fields(
+    value: Option<&serde_json::Value>,
+    path: &str,
+    allowed: &[&str],
+) -> Result<(), String> {
+    let Some(object) = value.and_then(serde_json::Value::as_object) else {
+        return Ok(());
+    };
+    if let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(format!("unknown field `{unknown}` in {path}"));
+    }
     Ok(())
 }
 
@@ -1116,6 +1186,46 @@ mod tests {
             let error = serde_json::from_str::<RequestEnvelope>(line)
                 .expect_err("a misspelled request field must fail closed");
             assert!(error.to_string().contains("unknown field"), "{error}");
+        }
+    }
+
+    #[test]
+    fn typos_inside_command_values_are_rejected() {
+        for (line, path) in [
+            (
+                r#"{"id":8,"method":"send_command","params":{"player":0,"command":{"type":"move","units":[],"goal":{"x":3,"y":4,"z":99}}}}"#,
+                "command.goal",
+            ),
+            (
+                r#"{"id":9,"method":"send_command","params":{"player":0,"command":{"type":"attack","units":[],"target":{"kind":"unit","id":2,"player":1}}}}"#,
+                "command.target",
+            ),
+            (
+                r#"{"id":10,"method":"send_command","params":{"player":0,"command":{"type":"harvest","units":[],"node":{"x":3,"y":4,"amount":99}}}}"#,
+                "command.node",
+            ),
+            (
+                r#"{"id":11,"method":"send_command","params":{"player":0,"command":{"type":"patrol","units":[],"waypoints":[{"x":3,"y":4},{"x":5,"y":6,"wait":10}]}}}"#,
+                "command.waypoints[1]",
+            ),
+            (
+                r#"{"id":12,"method":"send_command","params":{"player":0,"command":{"type":"build","units":[],"kind":"turret","anchor":{"x":3,"y":4,"rotation":1}}}}"#,
+                "command.anchor",
+            ),
+            (
+                r#"{"id":13,"method":"send_command","params":{"player":0,"command":{"type":"set_rally","building":2,"rally":{"x":3,"y":4,"radius":2}}}}"#,
+                "command.rally",
+            ),
+            (
+                r#"{"id":14,"method":"send_command","params":{"player":0,"command":{"type":"unload","transport":2,"at":{"x":3,"y":4,"spread":2},"queue":false}}}"#,
+                "command.at",
+            ),
+        ] {
+            let error = serde_json::from_str::<RequestEnvelope>(line)
+                .expect_err("an unknown field nested inside a command must fail closed");
+            let message = error.to_string();
+            assert!(message.contains("unknown field"), "{message}");
+            assert!(message.contains(path), "{message}");
         }
     }
 

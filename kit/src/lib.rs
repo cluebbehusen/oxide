@@ -5,6 +5,7 @@ pub mod matchup;
 pub mod perceptual;
 pub mod playback;
 pub mod render;
+mod replay;
 pub mod runner;
 pub mod stats;
 
@@ -19,3 +20,5 @@ pub const MAX_REPLAY_TICKS: u64 = 2_000_000;
 /// The concrete session replay type every Oxide surface records,
 /// saves, and replays.
 pub type GameReplay = chassis::replay::Replay<Scenario, PlayerCommand>;
+
+pub use replay::load_replay;

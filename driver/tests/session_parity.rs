@@ -14,7 +14,7 @@
 
 use anyhow::{Context, Result, bail};
 use oxide_driver::client::Client;
-use oxide_driver::runner::{self, GameReplay};
+use oxide_driver::runner;
 use oxide_driver::session::{Session, serve_listener};
 use oxide_protocol::framing::Limits;
 use oxide_protocol::{Reply, Request, StateFilter, hash_hex};
@@ -186,7 +186,7 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
     let Reply::Hash(live) = client.call(Request::StateHash)? else {
         bail!("expected a hash reply");
     };
-    let replay = GameReplay::load(&replay_path)?;
+    let replay = oxide_kit::load_replay(&replay_path)?;
     let replayed = runner::run_replay(&replay, None, false)?;
     assert_eq!(
         hash_hex(replayed.hash()),

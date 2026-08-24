@@ -202,6 +202,20 @@ impl<S, C> Replay<S, C> {
         Self::load_with_limits(path, MAX_REPLAY_BYTES, MAX_REPLAY_COMMANDS)
     }
 
+    /// Reads a bounded replay file and delegates its wire format to a
+    /// game-specific decoder. The decoded replay still receives the shared
+    /// command-count check.
+    ///
+    /// Use this when a game must inspect versioned setup metadata before it
+    /// can produce the current `S`, without duplicating the file-size and
+    /// command-count boundary owned by chassis.
+    pub fn load_with_decoder(
+        path: impl AsRef<Path>,
+        decoder: impl FnOnce(&[u8]) -> Result<Self, ReplayError>,
+    ) -> Result<Self, ReplayError> {
+        Self::load_with_limits_and_decoder(path, MAX_REPLAY_BYTES, MAX_REPLAY_COMMANDS, decoder)
+    }
+
     fn load_with_limits(
         path: impl AsRef<Path>,
         max_bytes: usize,
@@ -211,6 +225,17 @@ impl<S, C> Replay<S, C> {
         S: DeserializeOwned,
         C: DeserializeOwned,
     {
+        Self::load_with_limits_and_decoder(path, max_bytes, max_commands, |bytes| {
+            Ok(serde_json::from_slice(bytes)?)
+        })
+    }
+
+    fn load_with_limits_and_decoder(
+        path: impl AsRef<Path>,
+        max_bytes: usize,
+        max_commands: usize,
+        decoder: impl FnOnce(&[u8]) -> Result<Self, ReplayError>,
+    ) -> Result<Self, ReplayError> {
         let file = std::fs::File::open(path)?;
         let length = file.metadata()?.len();
         if length > max_bytes as u64 {
@@ -227,7 +252,7 @@ impl<S, C> Replay<S, C> {
             )));
         }
 
-        let replay: Self = serde_json::from_slice(&bytes)?;
+        let replay = decoder(&bytes)?;
         replay.validate_command_count(max_commands)?;
         Ok(replay)
     }

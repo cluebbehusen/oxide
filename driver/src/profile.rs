@@ -76,7 +76,7 @@ pub fn run(options: &ProfileOptions<'_>) -> Result<ProfileReport> {
     // Validate before paying for a shell build or opening a window. The shell
     // remains the reproducer; this merely turns malformed input into a prompt
     // CLI error.
-    let record = GameReplay::load(&replay)
+    let record = oxide_kit::load_replay(&replay)
         .with_context(|| format!("loading replay {}", replay.display()))?;
     let total = record.meta.ticks.unwrap_or_else(|| {
         record

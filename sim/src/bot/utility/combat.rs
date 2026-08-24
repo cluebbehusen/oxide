@@ -94,6 +94,23 @@ impl UtilityPolicy {
             && !obs.my_units.iter().any(|u| u.id == id)
         {
             self.scout = None; // died on duty
+            self.scout_dispatch = None;
+        }
+        if let Some(id) = self.scout
+            && let Some(unit) = obs.my_units.iter().find(|unit| unit.id == id)
+            && unit.idle
+            && unit.kind.stats().domain == Domain::Ground
+            && let Some((sent, from, to)) = self.scout_dispatch
+            && sent == id
+            && from.chebyshev(to) > 1
+            && unit.tile.chebyshev(from) <= 1
+        {
+            // A ground Move with no route goes idle where it started.
+            // Stop cycling the same island shoreline and ask production
+            // for the faction's dedicated scout flyer.
+            self.scout = None;
+            self.scout_dispatch = None;
+            self.air_scout_needed = true;
         }
         if !due {
             // Between sweeps the scout goes back in the pool.
@@ -101,6 +118,7 @@ impl UtilityPolicy {
                 && obs.my_units.iter().any(|u| u.id == id && u.idle)
             {
                 self.scout = None;
+                self.scout_dispatch = None;
             }
             return;
         }
@@ -122,6 +140,7 @@ impl UtilityPolicy {
                 .filter(|u| {
                     !enlisted.contains(&u.id) && (u.kind.stats().harvest.is_some() || u.idle)
                 })
+                .filter(|u| !self.air_scout_needed || u.kind.role() == crate::stats::Role::Scout)
                 .min_by_key(|u| {
                     let preference = match u.kind {
                         UnitKind::Kestrel | UnitKind::Gnat => (0, 0),
@@ -171,6 +190,13 @@ impl UtilityPolicy {
             leg
         };
         let to = self.passable_near(obs, to);
+        let from = obs
+            .my_units
+            .iter()
+            .find(|unit| unit.id == scout)
+            .map(|unit| unit.tile)
+            .expect("the selected scout came from this observation");
+        self.scout_dispatch = Some((scout, from, to));
         intents.push(Intent::Scout { unit: scout, to });
     }
 

@@ -10,7 +10,7 @@
 //! ```
 
 use crate::client::Client;
-use crate::runner::{self, GameReplay};
+use crate::runner;
 use anyhow::{Context, Result, bail};
 use oxide_protocol::{RawEvent, Reply, Request, StateFilter};
 use oxide_sim::{Command, PlayerId, UnitId, UnitKind};
@@ -357,7 +357,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     client.call(Request::SaveReplay {
         path: replay_path.clone(),
     })?;
-    let replay = GameReplay::load(&replay_path).context("reading saved replay")?;
+    let replay = oxide_kit::load_replay(&replay_path).context("reading saved replay")?;
     let replayed = runner::run_replay(&replay, Some(live.tick), false)?;
     checks.note(
         "saved replay reproduces the live session",

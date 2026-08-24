@@ -53,7 +53,8 @@ pub struct PlaybackSession {
 
 impl PlaybackSession {
     pub fn open(path: &str) -> Result<Self> {
-        let replay = GameReplay::load(path).with_context(|| format!("loading replay {path}"))?;
+        let replay =
+            oxide_kit::load_replay(path).with_context(|| format!("loading replay {path}"))?;
         Self::from_replay(replay)
     }
 

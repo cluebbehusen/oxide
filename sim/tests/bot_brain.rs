@@ -517,6 +517,155 @@ fn a_stranded_brain_spends_only_on_one_recovery_harvester() {
 }
 
 #[test]
+fn a_build_dropped_during_lowering_does_not_poison_its_preferred_anchor() {
+    let mut scenario = open_arena(
+        (0..5)
+            .map(|offset| unit(0, UnitKind::Harvester, 3 + offset, 3))
+            .collect(),
+    );
+    scenario.players[0].scrap = 2_000;
+    let mut salvage_row = scenario.map[6].as_bytes().to_vec();
+    salvage_row[12] = b's';
+    scenario.map[6] = String::from_utf8(salvage_row).unwrap();
+    let mut state = scenario.build().expect("the construction arena builds");
+    let mut continuing = Brain::balanced(PlayerId(0), scenario.seed);
+
+    let opening = continuing.act(&state);
+    assert_eq!(
+        opening
+            .iter()
+            .filter(|command| matches!(command.command, Command::Harvest { .. }))
+            .count(),
+        5,
+        "the opening economy claims every idle worker before construction lowers"
+    );
+    assert!(
+        opening
+            .iter()
+            .all(|command| !matches!(command.command, Command::Build { .. })),
+        "with every worker already claimed, the executive cannot dispatch the build"
+    );
+
+    state.tick(&opening);
+    for _ in 1..8 {
+        state.tick(&[]);
+    }
+    assert_eq!(state.current_tick(), 8);
+
+    let fabricator_anchor = |commands: &[PlayerCommand]| {
+        commands.iter().find_map(|command| match command.command {
+            Command::Build {
+                kind: BuildingKind::Fabricator,
+                anchor,
+                ..
+            } => Some(anchor),
+            _ => None,
+        })
+    };
+    let mut fresh = Brain::balanced(PlayerId(0), scenario.seed);
+    let preferred = fabricator_anchor(&fresh.act(&state))
+        .expect("a fresh commander dispatches its preferred Fabricator site");
+    let retried = fabricator_anchor(&continuing.act(&state))
+        .expect("the continuing commander retries the deferred Fabricator");
+
+    assert_eq!(
+        retried, preferred,
+        "an intent that emitted no Build command is not evidence that the site was refused"
+    );
+
+    // Conversely, an emitted command that produces no site is refusal
+    // evidence. Leave the valid command unapplied to model that outcome;
+    // the next audit must move away from the now-proven bad anchor.
+    for _ in 0..8 {
+        state.tick(&[]);
+    }
+    let after_refusal = fabricator_anchor(&continuing.act(&state))
+        .expect("the commander searches for another Fabricator site after refusal");
+    assert_ne!(
+        after_refusal, retried,
+        "a dispatched Build that never appears must still blacklist its anchor"
+    );
+}
+
+#[test]
+fn a_brain_without_an_authored_aircraft_discovers_an_island_opponent() {
+    let mut scenario = open_arena(
+        (0..5)
+            .map(|offset| unit(0, UnitKind::Harvester, 3 + offset, 3))
+            .collect(),
+    );
+    for row in 1..scenario.map.len() - 1 {
+        let mut bytes = scenario.map[row].as_bytes().to_vec();
+        bytes[12] = b'#';
+        scenario.map[row] = String::from_utf8(bytes).unwrap();
+    }
+    scenario.players[0].scrap = 2_000;
+    scenario.buildings.extend([
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 5,
+            y: 7,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Airworks,
+            x: 8,
+            y: 7,
+        },
+    ]);
+    let mut state = scenario.build().expect("the island arena builds");
+    let mut brain = Brain::balanced(PlayerId(0), scenario.seed);
+    assert!(
+        Observation::fog_honest(&state, PlayerId(0))
+            .enemy_buildings
+            .is_empty(),
+        "the opposing shore starts outside vision"
+    );
+    let mut saw_no_route = false;
+    let mut saw_scout_flyer = false;
+
+    for _ in 0..1_200 {
+        let commands = brain.act(&state);
+        let report = state.tick(&commands);
+        saw_no_route |= report.events.iter().any(|event| {
+            matches!(
+                event,
+                oxide_sim::Event::OrderStalled {
+                    player: PlayerId(0),
+                    reason: oxide_sim::StallReason::NoRoute,
+                    ..
+                }
+            )
+        });
+        saw_scout_flyer |= state.units().iter().any(|unit| {
+            unit.player == PlayerId(0) && unit.kind.role() == oxide_sim::stats::Role::Scout
+        });
+        if !Observation::fog_honest(&state, PlayerId(0))
+            .enemy_buildings
+            .is_empty()
+        {
+            break;
+        }
+    }
+
+    assert!(
+        saw_no_route,
+        "the ground sweep must prove the severed route"
+    );
+    assert!(
+        saw_scout_flyer,
+        "the Airworks must replace the stranded ground scout"
+    );
+    assert!(
+        !Observation::fog_honest(&state, PlayerId(0))
+            .enemy_buildings
+            .is_empty(),
+        "the replacement flyer must reveal the enemy shore"
+    );
+}
+
+#[test]
 fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
     // Four sentinels form an army, push into a hopeless fight (ten enemy
     // sentinels), and the executive pulls them out: Staging -> Pushing ->

@@ -229,7 +229,7 @@ pub struct UtilityPolicy {
     raided: bool,
     /// Turret count at the last think.
     turrets_seen: usize,
-    /// Build sites requested last think, by anchor — one that never
+    /// Build commands dispatched last think, by anchor — one that never
     /// appeared was rejected by ground truth the observation lacks
     /// (an unseen unit in the footprint, say); blacklist the anchor.
     pending_sites: Vec<TilePos>,
@@ -240,6 +240,13 @@ pub struct UtilityPolicy {
     scout: Option<UnitId>,
     /// Which leg of the search sweep the scout is on.
     scout_leg: u32,
+    /// The last scout order: unit, starting tile, and destination. An
+    /// idle ground unit still at the start is direct no-route testimony.
+    scout_dispatch: Option<(UnitId, TilePos, TilePos)>,
+    /// A ground scout proved that reconnaissance needs an aircraft.
+    /// This keeps one scout-role flyer alive or queued so lower-priority
+    /// purchases cannot strand an island seat behind its own shoreline.
+    air_scout_needed: bool,
     /// Tick of the last intel refresh toward a known enemy base.
     scouted_at: u64,
     /// Whether enemy air has ever been sighted — the sky stays suspect
@@ -382,6 +389,27 @@ impl UtilityPolicy {
             } else if !self.dead_anchors.contains(&anchor) {
                 self.dead_anchors.push(anchor);
             }
+        }
+    }
+
+    /// Remember a newly dispatched construction command for next
+    /// think's refusal audit. Existing sites are orphan relief, and an
+    /// Extractor frame has only one legal anchor, so neither may enter
+    /// the site blacklist.
+    pub(super) fn record_dispatched_build(
+        &mut self,
+        obs: &Observation,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) {
+        if kind != BuildingKind::Extractor
+            && !obs
+                .my_buildings
+                .iter()
+                .any(|building| building.anchor == anchor)
+            && !self.pending_sites.contains(&anchor)
+        {
+            self.pending_sites.push(anchor);
         }
     }
 

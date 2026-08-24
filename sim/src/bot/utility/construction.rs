@@ -103,7 +103,6 @@ impl UtilityPolicy {
                     && let Some(anchor) = self.placement_near(obs, BuildingKind::Foundry, focus)
                 {
                     *budget -= cost;
-                    self.pending_sites.push(anchor);
                     intents.push(Intent::Build {
                         kind: BuildingKind::Foundry,
                         anchor,
@@ -122,7 +121,6 @@ impl UtilityPolicy {
                     && let Some(anchor) = self.placement_near(obs, kind, home)
                 {
                     *budget -= cost;
-                    self.pending_sites.push(anchor);
                     intents.push(Intent::Build { kind, anchor });
                     return true;
                 }
@@ -211,7 +209,6 @@ impl UtilityPolicy {
                 && let Some(anchor) = self.placement_near(obs, BuildingKind::Fabricator, home)
             {
                 *budget -= cost;
-                self.pending_sites.push(anchor);
                 intents.push(Intent::Build {
                     kind: BuildingKind::Fabricator,
                     anchor,
@@ -237,7 +234,6 @@ impl UtilityPolicy {
                 && let Some(anchor) = self.placement_near(obs, BuildingKind::Turret, node)
             {
                 *budget -= cost;
-                self.pending_sites.push(anchor);
                 intents.push(Intent::Build {
                     kind: BuildingKind::Turret,
                     anchor,
@@ -284,7 +280,6 @@ impl UtilityPolicy {
                         self.placement_near(obs, BuildingKind::ScuttleCharge, focus)
                     {
                         *budget -= cost;
-                        self.pending_sites.push(anchor);
                         intents.push(Intent::Build {
                             kind: BuildingKind::ScuttleCharge,
                             anchor,
@@ -314,7 +309,6 @@ impl UtilityPolicy {
                 && let Some(anchor) = self.placement_near(obs, BuildingKind::FlakTurret, node)
             {
                 *budget -= cost;
-                self.pending_sites.push(anchor);
                 intents.push(Intent::Build {
                     kind: BuildingKind::FlakTurret,
                     anchor,
@@ -345,7 +339,6 @@ impl UtilityPolicy {
                 && let Some(anchor) = self.placement_near(obs, BuildingKind::Array, home)
             {
                 *budget -= cost;
-                self.pending_sites.push(anchor);
                 intents.push(Intent::Build {
                     kind: BuildingKind::Array,
                     anchor,
@@ -380,7 +373,6 @@ impl UtilityPolicy {
                 && let Some(anchor) = self.placement_near(obs, BuildingKind::Reclaimer, home)
             {
                 *budget -= cost;
-                self.pending_sites.push(anchor);
                 intents.push(Intent::Build {
                     kind: BuildingKind::Reclaimer,
                     anchor,

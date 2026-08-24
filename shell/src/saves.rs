@@ -5,7 +5,6 @@
 //! and an honest compatibility verdict: replays reproduce only on the
 //! sim that wrote them, and the browser says so instead of guessing.
 
-use crate::game::GameReplay;
 use oxide_sim::SIM_VERSION;
 use std::path::PathBuf;
 
@@ -82,7 +81,7 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(replay) = GameReplay::load(&path) else {
+        let Ok(replay) = oxide_kit::load_replay(&path) else {
             continue;
         };
         let stem = path
@@ -196,6 +195,7 @@ pub fn discover() -> Vec<ReplayEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::GameReplay;
 
     #[test]
     fn the_shelf_badge_compares_versions_and_never_guesses() {

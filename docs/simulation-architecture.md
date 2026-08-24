@@ -233,10 +233,12 @@ legality authority. `Brain::overseer` is a separate stable QA anchor.
 `BotConfig` deliberately has one maintained controller, `Scripted`. Replays
 record the commands a bot emitted, so read-only playback does not need to
 reconstruct or run that controller. Replay compatibility remains governed by the
-simulation version rather than by retaining obsolete bot implementations. The
-deserializer recognizes known retired bot-configuration shapes only to normalize
-their setup metadata and reach that version check; serialization emits only the
-current `Scripted` shape.
+simulation version rather than by retaining obsolete bot implementations.
+Authored scenarios and current-version replays accept only the current
+`Scripted` shape. The Oxide replay loader recognizes known retired
+bot-configuration shapes only inside a replay stamped with another simulation
+version, normalizing that setup metadata so deliberate archaeology can reach the
+version check. Serialization emits only the current shape.
 
 ## Maintained entry points
 

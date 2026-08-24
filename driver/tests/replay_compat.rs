@@ -39,7 +39,7 @@ fn legacy_bot_replay() -> TempReplay {
 #[test]
 fn legacy_bot_setup_reaches_version_validation_and_the_archaeology_flag() {
     let fixture = legacy_bot_replay();
-    let replay = GameReplay::load(&fixture.0).expect("legacy setup remains loadable");
+    let replay = oxide_kit::load_replay(&fixture.0).expect("legacy setup remains loadable");
     assert!(matches!(
         replay.validate(Some(SIM_VERSION)),
         Err(ReplayError::VersionMismatch { .. })

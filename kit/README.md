@@ -10,6 +10,8 @@ while reusable game-independent primitives stay in `chassis`.
 
 ## Main pieces
 
+- `load_replay` owns bounded Oxide replay loading and version-scoped setup
+  compatibility.
 - `runner` executes scenarios and replays headlessly.
 - `playback` provides bounded seeking and replay-viewer state.
 - `stats` derives match summaries from simulation truth.

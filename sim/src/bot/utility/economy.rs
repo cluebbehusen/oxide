@@ -85,6 +85,38 @@ impl UtilityPolicy {
             Self::capital_reserve(dials, obs)
         };
 
+        // A ground scout that bounced off a severed route has proved
+        // that the next reconnaissance leg must fly. Keep exactly one
+        // faction scout alive or queued once an Airworks can build it.
+        if dials.scouting && self.air_scout_needed {
+            let scout_kind = crate::stats::Role::Scout.unit_for(obs.faction);
+            let scout_count = alive(scout_kind) + queued(scout_kind);
+            let airworks = obs
+                .my_buildings
+                .iter()
+                .enumerate()
+                .filter(|(_, building)| building.kind == BuildingKind::Airworks && building.built)
+                .min_by_key(|(_, building)| building.id);
+            if scout_count == 0
+                && let Some((queue_index, airworks)) = airworks
+                && obs.my_queues[queue_index].len() < 2
+            {
+                let price = scout_kind.stats().cost;
+                if *budget >= price {
+                    *budget -= price;
+                    intents.push(Intent::TrainAt {
+                        building: airworks.id,
+                        kind: scout_kind,
+                    });
+                } else {
+                    // Reconnaissance is the prerequisite for every
+                    // target-driven island purchase, so cheaper drips
+                    // must not spend its partial fund.
+                    *budget = 0;
+                }
+            }
+        }
+
         // The ferry fund: with a built Airworks, a known island target,
         // a squad worth lifting, and no lifter, the Skyhook's price is
         // banked ahead of every other military purchase — the wing and
