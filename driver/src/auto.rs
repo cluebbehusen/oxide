@@ -46,8 +46,8 @@ pub(crate) fn build_shell_executable() -> Result<PathBuf> {
 }
 
 /// Builds either the ordinary development shell or the optimized shell used
-/// for native frame profiling. Profiling a debug build mostly measures
-/// assertions and optimizer omissions, so callers must opt into that shape.
+/// for native frame profiling. Callers choose explicitly because debug-build
+/// timing is not representative of the shipped executable.
 pub(crate) fn build_shell_executable_for(release: bool) -> Result<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut command = std::process::Command::new("cargo");
@@ -77,7 +77,12 @@ pub(crate) fn build_shell_executable_for(release: bool) -> Result<PathBuf> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    shell_executable_from_cargo_output(&output.stdout)
+        .context("cargo did not report the Oxide executable")
+}
+
+fn shell_executable_from_cargo_output(stdout: &[u8]) -> Option<PathBuf> {
+    for line in String::from_utf8_lossy(stdout).lines() {
         let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
@@ -85,10 +90,10 @@ pub(crate) fn build_shell_executable_for(release: bool) -> Result<PathBuf> {
             && message["target"]["name"] == "Oxide"
             && let Some(executable) = message["executable"].as_str()
         {
-            return Ok(PathBuf::from(executable));
+            return Some(PathBuf::from(executable));
         }
     }
-    bail!("cargo did not report the Oxide executable")
+    None
 }
 
 pub(crate) fn isolate_home(command: &mut std::process::Command, home: &std::path::Path) {
@@ -166,13 +171,8 @@ pub fn press_key(client: &mut Client, key: Key) -> Result<()> {
     inject(client, RawEvent::KeyUp { key })
 }
 
-/// Selects the row whose label contains `needle` (case-insensitive)
-/// with keyboard navigation, then activates it with Enter.
-pub fn activate_labeled(client: &mut Client, needle: &str) -> Result<()> {
-    let view = ui(client)?;
+fn labeled_activation_keys(view: &UiView, needle: &str) -> Result<Vec<Key>> {
     let lower = needle.to_lowercase();
-    // Exact label first ('play' must never land on 'Replays'), then
-    // substring for rows that carry decorations.
     let target = view
         .items
         .iter()
@@ -189,10 +189,19 @@ pub fn activate_labeled(client: &mut Client, needle: &str) -> Result<()> {
     } else {
         (Key::Up, selected - target)
     };
-    for _ in 0..steps {
+    let mut keys = vec![key; steps];
+    keys.push(Key::Enter);
+    Ok(keys)
+}
+
+/// Selects the row whose label contains `needle` (case-insensitive)
+/// with keyboard navigation, then activates it with Enter.
+pub fn activate_labeled(client: &mut Client, needle: &str) -> Result<()> {
+    let view = ui(client)?;
+    for key in labeled_activation_keys(&view, needle)? {
         press_key(client, key)?;
     }
-    press_key(client, Key::Enter)
+    Ok(())
 }
 
 /// Fails loudly when the shell is not on the expected screen.
@@ -202,4 +211,105 @@ pub fn assert_mode(client: &mut Client, expected: &str, at: &str) -> Result<()> 
         bail!("after {at}: expected mode '{expected}', shell reports '{mode}'");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    fn menu(items: &[&str], selected: Option<usize>) -> UiView {
+        UiView {
+            mode: "home".to_string(),
+            title: None,
+            selected,
+            items: items.iter().map(|item| (*item).to_string()).collect(),
+            visible_range: None,
+            hover: None,
+            chrome: None,
+        }
+    }
+
+    #[test]
+    fn cargo_artifact_selection_ignores_noise_and_other_targets() {
+        let output = br#"
+not json
+{"reason":"compiler-artifact","target":{"name":"oxide-sim"},"executable":"/tmp/wrong"}
+{"reason":"compiler-artifact","target":{"name":"Oxide"},"executable":null}
+{"reason":"build-finished","success":true}
+{"reason":"compiler-artifact","target":{"name":"Oxide"},"executable":"/tmp/Oxide"}
+"#;
+        assert_eq!(
+            shell_executable_from_cargo_output(output),
+            Some(PathBuf::from("/tmp/Oxide"))
+        );
+        assert_eq!(shell_executable_from_cargo_output(b"not json\n"), None);
+    }
+
+    #[test]
+    fn isolated_shells_override_every_platform_writable_root() {
+        let home = PathBuf::from("/tmp/oxide-isolated-home");
+        let mut command = std::process::Command::new("Oxide");
+        command.env("HOME", "/host/home");
+        command.env("XDG_CONFIG_HOME", "/host/config");
+        command.env("XDG_DATA_HOME", "/host/data");
+        command.env("APPDATA", "C:/host/data");
+
+        isolate_home(&mut command, &home);
+
+        let value = |key: &str| {
+            command
+                .get_envs()
+                .find(|(name, _)| *name == OsStr::new(key))
+                .and_then(|(_, value)| value)
+                .map(std::ffi::OsStr::to_owned)
+        };
+        assert_eq!(value("HOME"), Some(home.clone().into_os_string()));
+        assert_eq!(
+            value("XDG_CONFIG_HOME"),
+            Some(home.join(".config").into_os_string())
+        );
+        assert_eq!(
+            value("XDG_DATA_HOME"),
+            Some(home.join(".local/share").into_os_string())
+        );
+        assert_eq!(
+            value("APPDATA"),
+            Some(home.join("AppData").into_os_string())
+        );
+    }
+
+    #[test]
+    fn labeled_activation_prefers_an_exact_row_over_an_earlier_substring() {
+        let view = menu(&["REPLAYS", "PLAY", "SETTINGS"], Some(0));
+        assert_eq!(
+            labeled_activation_keys(&view, "play").unwrap(),
+            vec![Key::Down, Key::Enter]
+        );
+    }
+
+    #[test]
+    fn labeled_activation_navigates_in_both_directions_and_defaults_to_the_first_row() {
+        let view = menu(&["PLAY", "SETTINGS", "QUIT"], Some(2));
+        assert_eq!(
+            labeled_activation_keys(&view, "play").unwrap(),
+            vec![Key::Up, Key::Up, Key::Enter]
+        );
+
+        let no_selection = menu(&["PLAY", "SETTINGS", "QUIT"], None);
+        assert_eq!(
+            labeled_activation_keys(&no_selection, "settings").unwrap(),
+            vec![Key::Down, Key::Enter]
+        );
+    }
+
+    #[test]
+    fn labeled_activation_reports_the_visible_rows_when_no_row_matches() {
+        let view = menu(&["PLAY", "SETTINGS"], Some(0));
+        let error = labeled_activation_keys(&view, "credits").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "no row containing 'credits' in [\"PLAY\", \"SETTINGS\"]"
+        );
+    }
 }

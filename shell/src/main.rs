@@ -1,13 +1,4 @@
-//! The Oxide shell: a thin macroquad window over the deterministic sim.
-//!
-//! This file is only the doorstep — argument parsing, window
-//! configuration, and the startup trace. The session coordinator (the
-//! `App` struct, the payload-carrying `Screen` enum, the frame loop,
-//! and the debug dispatch) lives in [`app`].
-//!
-//! Nothing in this crate may affect game outcomes except by staging
-//! tick-stamped commands. If a feature can't be expressed that way, it
-//! belongs in the sim.
+#![doc = include_str!("../README.md")]
 
 mod action;
 mod app;
@@ -227,5 +218,53 @@ mod tests {
         assert!(trace_active(true, true, false));
         assert!(trace_active(false, false, true));
         assert!(!trace_active(false, false, false));
+    }
+
+    #[test]
+    fn public_numeric_options_enforce_their_documented_envelopes() {
+        assert_eq!(parse_window("640x400"), Ok((640, 400)));
+        assert_eq!(parse_window("16384x16384"), Ok((16_384, 16_384)));
+        for invalid in ["800", "639x400", "640x399", "16385x400", "640x16385"] {
+            assert!(parse_window(invalid).is_err(), "accepted {invalid}");
+        }
+
+        for valid in ["0.05", "1", "64"] {
+            assert!(parse_speed(valid).is_ok(), "refused {valid}");
+        }
+        for invalid in ["0", "0.049", "64.1", "NaN", "inf"] {
+            assert!(parse_speed(invalid).is_err(), "accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn modes_that_depend_on_the_debug_server_are_rejected_without_it() {
+        for option in ["--automation", "--profile-frames", "--debug-idle-timeout"] {
+            let mut args = vec!["oxide-shell", option];
+            if option == "--debug-idle-timeout" {
+                args.push("60");
+            }
+            assert!(Args::try_parse_from(args).is_err(), "accepted {option}");
+        }
+
+        assert!(
+            Args::try_parse_from([
+                "oxide-shell",
+                "--watch",
+                "match.json",
+                "--scenario",
+                "map.json"
+            ])
+            .is_err()
+        );
+        assert!(
+            Args::try_parse_from([
+                "oxide-shell",
+                "--watch",
+                "match.json",
+                "--replay",
+                "save.json"
+            ])
+            .is_err()
+        );
     }
 }

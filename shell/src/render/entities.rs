@@ -13,7 +13,8 @@ use super::*;
 pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &InputState) {
     let Some(kind) = input.placing else { return };
     let world = game.camera.to_world(input.mouse);
-    let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let anchor = crate::input::placement_anchor(game, kind, clicked);
     let zoom = game.camera.zoom;
     let (w, h) = kind.base_stats().size;
     let queue = input.placing_stroke.is_some() || input.resolver.shift_held();
@@ -1506,8 +1507,9 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
     // The armed placement ghost carries its rings to the cursor.
     if let Some(kind) = input.placing {
         let world = game.camera.to_world(input.mouse);
-        let anchor = vec2(world.x.floor(), world.y.floor());
-        building_rings(anchor, kind, 0);
+        let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+        let anchor = crate::input::placement_anchor(game, kind, clicked);
+        building_rings(vec2(anchor.x as f32, anchor.y as f32), kind, 0);
     }
 }
 

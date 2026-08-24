@@ -464,6 +464,7 @@ mod tests {
     #[test]
     fn opens_on_a_page_and_escape_leaves() {
         let mut screen = CodexScreen::open();
+        assert_eq!(screen.mode_name(), "codex");
         assert_eq!(
             screen.selected_entry(),
             Some(Entry::Unit(UnitKind::Harvester)),

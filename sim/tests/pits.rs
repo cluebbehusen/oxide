@@ -331,7 +331,7 @@ fn a_chasm_map_reproduces_bit_identically() {
             unit(0, UnitKind::Wisp, 9, 7),
         ],
     );
-    let mut a = scenario.clone().build().unwrap();
+    let mut a = scenario.build().unwrap();
     let mut b = scenario.build().unwrap();
     let orders = |state: &State| {
         vec![cmd(

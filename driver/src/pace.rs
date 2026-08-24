@@ -17,11 +17,11 @@
 //! into a single queue — a row that answers to a single command is
 //! worth more here than the packing.
 //!
-//! Measurement only: the medians move with every artifact generation
-//! and every balance bless, so nothing gates on them. The one thing
-//! authored from this output is `ScenarioMeta.duration` — the browser's
-//! p25-p75 band, an artifact-stamped measurement re-stamped after any
-//! bless that moves the clock, never a gate.
+//! Measurement only: the sweep uses the stable Overseer QA controller,
+//! not the player-facing opponent, and nothing gates on its medians.
+//! Treat the output as a geometry and decisiveness diagnostic.
+//! `ScenarioMeta.duration` is player-facing metadata and needs current
+//! opponent measurements plus human play evidence.
 
 use crate::sweep::{SweepOutcome, SweepReport, quantile, run_sweep};
 use anyhow::{Context, Result};
@@ -252,8 +252,8 @@ mod tests {
     fn the_slate_rows_every_duel_map_and_admits_full_censoring() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios");
         let slate = run_pace_sweep(dir, 1, 20, 3_000).unwrap();
-        // Five 1v1 maps survived the 0.15 roster contraction; the new
-        // format slots grow the roster back from here.
+        // This is a broad directory probe rather than a fixed roster
+        // count, so adding or retiring maps does not make it brittle.
         assert!(slate.per_map.len() >= 5, "the 1v1 roster is present");
         assert_eq!(slate.decided, 0);
         assert_eq!(slate.undecided, slate.matches);

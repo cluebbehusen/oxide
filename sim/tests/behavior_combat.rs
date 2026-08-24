@@ -45,6 +45,96 @@ fn attack_command_kills_and_reports() {
 }
 
 #[test]
+fn avalanche_backs_out_of_its_dead_zone_before_firing() {
+    let scenario = Scenario {
+        name: "avalanche-dead-zone".into(),
+        seed: 43,
+        map: vec![
+            "########################".into(),
+            "#1.....................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#...................2..#".into(),
+            "#......................#".into(),
+            "########################".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![unit(0, UnitKind::Avalanche, 10, 5)],
+        buildings: vec![BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Fabricator,
+            x: 12,
+            y: 4,
+        }],
+        meta: None,
+    };
+    let mut state = scenario.build().unwrap();
+    let avalanche = state.units()[0].id;
+    let target = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Fabricator)
+        .unwrap()
+        .id;
+    let initial_pos = state.unit(avalanche).unwrap().pos;
+    let initial_distance = initial_pos.dist(
+        state
+            .building(target)
+            .unwrap()
+            .closest_point_to(initial_pos),
+    );
+
+    let mut events = state
+        .tick(&[cmd(
+            0,
+            Command::Attack {
+                units: vec![avalanche],
+                target: Target::Building(target),
+                queue: false,
+            },
+        )])
+        .events;
+    events.extend(run_until(&mut state, 500, |_, events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                Event::ShellLaunched {
+                    shooter: Target::Unit(id),
+                    ..
+                } if *id == avalanche
+            )
+        })
+    }));
+
+    let fired = events.iter().find_map(|event| match event {
+        Event::ShellLaunched {
+            shooter: Target::Unit(id),
+            from,
+            to,
+            ..
+        } if *id == avalanche => Some((*from, *to)),
+        _ => None,
+    });
+    let (from, to) = fired.expect("the Avalanche must escape its dead zone and fire");
+    let weapon = UnitKind::Avalanche.stats().weapons[0];
+    assert!(
+        from.dist_sq(to) >= weapon.minimum_range * weapon.minimum_range,
+        "the Avalanche fired inside its dead zone"
+    );
+    assert!(
+        initial_distance < weapon.minimum_range,
+        "test premise: the target starts inside the dead zone"
+    );
+    assert!(
+        from.dist(state.building(target).unwrap().closest_point_to(from)) > initial_distance,
+        "the Avalanche must open distance instead of closing on the target"
+    );
+}
+
+#[test]
 fn attack_move_engages_on_the_way_then_resumes() {
     // A wider arena than `arena()`: the enemy Foundry must sit outside
     // aggro range of the march route, or the marcher will (correctly)

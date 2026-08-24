@@ -208,3 +208,47 @@ pub fn save_png(state: &State, path: &std::path::Path) -> Result<()> {
         .save_png(path)
         .with_context(|| format!("writing {}", path.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("oxide-kit-render-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&path).ok();
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn save_png_creates_parents_and_writes_the_canonical_render() {
+        let dir = scratch("save");
+        let path = dir.join("nested/state.png");
+        let state = oxide_sim::Scenario::skirmish().build().unwrap();
+
+        save_png(&state, &path).unwrap();
+
+        let saved = std::fs::read(&path).unwrap();
+        assert_eq!(saved, png_bytes(&state).unwrap());
+        let decoded = Pixmap::decode_png(&saved).expect("saved bytes are a PNG");
+        assert_eq!(decoded.width(), state.map().width() as u32 * TILE_PX as u32);
+        assert_eq!(
+            decoded.height(),
+            state.map().height() as u32 * TILE_PX as u32
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn save_png_reports_a_parent_that_cannot_be_created() {
+        let dir = scratch("bad-parent");
+        let blocked = dir.join("not-a-directory");
+        std::fs::write(&blocked, b"existing file").unwrap();
+        let state = oxide_sim::Scenario::skirmish().build().unwrap();
+
+        assert!(save_png(&state, &blocked.join("state.png")).is_err());
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"existing file");
+        std::fs::remove_dir_all(dir).ok();
+    }
+}

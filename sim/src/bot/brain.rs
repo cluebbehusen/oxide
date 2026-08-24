@@ -11,7 +11,7 @@ use super::executive::Executive;
 use super::observation::Observation;
 use super::orient::Orientation;
 use super::utility::{Dials, UtilityPolicy};
-use crate::command::PlayerCommand;
+use crate::command::{Command, PlayerCommand};
 use crate::ids::PlayerId;
 use crate::state::State;
 use chassis::grid::TilePos;
@@ -50,11 +50,14 @@ impl Brain {
         }
     }
 
-    /// The Overseer: the scripted commander with the whole 0.15 tree
-    /// switched on. Training infrastructure ONLY — it bootstraps the
-    /// gym-v9 retrain as demonstration source, league anchor, and
-    /// yardstick, and is deliberately not reachable from any player
-    /// surface (no scenario field, no wizard dial, no SeatBot arm).
+    /// The fair, fog-honest rules-based opponent used by normal matches.
+    pub fn balanced(player: PlayerId, scenario_seed: u64) -> Self {
+        Self::new(player, scenario_seed, Dials::balanced())
+    }
+
+    /// The stable full-tree QA controller. Keep it separate from the
+    /// player-facing constructor so bot tuning cannot silently move
+    /// deterministic probes and fairness measurements.
     pub fn overseer(player: PlayerId, scenario_seed: u64) -> Self {
         Self::new(player, scenario_seed, Dials::overseer())
     }
@@ -117,7 +120,15 @@ impl Brain {
             .policy
             .think(&self.dials, &oriented, &armies, &enlisted);
         let intents = orientation.emit(intents);
-        commands.extend(self.exec.apply(self.player, &obs, &intents));
+        let lowered = self.exec.apply(self.player, &obs, &intents);
+        for command in &lowered {
+            if let Command::Build { kind, anchor, .. } = command.command {
+                let oriented_anchor = orientation.anchor(anchor, kind.base_stats().size);
+                self.policy
+                    .record_dispatched_build(&oriented, kind, oriented_anchor);
+            }
+        }
+        commands.extend(lowered);
         commands
     }
 }

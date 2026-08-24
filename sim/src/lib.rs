@@ -1,16 +1,4 @@
-//! Oxide game rules: a pure, deterministic, headless RTS simulation.
-//!
-//! The entire game is [`State`] plus one function, [`State::tick`], which
-//! consumes the commands stamped for that tick and advances the world by
-//! exactly one fixed timestep. No rendering, no input handling, no wall
-//! clock, no floats — given the same [`scenario::Scenario`] and the same
-//! command log, two runs produce bit-identical states on any platform.
-//! That property is load-bearing: replays, regression hashes, and the debug
-//! tooling all assume it.
-//!
-//! The tick pipeline runs in a fixed order (commands → production → unit
-//! brains → movement → separation → deaths → victory); see [`State::tick`]
-//! for why the order matters.
+#![doc = include_str!("../README.md")]
 
 pub mod bot;
 pub mod command;

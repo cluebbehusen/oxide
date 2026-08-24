@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oxide Simulation Development"
+  short_description: "Change deterministic Oxide game rules safely"
+  default_prompt: "Use $simulation-development to change or refactor Oxide's Rust simulation while preserving its deterministic state and replay contracts."

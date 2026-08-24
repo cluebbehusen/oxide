@@ -209,7 +209,7 @@ fn group_moves_fan_out_over_distinct_tiles() {
     state.tick(&[cmd(
         0,
         Command::Move {
-            units: ids.clone(),
+            units: ids,
             goal: TilePos::new(10, 4),
             queue: false,
         },

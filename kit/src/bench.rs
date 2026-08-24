@@ -136,22 +136,15 @@ pub fn engage(state: &mut oxide_sim::State) {
     ]);
 }
 
-/// Flags EVERY chair as a configured bot seat. Scenario benches claim
-/// the heaviest honest shape — all seats thinking — but shipped
-/// playable maps author a human seat (`bot: false`) that would
-/// otherwise sit idle. The configs are harness data: a bench pairs
-/// this with [`overseer_bots`] when it wants the fixed scripted
-/// commander rather than the shipped actor's dealt personalities.
+/// Flags every chair as a configured scripted bot seat. Scenario
+/// benches claim the heaviest honest shape — all seats thinking — but
+/// shipped maps author a human seat (`bot: false`) that would otherwise
+/// sit idle. A bench may still pair this with [`overseer_bots`] when it
+/// needs the frozen QA anchor rather than the player-facing controller.
 pub fn all_bots(scenario: &mut Scenario) {
     for player in &mut scenario.players {
         player.bot = true;
-        player.bot_config = Some(oxide_sim::scenario::BotConfig {
-            level: oxide_sim::bot::Level::Expert,
-            aggression: None,
-            style: None,
-            variant: None,
-            team_role: None,
-        });
+        player.bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
     }
 }
 
@@ -191,7 +184,7 @@ mod tests {
         assert_eq!(
             oxide_sim::bot::seat_bots(&scenario).len(),
             scenario.players.iter().filter(|p| p.bot).count(),
-            "the shipped actor fields every configured bot seat"
+            "every configured bot seat gets a command source"
         );
         let mut bots = overseer_bots(&scenario);
         assert_eq!(bots.len(), scenario.players.len());

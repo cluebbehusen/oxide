@@ -1,9 +1,9 @@
 //! What a bot may know.
 //!
-//! An [`Observation`] is the only input a bot policy receives — versioned,
-//! serializable, and buildable two ways: [`Observation::omniscient`] reads
-//! the whole state (the classic cheating commander, honestly labeled), and
-//! [`Observation::fog_honest`] filters through the player's own vision:
+//! An [`Observation`] is the only input a bot policy receives. It is
+//! serializable and buildable two ways: [`Observation::omniscient`] exposes
+//! the whole state for focused tests, while [`Observation::fog_honest`]
+//! filters through the player's own vision:
 //! visible enemies live, remembered buildings as ghosts, remembered scrap
 //! amounts, nothing else. The two produce the *same shape* — a policy
 //! cannot tell which world it lives in, only how much of it it sees.
@@ -22,20 +22,10 @@ use chassis::Tick;
 use chassis::grid::TilePos;
 use serde::{Deserialize, Serialize};
 
-/// Observation schema version — bump when the shape changes so recorded
-/// training data and shipped policies can refuse mismatched worlds.
-/// v5: `UnitObs` gained the required `salvaging` field (0.11) — v4
-/// recordings no longer deserialize, and claiming their version would
-/// have made the mismatch fail confusingly instead of cleanly.
-/// v6: `UnitObs` gained the required `founding` field (0.13, fog
-/// placement Part B) — same rule.
-/// v7: terrain knowledge gained the required `known_peaks` subset and
-/// exact explored mask so defense roles can distinguish mountain barriers
-/// from flyable rock without proposing foundations in unknown ground.
-/// v8: the 0.15 tree's accumulated shape — `UnitObs` gained `cargo`,
-/// `BuildingObs` gained `tier` (now honest for every live sighting),
-/// and the observation itself gained `known_frames`, `my_shells`, and
-/// `incoming_shells`. Stamped late: v7 recordings predate these fields.
+/// Schema version for serialized observation snapshots. Increment it when
+/// fields or their meaning change so tools can reject incompatible data.
+/// Version 8 includes deferred founding, terrain knowledge, cargo, building
+/// tiers, Extractor frames, and shell activity.
 pub const OBSERVATION_VERSION: u32 = 8;
 
 /// One unit as a bot sees it.
@@ -213,7 +203,7 @@ impl Observation {
             .unwrap_or(false)
     }
 
-    /// The classic cheating commander's view: everything, live.
+    /// The complete live view used by focused policy tests.
     pub fn omniscient(state: &State, me: PlayerId) -> Self {
         let mut obs = Self::base(state, me);
         for u in state.units() {

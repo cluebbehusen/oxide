@@ -14,7 +14,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   }
  ],
@@ -83,7 +83,6 @@
  "meta": {
   "hook": "One derelict frame between two front doors. Whoever holds it eats.",
   "pace": "quick",
-  "duration": "6-7 min",
   "mode": "1v1",
   "richness": "lean",
   "theme": "rusted-yard"

@@ -16,6 +16,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -64,6 +67,48 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master 2026-07-16
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2.86.3
+        with:
+          tool: cargo-llvm-cov
+      - name: Install Linux system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev jq
+      - name: Unit coverage
+        shell: bash
+        run: .github/coverage.sh cov-unit "Unit coverage"
+      - name: Combined coverage
+        shell: bash
+        run: .github/coverage.sh cov-combined "Combined coverage"
+
+  markdown:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: npx --yes prettier@3.9.6 --check "**/*.md"
+
+  skills:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Validate agent skills
+        shell: bash
+        run: |
+          for skill_file in .agents/skills/*/SKILL.md; do
+            skill_dir="${skill_file%/SKILL.md}"
+            uvx --from skills-ref==0.1.1 agentskills validate "$skill_dir"
+          done
+
   # The declared rust-version is a promise; moving-stable alone never
   # tests whether the complete test surface still compiles and links on it.
   msrv:
@@ -81,51 +126,25 @@ jobs:
       - name: Compile tests on MSRV
         run: cargo test --workspace --locked --no-run
 
-  # The training tools are shipped source too: lint, formatting, and
-  # types hold to the same standard as the Rust side.
-  python:
+  # Generated sprites and sounds are checked for reproducibility, and
+  # their generators carry their own pinned inline Python dependencies.
+  assets:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
-          cache-dependency-glob: tools/train/uv.lock
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master 2026-07-16
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: Ruff lint
-        working-directory: tools/train
-        run: uv run ruff check .
-      - name: Ruff format
-        working-directory: tools/train
-        run: uv run ruff format --check .
-      - name: Type check
-        working-directory: tools/train
-        run: uv run ty check
-      - name: Tests
-        working-directory: tools/train
-        run: uv run pytest -q
       - name: Sprite generator check
         run: uv run tools/gen_sprites.py --check
       - name: Sprite generator tests
-        run: uv run --python 3.14 --with 'pillow==12.3.0' -m unittest tools.test_gen_sprites tools.test_production_sprite_sources
+        run: uv run --python 3.14 --with 'pillow==12.3.0' -m unittest tools.test_gen_sprites tools.test_production_sprite_sources tools.test_gen_icon
       - name: Sound generator check
         run: uv run tools/gen_sounds.py --check
       - name: Sound tests
         run: uv run --with 'numpy==2.5.1' --with 'scipy==1.18.0' -m unittest tools.test_gen_sounds
-      # The gym contract only verifies when a worker actually launches;
-      # without this, Rust/Python column order can drift while both
-      # suites stay green. oxide-driver has no macroquad dependency, so
-      # the build needs no display or system libraries.
-      - name: Build gym driver
-        run: cargo build -p oxide-driver --locked
-      - name: Gym handshake
-        working-directory: tools/train
-        env:
-          OXIDE_DRIVER_BIN: ${{ github.workspace }}/target/debug/oxide-driver
-        run: uv run pytest tests/test_handshake.py -q
+      - name: Review tool tests
+        run: uv run --python 3.14 -m unittest tools.test_map_review tools.test_asset_review
 
   # Supply-chain gate: advisories, bans, licenses, and source policy
   # live in deny.toml, including the triage list for macroquad's stale

@@ -209,8 +209,7 @@ pub enum Key {
     H,
     /// Train a Sentinel.
     S,
-    /// Jump the camera to the last alert (classic profile). Formerly
-    /// armed attack-move; reassigned when alerts landed.
+    /// Jump the camera to the last alert in the classic profile.
     A,
     /// Pause / unpause.
     P,

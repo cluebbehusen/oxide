@@ -47,13 +47,18 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 let units = game.selection.units.clone();
                 game.issue(Command::Stop { units });
             } else if let [id] = game.selection.buildings.as_slice()
-                && game
+                && let Some(tier) = game
                     .state
                     .building(*id)
-                    .is_some_and(|b| b.player == game.human && !b.built)
+                    .filter(|b| b.player == game.human && !b.built)
+                    .map(|b| b.tier)
             {
-                game.issue(Command::Cancel { building: *id });
-                game.selection.buildings.clear();
+                if tier > 0 {
+                    game.toast("upgrades cannot be cancelled");
+                } else {
+                    game.issue(Command::Cancel { building: *id });
+                    game.selection.buildings.clear();
+                }
             }
         }
         Action::TrainSlot(n) => train(game, n as usize),

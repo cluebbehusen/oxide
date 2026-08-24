@@ -32,9 +32,8 @@ fn tick_with_bots(
     state.tick(&commands);
 }
 
-/// Skirmish with both seats handed to the scripted Overseer — the one
-/// surviving in-tree command source while bot seats await the retrained
-/// actor.
+/// Skirmish with both seats handed to the stable Overseer so this
+/// determinism fixture remains independent of player-facing bot tuning.
 fn bot_match() -> (Scenario, State, Vec<Brain>) {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
@@ -125,7 +124,7 @@ fn replay_reproduces_a_recorded_run() {
 #[test]
 fn replay_roundtrip_executes_and_reproduces_advance() {
     let scenario = open_arena(24, 12, vec![unit(0, UnitKind::Sentinel, 3, 6)]);
-    let mut live = scenario.clone().build().unwrap();
+    let mut live = scenario.build().unwrap();
     let mover = live.units()[0].id;
     let goal = TilePos::new(18, 6);
     let advance = cmd(

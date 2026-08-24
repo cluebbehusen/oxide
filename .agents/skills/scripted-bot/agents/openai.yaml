@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oxide Scripted Bot"
+  short_description: "Build and evaluate Oxide's fair scripted opponent"
+  default_prompt: "Use $scripted-bot to improve Oxide's rules-based opponent and validate its fairness, liveness, determinism, and complete-match behavior."

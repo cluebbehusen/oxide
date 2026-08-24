@@ -314,7 +314,7 @@ fn two_runs_with_shells_in_flight_stay_bit_identical() {
 #[test]
 fn a_straight_mover_is_led_hit_and_replayed_bit_exactly() {
     let scenario = moving_target_range();
-    let initial = scenario.clone().build().unwrap();
+    let initial = scenario.build().unwrap();
     let target = initial
         .units()
         .iter()

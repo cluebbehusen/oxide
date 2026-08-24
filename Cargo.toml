@@ -3,7 +3,7 @@ resolver = "3"
 members = ["chassis", "sim", "protocol", "kit", "shell", "driver"]
 
 [workspace.package]
-version = "0.15.8"
+version = "0.15.11"
 edition = "2024"
 rust-version = "1.93"
 publish = false
@@ -15,7 +15,6 @@ postcard = { version = "1", features = ["alloc"] }
 fixed = { version = "1", features = ["serde"] }
 anyhow = "1"
 thiserror = "2"
-sha2 = "0.10"
 
 chassis = { path = "chassis" }
 oxide-sim = { path = "sim" }

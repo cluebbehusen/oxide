@@ -44,6 +44,7 @@ use crate::command::PlayerCommand;
 use crate::event::{Event, TickReport};
 use crate::state::{GameResult, State};
 use crate::stats::PATH_EXPANSION_CAP;
+use chassis::fx::Vec2Fx;
 use chassis::grid::TilePos;
 use chassis::path::astar;
 
@@ -89,7 +90,7 @@ impl CommandPhaseView<'_> {
         self.state.unit(id)
     }
 
-    /// Whether projected commands already paid for a matching own site.
+    /// Whether projected commands already paid for a matching ordinary site.
     ///
     /// A deferred founder joins that unfinished site for free when it
     /// arrives, so callers must not reserve the construction price again.
@@ -104,6 +105,7 @@ impl CommandPhaseView<'_> {
                 && building.kind == kind
                 && building.anchor == anchor
                 && !building.built
+                && building.tier == 0
         })
     }
 
@@ -354,8 +356,7 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
 ///
 /// Elimination is Foundry-based: a team lives while *any* of its seats
 /// holds a Foundry — no Foundry anywhere, no comeback; turrets and
-/// factories left standing don't keep a team in the game (or 0.5's
-/// buildable kinds would have silently rewritten the victory rule).
+/// factories left standing do not keep a team in the game.
 /// A resigned seat's Foundries stop counting the tick it concedes, so
 /// a fully-resigned team is eliminated on the spot. The per-seat
 /// command gate in `commands::apply` deliberately stays player-scoped:
@@ -426,8 +427,21 @@ pub(crate) fn route_for(
     from: TilePos,
     to: TilePos,
 ) -> Option<Vec<TilePos>> {
+    route_for_position(state, kind, from.center(), to)
+}
+
+/// A route traced from a unit's exact position. Most ground routing starts
+/// at a tile center, but a wide-turn aircraft can meet a peak near one edge
+/// of its current tile even when the center-to-center segment looks clear.
+pub(crate) fn route_for_position(
+    state: &State,
+    kind: crate::stats::UnitKind,
+    from: Vec2Fx,
+    to: TilePos,
+) -> Option<Vec<TilePos>> {
+    let from_tile = TilePos::containing(from);
     match kind.stats().domain {
-        crate::stats::Domain::Ground => astar_for(state, from, to),
+        crate::stats::Domain::Ground => astar_for(state, from_tile, to),
         crate::stats::Domain::Air => {
             // Goals ring-snap off peaks here, at the one funnel every
             // air route passes: group orders pre-snap via spread_goals,
@@ -445,13 +459,13 @@ pub(crate) fn route_for(
                     .tile(t)
                     .is_none_or(|tile| !tile.terrain.blocks_air())
             };
-            if !chassis::path::line_blocked(from.center(), to.center(), sky_open) {
+            if !chassis::path::line_blocked(from, to.center(), sky_open) {
                 return Some(vec![to]);
             }
             astar(
                 state.map.width(),
                 state.map.height(),
-                from,
+                from_tile,
                 to,
                 |p| state.passable_for(crate::stats::Domain::Air, p),
                 PATH_EXPANSION_CAP,

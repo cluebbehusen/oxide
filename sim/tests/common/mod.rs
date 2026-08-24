@@ -1,5 +1,4 @@
-//! Shared scaffolding for the behavior suites (split by family
-//! in the 0.10 file diet; each binary uses its own subset).
+//! Shared scaffolding used by the focused behavior suites.
 #![allow(dead_code)]
 
 use oxide_sim::scenario::{PlayerSpec, UnitSpec};

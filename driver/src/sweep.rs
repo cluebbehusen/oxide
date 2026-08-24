@@ -1,13 +1,11 @@
 //! The decisiveness sweep: N seeds of Overseer-vs-Overseer on one 1v1
-//! scenario. Where `balance-probe` reads what armies were made of, this
-//! reads whether games *end*: decided/undecided counts, seat lean, and
-//! decision-tick medians.
+//! scenario. It reads whether games *end*: decided/undecided counts,
+//! seat lean, and decision-tick medians.
 //!
-//! Both seats play [`Brain::overseer`], the scripted QA anchor, so any
-//! lean the sweep reports is the map or the engine — the two command
-//! sources are the same commander. The shipped neural actor is
-//! deliberately absent: this instrument measures the world, not a
-//! policy.
+//! Both seats play [`Brain::overseer`], the stable scripted QA anchor,
+//! so any lean the sweep reports is the map or the engine: the two
+//! command sources are the same commander. This instrument measures
+//! the world rather than the player-facing bot.
 
 use anyhow::{Context, Result};
 use oxide_sim::bot::Brain;
@@ -92,7 +90,7 @@ pub fn run_sweep(
 
     let (victories, draws, undecided, seat_wins, median_decision_tick) = tally_outcomes(&matches);
     Ok(SweepReport {
-        scenario: base.name.clone(),
+        scenario: base.name,
         seeds,
         max_ticks,
         victories,

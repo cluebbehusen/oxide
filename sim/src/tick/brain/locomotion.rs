@@ -1,7 +1,7 @@
 //! Getting there: idle auto-acquire, advance and attack-move routing,
 //! plain walking, contact-propagated arrival, and doorstep approach.
 
-use super::super::{rect_adjacent_tiles, route_for, tile_adjacent_to_rect};
+use super::super::{rect_adjacent_tiles, route_for, route_for_position, tile_adjacent_to_rect};
 use super::combat::acquire_target;
 use crate::event::{Event, StallReason};
 use crate::ids::UnitId;
@@ -106,8 +106,8 @@ pub(super) fn walk(state: &mut State, id: UnitId, goal: TilePos, events: &mut Ve
     if has_fresh_path {
         return;
     }
-    let (tile, kind) = (unit.tile(), unit.kind);
-    let path = route_for(state, kind, tile, goal);
+    let (pos, kind) = (unit.pos, unit.kind);
+    let path = route_for_position(state, kind, pos, goal);
     let unit = state.unit_mut(id).expect("caller checked");
     match path {
         Some(waypoints) => {

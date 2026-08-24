@@ -686,23 +686,13 @@ const HARVESTER: UnitStats = UnitStats {
 };
 
 const SENTINEL: UnitStats = UnitStats {
-    // 0.10 balance, third pass: 100 hp made the line unit the best
-    // value mass in the roster and the optimizer proved it (nine
-    // campaign rounds of sentinel floods). At 60 the rail one-shots
-    // it, scuttler swarms out-trade it, and turrets drop it in five
-    // hits: the sentinel is a screen and a scout, not a war-winner.
+    // A cheap screen and scout rather than an efficient massed army:
+    // rails one-shot it, Scuttler swarms out-trade it, and fixed
+    // defenses punish unsupported groups.
     max_hp: 60,
     speed: Fx::lit("0.11"), // 2.2 tiles/s — armies are slightly outrun by harvesters
     radius: Fx::lit("0.35"),
-    cost: 90, // 0.10 balance: spam pays — four campaign rounds proved 75 optimal-by-flooding
-    // 0.13 balance: 7.5 s, and load-bearing twice over despite the kind
-    // being faction-shared. Measured at 160 under the 0.13 economy
-    // (yardstick: the since-deleted classic bot): long-haul stalls past
-    // the liveness horizon (8,245
-    // ticks of zero progress), and the mixed-roster marginal reads
-    // ferrous 37.3% [34.9, 39.8] against 48.5% at 150 — Ferrous fields
-    // the heavier Sentinel share, so the shared cadence is not
-    // faction-neutral in play.
+    cost: 90,
     train_ticks: 150, // 7.5 s
     domain: Domain::Ground,
     weapons: &[
@@ -781,10 +771,9 @@ const LANCER: UnitStats = UnitStats {
     train_ticks: 200, // 10 s
     domain: Domain::Ground,
     weapons: &[WeaponStats {
-        // 0.10 balance: at 30 the rail matched sentinel dps at higher
-        // cost and lost par to the entire roster — the tech tree's
-        // first rung wasn't worth climbing. 60 two-shots a sentinel and
-        // one-shots the light roster; siege and air still counter.
+        // This must reward climbing the first tech rung: it two-shots a
+        // Sentinel and one-shots light machines, while siege and air remain
+        // effective counters.
         damage: 60,
         range: Fx::lit("5.5"), // beyond aggro: it only uses this on orders
         minimum_range: Fx::ZERO,
@@ -901,10 +890,8 @@ const BUZZARD: UnitStats = UnitStats {
     max_hp: 110,
     speed: Fx::lit("0.10"), // 2.0 tiles/s
     radius: Fx::lit("0.4"),
-    // 0.13 balance: at 160 the durable flyer was strictly outclassed by
-    // the Darter (more dps at 56% the price) and fell out of play (0.8%
-    // of army value). 120 is arena par against a common Sentinel line:
-    // the Buzzard keeps more value, the Darter clears faster.
+    // At this price the durable flyer trades efficiency for staying power
+    // against a common Sentinel line; the cheaper Darter clears faster.
     cost: 120,
     train_ticks: 180, // 9 s
     domain: Domain::Air,
@@ -935,10 +922,7 @@ const DARTER: UnitStats = UnitStats {
     max_hp: 55,
     speed: Fx::lit("0.17"), // 3.4 tiles/s — the fastest thing in the sky
     radius: Fx::lit("0.3"),
-    // 0.13 balance: 90 underpriced the speed — the factorial probe read
-    // Ferrous at 21.5% of mixed-roster victories under the old prices.
-    // The shipped 100 (with the Sentinel at 150 ticks) measures 48.5%;
-    // the harsher 110 probe read 46.9% and was rejected as overshoot.
+    // Its exceptional speed carries a premium over other light aircraft.
     cost: 100,
     train_ticks: 150, // 7.5 s
     domain: Domain::Air,
@@ -1026,12 +1010,8 @@ const WISP: UnitStats = UnitStats {
 };
 
 const WARDEN: UnitStats = UnitStats {
-    // 0.15 balance lab: at 240hp/24dmg the Lancer didn't counter the
-    // Warden, it deleted it (cost-normalized arena: 0-550 wipe both
-    // seats) while the Lancer also carried 2.6x the damage-per-scrap —
-    // so learned play rationally never left tier one. The line brawler
-    // now trades into massed rails instead of evaporating; the Lancer
-    // keeps the per-cost edge as the dedicated answer.
+    // The line brawler can trade into massed rails without replacing
+    // the Lancer's role as the more efficient dedicated counter.
     max_hp: 260,
     speed: Fx::lit("0.09"),
     radius: Fx::lit("0.45"),
@@ -1065,9 +1045,8 @@ const TENDER: UnitStats = UnitStats {
     max_hp: 150,
     speed: Fx::lit("0.11"),
     radius: Fx::lit("0.38"),
-    // 0.15.3 balance lab: 0.2% reach at 180 — the mobile welder lost
-    // every pricing comparison to the static Repair Bay and to simply
-    // rebuilding. Priced as a line attachment, not an investment.
+    // Priced as a mobile line attachment rather than a substitute for
+    // the static Repair Bay.
     cost: 130,
     train_ticks: 300,
     domain: Domain::Ground,
@@ -1268,12 +1247,9 @@ const MOTH: UnitStats = UnitStats {
 };
 
 const BREAKER: UnitStats = UnitStats {
-    // 0.15 balance lab: the tier-crusher coin-flipped cost-equal
-    // Lancer mass (verdict flipped on seat swap) — a 900-scrap unit
-    // behind a Crucible that trades evenly with tier one is a climb
-    // nobody should make. One shell now deletes a rail and its splash
-    // punishes the clump; bombers, artillery, and economy remain the
-    // honest answers.
+    // A costly late-game answer to clustered tier-one armor. One shell
+    // destroys a Lancer and punishes the surrounding clump; aircraft,
+    // artillery, and economic pressure remain effective counters.
     max_hp: 900,
     speed: Fx::lit("0.055"),
     radius: Fx::lit("0.55"),
@@ -1311,12 +1287,9 @@ const AVALANCHE: UnitStats = UnitStats {
     train_ticks: 900,
     domain: Domain::Ground,
     weapons: &[WeaponStats {
-        // 0.15 balance lab: at 70/140t the superheavy needed TWO
-        // seven-second shots per Bombard and lost the cost-normalized
-        // artillery duel outright (0-800 both seats) — tier-one
-        // artillery obsoleted its own successor. One shell now deletes
-        // a Bombard on the drop; rushes inside the blind ring and the
-        // sky it cannot answer stay lethal.
+        // One shell destroys a Bombard so tier-one artillery does not
+        // obsolete its successor. Units inside the blind ring and all
+        // aircraft remain lethal counters.
         damage: 110,
         range: Fx::lit("14"),        // far past its own eyes: a spotter weapon
         minimum_range: Fx::lit("4"), // blind at its feet — close the gap
@@ -1380,8 +1353,8 @@ const SAPPER: UnitStats = UnitStats {
 };
 
 const FOUNDRY: BuildingStats = BuildingStats {
-    // 0.10 pacing: doubled so a rush can pressure but rarely close a
-    // match in single-digit minutes (measured: +60-75% match length).
+    // Durable enough that an opening rush creates pressure without
+    // routinely ending a match before either side develops.
     max_hp: 1600,
     size: (2, 2),
     vision: 8,
@@ -1392,14 +1365,9 @@ const FOUNDRY: BuildingStats = BuildingStats {
         UnitKind::Excavator,
     ],
     weapons: &[],
-    // 0.15: buildable — the expansion base and the comeback path. Gated
-    // on a Fabricator so a proxy Foundry is a committed tech play.
-    // 0.15.3 balance lab: with the passive drip removed a Foundry is a
-    // pure production, drop-off, and survivability purchase — and at
-    // 400/800t the measured meta bought one in 0.6% of competitive
-    // lifetimes. Priced to be a real mid-game decision instead of a
-    // luxury; victory counts sites too, so a dying main can be
-    // answered by ground already claimed.
+    // The expansion base and comeback path. Its Fabricator prerequisite
+    // makes a proxy Foundry a committed tech play, while its price keeps
+    // expansion a credible mid-game choice.
     construction: Some(ConstructionStats {
         cost: 300,
         build_ticks: 600,
@@ -1492,8 +1460,8 @@ const BASTION: BuildingStats = BuildingStats {
         salvo: 1,
         projectile: true,
     }],
-    // 0.15.3 balance lab: 2.8% reach — the fortress gun competes with
-    // a 200-scrap mobile Bombard and was losing on price alone.
+    // Competes with the mobile Bombard by trading mobility for a durable
+    // firing position rather than losing the comparison on price alone.
     construction: Some(ConstructionStats {
         cost: 210,
         build_ticks: 500,
@@ -1502,12 +1470,8 @@ const BASTION: BuildingStats = BuildingStats {
 };
 
 const ARRAY: BuildingStats = BuildingStats {
-    // 0.15 balance lab: at 120 scrap the mast was dominated by the
-    // 60-scrap scout flyer (mobile, vision 10, identifies what it
-    // sees); candidates trained against the mine-laying yardstick won
-    // 80% while abandoning radar entirely. Priced against the scout's
-    // benchmark the mast sells what the flyer cannot: a permanent
-    // sentry that never needs a pilot's attention.
+    // A permanent early-warning sentry. Unlike a scout aircraft it does
+    // not need attention, but it cannot move or identify radar contacts.
     max_hp: 250,
     size: (1, 1),
     vision: 9, // the inner ring: true sight
@@ -1579,11 +1543,9 @@ const CRUCIBLE: BuildingStats = BuildingStats {
     vision: 6,
     produces: &[UnitKind::Breaker, UnitKind::Avalanche],
     weapons: &[],
-    // 0.15.3 balance lab: the whole tier-three era hid behind this
-    // gate — 7.6% Crucible reach at expert execution meant Breakers,
-    // Avalanches, and bombers barely existed in the shipped meta, and
-    // buffing the units behind an unbuilt gate moved nothing. The gate
-    // itself cheapens instead.
+    // This gate must be affordable often enough for the late-game roster
+    // to appear; stronger units do not matter when their factory is never
+    // a credible purchase.
     construction: Some(ConstructionStats {
         cost: 400,
         build_ticks: 550,
@@ -1923,10 +1885,8 @@ pub const WRECK_DECAY_TICKS: u64 = 300;
 
 /// Outer detection ring of the Array, in tiles: hostile units inside it
 /// but out of true sight appear as blips — a tile, no kind, no owner.
-/// Blips never satisfy targeted-attack visibility. Widened from 16 in
-/// the 0.15 balance lab so one mast covers a whole approach corridor:
-/// the ring is the product scouts cannot replicate, standing early
-/// warning that outlives any patrol.
+/// Blips never satisfy targeted-attack visibility. One mast covers an
+/// approach corridor, providing persistent warning that a patrol cannot.
 pub const RADAR_DETECT_RADIUS: i32 = 20;
 
 /// Shell flight speed in tiles per tick. A full-range 9.5-tile lob takes
@@ -1947,18 +1907,12 @@ pub const RECLAIMER_PERIOD: u64 = 24;
 /// with no income at all. Credit is per Foundry so expansion bases are
 /// worth their keep, but the rate is tuned so income alone never pays
 /// for one (20/min against a 300 cost: production, drop-off reach,
-/// and survivability are the reasons to expand). Watched in training
-/// telemetry for foundry-farm degeneracy; the fallback design is a
-/// flat per-player floor at this same period.
+/// and survivability are the reasons to expand).
 pub const FOUNDRY_DRIP_PERIOD: u64 = 60;
 
 /// First completed tick eligible for the drip: a two-minute warm-up.
-/// The floor exists for mid- and late-game lockouts; openings stay
-/// exactly as tuned without it. Measured (against the since-deleted
-/// 0.14 scripted bots): a from-tick-zero drip handed an omniscient
-/// anchor a decisive edge over a fog-honest brain (13/40 -> passing)
-/// purely on perfectly-converted
-/// early free scrap — the floor should never be an opening build order.
+/// The income floor addresses mid- and late-game lockouts without
+/// becoming free opening economy.
 pub const FOUNDRY_DRIP_START_TICK: u64 = 2_400;
 
 /// Ticks per emergency scrap credited by a surviving Foundry after its
@@ -2017,12 +1971,8 @@ pub const CHARGE_SCOUT_DETECT_RADIUS: i32 = 4;
 /// stands on, the Deep Array upgrade buys the wide ring below, and scout
 /// flyers remain the mobile channel that goes where no mast stands.
 ///
-/// Priced in 0.15.2 by the same razor that repriced the mast itself: the
-/// 0.15.1 harvester replan stagger cut how much a blip is worth to a
-/// working economy, and fine-tuned policies answered by shedding arrays
-/// monotonically — a seeded recovery run drove reach down rather than
-/// back up. Standing detection is the mast's one product the stagger
-/// cannot touch, so it carries more of the building's worth.
+/// Standing detection is the mast's durable strategic value even when
+/// ordinary radar contacts are too transient to redirect an economy.
 pub const CHARGE_BASE_ARRAY_DETECT_RADIUS: i32 = 12;
 
 /// A built Deep Array (Array tier 1) reveals buried charges anywhere
@@ -2071,8 +2021,8 @@ pub const SITE_DECAY_PERIOD: u64 = 8;
 /// welding always costs more than salvage refunds, so repair-then-salvage
 /// strictly loses scrap, and a full re-ramp costs ~68% of the price —
 /// cheaper than replacing it, never free, and a real sustain tax under
-/// fire (the 0.11 repricing; the old flat tick-trickle accidentally
-/// charged 25-47% and would have made salvage refunds a printer).
+/// fire. The hp-proportional price also prevents repair followed by
+/// salvage from creating scrap.
 pub const REPAIR_COST_PERMILLE: u64 = 850;
 
 pub(crate) fn unit_repair_debit(kind: UnitKind, progress: u32) -> u32 {
@@ -2083,12 +2033,6 @@ pub(crate) fn unit_repair_debit(kind: UnitKind, progress: u32) -> u32 {
     };
     u32::try_from(owed(progress + 1).div_ceil(1000) - owed(progress).div_ceil(1000))
         .expect("one unit-repair tick debit fits u32")
-}
-
-pub(crate) fn unit_repair_opening_debit(kind: UnitKind) -> u32 {
-    let stats = kind.stats();
-    let first_weld_tick = stats.train_ticks.div_ceil(stats.max_hp);
-    unit_repair_debit(kind, first_weld_tick - 1)
 }
 
 /// Per-mille of a building's cost refunded per hp drained by salvage
@@ -2123,9 +2067,8 @@ pub const CRUCIBLE_SMELT_RADIUS: Fx = Fx::lit("6.0");
 /// Ticks between smelter pulses; each pulse melts one wreck unit into
 /// one scrap. 1 / 40 sits below a dedicated harvester working the same
 /// field and near the Foundry drip's order of magnitude — the point is
-/// that a standing Crucible pays for itself over a mid-game's debris,
-/// not that it replaces the harvest line. This is the amortization
-/// that makes the tier-three climb a purchase instead of dead spend.
+/// that a standing Crucible earns meaningful value from a fought-over
+/// battlefield without replacing a dedicated harvest line.
 pub const CRUCIBLE_SMELT_PERIOD: u64 = 40;
 
 /// Hp each aura pulse offers each patient in the ring.
@@ -2136,9 +2079,8 @@ pub const REPAIR_BAY_STEP: u32 = 1;
 pub const FOUNDRY_REPAIR_TICKS: u32 = 400;
 
 /// Billing basis for Foundry repair, which has no purchase cost to
-/// price against. Chosen so a full re-ramp runs ~68 scrap — pricier
-/// than the pre-0.11 flat trickle's 40 (the sustain tax is intended)
-/// without making the victory token unhealable in a siege.
+/// price against. A full repair is intentionally expensive without
+/// making the victory structure impossible to restore during a siege.
 pub const FOUNDRY_REPAIR_PRICE: u32 = 100;
 
 /// Scrap in a rich node (the `S` map legend) — a fought-over prize.
@@ -2156,8 +2098,8 @@ pub const PATH_EXPANSION_CAP: u32 = 20_000;
 
 /// Chebyshev radius of a Harvester's work zone around the source the
 /// player clicked. Seven spans the widest deliberately connected deposit
-/// on the shipped 0.13 map shelf (the grand team-map center fields) while
-/// a fixed anchor prevents hop-by-hop drift into another patch.
+/// on the shipped map shelf, while a fixed anchor prevents hop-by-hop drift
+/// into another patch.
 pub const HARVEST_ZONE_RADIUS: i32 = 7;
 
 /// A radar blip only makes salvage unsafe when it is this close to a
@@ -2261,7 +2203,6 @@ pub const LEASH_REACQUIRE_COOLDOWN: u16 = 60;
 /// Ticks of standing idle before a machine counts as STATIONED — only
 /// a stationed machine's self-acquired fights tether. A unit cycling
 /// through idle mid-battle (its target fell, the next is a tick away)
-/// re-acquires unleashed: tethering those turned army fights into
-/// seat-parity coin flips (measured against the since-deleted scripted
-/// tier ladder, which it collapsed).
+/// re-acquires unleashed; otherwise unit-id ordering can decide which
+/// side's advancing army is tethered first.
 pub const LEASH_STATION_TICKS: u16 = 40;

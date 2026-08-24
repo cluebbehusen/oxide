@@ -53,7 +53,8 @@ pub struct PlaybackSession {
 
 impl PlaybackSession {
     pub fn open(path: &str) -> Result<Self> {
-        let replay = GameReplay::load(path).with_context(|| format!("loading replay {path}"))?;
+        let replay =
+            oxide_kit::load_replay(path).with_context(|| format!("loading replay {path}"))?;
         Self::from_replay(replay)
     }
 
@@ -594,6 +595,12 @@ mod tests {
         PlaybackSession::from_replay(replay()).expect("session opens")
     }
 
+    fn long_session(ticks: u64) -> PlaybackSession {
+        let mut replay = GameReplay::new(SIM_VERSION, oxide_sim::Scenario::skirmish());
+        replay.meta.ticks = Some(ticks);
+        PlaybackSession::from_replay(replay).expect("long session opens")
+    }
+
     fn key(session: &mut PlaybackSession, key: Key) -> bool {
         let mut mouse = vec2(0.0, 0.0);
         let leave = session.update(
@@ -622,13 +629,7 @@ mod tests {
         let mut scenario = oxide_sim::Scenario::skirmish();
         for p in &mut scenario.players {
             p.bot = true;
-            p.bot_config = Some(oxide_sim::scenario::BotConfig {
-                level: oxide_sim::bot::Level::Medium,
-                aggression: None,
-                style: None,
-                variant: None,
-                team_role: None,
-            });
+            p.bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
         }
         let outcome = oxide_kit::runner::run_scenario(&scenario, 60, true, true).expect("run");
         let mut replay = outcome.replay.expect("recorded");
@@ -893,5 +894,76 @@ mod tests {
             let expected = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
             assert_eq!(pb.game.prev_pos.get(&unit.id.0), Some(&expected));
         }
+    }
+
+    #[test]
+    fn long_seeks_are_budgeted_and_a_new_transport_command_replaces_them() {
+        let mut pb = long_session(5_000);
+        let viewport = vec2(1280.0, 800.0);
+        let mut mouse = Vec2::ZERO;
+
+        pb.update(
+            &[RawEvent::KeyDown { key: Key::End }],
+            0.0,
+            viewport,
+            false,
+            1.0,
+            &mut mouse,
+        );
+        assert_eq!(
+            pb.engine.position(),
+            2_000,
+            "one frame consumes one seek budget"
+        );
+        assert_eq!(pb.seeking, Some(5_000));
+
+        pb.update(
+            &[RawEvent::KeyDown { key: Key::PageUp }],
+            0.0,
+            viewport,
+            false,
+            1.0,
+            &mut mouse,
+        );
+        assert_eq!(pb.engine.position(), 1_500);
+        assert_eq!(pb.seeking, None, "the replacement target settled");
+
+        use oxide_protocol::DebugSession;
+        pb.seeking = Some(5_000);
+        pb.accum = game::TICK_DT * 0.75;
+        let advanced = DebugSession::advance(&mut pb, 10);
+        assert_eq!(advanced.ticks, 10);
+        assert_eq!(pb.engine.position(), 1_510);
+        assert_eq!(pb.seeking, None, "driven input cancels stale UI seeks");
+        assert_eq!(pb.accum, 0.0, "driven input drops wall-clock debt");
+    }
+
+    #[test]
+    fn playback_hitches_run_only_one_frames_tick_budget() {
+        let mut pb = long_session(5_000);
+        pb.speed = 64.0;
+        let mut mouse = Vec2::ZERO;
+        pb.update(&[], 1.0, vec2(1280.0, 800.0), false, 1.0, &mut mouse);
+        assert_eq!(pb.engine.position(), 24);
+        assert!(pb.accum < game::TICK_DT, "excess frame debt is dropped");
+    }
+
+    #[test]
+    fn statistics_are_created_lazily_and_retained_while_hidden() {
+        let mut pb = session();
+        assert!(!pb.show_stats);
+        assert!(pb.stats.is_none());
+
+        key(&mut pb, Key::S);
+        assert!(pb.show_stats);
+        let final_tick = pb.stats.as_ref().expect("statistics computed").final_tick;
+        assert_eq!(final_tick, pb.engine.total());
+
+        key(&mut pb, Key::S);
+        assert!(!pb.show_stats);
+        assert_eq!(
+            pb.stats.as_ref().map(|stats| stats.final_tick),
+            Some(final_tick)
+        );
     }
 }

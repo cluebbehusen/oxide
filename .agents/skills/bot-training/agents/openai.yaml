@@ -1,4 +1,0 @@
-interface:
-  display_name: "Oxide Bot Training"
-  short_description: "Train and promote deterministic Oxide bots"
-  default_prompt: "Use $bot-training to change, train, evaluate, or promote an Oxide neural policy without violating determinism or bot parity."

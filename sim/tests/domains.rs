@@ -81,7 +81,7 @@ fn run_until(
 
 #[test]
 fn roles_resolve_consistently_per_faction() {
-    for role in [
+    let roles = [
         Role::Harvester,
         Role::Sentinel,
         Role::Scuttler,
@@ -90,7 +90,25 @@ fn roles_resolve_consistently_per_faction() {
         Role::AntiAir,
         Role::AirGround,
         Role::AirAir,
-    ] {
+        Role::Warden,
+        Role::Tender,
+        Role::Excavator,
+        Role::Scout,
+        Role::Interceptor,
+        Role::Bomber,
+        Role::Breaker,
+        Role::Avalanche,
+        Role::Skyhook,
+        Role::Sapper,
+    ];
+    for kind in UnitKind::ALL {
+        assert!(
+            roles.contains(&kind.role()),
+            "the role audit forgot {kind:?}'s {:?} slot",
+            kind.role()
+        );
+    }
+    for role in roles {
         for faction in [Faction::Ferrous, Faction::Cupric] {
             let kind = role.unit_for(faction);
             assert_eq!(kind.role(), role, "{kind:?} must map back to its role");
@@ -98,6 +116,103 @@ fn roles_resolve_consistently_per_faction() {
                 kind.faction().is_none() || kind.faction() == Some(faction),
                 "{kind:?} dealt to the wrong faction"
             );
+        }
+    }
+}
+
+#[test]
+fn stat_tables_satisfy_the_runtime_math_preconditions() {
+    use oxide_sim::stats::{BuildingKind, MAX_WEAPONS};
+
+    let check_weapons = |owner: &str, weapons: &[oxide_sim::stats::WeaponStats]| {
+        assert!(
+            weapons.len() <= MAX_WEAPONS,
+            "{owner} has more weapon slots than serialized cooldown state"
+        );
+        for (slot, weapon) in weapons.iter().enumerate() {
+            assert!(weapon.damage > 0, "{owner} weapon {slot} deals no damage");
+            assert!(
+                weapon.cooldown_ticks > 0,
+                "{owner} weapon {slot} divides by a zero cooldown"
+            );
+            assert!(
+                weapon.minimum_range >= chassis::fx::Fx::ZERO
+                    && weapon.minimum_range < weapon.range,
+                "{owner} weapon {slot} has an empty range band"
+            );
+            assert!(
+                weapon.targets.ground || weapon.targets.air,
+                "{owner} weapon {slot} cannot hit any domain"
+            );
+            assert!(weapon.salvo > 0, "{owner} weapon {slot} fires no rounds");
+            if let Some(radius) = weapon.splash {
+                assert!(
+                    radius > chassis::fx::Fx::ZERO,
+                    "{owner} weapon {slot} has a non-positive splash radius"
+                );
+            }
+        }
+    };
+
+    for kind in UnitKind::ALL {
+        let stats = kind.stats();
+        let owner = format!("unit {kind:?}");
+        assert!(stats.max_hp > 0, "{owner} spawns dead");
+        assert!(
+            stats.cost > 0 && stats.train_ticks > 0,
+            "{owner} trains for free"
+        );
+        assert!(stats.speed > chassis::fx::Fx::ZERO, "{owner} cannot move");
+        assert!(stats.radius > chassis::fx::Fx::ZERO, "{owner} has no body");
+        assert!(stats.vision > 0, "{owner} has no sight");
+        if stats.harvest.is_some() {
+            assert!(
+                stats.build_rate > 0,
+                "{owner} cannot advance construction work"
+            );
+        }
+        check_weapons(&owner, stats.weapons);
+        if let Some(harvest) = stats.harvest {
+            assert!(
+                harvest.capacity > 0 && harvest.ticks_per_scrap > 0,
+                "{owner} carries an inoperable harvest profile"
+            );
+        }
+        if stats.transport_capacity > 0 {
+            assert_eq!(stats.transport_size, 0, "a carrier cannot carry itself");
+        }
+        assert!(
+            BuildingKind::ALL
+                .iter()
+                .any(|building| building.base_stats().produces.contains(&kind)),
+            "{owner} is in no production roster"
+        );
+    }
+
+    for kind in BuildingKind::ALL {
+        let tiers = kind.tiers();
+        assert!(!tiers.is_empty(), "{kind:?} has no base tier");
+        for (tier, stats) in tiers.iter().enumerate() {
+            let owner = format!("building {kind:?} tier {tier}");
+            assert!(stats.max_hp > 0, "{owner} stands dead");
+            assert!(
+                stats.size.0 > 0 && stats.size.1 > 0,
+                "{owner} has no footprint"
+            );
+            assert!(stats.vision > 0, "{owner} has no sight");
+            check_weapons(&owner, stats.weapons);
+            if let Some(construction) = stats.construction {
+                assert!(
+                    construction.cost > 0 && construction.build_ticks > 0,
+                    "{owner} has inoperable construction math"
+                );
+            }
+            if tier > 0 {
+                assert!(
+                    stats.construction.is_some(),
+                    "{owner} cannot define its automatic upgrade"
+                );
+            }
         }
     }
 }

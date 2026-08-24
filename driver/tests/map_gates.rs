@@ -7,6 +7,7 @@
 use chassis::grid::TilePos;
 use oxide_driver::audit::audit;
 use oxide_sim::map::Map;
+use oxide_sim::scenario::BotConfig;
 use oxide_sim::{BuildingKind, PlayerId, Scenario};
 use std::path::PathBuf;
 
@@ -40,8 +41,16 @@ fn every_map_seats_a_human_and_live_opponents() {
             !scenario.players[0].bot,
             "{name}: seat 0 is the human chair"
         );
+        assert!(
+            scenario.players[0].bot_config.is_none(),
+            "{name}: human chair must not carry a bot configuration"
+        );
         for (i, seat) in scenario.players.iter().enumerate().skip(1) {
             assert!(seat.bot, "{name}: seat {i} is a dead chair (bot: false)");
+            assert!(
+                seat.bot_config == Some(BotConfig::Scripted),
+                "{name}: seat {i} is not the shipped scripted opponent"
+            );
         }
     }
 }
@@ -54,12 +63,6 @@ fn every_map_carries_complete_metadata() {
             .as_ref()
             .unwrap_or_else(|| panic!("{name}: shipped maps carry metadata"));
         assert!(!meta.hook.is_empty(), "{name}: hook missing");
-        if scenario.players.len() == 2 {
-            assert!(
-                !meta.duration.is_empty(),
-                "{name}: 1v1 duration measurement missing"
-            );
-        }
         assert!(
             matches!(
                 meta.pace.as_str(),
@@ -107,11 +110,9 @@ fn routes_connect_and_pace_labels_hold() {
                 "quick" => 8..=28,
                 "standard" => 29..=52,
                 "large" => 53..=90,
-                // 0.10: matches should run tens of minutes — the vast
-                // class exists to hold maps big enough to make it so.
+                // Vast maps deliberately support long travel and buildup.
                 "vast" => 91..=150,
-                // 0.15: the grand class — island wars, 12-seat FFAs,
-                // maps whose matches are campaigns.
+                // Grand maps cover island wars and very large FFAs.
                 "grand" => 151..=400,
                 other => panic!("{name}: unknown pace '{other}'"),
             };

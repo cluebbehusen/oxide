@@ -162,14 +162,13 @@ const ACCENT: usize = 2;
 type Manifest = std::collections::HashMap<String, [f32; 4]>;
 
 /// Sprites with no faction variants: one region, one name.
-const SINGLE_KEYS: [&str; 11] = [
+const SINGLE_KEYS: [&str; 10] = [
     "rock_skirt",
     "extractor_frame",
     "scrap_full",
     "scrap_mid",
     "scrap_low",
     "scrap_rich",
-    "muzzle_flash",
     "scorch",
     "wreck_pile",
     "air_shadow",
@@ -818,7 +817,6 @@ impl Sprites {
             scrap_mid,
             scrap_low,
             scrap_rich,
-            _muzzle_flash,
             scorch,
             wreck_pile,
             air_shadow,
@@ -1582,7 +1580,7 @@ impl Sounds {
 mod tests {
     use super::*;
 
-    const SOUND_NAMES: [&str; 40] = [
+    const SOUND_NAMES: [&str; 38] = [
         "ack",
         "alert",
         "artillery_boom",
@@ -1609,7 +1607,6 @@ mod tests {
         "demolition_boom",
         "denied",
         "deposit",
-        "flak",
         "laser",
         "laser2",
         "music_calm",
@@ -1618,7 +1615,6 @@ mod tests {
         "music_menu",
         "music_result",
         "music_victory",
-        "rail_fire",
         "train_done",
         "unit_death",
         "upgrade_done",
@@ -1831,7 +1827,7 @@ mod tests {
     }
 
     fn alpha_bytes(image: &macroquad::prelude::Image) -> impl Iterator<Item = u8> + '_ {
-        image.bytes.chunks_exact(4).map(|pixel| pixel[3])
+        image.bytes.as_chunks::<4>().0.iter().map(|pixel| pixel[3])
     }
 
     fn opaque_bounds(image: &macroquad::prelude::Image) -> (usize, usize, usize, usize) {
@@ -1842,7 +1838,7 @@ mod tests {
         let mut max_x = 0;
         let mut max_y = 0;
         let mut found = false;
-        for (index, pixel) in image.bytes.chunks_exact(4).enumerate() {
+        for (index, pixel) in image.bytes.as_chunks::<4>().0.iter().enumerate() {
             if pixel[3] < 64 {
                 continue;
             }

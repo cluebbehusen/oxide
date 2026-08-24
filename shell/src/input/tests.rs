@@ -400,6 +400,97 @@ fn build_click(
     apply_events(game, input, &click(point.x, point.y));
 }
 
+fn extractor_input_game() -> Game {
+    let scenario = oxide_sim::Scenario::from_json(
+        "{
+        \"name\": \"frame input\",
+        \"seed\": 7,
+        \"players\": [
+            {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 500, \"bot\": false},
+            {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 500, \"bot\": true,
+             \"bot_config\": {\"controller\": \"scripted\"}}
+        ],
+        \"map\": [
+            \"################\",
+            \"#..............#\",
+            \"#.1............#\",
+            \"#..............#\",
+            \"#......E.......#\",
+            \"#..............#\",
+            \"#............2.#\",
+            \"#..............#\",
+            \"################\"
+        ],
+        \"units\": [
+            {\"player\": 0, \"kind\": \"harvester\", \"x\": 5, \"y\": 4}
+        ]
+    }",
+    )
+    .expect("inline Extractor scenario parses");
+    Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("Extractor input fixture builds")
+}
+
+#[test]
+fn every_tile_of_a_known_extractor_frame_places_the_same_site() {
+    let frame = TilePos::new(7, 4);
+    for dy in 0..2 {
+        for dx in 0..2 {
+            let mut game = extractor_input_game();
+            let mut input = InputState::new();
+            let worker = game
+                .state
+                .units()
+                .iter()
+                .find(|unit| unit.player == game.human)
+                .expect("fixture worker")
+                .id;
+            game.selection.units = vec![worker];
+            input.placing = Some(oxide_sim::BuildingKind::Extractor);
+            let clicked = frame.offset(dx, dy);
+            let world = vec2(clicked.x as f32 + 0.5, clicked.y as f32 + 0.5);
+            let point = game.camera.to_screen(world);
+
+            apply_events(
+                &mut game,
+                &mut input,
+                &[RawEvent::MouseDown {
+                    button: MouseButton::Left,
+                    x: point.x,
+                    y: point.y,
+                }],
+            );
+
+            assert!(matches!(
+                game.pending.as_slice(),
+                [PlayerCommand {
+                    command: Command::Build {
+                        kind: oxide_sim::BuildingKind::Extractor,
+                        anchor,
+                        ..
+                    },
+                    ..
+                }] if *anchor == frame
+            ));
+            assert_eq!(
+                input
+                    .placing_stroke
+                    .as_ref()
+                    .expect("accepted click opens its placement stroke")
+                    .anchors,
+                vec![frame]
+            );
+            assert!(
+                game.fx.iter().any(|effect| matches!(
+                    effect.kind,
+                    crate::game::EffectKind::Ping { at, kind: crate::game::PingKind::Rally }
+                        if (at - vec2(8.0, 5.0)).length_squared() < f32::EPSILON
+                )),
+                "the acknowledgment stays centered on the snapped frame"
+            );
+        }
+    }
+}
+
 #[test]
 fn bookmarks_remember_and_recall_camera_ground() {
     let mut game = headless_game();
@@ -1812,9 +1903,9 @@ fn team_game() -> Game {
         \"players\": [
             {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false, \"team\": 1},
             {\"name\": \"pal\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true, \"team\": 1,
-             \"bot_config\": {\"level\": \"easy\"}},
+             \"bot_config\": {\"controller\": \"scripted\"}},
             {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true,
-             \"bot_config\": {\"level\": \"hard\"}}
+             \"bot_config\": {\"controller\": \"scripted\"}}
         ],
         \"map\": [
             \"########################\",
@@ -1854,7 +1945,10 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
     // static combat capability and its order chips.
     let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on an ally panel");
-    assert!(panel.sub.contains("Easy"), "bot difficulty stays visible");
+    assert!(
+        panel.sub.contains("Balanced AI"),
+        "the ally's controller stays visible"
+    );
     assert!(
         panel.combat.is_empty(),
         "an unarmed ally needs no capability band"
@@ -1913,7 +2007,10 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
     let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
     assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
-    assert!(panel.sub.contains("Hard"), "enemy difficulty stays visible");
+    assert!(
+        panel.sub.contains("Balanced AI"),
+        "the enemy's controller stays visible"
+    );
     assert_eq!(panel.combat.len(), 1);
     assert_eq!(panel.combat[0].icon, crate::panel::CombatIcon::Weapon);
     assert!(panel.combat[0].text.contains("dmg"));
@@ -2306,13 +2403,7 @@ fn an_allied_site_under_fog_refuses_selection() {
     };
     for p in scenario.players.iter_mut().skip(1) {
         p.bot = true;
-        p.bot_config = Some(BotConfig {
-            level: oxide_sim::bot::Level::Medium,
-            aggression: None,
-            style: None,
-            variant: None,
-            team_role: None,
-        });
+        p.bot_config = Some(BotConfig::Scripted);
     }
     let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("ally arena builds");
     let mut input = InputState::new();
@@ -4703,8 +4794,11 @@ fn a_plain_placement_replaces_the_selected_claim_while_shift_preserves_it() {
 }
 
 #[test]
-fn the_upgrade_card_drafts_the_nearest_crew() {
+fn the_upgrade_card_stages_only_the_building() {
     let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario
+        .units
+        .retain(|unit| unit.player != 0 || unit.kind != UnitKind::Harvester);
     scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
         player: 0,
         kind: oxide_sim::BuildingKind::Turret,
@@ -4727,36 +4821,112 @@ fn the_upgrade_card_drafts_the_nearest_crew() {
         &mut input,
         crate::panel::CardAction::Upgrade(turret),
     );
-    let staged: Vec<_> = game
-        .pending
+    assert_eq!(game.pending.len(), 1, "one upgrade command staged");
+    assert!(matches!(
+        game.pending[0].command,
+        oxide_sim::Command::UpgradeBuilding { building } if building == turret
+    ));
+}
+
+#[test]
+fn an_automatic_upgrade_is_not_a_worker_target_or_a_scrappable_site() {
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.players[0].scrap = 500;
+    scenario.buildings.extend([
+        oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: oxide_sim::BuildingKind::Fabricator,
+            x: 9,
+            y: 3,
+        },
+        oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: oxide_sim::BuildingKind::Turret,
+            x: 12,
+            y: 3,
+        },
+    ]);
+    let mut game =
+        Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("upgrade fixture builds");
+    let mut input = InputState::new();
+    let harvester = game
+        .state
+        .units()
         .iter()
-        .filter_map(|c| match &c.command {
-            oxide_sim::Command::UpgradeBuilding {
-                units, building, ..
-            } => Some((units.clone(), *building)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(staged.len(), 1, "one upgrade command staged");
-    let (units, building) = &staged[0];
-    assert_eq!(*building, turret);
-    assert!(
-        !units.is_empty() && units.len() <= 3,
-        "a small nearby crew is drafted: {units:?}"
+        .find(|unit| unit.player == game.human && unit.kind == UnitKind::Harvester)
+        .expect("fixture has a human harvester")
+        .id;
+    let turret = game
+        .state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == oxide_sim::BuildingKind::Turret)
+        .expect("fixture has a turret")
+        .id;
+    game.state.tick(&[oxide_sim::PlayerCommand {
+        player: game.human,
+        command: oxide_sim::Command::UpgradeBuilding { building: turret },
+    }]);
+    let center = game.state.building(turret).expect("upgrade lives").center();
+    assert_eq!(
+        (
+            game.state.building(turret).unwrap().built,
+            game.state.building(turret).unwrap().tier,
+        ),
+        (false, 1),
+        "premise: the turret is rebuilding"
     );
-    for id in units {
-        let u = game.state.unit(*id).expect("crew member lives");
-        assert!(
-            u.kind.stats().harvest.is_some(),
-            "only construction-capable machines are drafted"
-        );
-    }
+
+    game.selection.units = vec![harvester];
+    let screen = game
+        .camera
+        .to_screen(vec2(center.x.to_num::<f32>(), center.y.to_num::<f32>()));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Right,
+            x: screen.x,
+            y: screen.y,
+        }],
+    );
+    assert!(
+        game.pending.is_empty(),
+        "right-click must not draft a worker"
+    );
+    assert!(
+        game.toasts
+            .iter()
+            .any(|toast| toast.text == "upgrade runs automatically")
+    );
+
+    game.toasts.clear();
+    game.selection.units.clear();
+    game.selection.buildings = vec![turret];
+    super::dispatch::dispatch_action(&mut game, &mut input, Action::StopOrScrap);
+    assert!(
+        game.pending.is_empty(),
+        "the scrap hotkey must not stage Cancel"
+    );
+    assert_eq!(game.selection.buildings, vec![turret]);
+    assert!(
+        game.toasts
+            .iter()
+            .any(|toast| toast.text == "upgrades cannot be cancelled")
+    );
 }
 
 #[test]
 fn the_build_palette_cycles_through_its_pages() {
     let mut game = headless_game();
     let mut input = InputState::new();
+    let press = |game: &mut Game, input: &mut InputState, key| {
+        apply_events(
+            game,
+            input,
+            &[RawEvent::KeyDown { key }, RawEvent::KeyUp { key }],
+        );
+    };
     let worker = game
         .state
         .units()
@@ -4765,19 +4935,52 @@ fn the_build_palette_cycles_through_its_pages() {
         .unwrap()
         .id;
     game.selection.units = vec![worker];
-    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    let closed = crate::panel::build_for_palette(&game, &input.bindings, false, 0)
+        .expect("closed palette panel");
+    assert_eq!(
+        closed
+            .cards
+            .iter()
+            .find(|card| card.title == "turret")
+            .expect("turret card")
+            .hotkey,
+        "B,1"
+    );
+    press(&mut game, &mut input, Key::B);
     assert!(input.build_menu && input.build_page == 0, "opens on page 0");
-    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    let basic = crate::panel::build_for_palette(&game, &input.bindings, true, input.build_page)
+        .expect("basic palette panel");
+    assert_eq!(
+        basic
+            .cards
+            .iter()
+            .find(|card| card.title == "turret")
+            .expect("turret card")
+            .hotkey,
+        "1"
+    );
+    press(&mut game, &mut input, Key::B);
     assert!(
         input.build_menu && input.build_page == 1,
         "the second press turns the page"
     );
-    // A digit now arms the tech page's kind, not the classic one.
-    super::orders::digit_action(&mut game, &mut input, 1);
+    let advanced = crate::panel::build_for_palette(&game, &input.bindings, true, input.build_page)
+        .expect("advanced palette panel");
+    assert_eq!(
+        advanced
+            .cards
+            .iter()
+            .find(|card| card.title == "crucible")
+            .expect("crucible card")
+            .hotkey,
+        "3"
+    );
+    // The displayed digit now arms the tech page's kind, not basic slot 3.
+    press(&mut game, &mut input, Key::Num3);
     assert_eq!(
         input.placing,
-        Some(oxide_sim::BuildingKind::Airworks),
-        "digit 2 on page 1 arms the Airworks"
+        Some(oxide_sim::BuildingKind::Crucible),
+        "the advanced card's visible 3 arms the Crucible"
     );
     // Reopen and close on the third press.
     super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
@@ -4788,4 +4991,23 @@ fn the_build_palette_cycles_through_its_pages() {
     super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
     super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
     assert!(!input.build_menu, "the cycle ends closed");
+
+    super::activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::ShowBuildPage(1),
+    );
+    assert!(
+        input.build_menu && input.build_page == 1,
+        "the advanced-page card is a direct, clickable route"
+    );
+    super::activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::ShowBuildPage(0),
+    );
+    assert!(
+        input.build_menu && input.build_page == 0,
+        "the basic-page card returns directly"
+    );
 }

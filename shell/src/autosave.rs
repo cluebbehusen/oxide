@@ -28,9 +28,9 @@ const RESERVATION_MARKER_PREFIX: &str = "oxide-save-reservation:";
 /// What a successful [`save`] call actually did.
 #[derive(Debug)]
 pub enum SaveOutcome {
-    /// A record landed at this path. The quit flows only need the
-    /// success; the path is the explicit-save UX's payload.
-    #[allow(dead_code)]
+    /// A record landed at this path. Runtime quit flows need only the
+    /// success; filesystem contract tests inspect the exact destination.
+    #[cfg_attr(not(test), allow(dead_code))]
     Wrote(PathBuf),
     /// An unstarted game has nothing worth a file.
     NothingToSave,
@@ -349,7 +349,7 @@ fn latest_compatible_in(dir: &std::path::Path) -> Option<PathBuf> {
         path.file_name()
             .and_then(|n| n.to_str())
             .is_some_and(|n| n.starts_with("autosave-"))
-            && GameReplay::load(path)
+            && oxide_kit::load_replay(path)
                 .map(|r| r.meta.sim_version == oxide_sim::SIM_VERSION)
                 .unwrap_or(false)
     })
@@ -422,7 +422,7 @@ mod tests {
         std::fs::remove_file(&newer).unwrap();
         assert_eq!(
             latest_compatible_in(&dir),
-            Some(older.clone()),
+            Some(older),
             "removing the newest falls back to the older compatible record"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -458,7 +458,7 @@ mod tests {
         game.advance_ticks(1);
         let saved = write_named(&game, "before the big push", &dir, 1_784_721_600)
             .expect("a named save lands");
-        let record = GameReplay::load(&saved).expect("loads back");
+        let record = oxide_kit::load_replay(&saved).expect("loads back");
         assert_eq!(record.meta.kind.as_deref(), Some("save"));
         assert_eq!(
             record.meta.description.as_deref(),
@@ -482,7 +482,7 @@ mod tests {
         let Ok(SaveOutcome::Wrote(auto_path)) = write_record(&mut game, &dir) else {
             panic!("the quit record lands");
         };
-        let auto = GameReplay::load(&auto_path).expect("loads back");
+        let auto = oxide_kit::load_replay(&auto_path).expect("loads back");
         assert_eq!(auto.meta.kind.as_deref(), Some("autosave"));
         assert!(auto.meta.description.is_none());
         std::fs::remove_dir_all(&dir).ok();
@@ -531,7 +531,7 @@ mod tests {
         let SaveError::Write { path, .. } = err else {
             panic!("the late failure keeps its path");
         };
-        GameReplay::load(&path).expect("a published replay is not mistaken for the marker");
+        oxide_kit::load_replay(&path).expect("a published replay is not mistaken for the marker");
         assert!(!game.autosave_done, "durability was not confirmed");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -559,7 +559,7 @@ mod tests {
             .expect("the next high-collision save lands");
         assert_ne!(first, second, "each save owns a distinct destination");
         assert_eq!(
-            GameReplay::load(&first)
+            oxide_kit::load_replay(&first)
                 .unwrap()
                 .meta
                 .description
@@ -567,7 +567,7 @@ mod tests {
             Some("first beyond the cutoff")
         );
         assert_eq!(
-            GameReplay::load(&second)
+            oxide_kit::load_replay(&second)
                 .unwrap()
                 .meta
                 .description
@@ -588,7 +588,7 @@ mod tests {
             let Ok(SaveOutcome::Wrote(path)) = write_record(&mut game, &dir) else {
                 panic!("completed autosave lands");
             };
-            GameReplay::load(path).expect("completed autosave loads");
+            oxide_kit::load_replay(path).expect("completed autosave loads");
         }
 
         let mut game = Game::new(scenario).expect("game");
@@ -609,7 +609,7 @@ mod tests {
             .unwrap()
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
-            .filter(|path| GameReplay::load(path).is_ok())
+            .filter(|path| oxide_kit::load_replay(path).is_ok())
             .collect();
         assert_eq!(
             completed.len(),

@@ -7,7 +7,7 @@ use crate::game::{Game, SoundKind};
 use crate::{render, theme};
 use macroquad::prelude::*;
 use oxide_protocol::{Key, MouseButton, RawEvent};
-use oxide_sim::{GameResult, PlayerId, TICKS_PER_SECOND, bot::Level};
+use oxide_sim::{GameResult, PlayerId, TICKS_PER_SECOND};
 
 const ACTIONS: [&str; 4] = ["REMATCH", "WATCH REPLAY", "VIEW FINAL MAP", "HOME"];
 const WIDE_STAT_HEADERS: [&str; 6] = [
@@ -186,16 +186,7 @@ fn draw_centered_text(text: &str, x: f32, y: f32, size: f32, color: Color) {
     draw_text(text, x - width * 0.5, y, size, color);
 }
 
-fn level_name(level: Level) -> &'static str {
-    match level {
-        Level::Easy => "EASY",
-        Level::Medium => "MEDIUM",
-        Level::Hard => "HARD",
-        Level::Expert => "EXPERT",
-    }
-}
-
-fn player_name_with_difficulty(
+fn player_name_with_controller(
     game: &Game,
     seat: usize,
     max_name_chars: usize,
@@ -209,10 +200,14 @@ fn player_name_with_difficulty(
     if !spec.bot {
         return name;
     }
-    match spec.bot_config {
-        Some(config) if compact => format!("{name}  {}", level_name(config.level)),
-        Some(config) => format!("{name}  {} AI", level_name(config.level)),
-        None => format!("{name}  AI"),
+    match (spec.bot_config, compact) {
+        (Some(oxide_sim::scenario::BotConfig::Scripted), true) => {
+            format!("{name}  BALANCED")
+        }
+        (Some(oxide_sim::scenario::BotConfig::Scripted), false) => {
+            format!("{name}  BALANCED AI")
+        }
+        (None, _) => format!("{name}  AI"),
     }
 }
 
@@ -494,7 +489,7 @@ impl ResultsScreen {
                     24
                 };
                 let name =
-                    player_name_with_difficulty(game, seat, max_name_chars, layout.compact_roster);
+                    player_name_with_controller(game, seat, max_name_chars, layout.compact_roster);
                 draw_text(
                     format!("T{}  {}{}", player.team + 1, name, crown),
                     columns[0] + 11.0 * s,
@@ -991,6 +986,16 @@ mod tests {
     }
 
     #[test]
+    fn compact_columns_and_names_fit_without_breaking_unicode() {
+        let columns = table_columns(20.0, 620.0, false);
+        assert_eq!(columns[0], 20.0);
+        assert!(columns.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(columns[6] < 620.0);
+        assert_eq!(clipped_name("short", 8), "short");
+        assert_eq!(clipped_name("cupréous", 7), "cupr...");
+    }
+
+    #[test]
     fn keyboard_wraps_and_escape_goes_home() {
         let mut screen = ResultsScreen::open();
         let mut mouse = vec2(0.0, 0.0);
@@ -1052,39 +1057,108 @@ mod tests {
     }
 
     #[test]
-    fn results_name_shows_the_bot_difficulty() {
+    fn results_name_shows_the_scripted_controller() {
         let game = Game::new(oxide_sim::Scenario::skirmish()).expect("skirmish builds");
         assert_eq!(
-            player_name_with_difficulty(&game, 1, 24, false),
-            "Cupric  MEDIUM AI"
+            player_name_with_controller(&game, 1, 24, false),
+            "Cupric  BALANCED AI"
         );
         assert_eq!(
-            player_name_with_difficulty(&game, 1, 24, true),
-            "Cupric  MEDIUM"
+            player_name_with_controller(&game, 1, 24, true),
+            "Cupric  BALANCED"
         );
-        assert_eq!(player_name_with_difficulty(&game, 0, 24, false), "Ferrous");
+        assert_eq!(player_name_with_controller(&game, 0, 24, false), "Ferrous");
     }
 
     #[test]
-    fn touch_requires_release_inside_the_armed_action() {
+    fn touch_activation_requires_the_arming_finger_and_same_action() {
         let viewport = vec2(640.0, 400.0);
-        let rect = action_rects(viewport, 1.0)[1];
-        let at = vec2(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+        let rematch = action_rects(viewport, 1.0)[0].center();
+        let watch = action_rects(viewport, 1.0)[1].center();
         let mut screen = ResultsScreen::open();
         let mut mouse = vec2(0.0, 0.0);
         let mut sounds = Vec::new();
+
+        assert_eq!(
+            screen.update(
+                &[RawEvent::TouchDown {
+                    id: 7,
+                    x: watch.x,
+                    y: watch.y,
+                }],
+                &mut mouse,
+                viewport,
+                1.0,
+                &mut sounds,
+            ),
+            Out::Stay
+        );
+        assert_eq!(screen.pressed_touch, Some((7, 1)));
+
+        // A second finger cannot move or resolve the first finger's gesture.
+        assert_eq!(
+            screen.update(
+                &[
+                    RawEvent::TouchMove {
+                        id: 8,
+                        x: rematch.x,
+                        y: rematch.y,
+                    },
+                    RawEvent::TouchUp {
+                        id: 8,
+                        x: rematch.x,
+                        y: rematch.y,
+                    },
+                ],
+                &mut mouse,
+                viewport,
+                1.0,
+                &mut sounds,
+            ),
+            Out::Stay
+        );
+        assert_eq!(screen.pressed_touch, Some((7, 1)));
+        assert_eq!(mouse, watch);
+
+        // The owning finger releases on another action, canceling the press.
+        assert_eq!(
+            screen.update(
+                &[
+                    RawEvent::TouchMove {
+                        id: 7,
+                        x: rematch.x,
+                        y: rematch.y,
+                    },
+                    RawEvent::TouchUp {
+                        id: 7,
+                        x: rematch.x,
+                        y: rematch.y,
+                    },
+                ],
+                &mut mouse,
+                viewport,
+                1.0,
+                &mut sounds,
+            ),
+            Out::Stay
+        );
+        assert_eq!(screen.pressed_touch, None);
+        assert_eq!(screen.selected(), 0);
+        assert!(sounds.is_empty(), "a canceled touch is silent");
+
+        // Cancellation releases ownership so the next gesture can commit.
         assert_eq!(
             screen.update(
                 &[
                     RawEvent::TouchDown {
-                        id: 7,
-                        x: at.x,
-                        y: at.y,
+                        id: 9,
+                        x: watch.x,
+                        y: watch.y,
                     },
                     RawEvent::TouchUp {
-                        id: 7,
-                        x: at.x,
-                        y: at.y,
+                        id: 9,
+                        x: watch.x,
+                        y: watch.y,
                     },
                 ],
                 &mut mouse,
@@ -1095,6 +1169,98 @@ mod tests {
             Out::Watch
         );
         assert_eq!(screen.selected(), 1);
+        assert_eq!(sounds, vec![(SoundKind::Click, None)]);
+    }
+
+    #[test]
+    fn mouse_hover_is_inert_and_clicks_commit_only_on_the_armed_action() {
+        let viewport = vec2(640.0, 400.0);
+        let rematch = action_rects(viewport, 1.0)[0].center();
+        let watch = action_rects(viewport, 1.0)[1].center();
+        let mut screen = ResultsScreen::open();
+        let mut mouse = Vec2::ZERO;
+        let mut sounds = Vec::new();
+
+        assert_eq!(
+            screen.update(
+                &[RawEvent::MouseMove {
+                    x: watch.x,
+                    y: watch.y,
+                }],
+                &mut mouse,
+                viewport,
+                1.0,
+                &mut sounds,
+            ),
+            Out::Stay
+        );
+        assert_eq!(screen.hover(), Some(1));
+        assert_eq!(screen.selected(), 0, "hover does not move the key cursor");
+
+        assert_eq!(
+            screen.update(
+                &[
+                    RawEvent::MouseDown {
+                        button: MouseButton::Left,
+                        x: rematch.x,
+                        y: rematch.y,
+                    },
+                    RawEvent::MouseUp {
+                        button: MouseButton::Left,
+                        x: watch.x,
+                        y: watch.y,
+                    },
+                ],
+                &mut mouse,
+                viewport,
+                1.0,
+                &mut sounds,
+            ),
+            Out::Stay,
+            "dragging between actions cancels the click"
+        );
+        assert_eq!(
+            screen.update(
+                &[
+                    RawEvent::MouseDown {
+                        button: MouseButton::Left,
+                        x: rematch.x,
+                        y: rematch.y,
+                    },
+                    RawEvent::MouseUp {
+                        button: MouseButton::Left,
+                        x: rematch.x,
+                        y: rematch.y,
+                    },
+                ],
+                &mut mouse,
+                viewport,
+                1.0,
+                &mut sounds,
+            ),
+            Out::Rematch
+        );
+        assert_eq!(sounds, vec![(SoundKind::Click, None)]);
+    }
+
+    #[test]
+    fn verdict_copy_distinguishes_winning_from_surrendering() {
+        let mut victory = Game::new(oxide_sim::Scenario::skirmish()).expect("game");
+        victory.stage(oxide_sim::PlayerCommand {
+            player: PlayerId(1),
+            command: oxide_sim::Command::Surrender,
+        });
+        victory.present_ticks(1);
+        let (title, _, subtitle) = verdict(&victory);
+        assert_eq!(title, "VICTORY");
+        assert!(subtitle.contains("FERROUS"));
+
+        let mut surrendered = Game::new(oxide_sim::Scenario::skirmish()).expect("game");
+        surrendered.issue(oxide_sim::Command::Surrender);
+        surrendered.present_ticks(1);
+        let (title, _, subtitle) = verdict(&surrendered);
+        assert_eq!(title, "SURRENDERED");
+        assert_eq!(subtitle, "your machines fell silent");
     }
 
     #[test]

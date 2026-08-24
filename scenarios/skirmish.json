@@ -14,7 +14,7 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "controller": "scripted"
    }
   }
  ],
@@ -97,7 +97,6 @@
  "meta": {
   "hook": "The first field: two foundries, open middle, no excuses.",
   "pace": "standard",
-  "duration": "13-18 min",
   "mode": "1v1",
   "richness": "standard",
   "theme": "rusted-yard"

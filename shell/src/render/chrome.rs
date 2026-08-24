@@ -301,8 +301,12 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
         }
     }
 
-    *game.panel_model.borrow_mut() =
-        crate::panel::build_with_page(game, &input.bindings, input.active_build_page());
+    *game.panel_model.borrow_mut() = crate::panel::build_for_palette(
+        game,
+        &input.bindings,
+        input.build_menu,
+        input.active_build_page(),
+    );
     let panel = game.panel_model.borrow();
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut roster_slots = [(zero, crate::panel::CardAction::None); 8];

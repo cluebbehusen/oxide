@@ -61,7 +61,6 @@ SFX_ATTACK_AUDIBILITY_NAMES = {
     "demolition_boom",
     "attack_flakhound",
     "attack_flak_turret",
-    "flak",
     "attack_bombard",
     "attack_bastion",
     "artillery_boom",
@@ -116,7 +115,6 @@ SFX_METADATA = (
         0.10,
         "38-buzzard-quad-fan-carriage-animated.gif",
     ),
-    ("rail_fire", "generic-weapon", 0.32, 0.15, "36-lancer-dark-channel-animated.gif"),
     (
         "attack_lancer",
         "signature-weapon",
@@ -145,7 +143,6 @@ SFX_METADATA = (
         0.12,
         "01-flak-turret-paired-yokes.gif",
     ),
-    ("flak", "signature-weapon", 0.30, 0.12, "01-flak-turret-paired-yokes.gif"),
     ("attack_warden", "generic-weapon", 0.30, 0.10, None),
     ("attack_breaker", "signature-weapon", 0.55, 0.15, None),
     ("avalanche_launch", "signature-weapon", 0.50, 0.15, None),
@@ -216,11 +213,9 @@ EXPECTED_SFX_SHA256 = {
     "avalanche_launch.wav": "e56a8da38dfab471ccd248716f41498cc6954c1dbea9a1a3f0b7804df97d2afd",
     "bomb_release.wav": "6b18f6e7db76d0a51a46930f3e17c017055575e3daec2dae01372a130d489413",
     "demolition_boom.wav": "8a7d117cc678fb98bba9b2d4ba72cb26bdb47c7ff77fa100256d767e14be69cd",
-    "flak.wav": "bb4566e35ae2c1a0f080913b29514b0ef262f9a8eec7a46a34b3a4b32b61f16c",
     "upgrade_done.wav": "f60e6045845b53946224d33ce1cc8dbf96671903893a36fe3a0738c73ea646f0",
     "laser.wav": "252519a8fb00d4587deefb182d1025c2d6c309d63f51d176119e39f24bdf63cd",
     "laser2.wav": "b44d1b4311b750fc6005b22d1a6021db39d1dbdbddabce7dd240d19a0b5ac1b3",
-    "rail_fire.wav": "562f5072e5bf73377ee6db5180403f867c0dc5b55e2577cb3043f5afd43f3d14",
     "train_done.wav": "6a5c193c7c749915cb7356aa3b2b426db50ffd3a017af2466a93dd17c1937827",
     "unit_death.wav": "b875ac45ad46385a8c5acc3f29f150496fb39071dc2c2bcb036b5d28b0538fec",
     "victory.wav": "ce13a0edb4afb7ad38fcbdf2d33d6afdf4f52ae6f9f3108fe37c8e4291e22ff2",
@@ -1018,24 +1013,6 @@ def sfx_buzzard() -> np.ndarray:
     return sfx_finish(sfx_slapback(result, 0.09, 1, 0.25), highpass=70, peak=0.88)
 
 
-def sfx_rail_fire() -> np.ndarray:
-    result = sfx_crush(
-        sfx_zap(
-            508,
-            1650.0,
-            240.0,
-            0.24,
-            thump=0.65,
-            snap=0.5,
-            sync_gain=0.45,
-            sharp=5.0,
-        ),
-        10,
-        2,
-    )
-    return sfx_finish(sfx_slapback(result, 0.08, 2, 0.26), highpass=90, peak=0.86)
-
-
 def sfx_lancer() -> np.ndarray:
     result = sfx_crush(
         sfx_zap(
@@ -1119,17 +1096,6 @@ def sfx_flak_turret() -> np.ndarray:
         )
     result = sfx_slapback(sfx_crush(canvas.output(), 10, 2), 0.11, 1, 0.22)
     return sfx_finish(result, highpass=65, peak=0.88)
-
-
-def sfx_flak() -> np.ndarray:
-    canvas = SfxCanvas(0.5)
-    canvas.add(sfx_crack(651), 0.0, 0.9)
-    canvas.add(
-        sfx_pound(652, 140.0, 52.0, 0.3, bloom=0.7, sharp=4.5),
-        0.003,
-        1.0,
-    )
-    return sfx_finish(sfx_crush(canvas.output(), 10, 2), highpass=60, peak=0.87)
 
 
 def sfx_bombard() -> np.ndarray:
@@ -1328,12 +1294,10 @@ SFX_BUILDERS = {
     "attack_wisp": sfx_wisp,
     "attack_darter": sfx_darter,
     "attack_buzzard": sfx_buzzard,
-    "rail_fire": sfx_rail_fire,
     "attack_lancer": sfx_lancer,
     "attack_scuttler": sfx_scuttler,
     "attack_flakhound": sfx_flakhound,
     "attack_flak_turret": sfx_flak_turret,
-    "flak": sfx_flak,
     "attack_warden": sfx_warden,
     "attack_breaker": sfx_breaker,
     "avalanche_launch": sfx_avalanche_launch,

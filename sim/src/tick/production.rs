@@ -241,8 +241,12 @@ fn rally_order(state: &State, owner: PlayerId, kind: UnitKind, rally: TilePos) -
 
 /// Phase 3.5: abandoned construction sites rust away.
 ///
-/// A site with no own harvest-capable machine standing beside its
-/// footprint loses one hp per [`crate::stats::SITE_DECAY_PERIOD`] ticks.
+/// A site with no live own harvest-capable machine committed to build it or
+/// standing beside its footprint loses one hp per
+/// [`crate::stats::SITE_DECAY_PERIOD`] ticks. A queued Build order is a
+/// commitment too: sites waiting behind earlier work are not abandoned.
+/// Tiered works are committed self-upgrades rather than abandoned sites and
+/// never enter this decay pass.
 /// Survival counts Foundry sites exactly like standing Foundries, so an
 /// untended scaffold must eventually die rather than keep a beaten seat
 /// technically alive — and decay burns the cancel refund exactly like
@@ -259,17 +263,21 @@ pub(super) fn decay_abandoned_sites(state: &mut State) {
     let decays: Vec<crate::ids::BuildingId> = state
         .buildings
         .iter()
-        .filter(|building| !building.built && building.hp > 0)
+        .filter(|building| !building.built && building.hp > 0 && building.tier == 0)
         .filter(|building| {
             !state.units.iter().any(|unit| {
                 unit.player == building.player
                     && unit.hp > 0
                     && unit.kind.stats().harvest.is_some()
-                    && super::tile_adjacent_to_rect(
-                        unit.tile(),
-                        building.anchor,
-                        building.stats().size,
-                    )
+                    && (matches!(unit.order, Order::Build { site } if site == building.id)
+                        || unit.queue.iter().any(
+                            |order| matches!(*order, Order::Build { site } if site == building.id),
+                        )
+                        || super::tile_adjacent_to_rect(
+                            unit.tile(),
+                            building.anchor,
+                            building.stats().size,
+                        ))
             })
         })
         .map(|building| building.id)

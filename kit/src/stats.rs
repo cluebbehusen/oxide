@@ -320,13 +320,8 @@ mod tests {
         let mut scenario = Scenario::skirmish();
         for p in scenario.players.iter_mut() {
             p.bot = true;
-            p.bot_config.get_or_insert(oxide_sim::scenario::BotConfig {
-                level: oxide_sim::bot::Level::Medium,
-                aggression: None,
-                style: None,
-                variant: None,
-                team_role: None,
-            });
+            p.bot_config
+                .get_or_insert(oxide_sim::scenario::BotConfig::Scripted);
         }
         let replay = record_overseer_match(&scenario, 600, Vec::new());
         let a = compute(&replay, 100).unwrap();
@@ -441,5 +436,34 @@ mod tests {
             }),
             "the thinned fixture must include real economy and construction events"
         );
+    }
+
+    #[test]
+    fn deliberate_salvage_is_not_counted_as_a_building_loss() {
+        use chassis::fx::Vec2Fx;
+        use oxide_sim::BuildingId;
+
+        let mut players = blank_players(2);
+        accumulate_events(
+            &mut players,
+            &[
+                Event::BuildingDestroyed {
+                    building: BuildingId(7),
+                    player: PlayerId(0),
+                    pos: Vec2Fx::ZERO,
+                },
+                Event::BuildingSalvaged {
+                    building: BuildingId(8),
+                    player: PlayerId(0),
+                    pos: Vec2Fx::ZERO,
+                    refund: 40,
+                },
+            ],
+        );
+
+        assert_eq!(players[0].buildings_lost, 1);
+        assert_eq!(players[0].buildings_salvaged, 1);
+        assert_eq!(players[1].buildings_lost, 0);
+        assert_eq!(players[1].buildings_salvaged, 0);
     }
 }

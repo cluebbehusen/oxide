@@ -1090,6 +1090,127 @@ fn queued_builds_chain_one_builder_through_two_sites() {
 }
 
 #[test]
+fn a_queued_build_claim_protects_the_site_until_its_worker_arrives() {
+    use oxide_sim::stats::{BuildingKind, SITE_DECAY_PERIOD};
+
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 3, 2)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(3, 4),
+            queue: false,
+            defer: false,
+        },
+    )]);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::FlakTurret,
+            anchor: TilePos::new(9, 2),
+            queue: true,
+            defer: false,
+        },
+    )]);
+    let queued = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::FlakTurret)
+        .expect("queued site exists")
+        .id;
+    let initial_hp = state.building(queued).unwrap().hp;
+    assert!(
+        state
+            .unit(builder)
+            .unwrap()
+            .queue
+            .iter()
+            .any(|order| *order == Order::Build { site: queued }),
+        "premise: the distant site is a queued job"
+    );
+
+    for _ in 0..SITE_DECAY_PERIOD * 4 {
+        state.tick(&[]);
+    }
+
+    let queued_site = state.building(queued).unwrap();
+    assert!(!queued_site.built, "the queued job has not started yet");
+    assert_eq!(
+        queued_site.hp, initial_hp,
+        "a paid site promised to a live worker must not decay while it waits"
+    );
+}
+
+#[test]
+fn replacing_the_only_builders_program_releases_a_queued_site_to_decay() {
+    use oxide_sim::stats::{BuildingKind, SITE_DECAY_PERIOD};
+
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 3, 2)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(3, 4),
+            queue: false,
+            defer: false,
+        },
+    )]);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::FlakTurret,
+            anchor: TilePos::new(9, 2),
+            queue: true,
+            defer: false,
+        },
+    )]);
+    let queued = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::FlakTurret)
+        .expect("queued site exists")
+        .id;
+    let initial_hp = state.building(queued).unwrap().hp;
+
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(3, 2),
+            queue: false,
+        },
+    )]);
+    let worker = state.unit(builder).unwrap();
+    assert_ne!(worker.order, Order::Build { site: queued });
+    assert!(
+        worker
+            .queue
+            .iter()
+            .all(|order| *order != Order::Build { site: queued }),
+        "replacement semantics clear the queued claim"
+    );
+
+    for _ in 0..SITE_DECAY_PERIOD * 2 {
+        state.tick(&[]);
+    }
+
+    assert!(
+        state.building(queued).unwrap().hp < initial_hp,
+        "once its last build claim disappears, an unattended site decays normally"
+    );
+}
+
+#[test]
 fn a_queued_build_whose_site_died_pops_silently_and_the_program_survives() {
     // A queued leg whose site vanished is a finished job, not a stall:
     // the rest of the program must survive (OrderStalled clears whole
@@ -1446,9 +1567,9 @@ fn an_allied_machine_makes_way_like_your_own() {
             "players": [
                 {"name": "West", "faction": "ferrous", "team": 1, "scrap": 300, "bot": false},
                 {"name": "East", "faction": "cupric", "team": 1, "scrap": 0, "bot": true,
-                 "bot_config": {"level": "medium"}},
+                 "bot_config": {"controller": "scripted"}},
                 {"name": "Foe", "faction": "cupric", "scrap": 0, "bot": true,
-                 "bot_config": {"level": "medium"}}
+                 "bot_config": {"controller": "scripted"}}
             ],
             "map": [
                 "####################",
@@ -2839,7 +2960,7 @@ fn a_late_crewmate_finds_its_building_finished_and_calls_it_done() {
     state.tick(&[cmd(
         0,
         Command::Build {
-            units: crew.clone(),
+            units: crew,
             kind: BuildingKind::Turret,
             anchor: spot,
             queue: false,

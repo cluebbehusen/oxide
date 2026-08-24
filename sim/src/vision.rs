@@ -6,11 +6,10 @@
 //! rocks do not block line of sight (a deliberate simplification, cheap and
 //! predictable).
 //!
-//! What fog *enforces* is deliberately narrow: targeted attack commands
-//! require the issuer to see the victim. Everything else — what the shell
-//! draws, what a player knows — is presentation reading these grids. The
-//! built-in bot reads full state (a classic cheating AI), but the commands
-//! it issues still pass the same validation as everyone else's.
+//! Fog is both a presentation surface and the knowledge boundary for built-in
+//! opponents. Fog-honest views expose current sight, explored terrain, ghosts,
+//! remembered salvage, and anonymous radar contacts; targeted attack commands
+//! still require current team sight when the simulation validates them.
 
 use crate::ids::PlayerId;
 use crate::state::State;

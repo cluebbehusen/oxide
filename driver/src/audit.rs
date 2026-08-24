@@ -1,9 +1,8 @@
 //! Map audit: the numbers that decide whether a map plays the way its
 //! label promises — usable room per seat, real route lengths by movement
-//! domain, resource spread, artillery pressure, and spawn spacing. The
-//! 0.9 map rework sets pace bands against these figures instead of raw
-//! dimensions (a 48x30 map whose bases sit 22 tiles apart plays like a
-//! knife fight, whatever the footprint says).
+//! domain, resource spread, artillery pressure, and spawn spacing. Pace
+//! bands use these figures instead of raw dimensions: a large footprint
+//! with bases 22 tiles apart still plays like a knife fight.
 
 use anyhow::{Context, Result};
 use chassis::grid::TilePos;
@@ -507,7 +506,7 @@ mod tests {
                 name: "detour".into(),
                 seed: 5,
                 map: rows,
-                players: Scenario::skirmish().players.clone(),
+                players: Scenario::skirmish().players,
                 units: Vec::new(),
                 buildings: Vec::new(),
                 meta: None,
@@ -551,7 +550,7 @@ mod tests {
             name: "detour".into(),
             seed: 5,
             map: rows,
-            players: Scenario::skirmish().players.clone(),
+            players: Scenario::skirmish().players,
             units: Vec::new(),
             buildings: Vec::new(),
             meta: None,

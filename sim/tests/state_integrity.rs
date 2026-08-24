@@ -5,15 +5,13 @@
 //! `State::validate_invariants` owes a fixture here, so a checklist row
 //! that stops firing is a red test rather than a silent gap.
 //!
-//! The other half is the bring-up gate, and it is the load-bearing one:
-//! a validator row TIGHTER than reality would refuse a state the sim
-//! really produces, which is how a stricter validator turns into data
-//! loss the day a snapshot save exists. So every shipped map plays out
-//! bot-vs-bot with the checklist sampled along the way, a scripted run
-//! exercises the verbs the bots rarely reach and is checked every single
-//! tick, and a ticked state makes the full round trip through JSON.
+//! The other half exercises states reached through real commands. A
+//! validator row tighter than reality would refuse a state the sim
+//! produces, turning hardening into data loss. A scripted run therefore
+//! exercises uncommon verbs and checks every tick, while the driver's
+//! shipped-map liveness sweep samples this validator and the JSON trust
+//! boundary across the full authored roster.
 
-use oxide_sim::bot::Brain;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::stats::{BuildingKind, QUEUE_CAP};
 use oxide_sim::{
@@ -254,43 +252,44 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::ForeignBuildingOwner(_) => 24,
         E::BuildingHpOutOfRange(_) => 25,
         E::BuildingProgressOutOfRange(_) => 26,
-        E::BuildingCooldownOutOfRange(_) => 27,
-        E::UnmintedBuildingFocus(_) => 28,
-        E::InvalidBuildingFocus(_) => 29,
-        E::OverlongBuildingQueue(_) => 30,
-        E::UnproducibleQueueEntry(_) => 31,
-        E::BuildingOutsideEnvelope(_) => 32,
-        E::IncoherentSalvageLedger(_) => 33,
-        E::TierBeyondLadder(_) => 34,
-        E::LiveBuildingMarkedSalvaged(_) => 35,
-        E::CargoOnNonTransport(_) => 50,
-        E::CargoBeyondCapacity(_) => 51,
-        E::UncarriableCargo(_) => 52,
-        E::CargoHpOutOfRange(_) => 53,
-        E::CargoOwnerMismatch(_) => 54,
-        E::CargoNotDormant(_) => 55,
-        E::AliasedCargoId => 56,
-        E::ForeignShellOwner(_) => 36,
-        E::ShellOutsideEnvelope(_) => 37,
-        E::UnmintedShellShooter(_) => 38,
-        E::ForeignGhostOwner(_) => 39,
-        E::FriendlyGhost(_) => 40,
-        E::GhostOutsideEnvelope(_) => 41,
-        E::UnsortedGhosts(_) => 42,
-        E::ContactOutsideEnvelope(_) => 43,
-        E::UnsortedContacts(_) => 44,
-        E::OverlongSalvageIncidentMemory(_) => 45,
-        E::SalvageIncidentOutsideEnvelope(_) => 46,
-        E::ExpiredSalvageIncident(_) => 47,
-        E::SalvageIncidentExpiryBeyondHorizon(_) => 48,
-        E::UnsortedSalvageIncidents(_) => 49,
-        E::EliminationInTheFuture(_) => 57,
-        E::CargoProgressOutOfRange(_) => 58,
-        E::CargoCooldownOutOfRange(_) => 59,
+        E::UpgradeProgressOutOfRange(_) => 27,
+        E::BuildingCooldownOutOfRange(_) => 28,
+        E::UnmintedBuildingFocus(_) => 29,
+        E::InvalidBuildingFocus(_) => 30,
+        E::OverlongBuildingQueue(_) => 31,
+        E::UnproducibleQueueEntry(_) => 32,
+        E::BuildingOutsideEnvelope(_) => 33,
+        E::IncoherentSalvageLedger(_) => 34,
+        E::TierBeyondLadder(_) => 35,
+        E::LiveBuildingMarkedSalvaged(_) => 36,
+        E::CargoOnNonTransport(_) => 51,
+        E::CargoBeyondCapacity(_) => 52,
+        E::UncarriableCargo(_) => 53,
+        E::CargoHpOutOfRange(_) => 54,
+        E::CargoOwnerMismatch(_) => 55,
+        E::CargoNotDormant(_) => 56,
+        E::AliasedCargoId => 57,
+        E::ForeignShellOwner(_) => 37,
+        E::ShellOutsideEnvelope(_) => 38,
+        E::UnmintedShellShooter(_) => 39,
+        E::ForeignGhostOwner(_) => 40,
+        E::FriendlyGhost(_) => 41,
+        E::GhostOutsideEnvelope(_) => 42,
+        E::UnsortedGhosts(_) => 43,
+        E::ContactOutsideEnvelope(_) => 44,
+        E::UnsortedContacts(_) => 45,
+        E::OverlongSalvageIncidentMemory(_) => 46,
+        E::SalvageIncidentOutsideEnvelope(_) => 47,
+        E::ExpiredSalvageIncident(_) => 48,
+        E::SalvageIncidentExpiryBeyondHorizon(_) => 49,
+        E::UnsortedSalvageIncidents(_) => 50,
+        E::EliminationInTheFuture(_) => 58,
+        E::CargoProgressOutOfRange(_) => 59,
+        E::CargoCooldownOutOfRange(_) => 60,
     }
 }
 
-const ROWS: usize = 60;
+const ROWS: usize = 61;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -330,6 +329,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::ForeignBuildingOwner(BuildingId(0)),
         E::BuildingHpOutOfRange(BuildingId(0)),
         E::BuildingProgressOutOfRange(BuildingId(0)),
+        E::UpgradeProgressOutOfRange(BuildingId(0)),
         E::BuildingCooldownOutOfRange(BuildingId(0)),
         E::UnmintedBuildingFocus(BuildingId(0)),
         E::InvalidBuildingFocus(BuildingId(0)),
@@ -598,10 +598,6 @@ fn every_checklist_row_refuses_its_forgery() {
             |d| d["buildings"][0]["player"] = json!(9),
             "building b0 is owned by a player outside the table",
         ),
-        // "An unfinished Foundry" left this checklist in 0.15: Foundries
-        // are buildable expansions now, so a Foundry site is a legal,
-        // reachable state. The unconstructible-site invariant remains in
-        // the validator for any future scenario-only kind.
         (
             "a building healthier than its kind can be",
             |d| d["buildings"][0]["hp"] = json!(999_999),
@@ -611,6 +607,15 @@ fn every_checklist_row_refuses_its_forgery() {
             "a progress meter past the ceiling",
             |d| d["buildings"][0]["progress"] = json!(u32::MAX),
             "building b0 carries a progress meter past the ceiling",
+        ),
+        (
+            "an automatic upgrade past its tier timer",
+            |d| {
+                d["buildings"][3]["built"] = json!(false);
+                d["buildings"][3]["tier"] = json!(1);
+                d["buildings"][3]["progress"] = json!(301);
+            },
+            "building b3 carries upgrade progress past its construction timer",
         ),
         (
             "a cooldown on a Foundry, which carries no weapon",
@@ -751,8 +756,8 @@ fn every_checklist_row_refuses_its_forgery() {
             "extractor frames out of canonical order",
             |d| {
                 // A duplicated anchor is the smallest ordering forgery:
-                // fog views copy this list as canon and the gym counts
-                // it, so one semantic map must not get two shapes.
+                // fog and bot views copy this list as canonical map
+                // knowledge, so one semantic map must not get two shapes.
                 let frame = d["map"]["extractor_frames"][0].clone();
                 d["map"]["extractor_frames"] = json!([frame.clone(), frame]);
             },
@@ -1110,110 +1115,6 @@ fn a_full_verb_run_stays_valid_every_tick() {
             .building(fabricator)
             .is_some_and(|b| b.salvage_drained > 0 && b.salvage_credited > 0),
         "premise: the salvage ledger carries a real entry"
-    );
-}
-
-/// The bring-up gate, broad half: every shipped map, every seat driven,
-/// thousands of ticks, the checklist sampled along the way. Independent
-/// deterministic sims, so the sweep fans across threads like the other
-/// map sweeps.
-#[test]
-fn every_shipped_map_stays_valid_under_bot_play() {
-    // Re-anchored on the all-Overseer sweep: its first construction
-    // lands around tick 1,100-3,600 depending on the map (the deleted
-    // 0.14 actors built earlier), and at 8,000 ticks every shipped map
-    // measures both built-up (34/34) and remembered (34/34).
-    const TICKS: u32 = 8_000;
-    /// How often the checklist runs directly (cheap: entities, not tiles).
-    const SAMPLE: u32 = 100;
-    /// How often the state makes the full trip through the deserializer,
-    /// which is where the checklist actually stands guard.
-    const ROUND_TRIP: u32 = 500;
-
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
-    let paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
-        .expect("scenarios dir")
-        .map(|e| e.expect("dir entry").path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
-        .collect();
-    assert!(paths.len() >= 10, "the shipped roster is present");
-
-    // A sweep that stopped producing memories, sites, or fresh machines
-    // would still pass every row while proving nothing.
-    let built_up = std::sync::atomic::AtomicUsize::new(0);
-    let remembered = std::sync::atomic::AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        for path in &paths {
-            let (built_up, remembered) = (&built_up, &remembered);
-            scope.spawn(move || {
-                let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-                let scenario = Scenario::load(path).unwrap_or_else(|err| panic!("{name}: {err}"));
-                let seed = scenario.seed;
-                let mut state = scenario
-                    .build()
-                    .unwrap_or_else(|err| panic!("{name}: {err}"));
-                let (scenario_units, scenario_buildings) =
-                    (state.units().len(), state.buildings().len());
-                // Every chair thinks: the widest spread of live orders,
-                // construction, and battle the shipped maps can produce.
-                // The Overseer is the one commander left standing while
-                // bot seats await the retrained actor.
-                let mut brains: Vec<Brain> = (0..state.players().len())
-                    .map(|i| Brain::overseer(PlayerId(i as u8), seed))
-                    .collect();
-                let mut saw_ghost = false;
-                for tick in 0..TICKS {
-                    let commands: Vec<PlayerCommand> =
-                        brains.iter_mut().flat_map(|b| b.act(&state)).collect();
-                    state.tick(&commands);
-                    if tick.is_multiple_of(SAMPLE) {
-                        state.validate_invariants().unwrap_or_else(|err| {
-                            panic!("{name}: tick {tick} is a state the validator refuses: {err}")
-                        });
-                    }
-                    if tick.is_multiple_of(ROUND_TRIP) {
-                        let restored: State =
-                            serde_json::from_str(&serde_json::to_string(&state).unwrap())
-                                .unwrap_or_else(|err| {
-                                    panic!("{name}: tick {tick} is refused at the door: {err}")
-                                });
-                        assert_eq!(
-                            restored.hash(),
-                            state.hash(),
-                            "{name}: tick {tick} round-trips exactly"
-                        );
-                    }
-                    saw_ghost |= (0..state.players().len())
-                        .any(|i| !state.vision(PlayerId(i as u8)).ghosts().is_empty());
-                }
-                let rich = state.units().len() > scenario_units
-                    && state.buildings().len() > scenario_buildings;
-                if rich {
-                    built_up.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                if saw_ghost {
-                    remembered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-            });
-        }
-    });
-    let (built_up, remembered) = (
-        built_up.load(std::sync::atomic::Ordering::Relaxed),
-        remembered.load(std::sync::atomic::Ordering::Relaxed),
-    );
-    eprintln!(
-        "sweep tallies: built_up {built_up}, remembered {remembered}, maps {}",
-        paths.len()
-    );
-    assert!(
-        built_up * 3 >= paths.len(),
-        "the sweep must reach built-up worlds, not idle openings ({built_up} of {})",
-        paths.len()
-    );
-    assert!(
-        remembered * 3 >= paths.len(),
-        "the sweep must reach worlds carrying enemy memories ({remembered} of {})",
-        paths.len()
     );
 }
 

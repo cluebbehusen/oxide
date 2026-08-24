@@ -50,6 +50,35 @@ fn arena(scrap: u32, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scen
     }
 }
 
+fn peak_strike_arena() -> Scenario {
+    Scenario {
+        name: "peak-strike-arena".into(),
+        seed: 11,
+        map: vec![
+            "########################".into(),
+            "#1.....................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#.................^^...#".into(),
+            "#..............2..^^...#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "########################".into(),
+        ],
+        players: players(1_000),
+        units: vec![
+            unit(0, UnitKind::Condor, 8, 5),
+            unit(0, UnitKind::Kestrel, 14, 6),
+        ],
+        buildings: Vec::new(),
+        meta: None,
+    }
+}
+
 fn cmd(player: u8, command: Command) -> PlayerCommand {
     PlayerCommand {
         player: PlayerId(player),
@@ -139,6 +168,81 @@ fn the_condor_bombs_on_passes_and_never_hovers_to_strafe() {
     assert!(
         max_still_streak < 60,
         "the condor parked for {max_still_streak} ticks mid-attack"
+    );
+}
+
+#[test]
+fn a_condor_replans_when_its_wide_turn_meets_a_peak() {
+    let mut state = peak_strike_arena().build().unwrap();
+    let condor = state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Condor)
+        .unwrap()
+        .id;
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(1))
+        .unwrap()
+        .id;
+    state.tick(&[]);
+    state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![condor],
+            target: Target::Building(foundry),
+            queue: false,
+        },
+    )]);
+
+    let mut release_ticks = Vec::new();
+    let mut still_streak = 0u32;
+    let mut max_still_streak = 0u32;
+    let mut last_pos = state.unit(condor).unwrap().pos;
+    let mut last_heading = state.unit(condor).unwrap().heading;
+    let rate = i16::from(UnitKind::Condor.stats().turn_rate);
+    for _ in 0..1_200 {
+        let report = state.tick(&[]);
+        if report.events.iter().any(
+            |event| matches!(event, Event::ShellLaunched { shooter: Target::Unit(id), .. } if *id == condor),
+        ) {
+            release_ticks.push(state.current_tick());
+        }
+        let unit = state.unit(condor).unwrap();
+        let terrain = state.map().tile(unit.tile()).unwrap().terrain;
+        assert_ne!(
+            terrain,
+            oxide_sim::map::Terrain::Peak,
+            "the turn never enters the mountain"
+        );
+        let delta = i16::from(unit.heading.wrapping_sub(last_heading) as i8).abs();
+        assert!(
+            delta <= rate,
+            "obstacle avoidance turned {delta} steps in one tick (rate {rate})"
+        );
+        if unit.pos == last_pos {
+            still_streak += 1;
+            max_still_streak = max_still_streak.max(still_streak);
+        } else {
+            still_streak = 0;
+        }
+        last_pos = unit.pos;
+        last_heading = unit.heading;
+        if release_ticks.len() >= 2 {
+            break;
+        }
+    }
+    assert!(
+        max_still_streak < 60,
+        "the Condor parked against the Peak for {max_still_streak} ticks at {:?} heading {} path {:?}",
+        state.unit(condor).unwrap().pos,
+        state.unit(condor).unwrap().heading,
+        state.unit(condor).unwrap().path,
+    );
+    assert!(
+        release_ticks.len() >= 2,
+        "the Condor never completed a second pass: {release_ticks:?}"
     );
 }
 

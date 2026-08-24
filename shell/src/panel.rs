@@ -83,6 +83,8 @@ pub enum CardAction {
     Dispatch(Action),
     /// Arm building placement (what the palette digit does).
     ArmBuild(BuildingKind),
+    /// Show one named build-palette page without requiring a hidden key cycle.
+    ShowBuildPage(usize),
     /// Arm the next world/minimap click as the selected producers' rally.
     ArmRally,
     /// Remove a queued unit from a producer (full refund).
@@ -93,8 +95,7 @@ pub enum CardAction {
     CancelFound(BuildingKind, chassis::grid::TilePos),
     /// Clear the selected producers' rally points.
     ClearRally,
-    /// Lift a built own building one tier: the shell drafts the nearest
-    /// own construction-capable machines as the crew.
+    /// Lift a built own building one tier through its automatic rebuild.
     Upgrade(BuildingId),
     /// Set a transport's cargo down around where it hovers.
     UnloadHere(oxide_sim::UnitId),
@@ -438,23 +439,18 @@ fn production_queue_label(
     Some(format!("queue {}", tick_time_label(remaining)))
 }
 
-fn bot_level_label(game: &Game, player: oxide_sim::PlayerId) -> Option<&'static str> {
+fn bot_controller_label(game: &Game, player: oxide_sim::PlayerId) -> Option<&'static str> {
     let spec = game.scenario.players.get(usize::from(player.0))?;
     if !spec.bot {
         return None;
     }
-    spec.bot_config.map(|config| match config.level {
-        oxide_sim::bot::Level::Easy => "Easy",
-        oxide_sim::bot::Level::Medium => "Medium",
-        oxide_sim::bot::Level::Hard => "Hard",
-        oxide_sim::bot::Level::Expert => "Expert",
-    })
+    spec.bot_config.map(|_| "Balanced AI")
 }
 
 fn foreign_sub(game: &Game, owner: oxide_sim::PlayerId, hostile: bool, detail: &str) -> String {
     let relation = if hostile { "hostile" } else { "ally" };
-    if let Some(level) = bot_level_label(game, owner) {
-        format!("{relation} | {level} | {detail}")
+    if let Some(controller) = bot_controller_label(game, owner) {
+        format!("{relation} | {controller} | {detail}")
     } else {
         format!("{relation} | {detail}")
     }
@@ -715,11 +711,25 @@ fn chord(bindings: &BindingMap, action: Action) -> String {
         .unwrap_or_default()
 }
 
-/// Builds the panel for the current selection, or `None` when nothing
-/// warrants one. Pure: reads game + bindings, owns no state.
-/// Panel construction with the open build-palette page — the shell
-/// passes the live page so the card row matches what digits will do.
-pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) -> Option<Panel> {
+/// Builds a panel as if the build palette were closed. Tests and other
+/// non-interactive consumers use this when they do not own input state.
+#[cfg(test)]
+pub(crate) fn build_with_page(
+    game: &Game,
+    bindings: &BindingMap,
+    build_page: usize,
+) -> Option<Panel> {
+    build_for_palette(game, bindings, false, build_page)
+}
+
+/// Builds the panel against the live palette state used by the input funnel,
+/// so displayed shortcuts start from the same page the next key press acts on.
+pub fn build_for_palette(
+    game: &Game,
+    bindings: &BindingMap,
+    build_menu_open: bool,
+    build_page: usize,
+) -> Option<Panel> {
     let faction = game.state.player(game.human).faction;
     let selected_buildings: Vec<_> = game
         .selection
@@ -854,8 +864,11 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
                     action: CardAction::None,
                     enabled: false,
                     why: Some("upgrades cannot be cancelled".into()),
-                    desc: vec!["The works returns to service when the crew finishes.".into()],
-                    progress: None,
+                    desc: vec!["The works returns to service when the upgrade finishes.".into()],
+                    progress: building.stats().construction.map(|construction| {
+                        (building.progress as f32 / construction.build_ticks.max(1) as f32)
+                            .clamp(0.0, 1.0)
+                    }),
                 });
                 return Some(panel);
             }
@@ -882,10 +895,6 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
                     .iter()
                     .any(|b| b.player == game.human && b.kind == *req && b.built)
             });
-            let crew_available =
-                game.state.units().iter().any(|u| {
-                    u.player == game.human && u.hp > 0 && u.kind.stats().harvest.is_some()
-                });
             let (enabled, why) = if !tech_ok {
                 let need = upgrade
                     .requires
@@ -896,13 +905,10 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
                 (false, Some(format!("needs a standing {need}")))
             } else if scrap < upgrade.cost {
                 (false, Some(format!("needs {} scrap", upgrade.cost)))
-            } else if !crew_available {
-                // Activation drafts the nearest harvest-capable crew;
-                // with none alive the click would silently do nothing.
-                (false, Some("needs a harvest-capable crew".to_string()))
             } else {
                 (true, None)
             };
+            let seconds = upgrade.build_ticks as f32 / oxide_sim::TICKS_PER_SECOND as f32;
             panel.cards.push(Card {
                 icon: CardIcon::Building(building.kind),
                 title: format!("Upgrade: {next}"),
@@ -913,11 +919,9 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
                 why,
                 desc: vec![
                     format!(
-                        "Rebuilds this works as a {next} ({} ticks of labor).",
-                        upgrade.build_ticks
+                        "Rebuilds this works as a {next}; it stays offline for about {seconds:.0} seconds."
                     ),
-                    "The works goes offline until the crew finishes; upgrades cannot be cancelled."
-                        .into(),
+                    "The upgrade runs automatically and cannot be cancelled.".into(),
                 ],
                 progress: None,
             });
@@ -1250,6 +1254,40 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
     if has_builder {
         let scrap = game.state.player(game.human).scrap;
         let palette_key = chord(bindings, Action::ToggleBuildPalette);
+        let (other_page, page_title, page_hotkey, page_desc) = if build_page == 0 {
+            (
+                1,
+                "Advanced builds",
+                if build_menu_open {
+                    palette_key.clone()
+                } else {
+                    format!("{palette_key},{palette_key}")
+                },
+                "Foundries, air production, Crucibles, Extractors, and fieldworks.",
+            )
+        } else {
+            (
+                0,
+                "Basic builds",
+                format!("{palette_key},{palette_key}"),
+                "Core defenses, economy, repairs, and the Fabricator.",
+            )
+        };
+        panel.cards.push(Card {
+            icon: CardIcon::Verb(VerbIcon::Build),
+            title: page_title.to_string(),
+            cost: None,
+            hotkey: page_hotkey,
+            action: CardAction::ShowBuildPage(other_page),
+            enabled: true,
+            why: None,
+            desc: vec![
+                page_desc.to_string(),
+                "Click to show this build page.".into(),
+            ],
+            progress: None,
+        });
+        let page_chord = (!build_menu_open).then_some(palette_key);
         for (i, &kind) in crate::input::build_page(build_page).iter().enumerate() {
             let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
             // The same construction tech gate placement enforces: an
@@ -1274,7 +1312,10 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
                 icon: CardIcon::Building(kind),
                 title: kind.name().to_string(),
                 cost: Some(cost),
-                hotkey: format!("{palette_key},{}", i + 1),
+                hotkey: page_chord.as_ref().map_or_else(
+                    || (i + 1).to_string(),
+                    |prefix| format!("{prefix},{}", i + 1),
+                ),
                 action: CardAction::ArmBuild(kind),
                 enabled,
                 why,
@@ -1318,6 +1359,16 @@ mod tests {
     fn nothing_selected_builds_no_panel() {
         let game = game();
         assert!(build_with_page(&game, &BindingMap::classic(), 0).is_none());
+    }
+
+    #[test]
+    fn scripted_opponents_are_labeled_as_balanced_ai() {
+        let mut game = game();
+        game.scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
+        assert_eq!(
+            bot_controller_label(&game, oxide_sim::PlayerId(1)),
+            Some("Balanced AI")
+        );
     }
 
     #[test]
@@ -1372,12 +1423,7 @@ mod tests {
         game.selection.buildings = vec![foundry];
         let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert_eq!(panel.title, "FOUNDRY");
-        assert_eq!(
-            panel.cards.len(),
-            5,
-            "four units plus the rally affordance (0.15: the Scuttler and \
-             the Excavator train here)"
-        );
+        assert_eq!(panel.cards.len(), 5, "four units plus the rally affordance");
         assert_eq!(panel.cards[0].title, "Set rally");
         assert_eq!(panel.cards[0].action, CardAction::ArmRally);
         assert_eq!(panel.cards[1].hotkey, "1");
@@ -1491,7 +1537,7 @@ mod tests {
         game.selection.buildings = vec![turret];
 
         let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("Turret panel");
-        // 0.15: the one card a defense DOES carry is its tier upgrade.
+        // A defense exposes only its tier upgrade.
         assert_eq!(
             panel.cards.len(),
             1,
@@ -1507,6 +1553,70 @@ mod tests {
                 .iter()
                 .all(|card| !matches!(card.action, CardAction::ArmRally | CardAction::ClearRally)),
             "a defense cannot rally units it never produces"
+        );
+    }
+
+    #[test]
+    fn an_upgrade_needs_no_harvester_and_explains_its_automatic_downtime() {
+        let mut scenario = Scenario::skirmish();
+        scenario.players[0].scrap = 500;
+        scenario
+            .units
+            .retain(|unit| unit.player != 0 || unit.kind != oxide_sim::UnitKind::Harvester);
+        scenario.buildings.extend([
+            oxide_sim::scenario::BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Fabricator,
+                x: 9,
+                y: 3,
+            },
+            oxide_sim::scenario::BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Turret,
+                x: 12,
+                y: 3,
+            },
+        ]);
+        let mut game =
+            Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("upgrade fixture builds");
+        let turret = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == BuildingKind::Turret)
+            .expect("fixture has a turret")
+            .id;
+        game.selection.buildings = vec![turret];
+
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("turret panel");
+        let upgrade = panel
+            .cards
+            .iter()
+            .find(|card| matches!(card.action, CardAction::Upgrade(id) if id == turret))
+            .expect("turret offers its upgrade");
+        assert!(upgrade.enabled, "automatic upgrades need no crew");
+        assert!(
+            upgrade.desc.iter().any(|line| line.contains("offline"))
+                && upgrade
+                    .desc
+                    .iter()
+                    .any(|line| line.contains("automatically")),
+            "the card explains the downtime and automatic progress: {:?}",
+            upgrade.desc
+        );
+
+        game.state.tick(&[PlayerCommand {
+            player: game.human,
+            command: Command::UpgradeBuilding { building: turret },
+        }]);
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("upgrade panel");
+        assert_eq!(panel.cards[0].title, "Upgrading");
+        assert!(panel.cards[0].progress.is_some());
+        assert!(
+            panel.cards[0]
+                .desc
+                .iter()
+                .all(|line| !line.contains("crew"))
         );
     }
 
@@ -1601,6 +1711,32 @@ mod tests {
             builds[0].hotkey.starts_with("B,"),
             "palette cards teach their chord"
         );
+        let advanced = panel
+            .cards
+            .iter()
+            .find(|card| card.title == "Advanced builds")
+            .expect("the basic page names the route to advanced construction");
+        assert_eq!(advanced.action, CardAction::ShowBuildPage(1));
+        assert_eq!(advanced.hotkey, "B,B");
+
+        let advanced_panel =
+            build_for_palette(&game, &BindingMap::classic(), true, 1).expect("advanced build page");
+        let crucible = advanced_panel
+            .cards
+            .iter()
+            .find(|card| card.title == "crucible")
+            .expect("the advanced page exposes the Crucible");
+        assert_eq!(
+            crucible.hotkey, "3",
+            "the open advanced page's digit acts directly"
+        );
+        let basic = advanced_panel
+            .cards
+            .iter()
+            .find(|card| card.title == "Basic builds")
+            .expect("the advanced page names the way back");
+        assert_eq!(basic.action, CardAction::ShowBuildPage(0));
+        assert_eq!(basic.hotkey, "B,B");
         // An idle unit with nothing queued shows no order chips at all —
         // the dock only exists when there is a program to show.
         assert!(panel.queue.is_empty(), "idle shows no dock");
@@ -1620,6 +1756,62 @@ mod tests {
             CardAction::None,
             "orders are display-only"
         );
+    }
+
+    #[test]
+    fn build_shortcuts_start_from_the_visible_palette_page() {
+        let mut game = game();
+        let harvester = game
+            .state
+            .units()
+            .iter()
+            .find(|unit| unit.player == game.human && unit.kind == oxide_sim::UnitKind::Harvester)
+            .expect("starting harvester")
+            .id;
+        game.selection.units = vec![harvester];
+        let bindings = BindingMap::classic();
+
+        let closed = build_for_palette(&game, &bindings, false, 0).expect("closed panel");
+        let turret = closed
+            .cards
+            .iter()
+            .find(|card| card.title == "turret")
+            .expect("basic build");
+        let advanced = closed
+            .cards
+            .iter()
+            .find(|card| card.title == "Advanced builds")
+            .expect("advanced page route");
+        assert_eq!(turret.hotkey, "B,1");
+        assert_eq!(advanced.hotkey, "B,B");
+
+        let basic = build_for_palette(&game, &bindings, true, 0).expect("basic page");
+        let turret = basic
+            .cards
+            .iter()
+            .find(|card| card.title == "turret")
+            .expect("basic build");
+        let advanced = basic
+            .cards
+            .iter()
+            .find(|card| card.title == "Advanced builds")
+            .expect("advanced page route");
+        assert_eq!(turret.hotkey, "1");
+        assert_eq!(advanced.hotkey, "B");
+
+        let advanced = build_for_palette(&game, &bindings, true, 1).expect("advanced page");
+        let crucible = advanced
+            .cards
+            .iter()
+            .find(|card| card.title == "crucible")
+            .expect("advanced build");
+        let basic = advanced
+            .cards
+            .iter()
+            .find(|card| card.title == "Basic builds")
+            .expect("basic page route");
+        assert_eq!(crucible.hotkey, "3");
+        assert_eq!(basic.hotkey, "B,B");
     }
 
     /// Places `kind` on the first tile the sim accepts near the

@@ -474,7 +474,7 @@ pub fn run_factorial(
 
     let overall = Tally::of(&matches.iter().collect::<Vec<_>>());
     Ok(FactorialReport {
-        scenario: base.name.clone(),
+        scenario: base.name,
         seeds,
         seed_base,
         max_ticks,

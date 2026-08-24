@@ -1,10 +1,12 @@
-//! Phase-A brain architecture tests: observation honesty and the
-//! executive's army lifecycle, driven through the public API only.
+//! Bot observation honesty and executive army-lifecycle contracts,
+//! driven through the public API.
 
 use chassis::grid::TilePos;
-use oxide_sim::bot::{ArmyState, Executive, Intent, Observation};
-use oxide_sim::scenario::{PlayerSpec, UnitSpec};
-use oxide_sim::{Command, Faction, PlayerCommand, PlayerId, Scenario, State, UnitKind};
+use oxide_sim::bot::{ArmyState, Brain, Executive, Intent, Observation};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::{
+    BuildingKind, Command, Faction, Order, PlayerCommand, PlayerId, Scenario, State, UnitKind,
+};
 
 fn open_arena(units: Vec<UnitSpec>) -> Scenario {
     Scenario {
@@ -121,6 +123,8 @@ fn observation_distinguishes_explored_peaks_from_flyable_rock() {
     let fog = Observation::fog_honest(&state, PlayerId(0));
     assert!(fog.explored(peak));
     assert!(!fog.explored(TilePos::new(20, 10)));
+    assert!(!fog.explored(TilePos::new(-1, peak.y)));
+    assert!(!fog.explored(TilePos::new(fog.map_width, peak.y)));
     assert!(fog.known_rock.contains(&peak));
     assert!(fog.known_rock.contains(&rock));
     assert_eq!(fog.known_peaks, vec![peak]);
@@ -130,6 +134,62 @@ fn observation_distinguishes_explored_peaks_from_flyable_rock() {
     assert!(omniscient.known_rock.contains(&rock));
     assert!(omniscient.known_peaks.contains(&peak));
     assert!(!omniscient.known_peaks.contains(&rock));
+}
+
+#[test]
+fn omniscient_observation_reports_frames_and_fresh_battlefield_wrecks() {
+    let mut scenario = open_arena(vec![
+        unit(0, UnitKind::Lancer, 5, 5),
+        unit(1, UnitKind::Scuttler, 7, 5),
+    ]);
+    let frame = TilePos::new(12, 6);
+    let mut row = scenario.map[frame.y as usize].as_bytes().to_vec();
+    row[frame.x as usize] = b'E';
+    scenario.map[frame.y as usize] = String::from_utf8(row).unwrap();
+    let mut state = scenario.build().unwrap();
+    let lancer = state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Lancer)
+        .unwrap()
+        .id;
+    let victim = state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Scuttler)
+        .unwrap()
+        .id;
+    let victim_tile = state.unit(victim).expect("the target starts alive").tile();
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![lancer],
+            target: oxide_sim::Target::Unit(victim),
+            queue: false,
+        },
+    )]);
+    assert!(
+        report.events.iter().any(
+            |event| matches!(event, oxide_sim::Event::UnitDied { unit, .. } if *unit == victim)
+        ),
+        "premise: the opening rail shot creates salvage on its command tick"
+    );
+
+    let observation = Observation::omniscient(&state, PlayerId(0));
+    assert_eq!(observation.known_frames, vec![frame]);
+    let fresh_value = UnitKind::Scuttler.stats().cost * oxide_sim::stats::WRECK_VALUE_NUM
+        / oxide_sim::stats::WRECK_VALUE_DEN;
+    let expected_value = fresh_value.saturating_sub(u32::from(
+        report
+            .tick
+            .is_multiple_of(oxide_sim::stats::WRECK_DECAY_TICKS),
+    ));
+    assert_eq!(
+        observation.known_wrecks,
+        vec![(victim_tile, expected_value)],
+        "the complete-world view reports the exact live wreck field"
+    );
 }
 
 #[test]
@@ -174,6 +234,435 @@ fn fog_honest_shows_ghosts_not_live_enemies() {
     // Omniscient control: everything is live there.
     let omni = Observation::omniscient(&state, PlayerId(0));
     assert!(omni.enemy_units.len() == 1 && omni.enemy_buildings.iter().all(|b| b.seen));
+}
+
+#[test]
+fn allied_observations_reveal_presence_but_not_private_programs() {
+    let scenario = Scenario {
+        name: "allied-observation".into(),
+        seed: 17,
+        map: vec![
+            "########################".into(),
+            "#1.....................#".into(),
+            "#......2...............#".into(),
+            "#........s.............#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#....................3.#".into(),
+            "#......................#".into(),
+            "########################".into(),
+        ],
+        players: vec![
+            PlayerSpec {
+                name: "Observer".into(),
+                faction: Faction::Ferrous,
+                team: Some(7),
+                scrap: 200,
+                bot: false,
+                bot_config: None,
+            },
+            PlayerSpec {
+                name: "Ally".into(),
+                faction: Faction::Cupric,
+                team: Some(7),
+                scrap: 1_000,
+                bot: false,
+                bot_config: None,
+            },
+            PlayerSpec {
+                name: "Enemy".into(),
+                faction: Faction::Ferrous,
+                team: Some(9),
+                scrap: 200,
+                bot: false,
+                bot_config: None,
+            },
+        ],
+        units: vec![
+            unit(1, UnitKind::Harvester, 10, 3),
+            unit(1, UnitKind::Harvester, 13, 3),
+            unit(1, UnitKind::Harvester, 13, 6),
+            unit(1, UnitKind::Harvester, 10, 6),
+            unit(1, UnitKind::Skyhook, 10, 8),
+            unit(1, UnitKind::Sentinel, 9, 8),
+        ],
+        buildings: vec![BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Turret,
+            x: 14,
+            y: 3,
+        }],
+        meta: None,
+    };
+    let mut state = scenario.build().expect("the team arena builds");
+    let (worker, stripper, builder, founder, sling, rider) = {
+        let id_at = |tile| {
+            state
+                .units()
+                .iter()
+                .find(|unit| unit.tile() == tile)
+                .expect("the authored allied unit stands at its start")
+                .id
+        };
+        (
+            id_at(TilePos::new(10, 3)),
+            id_at(TilePos::new(13, 3)),
+            id_at(TilePos::new(13, 6)),
+            id_at(TilePos::new(10, 6)),
+            id_at(TilePos::new(10, 8)),
+            id_at(TilePos::new(9, 8)),
+        )
+    };
+    let stripped = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(1) && building.kind == BuildingKind::Turret)
+        .expect("the allied Turret stands")
+        .id;
+    state.tick(&[cmd(
+        1,
+        Command::Harvest {
+            units: vec![worker],
+            node: TilePos::new(9, 3),
+            queue: false,
+        },
+    )]);
+    for _ in 0..30 {
+        state.tick(&[]);
+        if state.unit(worker).is_some_and(|unit| unit.carrying > 0) {
+            break;
+        }
+    }
+    let live = state.unit(worker).expect("the allied worker lives");
+    assert!(live.carrying > 0, "test premise: the ally mined scrap");
+    assert!(matches!(live.order, Order::Harvest { .. }));
+
+    let site_anchor = TilePos::new(14, 6);
+    let founding_anchor = TilePos::new(16, 6);
+    state.tick(&[
+        cmd(
+            1,
+            Command::Salvage {
+                units: vec![stripper],
+                building: stripped,
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Build {
+                units: vec![builder],
+                kind: BuildingKind::Turret,
+                anchor: site_anchor,
+                queue: false,
+                defer: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Build {
+                units: vec![founder],
+                kind: BuildingKind::Turret,
+                anchor: founding_anchor,
+                queue: false,
+                defer: true,
+            },
+        ),
+        cmd(
+            1,
+            Command::Load {
+                units: vec![rider],
+                transport: sling,
+                queue: false,
+            },
+        ),
+    ]);
+    assert!(matches!(
+        state.unit(stripper).expect("the stripper lives").order,
+        Order::Salvage { building } if building == stripped
+    ));
+    assert!(matches!(
+        state.unit(builder).expect("the builder lives").order,
+        Order::Build { .. }
+    ));
+    assert!(matches!(
+        state.unit(founder).expect("the founder lives").order,
+        Order::Found { kind: BuildingKind::Turret, anchor } if anchor == founding_anchor
+    ));
+    assert!(
+        !state
+            .unit(sling)
+            .expect("the allied sling lives")
+            .cargo
+            .is_empty(),
+        "test premise: the allied transport carries a private manifest"
+    );
+    assert!(state.unit(rider).is_none(), "the rider is inside the sling");
+
+    for observation in [
+        Observation::omniscient(&state, PlayerId(0)),
+        Observation::fog_honest(&state, PlayerId(0)),
+    ] {
+        assert!(observation.my_units.is_empty());
+        assert_eq!(observation.ally_units.len(), 5);
+        assert!(observation.ally_units.iter().any(|ally| ally.id == worker));
+        assert!(observation.ally_units.iter().any(|ally| ally.id == sling));
+        for ally in &observation.ally_units {
+            assert!(!ally.idle, "ally intent is opaque, never reported as idle");
+            assert_eq!(ally.carrying, 0, "ally carried scrap is private");
+            assert_eq!(ally.cargo, 0, "ally transport manifests are private");
+            assert_eq!(ally.site, None, "ally construction orders are private");
+            assert_eq!(ally.salvaging, None, "ally salvage orders are private");
+            assert_eq!(ally.founding, None, "ally deferred claims are private");
+        }
+        assert!(
+            observation
+                .ally_buildings
+                .iter()
+                .any(|building| building.player == PlayerId(1)
+                    && building.kind == BuildingKind::Foundry),
+            "the ally's standing base remains public team presence"
+        );
+    }
+}
+
+#[test]
+fn own_observations_expose_salvage_and_deferred_found_commitments() {
+    let mut scenario = open_arena(vec![unit(0, UnitKind::Harvester, 4, 3)]);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Turret,
+        x: 6,
+        y: 3,
+    });
+    let mut state = scenario.build().unwrap();
+    let worker = state.units()[0].id;
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Turret)
+        .expect("the authored Turret stands")
+        .id;
+
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![worker],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    let salvage = Observation::omniscient(&state, PlayerId(0));
+    assert_eq!(salvage.my_units[0].salvaging, Some(turret));
+    assert_eq!(salvage.my_units[0].founding, None);
+
+    let anchor = TilePos::new(9, 3);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![worker],
+            kind: BuildingKind::Turret,
+            anchor,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    let founding = Observation::fog_honest(&state, PlayerId(0));
+    assert_eq!(
+        founding.my_units[0].founding,
+        Some((BuildingKind::Turret, anchor))
+    );
+    assert_eq!(founding.my_units[0].salvaging, None);
+    assert_eq!(founding.my_units[0].site, None);
+}
+
+#[test]
+fn a_stranded_brain_spends_only_on_one_recovery_harvester() {
+    let price = UnitKind::Harvester.stats().cost;
+
+    let mut short = open_arena(Vec::new());
+    short.players[0].scrap = price - 1;
+    let short = short.build().expect("the stranded arena builds");
+    let mut brain = Brain::balanced(PlayerId(0), 91);
+    assert_eq!(
+        brain.act(&short),
+        Vec::new(),
+        "ordinary policy spending pauses while the replacement fund is short"
+    );
+
+    let mut funded = open_arena(Vec::new());
+    funded.players[0].scrap = price;
+    let funded = funded.build().expect("the funded arena builds");
+    let foundry = funded
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Foundry)
+        .expect("the stranded seat retains its Foundry")
+        .id;
+    let mut brain = Brain::balanced(PlayerId(0), 91);
+    assert_eq!(
+        brain.act(&funded),
+        vec![PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Train {
+                building: foundry,
+                kind: UnitKind::Harvester,
+            },
+        }],
+        "the complete reserve buys exactly one recovery unit"
+    );
+}
+
+#[test]
+fn a_build_dropped_during_lowering_does_not_poison_its_preferred_anchor() {
+    let mut scenario = open_arena(
+        (0..5)
+            .map(|offset| unit(0, UnitKind::Harvester, 3 + offset, 3))
+            .collect(),
+    );
+    scenario.players[0].scrap = 2_000;
+    let mut salvage_row = scenario.map[6].as_bytes().to_vec();
+    salvage_row[12] = b's';
+    scenario.map[6] = String::from_utf8(salvage_row).unwrap();
+    let mut state = scenario.build().expect("the construction arena builds");
+    let mut continuing = Brain::balanced(PlayerId(0), scenario.seed);
+
+    let opening = continuing.act(&state);
+    assert_eq!(
+        opening
+            .iter()
+            .filter(|command| matches!(command.command, Command::Harvest { .. }))
+            .count(),
+        5,
+        "the opening economy claims every idle worker before construction lowers"
+    );
+    assert!(
+        opening
+            .iter()
+            .all(|command| !matches!(command.command, Command::Build { .. })),
+        "with every worker already claimed, the executive cannot dispatch the build"
+    );
+
+    state.tick(&opening);
+    for _ in 1..8 {
+        state.tick(&[]);
+    }
+    assert_eq!(state.current_tick(), 8);
+
+    let fabricator_anchor = |commands: &[PlayerCommand]| {
+        commands.iter().find_map(|command| match command.command {
+            Command::Build {
+                kind: BuildingKind::Fabricator,
+                anchor,
+                ..
+            } => Some(anchor),
+            _ => None,
+        })
+    };
+    let mut fresh = Brain::balanced(PlayerId(0), scenario.seed);
+    let preferred = fabricator_anchor(&fresh.act(&state))
+        .expect("a fresh commander dispatches its preferred Fabricator site");
+    let retried = fabricator_anchor(&continuing.act(&state))
+        .expect("the continuing commander retries the deferred Fabricator");
+
+    assert_eq!(
+        retried, preferred,
+        "an intent that emitted no Build command is not evidence that the site was refused"
+    );
+
+    // Conversely, an emitted command that produces no site is refusal
+    // evidence. Leave the valid command unapplied to model that outcome;
+    // the next audit must move away from the now-proven bad anchor.
+    for _ in 0..8 {
+        state.tick(&[]);
+    }
+    let after_refusal = fabricator_anchor(&continuing.act(&state))
+        .expect("the commander searches for another Fabricator site after refusal");
+    assert_ne!(
+        after_refusal, retried,
+        "a dispatched Build that never appears must still blacklist its anchor"
+    );
+}
+
+#[test]
+fn a_brain_without_an_authored_aircraft_discovers_an_island_opponent() {
+    let mut scenario = open_arena(
+        (0..5)
+            .map(|offset| unit(0, UnitKind::Harvester, 3 + offset, 3))
+            .collect(),
+    );
+    for row in 1..scenario.map.len() - 1 {
+        let mut bytes = scenario.map[row].as_bytes().to_vec();
+        bytes[12] = b'#';
+        scenario.map[row] = String::from_utf8(bytes).unwrap();
+    }
+    scenario.players[0].scrap = 2_000;
+    scenario.buildings.extend([
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 5,
+            y: 7,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Airworks,
+            x: 8,
+            y: 7,
+        },
+    ]);
+    let mut state = scenario.build().expect("the island arena builds");
+    let mut brain = Brain::balanced(PlayerId(0), scenario.seed);
+    assert!(
+        Observation::fog_honest(&state, PlayerId(0))
+            .enemy_buildings
+            .is_empty(),
+        "the opposing shore starts outside vision"
+    );
+    let mut saw_no_route = false;
+    let mut saw_scout_flyer = false;
+
+    for _ in 0..1_200 {
+        let commands = brain.act(&state);
+        let report = state.tick(&commands);
+        saw_no_route |= report.events.iter().any(|event| {
+            matches!(
+                event,
+                oxide_sim::Event::OrderStalled {
+                    player: PlayerId(0),
+                    reason: oxide_sim::StallReason::NoRoute,
+                    ..
+                }
+            )
+        });
+        saw_scout_flyer |= state.units().iter().any(|unit| {
+            unit.player == PlayerId(0) && unit.kind.role() == oxide_sim::stats::Role::Scout
+        });
+        if !Observation::fog_honest(&state, PlayerId(0))
+            .enemy_buildings
+            .is_empty()
+        {
+            break;
+        }
+    }
+
+    assert!(
+        saw_no_route,
+        "the ground sweep must prove the severed route"
+    );
+    assert!(
+        saw_scout_flyer,
+        "the Airworks must replace the stranded ground scout"
+    );
+    assert!(
+        !Observation::fog_honest(&state, PlayerId(0))
+            .enemy_buildings
+            .is_empty(),
+        "the replacement flyer must reveal the enemy shore"
+    );
 }
 
 #[test]
@@ -263,13 +752,13 @@ fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
 }
 
 #[test]
-fn wounded_members_rejoin_after_full_repair() {
+fn wounded_members_remain_reserved_after_full_repair() {
     // Executive semantics, pinned against a synthetic observation (the
     // executive is a pure function of what it is shown): a member below
     // the 35% pullback line and out of contact is Move-ordered to the
     // rear and dropped from the army; a wounded member still in a fight
-    // is left in the line, and a fully healed rear member can be drafted
-    // again.
+    // is left in the line, and the rear reservation remains stable after
+    // external healing.
     use oxide_sim::UnitId;
     use oxide_sim::bot::UnitObs;
 
@@ -368,8 +857,8 @@ fn wounded_members_rejoin_after_full_repair() {
         );
     }
 
-    // Plain scripted maintenance retains even an externally healed rear
-    // member; only the repair-capable entry point releases it.
+    // Maintenance retains even an externally healed rear member. Rear-line
+    // reservation is part of the current scripted controller's behavior.
     let healed = obs_with(vec![sentinel(0, 0, 1, 1, 100), sentinel(1, 0, 4, 2, 100)]);
     let _ = exec.maintain(me, &healed, TilePos::new(1, 1));
     let _ = exec.apply(
@@ -384,26 +873,7 @@ fn wounded_members_rejoin_after_full_repair() {
         exec.armies()
             .iter()
             .all(|army| !army.members.contains(&UnitId(0))),
-        "plain scripted maintenance retains the rear line"
-    );
-
-    // A repair-capable policy releases the unit at full health. A
-    // partial repair would leave it enlisted there and avoid oscillating
-    // around the pullback threshold.
-    let _ = exec.maintain_repair_capable(me, &healed, TilePos::new(1, 1));
-    let _ = exec.apply(
-        me,
-        &healed,
-        &[Intent::FormArmy {
-            staging: TilePos::new(5, 3),
-            size: 5,
-        }],
-    );
-    assert!(
-        exec.armies()
-            .iter()
-            .any(|army| army.members.contains(&UnitId(0))),
-        "a fully healed veteran returns to the draft pool"
+        "scripted maintenance retains the rear line"
     );
 }
 

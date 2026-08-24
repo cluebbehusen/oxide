@@ -148,4 +148,103 @@ mod tests {
             "camera input never ticks the sim"
         );
     }
+
+    #[test]
+    fn minimap_drag_and_key_release_have_explicit_camera_lifetimes() {
+        let viewport = vec2(1280.0, 800.0);
+        let mut game = Game::with_viewport(Scenario::skirmish(), viewport).expect("game");
+        let mut screen = FinalMapScreen::open();
+        let mut mouse = Vec2::ZERO;
+        let rect = render::minimap_rect(&game);
+        let mut layout = game.layout.get();
+        layout.minimap = rect;
+        game.layout.set(layout);
+        let press = vec2(rect.x + 2.0, rect.y + 2.0);
+        let expected = render::minimap_world_at(&game, press).expect("inside minimap");
+        let original = game.camera.center;
+        game.camera.center = expected;
+        game.camera.pan(Vec2::ZERO);
+        let expected = game.camera.center;
+        game.camera.center = original;
+        game.camera.pan(Vec2::ZERO);
+
+        screen.update(
+            &[RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: press.x,
+                y: press.y,
+            }],
+            0.0,
+            viewport,
+            crate::config::CameraPrefs::default(),
+            &mut mouse,
+            &mut game,
+        );
+        assert!(screen.minimap_drag);
+        assert!((game.camera.center - expected).length() < 0.1);
+
+        let dragged = vec2(rect.x + rect.w + 100.0, rect.y + rect.h + 100.0);
+        let clamped = vec2(rect.x + rect.w, rect.y + rect.h);
+        let expected_after_drag =
+            render::minimap_world_at(&game, clamped).expect("clamped inside minimap");
+        let after_press = game.camera.center;
+        game.camera.center = expected_after_drag;
+        game.camera.pan(Vec2::ZERO);
+        let expected_after_drag = game.camera.center;
+        game.camera.center = after_press;
+        game.camera.pan(Vec2::ZERO);
+        screen.update(
+            &[RawEvent::MouseMove {
+                x: dragged.x,
+                y: dragged.y,
+            }],
+            0.0,
+            viewport,
+            crate::config::CameraPrefs::default(),
+            &mut mouse,
+            &mut game,
+        );
+        let after_drag = game.camera.center;
+        assert!((after_drag - expected_after_drag).length() < 0.1);
+        assert_ne!(
+            after_drag, after_press,
+            "a held minimap drag must steer away from its press target"
+        );
+        screen.update(
+            &[
+                RawEvent::MouseUp {
+                    button: MouseButton::Left,
+                    x: dragged.x,
+                    y: dragged.y,
+                },
+                RawEvent::MouseMove {
+                    x: press.x,
+                    y: press.y,
+                },
+            ],
+            0.0,
+            viewport,
+            crate::config::CameraPrefs::default(),
+            &mut mouse,
+            &mut game,
+        );
+        assert!(!screen.minimap_drag);
+        assert_eq!(
+            game.camera.center, after_drag,
+            "released drags stop steering"
+        );
+
+        screen.update(
+            &[
+                RawEvent::KeyDown { key: Key::Left },
+                RawEvent::KeyUp { key: Key::Left },
+            ],
+            0.25,
+            viewport,
+            crate::config::CameraPrefs::default(),
+            &mut mouse,
+            &mut game,
+        );
+        assert_eq!(game.camera.center, after_drag, "released keys do not pan");
+    }
 }

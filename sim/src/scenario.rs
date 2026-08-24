@@ -9,7 +9,7 @@ use crate::map::{Map, MapError};
 use crate::state::{Faction, Player, State};
 use crate::stats::{BuildingKind, UnitKind};
 use chassis::grid::TilePos;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// A match definition.
@@ -27,11 +27,9 @@ pub struct Scenario {
     /// Starting units.
     #[serde(default)]
     pub units: Vec<UnitSpec>,
-    /// Structures standing — built, full hp — at match start, beyond
-    /// the Foundries the map anchors place. Empty on every shipped map;
-    /// the workhorse of arena experiments (a defense-mode duel needs
-    /// turrets that never spent build time). Skipped when empty so
-    /// existing scenario and replay bytes stand.
+    /// Completed structures present at match start, beyond the Foundries
+    /// placed by map anchors. Primarily useful for focused scenarios and
+    /// tests. Skipped when empty for compact scenario and replay files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub buildings: Vec<BuildingSpec>,
     /// Authored presentation metadata for browsers and previews. The
@@ -53,10 +51,9 @@ pub struct ScenarioMeta {
     /// It is not a clock reading; `driver pace-sweep` measures those.
     #[serde(default)]
     pub pace: String,
-    /// Measured duration band, e.g. "5-8 min": the p25-p75 decision
-    /// window from `driver pace-sweep`. A bot-stamped measurement,
-    /// never a gate — re-stamp it when a weights or balance bless
-    /// moves the clock (stale until the retrained actor re-measures).
+    /// Optional measured duration band, e.g. "5-8 min". This is a
+    /// presentation claim rather than a gate; leave it empty until the
+    /// current opponent and human play support it.
     #[serde(default)]
     pub duration: String,
     /// Mode support, e.g. "1v1" or "2v2".
@@ -97,149 +94,44 @@ pub struct PlayerSpec {
     /// ignores this — shells and drivers honor it).
     #[serde(default)]
     pub bot: bool,
-    /// How that bot plays: a ladder level and personality. Authored
-    /// scenario data — it rides inside every replay, and the promoted
-    /// actor reads its difficulty and profile from here. `None` seats
-    /// no bot at all.
+    /// Which built-in controller drives the seat. Authored scenario
+    /// data rides inside every replay. `None` seats no bot at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot_config: Option<BotConfig>,
 }
 
-/// A named strategic personality selected in match setup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NamedStyle {
-    /// Fortify, invest, and counterattack.
-    Turtle,
-    /// Mix economy, production, and pressure.
-    Balanced,
-    /// Commit earlier and keep the initiative.
-    Aggressive,
-}
-
-impl NamedStyle {
-    /// All setup-visible styles in display order.
-    pub const ALL: [Self; 3] = [Self::Turtle, Self::Balanced, Self::Aggressive];
-
-    /// Inclusive aggression envelope reserved for this named family.
-    pub const fn aggression_bounds(self) -> (u32, u32) {
-        match self {
-            Self::Turtle => (0, 249),
-            Self::Balanced => (250, 749),
-            Self::Aggressive => (750, 1000),
-        }
-    }
-}
-
-/// A bot's complementary job within its team.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TeamRole {
-    /// No specialized team job, including every default free-for-all seat.
-    Generalist,
-    /// Apply direct pressure and screen for teammates.
-    Vanguard,
-    /// Carry the team's economic investment.
-    Industry,
-    /// Protect and sustain allied positions.
-    Support,
-    /// Supply long-range pressure against entrenched targets.
-    Siege,
-}
-
-/// Why a bot profile selection is not meaningful.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum BotConfigError {
-    /// A raw aggression value and named style would both own personality.
-    #[error("aggression and style are mutually exclusive")]
-    AmbiguousPersonality,
-    /// A variant only has meaning inside a named style.
-    #[error("variant requires a named style")]
-    VariantWithoutStyle,
-    /// Every named style currently has exactly three curated variants.
-    #[error("variant must be 0, 1, or 2, got {0}")]
-    InvalidVariant(u8),
-    /// The neural policy's public aggression domain is 0..=1000.
-    #[error("aggression must be at most 1000, got {0}")]
-    InvalidAggression(u32),
-}
-
-/// A shipped-ladder bot seat: difficulty plus personality and team job.
+/// A built-in bot controller selected for one seat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct BotConfig {
-    /// Named difficulty on the neural ladder.
-    pub level: crate::bot::Level,
-    /// Exact legacy personality knob, 0..=1000. This remains supported
-    /// for experiments and old scenarios; it cannot accompany `style`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aggression: Option<u32>,
-    /// Named personality. When both personality fields are absent, the
-    /// scenario seed deals a named style.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub style: Option<NamedStyle>,
-    /// Curated variant within `style`, 0..=2. When absent, a dedicated
-    /// construction-time stream deals one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub variant: Option<u8>,
-    /// Optional authored team job. Automatic roles remain mirrored and
-    /// complementary; an authored role is mirrored onto its opponent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub team_role: Option<TeamRole>,
+#[serde(tag = "controller", rename_all = "snake_case")]
+pub enum BotConfig {
+    /// The fair, fog-honest rules-based opponent.
+    Scripted,
 }
 
-impl BotConfig {
-    /// Validates combinations that serde cannot express structurally.
-    pub fn validate(self) -> Result<(), BotConfigError> {
-        if self.aggression.is_some() && self.style.is_some() {
-            return Err(BotConfigError::AmbiguousPersonality);
-        }
-        if self.variant.is_some() && self.style.is_none() {
-            return Err(BotConfigError::VariantWithoutStyle);
-        }
-        if let Some(variant) = self.variant
-            && variant >= crate::bot::NAMED_VARIANT_COUNT
-        {
-            return Err(BotConfigError::InvalidVariant(variant));
-        }
-        if let Some(aggression) = self.aggression
-            && aggression > 1000
-        {
-            return Err(BotConfigError::InvalidAggression(aggression));
-        }
-        Ok(())
-    }
+// Internally tagged unit variants accept sibling fields even when the enum
+// asks Serde to deny them. A struct-shaped wire type keeps authored scenarios
+// strict; replay-only compatibility is handled at the versioned replay loader.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CurrentBotConfigWire {
+    controller: BotController,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BotController {
+    Scripted,
 }
 
 impl<'de> Deserialize<'de> for BotConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: Deserializer<'de>,
+        D: serde::Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Fields {
-            level: crate::bot::Level,
-            #[serde(default)]
-            aggression: Option<u32>,
-            #[serde(default)]
-            style: Option<NamedStyle>,
-            #[serde(default)]
-            variant: Option<u8>,
-            #[serde(default)]
-            team_role: Option<TeamRole>,
-        }
-
-        let fields = Fields::deserialize(deserializer)?;
-        let config = Self {
-            level: fields.level,
-            aggression: fields.aggression,
-            style: fields.style,
-            variant: fields.variant,
-            team_role: fields.team_role,
-        };
-        config.validate().map_err(serde::de::Error::custom)?;
-        Ok(config)
+        let CurrentBotConfigWire {
+            controller: BotController::Scripted,
+        } = CurrentBotConfigWire::deserialize(deserializer)?;
+        Ok(Self::Scripted)
     }
 }
 
@@ -314,9 +206,6 @@ pub enum ScenarioError {
     /// Every seat on one team: nobody to fight, no way to win.
     #[error("all players share one team, so the match could never end")]
     OneTeam,
-    /// A bot's personality or team-role selection cannot be resolved.
-    #[error(transparent)]
-    BotProfile(#[from] crate::bot::BotProfileError),
 }
 
 impl Scenario {
@@ -356,15 +245,6 @@ impl Scenario {
         }
     }
 
-    /// The map's authored Foundry start anchors, seat order. Public
-    /// map data — the same knowledge a player has from picking the
-    /// map — so a fog-honest bot may know where every base BEGINS
-    /// while fog still governs what stands there now.
-    pub fn start_anchors(&self) -> Result<Vec<(crate::ids::PlayerId, TilePos)>, ScenarioError> {
-        let (_, anchors) = Map::parse(&self.map)?;
-        Ok(anchors)
-    }
-
     /// Validates the scenario and constructs the initial [`State`].
     ///
     /// Building the same scenario twice yields bit-identical states (a test
@@ -381,7 +261,6 @@ impl Scenario {
         {
             return Err(ScenarioError::ExtraAnchor(*player, self.players.len()));
         }
-        crate::bot::profile::resolve_bot_profiles_from_parts(self, &map, &anchors)?;
         // Teams normalize to dense ids by first appearance: seats naming
         // the same explicit id share one, and every omitted seat gets a
         // fresh singleton — an authored id can never alias a "team of

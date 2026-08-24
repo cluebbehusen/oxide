@@ -97,9 +97,8 @@ impl From<UnitKindArg> for UnitKind {
     }
 }
 
-/// Every player-buildable kind, expansion Foundries included since
-/// 0.15 made them purchasable; the sim's placement rules remain the
-/// authority on where each may stand.
+/// Every player-buildable kind. The simulation's placement rules remain
+/// the authority on where each may stand.
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub(crate) enum BuildingKindArg {
     Turret,
@@ -195,4 +194,69 @@ pub(crate) fn parse_key(s: &str) -> Result<Key> {
         "9" => Key::Num9,
         other => bail!("unknown key {other:?}"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::ValueEnum as _;
+
+    #[test]
+    fn coordinate_parsers_trim_input_and_reject_invalid_shapes() {
+        assert_eq!(
+            parse_tile(" -3, 17 ").unwrap(),
+            chassis::grid::TilePos::new(-3, 17)
+        );
+        assert_eq!(parse_point(" 1.25, -2.5 ").unwrap(), (1.25, -2.5));
+        assert!(parse_tile("3").is_err());
+        assert!(parse_tile("3,4,5").is_err());
+        assert!(
+            parse_point("NaN,1")
+                .unwrap_err()
+                .to_string()
+                .contains("finite")
+        );
+        assert!(
+            parse_point("1,inf")
+                .unwrap_err()
+                .to_string()
+                .contains("finite")
+        );
+    }
+
+    #[test]
+    fn pointer_and_key_aliases_are_case_insensitive_but_fail_closed() {
+        assert_eq!(parse_mouse_button("LEFT").unwrap(), MouseButton::Left);
+        assert_eq!(parse_mouse_button("right").unwrap(), MouseButton::Right);
+        assert_eq!(parse_mouse_button("Middle").unwrap(), MouseButton::Middle);
+        assert!(parse_mouse_button("primary").is_err());
+
+        assert_eq!(parse_key("RETURN").unwrap(), Key::Enter);
+        assert_eq!(parse_key("esc").unwrap(), Key::Escape);
+        assert_eq!(parse_key("7").unwrap(), Key::Num7);
+        assert!(parse_key("delete").is_err());
+    }
+
+    #[test]
+    fn cli_kind_catalogs_cover_every_sim_kind_exactly_once() {
+        let mut cli_units: Vec<_> = UnitKindArg::value_variants()
+            .iter()
+            .copied()
+            .map(UnitKind::from)
+            .collect();
+        let mut sim_units = UnitKind::ALL.to_vec();
+        cli_units.sort_unstable();
+        sim_units.sort_unstable();
+        assert_eq!(cli_units, sim_units);
+
+        let mut cli_buildings: Vec<_> = BuildingKindArg::value_variants()
+            .iter()
+            .copied()
+            .map(oxide_sim::BuildingKind::from)
+            .collect();
+        let mut sim_buildings = oxide_sim::BuildingKind::ALL.to_vec();
+        cli_buildings.sort_unstable();
+        sim_buildings.sort_unstable();
+        assert_eq!(cli_buildings, sim_buildings);
+    }
 }

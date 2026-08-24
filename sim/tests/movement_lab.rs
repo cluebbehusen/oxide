@@ -1,9 +1,7 @@
-//! The movement lab: instrumented, `#[ignore]`d diagnostics that put
-//! integer numbers on movement feel — the 0.12 pathfinding campaign's
-//! before/after instrument (head-on grind, overtake drag, crossing,
-//! group strandings, parked bulldozing, pursuit kiting, bulk-attack
-//! surround utilization). No assertions on the contested numbers:
-//! the lab measures, the behavior suites pin. Run explicitly:
+//! Ignored diagnostics that put integer measurements on movement feel:
+//! head-on grind, overtake drag, crossing, group strandings, parked
+//! bulldozing, pursuit kiting, and surround utilization. The lab reports;
+//! focused behavior suites own the assertions. Run explicitly:
 //!
 //! `cargo test -p oxide-sim --test movement_lab -- --ignored --nocapture`
 
@@ -393,7 +391,7 @@ fn lab_bulk_attack() {
     state.tick(&[cmd(
         0,
         Command::AttackMove {
-            units: ids.clone(),
+            units: ids,
             goal: foundry,
             queue: false,
         },
@@ -481,7 +479,7 @@ fn lab_bulk_attack_pocket() {
     state.tick(&[cmd(
         0,
         Command::AttackMove {
-            units: ids.clone(),
+            units: ids,
             goal: foundry,
             queue: false,
         },
@@ -553,7 +551,7 @@ fn lab_bulk_attack_ranged() {
     state.tick(&[cmd(
         0,
         Command::AttackMove {
-            units: ids.clone(),
+            units: ids,
             goal: foundry,
             queue: false,
         },

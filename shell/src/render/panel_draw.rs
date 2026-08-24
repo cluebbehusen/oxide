@@ -1034,8 +1034,8 @@ mod tests {
             ["60/60 hp", "speed 2.5 tiles/sec"]
         );
         assert_eq!(
-            panel_sub_lines("hostile | Hard | 60/60 hp | speed 3.1 tiles/sec"),
-            ["hostile | Hard | 60/60 hp", "speed 3.1 tiles/sec"]
+            panel_sub_lines("hostile | Balanced AI | 60/60 hp | speed 3.1 tiles/sec"),
+            ["hostile | Balanced AI | 60/60 hp", "speed 3.1 tiles/sec"]
         );
         assert_eq!(panel_sub_lines("3 types"), ["3 types"]);
     }

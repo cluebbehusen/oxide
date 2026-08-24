@@ -214,6 +214,10 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         && building.player == game.human
     {
         if !building.built {
+            if building.tier > 0 {
+                game.toast("upgrade runs automatically");
+                return;
+            }
             if has_worker {
                 // Resume the site: the sim commits every accepted
                 // worker (builders stack). Send the building's own

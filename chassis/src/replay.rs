@@ -11,7 +11,16 @@
 
 use crate::Tick;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::io::Read as _;
 use std::path::Path;
+
+/// Largest replay document accepted from disk. Honest records remain far
+/// below this ceiling; bounding bytes before JSON parsing prevents an
+/// untrusted path from turning into an unbounded allocation.
+pub const MAX_REPLAY_BYTES: usize = 64 << 20;
+
+/// Most commands accepted in a loaded replay.
+pub const MAX_REPLAY_COMMANDS: usize = 1_000_000;
 
 /// A recorded run: metadata, initial setup, and every command ever issued.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +132,7 @@ impl<S, C> Replay<S, C> {
     /// replay; a log that fails these can silently produce a different
     /// world, or panic the recorder later.
     pub fn validate(&self, expected_version: Option<&str>) -> Result<(), ReplayError> {
+        self.validate_command_count(MAX_REPLAY_COMMANDS)?;
         for pair in self.commands.windows(2) {
             if pair[1].tick < pair[0].tick {
                 return Err(ReplayError::Invalid(format!(
@@ -189,8 +199,72 @@ impl<S, C> Replay<S, C> {
         S: DeserializeOwned,
         C: DeserializeOwned,
     {
+        Self::load_with_limits(path, MAX_REPLAY_BYTES, MAX_REPLAY_COMMANDS)
+    }
+
+    /// Reads a bounded replay file and delegates its wire format to a
+    /// game-specific decoder. The decoded replay still receives the shared
+    /// command-count check.
+    ///
+    /// Use this when a game must inspect versioned setup metadata before it
+    /// can produce the current `S`, without duplicating the file-size and
+    /// command-count boundary owned by chassis.
+    pub fn load_with_decoder(
+        path: impl AsRef<Path>,
+        decoder: impl FnOnce(&[u8]) -> Result<Self, ReplayError>,
+    ) -> Result<Self, ReplayError> {
+        Self::load_with_limits_and_decoder(path, MAX_REPLAY_BYTES, MAX_REPLAY_COMMANDS, decoder)
+    }
+
+    fn load_with_limits(
+        path: impl AsRef<Path>,
+        max_bytes: usize,
+        max_commands: usize,
+    ) -> Result<Self, ReplayError>
+    where
+        S: DeserializeOwned,
+        C: DeserializeOwned,
+    {
+        Self::load_with_limits_and_decoder(path, max_bytes, max_commands, |bytes| {
+            Ok(serde_json::from_slice(bytes)?)
+        })
+    }
+
+    fn load_with_limits_and_decoder(
+        path: impl AsRef<Path>,
+        max_bytes: usize,
+        max_commands: usize,
+        decoder: impl FnOnce(&[u8]) -> Result<Self, ReplayError>,
+    ) -> Result<Self, ReplayError> {
         let file = std::fs::File::open(path)?;
-        Ok(serde_json::from_reader(std::io::BufReader::new(file))?)
+        let length = file.metadata()?.len();
+        if length > max_bytes as u64 {
+            return Err(ReplayError::Invalid(format!(
+                "file is {length} bytes, beyond the {max_bytes}-byte limit"
+            )));
+        }
+
+        let mut bytes = Vec::with_capacity(length as usize);
+        file.take(max_bytes as u64 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > max_bytes {
+            return Err(ReplayError::Invalid(format!(
+                "file grew beyond the {max_bytes}-byte limit while being read"
+            )));
+        }
+
+        let replay = decoder(&bytes)?;
+        replay.validate_command_count(max_commands)?;
+        Ok(replay)
+    }
+
+    fn validate_command_count(&self, max_commands: usize) -> Result<(), ReplayError> {
+        if self.commands.len() > max_commands {
+            return Err(ReplayError::Invalid(format!(
+                "record contains {} commands, beyond the {max_commands}-command limit",
+                self.commands.len()
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -241,6 +315,23 @@ mod tests {
         assert_eq!(at3, vec!["a", "b"]);
         assert!(cursor.take_tick(4).is_empty());
         assert_eq!(cursor.take_tick(10).len(), 1);
+        assert!(cursor.is_finished());
+    }
+
+    #[test]
+    fn cursor_skips_commands_from_ticks_the_caller_skipped() {
+        let mut replay: Replay<(), &str> = Replay::new("0.0.0", ());
+        replay.record(1, "missed-a");
+        replay.record(2, "missed-b");
+        replay.record(5, "current");
+
+        let mut cursor = replay.cursor();
+        let at_five: Vec<_> = cursor
+            .take_tick(5)
+            .iter()
+            .map(|timed| timed.command)
+            .collect();
+        assert_eq!(at_five, vec!["current"]);
         assert!(cursor.is_finished());
     }
 
@@ -410,5 +501,37 @@ mod tests {
         assert_eq!(loaded.setup, 77);
         assert_eq!(loaded.commands.len(), 1);
         assert_eq!(loaded.commands[0].command, "move");
+    }
+
+    #[test]
+    fn load_rejects_oversized_input_before_json_parsing() {
+        let dir =
+            std::env::temp_dir().join(format!("chassis-replay-bounds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("oversized.json");
+        std::fs::write(&path, vec![b' '; 33]).unwrap();
+
+        let error = Replay::<(), ()>::load_with_limits(&path, 32, 10).unwrap_err();
+        assert!(error.to_string().contains("32-byte limit"), "{error}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_rejects_too_many_commands_at_the_shared_boundary() {
+        let dir = std::env::temp_dir().join(format!(
+            "chassis-replay-command-bounds-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("commands.json");
+        let mut replay: Replay<(), ()> = Replay::new("1.0.0", ());
+        for tick in 0..3 {
+            replay.record(tick, ());
+        }
+        replay.save(&path).unwrap();
+
+        let error = Replay::<(), ()>::load_with_limits(&path, MAX_REPLAY_BYTES, 2).unwrap_err();
+        assert!(error.to_string().contains("2-command limit"), "{error}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

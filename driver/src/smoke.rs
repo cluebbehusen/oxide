@@ -10,7 +10,7 @@
 //! ```
 
 use crate::client::Client;
-use crate::runner::{self, GameReplay};
+use crate::runner;
 use anyhow::{Context, Result, bail};
 use oxide_protocol::{RawEvent, Reply, Request, StateFilter};
 use oxide_sim::{Command, PlayerId, UnitId, UnitKind};
@@ -308,7 +308,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         .to_string_lossy()
         .into_owned();
     let Reply::Screenshot(shot) = client.call(Request::Screenshot {
-        path: Some(shot_path.clone()),
+        path: Some(shot_path),
     })?
     else {
         bail!("screenshot returned the wrong reply kind");
@@ -357,7 +357,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     client.call(Request::SaveReplay {
         path: replay_path.clone(),
     })?;
-    let replay = GameReplay::load(&replay_path).context("reading saved replay")?;
+    let replay = oxide_kit::load_replay(&replay_path).context("reading saved replay")?;
     let replayed = runner::run_replay(&replay, Some(live.tick), false)?;
     checks.note(
         "saved replay reproduces the live session",
@@ -378,9 +378,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
 
     // Session resume: loading the replay we just saved must land on the
     // same tick and hash, still recording.
-    let resumed = client.call(Request::LoadReplay {
-        path: replay_path.clone(),
-    })?;
+    let resumed = client.call(Request::LoadReplay { path: replay_path })?;
     let resumed_ok = matches!(&resumed, Reply::Status(s) if s.tick == live.tick);
     checks.note(
         "load-replay resumes at the recorded tick",
@@ -482,8 +480,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     std::thread::sleep(Duration::from_millis(200));
     // The minimap rect comes from the shell's published layout — the
     // QueryUi chrome is the same model hit-testing reads, so geometry
-    // changes can never strand this check on a stale mirror of the
-    // formula (the 0.9 flush-minimap move did exactly that once).
+    // changes cannot strand this check on a stale copy of the formula.
     let Reply::Ui(ui) = client.call(Request::QueryUi)? else {
         bail!("query_ui returned the wrong reply kind");
     };

@@ -111,11 +111,7 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             Command::CancelFound { kind, anchor } => {
                 apply_cancel_found(state, pc.player, *kind, *anchor)
             }
-            Command::UpgradeBuilding {
-                units,
-                building,
-                queue,
-            } => apply_upgrade(state, pc.player, &canonical_units(units), *building, *queue),
+            Command::UpgradeBuilding { building } => apply_upgrade(state, pc.player, *building),
             Command::Load {
                 units,
                 transport,
@@ -684,7 +680,9 @@ fn apply_build(
     let existing = state
         .buildings
         .iter()
-        .find(|b| b.anchor == anchor && b.kind == kind && b.player == player && !b.built)
+        .find(|b| {
+            b.anchor == anchor && b.kind == kind && b.player == player && !b.built && b.tier == 0
+        })
         .map(|b| b.id);
     if let Some(site) = existing {
         let mut landed = 0;
@@ -806,10 +804,9 @@ pub(super) fn found_site(
         }
     }
     // Friendly machines make way as the site claims the ground: no
-    // sim rule expects a resting unit on a claimed footprint. Since
-    // 0.13 they WALK off — the builders' own approach and the
-    // phase-5 eviction pre-pass both route out of the footprint —
-    // so only a body with NO escape route takes the instant deal
+    // sim rule expects a resting unit on a claimed footprint. The
+    // builders' own approach and the eviction pre-pass both route out
+    // of the footprint, so only a body with no escape route takes the instant deal
     // onto the passable perimeter ring, round-robin in (y, x)
     // order, id order among the dealt: nothing may end up inside a
     // finished building. Strictly after the last rejection path and
@@ -1313,17 +1310,14 @@ fn apply_focus_fire(
     Ok(())
 }
 
-/// Lifts a completed own building one rung up its ladder: full price
-/// charged now, the works goes offline as a site on the NEW tier's row,
-/// and the accepted harvester crew takes the ordinary Build order — the
-/// whole construction machinery (resume, relief, stacking) serves
-/// upgrades unchanged. There is no cancel: upgrading is committed.
+/// Lifts a completed own building one rung up its ladder: full price is
+/// charged now and the works goes offline on the new tier's row. Its own
+/// deterministic rebuild clock advances once per tick; no worker can pause
+/// or accelerate it. There is no cancel once the upgrade is committed.
 fn apply_upgrade(
     state: &mut State,
     player: PlayerId,
-    units: &[UnitId],
     building: BuildingId,
-    queue: bool,
 ) -> Result<(), RejectReason> {
     let Some(b) = state.building(building) else {
         return Err(RejectReason::NotYourBuilding);
@@ -1348,32 +1342,8 @@ fn apply_upgrade(
     if !met {
         return Err(RejectReason::MissingPrerequisite);
     }
-    let crew: Vec<UnitId> = accepted_units(state, player, units)
-        .into_iter()
-        .filter(|id| {
-            state
-                .unit(*id)
-                .is_some_and(|u| u.kind.stats().harvest.is_some())
-        })
-        .collect();
-    if crew.is_empty() {
-        return Err(RejectReason::NoValidUnits);
-    }
     if state.players[player.0 as usize].scrap < upgrade.cost {
         return Err(RejectReason::NotEnoughScrap);
-    }
-    // Assign before paying, like Build: a crew whose every queue is full
-    // must reject the whole command with nothing spent.
-    let mut landed = 0;
-    for id in &crew {
-        if let Some(unit) = state.unit_mut(*id)
-            && assign(unit, Order::Build { site: building }, queue)
-        {
-            landed += 1;
-        }
-    }
-    if landed == 0 {
-        return Err(RejectReason::QueueFull);
     }
     state.players[player.0 as usize].scrap -= upgrade.cost;
     let b = state.building_mut(building).expect("validated above");

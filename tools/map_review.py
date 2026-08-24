@@ -3,8 +3,8 @@
 Map drafts live in ``map-drafts/`` — outside ``scenarios/`` so the
 shipped-map sweeps and hash fixtures never see unblessed work. This
 tool renders each draft through the driver's CPU rasterizer, runs the
-structural audit and the mirror-robustness probe, and writes one
-self-contained HTML file (images inlined) for review in any browser.
+structural audit, and writes one self-contained HTML file (images
+inlined) for review in any browser.
 
 Blessing a draft means moving its JSON into ``scenarios/``, re-running
 the map gates, blessing the hash fixture row, and committing — this
@@ -12,7 +12,6 @@ page only presents; it never promotes.
 
 Usage (from the repository root):
     uv run tools/map_review.py
-    uv run tools/map_review.py --no-probe     # skip the slow mirror probe
     open map-review/index.html
 """
 
@@ -54,30 +53,12 @@ def far_scrap_share(rows: list[str], threshold: float = 18.0) -> tuple[float, in
     return far / total, total
 
 
-def probe_summary(row: dict) -> str:
-    """One-line robustness verdict from a turret-perturbation probe row."""
-    flips = row["helped"] + row["hurt"] + row["stalled"]
-    if flips == 0:
-        return "robust — no flips under a forced turret"
-    return (
-        f"fragile — helped {row['helped']}, hurt {row['hurt']}, "
-        f"stalled {row['stalled']} of {row['games']} games"
-    )
-
-
 def run_json(cmd: list[str]) -> dict | list | None:
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     text = result.stdout.strip()
     if text.startswith("{") or text.startswith("["):
         return json.loads(text)
     return None
-
-
-def baseline_line(stderr: str) -> str:
-    for line in stderr.splitlines():
-        if "baseline:" in line:
-            return line.strip()
-    return ""
 
 
 def review_card(name: str, meta: dict, stats: dict, png: bytes) -> str:
@@ -137,16 +118,6 @@ def main() -> None:
     ap.add_argument("--drafts", default="map-drafts")
     ap.add_argument("--out", default="map-review/index.html")
     ap.add_argument("--driver", default="target/release/oxide-driver")
-    ap.add_argument(
-        "--weights",
-        default="sim/src/bot/ladder_weights.json",
-        help="artifact the robustness probe drives both mirror seats with",
-    )
-    ap.add_argument(
-        "--no-probe",
-        action="store_true",
-        help="skip the mirror decisiveness/robustness probe (slow)",
-    )
     args = ap.parse_args()
 
     drafts = sorted(pathlib.Path(args.drafts).glob("*.json"))
@@ -177,34 +148,6 @@ def main() -> None:
             for key in ("free_tiles", "nodes"):
                 if key in audit:
                     stats[key.replace("_", " ")] = audit[key]
-
-        if not args.no_probe:
-            probe = subprocess.run(
-                [
-                    args.driver,
-                    "viability-probe",
-                    "--weights",
-                    args.weights,
-                    "--scenario",
-                    str(draft),
-                    "--action",
-                    "turret",
-                    "--seeds",
-                    "12",
-                    "--quota",
-                    "1",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            row = None
-            for line in probe.stdout.splitlines():
-                if line.strip().startswith("{"):
-                    row = json.loads(line)
-            if row is not None:
-                stats["mirror"] = baseline_line(probe.stderr) or "(no baseline line)"
-                stats["robustness"] = probe_summary(row)
 
         cards.append(review_card(draft.stem, meta, stats, png))
 

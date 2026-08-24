@@ -1,5 +1,4 @@
-//! Crowd settling: measured displacement in steady state — the 0.12
-//! jitter phase's instrument, and its regression once the dials land.
+//! Crowd settling: measured displacement after units reach steady state.
 
 mod common;
 
