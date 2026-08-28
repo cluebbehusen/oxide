@@ -31,20 +31,172 @@ that does not require it.
 The maintained path is:
 
 ```text
-fog-honest Observation -> UtilityPolicy Intent -> Executive -> PlayerCommand[]
+fog-honest Observation
+  -> StrategicIntelligence
+  -> persistent playbooks + UtilityPolicy Intent
+  -> Executive
+  -> PlayerCommand[]
 ```
 
-- `Brain::balanced` is the player-facing rules-based controller.
-- `Dials::balanced` names its complete strategic surface.
+- `Brain::scripted` is the configurable player-facing controller;
+  `Brain::balanced` is its default-profile convenience constructor.
+- `BotConfig::scripted` records difficulty, stance, and personality seed.
+- `ResolvedProfile` and `DifficultyTuning` derive stable strategic and cognitive
+  dials before play begins.
+- `StrategicIntelligence` separates current evidence from timestamped memory.
+- `StrategicPlanner`, `LiftPlanner`, `RaidPlanner`, and `TeamReliefPlanner`
+  retain phased operations across decisions, reserve exact units, and budget
+  committed scrap.
+- `sim/src/bot/strategy.rs` owns air operations, `sim/src/bot/lift.rs` owns
+  severed-ground transport operations, and `sim/src/bot/routing.rs` owns their
+  fog-honest route projection and exact command-subset checks.
+- `UtilityPolicy` fills work not claimed by those operations, while `Executive`
+  owns exact-unit bookkeeping and lowers every intent to commands.
 - `Brain::overseer` is a separate stable QA anchor. Do not silently change it
   while tuning the playable opponent.
 - `seat_bots` constructs controllers requested by scenario `BotConfig`.
-- Authored bot seats use `BotConfig::Scripted`. Replays preserve emitted
-  commands, so playback does not rerun the controller.
+- Replays preserve the exact configuration and emitted commands, so playback
+  does not rerun the controller.
 
 Keep policy memory controller-local and deterministic. A resumed replay rebuilds
 controller memory by observing the authoritative recorded prefix; never add an
 unrecorded state mutation to make resume convenient.
+
+Admit new persistent strategic work on the shared 24-tick boundaries, not on a
+difficulty's private think cadence. Air, lift, and raid admission,
+remembered-to-current air promotion, and the initial team-relief pressure watch
+must sample a world tick available to every rung; apply rung-specific reaction
+and commitment latency afterward. This keeps a faster controller from freezing a
+different roster or contact merely because it sampled between shared boundaries.
+
+Treat renewable economy as a strategic demand problem, not a bot-only entity
+cap. The player-facing opening may reserve the exact cost of a visible home
+Extractor restoration. Restore only after the whole frame is explored, and pause
+while current sight or recent local salvage evidence makes its footprint unsafe.
+Keep persistent combat rally points off known frames so restoring one cannot
+invalidate an existing order.
+
+Once a built Fabricator unlocks expansion Foundries, an owned completed
+Extractor without completed or projected support is a priority objective, but
+only across fog-honestly known reachable ground. Reserve capital only when a
+legal support footprint has a route-capable builder, and try other known
+Extractors when the nearest one cannot be supported. Count paid and deferred
+Foundry claims before promising another. Expansion saving and construction must
+use the same exact safe worker-and-site claim. Treat a generic frontier nearer
+to a known enemy Foundry than to any projected own Foundry as enemy-controlled,
+not as a reason to hoard. Count completed, upgrading, pending, and uniquely
+deferred Reclaimer income once when projecting supply. Reclaimer construction
+should answer completed production demand and known resource exhaustion; do not
+impose a fixed count ceiling that a human player does not share. Preserve
+Overseer's documented legacy policy when evolving these rules.
+
+For adaptive profiles, fill an ordinary unreserved ground core before optional
+specialties. Project live HP, queued units, and same-think orders exactly once,
+and keep strategic reservations, raiders, artillery, anti-air, and support out
+of that core. Keep one baseline Tender; each additional Tender up to the seeded
+support ceiling needs a distinct currently wounded ground combatant reachable
+over known terrain. Count live, queued, and same-think Tenders once, and release
+the specialist fund when that demand disappears. Fill shallow Foundry queues
+breadth-first and reserve a remaining shortfall without double-counting the
+ordinary fighting reserve. Generic production must not create partial bomber or
+ground-attack-air cohorts; a persistent air or lift operation owns those cohorts
+and its outstanding Airworks capacity. A shallow independently useful
+air-defense purchase is allowed only when no operation owns that capacity.
+
+Defend every completed owned Foundry, not only the starting base. Harvest work
+must also respect anonymous regional loss evidence: a wreck near a dead worker
+is not automatically a safe replacement source. Derive that evidence only from
+allied damage and retain no attacker identity. Keep a contested region through
+darkness; clear it only after one continuous, bounded interval with the whole
+region currently visible and free of known danger.
+
+Treat severed-ground attacks as coordinated operations, not a singleton ferry.
+Let a lift's payload and matching carrier target grow while it remains in
+Provision, then freeze exact, disjoint manifests when Boarding begins. Derive
+carrier demand from that payload and usable landing space instead of imposing an
+arbitrary controller cap, and retain a ground-capable home-defense floor. Launch
+only after a shared boarding quorum. Bound every provision, boarding, landing,
+and recovery phase; an incomplete wave must recover or shrink deterministically
+rather than leak one carrier at a time.
+
+While a remembered, built objective is being reacquired, reserve at most the
+first Skyhook's exact cost only when optimistic fog-honest routing still proves
+the target ground-disconnected, a completed Airworks and transportable payload
+exist, and no usable carrier is live or queued. Treat this as capital only. Do
+not start the lift, claim riders, or queue the carrier until current evidence
+admits the ordinary operation, and release the reservation when any premise no
+longer holds.
+
+A wealthy island bot should consider a screen and bomber wing even when air is
+not its seeded specialty, because personality may change emphasis but cannot
+remove the only credible attack domain. Let airborne screen and bomber targets
+grow during Recon and Assemble, then freeze the requested force when the
+operation enters SuppressAa. Use current sight for uncoordinated commitments,
+remembered objectives only for honest reconnaissance, and currently visible flak
+along the complete known corridor for suppression. Air and lift plans must
+remain independently viable. When both choose the same objective, coordinate
+only through an explicit target-specific hold, release, or abort signal; neither
+may infer the other's success from missing omniscient state.
+
+Distinguish an empty scout slot from a lost dispatched scout. The planner may
+fill or train the former before commitment. The latter must abort into bounded
+recovery, release its factory bank, return surviving claimed units once, and
+respect a cooldown rather than drafting a replacement into an endless probe
+loop. Cover Recon and Assemble separately because both phases can otherwise
+replace a missing unit before loss handling observes it.
+
+Audit the utility scout separately from the persistent air planner. After the
+first dedicated flyer is dispatched and lost, suspend that production channel
+and release its Airworks capital. Rearm only after actionable current enemy
+sight has gone dark after the loss and later returns; persistent sight,
+remembered ghosts, and cross-sight between opposing dedicated scouts do not
+count. Exercise this through the whole `Brain` or utility economy path because
+an isolated strategic-planner test cannot see the solo scout conveyor.
+
+## Keep identity and difficulty honest
+
+The personality seed resolves independent, stance-bounded preferences for air,
+siege, support, fortification, greed, and guile. These rank otherwise legal
+choices; they never alter vision, costs, prerequisites, capabilities, or unit
+strength, and they never roll private competence such as strength-estimation
+accuracy. Expect each axis to leave an observable signature: air in wing size
+and timing; siege in artillery volume and preference; support in support units,
+flak, and allied relief; fortification in turrets, mines, and defensive reserve;
+greed in worker and renewable expansion targets; and guile in raid size, timing,
+withdrawal, and some mine or airborne-screen emphasis. Store the seed in the
+scenario and replay rather than serializing resolved traits or planner state.
+
+Keep early defensive choices bounded across identities. One perimeter turret may
+precede contact once the enemy has been located; unlock the remainder of a
+fortification target only after a real raid. For a player-facing controller,
+anonymous radar blips are not confirmed air and must not independently trigger
+flak construction.
+
+Scrapheap, Standard, Veteran, and Prime use the same strategic repertoire.
+Scrapheap alone thinks less often; Standard, Veteran, and Prime intentionally
+share one competent decision cadence because additional controller APM must not
+become a disadvantage. Higher rungs still react sooner, remember more, service
+no fewer simultaneous concerns, use a smaller fixed conservative error in
+private estimates, coordinate focus fire, and hesitate less before commitment.
+Prime also directs an overlapping static-defense line through the same explicit
+focus-fire command available to a person. It locks one currently visible ground
+threat until the target or firing overlap disappears; blocked or out-of-range
+defenses retain the simulation's ordinary target fallback. No rung may receive a
+rules advantage or lose an entire strategy merely to become easier.
+
+Keep those limits structurally monotone. Lower-rung decision ticks must nest
+inside higher-rung schedules; reaction and commitment windows must become no
+slower as difficulty rises; and attention and memory must become no smaller.
+Lower rungs use a fixed deterministic underestimate of their own force, so they
+may miss a marginal opening; Veteran and Prime coordinate whole-army focus,
+while Scrapheap and Standard rely on ordinary unit acquisition. Veteran and
+Prime share the same optional-operation attention ceiling: neither peels a raid
+off while air and lift work already run together. Personality must never change
+these competence limits.
+
+A successful New Match chooses new personality seeds. Restart, Rematch, save
+loading, and replay reconstruction must preserve the recorded difficulty,
+stance, and seed.
 
 ## Change one behavior at a time
 
@@ -88,6 +240,33 @@ The complete-match path is `run <scenario> --all-bots`; ordinary `--bots` honors
 the scenario's configured chairs and therefore leaves its human chair under
 human control. Add `--save-replay <path>` for review evidence.
 
+Sample every difficulty and stance across the review set, plus multiple
+personality seeds. Lower difficulty is not required to lose every paired match,
+but its cognitive limits should remain visible and internally consistent.
+
+Use `bot-eval` for reproducible player-facing profile cells. It stops when the
+match decides, emits one compact JSONL row per leg, and can preserve the replay:
+
+```sh
+cargo run -p oxide-driver -- bot-eval skirmish \
+  --difficulty prime --stance balanced \
+  --scenario-seed-base 7000 --personality-seed-base 9000 \
+  --paired --candidate candidate-a --replay-dir replays/bot-eval
+```
+
+`--paired` is a two-seat comparison: the second leg exchanges the two complete
+resolved profiles while keeping the map, factions, teams, and simulation seed
+fixed. Use `--runs N` for consecutive deterministic seed cells. Use the per-unit
+stall breakdown to distinguish one blocked order from a broad command failure.
+Treat rejections and stalls as anomaly evidence, not a quality score. Persisted
+evidence requires an explicit stable `--candidate`; rows also record the
+complete scenario fingerprint and requested tick limit. The driver stages the
+whole invocation, rolls back normal publication errors, and refuses to replace
+an existing JSONL or replay. This is not a cross-path crash transaction: abrupt
+process termination can leave hidden staging files or a partial replay set.
+Inspect and remove the incomplete batch, then rerun it under a fresh candidate
+rather than treating those files as complete evidence.
+
 For each candidate, preserve the scenario, seed, replay, final hash, result,
 duration, and a short behavioral verdict. Compare repeated identical runs for
 exact hashes. Check that the controller:
@@ -98,6 +277,15 @@ exact hashes. Check that the controller:
 - escapes or changes plans after a failed route or site;
 - behaves coherently after the opening and through the match's end;
 - remains active on every seat, faction, and team shape in scope.
+
+When paired results follow the physical seat, reduce the divergence to a
+half-turned scenario before tuning policy. Compare authoritative state after
+each relevant tick phase and audit equal-cost A* ties, footprint doorsteps,
+production spawns, blocked group-goal snapping and spreading, signed fixed-point
+vector scaling, and perfectly stacked collision separation. Outcome-relevant
+tie-breaks belong in a query-, local-, or map-relative frame; an absolute
+row-major or compass preference can turn a mechanical asymmetry into a false
+personality or difficulty signal.
 
 Use `replay-summary` to find long silences, nonsense loops, missed tech,
 one-sided non-participation, and suspicious endings. Then watch the suspicious
@@ -111,10 +299,9 @@ an average. Play against it and watch full matches beyond the opening. Record
 what the bot appeared to be trying to do, where that intention became legible,
 and where it behaved nonsensically.
 
-Keep one Balanced opponent until that baseline is worth preserving. Do not add
-difficulty levels by granting advantages or by arbitrarily disabling whole
-strategic channels. A future ladder should alter decision quality or execution
-in a measured, explainable way and must be reviewed as a separate design.
+Review every difficulty and stance as the same opponent under explainable
+cognitive limits. Do not promote a rung because its win rate alone looks
+plausible, and do not hide a broken strategy behind personality variation.
 
 Finish with the full Rust gates from `AGENTS.md` and the native QA path from the
 `oxide-live-qa` skill whenever setup UI or player-facing behavior changed.

@@ -72,6 +72,11 @@ decides the economy.
 Check these questions while authoring:
 
 - Can every seat fund a viable opening from nearby salvage?
+- Does each intended long-form seat have one visible home Extractor frame inside
+  `EXTRACTOR_SUPPORT_RADIUS`, while its next frame requires leaving the starting
+  Foundry's support?
+- Does every forward frame leave fair, reachable construction room for a new
+  Foundry inside that radius rather than prescribing one fragile anchor?
 - Is there a reason to leave the starting pocket?
 - Are alternate routes meaningfully different rather than cosmetic twins?
 - Is there room to build where armies and harvest lines actually travel?

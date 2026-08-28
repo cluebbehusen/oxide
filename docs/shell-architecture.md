@@ -58,6 +58,19 @@ orchestration, debug requests, audio, capture, and persistence. This separation
 lets the navigation graph and destructive confirmations be tested without a GPU
 window.
 
+The New Match draft carries each chair's visible bot difficulty and stance. Each
+opponent row exposes those as two direct controls while the map preview remains
+visible. When a small window cannot fit the roster at 44 logical pixels per row,
+setup pages the seat list and Start button instead of overlapping touch targets.
+Only a successful New Match launch asks `App` to advance its shell-only
+personality-seed source. Ordinary sessions seed that source from wall-clock and
+process identity; automation uses a fixed test seed. This is the sole
+pre-scenario entropy boundary, not in-match randomness. Launch materializes one
+exact, distinct seed per opponent into the `Scenario` before `Game` is created,
+and the source is not consulted again. The seed becomes replay provenance;
+hidden personality traits are derived from it rather than serialized separately
+or shown in ordinary UI labels.
+
 The frame loop has a fixed shape:
 
 1. Drain debug requests; defer screenshot replies until after rendering.
@@ -117,6 +130,12 @@ replaying every recorded command. Bots are allowed to observe the reconstruction
 only to restore their controller-local memory; their regenerated commands are
 discarded because the log is authoritative. The resumed `Game` continues
 recording onto that same command history.
+
+Restart and Rematch rebuild from `Game::scenario`, while replay and save loading
+rebuild from the recorded setup. Consequently all of those paths preserve the
+exact opponent difficulty, stance, and personality seed. They never consult the
+New Match seed source; only another successful wizard launch creates new
+opponent identities.
 
 Read-only viewing uses `oxide_kit::playback::Playback`: no bots, no recorder,
 and no new commands. Forward playback feeds recorded commands directly to
@@ -192,6 +211,14 @@ the renderer must not load per-sprite textures. Animation state is driven by
 simulation events and current actions, then discarded or rebuilt after a
 timeline jump. Fog rendering reads the controlled seat's `Vision` unless an
 explicit spectator/debug mode is active.
+
+Selection feedback may describe public simulation rules, but dynamic economy
+state remains owner-only. A selected own Extractor names its authoritative
+remote or supported rate, and selected own Extractors and Foundries draw the
+exact square support footprint plus current endpoint links. Hostile selections
+may show the static support radius without revealing whether an unseen enemy
+Foundry currently supplies the bonus. The panel and renderer both ask `State`
+for support rather than duplicating its footprint calculation.
 
 `oxide-kit` also contains a tiny-skia CPU renderer. It is a deliberately plain,
 whole-map schematic used for deterministic goldens and headless screenshots. It

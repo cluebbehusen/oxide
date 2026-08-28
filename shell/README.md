@@ -14,9 +14,13 @@ crate-level rustdoc.
 - `main` handles CLI arguments, window configuration, and startup.
 - `app` owns frame orchestration and debug requests; `app/screen_flow` owns
   cross-screen transitions and draws one active screen.
+- `screens/wizard` owns New Match seat, team, faction, and opponent choices;
+  `bot_label` keeps configured opponent names consistent across the wizard, HUD,
+  and result report.
 - `game` owns one live session, its recorder, bots, and presentation state.
 - `input` and `action` form the single hardware and injected-input funnel.
-- `render`, `panel`, and `layout` draw the world and share hit-test geometry.
+- `render`, `panel`, and `layout` draw the world, expose owner-safe selection
+  feedback such as Extractor support, and share hit-test geometry.
 - `assets`, `audio_mix`, and `soundtrack` own presentation resources.
 - `debug_server` connects the frame loop to `oxide-protocol`.
 - `autosave`, `saves`, and the playback screens manage replay-backed
