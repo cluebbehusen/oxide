@@ -1942,15 +1942,15 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
     assert_eq!(game.selection.units, vec![ally], "allies are selectable");
 
     // The panel is read-only: no command cards; a single ally shows
-    // static combat capability and its order chips.
+    // static capability and its order chips.
     let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on an ally panel");
     assert!(
-        panel.sub.contains("Balanced AI"),
+        panel.sub.contains("Standard / Balanced AI"),
         "the ally's controller stays visible"
     );
     assert!(
-        panel.combat.is_empty(),
+        panel.capabilities.is_empty(),
         "an unarmed ally needs no capability band"
     );
     assert!(panel.sub.contains("speed 2.5 tiles/sec"));
@@ -2002,20 +2002,23 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
     apply_events(&mut game, &mut input, &click(screen.x, screen.y));
     assert_eq!(game.selection.units, vec![foe], "a visible foe inspects");
 
-    // Static kind-level combat facts are safe to inspect. Command cards
+    // Static kind-level capability facts are safe to inspect. Command cards
     // and order chips stay absent because order state reveals intent.
     let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
     assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
     assert!(
-        panel.sub.contains("Balanced AI"),
+        panel.sub.contains("Standard / Balanced AI"),
         "the enemy's controller stays visible"
     );
-    assert_eq!(panel.combat.len(), 1);
-    assert_eq!(panel.combat[0].icon, crate::panel::CombatIcon::Weapon);
-    assert!(panel.combat[0].text.contains("dmg"));
-    assert!(panel.combat[0].text.contains("tiles"));
-    assert!(panel.combat[0].text.contains("ground"));
+    assert_eq!(panel.capabilities.len(), 1);
+    assert_eq!(
+        panel.capabilities[0].icon,
+        crate::panel::CapabilityIcon::Weapon
+    );
+    assert!(panel.capabilities[0].text.contains("dmg"));
+    assert!(panel.capabilities[0].text.contains("tiles"));
+    assert!(panel.capabilities[0].text.contains("ground"));
 
     // And no breadcrumbs, whatever program the enemy runs.
     let unit = game.state.unit(foe).unwrap();
@@ -2403,7 +2406,7 @@ fn an_allied_site_under_fog_refuses_selection() {
     };
     for p in scenario.players.iter_mut().skip(1) {
         p.bot = true;
-        p.bot_config = Some(BotConfig::Scripted);
+        p.bot_config = Some(BotConfig::default());
     }
     let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("ally arena builds");
     let mut input = InputState::new();

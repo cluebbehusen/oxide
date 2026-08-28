@@ -9,6 +9,7 @@
 //! the key that does the same thing.
 
 use crate::action::{Action, BindingMap};
+use crate::bot_label::{BotLabelStyle, bot_label};
 use crate::game::Game;
 use oxide_sim::stats::{BuildingKind, UnitKind, WeaponStats};
 use oxide_sim::{BuildingId, Order};
@@ -131,9 +132,9 @@ pub struct Card {
     pub progress: Option<f32>,
 }
 
-/// Compact semantic mark paired with an always-visible combat fact.
+/// Compact semantic mark paired with an always-visible capability fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CombatIcon {
+pub enum CapabilityIcon {
     /// Weapon reach and damage against ground targets.
     Weapon,
     /// Weapon reach and damage against air targets.
@@ -146,13 +147,15 @@ pub enum CombatIcon {
     Radar,
     /// Automatic repair reach.
     Repair,
+    /// Economic support shared by Foundries and Extractors.
+    EconomySupport,
 }
 
 /// One compact capability row in the selection panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CombatFact {
+pub struct CapabilityFact {
     /// Symbol shared with the corresponding battlefield ring.
-    pub icon: CombatIcon,
+    pub icon: CapabilityIcon,
     /// Numeric capability details, without explaining the ring style.
     pub text: String,
 }
@@ -173,7 +176,7 @@ pub struct Panel {
     /// are drawn without a hover and deliberately contain no order,
     /// target, or cooldown state, so inspecting a visible enemy reveals
     /// capability without revealing intent.
-    pub combat: Vec<CombatFact>,
+    pub capabilities: Vec<CapabilityFact>,
     /// A mixed selection's unit-kind filters. Kept separate from
     /// command cards so choosing a roster slice can never crowd out a
     /// verb or make the verb row look like more selected units.
@@ -255,6 +258,27 @@ pub fn building_stat_line(kind: BuildingKind) -> String {
     )
 }
 
+/// Economy details shared by build cards and the codex.
+pub fn building_economy_lines(kind: BuildingKind) -> Vec<String> {
+    let radius = oxide_sim::stats::EXTRACTOR_SUPPORT_RADIUS;
+    let remote = oxide_sim::stats::EXTRACTOR_REMOTE_INCOME_PER_MINUTE;
+    let supported = oxide_sim::stats::EXTRACTOR_SUPPORTED_INCOME_PER_MINUTE;
+    match kind {
+        BuildingKind::Extractor => vec![
+            format!(
+                "Income: {remote} scrap/min remote; {supported} scrap/min with non-stacking support."
+            ),
+            format!(
+                "Supported by one or more own completed Foundries within {radius} footprint tiles."
+            ),
+        ],
+        BuildingKind::Foundry => vec![format!(
+            "Supports own completed Extractors within {radius} footprint tiles: {remote} to {supported} scrap/min; additional Foundries do not stack."
+        )],
+        _ => Vec::new(),
+    }
+}
+
 fn weapon_line(weapon: &WeaponStats) -> String {
     let targets = match (
         weapon.targets.covers(oxide_sim::stats::Domain::Ground),
@@ -295,13 +319,13 @@ fn weapon_line(weapon: &WeaponStats) -> String {
 /// The compact mark shared by a weapon fact and its battlefield range.
 /// Air-only weapons need a different silhouette, not just a quieter copy
 /// of the ground ring, because the Sentinel exposes both at once.
-pub(crate) fn weapon_combat_icon(weapon: &WeaponStats) -> CombatIcon {
+pub(crate) fn weapon_capability_icon(weapon: &WeaponStats) -> CapabilityIcon {
     if weapon.targets.covers(oxide_sim::stats::Domain::Air)
         && !weapon.targets.covers(oxide_sim::stats::Domain::Ground)
     {
-        CombatIcon::AirWeapon
+        CapabilityIcon::AirWeapon
     } else {
-        CombatIcon::Weapon
+        CapabilityIcon::Weapon
     }
 }
 
@@ -319,13 +343,13 @@ pub fn building_weapon_lines(kind: BuildingKind, tier: u8) -> Vec<String> {
         .collect()
 }
 
-fn building_combat_lines(kind: BuildingKind, tier: u8) -> Vec<CombatFact> {
+fn building_capability_lines(kind: BuildingKind, tier: u8) -> Vec<CapabilityFact> {
     let stats = kind.tier_stats(tier);
-    let mut lines: Vec<CombatFact> = stats
+    let mut lines: Vec<CapabilityFact> = stats
         .weapons
         .iter()
-        .map(|weapon| CombatFact {
-            icon: weapon_combat_icon(weapon),
+        .map(|weapon| CapabilityFact {
+            icon: weapon_capability_icon(weapon),
             text: weapon_line(weapon),
         })
         .collect();
@@ -335,8 +359,8 @@ fn building_combat_lines(kind: BuildingKind, tier: u8) -> Vec<CombatFact> {
         .map(|weapon| weapon.minimum_range)
         .find(|minimum| *minimum > chassis::fx::Fx::ZERO)
     {
-        lines.push(CombatFact {
-            icon: CombatIcon::DeadZone,
+        lines.push(CapabilityFact {
+            icon: CapabilityIcon::DeadZone,
             text: format!("{:.1} tiles", minimum.to_num::<f32>()),
         });
     }
@@ -346,37 +370,46 @@ fn building_combat_lines(kind: BuildingKind, tier: u8) -> Vec<CombatFact> {
         .any(|weapon| weapon.range.to_num::<f32>() > stats.vision as f32)
         || kind == BuildingKind::Array
     {
-        lines.push(CombatFact {
-            icon: CombatIcon::Vision,
+        lines.push(CapabilityFact {
+            icon: CapabilityIcon::Vision,
             text: format!("{} tiles", stats.vision),
         });
     }
     if kind == BuildingKind::Array {
-        lines.push(CombatFact {
-            icon: CombatIcon::Radar,
+        lines.push(CapabilityFact {
+            icon: CapabilityIcon::Radar,
             text: format!("{} tiles", oxide_sim::stats::RADAR_DETECT_RADIUS),
         });
     }
     if kind == BuildingKind::RepairBay {
-        lines.push(CombatFact {
-            icon: CombatIcon::Repair,
+        lines.push(CapabilityFact {
+            icon: CapabilityIcon::Repair,
             text: format!(
                 "{:.1} tiles",
                 oxide_sim::stats::REPAIR_BAY_RADIUS.to_num::<f32>()
             ),
         });
     }
+    if matches!(kind, BuildingKind::Foundry | BuildingKind::Extractor) {
+        lines.push(CapabilityFact {
+            icon: CapabilityIcon::EconomySupport,
+            text: format!(
+                "Extractor support | {} footprint tiles",
+                oxide_sim::stats::EXTRACTOR_SUPPORT_RADIUS
+            ),
+        });
+    }
     lines
 }
 
-/// Always-visible combat facts for a selected unit.
-pub fn combat_lines(kind: UnitKind) -> Vec<CombatFact> {
+/// Always-visible capability facts for a selected unit.
+pub fn unit_capability_lines(kind: UnitKind) -> Vec<CapabilityFact> {
     let stats = kind.stats();
     let mut lines: Vec<_> = stats
         .weapons
         .iter()
-        .map(|weapon| CombatFact {
-            icon: weapon_combat_icon(weapon),
+        .map(|weapon| CapabilityFact {
+            icon: weapon_capability_icon(weapon),
             text: weapon_line(weapon),
         })
         .collect();
@@ -385,8 +418,8 @@ pub fn combat_lines(kind: UnitKind) -> Vec<CombatFact> {
         .iter()
         .any(|weapon| weapon.range.to_num::<f32>() > stats.vision as f32)
     {
-        lines.push(CombatFact {
-            icon: CombatIcon::Vision,
+        lines.push(CapabilityFact {
+            icon: CapabilityIcon::Vision,
             text: format!("{} tiles", stats.vision),
         });
     }
@@ -439,12 +472,13 @@ fn production_queue_label(
     Some(format!("queue {}", tick_time_label(remaining)))
 }
 
-fn bot_controller_label(game: &Game, player: oxide_sim::PlayerId) -> Option<&'static str> {
+fn bot_controller_label(game: &Game, player: oxide_sim::PlayerId) -> Option<String> {
     let spec = game.scenario.players.get(usize::from(player.0))?;
     if !spec.bot {
         return None;
     }
-    spec.bot_config.map(|_| "Balanced AI")
+    spec.bot_config
+        .map(|config| bot_label(config.difficulty, config.stance, BotLabelStyle::Controller))
 }
 
 fn foreign_sub(game: &Game, owner: oxide_sim::PlayerId, hostile: bool, detail: &str) -> String {
@@ -454,6 +488,15 @@ fn foreign_sub(game: &Game, owner: oxide_sim::PlayerId, hostile: bool, detail: &
     } else {
         format!("{relation} | {detail}")
     }
+}
+
+fn extractor_income_label(income: oxide_sim::ExtractorIncome) -> String {
+    let state = if income.is_supported() {
+        "SUPPORTED"
+    } else {
+        "REMOTE"
+    };
+    format!("{state} {}/min", income.scrap_per_minute())
 }
 
 /// The subject an order chip may show, plus the lines that name it —
@@ -753,7 +796,7 @@ pub fn build_for_palette(
             },
             portrait: CardIcon::Building(first.kind),
             faction: game.state.player(owner).faction,
-            combat: Vec::new(),
+            capabilities: Vec::new(),
             roster: Vec::new(),
             cards: Vec::new(),
             queue: Vec::new(),
@@ -822,13 +865,18 @@ pub fn build_for_palette(
             sub: format!("{}/{} hp", building.hp, stats.max_hp),
             portrait: CardIcon::Building(building.kind),
             faction: game.state.player(owner).faction,
-            combat: building_combat_lines(building.kind, building.tier),
+            capabilities: building_capability_lines(building.kind, building.tier),
             roster: Vec::new(),
             cards: Vec::new(),
             queue: Vec::new(),
             queue_label: production_queue_label(&building.queue, building.progress)
                 .unwrap_or_else(|| "queue".to_string()),
         };
+        if owner == game.human
+            && let Some(income) = game.state.extractor_income(building.id)
+        {
+            panel.sub = format!("{} | {}", panel.sub, extractor_income_label(income));
+        }
         if owner != game.human {
             // Foreign buildings inspect read-only: an allied building says
             // whose they are; a hostile shows hp and kind, nothing
@@ -1078,8 +1126,8 @@ pub fn build_for_palette(
         },
         portrait: CardIcon::Unit(first.kind),
         faction: game.state.player(owner).faction,
-        combat: if units.len() == 1 {
-            combat_lines(first.kind)
+        capabilities: if units.len() == 1 {
+            unit_capability_lines(first.kind)
         } else {
             Vec::new()
         },
@@ -1308,6 +1356,8 @@ pub fn build_for_palette(
             } else {
                 (true, None)
             };
+            let mut desc = vec![building_flavor(kind).to_string(), building_stat_line(kind)];
+            desc.extend(building_economy_lines(kind));
             panel.cards.push(Card {
                 icon: CardIcon::Building(kind),
                 title: kind.name().to_string(),
@@ -1319,7 +1369,7 @@ pub fn build_for_palette(
                 action: CardAction::ArmBuild(kind),
                 enabled,
                 why,
-                desc: vec![building_flavor(kind).to_string(), building_stat_line(kind)],
+                desc,
                 progress: None,
             });
         }
@@ -1355,6 +1405,33 @@ mod tests {
             .id
     }
 
+    fn extractor_panel_game() -> Game {
+        let mut scenario = Scenario::skirmish();
+        let frames: Vec<_> = scenario
+            .map
+            .iter()
+            .enumerate()
+            .flat_map(|(y, row)| {
+                row.char_indices()
+                    .filter(|(_, tile)| *tile == 'E')
+                    .map(move |(x, _)| (x as i32, y as i32))
+            })
+            .collect();
+        assert!(frames.len() >= 3, "fixture needs home and remote frames");
+        let last = frames.len() - 1;
+        scenario
+            .buildings
+            .extend(frames.into_iter().enumerate().map(|(index, (x, y))| {
+                oxide_sim::scenario::BuildingSpec {
+                    player: u8::from(index == last),
+                    kind: BuildingKind::Extractor,
+                    x,
+                    y,
+                }
+            }));
+        Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("Extractor fixture builds")
+    }
+
     #[test]
     fn nothing_selected_builds_no_panel() {
         let game = game();
@@ -1362,12 +1439,133 @@ mod tests {
     }
 
     #[test]
-    fn scripted_opponents_are_labeled_as_balanced_ai() {
+    fn own_extractors_name_current_income_without_exposing_foreign_support() {
+        let mut game = extractor_panel_game();
+        let own_extractors: Vec<_> = game
+            .state
+            .buildings()
+            .iter()
+            .filter(|building| {
+                building.player == game.human && building.kind == BuildingKind::Extractor
+            })
+            .map(|building| building.id)
+            .collect();
+        let supported = own_extractors
+            .iter()
+            .copied()
+            .find(|id| {
+                game.state.extractor_income(*id) == Some(oxide_sim::ExtractorIncome::Supported)
+            })
+            .expect("a home Extractor is supported");
+        let remote = own_extractors
+            .iter()
+            .copied()
+            .find(|id| game.state.extractor_income(*id) == Some(oxide_sim::ExtractorIncome::Remote))
+            .expect("a distant Extractor is remote");
+
+        game.selection.buildings = vec![supported];
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("supported panel");
+        assert!(panel.sub.contains("SUPPORTED 180/min"), "{}", panel.sub);
+        assert!(panel.capabilities.iter().any(|fact| {
+            fact.icon == CapabilityIcon::EconomySupport && fact.text.contains("8 footprint tiles")
+        }));
+
+        game.selection.buildings = vec![remote];
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("remote panel");
+        assert!(panel.sub.contains("REMOTE 120/min"), "{}", panel.sub);
+
+        let foreign = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| {
+                building.player != game.human && building.kind == BuildingKind::Extractor
+            })
+            .expect("foreign Extractor")
+            .id;
+        assert_eq!(
+            game.state.extractor_income(foreign),
+            Some(oxide_sim::ExtractorIncome::Supported),
+            "the fixture needs private dynamic support to hide"
+        );
+        game.selection.buildings = vec![foreign];
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("foreign panel");
+        assert!(!panel.sub.contains("SUPPORTED"), "{}", panel.sub);
+        assert!(!panel.sub.contains("REMOTE"), "{}", panel.sub);
+        assert!(
+            panel
+                .capabilities
+                .iter()
+                .any(|fact| fact.icon == CapabilityIcon::EconomySupport),
+            "static capability remains safe to inspect"
+        );
+    }
+
+    #[test]
+    fn extractor_build_copy_names_both_rates_and_the_foundry_rule() {
+        let extractor = building_economy_lines(BuildingKind::Extractor);
+        assert!(
+            extractor
+                .iter()
+                .any(|line| line.contains("120 scrap/min remote"))
+        );
+        assert!(
+            extractor
+                .iter()
+                .any(|line| line.contains("180 scrap/min with non-stacking support"))
+        );
+        assert!(extractor.iter().any(|line| {
+            line.contains("own completed Foundries") && line.contains("8 footprint tiles")
+        }));
+
+        let foundry = building_economy_lines(BuildingKind::Foundry);
+        assert!(foundry.iter().any(|line| {
+            line.contains("own completed Extractors")
+                && line.contains("120 to 180 scrap/min")
+                && line.contains("8 footprint tiles")
+                && line.contains("do not stack")
+        }));
+
         let mut game = game();
-        game.scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
+        let harvester = game
+            .state
+            .units()
+            .iter()
+            .find(|unit| unit.player == game.human && unit.kind == UnitKind::Harvester)
+            .expect("starting Harvester")
+            .id;
+        game.selection.units = vec![harvester];
+        let panel = build_with_page(&game, &BindingMap::classic(), 1).expect("advanced builds");
+        let extractor_card = panel
+            .cards
+            .iter()
+            .find(|card| card.title == "extractor")
+            .expect("advanced palette contains Extractor");
+        assert!(
+            extractor_card
+                .desc
+                .iter()
+                .any(|line| line.contains("120 scrap/min"))
+        );
+        assert!(
+            extractor_card
+                .desc
+                .iter()
+                .any(|line| line.contains("180 scrap/min"))
+        );
+    }
+
+    #[test]
+    fn scripted_opponents_show_their_difficulty_and_stance() {
+        let mut game = game();
+        game.scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::scripted(
+            oxide_sim::scenario::BotDifficulty::Prime,
+            oxide_sim::scenario::BotStance::Aggressive,
+            91,
+        ));
         assert_eq!(
             bot_controller_label(&game, oxide_sim::PlayerId(1)),
-            Some("Balanced AI")
+            Some("Prime / Aggressive AI".to_string())
         );
     }
 
@@ -1697,7 +1895,7 @@ mod tests {
         assert_eq!(panel.cards[2].title, "Attack-move");
         assert_eq!(panel.cards[3].title, "Patrol");
         assert!(
-            panel.combat.is_empty(),
+            panel.capabilities.is_empty(),
             "an unarmed unit needs no capability band"
         );
         assert_eq!(panel.sub, "60/60 hp | speed 2.5 tiles/sec");
@@ -2012,6 +2210,7 @@ mod tests {
             BuildingKind::Array,
             BuildingKind::Reclaimer,
             BuildingKind::RepairBay,
+            BuildingKind::Extractor,
         ];
         let supported = |text: &str| text.is_ascii();
         let assert_card = |card: &Card| {
@@ -2032,7 +2231,7 @@ mod tests {
                 "panel queue label: {}",
                 panel.queue_label
             );
-            for fact in &panel.combat {
+            for fact in &panel.capabilities {
                 assert!(supported(&fact.text), "panel capability: {}", fact.text);
             }
             for card in panel.roster.iter().chain(&panel.cards).chain(&panel.queue) {
@@ -2044,10 +2243,10 @@ mod tests {
             for line in weapon_lines(kind) {
                 assert!(supported(&line), "{} weapon: {line}", kind.name());
             }
-            for fact in combat_lines(kind) {
+            for fact in unit_capability_lines(kind) {
                 assert!(
                     supported(&fact.text),
-                    "{} combat: {}",
+                    "{} capability: {}",
                     kind.name(),
                     fact.text
                 );
@@ -2055,10 +2254,10 @@ mod tests {
         }
         for kind in buildings {
             assert!(supported(building_flavor(kind)), "{} flavor", kind.name());
-            for fact in building_combat_lines(kind, 0) {
+            for fact in building_capability_lines(kind, 0) {
                 assert!(
                     supported(&fact.text),
-                    "{} combat: {}",
+                    "{} capability: {}",
                     kind.name(),
                     fact.text
                 );
@@ -2085,24 +2284,24 @@ mod tests {
     }
 
     #[test]
-    fn combat_facts_use_semantic_icons_instead_of_explaining_line_styles() {
-        let bastion = building_combat_lines(BuildingKind::Bastion, 0);
+    fn capability_facts_use_semantic_icons_instead_of_explaining_line_styles() {
+        let bastion = building_capability_lines(BuildingKind::Bastion, 0);
         assert!(
             bastion.iter().any(|fact| {
-                fact.icon == CombatIcon::Weapon && fact.text.contains("2.5-9.5 tiles")
+                fact.icon == CapabilityIcon::Weapon && fact.text.contains("2.5-9.5 tiles")
             }),
             "{bastion:?}"
         );
         assert!(
             bastion
                 .iter()
-                .any(|fact| { fact.icon == CombatIcon::DeadZone && fact.text == "2.5 tiles" }),
+                .any(|fact| { fact.icon == CapabilityIcon::DeadZone && fact.text == "2.5 tiles" }),
             "{bastion:?}"
         );
         assert!(
             bastion
                 .iter()
-                .any(|fact| fact.icon == CombatIcon::Vision && fact.text == "6 tiles"),
+                .any(|fact| fact.icon == CapabilityIcon::Vision && fact.text == "6 tiles"),
             "{bastion:?}"
         );
         assert!(bastion.iter().all(|fact| {
@@ -2112,11 +2311,11 @@ mod tests {
                 && !fact.text.contains("blue")
         }));
 
-        let bombard = combat_lines(UnitKind::Bombard);
+        let bombard = unit_capability_lines(UnitKind::Bombard);
         assert!(
             bombard
                 .iter()
-                .any(|fact| fact.icon == CombatIcon::Vision && fact.text == "5 tiles"),
+                .any(|fact| fact.icon == CapabilityIcon::Vision && fact.text == "5 tiles"),
             "{bombard:?}"
         );
     }
@@ -2131,19 +2330,19 @@ mod tests {
         let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("Bastion panel");
         assert_eq!(panel.title, "BASTION");
         assert!(
-            panel.combat.iter().any(|fact| {
-                fact.icon == CombatIcon::Weapon && fact.text.contains("2.5-9.5 tiles")
+            panel.capabilities.iter().any(|fact| {
+                fact.icon == CapabilityIcon::Weapon && fact.text.contains("2.5-9.5 tiles")
             }),
             "{:?}",
-            panel.combat
+            panel.capabilities
         );
         assert!(
             panel
-                .combat
+                .capabilities
                 .iter()
-                .any(|fact| { fact.icon == CombatIcon::DeadZone && fact.text == "2.5 tiles" }),
+                .any(|fact| { fact.icon == CapabilityIcon::DeadZone && fact.text == "2.5 tiles" }),
             "{:?}",
-            panel.combat
+            panel.capabilities
         );
     }
 
@@ -2160,34 +2359,52 @@ mod tests {
         game.selection.units = vec![sentinel];
         let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert_eq!(
-            panel.combat.len(),
+            panel.capabilities.len(),
             2,
-            "the two weapons stay in the combat band"
+            "the two weapons stay in the capability band"
         );
         assert!(
-            panel
-                .combat
-                .iter()
-                .any(|fact| fact.icon == CombatIcon::Weapon && fact.text.contains("ground"))
+            panel.capabilities.iter().any(|fact| {
+                fact.icon == CapabilityIcon::Weapon && fact.text.contains("ground")
+            })
         );
         assert!(
-            panel
-                .combat
-                .iter()
-                .any(|fact| fact.icon == CombatIcon::AirWeapon && fact.text.contains("air")),
+            panel.capabilities.iter().any(|fact| {
+                fact.icon == CapabilityIcon::AirWeapon && fact.text.contains("air")
+            }),
             "the anti-air range uses a targeted-aircraft mark"
         );
         assert!(panel.sub.ends_with("speed 2.2 tiles/sec"));
         assert!(
             panel
-                .combat
+                .capabilities
                 .iter()
-                .filter(|fact| { matches!(fact.icon, CombatIcon::Weapon | CombatIcon::AirWeapon) })
+                .filter(|fact| {
+                    matches!(
+                        fact.icon,
+                        CapabilityIcon::Weapon | CapabilityIcon::AirWeapon
+                    )
+                })
                 .all(|fact| fact.text.contains("dmg"))
         );
-        assert!(panel.combat.iter().all(|fact| fact.text.contains("tiles")));
-        assert!(panel.combat.iter().any(|fact| fact.text.contains("ground")));
-        assert!(panel.combat.iter().any(|fact| fact.text.contains("air")));
+        assert!(
+            panel
+                .capabilities
+                .iter()
+                .all(|fact| fact.text.contains("tiles"))
+        );
+        assert!(
+            panel
+                .capabilities
+                .iter()
+                .any(|fact| fact.text.contains("ground"))
+        );
+        assert!(
+            panel
+                .capabilities
+                .iter()
+                .any(|fact| fact.text.contains("air"))
+        );
 
         let harvester = game
             .state
@@ -2199,7 +2416,7 @@ mod tests {
         game.selection.units = vec![sentinel, harvester];
         let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert!(
-            panel.combat.is_empty(),
+            panel.capabilities.is_empty(),
             "mixed selections keep combat detail out of the command band"
         );
         assert_eq!(

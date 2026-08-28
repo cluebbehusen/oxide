@@ -144,7 +144,7 @@ pub fn engage(state: &mut oxide_sim::State) {
 pub fn all_bots(scenario: &mut Scenario) {
     for player in &mut scenario.players {
         player.bot = true;
-        player.bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
+        player.bot_config = Some(oxide_sim::scenario::BotConfig::default());
     }
 }
 

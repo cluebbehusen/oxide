@@ -8,7 +8,8 @@ use chassis::grid::TilePos;
 use oxide_driver::audit::audit;
 use oxide_sim::map::Map;
 use oxide_sim::scenario::BotConfig;
-use oxide_sim::{BuildingKind, PlayerId, Scenario};
+use oxide_sim::{BuildingKind, PlayerId, Scenario, State};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 
 fn shipped() -> Vec<(String, Scenario)> {
@@ -48,7 +49,7 @@ fn every_map_seats_a_human_and_live_opponents() {
         for (i, seat) in scenario.players.iter().enumerate().skip(1) {
             assert!(seat.bot, "{name}: seat {i} is a dead chair (bot: false)");
             assert!(
-                seat.bot_config == Some(BotConfig::Scripted),
+                seat.bot_config == Some(BotConfig::default()),
                 "{name}: seat {i} is not the shipped scripted opponent"
             );
         }
@@ -305,6 +306,257 @@ fn metric_fairness(name: &str, seats: &[oxide_driver::audit::SeatAudit]) {
 }
 
 #[test]
+fn renewable_economy_prototypes_offer_one_home_claim_and_a_forward_choice() {
+    const PROTOTYPES: [&str; 3] = ["cinder-steppe", "skirmish", "the-scattering"];
+    let support_radius = oxide_sim::stats::EXTRACTOR_SUPPORT_RADIUS;
+    let prototypes: Vec<_> = shipped()
+        .into_iter()
+        .filter(|(name, _)| PROTOTYPES.contains(&name.as_str()))
+        .collect();
+    let found: Vec<_> = prototypes.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        found, PROTOTYPES,
+        "the renewable-economy gate must exercise every promoted prototype"
+    );
+
+    for (name, scenario) in prototypes {
+        let (map, foundries) =
+            Map::parse(&scenario.map).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let frames = map.extractor_frames();
+        assert!(
+            frames.len() >= scenario.players.len() * 2,
+            "{name}: each seat needs a home claim and at least one forward option"
+        );
+
+        let state = scenario.build().expect("prototype map builds");
+        for (seat, foundry) in foundries {
+            let mut distances: Vec<(i32, TilePos)> = frames
+                .iter()
+                .copied()
+                .map(|frame| (extractor_foundry_distance(foundry, frame), frame))
+                .collect();
+            distances.sort_unstable();
+            let home: Vec<_> = distances
+                .iter()
+                .filter(|(distance, _)| *distance <= support_radius)
+                .collect();
+            assert_eq!(
+                home.len(),
+                1,
+                "{name}: seat {} needs exactly one frame supported by its starting Foundry: {distances:?}",
+                seat.0
+            );
+            let home = home[0].1;
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    assert!(
+                        state.vision(seat).visible(home.offset(dx, dy)),
+                        "{name}: seat {} cannot see its opening Extractor frame",
+                        seat.0
+                    );
+                }
+            }
+            let home_reachable = reachable_builder_ground(&map, &state, seat, home);
+            assert!(
+                reachable_rect_perimeter(
+                    &map,
+                    home,
+                    BuildingKind::Extractor.base_stats().size,
+                    &home_reachable,
+                ),
+                "{name}: seat {} cannot reach its opening Extractor frame at ({}, {})",
+                seat.0,
+                home.x,
+                home.y
+            );
+            let forward: Vec<_> = distances
+                .iter()
+                .filter(|(distance, _)| {
+                    *distance > support_radius && *distance <= support_radius + 8
+                })
+                .map(|(_, frame)| *frame)
+                .collect();
+            assert!(
+                !forward.is_empty(),
+                "{name}: seat {} needs a nearby but unsupported natural frame: {distances:?}",
+                seat.0
+            );
+            for frame in forward {
+                let reachable = reachable_builder_ground(&map, &state, seat, frame);
+                assert!(
+                    reachable_rect_perimeter(
+                        &map,
+                        frame,
+                        BuildingKind::Extractor.base_stats().size,
+                        &reachable,
+                    ),
+                    "{name}: seat {} cannot reach its natural Extractor frame at ({}, {})",
+                    seat.0,
+                    frame.x,
+                    frame.y
+                );
+                assert!(
+                    supportable_foundry_anchor(&map, &state, frame, &reachable, support_radius)
+                        .is_some(),
+                    "{name}: seat {} cannot reach a legal Foundry site that supports forward frame ({}, {})",
+                    seat.0,
+                    frame.x,
+                    frame.y
+                );
+            }
+        }
+    }
+}
+
+fn reachable_rect_perimeter(
+    map: &Map,
+    anchor: TilePos,
+    size: (i32, i32),
+    reachable: &[bool],
+) -> bool {
+    (anchor.y - 1..=anchor.y + size.1).any(|y| {
+        (anchor.x - 1..=anchor.x + size.0).any(|x| {
+            let inside =
+                x >= anchor.x && x < anchor.x + size.0 && y >= anchor.y && y < anchor.y + size.1;
+            !inside
+                && x >= 0
+                && y >= 0
+                && x < map.width()
+                && y < map.height()
+                && reachable[(y * map.width() + x) as usize]
+        })
+    })
+}
+
+fn extractor_foundry_distance(foundry: TilePos, extractor: TilePos) -> i32 {
+    let foundry_size = BuildingKind::Foundry.base_stats().size;
+    let extractor_size = BuildingKind::Extractor.base_stats().size;
+    let axis = |a: i32, a_len: i32, b: i32, b_len: i32| {
+        let a_far = a + a_len - 1;
+        let b_far = b + b_len - 1;
+        (a - b_far).max(b - a_far).max(0)
+    };
+    axis(foundry.x, foundry_size.0, extractor.x, extractor_size.0).max(axis(
+        foundry.y,
+        foundry_size.1,
+        extractor.y,
+        extractor_size.1,
+    ))
+}
+
+fn reachable_builder_ground(
+    map: &Map,
+    state: &State,
+    seat: PlayerId,
+    restored_frame: TilePos,
+) -> Vec<bool> {
+    let index = |tile: TilePos| (tile.y * map.width() + tile.x) as usize;
+    let blocked = |tile: TilePos| {
+        rect_contains(
+            restored_frame,
+            BuildingKind::Extractor.base_stats().size,
+            tile,
+        ) || state
+            .buildings()
+            .iter()
+            .any(|building| building.contains(tile))
+    };
+    let passable = |tile: TilePos| map.terrain_passable(tile) && !blocked(tile);
+    let mut reachable = vec![false; (map.width() * map.height()) as usize];
+    let mut queue = VecDeque::new();
+    for unit in state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == seat && unit.kind.stats().harvest.is_some())
+    {
+        let tile = unit.tile();
+        if passable(tile) && !reachable[index(tile)] {
+            reachable[index(tile)] = true;
+            queue.push_back(tile);
+        }
+    }
+    assert!(
+        !queue.is_empty(),
+        "seat {} needs a live starting builder for the forward-economy proof",
+        seat.0
+    );
+
+    while let Some(tile) = queue.pop_front() {
+        for (dx, dy) in chassis::grid::CARDINALS {
+            let next = tile.offset(dx, dy);
+            if passable(next) && !reachable[index(next)] {
+                reachable[index(next)] = true;
+                queue.push_back(next);
+            }
+        }
+    }
+    reachable
+}
+
+fn supportable_foundry_anchor(
+    map: &Map,
+    state: &State,
+    frame: TilePos,
+    reachable: &[bool],
+    support_radius: i32,
+) -> Option<TilePos> {
+    let foundry_size = BuildingKind::Foundry.base_stats().size;
+    for y in 0..map.height() {
+        for x in 0..map.width() {
+            let anchor = TilePos::new(x, y);
+            if extractor_foundry_distance(anchor, frame) > support_radius
+                || !foundry_site_is_legal(map, state, anchor)
+            {
+                continue;
+            }
+            let doorstep_reached = (anchor.y - 1..=anchor.y + foundry_size.1).any(|door_y| {
+                (anchor.x - 1..=anchor.x + foundry_size.0).any(|door_x| {
+                    let inside = door_x >= anchor.x
+                        && door_x < anchor.x + foundry_size.0
+                        && door_y >= anchor.y
+                        && door_y < anchor.y + foundry_size.1;
+                    if inside
+                        || door_x < 0
+                        || door_y < 0
+                        || door_x >= map.width()
+                        || door_y >= map.height()
+                    {
+                        return false;
+                    }
+                    reachable[(door_y * map.width() + door_x) as usize]
+                })
+            });
+            if doorstep_reached {
+                return Some(anchor);
+            }
+        }
+    }
+    None
+}
+
+fn foundry_site_is_legal(map: &Map, state: &State, anchor: TilePos) -> bool {
+    let (width, height) = BuildingKind::Foundry.base_stats().size;
+    (0..height).all(|dy| {
+        (0..width).all(|dx| {
+            let tile = anchor.offset(dx, dy);
+            map.terrain_passable(tile)
+                && !map.tile_in_extractor_frame(tile)
+                && state
+                    .buildings()
+                    .iter()
+                    .all(|building| !building.contains(tile))
+        })
+    })
+}
+
+fn rect_contains(anchor: TilePos, size: (i32, i32), tile: TilePos) -> bool {
+    tile.x >= anchor.x
+        && tile.x < anchor.x + size.0
+        && tile.y >= anchor.y
+        && tile.y < anchor.y + size.1
+}
+
+#[test]
 fn every_map_mirrors_its_paired_seats_entry_by_entry() {
     // The metric class opts out: its fairness is measured, not
     // mirrored (see `metric_fairness`).
@@ -347,6 +599,21 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
                 "{name}: tile ({}, {}) is not the image of its mirror",
                 pos.x,
                 pos.y
+            );
+        }
+        let (ew, eh) = BuildingKind::Extractor.base_stats().size;
+        for frame in map.extractor_frames() {
+            let image = TilePos {
+                x: w - ew - frame.x,
+                y: h - eh - frame.y,
+            };
+            assert!(
+                map.extractor_frames().contains(&image),
+                "{name}: Extractor frame ({}, {}) has no rotated frame at ({}, {})",
+                frame.x,
+                frame.y,
+                image.x,
+                image.y
             );
         }
 

@@ -220,26 +220,27 @@ const HP_BACK: Color = color_u8!(20, 20, 24, 220);
 const DANGER: Color = crate::theme::TEXT_DANGER;
 const PANEL: Color = crate::theme::SURFACE_PANEL;
 
-fn combat_icon_color(icon: crate::panel::CombatIcon) -> Color {
-    use crate::panel::CombatIcon;
+fn capability_icon_color(icon: crate::panel::CapabilityIcon) -> Color {
+    use crate::panel::CapabilityIcon;
     match icon {
-        CombatIcon::Weapon => Color::new(0.85, 0.32, 0.29, 0.86),
-        CombatIcon::AirWeapon => Color::new(0.38, 0.70, 0.95, 0.90),
-        CombatIcon::DeadZone => Color::new(1.0, 0.68, 0.18, 0.92),
-        CombatIcon::Vision => Color::new(0.63, 0.77, 0.94, 0.86),
-        CombatIcon::Radar => Color::new(0.22, 0.76, 0.72, 0.90),
-        CombatIcon::Repair => Color::new(0.38, 0.82, 0.45, 0.90),
+        CapabilityIcon::Weapon => Color::new(0.85, 0.32, 0.29, 0.86),
+        CapabilityIcon::AirWeapon => Color::new(0.38, 0.70, 0.95, 0.90),
+        CapabilityIcon::DeadZone => Color::new(1.0, 0.68, 0.18, 0.92),
+        CapabilityIcon::Vision => Color::new(0.63, 0.77, 0.94, 0.86),
+        CapabilityIcon::Radar => Color::new(0.22, 0.76, 0.72, 0.90),
+        CapabilityIcon::Repair => Color::new(0.38, 0.82, 0.45, 0.90),
+        CapabilityIcon::EconomySupport => Color::new(0.95, 0.72, 0.24, 0.92),
     }
 }
 
-fn draw_combat_icon(
+fn draw_capability_icon(
     center: Vec2,
     radius: f32,
-    icon: crate::panel::CombatIcon,
+    icon: crate::panel::CapabilityIcon,
     color: Color,
     plate: bool,
 ) {
-    use crate::panel::CombatIcon;
+    use crate::panel::CapabilityIcon;
     let radius = radius.max(2.0);
     let stroke = (radius * 0.18).clamp(1.0, 2.0);
     if plate {
@@ -251,7 +252,7 @@ fn draw_combat_icon(
         );
     }
     match icon {
-        CombatIcon::Weapon | CombatIcon::DeadZone => {
+        CapabilityIcon::Weapon | CapabilityIcon::DeadZone => {
             draw_circle_lines(center.x, center.y, radius * 0.58, stroke, color);
             draw_line(
                 center.x - radius,
@@ -285,7 +286,7 @@ fn draw_combat_icon(
                 stroke,
                 color,
             );
-            if icon == CombatIcon::DeadZone {
+            if icon == CapabilityIcon::DeadZone {
                 draw_line(
                     center.x - radius * 0.78,
                     center.y + radius * 0.78,
@@ -296,7 +297,7 @@ fn draw_combat_icon(
                 );
             }
         }
-        CombatIcon::AirWeapon => {
+        CapabilityIcon::AirWeapon => {
             // A top-down aircraft inside four targeting brackets. The
             // aircraft names the domain; the brackets make this an attack
             // reach mark rather than a place the selected unit can fly.
@@ -349,7 +350,7 @@ fn draw_combat_icon(
                 color,
             );
         }
-        CombatIcon::Vision => {
+        CapabilityIcon::Vision => {
             let left = vec2(center.x - radius, center.y);
             let right = vec2(center.x + radius, center.y);
             let upper = vec2(center.x, center.y - radius * 0.62);
@@ -359,7 +360,7 @@ fn draw_combat_icon(
             }
             draw_circle(center.x, center.y, radius * 0.28, color);
         }
-        CombatIcon::Radar => {
+        CapabilityIcon::Radar => {
             let origin = center + vec2(-radius * 0.58, radius * 0.58);
             draw_circle(origin.x, origin.y, radius * 0.18, color);
             for ring in [0.62, 1.0] {
@@ -380,7 +381,7 @@ fn draw_combat_icon(
                 }
             }
         }
-        CombatIcon::Repair => {
+        CapabilityIcon::Repair => {
             draw_line(
                 center.x - radius,
                 center.y,
@@ -395,6 +396,28 @@ fn draw_combat_icon(
                 center.x,
                 center.y + radius,
                 stroke * 1.25,
+                color,
+            );
+        }
+        CapabilityIcon::EconomySupport => {
+            let left = center - vec2(radius * 0.48, 0.0);
+            let right = center + vec2(radius * 0.48, 0.0);
+            draw_circle_lines(left.x, left.y, radius * 0.42, stroke, color);
+            draw_circle_lines(right.x, right.y, radius * 0.42, stroke, color);
+            draw_line(
+                left.x + radius * 0.22,
+                left.y - radius * 0.22,
+                right.x - radius * 0.22,
+                right.y - radius * 0.22,
+                stroke,
+                color,
+            );
+            draw_line(
+                left.x + radius * 0.22,
+                left.y + radius * 0.22,
+                right.x - radius * 0.22,
+                right.y + radius * 0.22,
+                stroke,
                 color,
             );
         }
@@ -992,8 +1015,8 @@ mod tests {
 
     #[test]
     fn ground_and_air_weapon_marks_do_not_depend_on_one_hue() {
-        let ground = super::combat_icon_color(crate::panel::CombatIcon::Weapon);
-        let air = super::combat_icon_color(crate::panel::CombatIcon::AirWeapon);
+        let ground = super::capability_icon_color(crate::panel::CapabilityIcon::Weapon);
+        let air = super::capability_icon_color(crate::panel::CapabilityIcon::AirWeapon);
 
         assert!(ground.r > ground.b, "ground range stays warm");
         assert!(air.b > air.r, "air range stays cool");

@@ -14,12 +14,14 @@
 
 use super::observation::{Observation, UnitObs};
 use crate::command::{Command, PlayerCommand};
-use crate::ids::{PlayerId, UnitId};
+use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::stats::{BuildingKind, UnitKind};
 use chassis::grid::TilePos;
 
 mod armies;
 mod lowering;
+
+pub(super) use armies::{catastrophically_outmatched_near, locally_overmatches_near};
 
 /// Stable handle for an army within one bot's executive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -28,7 +30,7 @@ pub struct ArmyId(pub u32);
 /// Where an army is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArmyState {
-    /// Gathering at the staging point until the policy commits it.
+    /// Gathering at a rally, or holding a live objective after arrival.
     Staging,
     /// Marching on a target as one body.
     Pushing,
@@ -49,7 +51,7 @@ pub struct Army {
     pub state: ArmyState,
     /// Where this army gathers and falls back to.
     pub staging: TilePos,
-    /// Where it was last sent.
+    /// Current objective, or the visible fight area that caused a withdrawal.
     pub target: Option<TilePos>,
     /// The unit the whole army is concentrating on while engaged.
     /// Spread fire kills nothing; focus deletes one gun at a time.
@@ -85,6 +87,19 @@ pub enum Intent {
         /// Footprint anchor.
         anchor: TilePos,
     },
+    /// Start a construction site with one exact policy-selected builder.
+    ///
+    /// Player-facing policy binds an implicit [`Self::Build`] only after it
+    /// has checked the worker's fog-honest command route. The profile-free
+    /// Overseer keeps the historical implicit-builder path.
+    BuildWith {
+        /// Exact Harvester whose route was checked.
+        builder: UnitId,
+        /// What to construct.
+        kind: BuildingKind,
+        /// Footprint anchor.
+        anchor: TilePos,
+    },
     /// Draft idle, un-enlisted fighters (nearest first, up to `size`)
     /// into the army staged at this rally point — reinforcing it if one
     /// is already staging there, creating it otherwise. Repeating the
@@ -102,6 +117,40 @@ pub enum Intent {
         army: ArmyId,
         /// Where to attack toward.
         target: TilePos,
+    },
+    /// Move one exact strategic group without engaging. The executive filters
+    /// stale, dead, duplicate, and non-owned ids before lowering.
+    MoveUnits {
+        /// Exact operation members.
+        units: Vec<UnitId>,
+        /// Destination tile.
+        goal: TilePos,
+    },
+    /// March one exact strategic group toward a tile while engaging.
+    AttackMoveUnits {
+        /// Exact operation members.
+        units: Vec<UnitId>,
+        /// Destination tile.
+        goal: TilePos,
+    },
+    /// Commit one exact strategic group against a visible target.
+    AttackUnits {
+        /// Exact operation members.
+        units: Vec<UnitId>,
+        /// Enemy unit or building.
+        target: Target,
+    },
+    /// Send exact mobile welders to repair one own ground unit.
+    RepairUnits {
+        /// Exact welders, normally Tenders.
+        welders: Vec<UnitId>,
+        /// Wounded own unit.
+        target: UnitId,
+    },
+    /// Cancel voluntary paid repair programs on exact own units.
+    StopUnits {
+        /// Repairers whose active order and queue must be cleared.
+        units: Vec<UnitId>,
     },
     /// Put a harvester on a node.
     AssignHarvest {
@@ -156,16 +205,36 @@ pub enum Intent {
     },
 }
 
-/// Fraction of max hp below which a member is rotated out of its army.
+/// One fighter waiting behind the line and the tick its retreat began.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RearUnit {
+    id: UnitId,
+    since: u64,
+}
+
+/// Player-facing tactical state that survives between decision ticks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlayerFacingTactics {
+    frame: armies::CentroidFrame,
+    defense_focus: Option<(Target, Vec<BuildingId>)>,
+}
+
 /// The layer between policies and the sim. One per bot; carries across
-/// ticks (armies are memory, legitimately — a bot is a command source,
-/// not sim state).
+/// ticks because armies are controller memory rather than simulation state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Executive {
     armies: Vec<Army>,
     next_army: u32,
-    /// Rear-line members kept out of drafts for the rest of their lives.
-    rear: Vec<UnitId>,
+    /// Rear-line members temporarily kept out of drafts.
+    rear: Vec<RearUnit>,
+    /// Wounded veterans whose rear-line wait expired without a repair. They
+    /// may fight again and are not pulled out a second time until genuinely
+    /// repaired.
+    exhausted_rear: Vec<UnitId>,
+    /// Stable owner-facing tactical state. Player-facing brains latch it on
+    /// their first maintenance pass; the profile-free Overseer leaves it
+    /// absent and preserves its historical world-space centroids.
+    player_frame: Option<PlayerFacingTactics>,
 }
 
 impl Executive {
@@ -185,7 +254,7 @@ impl Executive {
         self.armies
             .iter()
             .flat_map(|a| a.members.iter().copied())
-            .chain(self.rear.iter().copied())
+            .chain(self.rear.iter().map(|unit| unit.id))
     }
 }
 
@@ -208,6 +277,18 @@ fn strength_vs(u: &UnitObs, domain: crate::stats::Domain) -> u64 {
 /// nothing, so an anti-air escort never inflates a push estimate.
 pub(super) fn unit_strength(u: &UnitObs) -> u64 {
     strength_vs(u, crate::stats::Domain::Ground)
+}
+
+/// Ground strength that the next march order will actually deploy. Long guns
+/// without their escort quorum remain at staging and cannot justify a push.
+pub(super) fn marching_strength(army: &Army, obs: &Observation) -> u64 {
+    let artillery_moves = armies::artillery_has_escort_quorum(army, obs);
+    obs.my_units
+        .iter()
+        .filter(|unit| army.members.contains(&unit.id))
+        .filter(|unit| artillery_moves || !armies::is_artillery(unit))
+        .map(unit_strength)
+        .sum()
 }
 
 /// Whether these two would have anything to say to each other in a
@@ -287,6 +368,68 @@ mod tests {
                 command: Command::UpgradeBuilding { building },
             }]
         );
+    }
+
+    #[test]
+    fn player_facing_repair_chooses_only_a_route_capable_welder() {
+        let me = PlayerId(0);
+        let state = crate::Scenario::skirmish().build().unwrap();
+        let mut obs = Observation::omniscient(&state, me);
+        let wall_x = obs.map_width / 2;
+        let y = obs.map_height / 2;
+        let mut target = obs
+            .my_buildings
+            .iter()
+            .find(|building| building.kind == BuildingKind::Foundry)
+            .cloned()
+            .expect("the skirmish has a player-zero Foundry");
+        target.anchor = TilePos::new(wall_x + 4, y - 1);
+        let building = target.id;
+        obs.my_buildings = vec![target];
+        obs.my_queues = vec![Vec::new()];
+        obs.known_scrap.clear();
+        obs.known_wrecks.clear();
+        obs.known_rock = (0..obs.map_height)
+            .map(|row| TilePos::new(wall_x, row))
+            .collect();
+
+        let mut blocked = obs
+            .my_units
+            .iter()
+            .find(|unit| unit.kind == UnitKind::Harvester)
+            .cloned()
+            .expect("the skirmish has a player-zero Harvester");
+        blocked.id = UnitId(100);
+        blocked.tile = TilePos::new(wall_x - 1, y);
+        let mut reachable = blocked.clone();
+        reachable.id = UnitId(101);
+        reachable.tile = TilePos::new(wall_x + 10, y);
+        obs.my_units = vec![blocked.clone(), reachable.clone()];
+
+        let intent = [Intent::Repair { building }];
+        let commands = Executive::new().apply_with_reservations(me, &obs, &intent, &[]);
+        assert!(matches!(
+            commands.as_slice(),
+            [PlayerCommand {
+                command: Command::Repair { units, building: target, queue: false },
+                ..
+            }] if units == &[reachable.id] && *target == building
+        ));
+
+        obs.my_units = vec![blocked.clone()];
+        assert!(
+            Executive::new()
+                .apply_with_reservations(me, &obs, &intent, &[])
+                .is_empty(),
+            "the player-facing controller must not emit a repair that cannot route"
+        );
+        assert!(matches!(
+            Executive::new().apply(me, &obs, &intent).as_slice(),
+            [PlayerCommand {
+                command: Command::Repair { units, building: target, queue: false },
+                ..
+            }] if units == &[blocked.id] && *target == building
+        ));
     }
 
     #[test]

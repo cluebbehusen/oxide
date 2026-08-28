@@ -629,7 +629,7 @@ mod tests {
         let mut scenario = oxide_sim::Scenario::skirmish();
         for p in &mut scenario.players {
             p.bot = true;
-            p.bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
+            p.bot_config = Some(oxide_sim::scenario::BotConfig::default());
         }
         let outcome = oxide_kit::runner::run_scenario(&scenario, 60, true, true).expect("run");
         let mut replay = outcome.replay.expect("recorded");

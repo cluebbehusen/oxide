@@ -9,8 +9,8 @@ use crate::assets::Sprites;
 use crate::game::SoundKind;
 use crate::menu::Menu;
 use crate::panel::{
-    building_flavor, building_stat_line, building_weapon_lines, unit_flavor, unit_stat_line,
-    weapon_lines,
+    building_economy_lines, building_flavor, building_stat_line, building_weapon_lines,
+    unit_flavor, unit_stat_line, weapon_lines,
 };
 use crate::render;
 use crate::theme::{SURFACE_MENU, TEXT_ACCENT, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY};
@@ -390,7 +390,7 @@ fn unit_notes(kind: UnitKind) -> Vec<String> {
 /// what it trains, and its upgrade rungs.
 fn building_notes(kind: BuildingKind) -> Vec<String> {
     let base = kind.base_stats();
-    let mut notes = Vec::new();
+    let mut notes = building_economy_lines(kind);
     if let Some(c) = base.construction
         && !c.requires.is_empty()
     {
@@ -509,5 +509,29 @@ mod tests {
         assert_eq!(turret.len(), 2, "two upgrade rungs: {turret:?}");
         assert!(turret[0].contains("heavy turret"));
         assert!(turret[1].contains("bulwark") && turret[1].contains("crucible"));
+
+        let extractor = building_notes(BuildingKind::Extractor);
+        assert!(
+            extractor
+                .iter()
+                .any(|line| line.contains("120 scrap/min remote"))
+        );
+        assert!(
+            extractor
+                .iter()
+                .any(|line| line.contains("180 scrap/min with non-stacking support"))
+        );
+        assert!(
+            extractor
+                .iter()
+                .any(|line| line.contains("8 footprint tiles"))
+        );
+
+        let foundry = building_notes(BuildingKind::Foundry);
+        assert!(foundry.iter().any(|line| {
+            line.contains("Supports own completed Extractors")
+                && line.contains("120 to 180 scrap/min")
+                && line.contains("do not stack")
+        }));
     }
 }

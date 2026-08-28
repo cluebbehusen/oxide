@@ -902,7 +902,7 @@ mod tests {
         let mut all_bots = Scenario::skirmish();
         for player in &mut all_bots.players {
             player.bot = true;
-            player.bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
+            player.bot_config = Some(oxide_sim::scenario::BotConfig::default());
         }
         let err = Game::with_viewport(all_bots.clone(), viewport)
             .err()
@@ -1236,7 +1236,7 @@ mod tests {
             team: Some(team),
             scrap: 100,
             bot,
-            bot_config: bot.then_some(oxide_sim::scenario::BotConfig::Scripted),
+            bot_config: bot.then_some(oxide_sim::scenario::BotConfig::default()),
         };
         let scenario = Scenario {
             name: "concede-arena".into(),

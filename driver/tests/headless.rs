@@ -209,7 +209,7 @@ fn all_bots(path: &std::path::Path) -> Scenario {
         player.bot = true;
         player
             .bot_config
-            .get_or_insert(oxide_sim::scenario::BotConfig::Scripted);
+            .get_or_insert(oxide_sim::scenario::BotConfig::default());
     }
     scenario
 }
@@ -218,7 +218,7 @@ fn bot_skirmish() -> Scenario {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
         player.bot = true;
-        player.bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
+        player.bot_config = Some(oxide_sim::scenario::BotConfig::default());
     }
     scenario
 }

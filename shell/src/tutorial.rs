@@ -95,7 +95,7 @@ pub fn tutorial_scenario() -> oxide_sim::Scenario {
     let mut scenario = oxide_sim::Scenario::skirmish();
     scenario.players[0].scrap = 260;
     for p in scenario.players.iter_mut().skip(1) {
-        p.bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
+        p.bot_config = Some(oxide_sim::scenario::BotConfig::default());
     }
     scenario
 }
