@@ -109,9 +109,9 @@ pub enum BuildingKind {
     /// owner's bank at repair pricing.
     RepairBay,
     /// A restored strip-mining machine from the old rush. Rebuilt only
-    /// on a map-authored derelict frame, it grinds the deep seams for
-    /// the strongest income in the game — and the frame outlives every
-    /// destruction, so the ground it stands on is contested forever.
+    /// on a map-authored derelict frame, it provides durable income;
+    /// a nearby own Foundry develops the claim into a stronger economy.
+    /// The frame outlives every destruction, so it remains contestable.
     Extractor,
     /// Air production hall: every flyer trains here. Committing to the
     /// sky is a visible, snipeable investment.
@@ -1585,8 +1585,9 @@ const EXTRACTOR: BuildingStats = BuildingStats {
     vision: 4,
     produces: &[],
     weapons: &[],
-    // Cheap to restore, brutal to hold: the price buys the strongest
-    // income in the game on ground everyone can read from the map.
+    // Cheap to restore, brutal to hold: the price buys durable income
+    // on ground everyone can read from the map. A nearby Foundry turns
+    // the claim into a developed extraction base.
     construction: Some(ConstructionStats {
         cost: 100,
         build_ticks: 300,
@@ -1810,7 +1811,7 @@ impl BuildingKind {
                 "Field workshop: an unarmed aura that welds own wounded machines, ground and air alike, inside its ring. Billed per hp from the owner's bank at repair pricing."
             }
             BuildingKind::Extractor => {
-                "A restored strip-mining machine from the old rush. Rebuilt only on a map-authored derelict frame, it grinds the deep seams for the strongest income in the game. The frame outlives every destruction, so the ground it stands on is contested forever."
+                "A restored strip-mining machine from the old rush. Rebuilt only on a map-authored derelict frame, it provides durable income; a nearby own Foundry develops the claim into a stronger economy. The frame outlives every destruction, so the ground remains contestable."
             }
             BuildingKind::Airworks => {
                 "Air production hall: every flyer trains here. Committing to the sky is a visible, snipeable investment."
@@ -1999,14 +2000,22 @@ pub const SAPPER_CONTACT_RANGE: Fx = Fx::lit("0.9");
 /// and a half times the base drum, the roadmap's "improved Reclaimer".
 pub const REFINERY_PERIOD: u64 = 10;
 
-/// Extractor yield: `(first eligible completed tick, scrap, per ticks)`
-/// rows, later rows superseding earlier ones. The escalation is the
-/// visible late-game pressure rule: map control compounds, so turtling
-/// on the drip against a seat holding restored Extractors is a legible
-/// death spiral rather than a stalemate. Base 120 scrap/min, +50% from
-/// ten minutes, doubled from twenty.
-pub const EXTRACTOR_YIELD_SCHEDULE: [(u64, u32, u64); 3] =
-    [(0, 1, 10), (12_000, 3, 20), (24_000, 2, 10)];
+/// Maximum footprint-to-footprint tile distance at which a completed own
+/// Foundry supports an Extractor.
+pub const EXTRACTOR_SUPPORT_RADIUS: i32 = 8;
+
+/// Fixed income of a completed Extractor without nearby Foundry support.
+pub const EXTRACTOR_REMOTE_INCOME_PER_MINUTE: u32 = 120;
+
+/// Fixed income of a completed Extractor supported by at least one nearby
+/// completed own Foundry. Additional Foundries do not stack.
+pub const EXTRACTOR_SUPPORTED_INCOME_PER_MINUTE: u32 = 180;
+
+/// Remote Extractors pay one scrap every half second.
+pub(crate) const EXTRACTOR_REMOTE_YIELD: (u32, u64) = (1, 10);
+
+/// Supported Extractors pay three scrap every second.
+pub(crate) const EXTRACTOR_SUPPORTED_YIELD: (u32, u64) = (3, 20);
 
 /// Ticks between decay steps on an unattended construction site (one hp
 /// per step, applied while no own harvest-capable machine stands beside

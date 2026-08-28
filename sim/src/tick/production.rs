@@ -1,8 +1,8 @@
 //! Phase 2: Foundry production queues.
 //!
 //! One queue per building, front item in progress. A finished unit spawns on
-//! the first passable ring tile (row-major scan — deterministic); if the
-//! ring is fully blocked the unit waits at 100% until a tile opens up. A
+//! a passable ring tile in the footprint's map-relative outward direction; if
+//! the ring is fully blocked the unit waits at 100% until a tile opens up. A
 //! rally point, when set, hands the newborn its first order.
 
 use super::rect_adjacent_tiles;
@@ -11,6 +11,27 @@ use crate::ids::PlayerId;
 use crate::state::{Order, State};
 use crate::stats::UnitKind;
 use chassis::grid::TilePos;
+use std::cmp::Reverse;
+
+/// Orders spawn doorsteps in the producer's radial frame around the map.
+/// Mirrored producers have negated radial and candidate rays, preserving both
+/// dot and cross products and therefore selecting mirrored spawn tiles.
+fn spawn_doorstep_key(
+    map_size: (i32, i32),
+    anchor: TilePos,
+    size: (i32, i32),
+    candidate: TilePos,
+) -> (Reverse<i64>, i64) {
+    let center_x = i64::from(anchor.x) * 2 + i64::from(size.0);
+    let center_y = i64::from(anchor.y) * 2 + i64::from(size.1);
+    let radial_x = center_x - i64::from(map_size.0);
+    let radial_y = center_y - i64::from(map_size.1);
+    let candidate_x = i64::from(candidate.x) * 2 + 1 - center_x;
+    let candidate_y = i64::from(candidate.y) * 2 + 1 - center_y;
+    let dot = radial_x * candidate_x + radial_y * candidate_y;
+    let cross = radial_x * candidate_y - radial_y * candidate_x;
+    (Reverse(dot), cross)
+}
 
 /// Arms each newly stranded seat from the state that existed at the tick
 /// boundary. Commands run afterward, so spending or reshaping a queue on
@@ -65,39 +86,25 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     }
 
     let completed_ticks = state.tick.saturating_add(1);
-    // Restored Extractors grind the deep seams on the escalating
-    // schedule — the visible late-game pressure rule. The applicable
-    // row is the last whose start the clock has passed.
-    let (_, amount, period) = crate::stats::EXTRACTOR_YIELD_SCHEDULE
-        .iter()
-        .rev()
-        .find(|(from, ..)| completed_ticks >= *from)
-        .expect("the schedule's first row starts at zero");
-    if completed_ticks.is_multiple_of(*period) {
+    // A restored Extractor pays a fixed remote yield. A completed own
+    // Foundry close to its footprint develops the claim and raises that
+    // yield; support is binary rather than one bonus per Foundry.
+    if completed_ticks.is_multiple_of(crate::stats::EXTRACTOR_REMOTE_YIELD.1) {
         let credits: Vec<(PlayerId, u32)> = state
-            .players
+            .buildings
             .iter()
-            .enumerate()
-            .map(|(index, _)| PlayerId(index as u8))
-            .filter(|player| !state.player(*player).resigned)
-            .map(|player| {
-                let extractors = state
-                    .buildings
-                    .iter()
-                    .filter(|building| {
-                        building.player == player
-                            && building.hp > 0
-                            && building.built
-                            && building.kind == crate::stats::BuildingKind::Extractor
-                    })
-                    .count() as u32;
-                (player, extractors)
+            .filter(|building| !state.player(building.player).resigned)
+            .filter_map(|building| {
+                let income = state.extractor_income(building.id)?;
+                let (amount, period) = income.yield_cadence();
+                completed_ticks
+                    .is_multiple_of(period)
+                    .then_some((building.player, amount))
             })
-            .filter(|(_, extractors)| *extractors > 0)
             .collect();
-        for (player, extractors) in credits {
+        for (player, amount) in credits {
             let bank = &mut state.player_mut(player).scrap;
-            *bank = bank.saturating_add(extractors.saturating_mul(*amount));
+            *bank = bank.saturating_add(amount);
         }
     }
 
@@ -192,7 +199,10 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         // flyer; the ground ring can be walled shut).
         let (anchor, size, player, rally) = (b.anchor, b.stats().size, b.player, b.rally);
         let domain = kind.stats().domain;
-        let spawn = rect_adjacent_tiles(anchor, size).find(|&t| state.passable_for(domain, t));
+        let map_size = (state.map.width(), state.map.height());
+        let spawn = rect_adjacent_tiles(anchor, size)
+            .filter(|&tile| state.passable_for(domain, tile))
+            .min_by_key(|&tile| spawn_doorstep_key(map_size, anchor, size, tile));
         let Some(tile) = spawn else {
             continue; // fully walled in; retry next tick
         };

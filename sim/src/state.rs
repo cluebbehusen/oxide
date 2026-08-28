@@ -386,6 +386,37 @@ pub struct Building {
     pub salvaged: bool,
 }
 
+/// The recurring-income state of a completed, living Extractor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractorIncome {
+    /// No completed own Foundry lies inside the support radius.
+    Remote,
+    /// At least one completed own Foundry lies inside the support radius.
+    Supported,
+}
+
+impl ExtractorIncome {
+    /// Scrap generated per minute at the fixed simulation rate.
+    pub const fn scrap_per_minute(self) -> u32 {
+        match self {
+            Self::Remote => crate::stats::EXTRACTOR_REMOTE_INCOME_PER_MINUTE,
+            Self::Supported => crate::stats::EXTRACTOR_SUPPORTED_INCOME_PER_MINUTE,
+        }
+    }
+
+    /// Whether nearby Foundry support is currently active.
+    pub const fn is_supported(self) -> bool {
+        matches!(self, Self::Supported)
+    }
+
+    pub(crate) const fn yield_cadence(self) -> (u32, u64) {
+        match self {
+            Self::Remote => crate::stats::EXTRACTOR_REMOTE_YIELD,
+            Self::Supported => crate::stats::EXTRACTOR_SUPPORTED_YIELD,
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -602,6 +633,48 @@ impl State {
     /// All standing buildings, sorted by id.
     pub fn buildings(&self) -> &[Building] {
         &self.buildings
+    }
+
+    /// Returns the current income state of a completed, living Extractor.
+    ///
+    /// Foundry support is binary and owner-specific. It uses the shortest
+    /// Chebyshev distance between the two building footprints, so multiple
+    /// supporting Foundries never stack and unfinished sites confer nothing.
+    pub fn extractor_income(&self, id: BuildingId) -> Option<ExtractorIncome> {
+        let extractor = self.building(id)?;
+        if extractor.kind != BuildingKind::Extractor || !extractor.built || extractor.hp == 0 {
+            return None;
+        }
+
+        let supported = self
+            .buildings
+            .iter()
+            .any(|building| self.extractor_supported_by(id, building.id));
+        Some(if supported {
+            ExtractorIncome::Supported
+        } else {
+            ExtractorIncome::Remote
+        })
+    }
+
+    /// Whether one completed own Foundry currently supports an Extractor.
+    ///
+    /// This endpoint query lets presentation and diagnostics show the same
+    /// connection that recurring income uses without reimplementing its
+    /// footprint geometry.
+    pub fn extractor_supported_by(&self, extractor: BuildingId, foundry: BuildingId) -> bool {
+        let (Some(extractor), Some(foundry)) = (self.building(extractor), self.building(foundry))
+        else {
+            return false;
+        };
+        extractor.kind == BuildingKind::Extractor
+            && extractor.built
+            && extractor.hp > 0
+            && foundry.kind == BuildingKind::Foundry
+            && foundry.built
+            && foundry.hp > 0
+            && foundry.player == extractor.player
+            && footprint_distance(extractor, foundry) <= crate::stats::EXTRACTOR_SUPPORT_RADIUS
     }
 
     /// The match outcome, once decided.
@@ -1407,6 +1480,19 @@ impl State {
         self.buildings.retain(|b| b.id != id);
         self.next_building_id = id.0;
     }
+}
+
+fn footprint_distance(a: &Building, b: &Building) -> i32 {
+    fn axis_distance(a: i32, a_len: i32, b: i32, b_len: i32) -> i32 {
+        let a_far = a + a_len - 1;
+        let b_far = b + b_len - 1;
+        (a - b_far).max(b - a_far).max(0)
+    }
+
+    let a_size = a.stats().size;
+    let b_size = b.stats().size;
+    axis_distance(a.anchor.x, a_size.0, b.anchor.x, b_size.0)
+        .max(axis_distance(a.anchor.y, a_size.1, b.anchor.y, b_size.1))
 }
 
 /// How far outside the map a coordinate may sit before a snapshot is
