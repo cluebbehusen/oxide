@@ -294,11 +294,14 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
                     <= chassis::fx::Fx::lit("0.0001")
         });
         if let Some(b) = direct {
-            hits.push(PendingHit {
-                attacker: shell.shooter,
-                victim: Target::Building(b.id),
-                damage: shell.damage,
-            });
+            hits.push(PendingHit::along(
+                state,
+                shell.shooter,
+                Target::Building(b.id),
+                shell.damage,
+                shell.launch,
+                shell.impact,
+            ));
         }
         let Some(radius) = shell.splash else { continue };
         let radius_sq = radius * radius;
@@ -313,11 +316,14 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
                 {
                     continue;
                 }
-                hits.push(PendingHit {
-                    attacker: shell.shooter,
-                    victim: Target::Building(b.id),
-                    damage: shell.damage,
-                });
+                hits.push(PendingHit::along(
+                    state,
+                    shell.shooter,
+                    Target::Building(b.id),
+                    shell.damage,
+                    shell.launch,
+                    shell.impact,
+                ));
             }
         }
         for u in state.units.iter() {
@@ -328,11 +334,14 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
             {
                 continue;
             }
-            hits.push(PendingHit {
-                attacker: shell.shooter,
-                victim: Target::Unit(u.id),
-                damage: shell.damage,
-            });
+            hits.push(PendingHit::along(
+                state,
+                shell.shooter,
+                Target::Unit(u.id),
+                shell.damage,
+                shell.launch,
+                shell.impact,
+            ));
         }
     }
 }
@@ -340,17 +349,25 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
 fn buffer_shot(
     state: &State,
     attacker: Target,
-    attacker_owner: PlayerId,
     victim: Target,
+    from: Vec2Fx,
     aim: Vec2Fx,
     weapon: &WeaponStats,
     hits: &mut Vec<PendingHit>,
 ) {
-    hits.push(PendingHit {
+    let attacker_owner = match attacker {
+        Target::Unit(id) => state.unit(id).map(|unit| unit.player),
+        Target::Building(id) => state.building(id).map(|building| building.player),
+    }
+    .expect("a buffered shot has a live source");
+    hits.push(PendingHit::along(
+        state,
         attacker,
         victim,
-        damage: weapon.damage,
-    });
+        weapon.damage,
+        from,
+        aim,
+    ));
     let Some(radius) = weapon.splash else { return };
     let radius_sq = radius * radius;
     for u in state.units.iter() {
@@ -362,11 +379,14 @@ fn buffer_shot(
         {
             continue;
         }
-        hits.push(PendingHit {
+        hits.push(PendingHit::along(
+            state,
             attacker,
-            victim: Target::Unit(u.id),
-            damage: weapon.damage,
-        });
+            Target::Unit(u.id),
+            weapon.damage,
+            from,
+            aim,
+        ));
     }
     // The one exception to buildings-take-direct-hits-only: a buried
     // charge is splash-vulnerable, detected or not — saturation fire is
@@ -381,11 +401,14 @@ fn buffer_shot(
             {
                 continue;
             }
-            hits.push(PendingHit {
+            hits.push(PendingHit::along(
+                state,
                 attacker,
-                victim: Target::Building(b.id),
-                damage: weapon.damage,
-            });
+                Target::Building(b.id),
+                weapon.damage,
+                from,
+                aim,
+            ));
         }
     }
 }
@@ -528,7 +551,7 @@ pub(super) fn turret_fire(
                 flight,
             });
         } else {
-            buffer_shot(state, Target::Building(id), me, victim, aim, atk, hits);
+            buffer_shot(state, Target::Building(id), victim, center, aim, atk, hits);
             events.push(Event::TurretFired {
                 turret: id,
                 kind,
@@ -887,7 +910,7 @@ pub(super) fn advance(
             flight,
         });
     } else {
-        buffer_shot(state, Target::Unit(id), me, target, aim, &weapon, hits);
+        buffer_shot(state, Target::Unit(id), target, pos, aim, &weapon, hits);
         events.push(Event::AttackHit {
             attacker: id,
             attacker_kind: kind,
@@ -949,11 +972,14 @@ fn sapper_attack(
             Target::Building(_) => crate::stats::SAPPER_STRUCTURE_DAMAGE,
             Target::Unit(_) => crate::stats::SAPPER_SPLASH_DAMAGE,
         };
-        hits.push(PendingHit {
-            attacker: Target::Unit(id),
-            victim: target,
-            damage: direct,
-        });
+        hits.push(PendingHit::along(
+            state,
+            Target::Unit(id),
+            target,
+            direct,
+            pos,
+            aim_point,
+        ));
         let ring = crate::stats::SAPPER_BLAST_RADIUS;
         let ring_sq = ring * ring;
         for u in state.units.iter() {
@@ -965,20 +991,26 @@ fn sapper_attack(
             {
                 continue;
             }
-            hits.push(PendingHit {
-                attacker: Target::Unit(id),
-                victim: Target::Unit(u.id),
-                damage: crate::stats::SAPPER_SPLASH_DAMAGE,
-            });
+            hits.push(PendingHit::along(
+                state,
+                Target::Unit(id),
+                Target::Unit(u.id),
+                crate::stats::SAPPER_SPLASH_DAMAGE,
+                pos,
+                aim_point,
+            ));
         }
         // The charge consumes its carrier, through the same buffer, so
         // a simultaneous kill on the sapper changes nothing.
         let own_hp = state.unit(id).expect("caller checked").hp;
-        hits.push(PendingHit {
-            attacker: Target::Unit(id),
-            victim: Target::Unit(id),
-            damage: own_hp,
-        });
+        hits.push(PendingHit::along(
+            state,
+            Target::Unit(id),
+            Target::Unit(id),
+            own_hp,
+            pos,
+            aim_point,
+        ));
         events.push(Event::AttackHit {
             attacker: id,
             attacker_kind: kind,
@@ -1471,7 +1503,15 @@ pub(super) fn attack(
                     flight,
                 });
             } else {
-                buffer_shot(state, Target::Unit(id), me, target, aim_point, weapon, hits);
+                buffer_shot(
+                    state,
+                    Target::Unit(id),
+                    target,
+                    pos,
+                    aim_point,
+                    weapon,
+                    hits,
+                );
                 events.push(Event::AttackHit {
                     attacker: id,
                     attacker_kind: kind,
@@ -1714,8 +1754,8 @@ fn fire_sidearms(
         buffer_shot(
             state,
             Target::Unit(id),
-            me,
             Target::Unit(uid),
+            pos,
             upos,
             weapon,
             hits,

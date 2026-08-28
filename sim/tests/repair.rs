@@ -213,6 +213,22 @@ fn a_rejected_welders_prepaid_coin_comes_back() {
     let builder = state.units()[0].id;
     let raiders = vec![state.units()[1].id, state.units()[2].id];
     let (turret, opener, _) = wounded_turret(&mut state, builder, raiders);
+    // Clear the producer doorstep before training the two synchronized
+    // torches. Spawn placement may legitimately choose any open side of the
+    // Foundry; leaving the opener there lets contact-arrival stop a newcomer
+    // before its explicit parking tile.
+    let opener_staging = TilePos::new(8, 1);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![opener],
+            goal: opener_staging,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 300, |s, _| {
+        s.unit(opener).unwrap().tile() == opener_staging
+    });
     // Two more torches, parked adjacent BEFORE they are needed so
     // their first weld ticks are their first meter ticks.
     let foundry = state

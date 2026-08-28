@@ -18,6 +18,38 @@ struct PendingHit {
     attacker: Target,
     victim: Target,
     damage: u32,
+    /// The exact point damage was aimed at or landed. Transient geometry only:
+    /// it never enters authoritative serialized state.
+    impact: chassis::fx::Vec2Fx,
+    /// Incoming direction for resolving a tied warning tile on an even-sized
+    /// footprint. A same-center unit attack falls back to chassis facing.
+    approach: chassis::fx::Vec2Fx,
+}
+
+impl PendingHit {
+    fn along(
+        state: &State,
+        attacker: Target,
+        victim: Target,
+        damage: u32,
+        from: chassis::fx::Vec2Fx,
+        impact: chassis::fx::Vec2Fx,
+    ) -> Self {
+        let mut approach = impact - from;
+        if approach == chassis::fx::Vec2Fx::ZERO
+            && let Target::Unit(id) = attacker
+            && let Some(unit) = state.unit(id)
+        {
+            approach = chassis::compass::dir(unit.heading);
+        }
+        Self {
+            attacker,
+            victim,
+            damage,
+            impact,
+            approach,
+        }
+    }
 }
 
 /// A buffered hp gain — construction progress or repair welding —
@@ -243,11 +275,25 @@ fn resolve_hits(
                 }
             }
             Target::Building(bid) => {
+                let incident_tile = state.building(bid).and_then(|b| {
+                    (hit.approach != chassis::fx::Vec2Fx::ZERO).then(|| {
+                        super::footprint_incident_tile(
+                            b.anchor,
+                            b.stats().size,
+                            hit.impact,
+                            hit.approach,
+                        )
+                    })
+                });
                 if let Some(b) = state.building_mut(bid) {
                     let relevant_hit = b.kind == crate::stats::BuildingKind::Reclaimer;
                     let relevant_loss = hit.damage >= b.hp;
-                    if b.hp > 0 && hit.damage > 0 && (relevant_hit || relevant_loss) {
-                        incidents.push((b.player, chassis::grid::TilePos::containing(b.center())));
+                    if b.hp > 0
+                        && hit.damage > 0
+                        && (relevant_hit || relevant_loss)
+                        && let Some(tile) = incident_tile
+                    {
+                        incidents.push((b.player, tile));
                     }
                     b.hp = b.hp.saturating_sub(hit.damage);
                 }

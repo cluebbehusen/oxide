@@ -435,7 +435,11 @@ impl GroundSalvageDanger {
             .collect();
         let mut building_blocks = vec![Vec::new(); state.map.height() as usize];
         let viewer_team = state.player(viewer).team;
-        for building in &state.buildings {
+        for building in state
+            .buildings
+            .iter()
+            .filter(|building| !building.kind.is_stealthy())
+        {
             if state.player(building.player).team == viewer_team {
                 stamp_blocked_rect(
                     &mut building_blocks,
@@ -460,7 +464,11 @@ impl GroundSalvageDanger {
                 }
             }
         }
-        for ghost in vision.ghosts() {
+        for ghost in vision
+            .ghosts()
+            .iter()
+            .filter(|ghost| !ghost.kind.is_stealthy())
+        {
             stamp_blocked_rect(
                 &mut building_blocks,
                 state.map.width(),
@@ -1180,15 +1188,19 @@ mod danger_tests {
         fn reference(state: &State, viewer: PlayerId, tile: TilePos) -> bool {
             let vision = state.vision(viewer);
             if vision.visible(tile) {
-                return state.building_at(tile).is_some();
+                return state
+                    .building_at(tile)
+                    .is_some_and(|building| !building.kind.is_stealthy());
             }
             let team = state.player(viewer).team;
             state.buildings.iter().any(|building| {
-                state.player(building.player).team == team && building.contains(tile)
+                !building.kind.is_stealthy()
+                    && state.player(building.player).team == team
+                    && building.contains(tile)
             }) || vision
                 .ghosts()
                 .iter()
-                .any(|ghost| ghost.footprint().any(|t| t == tile))
+                .any(|ghost| !ghost.kind.is_stealthy() && ghost.footprint().any(|t| t == tile))
         }
 
         let (mut state, _) = screened_source(false);
@@ -1229,5 +1241,44 @@ mod danger_tests {
                 .any(|ghost| ghost.anchor == visible_site)
         );
         check(&state);
+    }
+
+    #[test]
+    fn known_building_projection_only_blocks_ground_claiming_footprints() {
+        let mut state = allied_incident_state();
+        let own_charge = TilePos::new(3, 4);
+        let allied_charge = TilePos::new(6, 4);
+        let allied_wall = TilePos::new(9, 4);
+        let hostile_wall = TilePos::new(13, 4);
+        let hostile_charge = TilePos::new(16, 4);
+        state.place_building(PlayerId(0), BuildingKind::ScuttleCharge, own_charge);
+        state.place_building(PlayerId(1), BuildingKind::ScuttleCharge, allied_charge);
+        state.place_building(PlayerId(1), BuildingKind::Barricade, allied_wall);
+        state.vision[0].ghosts.extend([
+            GhostBuilding {
+                kind: BuildingKind::Barricade,
+                owner: PlayerId(2),
+                anchor: hostile_wall,
+                hp: BuildingKind::Barricade.base_stats().max_hp,
+                built: true,
+            },
+            GhostBuilding {
+                kind: BuildingKind::ScuttleCharge,
+                owner: PlayerId(2),
+                anchor: hostile_charge,
+                hp: BuildingKind::ScuttleCharge.base_stats().max_hp,
+                built: true,
+            },
+        ]);
+
+        assert!(state.passable(own_charge));
+        assert!(state.passable(allied_charge));
+        assert!(!state.passable(allied_wall));
+        let projection = GroundSalvageDanger::capture(&state, PlayerId(0));
+        assert!(!projection.known_building_blocked(own_charge));
+        assert!(!projection.known_building_blocked(allied_charge));
+        assert!(projection.known_building_blocked(allied_wall));
+        assert!(projection.known_building_blocked(hostile_wall));
+        assert!(!projection.known_building_blocked(hostile_charge));
     }
 }

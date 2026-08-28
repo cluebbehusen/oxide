@@ -1,7 +1,10 @@
 //! Getting there: idle auto-acquire, advance and attack-move routing,
 //! plain walking, contact-propagated arrival, and doorstep approach.
 
-use super::super::{rect_adjacent_tiles, route_for, route_for_position, tile_adjacent_to_rect};
+use super::super::{
+    rect_adjacent_tiles, rect_approach_key_from, rect_approach_origin, route_for,
+    route_for_position, tile_adjacent_to_rect,
+};
 use super::combat::acquire_target;
 use crate::event::{Event, StallReason};
 use crate::ids::UnitId;
@@ -164,9 +167,9 @@ pub(super) fn approach_rect(
     anchor: TilePos,
     size: (i32, i32),
 ) -> bool {
-    let (tile, kind) = {
+    let (tile, kind, player) = {
         let u = state.unit(id).expect("caller checked");
-        (u.tile(), u.kind)
+        (u.tile(), u.kind, u.player)
     };
     let keep = state
         .unit(id)
@@ -187,10 +190,16 @@ pub(super) fn approach_rect(
     let mut candidates: Vec<TilePos> = rect_adjacent_tiles(anchor, size)
         .filter(|&t| state.passable_for(domain, t))
         .collect();
-    candidates.sort_by_key(|t| t.chebyshev(tile));
+    let approach_from = rect_approach_origin(state, player, tile, anchor, size);
+    candidates.sort_by_key(|t| rect_approach_key_from(tile, approach_from, anchor, size, *t));
     let near = candidates.len().min(4);
     if near > 1 {
-        candidates[..near].rotate_left(id.0 as usize % near);
+        let rank = crate::ids::owner_local_unit_rank(
+            id,
+            player,
+            state.units.iter().map(|unit| (unit.id, unit.player)),
+        );
+        candidates[..near].rotate_left(rank % near);
     }
     for goal in candidates {
         if let Some(waypoints) = route_for(state, kind, tile, goal) {

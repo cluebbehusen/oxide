@@ -2,7 +2,7 @@
 //! harvesting, wreck stripping, and delivery. Hp gains buffer like
 //! damage and resolve after it — fire wins ties.
 
-use super::super::{rect_adjacent_tiles, route_for, tile_adjacent_to_rect};
+use super::super::{rect_adjacent_tiles, rect_approach_key, route_for, tile_adjacent_to_rect};
 use super::PendingHpGain;
 use super::locomotion::approach_rect;
 use crate::event::{Event, StallReason};
@@ -706,14 +706,22 @@ const HARVEST_DANGER_REACT_ZONE: usize = 3;
 /// the FAR zone does not re-plan every tick while the threat lingers —
 /// that thrashed a full multi-candidate A* per worker per tick and
 /// jittered the fleet between near-equal detours. Far-zone replans
-/// stagger on this period, keyed by unit id so a fleet never re-plans
-/// in unison; near-zone threats never wait.
+/// stagger on this period, keyed by owner-local unit rank so a fleet never
+/// re-plans in unison without making cross-seat production ids a tactical
+/// input; near-zone threats never wait.
 const HARVEST_REPLAN_PERIOD: u64 = 4;
 
 /// Whether this is the tick on which `id` may re-plan a retained route
 /// the danger lookahead has flagged beyond the react zone.
 fn danger_replan_window(state: &State, id: UnitId) -> bool {
-    (state.tick + u64::from(id.0)).is_multiple_of(HARVEST_REPLAN_PERIOD)
+    let unit = state.unit(id).expect("caller checked");
+    let rank = crate::ids::owner_local_unit_rank(
+        id,
+        unit.player,
+        state.units.iter().map(|unit| (unit.id, unit.player)),
+    );
+    (state.tick + u64::try_from(rank).expect("unit rank fits u64"))
+        .is_multiple_of(HARVEST_REPLAN_PERIOD)
 }
 
 /// Whether the retained route may be kept this tick: clear routes and
@@ -1001,10 +1009,15 @@ fn source_route_avoiding_danger(
                 .filter(|tile| known_ground_passable(state, danger, player, *tile))
                 .filter(|tile| allow_dangerous_goal || !danger.contains(*tile))
                 .collect();
-            candidates.sort_by_key(|tile| tile.chebyshev(from));
+            candidates.sort_by_key(|tile| rect_approach_key(from, source.pos, (1, 1), *tile));
             let near = candidates.len().min(4);
             if near > 1 {
-                candidates[..near].rotate_left(id.0 as usize % near);
+                let rank = crate::ids::owner_local_unit_rank(
+                    id,
+                    player,
+                    state.units.iter().map(|unit| (unit.id, unit.player)),
+                );
+                candidates[..near].rotate_left(rank % near);
             }
             let mut reachability = None;
             best_candidate_route(&candidates, from, |rank, goal| {
@@ -1204,10 +1217,15 @@ fn known_rect_route(
         .filter(|tile| known_ground_passable(state, danger, player, *tile))
         .filter(|tile| !avoid_danger || !danger.contains(*tile))
         .collect();
-    candidates.sort_by_key(|tile| tile.chebyshev(from));
+    candidates.sort_by_key(|tile| rect_approach_key(from, anchor, size, *tile));
     let near = candidates.len().min(4);
     if near > 1 {
-        candidates[..near].rotate_left(id.0 as usize % near);
+        let rank = crate::ids::owner_local_unit_rank(
+            id,
+            player,
+            state.units.iter().map(|unit| (unit.id, unit.player)),
+        );
+        candidates[..near].rotate_left(rank % near);
     }
     // The passability predicate is candidate-independent, so one failed
     // search that exhausted the walkable component has already decided
@@ -1652,6 +1670,97 @@ mod harvest_zone_tests {
             HARVEST_DANGER_LOOKAHEAD,
             "the hot-path cost is independent of total route length"
         );
+    }
+
+    #[test]
+    fn danger_replan_cadence_uses_owner_local_rank() {
+        let mut state = Scenario {
+            name: "owner-local-replan-cadence".into(),
+            seed: 13,
+            map: vec![
+                "##############".into(),
+                "#1.........2.#".into(),
+                "#............#".into(),
+                "#............#".into(),
+                "#............#".into(),
+                "##############".into(),
+            ],
+            players: vec![
+                PlayerSpec {
+                    name: "West".into(),
+                    faction: Faction::Ferrous,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+                PlayerSpec {
+                    name: "East".into(),
+                    faction: Faction::Cupric,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+            ],
+            units: vec![
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Harvester,
+                    x: 4,
+                    y: 2,
+                },
+                UnitSpec {
+                    player: 1,
+                    kind: UnitKind::Harvester,
+                    x: 7,
+                    y: 2,
+                },
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Harvester,
+                    x: 4,
+                    y: 3,
+                },
+                UnitSpec {
+                    player: 1,
+                    kind: UnitKind::Harvester,
+                    x: 7,
+                    y: 3,
+                },
+            ],
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .expect("the cadence scenario builds");
+        let ids: Vec<_> = state
+            .units
+            .iter()
+            .map(|unit| (unit.id, unit.player))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                (UnitId(0), PlayerId(0)),
+                (UnitId(1), PlayerId(1)),
+                (UnitId(2), PlayerId(0)),
+                (UnitId(3), PlayerId(1)),
+            ],
+            "the fixture interleaves global ids across equivalent owner ranks"
+        );
+
+        state.tick = 0;
+        assert!(danger_replan_window(&state, UnitId(0)));
+        assert!(danger_replan_window(&state, UnitId(1)));
+        assert!(!danger_replan_window(&state, UnitId(2)));
+        assert!(!danger_replan_window(&state, UnitId(3)));
+
+        state.tick = HARVEST_REPLAN_PERIOD - 1;
+        assert!(!danger_replan_window(&state, UnitId(0)));
+        assert!(!danger_replan_window(&state, UnitId(1)));
+        assert!(danger_replan_window(&state, UnitId(2)));
+        assert!(danger_replan_window(&state, UnitId(3)));
     }
 
     #[test]

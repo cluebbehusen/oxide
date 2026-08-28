@@ -730,26 +730,40 @@ mod tests {
     }
 
     #[test]
-    fn orientation_dependent_matchups_report_both_verdicts() {
-        // This pairing exposes a deterministic orientation/player-order
-        // effect. A single leg declared opposite winners depending only
-        // on which physical side the logical army occupied.
+    fn paired_matchups_report_both_legs_when_one_roster_wins_in_either_seat() {
         let lancers = parse_army("lancer:3").unwrap();
         let bombards = parse_army("bombard:2").unwrap();
         let out = duel(&lancers, &bombards, &Arena::default()).unwrap();
 
-        // These two assertions pin a MEASURED orientation effect under the
-        // current balance numbers. A stats or movement bless can
-        // legitimately flip a leg; if one fails after such a change,
-        // re-measure and update the pinned winners rather than suspecting
-        // the pairing machinery.
+        // This is a measured result under the current movement and combat
+        // rules. Keep both physical legs visible even when the same logical
+        // roster wins from either seat.
         assert_eq!(out.a_as_player_0.verdict(), Some(DuelVerdict::B), "{out:?}");
-        assert_eq!(out.a_as_player_1.verdict(), Some(DuelVerdict::A), "{out:?}");
+        assert_eq!(out.a_as_player_1.verdict(), Some(DuelVerdict::B), "{out:?}");
         assert_eq!(
             out.verdict_flips_on_swap(),
-            Some(true),
-            "the paired result must surface a seat-dependent winner: {out:?}"
+            Some(false),
+            "the paired result must distinguish a roster sweep from a seat effect: {out:?}"
         );
+    }
+
+    #[test]
+    fn opposite_resolved_leg_verdicts_report_a_seat_dependent_winner() {
+        let leg = |a_player, a_value, b_value| DuelLegOutcome {
+            a_player,
+            a_value,
+            b_value,
+            a_hp_value: u64::from(a_value),
+            b_hp_value: u64::from(b_value),
+            ticks: 1,
+            termination: DuelTermination::Wipe,
+        };
+        let outcome = DuelOutcome {
+            a_as_player_0: leg(0, 100, 0),
+            a_as_player_1: leg(1, 0, 100),
+        };
+
+        assert_eq!(outcome.verdict_flips_on_swap(), Some(true));
     }
 
     #[test]

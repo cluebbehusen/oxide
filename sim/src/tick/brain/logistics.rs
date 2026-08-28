@@ -61,7 +61,7 @@ pub(super) fn board(
         return;
     };
     let capacity = carrier.kind.stats().transport_capacity;
-    let (carrier_pos, carrier_tile) = (carrier.pos, carrier.tile());
+    let carrier_pos = carrier.pos;
     if cargo_load(carrier) + my_size > capacity {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.clear_program();
@@ -82,22 +82,27 @@ pub(super) fn board(
         pending.boardings.push((id, transport));
         return;
     }
-    // Chase the carrier: repath when it has drifted a tile, exactly the
-    // pursuit rule attack chases use.
+    // Chase a standable tile inside boarding reach. Aircraft may hover over a
+    // building, scrap, or blocked terrain that a ground rider can never occupy;
+    // routing to the carrier's exact tile would reject an otherwise legal Load.
     let stale = state
         .unit(id)
         .expect("caller checked")
         .path
         .as_ref()
-        .is_none_or(|p| p.goal != carrier_tile && p.goal.chebyshev(carrier_tile) > 1);
+        .is_none_or(|p| {
+            !state.passable(p.goal)
+                || p.goal.center().dist_sq(carrier_pos)
+                    > crate::stats::LOAD_REACH * crate::stats::LOAD_REACH
+        });
     if !stale {
         return;
     }
-    match route_for(state, kind, tile, carrier_tile) {
-        Some(waypoints) => {
+    match boarding_route(state, kind, tile, carrier_pos) {
+        Some((goal, waypoints)) => {
             let unit = state.unit_mut(id).expect("caller checked");
             unit.path = Some(PathFollow {
-                goal: carrier_tile,
+                goal,
                 waypoints,
                 next: 0,
             });
@@ -113,6 +118,39 @@ pub(super) fn board(
             });
         }
     }
+}
+
+/// Fewest-waypoint deterministic ground route to a standable tile within
+/// boarding reach. A route that stays on the rider's current tile cannot help
+/// when the exact rider and carrier positions are still too far apart, so it
+/// is not a boarding route. Waypoint count wins, then `(y, x)`; a truly sealed
+/// carrier still reports `NoRoute` through the caller.
+fn boarding_route(
+    state: &State,
+    kind: crate::stats::UnitKind,
+    from: TilePos,
+    carrier_pos: chassis::fx::Vec2Fx,
+) -> Option<(TilePos, Vec<TilePos>)> {
+    let center = TilePos::containing(carrier_pos);
+    let reach_sq = crate::stats::LOAD_REACH * crate::stats::LOAD_REACH;
+    let mut routes = Vec::new();
+    for y in center.y - 2..=center.y + 2 {
+        for x in center.x - 2..=center.x + 2 {
+            let goal = TilePos::new(x, y);
+            if !state.passable(goal) || goal.center().dist_sq(carrier_pos) > reach_sq {
+                continue;
+            }
+            if let Some(waypoints) = route_for(state, kind, from, goal)
+                && !waypoints.is_empty()
+            {
+                routes.push((waypoints.len(), goal.y, goal.x, waypoints));
+            }
+        }
+    }
+    routes
+        .into_iter()
+        .min_by_key(|(length, y, x, _)| (*length, *y, *x))
+        .map(|(_, y, x, waypoints)| (TilePos::new(x, y), waypoints))
 }
 
 /// Fly to the drop point; standing on it, ask to set the riders down.
@@ -265,5 +303,81 @@ pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: 
                 reason: StallReason::NoOpenGround,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Scenario;
+    use crate::scenario::UnitSpec;
+    use crate::stats::UnitKind;
+    use chassis::fx::{Fx, Vec2Fx};
+
+    #[test]
+    fn boarding_route_moves_when_tile_centers_are_misleadingly_close() {
+        let mut scenario = Scenario::skirmish();
+        scenario.name = "exact boarding reach".to_owned();
+        scenario.map = vec![
+            "############".to_owned(),
+            "#1.........#".to_owned(),
+            "#..........#".to_owned(),
+            "#..........#".to_owned(),
+            "#..........#".to_owned(),
+            "#........2.#".to_owned(),
+            "#..........#".to_owned(),
+            "############".to_owned(),
+        ];
+        scenario.units = vec![
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Skyhook,
+                x: 6,
+                y: 4,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 5,
+                y: 4,
+            },
+        ];
+        scenario.buildings.clear();
+        scenario.meta = None;
+        let mut state = scenario.build().expect("boarding arena builds");
+        let transport = state
+            .units()
+            .iter()
+            .find(|unit| unit.kind == UnitKind::Skyhook)
+            .expect("scenario has a transport")
+            .id;
+        let rider = state
+            .units()
+            .iter()
+            .find(|unit| unit.kind == UnitKind::Sentinel)
+            .expect("scenario has a rider")
+            .id;
+        let carrier_pos = Vec2Fx::new(Fx::lit("6.99"), Fx::lit("4.5"));
+        let rider_pos = Vec2Fx::new(Fx::lit("5.01"), Fx::lit("4.5"));
+        state.unit_mut(transport).expect("transport lives").pos = carrier_pos;
+        state.unit_mut(rider).expect("rider lives").pos = rider_pos;
+
+        let rider_tile = TilePos::containing(rider_pos);
+        let reach_sq = crate::stats::LOAD_REACH * crate::stats::LOAD_REACH;
+        assert!(rider_tile.center().dist_sq(carrier_pos) <= reach_sq);
+        assert!(rider_pos.dist_sq(carrier_pos) > reach_sq);
+
+        let mut pending = Pending::default();
+        let mut events = Vec::new();
+        board(&mut state, rider, transport, &mut pending, &mut events);
+
+        let path = state
+            .unit(rider)
+            .and_then(|unit| unit.path.as_ref())
+            .expect("the rider receives a real approach path");
+        assert_ne!(path.goal, rider_tile);
+        assert!(!path.waypoints.is_empty());
+        assert!(events.is_empty());
+        assert!(pending.boardings.is_empty());
     }
 }
