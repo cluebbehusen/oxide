@@ -84,7 +84,8 @@ impl Vec2Fx {
             target
         } else {
             // dist > max_step >= 0, so the ratio is in (0, 1) and division
-            // cannot overflow or divide by zero.
+            // cannot overflow or divide by zero. Vec2Fx's scalar operation
+            // preserves exact negation, so opposite rays take opposite steps.
             self + delta * (max_step / dist)
         }
     }
@@ -114,15 +115,56 @@ impl core::ops::Neg for Vec2Fx {
 impl core::ops::Mul<Fx> for Vec2Fx {
     type Output = Self;
     fn mul(self, rhs: Fx) -> Self {
-        Self::new(self.x * rhs, self.y * rhs)
+        Self::new(
+            sign_symmetric_mul(self.x, rhs),
+            sign_symmetric_mul(self.y, rhs),
+        )
     }
 }
 
 impl core::ops::Div<Fx> for Vec2Fx {
     type Output = Self;
     fn div(self, rhs: Fx) -> Self {
-        Self::new(self.x / rhs, self.y / rhs)
+        Self::new(
+            sign_symmetric_div(self.x, rhs),
+            sign_symmetric_div(self.y, rhs),
+        )
     }
+}
+
+/// Restores a signed raw result when it fits. The magnitude is wider than an
+/// `i64`, so `Fx::MIN` is representable without ever negating it.
+fn signed_magnitude(magnitude: u128, negative: bool) -> Option<Fx> {
+    let signed = if negative {
+        -(magnitude as i128)
+    } else {
+        magnitude as i128
+    };
+    i64::try_from(signed).ok().map(Fx::from_bits)
+}
+
+/// Multiplies raw magnitudes, truncating toward zero before restoring sign.
+/// The fixed crate's signed multiply shifts a negative wide product and thus
+/// rounds it one ulp below the corresponding positive result. Geometry needs
+/// the stronger identity `(-v) * s == -(v * s)` for half-turn parity.
+fn sign_symmetric_mul(lhs: Fx, rhs: Fx) -> Fx {
+    let negative = (lhs < Fx::ZERO) != (rhs < Fx::ZERO);
+    let magnitude =
+        ((lhs.to_bits().unsigned_abs() as u128) * (rhs.to_bits().unsigned_abs() as u128)) >> 32;
+    signed_magnitude(magnitude, negative).unwrap_or_else(|| lhs * rhs)
+}
+
+/// Divides raw magnitudes, preserving the fixed operator's division-by-zero
+/// and overflow behavior while making every representable result sign
+/// symmetric.
+fn sign_symmetric_div(lhs: Fx, rhs: Fx) -> Fx {
+    if rhs == Fx::ZERO {
+        return lhs / rhs;
+    }
+    let negative = (lhs < Fx::ZERO) != (rhs < Fx::ZERO);
+    let numerator = (lhs.to_bits().unsigned_abs() as u128) << 32;
+    let magnitude = numerator / (rhs.to_bits().unsigned_abs() as u128);
+    signed_magnitude(magnitude, negative).unwrap_or_else(|| lhs / rhs)
 }
 
 impl core::ops::AddAssign for Vec2Fx {
@@ -207,5 +249,67 @@ mod tests {
     fn move_toward_zero_distance_stays_put() {
         let p = Vec2Fx::new(fx(2), fx(2));
         assert_eq!(p.move_toward(p, Fx::ONE), p);
+    }
+
+    #[test]
+    fn move_toward_is_equivariant_under_half_turns() {
+        let world_center_twice = Vec2Fx::new(fx(48), fx(30));
+        let from = Vec2Fx::new(Fx::lit("6.5"), Fx::lit("8.5"));
+        let target = Vec2Fx::new(Fx::lit("7.5"), Fx::lit("4.5"));
+        let mirrored_from = world_center_twice - from;
+        let mirrored_target = world_center_twice - target;
+        let step = Fx::lit("0.125");
+
+        let advance_twice = |mut pos: Vec2Fx, goal| {
+            for _ in 0..2 {
+                pos = pos.move_toward(goal, step);
+            }
+            pos
+        };
+        assert_eq!(
+            world_center_twice - advance_twice(from, target),
+            advance_twice(mirrored_from, mirrored_target),
+            "opposite movement rays must accumulate the same fixed-point step"
+        );
+    }
+
+    #[test]
+    fn vector_scalar_operations_preserve_exact_negation() {
+        let vector = Vec2Fx::new(Fx::lit("0.713579"), Fx::lit("-0.248163"));
+        for scalar in [Fx::lit("0.1729"), Fx::lit("-0.1729")] {
+            assert_eq!((-vector) * scalar, -(vector * scalar));
+            assert_eq!((-vector) / scalar, -(vector / scalar));
+        }
+    }
+
+    #[test]
+    fn vector_scalar_operations_preserve_extreme_and_exact_signed_semantics() {
+        let extremes = Vec2Fx::new(Fx::MIN, Fx::MAX);
+        assert_eq!(extremes * Fx::ONE, extremes);
+        assert_eq!(extremes / Fx::ONE, extremes);
+        assert_eq!(extremes * Fx::ZERO, Vec2Fx::ZERO);
+        assert_eq!(Vec2Fx::ZERO * Fx::MIN, Vec2Fx::ZERO);
+
+        let exact = Vec2Fx::new(fx(2), fx(-4));
+        assert_eq!(exact * Fx::lit("-0.5"), Vec2Fx::new(fx(-1), fx(2)));
+        assert_eq!(exact / fx(-2), Vec2Fx::new(fx(-1), fx(2)));
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to divide by zero")]
+    fn vector_division_by_zero_still_panics() {
+        let _ = Vec2Fx::new(Fx::MIN, Fx::ONE) / Fx::ZERO;
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn vector_multiplication_overflow_still_panics() {
+        let _ = Vec2Fx::new(Fx::MIN, Fx::ZERO) * fx(-1);
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn vector_division_overflow_still_panics() {
+        let _ = Vec2Fx::new(Fx::MIN, Fx::ZERO) / fx(-1);
     }
 }
