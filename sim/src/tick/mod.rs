@@ -36,6 +36,7 @@
 
 mod brain;
 mod commands;
+mod flight;
 mod movement;
 mod production;
 mod spatial;

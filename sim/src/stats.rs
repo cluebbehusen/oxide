@@ -274,16 +274,20 @@ pub struct UnitStats {
 }
 
 impl UnitStats {
-    /// The ring inside which a turn-limited flier accepts a waypoint or
-    /// goal. It is the aircraft's own turn radius
-    /// (`speed * 256 / (2*pi*turn_rate)`, with `256/(2*pi)` as the
-    /// literal `40.75`) plus [`BOMBER_ACCEPT_SLACK`] — anything smaller
-    /// is an orbit the aircraft can fly forever without ever crossing
-    /// the ring. Only meaningful when `turn_rate > 0`.
-    pub fn turn_acceptance(&self) -> Fx {
+    /// The radius of the tightest circle a turn-limited flier can fly:
+    /// `speed * 256 / (2*pi*turn_rate)`, with `256/(2*pi)` as the literal
+    /// `40.75`. Only meaningful when `turn_rate > 0`.
+    pub fn turn_radius(&self) -> Fx {
         debug_assert!(self.turn_rate > 0);
         self.speed * Fx::lit("40.75") / Fx::from_num(i64::from(self.turn_rate))
-            + BOMBER_ACCEPT_SLACK
+    }
+
+    /// The ring inside which a turn-limited flier accepts a waypoint or
+    /// goal: [`Self::turn_radius`] plus [`BOMBER_ACCEPT_SLACK`] — anything
+    /// smaller is an orbit the aircraft can fly forever without ever
+    /// crossing the ring. Only meaningful when `turn_rate > 0`.
+    pub fn turn_acceptance(&self) -> Fx {
+        self.turn_radius() + BOMBER_ACCEPT_SLACK
     }
 }
 

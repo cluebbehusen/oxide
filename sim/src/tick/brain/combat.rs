@@ -3,6 +3,7 @@
 //! the retaliation contract. Every shot buffers into the tick's volley;
 //! nothing here applies damage directly.
 
+use super::super::flight;
 use super::super::{route_for, route_for_position};
 use super::PendingHit;
 use super::locomotion::{approach_rect, walk};
@@ -1175,13 +1176,21 @@ fn bomber_attack(
             aim_point,
             weapon,
         );
+        // A bomb falls on the building, not on the edge point that range
+        // is measured to: a footprint's closest point can be a corner it
+        // shares with a neighbour, and a shell landing exactly there is
+        // credited to the lowest-id footprint touching it.
+        let center = match target {
+            Target::Building(bid) => state.building(bid).map_or(center, |b| b.center()),
+            Target::Unit(_) => center,
+        };
         // The stick lays out along the flight line, centered on the aim
         // point; a single bomb is a one-entry stick.
         let salvo = weapon.salvo.max(1) as i32;
         for k in 0..salvo {
             let along = Fx::from_num(2 * k - (salvo - 1)) * chassis::fx::HALF;
             let impact = center + hv * (along * crate::stats::BOMB_SALVO_SPACING);
-            let impact = clamp_to_envelope(state, impact);
+            let impact = state.map().clamp_to_envelope(impact);
             let flight = launch_shell(state, launches, Target::Unit(id), me, pos, impact, weapon);
             events.push(Event::ShellLaunched {
                 shooter: Target::Unit(id),
@@ -1196,7 +1205,7 @@ fn bomber_attack(
         // plain path goal, so steering, arrival, and repath all reuse
         // the ordinary machinery; when it completes (or goes stale) the
         // chase below lines up the next run.
-        let egress = egress_goal(state, pos, heading, stats.turn_acceptance());
+        let egress = egress_goal(state, pos, heading, stats);
         let unit = state.unit_mut(id).expect("caller checked");
         unit.cooldowns[pi] = weapon.cooldown_ticks;
         unit.path = egress.map(|goal| PathFollow {
@@ -1214,7 +1223,7 @@ fn bomber_attack(
     // point-blank is exactly the stop-and-strafe this chassis forbids.
     if cooldowns[pi] > weapon.cooldown_ticks / 2 {
         if state.unit(id).expect("caller checked").path.is_none()
-            && let Some(goal) = egress_goal(state, pos, heading, stats.turn_acceptance())
+            && let Some(goal) = egress_goal(state, pos, heading, stats)
         {
             let unit = state.unit_mut(id).expect("caller checked");
             unit.path = Some(PathFollow {
@@ -1226,14 +1235,21 @@ fn bomber_attack(
         return;
     }
 
-    // A cold bomber already inside release range may still have the victim
-    // outside its forward cone (or hidden behind terrain). Once its approach
-    // path completes, send it onward along a clear departure leg rather than
-    // leaving it parked at the edge of the waypoint acceptance ring. Keep the
-    // attack tile as PathFollow's semantic goal so the chase retains this leg;
-    // when it completes, the next exact-position route lines up another pass.
-    if cooldowns[pi] == 0 && in_range && state.unit(id).expect("caller checked").path.is_none() {
-        let departure = egress_goal(state, pos, heading, stats.turn_acceptance());
+    // A bomber already inside release range, or inside its own turn
+    // acceptance ring of the attack tile, cannot line up a pass from where
+    // it is: the victim may sit outside the forward cone, and any route to
+    // the tile would complete without a tick of flight. Once its approach
+    // path completes, send it onward along a clear departure leg instead.
+    // This covers the second half of a reload as well as a cold bay: a
+    // warm bomber chasing straight back to a nearby target used to plan
+    // that instantly accepted route every tick and hang over the target
+    // until the bay was cold. Keep the attack tile as PathFollow's
+    // semantic goal so the chase retains this leg; when it completes, the
+    // next exact-position route lines up another pass.
+    let accept = stats.turn_acceptance();
+    let inside_ring = pos.dist_sq(target_tile.center()) <= accept * accept;
+    if (in_range || inside_ring) && state.unit(id).expect("caller checked").path.is_none() {
+        let departure = egress_goal(state, pos, heading, stats);
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = departure.map(|waypoint| PathFollow {
             goal: target_tile,
@@ -1251,7 +1267,7 @@ fn bomber_attack(
         .as_ref()
         .is_none_or(|p| p.goal != target_tile && p.goal.chebyshev(target_tile) > 1);
     if stale {
-        match route_for_position(state, kind, pos, target_tile) {
+        match bomber_route(state, stats, kind, pos, heading, target_tile) {
             Some(waypoints) => {
                 let unit = state.unit_mut(id).expect("caller checked");
                 unit.path = Some(PathFollow {
@@ -1275,16 +1291,98 @@ fn bomber_attack(
     }
 }
 
+/// The route a bomber flies to its attack tile. A straight line serves when
+/// the airframe can still be flown out of the state it reaches at the edge
+/// of its acceptance ring. Otherwise the run is planned through an initial
+/// point so the final leg runs parallel to a wall: a corner target is
+/// attacked along one of its walls instead of by a dive the turn radius
+/// cannot recover from. Candidates are ranked by the turn needed to head
+/// for the initial point, then by length, then by run-in bearing relative
+/// to the current heading, so mirrored seats plan mirrored runs.
+fn bomber_route(
+    state: &State,
+    stats: &crate::stats::UnitStats,
+    kind: UnitKind,
+    pos: Vec2Fx,
+    heading: u8,
+    target: TilePos,
+) -> Option<Vec<TilePos>> {
+    let map = state.map();
+    let radius = stats.turn_radius();
+    let accept = stats.turn_acceptance();
+    let goal = target.center();
+    let approach = goal - pos;
+    let length = approach.length();
+    if length <= accept {
+        return route_for_position(state, kind, pos, target);
+    }
+    let along = approach / length;
+    if flight::escapable(
+        map,
+        goal - along * accept,
+        flight::heading_of(along),
+        radius,
+    ) {
+        return route_for_position(state, kind, pos, target);
+    }
+    let mut best: Option<((u16, Fx, u8), TilePos)> = None;
+    for run_in in [0u8, 64, 128, 192] {
+        let v = chassis::compass::dir(run_in);
+        if !flight::escapable(map, goal - v * accept, run_in, radius) {
+            continue;
+        }
+        for distance in [7i64, 5] {
+            let point = TilePos::containing(goal - v * Fx::from_num(distance));
+            if !state.passable_for(Domain::Air, point) {
+                continue;
+            }
+            let leg = point.center() - pos;
+            if leg == Vec2Fx::ZERO
+                || !flight::escapable(map, point.center(), flight::heading_of(leg), radius)
+            {
+                continue;
+            }
+            let turn = flight::turn_to(heading, leg).map_or(0, |(_, sweep)| sweep);
+            let key = (
+                turn,
+                leg.length() + Fx::from_num(distance),
+                run_in.wrapping_sub(heading),
+            );
+            if best.as_ref().is_none_or(|(held, _)| key < *held) {
+                best = Some((key, point));
+            }
+            break;
+        }
+    }
+    let Some((_, point)) = best else {
+        return route_for_position(state, kind, pos, target);
+    };
+    let mut waypoints = route_for_position(state, kind, pos, point)?;
+    waypoints.extend(route_for_position(state, kind, point.center(), target)?);
+    Some(waypoints)
+}
+
 /// Where a bomber rolls out after a release: straight ahead along its
-/// heading when the sky is open, bending up to ninety degrees when a
-/// wall or mesa closes the line. Every candidate must sit beyond the
-/// aircraft's own acceptance ring — a goal inside it completes without
-/// a single tick of flight, which is how a wall-facing bomber once
-/// parked through its whole reload. `None` only in a closed pocket.
-fn egress_goal(state: &State, pos: Vec2Fx, heading: u8, accept: Fx) -> Option<TilePos> {
+/// heading when the sky is open, bending progressively further, up to a
+/// full reversal, when a wall, mesa, or map corner closes the line.
+/// Every candidate must sit beyond the aircraft's own acceptance ring — a
+/// goal inside it completes without a single tick of flight, which is how
+/// a wall-facing bomber once parked through its whole reload — and must be
+/// a state the airframe can still be flown out of on arrival, so a roll-out
+/// never ends pressed against the world's edge. `None` only in a closed
+/// pocket, where the airframe orbits until the brain replans.
+fn egress_goal(
+    state: &State,
+    pos: Vec2Fx,
+    heading: u8,
+    stats: &crate::stats::UnitStats,
+) -> Option<TilePos> {
+    let accept = stats.turn_acceptance();
     let accept_sq = accept * accept;
-    for offset in [0u8, 32, 224, 64, 192] {
-        let hv = chassis::compass::dir(heading.wrapping_add(offset));
+    let radius = stats.turn_radius();
+    for offset in [0u8, 32, 224, 64, 192, 96, 160, 128] {
+        let leg_heading = heading.wrapping_add(offset);
+        let hv = chassis::compass::dir(leg_heading);
         for reach in [5i64, 4, 3] {
             let probe = pos + hv * Fx::from_num(reach);
             let tile = TilePos::containing(probe);
@@ -1294,6 +1392,7 @@ fn egress_goal(state: &State, pos: Vec2Fx, heading: u8, accept: Fx) -> Option<Ti
                 && tile.y < state.map().height()
                 && state.passable_for(Domain::Air, tile)
                 && tile.center().dist_sq(pos) > accept_sq
+                && flight::escapable(state.map(), tile.center(), leg_heading, radius)
                 && !chassis::path::line_blocked(pos, tile.center(), |crossed| {
                     state
                         .map()
@@ -1306,17 +1405,6 @@ fn egress_goal(state: &State, pos: Vec2Fx, heading: u8, accept: Fx) -> Option<Ti
         }
     }
     None
-}
-
-/// Clamps an impact point into the map envelope so an edge-of-map stick
-/// never lands a shell outside the world.
-fn clamp_to_envelope(state: &State, p: Vec2Fx) -> Vec2Fx {
-    let max_x = Fx::from_num(state.map().width()) - chassis::fx::HALF;
-    let max_y = Fx::from_num(state.map().height()) - chassis::fx::HALF;
-    Vec2Fx::new(
-        p.x.clamp(chassis::fx::HALF, max_x),
-        p.y.clamp(chassis::fx::HALF, max_y),
-    )
 }
 
 /// Chase-and-hit. Range is measured to the target's closest point and

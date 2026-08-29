@@ -11,6 +11,7 @@
 //! are only ever blocked by terrain and buildings, so pathfinding stays
 //! deadlock-free while crowds physically jostle.
 
+use super::flight;
 use crate::map::Map;
 use crate::state::{Order, PathFollow, State};
 use chassis::fx::{Fx, Vec2Fx, sqrt};
@@ -226,10 +227,13 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
 /// the heading steers, at most `turn_rate` compass steps per tick.
 /// Waypoints are accepted inside the kind's turn-acceptance ring — a
 /// bounded arc cannot promise an exact center, and a ring tighter than
-/// the turn radius is an orbit trap. A step whose tile is closed to air
-/// invalidates the route so the owning brain can plan again from the
-/// aircraft's actual position instead of steering into the same mountain
-/// forever. Pathless means hovering.
+/// the turn radius is an orbit trap. A committed airframe never stops:
+/// without a path it orbits at its full turn rate where it lost the
+/// route, and at the world's edge it slides along the boundary while it
+/// turns back in. A step into a Peak invalidates the route so the owning
+/// brain can plan again from the aircraft's actual position instead of
+/// steering into the same mountain forever, while the airframe slides
+/// along the face rather than stopping.
 fn steer_turn_limited(
     unit: &mut crate::state::Unit,
     map: &Map,
@@ -243,11 +247,10 @@ fn steer_turn_limited(
     // to the following waypoint is also clear. Otherwise a bomber can erase
     // the one waypoint that would have turned it around a peak, then keep
     // replanning the same impossible shortcut.
-    loop {
-        let Some(path) = &unit.path else { return };
+    while let Some(path) = &unit.path {
         let Some(&waypoint) = path.waypoints.get(path.next as usize) else {
             unit.path = None;
-            return;
+            break;
         };
         if unit.pos.dist_sq(waypoint.center()) > arrive_sq {
             break;
@@ -264,18 +267,113 @@ fn steer_turn_limited(
         path.next += 1;
         if path.next as usize >= path.waypoints.len() {
             unit.path = None;
+            break;
+        }
+    }
+    let radius = stats.turn_radius();
+    let target = unit
+        .path
+        .as_ref()
+        .map(|path| path.waypoints[path.next as usize].center());
+    let heading_before = unit.heading;
+    let straight =
+        map.clamp_to_envelope(unit.pos + chassis::compass::dir(unit.heading) * stats.speed);
+    let bank_away = |unit: &mut crate::state::Unit| {
+        let step = flight::safest_step(map, unit.pos, heading_before, radius);
+        unit.heading = heading_before.wrapping_add(step.wrapping_mul(stats.turn_rate));
+    };
+    if !flight::escapable(map, straight, unit.heading, radius) {
+        // Wall reflex: one more straight tick would leave no arc that stays
+        // inside the world, so bank away now, whatever the route wants.
+        bank_away(unit);
+    } else {
+        match target {
+            Some(target) => steer_toward(unit, map, stats, target),
+            // No route: hold the bank and orbit. The circle is tangent to
+            // the point where the path ran out, so an idle aircraft stays
+            // within one turn diameter of it instead of hanging motionless.
+            None => bank_away(unit),
+        }
+        // A route's turn is planned one leg at a time, and a leg accepted
+        // early by the ring can hand the next one a heading its own arc
+        // never checked. Whatever the leg wants, a tick that would carry an
+        // escapable airframe into a state it cannot fly out of banks the
+        // safe way instead.
+        let ahead =
+            map.clamp_to_envelope(unit.pos + chassis::compass::dir(unit.heading) * stats.speed);
+        if flight::escapable(map, unit.pos, heading_before, radius)
+            && !flight::escapable(map, ahead, unit.heading, radius)
+        {
+            bank_away(unit);
+        }
+    }
+    let ahead = map.clamp_to_envelope(unit.pos + chassis::compass::dir(unit.heading) * stats.speed);
+    let sky_open = |p: Vec2Fx| {
+        map.tile(TilePos::containing(p))
+            .is_some_and(|t| !t.terrain.blocks_air())
+    };
+    if sky_open(ahead) {
+        unit.pos = ahead;
+        return;
+    }
+    // A Peak face: drop the route so the brain replans from here, but keep
+    // the airframe moving by sliding along the face on whichever axis is
+    // still open, the same way the envelope slides it along the world's edge.
+    unit.path = None;
+    for slid in [
+        Vec2Fx::new(ahead.x, unit.pos.y),
+        Vec2Fx::new(unit.pos.x, ahead.y),
+    ] {
+        if slid != unit.pos && sky_open(slid) {
+            unit.pos = slid;
             return;
         }
     }
-    let target = {
-        let path = unit.path.as_ref().expect("checked above");
-        path.waypoints[path.next as usize].center()
-    };
-    // Steer: rotate one compass step at a time toward the goal ray,
-    // stopping early the moment the nose crosses it. The cross product's
-    // sign picks the turn direction; dead astern breaks the tie toward
-    // +1, and every input is Q32.32, so each platform turns identically.
+}
+
+/// Rotates the heading toward `target` by at most `turn_rate` compass
+/// steps, stopping early the moment the nose crosses the goal ray. Every
+/// input is Q32.32, so each platform turns identically. The turn is a
+/// committed arc, not a nudge: the shorter rotation is taken only when the
+/// arc it sweeps stays inside the world and ends somewhere the airframe can
+/// still be flown out of; otherwise the long way round is taken when that
+/// one qualifies, and the shorter arc only as a last resort.
+fn steer_toward(
+    unit: &mut crate::state::Unit,
+    map: &Map,
+    stats: &'static crate::stats::UnitStats,
+    target: Vec2Fx,
+) {
     let d = target - unit.pos;
+    let Some((short, sweep)) = flight::turn_to(unit.heading, d) else {
+        return;
+    };
+    let radius = stats.turn_radius();
+    let long = flight::reverse(short);
+    let qualifies = |step: u8, sweep: u16| {
+        flight::arc_fits(map, unit.pos, unit.heading, step, sweep, radius) && {
+            let (end, end_heading) = flight::arc_end(unit.pos, unit.heading, step, sweep, radius);
+            flight::escapable(map, end, end_heading, radius)
+        }
+    };
+    let step = if qualifies(short, sweep) {
+        short
+    } else if qualifies(long, flight::FULL_TURN - sweep) {
+        long
+    } else if flight::arc_fits(map, unit.pos, unit.heading, short, sweep, radius) {
+        short
+    } else if flight::arc_fits(
+        map,
+        unit.pos,
+        unit.heading,
+        long,
+        flight::FULL_TURN - sweep,
+        radius,
+    ) {
+        long
+    } else {
+        short
+    };
     for _ in 0..stats.turn_rate {
         let hv = chassis::compass::dir(unit.heading);
         let cross = hv.x * d.y - hv.y * d.x;
@@ -283,29 +381,35 @@ fn steer_turn_limited(
         if cross == Fx::ZERO && dot >= Fx::ZERO {
             break;
         }
-        let step: u8 = if cross > Fx::ZERO { 1 } else { 255 };
         let next = unit.heading.wrapping_add(step);
         let nhv = chassis::compass::dir(next);
         let ncross = nhv.x * d.y - nhv.y * d.x;
+        let ndot = nhv.x * d.x + nhv.y * d.y;
         unit.heading = next;
-        if (cross > Fx::ZERO) != (ncross > Fx::ZERO) {
+        // The sign of the cross product also flips when the nose sweeps
+        // through dead astern on the long way round; only a crossing
+        // with the target ahead is the goal ray.
+        if ndot >= Fx::ZERO && (cross > Fx::ZERO) != (ncross > Fx::ZERO) {
             break;
         }
     }
-    let ahead = unit.pos + chassis::compass::dir(unit.heading) * stats.speed;
-    let tile = TilePos::containing(ahead);
-    let open = map.tile(tile).is_some_and(|t| !t.terrain.blocks_air());
-    if open {
-        unit.pos = ahead;
-    } else {
-        unit.path = None;
+}
+
+/// Ground bodies stop at terrain, but nothing but the world's edge bounds
+/// the sky: an air push is clamped to the flight envelope so no correction
+/// can carry an aircraft past the boundary its own steering respects.
+fn envelope_bound(state: &State, domain: crate::stats::Domain, to: Vec2Fx) -> Vec2Fx {
+    match domain {
+        crate::stats::Domain::Air => state.map.clamp_to_envelope(to),
+        crate::stats::Domain::Ground => to,
     }
 }
 
 /// A unit that is standing still to work — extracting, welding, or
 /// holding fire on a target — resists shoving; movers yield around it.
 fn is_anchored(unit: &crate::state::Unit) -> bool {
-    unit.path.is_none()
+    unit.kind.stats().turn_rate == 0
+        && unit.path.is_none()
         && matches!(
             unit.order,
             Order::Harvest { .. } | Order::Attack { .. } | Order::Repair { .. }
@@ -522,8 +626,12 @@ fn collision_pairs(
     owner_ranks: &[usize],
 ) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
+    // A heading-first airframe flies a committed arc that its steering has
+    // already checked against the world; a shove would carry it faster than
+    // its speed and off that arc, so such aircraft neither push nor yield.
+    let shoveable = |i: usize| state.units[i].kind.stats().turn_rate == 0;
     for i in 0..state.units.len() {
-        if state.units[i].hp == 0 {
+        if state.units[i].hp == 0 || !shoveable(i) {
             continue;
         }
         let home = state.units[i].tile();
@@ -536,7 +644,7 @@ fn collision_pairs(
             };
             let row = index.row_span(home.y + dy, home.x - 1, home.x + 1);
             for j in OrientedRow::new(row, rotated_frame) {
-                if j > i {
+                if j > i && shoveable(j) {
                     pairs.push((i, j));
                 }
             }
@@ -647,7 +755,7 @@ fn relaxation_pass(
         let step_j = (overlap * share_j).min(COLLISION_MAX_STEP - spent[j]);
         if step_j > Fx::ZERO {
             for cand in dirs_j.into_iter().flatten() {
-                let to = pos_j + cand * step_j;
+                let to = envelope_bound(state, dom_j, pos_j + cand * step_j);
                 if state.passable_for(dom_j, TilePos::containing(to)) {
                     state.units[j].pos = to;
                     spent[j] += step_j;
@@ -658,7 +766,7 @@ fn relaxation_pass(
         let step_i = (overlap * share_i).min(COLLISION_MAX_STEP - spent[i]);
         if step_i > Fx::ZERO {
             for cand in dirs_i.into_iter().flatten() {
-                let to = pos_i + cand * step_i;
+                let to = envelope_bound(state, dom_i, pos_i + cand * step_i);
                 if state.passable_for(dom_i, TilePos::containing(to)) {
                     state.units[i].pos = to;
                     spent[i] += step_i;

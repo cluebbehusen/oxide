@@ -130,6 +130,31 @@ non-stealthy building footprint. A buried Scuttle Charge deliberately blocks
 nothing. Air movement ignores rocks, scrap, and buildings, but Peaks own their
 air column and remain impassable.
 
+Turn-limited aircraft fly heading-first: only the heading steers, at most
+`turn_rate` compass steps per tick, so every waypoint is accepted inside the
+kind's turn-acceptance ring rather than at an exact center. Every turn is a
+committed arc of one fixed radius, and the simulation reasons about that arc
+against the map's flight envelope in fixed point. Steering takes the shorter
+rotation only when the arc it sweeps stays inside the world and ends in a state
+the airframe can still be flown out of, otherwise the longer one. A wall reflex
+banks the aircraft away whenever one more straight tick would leave no such arc.
+A committed airframe never stops: without a path it orbits on the bank whose
+fitting arc is longest, tangent to the point where the route ran out, and if it
+is ever pressed into the envelope it slides along the boundary while turning
+back in. A step into a Peak drops the route so the brain replans from the actual
+position, while the airframe slides along the face.
+
+A bomber's roll-out after a release, and its departure leg when it is inside
+release range or inside its own acceptance ring of the attack tile, go only to
+goals it can still be flown out of on arrival, bending progressively further
+when a wall or corner closes the line ahead. When the straight approach to an
+attack tile would reach the acceptance ring in an unrecoverable state, the run
+is planned through an initial point so the final leg runs parallel to a wall: a
+corner target is attacked along one of its walls rather than by a dive the turn
+radius cannot recover from. Bombs fall on the targeted building's center rather
+than on the footprint edge point that range is measured to, so a corner shared
+with a neighbouring footprint cannot hand the hit to the neighbour.
+
 A path is advisory rather than a reservation. Every ground step rechecks its
 next waypoint because construction can claim ground after the path was made; an
 invalid path is dropped and behavior may route again on the next tick. When a
@@ -150,7 +175,9 @@ when the requested tile is occupied.
 
 Units never make tiles impassable to pathfinding. They are physical bodies,
 however, and deterministic relaxation passes separate overlapping units after
-path movement. Ground collides only with ground and air only with air. Moving
+path movement. Ground collides only with ground and air only with air, and
+turn-limited aircraft take part in no collision at all: a committed arc that
+steering has already checked against the world cannot be shoved off it. Moving
 bodies slide around contacts, while anchored harvesting, firing, and
 building-repair stances resist displacement. Terrain wins over a proposed push,
 and a per-tick budget prevents dense groups from exploding outward. Iteration
