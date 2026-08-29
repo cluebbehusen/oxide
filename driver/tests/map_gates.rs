@@ -9,7 +9,7 @@ use oxide_driver::audit::audit;
 use oxide_sim::map::Map;
 use oxide_sim::scenario::BotConfig;
 use oxide_sim::{BuildingKind, PlayerId, Scenario, State};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
 
 fn shipped() -> Vec<(String, Scenario)> {
@@ -306,30 +306,75 @@ fn metric_fairness(name: &str, seats: &[oxide_driver::audit::SeatAudit]) {
 }
 
 #[test]
-fn renewable_economy_prototypes_offer_one_home_claim_and_a_forward_choice() {
-    const PROTOTYPES: [&str; 3] = ["cinder-steppe", "skirmish", "the-scattering"];
-    let support_radius = oxide_sim::stats::EXTRACTOR_SUPPORT_RADIUS;
-    let prototypes: Vec<_> = shipped()
-        .into_iter()
-        .filter(|(name, _)| PROTOTYPES.contains(&name.as_str()))
-        .collect();
-    let found: Vec<_> = prototypes.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(
-        found, PROTOTYPES,
-        "the renewable-economy gate must exercise every promoted prototype"
-    );
+fn every_map_offers_a_home_extractor_and_expansion_value() {
+    const NATURAL_EXTENSION: i32 = 8;
 
-    for (name, scenario) in prototypes {
+    let support_radius = oxide_sim::stats::EXTRACTOR_SUPPORT_RADIUS;
+    for (name, scenario) in shipped() {
         let (map, foundries) =
             Map::parse(&scenario.map).unwrap_or_else(|error| panic!("{name}: {error}"));
         let frames = map.extractor_frames();
         assert!(
-            frames.len() >= scenario.players.len() * 2,
-            "{name}: each seat needs a home claim and at least one forward option"
+            frames.len() >= scenario.players.len(),
+            "{name}: every seat needs its own opening Extractor claim"
         );
+        for (index, &frame) in frames.iter().enumerate() {
+            for &other in &frames[index + 1..] {
+                assert!(
+                    !rects_overlap(
+                        frame,
+                        BuildingKind::Extractor.base_stats().size,
+                        other,
+                        BuildingKind::Extractor.base_stats().size,
+                    ),
+                    "{name}: Extractor frames at ({}, {}) and ({}, {}) overlap",
+                    frame.x,
+                    frame.y,
+                    other.x,
+                    other.y
+                );
+            }
+        }
 
-        let state = scenario.build().expect("prototype map builds");
-        for (seat, foundry) in foundries {
+        let state = scenario.build().expect("shipped map builds");
+        let air_reachability: Vec<_> = foundries
+            .iter()
+            .map(|(_, foundry)| reachable_air_from_foundry(&map, *foundry))
+            .collect();
+        for &frame in frames {
+            assert!(
+                state.units().iter().all(|unit| {
+                    !rect_contains(
+                        frame,
+                        BuildingKind::Extractor.base_stats().size,
+                        unit.tile(),
+                    )
+                }),
+                "{name}: Extractor frame ({}, {}) overlaps a starting unit",
+                frame.x,
+                frame.y
+            );
+            assert!(
+                state.buildings().iter().all(|building| {
+                    !(0..BuildingKind::Extractor.base_stats().size.1).any(|dy| {
+                        (0..BuildingKind::Extractor.base_stats().size.0)
+                            .any(|dx| building.contains(frame.offset(dx, dy)))
+                    })
+                }),
+                "{name}: Extractor frame ({}, {}) overlaps a starting building",
+                frame.x,
+                frame.y
+            );
+        }
+        let pace = scenario
+            .meta
+            .as_ref()
+            .expect("shipped metadata exists")
+            .pace
+            .as_str();
+        let mut opening_candidates = Vec::with_capacity(foundries.len());
+        let mut seat_distances = Vec::with_capacity(foundries.len());
+        for &(seat, foundry) in &foundries {
             let mut distances: Vec<(i32, TilePos)> = frames
                 .iter()
                 .copied()
@@ -339,71 +384,171 @@ fn renewable_economy_prototypes_offer_one_home_claim_and_a_forward_choice() {
             let home: Vec<_> = distances
                 .iter()
                 .filter(|(distance, _)| *distance <= support_radius)
-                .collect();
-            assert_eq!(
-                home.len(),
-                1,
-                "{name}: seat {} needs exactly one frame supported by its starting Foundry: {distances:?}",
-                seat.0
-            );
-            let home = home[0].1;
-            for dy in 0..2 {
-                for dx in 0..2 {
-                    assert!(
-                        state.vision(seat).visible(home.offset(dx, dy)),
-                        "{name}: seat {} cannot see its opening Extractor frame",
-                        seat.0
-                    );
-                }
-            }
-            let home_reachable = reachable_builder_ground(&map, &state, seat, home);
-            assert!(
-                reachable_rect_perimeter(
-                    &map,
-                    home,
-                    BuildingKind::Extractor.base_stats().size,
-                    &home_reachable,
-                ),
-                "{name}: seat {} cannot reach its opening Extractor frame at ({}, {})",
-                seat.0,
-                home.x,
-                home.y
-            );
-            let forward: Vec<_> = distances
-                .iter()
-                .filter(|(distance, _)| {
-                    *distance > support_radius && *distance <= support_radius + 8
-                })
                 .map(|(_, frame)| *frame)
                 .collect();
+            let usable_home: Vec<_> = home
+                .iter()
+                .copied()
+                .filter(|frame| {
+                    (0..2)
+                        .all(|dy| (0..2).all(|dx| state.vision(seat).visible(frame.offset(dx, dy))))
+                        && {
+                            let reachable =
+                                reachable_builder_ground(&map, &state, seat, Some(*frame));
+                            reachable_rect_perimeter(
+                                &map,
+                                *frame,
+                                BuildingKind::Extractor.base_stats().size,
+                                &reachable,
+                            )
+                        }
+                })
+                .collect();
             assert!(
-                !forward.is_empty(),
-                "{name}: seat {} needs a nearby but unsupported natural frame: {distances:?}",
+                !usable_home.is_empty(),
+                "{name}: seat {} needs a fully visible, builder-reachable frame inside starting Foundry support: {distances:?}",
                 seat.0
             );
-            for frame in forward {
-                let reachable = reachable_builder_ground(&map, &state, seat, frame);
-                assert!(
-                    reachable_rect_perimeter(
-                        &map,
-                        frame,
-                        BuildingKind::Extractor.base_stats().size,
-                        &reachable,
-                    ),
-                    "{name}: seat {} cannot reach its natural Extractor frame at ({}, {})",
-                    seat.0,
-                    frame.x,
-                    frame.y
-                );
-                assert!(
-                    supportable_foundry_anchor(&map, &state, frame, &reachable, support_radius)
-                        .is_some(),
-                    "{name}: seat {} cannot reach a legal Foundry site that supports forward frame ({}, {})",
-                    seat.0,
-                    frame.x,
-                    frame.y
-                );
+            opening_candidates.push((seat, usable_home));
+            seat_distances.push((seat, distances));
+        }
+        assert!(
+            distinct_opening_claims_exist(&opening_candidates),
+            "{name}: starting seats cannot be matched to distinct visible, reachable home Extractor frames: {opening_candidates:?}"
+        );
+
+        let all_home_candidates: BTreeSet<_> = opening_candidates
+            .iter()
+            .flat_map(|(_, frames)| frames.iter().copied())
+            .collect();
+        for (seat, distances) in &seat_distances {
+            // Quick maps may make the second claim a shared contested center.
+            // Every longer format gives each seat a nearby natural beyond all
+            // viable opening claims so expansion adds renewable value. A
+            // natural may still be shared by teammates. Skyhook Anchorage's
+            // compact starting islands contain no clear 2x2 footprint in this
+            // band; its second claims are transport-contested remote islands.
+            let compact_island_start = name == "skyhook-anchorage";
+            if pace == "quick" || compact_island_start {
+                continue;
             }
+            assert!(
+                distances.iter().any(|(distance, frame)| {
+                    *distance > support_radius
+                        && *distance <= support_radius + NATURAL_EXTENSION
+                        && !all_home_candidates.contains(frame)
+                        && {
+                            let reachable =
+                                reachable_builder_ground(&map, &state, *seat, Some(*frame));
+                            reachable_rect_perimeter(
+                                &map,
+                                *frame,
+                                BuildingKind::Extractor.base_stats().size,
+                                &reachable,
+                            ) && supportable_foundry_anchor(
+                                &map,
+                                &state,
+                                *frame,
+                                &reachable,
+                                support_radius,
+                            )
+                            .is_some()
+                        }
+                }),
+                "{name}: seat {} needs a reachable additional natural and a legal supporting Foundry site: {distances:?}",
+                seat.0
+            );
+        }
+
+        // Every authored claim must be reachable by at least one starting
+        // builder. Unless that builder's own Foundry supports the frame, the
+        // claim also needs construction room for a supporting Foundry.
+        for &frame in frames {
+            let ground_usable = foundries.iter().any(|(seat, foundry)| {
+                let reachable = reachable_builder_ground(&map, &state, *seat, Some(frame));
+                reachable_rect_perimeter(
+                    &map,
+                    frame,
+                    BuildingKind::Extractor.base_stats().size,
+                    &reachable,
+                ) && (extractor_foundry_distance(*foundry, frame) <= support_radius
+                    || supportable_foundry_anchor(&map, &state, frame, &reachable, support_radius)
+                        .is_some())
+            });
+            let transport_usable = air_reachability.iter().any(|air_reachable| {
+                reachable_ground_rect_perimeter(
+                    &map,
+                    &state,
+                    frame,
+                    BuildingKind::Extractor.base_stats().size,
+                    air_reachable,
+                ) && supportable_foundry_anchor_from_air(
+                    &map,
+                    &state,
+                    frame,
+                    air_reachable,
+                    support_radius,
+                )
+                .is_some()
+            });
+            assert!(
+                ground_usable || transport_usable,
+                "{name}: Extractor frame ({}, {}) is neither a ground-reachable claim nor a viable transport expansion",
+                frame.x,
+                frame.y
+            );
+        }
+
+        // Pace describes contact timing, not total acreage. Large FFA basins
+        // can legitimately retain a standard pace while still needing value
+        // beyond their starting pockets.
+        const REMOTE_VALUE_AREA_FLOOR: i32 = 7_000;
+        let physically_large = map.width() * map.height() >= REMOTE_VALUE_AREA_FLOOR;
+        if physically_large || matches!(pace, "large" | "vast" | "grand") {
+            let remote: Vec<_> = frames
+                .iter()
+                .copied()
+                .filter(|frame| {
+                    foundries.iter().all(|(_, foundry)| {
+                        extractor_foundry_distance(*foundry, *frame)
+                            > support_radius + NATURAL_EXTENSION
+                    })
+                })
+                .collect();
+            assert!(
+                !remote.is_empty(),
+                "{name}: a {pace} map with footprint {}x{} needs Extractor value beyond every starting pocket",
+                map.width(),
+                map.height()
+            );
+
+            let cluster_floor = match (name.as_str(), pace) {
+                // Its remote ground is a set of tiny transport-only islands;
+                // preserving legible landing room matters more than packing
+                // overlapping frames onto one component.
+                ("skyhook-anchorage", _) => 1,
+                (_, "grand") => 3,
+                (_, "vast") => 2,
+                _ => 1,
+            };
+            let reachability: Vec<_> = foundries
+                .iter()
+                .map(|(seat, _)| reachable_builder_ground(&map, &state, *seat, None))
+                .collect();
+            let cluster = largest_supportable_cluster(
+                &map,
+                &state,
+                &remote,
+                &reachability,
+                &air_reachability,
+                support_radius,
+            );
+            assert!(
+                cluster >= cluster_floor,
+                "{name}: a {pace} map with footprint {}x{} needs a reachable remote cluster of at least {cluster_floor} frame(s), found {cluster}",
+                map.width(),
+                map.height()
+            );
         }
     }
 }
@@ -428,6 +573,29 @@ fn reachable_rect_perimeter(
     })
 }
 
+fn reachable_ground_rect_perimeter(
+    map: &Map,
+    state: &State,
+    anchor: TilePos,
+    size: (i32, i32),
+    reachable: &[bool],
+) -> bool {
+    (anchor.y - 1..=anchor.y + size.1).any(|y| {
+        (anchor.x - 1..=anchor.x + size.0).any(|x| {
+            let tile = TilePos::new(x, y);
+            let inside =
+                x >= anchor.x && x < anchor.x + size.0 && y >= anchor.y && y < anchor.y + size.1;
+            !inside
+                && map.terrain_passable(tile)
+                && state
+                    .buildings()
+                    .iter()
+                    .all(|building| !building.contains(tile))
+                && reachable[(y * map.width() + x) as usize]
+        })
+    })
+}
+
 fn extractor_foundry_distance(foundry: TilePos, extractor: TilePos) -> i32 {
     let foundry_size = BuildingKind::Foundry.base_stats().size;
     let extractor_size = BuildingKind::Extractor.base_stats().size;
@@ -444,19 +612,44 @@ fn extractor_foundry_distance(foundry: TilePos, extractor: TilePos) -> i32 {
     ))
 }
 
+fn distinct_opening_claims_exist(candidates: &[(PlayerId, Vec<TilePos>)]) -> bool {
+    fn assign(
+        seats: &[(PlayerId, Vec<TilePos>)],
+        index: usize,
+        claimed: &mut Vec<TilePos>,
+    ) -> bool {
+        let Some((_, frames)) = seats.get(index) else {
+            return true;
+        };
+        for &frame in frames {
+            if claimed.contains(&frame) {
+                continue;
+            }
+            claimed.push(frame);
+            if assign(seats, index + 1, claimed) {
+                return true;
+            }
+            claimed.pop();
+        }
+        false
+    }
+
+    let mut constrained_first = candidates.to_vec();
+    constrained_first.sort_by_key(|(seat, frames)| (frames.len(), *seat));
+    assign(&constrained_first, 0, &mut Vec::new())
+}
+
 fn reachable_builder_ground(
     map: &Map,
     state: &State,
     seat: PlayerId,
-    restored_frame: TilePos,
+    restored_frame: Option<TilePos>,
 ) -> Vec<bool> {
     let index = |tile: TilePos| (tile.y * map.width() + tile.x) as usize;
     let blocked = |tile: TilePos| {
-        rect_contains(
-            restored_frame,
-            BuildingKind::Extractor.base_stats().size,
-            tile,
-        ) || state
+        restored_frame.is_some_and(|frame| {
+            rect_contains(frame, BuildingKind::Extractor.base_stats().size, tile)
+        }) || state
             .buildings()
             .iter()
             .any(|building| building.contains(tile))
@@ -493,6 +686,80 @@ fn reachable_builder_ground(
     reachable
 }
 
+fn reachable_air_from_foundry(map: &Map, foundry: TilePos) -> Vec<bool> {
+    let index = |tile: TilePos| (tile.y * map.width() + tile.x) as usize;
+    let passable = |tile: TilePos| {
+        map.tile(tile)
+            .is_some_and(|map_tile| !map_tile.terrain.blocks_air())
+    };
+    let mut reachable = vec![false; (map.width() * map.height()) as usize];
+    let mut queue = VecDeque::new();
+    if passable(foundry) {
+        reachable[index(foundry)] = true;
+        queue.push_back(foundry);
+    }
+
+    while let Some(tile) = queue.pop_front() {
+        for (dx, dy) in chassis::grid::CARDINALS {
+            let next = tile.offset(dx, dy);
+            if passable(next) && !reachable[index(next)] {
+                reachable[index(next)] = true;
+                queue.push_back(next);
+            }
+        }
+    }
+    reachable
+}
+
+fn largest_supportable_cluster(
+    map: &Map,
+    state: &State,
+    frames: &[TilePos],
+    reachability: &[Vec<bool>],
+    air_reachability: &[Vec<bool>],
+    support_radius: i32,
+) -> usize {
+    let mut largest = 0;
+    for y in 0..map.height() {
+        for x in 0..map.width() {
+            let anchor = TilePos::new(x, y);
+            if !foundry_site_is_legal(map, state, anchor) {
+                continue;
+            }
+            let supported = frames
+                .iter()
+                .filter(|frame| extractor_foundry_distance(anchor, **frame) <= support_radius)
+                .count();
+            if reachability
+                .iter()
+                .any(|reachable| foundry_doorstep_reached(map, anchor, reachable))
+            {
+                largest = largest.max(supported);
+            }
+            for air_reachable in air_reachability {
+                if !foundry_ground_doorstep_reached(map, state, anchor, air_reachable) {
+                    continue;
+                }
+                let accessible = frames
+                    .iter()
+                    .filter(|frame| {
+                        extractor_foundry_distance(anchor, **frame) <= support_radius
+                            && reachable_ground_rect_perimeter(
+                                map,
+                                state,
+                                **frame,
+                                BuildingKind::Extractor.base_stats().size,
+                                air_reachable,
+                            )
+                    })
+                    .count();
+                largest = largest.max(accessible);
+            }
+        }
+    }
+    largest
+}
+
 fn supportable_foundry_anchor(
     map: &Map,
     state: &State,
@@ -500,7 +767,6 @@ fn supportable_foundry_anchor(
     reachable: &[bool],
     support_radius: i32,
 ) -> Option<TilePos> {
-    let foundry_size = BuildingKind::Foundry.base_stats().size;
     for y in 0..map.height() {
         for x in 0..map.width() {
             let anchor = TilePos::new(x, y);
@@ -509,29 +775,76 @@ fn supportable_foundry_anchor(
             {
                 continue;
             }
-            let doorstep_reached = (anchor.y - 1..=anchor.y + foundry_size.1).any(|door_y| {
-                (anchor.x - 1..=anchor.x + foundry_size.0).any(|door_x| {
-                    let inside = door_x >= anchor.x
-                        && door_x < anchor.x + foundry_size.0
-                        && door_y >= anchor.y
-                        && door_y < anchor.y + foundry_size.1;
-                    if inside
-                        || door_x < 0
-                        || door_y < 0
-                        || door_x >= map.width()
-                        || door_y >= map.height()
-                    {
-                        return false;
-                    }
-                    reachable[(door_y * map.width() + door_x) as usize]
-                })
-            });
-            if doorstep_reached {
+            if foundry_doorstep_reached(map, anchor, reachable) {
                 return Some(anchor);
             }
         }
     }
     None
+}
+
+fn supportable_foundry_anchor_from_air(
+    map: &Map,
+    state: &State,
+    frame: TilePos,
+    air_reachable: &[bool],
+    support_radius: i32,
+) -> Option<TilePos> {
+    for y in 0..map.height() {
+        for x in 0..map.width() {
+            let anchor = TilePos::new(x, y);
+            if extractor_foundry_distance(anchor, frame) <= support_radius
+                && foundry_site_is_legal(map, state, anchor)
+                && foundry_ground_doorstep_reached(map, state, anchor, air_reachable)
+            {
+                return Some(anchor);
+            }
+        }
+    }
+    None
+}
+
+fn foundry_doorstep_reached(map: &Map, anchor: TilePos, reachable: &[bool]) -> bool {
+    let foundry_size = BuildingKind::Foundry.base_stats().size;
+    (anchor.y - 1..=anchor.y + foundry_size.1).any(|door_y| {
+        (anchor.x - 1..=anchor.x + foundry_size.0).any(|door_x| {
+            let inside = door_x >= anchor.x
+                && door_x < anchor.x + foundry_size.0
+                && door_y >= anchor.y
+                && door_y < anchor.y + foundry_size.1;
+            !inside
+                && door_x >= 0
+                && door_y >= 0
+                && door_x < map.width()
+                && door_y < map.height()
+                && reachable[(door_y * map.width() + door_x) as usize]
+        })
+    })
+}
+
+fn foundry_ground_doorstep_reached(
+    map: &Map,
+    state: &State,
+    anchor: TilePos,
+    reachable: &[bool],
+) -> bool {
+    let foundry_size = BuildingKind::Foundry.base_stats().size;
+    (anchor.y - 1..=anchor.y + foundry_size.1).any(|door_y| {
+        (anchor.x - 1..=anchor.x + foundry_size.0).any(|door_x| {
+            let tile = TilePos::new(door_x, door_y);
+            let inside = door_x >= anchor.x
+                && door_x < anchor.x + foundry_size.0
+                && door_y >= anchor.y
+                && door_y < anchor.y + foundry_size.1;
+            !inside
+                && map.terrain_passable(tile)
+                && state
+                    .buildings()
+                    .iter()
+                    .all(|building| !building.contains(tile))
+                && reachable[(door_y * map.width() + door_x) as usize]
+        })
+    })
 }
 
 fn foundry_site_is_legal(map: &Map, state: &State, anchor: TilePos) -> bool {
@@ -554,6 +867,10 @@ fn rect_contains(anchor: TilePos, size: (i32, i32), tile: TilePos) -> bool {
         && tile.x < anchor.x + size.0
         && tile.y >= anchor.y
         && tile.y < anchor.y + size.1
+}
+
+fn rects_overlap(a: TilePos, a_size: (i32, i32), b: TilePos, b_size: (i32, i32)) -> bool {
+    a.x < b.x + b_size.0 && b.x < a.x + a_size.0 && a.y < b.y + b_size.1 && b.y < a.y + a_size.1
 }
 
 #[test]
