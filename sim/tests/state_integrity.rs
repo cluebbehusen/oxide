@@ -286,10 +286,16 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::EliminationInTheFuture(_) => 58,
         E::CargoProgressOutOfRange(_) => 59,
         E::CargoCooldownOutOfRange(_) => 60,
+        E::LandedNonAircraft(_) => 61,
+        E::LandedOffCenter(_) => 62,
+        E::LandedWithPath(_) => 63,
+        E::LandedUnescapable(_) => 64,
+        E::LandedOnUnstandableGround(_) => 65,
+        E::LandedOverlap(..) => 66,
     }
 }
 
-const ROWS: usize = 61;
+const ROWS: usize = 67;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -363,6 +369,12 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::EliminationInTheFuture(PlayerId(0)),
         E::CargoProgressOutOfRange(UnitId(0)),
         E::CargoCooldownOutOfRange(UnitId(0)),
+        E::LandedNonAircraft(UnitId(0)),
+        E::LandedOffCenter(UnitId(0)),
+        E::LandedWithPath(UnitId(0)),
+        E::LandedUnescapable(UnitId(0)),
+        E::LandedOnUnstandableGround(UnitId(0)),
+        E::LandedOverlap(UnitId(0), UnitId(1)),
     ]
 }
 
@@ -398,6 +410,25 @@ fn make_transport(d: &mut Value) {
     d["units"][0]["hp"] = json!(150);
     d["units"][0]["order"] = json!({"order": "idle"});
     d["units"][0]["carrying"] = json!(0);
+    let unit = d["units"][0].as_object_mut().expect("unit is a map");
+    unit.remove("path");
+    unit.remove("leash");
+    unit.remove("queue");
+}
+
+/// Reshapes unit 0 into a Condor parked on a tile center, facing east
+/// with open sky ahead of it.
+fn make_landed(d: &mut Value) {
+    d["units"][0]["kind"] = json!("condor");
+    d["units"][0]["hp"] = json!(260);
+    d["units"][0]["order"] = json!({"order": "idle"});
+    d["units"][0]["carrying"] = json!(0);
+    d["units"][0]["pos"] = json!({
+        "x": {"bits": chassis::fx::Fx::lit("4.5").to_bits()},
+        "y": {"bits": chassis::fx::Fx::lit("4.5").to_bits()},
+    });
+    d["units"][0]["heading"] = json!(0);
+    d["units"][0]["landed"] = json!(true);
     let unit = d["units"][0].as_object_mut().expect("unit is a map");
     unit.remove("path");
     unit.remove("leash");
@@ -901,6 +932,62 @@ fn every_checklist_row_refuses_its_forgery() {
                     json!([incident(2, 4, 100), incident(4, 3, 100)]);
             },
             "player p0 holds salvage incidents out of canonical order",
+        ),
+        (
+            "a landed flag on a machine that cannot land",
+            |d| d["units"][0]["landed"] = json!(true),
+            "is landed but is not an aircraft that can land",
+        ),
+        (
+            "a landed airframe resting off its tile center",
+            |d| {
+                make_landed(d);
+                d["units"][0]["pos"]["x"] = json!({"bits": chassis::fx::Fx::lit("4.95").to_bits()});
+            },
+            "is landed off its tile center",
+        ),
+        (
+            "a landed airframe holding a path",
+            |d| {
+                make_landed(d);
+                d["units"][0]["path"] =
+                    json!({"goal": {"x": 4, "y": 4}, "waypoints": [{"x": 4, "y": 4}], "next": 0});
+            },
+            "is landed but holds a path",
+        ),
+        (
+            "a landed airframe parked facing into a corner",
+            |d| {
+                make_landed(d);
+                d["units"][0]["pos"] = json!({
+                    "x": {"bits": chassis::fx::Fx::lit("1.5").to_bits()},
+                    "y": {"bits": chassis::fx::Fx::lit("1.5").to_bits()},
+                });
+                d["units"][0]["heading"] = json!(160);
+            },
+            "is landed on a heading it cannot fly out of",
+        ),
+        (
+            "a landed airframe resting on the rock rim",
+            |d| {
+                make_landed(d);
+                d["units"][0]["pos"] = json!({
+                    "x": {"bits": chassis::fx::Fx::lit("0.5").to_bits()},
+                    "y": {"bits": chassis::fx::Fx::lit("4.5").to_bits()},
+                });
+                d["units"][0]["heading"] = json!(64);
+            },
+            "is landed on ground it cannot stand on",
+        ),
+        (
+            "two airframes parked inside each other",
+            |d| {
+                make_landed(d);
+                let id = d["units"][1]["id"].clone();
+                d["units"][1] = d["units"][0].clone();
+                d["units"][1]["id"] = id;
+            },
+            "are parked inside each other",
         ),
     ];
 

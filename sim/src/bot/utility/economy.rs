@@ -851,6 +851,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         };
         Observation {
             version: OBSERVATION_VERSION,
@@ -1114,6 +1115,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         });
     }
 
@@ -1255,6 +1257,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         });
         assert!(policy.ordinary_ground_has_work(&dials, &island, home));
         island.enemy_units[0].kind = crate::stats::Role::Scout.unit_for(island.faction);
@@ -1667,6 +1670,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         });
         obs.my_units.retain(|unit| unit.id != UnitId(99));
         obs.tick += 1;
@@ -1720,6 +1724,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         });
         obs.tick += SOLO_SCOUT_QUIET_TICKS - 1;
         policy.scouting(&obs, home, None, &[], &mut Vec::new());
@@ -2487,6 +2492,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         });
         let mut policy = UtilityPolicy::new();
         let mut intents = Vec::new();
@@ -2540,6 +2546,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         });
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&obs);
@@ -2846,6 +2853,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         });
 
         let mut policy = UtilityPolicy::new();

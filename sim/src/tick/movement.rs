@@ -104,7 +104,7 @@ pub(super) fn escape_route(
 pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Option<PathFollow> {
     let unit = state.unit(id)?;
     if unit.hp == 0
-        || unit.kind.stats().domain != crate::stats::Domain::Ground
+        || unit.domain() != crate::stats::Domain::Ground
         || unit.path.is_some()
         || state
             .building_at(unit.tile())
@@ -131,6 +131,9 @@ pub(super) fn evict_claimed_ground(state: &mut State) {
     for i in 0..state.units.len() {
         let id = state.units[i].id;
         if let Some(path) = claimed_ground_escape(state, id) {
+            // A landed airframe leaves a claimed footprint the only way it
+            // can: it lifts off along that route.
+            state.units[i].landed = false;
             state.units[i].path = Some(path);
         }
     }
@@ -159,8 +162,11 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
         let before = unit.pos;
         let stats = unit.kind.stats();
         if stats.turn_rate > 0 {
-            steer_turn_limited(unit, map, stats);
-            travel[slot] = unit.pos - before;
+            // A landed airframe rests on its tile until an order lifts it.
+            if !unit.landed {
+                steer_turn_limited(unit, map, stats);
+                travel[slot] = unit.pos - before;
+            }
             continue;
         }
         let airborne = stats.domain == crate::stats::Domain::Air;
@@ -241,6 +247,9 @@ fn steer_turn_limited(
 ) {
     let accept = stats.turn_acceptance();
     let arrive_sq = accept * accept;
+    // A landing's final leg is never accepted by the ring: the brain owns
+    // touchdown at the tile center.
+    let landing = matches!(unit.order, Order::Land { .. });
     // Accept every waypoint the arc has already effectively reached. A
     // terrain-routing waypoint is not disposable merely because the wide
     // acceptance ring overlaps it: only skip it when the direct air segment
@@ -252,6 +261,9 @@ fn steer_turn_limited(
             unit.path = None;
             break;
         };
+        if landing && path.next as usize + 1 == path.waypoints.len() {
+            break;
+        }
         if unit.pos.dist_sq(waypoint.center()) > arrive_sq {
             break;
         }
@@ -408,12 +420,13 @@ fn envelope_bound(state: &State, domain: crate::stats::Domain, to: Vec2Fx) -> Ve
 /// A unit that is standing still to work — extracting, welding, or
 /// holding fire on a target — resists shoving; movers yield around it.
 fn is_anchored(unit: &crate::state::Unit) -> bool {
-    unit.kind.stats().turn_rate == 0
-        && unit.path.is_none()
-        && matches!(
-            unit.order,
-            Order::Harvest { .. } | Order::Attack { .. } | Order::Repair { .. }
-        )
+    unit.landed
+        || unit.kind.stats().turn_rate == 0
+            && unit.path.is_none()
+            && matches!(
+                unit.order,
+                Order::Harvest { .. } | Order::Attack { .. } | Order::Repair { .. }
+            )
 }
 
 /// Unit directions for perfectly stacked pairs, indexed by owner-local rank
@@ -629,7 +642,10 @@ fn collision_pairs(
     // A heading-first airframe flies a committed arc that its steering has
     // already checked against the world; a shove would carry it faster than
     // its speed and off that arc, so such aircraft neither push nor yield.
-    let shoveable = |i: usize| state.units[i].kind.stats().turn_rate == 0;
+    let shoveable = |i: usize| {
+        let unit = &state.units[i];
+        unit.kind.stats().turn_rate == 0 || unit.landed
+    };
     for i in 0..state.units.len() {
         if state.units[i].hp == 0 || !shoveable(i) {
             continue;
@@ -699,11 +715,11 @@ fn relaxation_pass(
     for (i, j) in collision_pairs(state, reversed, index, owner_ranks) {
         let (pos_i, radius_i, dom_i) = {
             let u = &state.units[i];
-            (u.pos, u.kind.stats().radius, u.kind.stats().domain)
+            (u.pos, u.kind.stats().radius, u.domain())
         };
         let (pos_j, radius_j, dom_j) = {
             let u = &state.units[j];
-            (u.pos, u.kind.stats().radius, u.kind.stats().domain)
+            (u.pos, u.kind.stats().radius, u.domain())
         };
         // Bodies only collide within their own layer: a flyer
         // and a crawler occupy the same tile without touching.
@@ -731,11 +747,17 @@ fn relaxation_pass(
         };
         // Anchored units (working in place) yield a sliver;
         // movers absorb the correction and flow around them.
-        let (share_i, share_j) = match (is_anchored(&state.units[i]), is_anchored(&state.units[j]))
-        {
-            (true, false) => (ANCHORED_PUSH_SHARE, Fx::ONE - ANCHORED_PUSH_SHARE),
-            (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
-            _ => (chassis::fx::HALF, chassis::fx::HALF),
+        // A landed airframe is a fixture on its tile center: it takes no
+        // correction at all, so the whole overlap falls on the mover.
+        let (share_i, share_j) = match (state.units[i].landed, state.units[j].landed) {
+            (true, true) => (Fx::ZERO, Fx::ZERO),
+            (true, false) => (Fx::ZERO, Fx::ONE),
+            (false, true) => (Fx::ONE, Fx::ZERO),
+            (false, false) => match (is_anchored(&state.units[i]), is_anchored(&state.units[j])) {
+                (true, false) => (ANCHORED_PUSH_SHARE, Fx::ONE - ANCHORED_PUSH_SHARE),
+                (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
+                _ => (chassis::fx::HALF, chassis::fx::HALF),
+            },
         };
         let (away_i, away_j) = (-dir, dir);
         let closing_i = travel[i].x * away_i.x + travel[i].y * away_i.y < Fx::ZERO;

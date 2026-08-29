@@ -17,7 +17,7 @@ impl UtilityPolicy {
             (0..height).all(|dy| (0..width).all(|dx| obs.explored(frame.offset(dx, dy))));
         let visibly_occupied = obs.enemy_units.iter().any(|unit| {
             unit.hp > 0
-                && unit.kind.stats().domain == Domain::Ground
+                && unit.body_domain() == Domain::Ground
                 && obs.visible(unit.tile)
                 && Self::frame_contains(frame, unit.tile)
         });
@@ -1061,6 +1061,7 @@ mod tests {
             salvaging: None,
             founding,
             repairing: false,
+            grounded: false,
         }
     }
 
@@ -1078,6 +1079,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         }
     }
 
@@ -1263,6 +1265,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         });
 
         let cases = [
@@ -1487,8 +1490,32 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         });
         assert!(!policy.supported_frame_restoration_needed(&occupied, HOME));
+
+        // A parked hostile airframe holds the ground like any body; the
+        // same airframe in the air does not.
+        let mut parked = ready.clone();
+        parked.enemy_units.push(UnitObs {
+            id: UnitId(21),
+            player: PlayerId(1),
+            kind: UnitKind::Condor,
+            tile: frame.offset(1, 1),
+            hp: UnitKind::Condor.stats().max_hp,
+            idle: true,
+            carrying: 0,
+            cargo: 0,
+            site: None,
+            salvaging: None,
+            founding: None,
+            repairing: false,
+            grounded: true,
+        });
+        assert!(!policy.supported_frame_restoration_needed(&parked, HOME));
+        let mut overflown = parked.clone();
+        overflown.enemy_units.last_mut().unwrap().grounded = false;
+        assert!(policy.supported_frame_restoration_needed(&overflown, HOME));
 
         let mut recent_battle = ready.clone();
         recent_battle.salvage_incidents.push(frame.offset(2, 0));
@@ -1673,6 +1700,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         });
         let mut policy = UtilityPolicy::new();
         assert!(

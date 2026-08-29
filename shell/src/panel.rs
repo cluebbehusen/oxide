@@ -583,7 +583,8 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
         | Order::AttackMove { .. }
         | Order::Advance { .. }
         | Order::Board { .. }
-        | Order::Unload { .. } => None,
+        | Order::Unload { .. }
+        | Order::Land { .. } => None,
     }
 }
 
@@ -638,6 +639,11 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
             VerbIcon::Move,
             "Unload",
             "Flying to a drop point to set every carried machine down.",
+        ),
+        Order::Land { .. } => (
+            VerbIcon::Move,
+            "Landing",
+            "Setting down on open ground; takes off again on the next order.",
         ),
         Order::Salvage { .. } => (
             VerbIcon::Salvage,
@@ -1105,6 +1111,9 @@ pub fn build_for_palette(
                     .map(|r| r.kind.stats().transport_size)
                     .sum();
                 sub = format!("{sub} | sling {held}/{capacity}");
+            }
+            if first.landed {
+                sub = format!("{sub} | landed");
             }
             sub
         } else {

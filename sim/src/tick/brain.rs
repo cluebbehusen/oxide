@@ -170,9 +170,23 @@ pub(super) fn run(
             }
         }
         let order = state.unit(id).expect("just seen").order;
+        {
+            // Takeoff: any program that is not "rest here" lifts a landed
+            // airframe off before it plans, so every order writer works
+            // unchanged and the first airborne tick steers from the parked
+            // heading at the ordinary turn rate.
+            let unit = state.unit_mut(id).expect("just seen");
+            if unit.landed && !unit.stays_parked() {
+                unit.landed = false;
+            }
+        }
         match order {
             Order::Idle => idle(state, index, id),
-            Order::Move { goal } => walk(state, id, goal, events),
+            Order::Move { goal } => {
+                if !land_at_destination(state, index, id, goal) {
+                    walk(state, id, goal, events);
+                }
+            }
             Order::Harvest {
                 node,
                 anchor,
@@ -218,6 +232,7 @@ pub(super) fn run(
             Order::Unload { at } => {
                 logistics::unload(state, id, at, &mut logistics_pending, events)
             }
+            Order::Land { goal } => land(state, index, id, goal, events),
         }
     }
     advance_upgrades(state, &mut builds);
@@ -244,7 +259,7 @@ use combat::{MotionSnapshot, advance, land_shells, retaliate, target_standing, t
 use economy::{
     advance_upgrades, build, commit_unit_welds, found, harvest, repair, repair_unit, salvage,
 };
-use locomotion::{attack_move, idle, walk};
+use locomotion::{attack_move, idle, land, land_at_destination, walk};
 
 /// The other half of simultaneity: buffered shots land now, in the order
 /// they were decided (unit-id order, then turret-id order). Damage first —
@@ -267,7 +282,7 @@ fn resolve_hits(
                 if let Some(v) = state.unit_mut(uid) {
                     let relevant_hit = v.kind == crate::stats::UnitKind::Harvester;
                     let relevant_loss =
-                        hit.damage >= v.hp && v.kind.stats().domain == crate::stats::Domain::Ground;
+                        hit.damage >= v.hp && v.domain() == crate::stats::Domain::Ground;
                     if v.hp > 0 && hit.damage > 0 && (relevant_hit || relevant_loss) {
                         incidents.push((v.player, v.tile()));
                     }

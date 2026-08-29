@@ -329,7 +329,7 @@ impl Executive {
                         unit.id == *target
                             && unit.player == me
                             && unit.hp > 0
-                            && unit.kind.stats().domain == crate::stats::Domain::Ground
+                            && unit.body_domain() == crate::stats::Domain::Ground
                     });
                     if !target_is_own_ground {
                         continue;
@@ -773,6 +773,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         }
     }
 
@@ -790,6 +791,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         }
     }
 

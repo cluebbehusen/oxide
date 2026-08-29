@@ -1371,6 +1371,7 @@ fn qa_rear_line_stays_frozen_while_player_facing_releases_repaired_units() {
         salvaging: None,
         founding: None,
         repairing: false,
+        grounded: false,
     };
 
     let mut exec = Executive::new();

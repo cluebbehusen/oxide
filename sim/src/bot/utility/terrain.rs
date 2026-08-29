@@ -930,7 +930,7 @@ impl UtilityPolicy {
             && !obs
                 .enemy_units
                 .iter()
-                .any(|unit| unit.kind.stats().domain == Domain::Ground && unit.tile == tile)
+                .any(|unit| unit.body_domain() == Domain::Ground && unit.tile == tile)
     }
 
     /// Known-buildable: not rock, not scrap, not under any known
@@ -1084,6 +1084,40 @@ mod tests {
     }
 
     #[test]
+    fn a_parked_hostile_airframe_closes_a_placement_tile_until_it_lifts_off() {
+        let mut obs = observation();
+        let policy = UtilityPolicy::new();
+        let tile = (0..obs.map_height)
+            .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
+            .find(|t| policy.placement_tile_open(&obs, *t))
+            .expect("the fixture has open ground");
+        obs.enemy_units.push(UnitObs {
+            id: UnitId(90),
+            player: PlayerId(1),
+            kind: UnitKind::Condor,
+            tile,
+            hp: UnitKind::Condor.stats().max_hp,
+            idle: true,
+            carrying: 0,
+            cargo: 0,
+            site: None,
+            salvaging: None,
+            founding: None,
+            repairing: false,
+            grounded: true,
+        });
+        assert!(
+            !policy.placement_tile_open(&obs, tile),
+            "a parked airframe is a ground body the sim would refuse a footprint over"
+        );
+        obs.enemy_units.last_mut().unwrap().grounded = false;
+        assert!(
+            policy.placement_tile_open(&obs, tile),
+            "the same airframe in the air leaves the tile open"
+        );
+    }
+
+    #[test]
     fn dense_placement_may_replace_the_first_spawn_when_an_egress_remains() {
         let obs = observation();
         let policy = UtilityPolicy::new();
@@ -1123,6 +1157,7 @@ mod tests {
             salvaging: None,
             founding: Some((BuildingKind::ScuttleCharge, mine_anchor)),
             repairing: false,
+            grounded: false,
         });
         assert_eq!(
             GroundEgressLayout::from_observation(&with_mine),
@@ -1317,6 +1352,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         };
         obs.my_units = vec![
             unit(1, UnitKind::Sentinel, TilePos::new(3, 3)),
@@ -1573,6 +1609,7 @@ mod tests {
             salvaging: None,
             founding: Some((BuildingKind::RepairBay, TilePos::new(12, 2))),
             repairing: false,
+            grounded: false,
         });
         let open = UtilityPolicy::ground_egress_base_open(&obs);
 
@@ -1734,6 +1771,7 @@ mod tests {
             salvaging: None,
             founding: Some((BuildingKind::Turret, TilePos::new(2, 2))),
             repairing: false,
+            grounded: false,
         });
         assert_ne!(
             baseline,

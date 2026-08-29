@@ -246,7 +246,7 @@ pub struct AirOperation {
     pub scout: Option<UnitId>,
     /// Last scout and destination dispatched by this operation.
     pub scout_dispatch: Option<(UnitId, TilePos)>,
-    /// Last home hold dispatched to the exact bomber wing.
+    /// Last hold (a landing near home) dispatched to the exact bomber wing.
     pub bomber_hold: Option<TilePos>,
     /// Last staging move dispatched to the artillery group. An explicit
     /// artillery attack clears this marker because the staging order no longer
@@ -784,7 +784,7 @@ fn assemble(
                 return;
             }
             enter(op, AirOperationPhase::SuppressAa, obs.tick);
-            hold_air_strike(op, plan, *home, out);
+            hold_air_strike(op, plan, obs, *home, out);
             return;
         }
         let Some(staging) = artillery_staging(op, obs, *home) else {
@@ -799,7 +799,7 @@ fn assemble(
                 recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
                 return;
             }
-            hold_bombers(op, *home, out);
+            hold_bombers(op, obs, *home, out);
             return;
         };
         if !dispatch_scout(op, obs, intel, landing_sites, out) {
@@ -808,7 +808,7 @@ fn assemble(
         }
         enter(op, AirOperationPhase::SuppressAa, obs.tick);
         stage_artillery(op, staging, out);
-        hold_bombers(op, *home, out);
+        hold_bombers(op, obs, *home, out);
     }
 }
 
@@ -1007,7 +1007,7 @@ fn strike(
                 recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
                 return;
             }
-            hold_bombers(op, home, out);
+            hold_bombers(op, obs, home, out);
             return;
         };
         Some(staging)
@@ -1709,7 +1709,7 @@ fn scout_and_hold(
     if !dispatch_scout(op, obs, intel, landing_sites, out) {
         return false;
     }
-    hold_air_strike(op, plan, home, out);
+    hold_air_strike(op, plan, obs, home, out);
     true
 }
 
@@ -1808,34 +1808,100 @@ fn scout_goal(
         })
 }
 
-fn hold_bombers(op: &mut AirOperation, home: TilePos, out: &mut StrategicDecision) {
-    if !op.bombers.is_empty() && op.bomber_hold != Some(home) {
+/// Nearest and farthest Chebyshev rings around the home anchor searched for
+/// a landing pad. Ring 1 is skipped so the pad never hugs the Foundry
+/// doorstep that production spawns and harvest traffic use.
+const LANDING_PAD_RINGS: core::ops::RangeInclusive<i32> = 2..=6;
+
+/// A parking tile for the held wing: the first tile by ring, then (y, x),
+/// around the home anchor that is on the map, not known impassable, and
+/// not under an own or allied footprint. The sim still snaps a landing to
+/// landable ground, so this only has to be a sensible, stable choice.
+fn landing_pad(obs: &Observation, home: TilePos) -> Option<TilePos> {
+    let footprints: Vec<(TilePos, (i32, i32))> = obs
+        .my_buildings
+        .iter()
+        .chain(obs.ally_buildings.iter())
+        .map(|building| (building.anchor, building.kind.base_stats().size))
+        .collect();
+    let under_footprint = |tile: TilePos| {
+        footprints.iter().any(|(anchor, (width, height))| {
+            tile.x >= anchor.x
+                && tile.x < anchor.x + width
+                && tile.y >= anchor.y
+                && tile.y < anchor.y + height
+        })
+    };
+    let in_bounds = |tile: TilePos| {
+        tile.x >= 0 && tile.y >= 0 && tile.x < obs.map_width && tile.y < obs.map_height
+    };
+    LANDING_PAD_RINGS
+        .flat_map(|ring| {
+            (-ring..=ring).flat_map(move |dy| {
+                (-ring..=ring)
+                    .filter(move |dx| dx.abs().max(dy.abs()) == ring)
+                    .map(move |dx| home.offset(dx, dy))
+            })
+        })
+        .find(|tile| in_bounds(*tile) && !obs.known_rock_at(*tile) && !under_footprint(*tile))
+}
+
+/// Parks the bomber wing on the landing pad. A landed bomber is idle, so
+/// the later strike dispatch lifts it off exactly like a person clicking an
+/// attack on a parked aircraft.
+fn hold_bombers(
+    op: &mut AirOperation,
+    obs: &Observation,
+    home: TilePos,
+    out: &mut StrategicDecision,
+) {
+    let pad = landing_pad(obs, home).unwrap_or(home);
+    if !op.bombers.is_empty() && op.bomber_hold != Some(pad) {
         out.intents.push(Intent::MoveUnits {
             units: op.bombers.clone(),
-            goal: home,
+            goal: pad,
         });
-        op.bomber_hold = Some(home);
+        op.bomber_hold = Some(pad);
     }
 }
 
 fn hold_air_strike(
     op: &mut AirOperation,
     plan: &AirPlan,
+    obs: &Observation,
     home: TilePos,
     out: &mut StrategicDecision,
 ) {
     if !plan.airborne() {
-        hold_bombers(op, home, out);
+        hold_bombers(op, obs, home, out);
         return;
     }
     let mut units = op.bombers.clone();
     units.extend(plan.screen.iter().copied());
     units.sort_unstable();
     units.dedup();
-    if !units.is_empty() && op.bomber_hold != Some(home) {
-        out.intents.push(Intent::MoveUnits { units, goal: home });
-        op.bomber_hold = Some(home);
+    let pad = landing_pad(obs, home).unwrap_or(home);
+    if units.is_empty() || op.bomber_hold == Some(pad) {
+        return;
     }
+    // Turn-limited kinds set down on the pad at the end of their move; the
+    // screen holds airborne over home.
+    let (landing, circling): (Vec<UnitId>, Vec<UnitId>) = units
+        .into_iter()
+        .partition(|id| unit(obs, *id).is_some_and(|member| member.kind.stats().turn_rate > 0));
+    if !landing.is_empty() {
+        out.intents.push(Intent::MoveUnits {
+            units: landing,
+            goal: pad,
+        });
+    }
+    if !circling.is_empty() {
+        out.intents.push(Intent::MoveUnits {
+            units: circling,
+            goal: home,
+        });
+    }
+    op.bomber_hold = Some(pad);
 }
 
 fn air_strike_members(op: &AirOperation, plan: &AirPlan, obs: &Observation) -> Vec<UnitId> {
@@ -2173,6 +2239,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         }
     }
 
@@ -2618,39 +2685,130 @@ mod tests {
 
     #[test]
     fn bomber_hold_is_dispatched_once_until_home_changes() {
+        let observation = obs(100);
         let mut operation = operation(AirOperationPhase::SuppressAa, 100);
+        let pad = landing_pad(&observation, HOME).expect("open ground rings the home anchor");
+        assert_eq!(
+            pad,
+            HOME.offset(-2, -2),
+            "the pad is the first ring-two tile by (y, x)"
+        );
 
         let mut first = StrategicDecision::default();
-        hold_bombers(&mut operation, HOME, &mut first);
+        hold_bombers(&mut operation, &observation, HOME, &mut first);
         assert_eq!(
             first.intents,
             [Intent::MoveUnits {
                 units: vec![UnitId(3), UnitId(4)],
-                goal: HOME,
+                goal: pad,
             }]
         );
+        assert_eq!(operation.bomber_hold, Some(pad));
 
         let mut repeated = StrategicDecision::default();
-        hold_bombers(&mut operation, HOME, &mut repeated);
+        hold_bombers(&mut operation, &observation, HOME, &mut repeated);
         assert!(
             repeated.intents.is_empty(),
             "the stable hold remains authoritative"
         );
 
         let replacement_home = HOME.offset(2, 1);
+        let replacement_pad = landing_pad(&observation, replacement_home).unwrap();
+        assert_ne!(replacement_pad, pad);
         let mut redirected = StrategicDecision::default();
-        hold_bombers(&mut operation, replacement_home, &mut redirected);
+        hold_bombers(
+            &mut operation,
+            &observation,
+            replacement_home,
+            &mut redirected,
+        );
         assert_eq!(
             redirected.intents,
             [Intent::MoveUnits {
                 units: vec![UnitId(3), UnitId(4)],
-                goal: replacement_home,
+                goal: replacement_pad,
             }]
         );
 
         let mut replacement_repeated = StrategicDecision::default();
-        hold_bombers(&mut operation, replacement_home, &mut replacement_repeated);
+        hold_bombers(
+            &mut operation,
+            &observation,
+            replacement_home,
+            &mut replacement_repeated,
+        );
         assert!(replacement_repeated.intents.is_empty());
+    }
+
+    #[test]
+    fn landing_pad_skips_footprints_known_rock_and_the_map_edge() {
+        let mut observation = obs(100);
+        let foundry_size = BuildingKind::Foundry.base_stats().size;
+        let inside = |tile: TilePos| {
+            tile.x >= HOME.x
+                && tile.x < HOME.x + foundry_size.0
+                && tile.y >= HOME.y
+                && tile.y < HOME.y + foundry_size.1
+        };
+        observation.my_buildings = vec![building(20, 0, BuildingKind::Foundry, HOME, true)];
+        observation.my_queues = vec![Vec::new()];
+        // Rock every ring-two tile outside the footprint so the only
+        // ring-two candidates left are under the Foundry itself.
+        observation.known_rock = (-2..=2)
+            .flat_map(|dy| (-2..=2).map(move |dx| HOME.offset(dx, dy)))
+            .filter(|tile| tile.chebyshev(HOME) == 2 && !inside(*tile))
+            .collect();
+        observation.known_rock.sort_by_key(|tile| (tile.y, tile.x));
+
+        let pad = landing_pad(&observation, HOME).expect("ring three is open");
+        assert!(!inside(pad), "the pad must never sit under the Foundry");
+        assert!(!observation.known_rock_at(pad));
+        assert_eq!(pad.chebyshev(HOME), 3);
+        assert_eq!(pad, HOME.offset(-3, -3));
+
+        let corner = TilePos::new(1, 1);
+        let corner_pad = landing_pad(&obs(100), corner).expect("the corner has open ground");
+        assert!(corner_pad.x >= 0 && corner_pad.y >= 0);
+        assert_eq!(corner_pad, TilePos::new(3, 0));
+
+        let mut sealed = obs(100);
+        sealed.known_rock = (0..sealed.map_height)
+            .flat_map(|y| (0..sealed.map_width).map(move |x| TilePos::new(x, y)))
+            .collect();
+        assert_eq!(landing_pad(&sealed, HOME), None);
+    }
+
+    #[test]
+    fn airborne_hold_lands_the_bombers_and_keeps_a_fixed_wing_screen_over_home() {
+        let mut observation = wealthy_island_obs(100, 1);
+        observation
+            .my_units
+            .push(own(30, UnitKind::Buzzard, TilePos::new(5, 8)));
+        let mut plan = AirPlan::island(&profile(), &observation);
+        plan.screen = vec![UnitId(30)];
+        let mut operation = operation(AirOperationPhase::SuppressAa, 100);
+        let pad = landing_pad(&observation, HOME).unwrap();
+
+        let mut held = StrategicDecision::default();
+        hold_air_strike(&mut operation, &plan, &observation, HOME, &mut held);
+        assert_eq!(
+            held.intents,
+            [
+                Intent::MoveUnits {
+                    units: vec![UnitId(3), UnitId(4)],
+                    goal: pad,
+                },
+                Intent::MoveUnits {
+                    units: vec![UnitId(30)],
+                    goal: HOME,
+                },
+            ]
+        );
+        assert_eq!(operation.bomber_hold, Some(pad));
+
+        let mut repeated = StrategicDecision::default();
+        hold_air_strike(&mut operation, &plan, &observation, HOME, &mut repeated);
+        assert!(repeated.intents.is_empty());
     }
 
     #[test]
@@ -4758,7 +4916,11 @@ mod tests {
             }
         )));
         assert!(verification.intents.contains(&Intent::MoveUnits {
-            units: vec![UnitId(3), UnitId(4), UnitId(30), UnitId(31)],
+            units: vec![UnitId(3), UnitId(4)],
+            goal: landing_pad(&battle, HOME).unwrap(),
+        }));
+        assert!(verification.intents.contains(&Intent::MoveUnits {
+            units: vec![UnitId(30), UnitId(31)],
             goal: HOME,
         }));
 
@@ -4905,7 +5067,7 @@ mod tests {
         );
         assert!(absent_decision.intents.contains(&Intent::MoveUnits {
             units: vec![UnitId(3), UnitId(4)],
-            goal: HOME,
+            goal: landing_pad(&absent, HOME).unwrap(),
         }));
         assert!(absent_decision.intents.iter().all(|intent| !matches!(
             intent,
@@ -4960,7 +5122,7 @@ mod tests {
         )));
         assert!(current_decision.intents.contains(&Intent::MoveUnits {
             units: vec![UnitId(3), UnitId(4)],
-            goal: HOME,
+            goal: landing_pad(&current, HOME).unwrap(),
         }));
 
         let mut remembered = current.clone();
@@ -5014,7 +5176,7 @@ mod tests {
         );
         assert!(absent_decision.intents.contains(&Intent::MoveUnits {
             units: vec![UnitId(3), UnitId(4)],
-            goal: HOME,
+            goal: landing_pad(&absent, HOME).unwrap(),
         }));
     }
 
@@ -5819,7 +5981,7 @@ mod tests {
         )));
         assert!(decision.intents.contains(&Intent::MoveUnits {
             units: vec![UnitId(3), UnitId(4)],
-            goal: HOME,
+            goal: landing_pad(&battle, HOME).unwrap(),
         }));
         assert_eq!(
             planner.remaining_airwork_ticks(&battle),

@@ -186,11 +186,17 @@ pub enum Order {
         transport: crate::ids::UnitId,
     },
     /// Fly to a tile and set every carried machine down on open ground
-    /// around it. (Last variant by appending discipline: earlier
-    /// discriminants keep their serialized bytes.)
+    /// around it.
     Unload {
         /// The drop point.
         at: TilePos,
+    },
+    /// Fly a run-in onto a ground tile and set the airframe down on its
+    /// center. (Last variant by appending discipline: earlier
+    /// discriminants keep their serialized bytes.)
+    Land {
+        /// The tile to park on.
+        goal: TilePos,
     },
 }
 
@@ -293,12 +299,39 @@ pub struct Unit {
     /// keeps its id (ids are never reused) and dies with the carrier.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cargo: Vec<Unit>,
+    /// Parked on the ground at its tile center. Only turn-limited kinds
+    /// land; a landed body is physically a ground body (see
+    /// [`Unit::domain`]) until an order lifts it off again.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub landed: bool,
 }
 
 impl Unit {
     /// The tile this unit currently occupies.
     pub fn tile(&self) -> TilePos {
         TilePos::containing(self.pos)
+    }
+
+    /// The movement layer this body occupies right now: a landed airframe
+    /// is a ground body for targeting, collision, charges, and footprints,
+    /// whatever its kind flies as.
+    pub fn domain(&self) -> crate::stats::Domain {
+        if self.landed {
+            crate::stats::Domain::Ground
+        } else {
+            self.kind.stats().domain
+        }
+    }
+
+    /// Whether a landed airframe's program leaves it on the ground: idle,
+    /// or a landing on the very tile it rests on. Anything else lifts it
+    /// off at the next brain tick.
+    pub(crate) fn stays_parked(&self) -> bool {
+        match self.order {
+            Order::Idle => true,
+            Order::Land { goal } => goal == self.tile(),
+            _ => false,
+        }
     }
 
     /// Ends the active order cleanly: a looping program rotates it to the
@@ -871,6 +904,32 @@ impl State {
             if !unit_inside_envelope(u) {
                 return Err(E::UnitOutsideEnvelope(u.id));
             }
+            if u.landed {
+                if stats.turn_rate == 0 {
+                    return Err(E::LandedNonAircraft(u.id));
+                }
+                let touchdown = crate::stats::LANDING_TOUCHDOWN;
+                if u.pos.dist_sq(u.tile().center()) > touchdown * touchdown {
+                    return Err(E::LandedOffCenter(u.id));
+                }
+                if u.path.is_some() {
+                    return Err(E::LandedWithPath(u.id));
+                }
+                if !crate::tick::flight::escapable(&self.map, u.pos, u.heading, stats.turn_radius())
+                {
+                    return Err(E::LandedUnescapable(u.id));
+                }
+                // Terrain only: a friendly site may claim the tile under a
+                // parked airframe between ticks, and eviction resolves it
+                // on the next.
+                if self
+                    .map
+                    .tile(u.tile())
+                    .is_none_or(|t| t.terrain.blocks_ground())
+                {
+                    return Err(E::LandedOnUnstandableGround(u.id));
+                }
+            }
             if std::iter::once(&u.order)
                 .chain(&u.queue)
                 .any(|order| !harvest_order_inside_zone(order))
@@ -945,6 +1004,20 @@ impl State {
                 }
                 if rider.id.0 >= self.next_unit_id {
                     return Err(E::StaleUnitCounter);
+                }
+            }
+        }
+        // Two parked bodies inside their combined radius could never have
+        // met: a touchdown needs that clearance and nothing moves a parked
+        // body afterwards.
+        for (i, a) in self.units.iter().enumerate() {
+            if !a.landed {
+                continue;
+            }
+            for b in self.units[i + 1..].iter().filter(|b| b.landed) {
+                let clearance = a.kind.stats().radius + b.kind.stats().radius;
+                if a.pos.dist_sq(b.pos) < clearance * clearance {
+                    return Err(E::LandedOverlap(a.id, b.id));
                 }
             }
         }
@@ -1151,7 +1224,7 @@ impl State {
                 (unit.hp > 0
                     && self.hostile(viewer, unit.player)
                     && self.can_see(viewer, unit.tile()))
-                .then_some(unit.kind.stats().domain)
+                .then_some(unit.domain())
             }),
             Target::Building(id) => self.building(id).and_then(|building| {
                 (building.hp > 0
@@ -1413,6 +1486,7 @@ impl State {
             // fixed so a wing leaving one factory doesn't share one
             // heading forever; any constant would be equally legal.
             heading: (TilePos::containing(pos).x as u8).wrapping_mul(64),
+            landed: false,
             cargo: Vec::new(),
         });
         id
@@ -1568,6 +1642,7 @@ fn order_inside_envelope(order: &Order) -> bool {
         Order::Found { anchor, .. } => tile_inside_envelope(*anchor),
         Order::Board { .. } => true,
         Order::Unload { at } => tile_inside_envelope(*at),
+        Order::Land { goal } => tile_inside_envelope(*goal),
     }
 }
 
@@ -1594,7 +1669,8 @@ fn order_reference(order: &Order) -> Option<Target> {
         | Order::Harvest { .. }
         | Order::AttackMove { .. }
         | Order::Advance { .. }
-        | Order::Found { .. } => None,
+        | Order::Found { .. }
+        | Order::Land { .. } => None,
         Order::Attack { target, .. } => Some(*target),
         Order::Build { site } => Some(Target::Building(*site)),
         Order::Repair { building } | Order::Salvage { building } => {
@@ -1957,6 +2033,27 @@ pub enum StateIntegrityError {
     /// A rider whose weapon cooldowns exceed its own weapon table.
     #[error("unit {0} carries a rider with impossible weapon cooldowns")]
     CargoCooldownOutOfRange(UnitId),
+    /// A machine that cannot land is marked landed.
+    #[error("unit {0} is landed but is not an aircraft that can land")]
+    LandedNonAircraft(UnitId),
+    /// A landed airframe resting farther from its tile center than a
+    /// touchdown allows.
+    #[error("unit {0} is landed off its tile center")]
+    LandedOffCenter(UnitId),
+    /// A landed airframe carrying a path; takeoff clears the flag before
+    /// any route is written.
+    #[error("unit {0} is landed but holds a path")]
+    LandedWithPath(UnitId),
+    /// A landed airframe parked on a heading no turn can fly out of
+    /// inside the world.
+    #[error("unit {0} is landed on a heading it cannot fly out of")]
+    LandedUnescapable(UnitId),
+    /// A landed airframe resting on terrain no ground body can stand on.
+    #[error("unit {0} is landed on ground it cannot stand on")]
+    LandedOnUnstandableGround(UnitId),
+    /// Two landed airframes resting inside their combined radius.
+    #[error("units {0} and {1} are parked inside each other")]
+    LandedOverlap(UnitId, UnitId),
     /// The same unit id appears twice across the world and every hold.
     #[error("a unit id is aliased between the world and a cargo hold")]
     AliasedCargoId,

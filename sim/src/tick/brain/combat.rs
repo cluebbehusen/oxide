@@ -4,7 +4,8 @@
 //! nothing here applies damage directly.
 
 use super::super::flight;
-use super::super::{route_for, route_for_position};
+use super::super::landing;
+use super::super::route_for;
 use super::PendingHit;
 use super::locomotion::{approach_rect, walk};
 use crate::event::{Event, StallReason};
@@ -17,9 +18,7 @@ use chassis::grid::TilePos;
 /// The movement domain a target occupies (buildings sit on the ground).
 fn target_domain(state: &State, target: Target) -> Domain {
     match target {
-        Target::Unit(uid) => state
-            .unit(uid)
-            .map_or(Domain::Ground, |u| u.kind.stats().domain),
+        Target::Unit(uid) => state.unit(uid).map_or(Domain::Ground, |u| u.domain()),
         Target::Building(_) => Domain::Ground,
     }
 }
@@ -143,7 +142,7 @@ fn visible_hostile_cluster_at(
         .filter(|unit| {
             unit.hp > 0
                 && state.hostile(owner, unit.player)
-                && weapon.targets.covers(unit.kind.stats().domain)
+                && weapon.targets.covers(unit.domain())
                 && state.can_see(owner, unit.tile())
                 && unit.pos.dist_sq(current) <= radius_sq
         })
@@ -330,7 +329,7 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
         for u in state.units.iter() {
             if u.hp == 0
                 || !state.hostile(shell.player, u.player)
-                || !shell.targets.covers(u.kind.stats().domain)
+                || !shell.targets.covers(u.domain())
                 || u.pos.dist_sq(shell.impact) > radius_sq
             {
                 continue;
@@ -375,7 +374,7 @@ fn buffer_shot(
         if u.hp == 0
             || !state.hostile(attacker_owner, u.player)
             || Target::Unit(u.id) == victim
-            || !weapon.targets.covers(u.kind.stats().domain)
+            || !weapon.targets.covers(u.domain())
             || u.pos.dist_sq(aim) > radius_sq
         {
             continue;
@@ -477,12 +476,10 @@ pub(super) fn turret_fire(
                     .units
                     .iter()
                     .filter(|u| {
-                        state.hostile(me, u.player)
-                            && u.hp > 0
-                            && atk.targets.covers(u.kind.stats().domain)
+                        state.hostile(me, u.player) && u.hp > 0 && atk.targets.covers(u.domain())
                     })
                     .filter(|u| state.can_see(me, u.tile()))
-                    .map(|u| (center.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
+                    .map(|u| (center.dist_sq(u.pos), u.id, u.pos, u.domain()))
                     .filter(|(d, _, _, _)| within_weapon_reach(atk, *d))
                     .filter(|(_, _, pos, dom)| {
                         let full = traces_terrain(atk, Domain::Ground, *dom);
@@ -707,17 +704,34 @@ pub(super) fn acquire_target(
     index: &super::super::spatial::UnitIndex,
     id: UnitId,
 ) -> Option<Target> {
+    let pos = state.unit(id).expect("caller checked").pos;
+    acquire_target_from(state, index, id, pos)
+}
+
+/// The same pick judged as if the unit stood at `pos`: what a landing
+/// aircraft would find in reach once parked on its tile, not what it
+/// happens to pass on the way there.
+pub(super) fn acquire_target_from(
+    state: &State,
+    index: &super::super::spatial::UnitIndex,
+    id: UnitId,
+    pos: chassis::fx::Vec2Fx,
+) -> Option<Target> {
     let unit = state.unit(id).expect("caller checked");
     let stats = unit.kind.stats();
     if !stats.can_fight() {
         return None;
     }
-    let (pos, me) = (unit.pos, unit.player);
+    let me = unit.player;
     let acquisition_range = stats.aggro_range;
-    let needs_shared_sight = unit.kind == UnitKind::Bombard;
+    // Acquisition normally rides on the unit's own eyes (vision is wider
+    // than aggro), except for the Bombard, which outshoots its sight. A
+    // pick judged from somewhere else can reach beyond those eyes, so it
+    // must lean on what the player actually sees or it becomes an oracle.
+    let needs_sight = unit.kind == UnitKind::Bombard || pos != unit.pos;
     let aggro_sq = acquisition_range * acquisition_range;
 
-    let home = unit.tile();
+    let home = TilePos::containing(pos);
     let reach = acquisition_range.floor().to_num::<i32>() + 1;
     let mut unit_target: Option<(chassis::fx::Fx, UnitId)> = None;
     for dy in -reach..=reach {
@@ -725,14 +739,14 @@ pub(super) fn acquire_target(
             let u = &state.units[slot];
             if !state.hostile(me, u.player)
                 || u.hp == 0
-                || !stats.can_target(u.kind.stats().domain)
-                || (needs_shared_sight && !state.can_see(me, u.tile()))
+                || !stats.can_target(u.domain())
+                || (needs_sight && !state.can_see(me, u.tile()))
             {
                 continue;
             }
             let d = pos.dist_sq(u.pos);
             let outside_dead_zone = stats.weapons.iter().any(|weapon| {
-                weapon.targets.covers(u.kind.stats().domain)
+                weapon.targets.covers(u.domain())
                     && d >= weapon.minimum_range * weapon.minimum_range
             });
             if !(d <= aggro_sq
@@ -752,7 +766,7 @@ pub(super) fn acquire_target(
                 let range = stats
                     .weapons
                     .iter()
-                    .find(|w| w.targets.covers(u.kind.stats().domain))
+                    .find(|w| w.targets.covers(u.domain()))
                     .map_or(chassis::fx::Fx::ZERO, |w| w.range);
                 if chase_stand_ins(state, stats.domain, victim_tile, range).is_empty() {
                     continue;
@@ -788,7 +802,7 @@ pub(super) fn acquire_target(
         // machine would be shooting at something its owner cannot know
         // exists — the stealth leaking through the guns.
         .filter(|(_, b)| state.building_apparent(me, b))
-        .filter(|(_, b)| !needs_shared_sight || b.tiles().any(|tile| state.can_see(me, tile)))
+        .filter(|(_, b)| !needs_sight || b.tiles().any(|tile| state.can_see(me, tile)))
         .map(|(d, b)| (d, b.id))
         .min()
         .map(|(_, bid)| Target::Building(bid))
@@ -810,6 +824,9 @@ pub(super) fn advance(
     hits: &mut Vec<PendingHit>,
     launches: &mut Vec<crate::state::Shell>,
 ) {
+    if super::locomotion::land_at_destination(state, index, id, goal) {
+        return;
+    }
     walk(state, id, goal, events);
     if !state
         .unit(id)
@@ -834,7 +851,7 @@ pub(super) fn advance(
     for dy in -reach..=reach {
         for &(_, slot) in index.row_span(home.y + dy, home.x - reach, home.x + reach) {
             let target = &state.units[slot];
-            let domain = target.kind.stats().domain;
+            let domain = target.domain();
             if target.hp == 0
                 || !state.hostile(me, target.player)
                 || !weapon.targets.covers(domain)
@@ -987,7 +1004,7 @@ fn sapper_attack(
             if u.hp == 0
                 || !state.hostile(me, u.player)
                 || Target::Unit(u.id) == target
-                || u.kind.stats().domain != Domain::Ground
+                || u.domain() != Domain::Ground
                 || u.pos.dist_sq(aim_point) > ring_sq
             {
                 continue;
@@ -1267,7 +1284,15 @@ fn bomber_attack(
         .as_ref()
         .is_none_or(|p| p.goal != target_tile && p.goal.chebyshev(target_tile) > 1);
     if stale {
-        match bomber_route(state, stats, kind, pos, heading, target_tile) {
+        match landing::run_in_route(
+            state,
+            stats,
+            kind,
+            pos,
+            heading,
+            target_tile,
+            landing::RunIn::Attack,
+        ) {
             Some(waypoints) => {
                 let unit = state.unit_mut(id).expect("caller checked");
                 unit.path = Some(PathFollow {
@@ -1289,77 +1314,6 @@ fn bomber_attack(
             }
         }
     }
-}
-
-/// The route a bomber flies to its attack tile. A straight line serves when
-/// the airframe can still be flown out of the state it reaches at the edge
-/// of its acceptance ring. Otherwise the run is planned through an initial
-/// point so the final leg runs parallel to a wall: a corner target is
-/// attacked along one of its walls instead of by a dive the turn radius
-/// cannot recover from. Candidates are ranked by the turn needed to head
-/// for the initial point, then by length, then by run-in bearing relative
-/// to the current heading, so mirrored seats plan mirrored runs.
-fn bomber_route(
-    state: &State,
-    stats: &crate::stats::UnitStats,
-    kind: UnitKind,
-    pos: Vec2Fx,
-    heading: u8,
-    target: TilePos,
-) -> Option<Vec<TilePos>> {
-    let map = state.map();
-    let radius = stats.turn_radius();
-    let accept = stats.turn_acceptance();
-    let goal = target.center();
-    let approach = goal - pos;
-    let length = approach.length();
-    if length <= accept {
-        return route_for_position(state, kind, pos, target);
-    }
-    let along = approach / length;
-    if flight::escapable(
-        map,
-        goal - along * accept,
-        flight::heading_of(along),
-        radius,
-    ) {
-        return route_for_position(state, kind, pos, target);
-    }
-    let mut best: Option<((u16, Fx, u8), TilePos)> = None;
-    for run_in in [0u8, 64, 128, 192] {
-        let v = chassis::compass::dir(run_in);
-        if !flight::escapable(map, goal - v * accept, run_in, radius) {
-            continue;
-        }
-        for distance in [7i64, 5] {
-            let point = TilePos::containing(goal - v * Fx::from_num(distance));
-            if !state.passable_for(Domain::Air, point) {
-                continue;
-            }
-            let leg = point.center() - pos;
-            if leg == Vec2Fx::ZERO
-                || !flight::escapable(map, point.center(), flight::heading_of(leg), radius)
-            {
-                continue;
-            }
-            let turn = flight::turn_to(heading, leg).map_or(0, |(_, sweep)| sweep);
-            let key = (
-                turn,
-                leg.length() + Fx::from_num(distance),
-                run_in.wrapping_sub(heading),
-            );
-            if best.as_ref().is_none_or(|(held, _)| key < *held) {
-                best = Some((key, point));
-            }
-            break;
-        }
-    }
-    let Some((_, point)) = best else {
-        return route_for_position(state, kind, pos, target);
-    };
-    let mut waypoints = route_for_position(state, kind, pos, point)?;
-    waypoints.extend(route_for_position(state, kind, point.center(), target)?);
-    Some(waypoints)
 }
 
 /// Where a bomber rolls out after a release: straight ahead along its
@@ -1786,7 +1740,7 @@ fn sidearm_victim(
     for dy in -reach..=reach {
         for &(_, slot) in index.row_span(home.y + dy, home.x - reach, home.x + reach) {
             let u = &state.units[slot];
-            let domain = u.kind.stats().domain;
+            let domain = u.domain();
             if !state.hostile(me, u.player)
                 || u.hp == 0
                 || !weapon.targets.covers(domain)
@@ -1977,7 +1931,7 @@ mod tests {
             .filter(|u| {
                 state.hostile(me, u.player)
                     && u.hp > 0
-                    && stats.can_target(u.kind.stats().domain)
+                    && stats.can_target(u.domain())
                     && (!needs_shared_sight || state.can_see(me, u.tile()))
             })
             .map(|u| (pos.dist_sq(u.pos), u.id))
@@ -2224,19 +2178,10 @@ mod tests {
             .units
             .iter()
             .filter(|u| {
-                state.hostile(me, u.player)
-                    && u.hp > 0
-                    && weapon.targets.covers(u.kind.stats().domain)
+                state.hostile(me, u.player) && u.hp > 0 && weapon.targets.covers(u.domain())
             })
             .filter(|u| state.can_see(me, u.tile()))
-            .map(|u| {
-                (
-                    shooter_pos.dist_sq(u.pos),
-                    u.id,
-                    u.pos,
-                    u.kind.stats().domain,
-                )
-            })
+            .map(|u| (shooter_pos.dist_sq(u.pos), u.id, u.pos, u.domain()))
             .filter(|(d, ..)| within_weapon_reach(weapon, *d))
             .filter(|(_, _, upos, dom)| {
                 let full = traces_terrain(weapon, shooter_domain, *dom);

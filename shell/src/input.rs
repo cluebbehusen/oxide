@@ -1446,7 +1446,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                     u.player == game.human
                         && u.hp > 0
                         && u.hp < u.kind.stats().max_hp
-                        && u.kind.stats().domain == oxide_sim::stats::Domain::Ground
+                        && u.domain() == oxide_sim::stats::Domain::Ground
                 })
                 .map(|u| {
                     let at = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());

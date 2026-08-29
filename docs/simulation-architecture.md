@@ -155,6 +155,50 @@ radius cannot recover from. Bombs fall on the targeted building's center rather
 than on the footprint edge point that range is measured to, so a corner shared
 with a neighbouring footprint cannot hand the hit to the neighbour.
 
+Turn-limited aircraft land on any ordinary ground tile, and there is no landing
+command: a flier's ground destination is a landing. A move, attack-move, or
+advance with nothing queued behind it and no patrol loop hands over to an
+internal `Land` order once the airframe is within `LANDING_HANDOFF_REACH` of its
+goal and nothing is in acquisition range, snapping to the nearest clear landable
+tile within `GOAL_SNAP_RADIUS`; with an enemy in reach it keeps the ordinary
+arrival contract and fights as an idle unit would. A tile is landable only when
+some run-in bearing exists whose parked heading the airframe could fly out of
+again, either by a half turn or by straight flight into open ground; corner
+tiles therefore land only with the nose toward the field. The `Land` order flies
+straight in on whatever bearing the tile lies whenever the nose can settle onto
+that line before reaching it; otherwise it flies a run-in entered from a fix
+twice as far out as the initial point on the same bearing, so the leg is joined
+lined up rather than from whatever heading reached it, and then chases a carrot
+on the run-in centerline two turn radii ahead of its own projection. Both fixes
+must sit strictly inside the flight envelope on a heading the airframe can fly
+out of, and the whole line must be open sky; a tile with no such line is not
+landable. Acquisition is judged from the landing tile, not from the airframe on
+its way there, so a retreat past a gun still completes; judged from anywhere but
+the unit's own position it is gated on what the player currently sees, since the
+tile can lie beyond the airframe's own eyes. A touchdown also needs clearance:
+no other ground body on the tile or within the two bodies' combined radius of
+the resting point, because parked bodies are immovable and such an overlap would
+never resolve. It touches down when it passes within `LANDING_TOUCHDOWN` of the
+tile center and rests where it met the tile, keeping its heading; the `landed`
+flag makes it a ground body for targeting, collision, buried charges, and
+footprints while it never moves. A tile that fills during the approach sends the
+landing around to the nearest clear tile; an overflown tile costs a fresh
+run-in. An idle aircraft lands itself after `AUTO_LAND_IDLE_TICKS` of orbit, and
+both it and a go-around prefer a tile they can fly straight in to over the
+nearest one, so a self-chosen pad rarely costs a procedure turn; run-in
+distances are tried nearest first. Any program other than idling or landing
+where it rests lifts a landed airframe off at its next brain tick, and takeoff
+is ordinary heading-first flight from the parked heading; a landed body evicted
+from a claimed footprint lifts off along its escape route. The validator refuses
+a landed non-aircraft, a landed body beyond touchdown reach of its tile center
+or holding a path, a parked heading it could not fly out of, and a rest on
+terrain no ground body can stand on (terrain only: a friendly site may claim the
+tile between ticks and eviction resolves it on the next), and two parked bodies
+inside their combined radius. It deliberately allows a parked airframe over live
+scrap: a flyer downed over the tile deposits wreck salvage there, so that state
+is reachable in play even though a landing never starts on scrap. A parked
+airframe is a legal weld patient; the torch ends when it lifts off.
+
 A path is advisory rather than a reservation. Every ground step rechecks its
 next waypoint because construction can claim ground after the path was made; an
 invalid path is dropped and behavior may route again on the next tick. When a

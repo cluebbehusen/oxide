@@ -277,6 +277,7 @@ mod tests {
             salvaging: None,
             founding,
             repairing: false,
+            grounded: false,
         }
     }
 

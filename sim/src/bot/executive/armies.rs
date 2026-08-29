@@ -481,7 +481,7 @@ impl Executive {
                                 .copied()
                                 .filter(|member| {
                                     !is_artillery(member)
-                                        && can_attack_domain(member, unit.kind.stats().domain)
+                                        && can_attack_domain(member, unit.body_domain())
                                 })
                                 .collect();
                             obs.visible(unit.tile)
@@ -490,9 +490,10 @@ impl Executive {
                                 // lets ordinary acquisition fire in range;
                                 // pursuing a flyer's moving tile can ask
                                 // every member to path onto water or roofs.
-                                && unit.kind.stats().domain == crate::stats::Domain::Ground
+                                // A parked airframe is such a body.
+                                && unit.body_domain() == crate::stats::Domain::Ground
                                 && members.iter().any(|member| {
-                                    can_attack_domain(unit, member.kind.stats().domain)
+                                    can_attack_domain(unit, member.body_domain())
                                 })
                                 && !focus_members.is_empty()
                                 // Focus fire is a shooting decision, not a
@@ -544,9 +545,7 @@ impl Executive {
                                         .iter()
                                         .find(|unit| unit.id == target)
                                         .expect("a selected focus remains observable")
-                                        .kind
-                                        .stats()
-                                        .domain;
+                                        .body_domain();
                                     let units = members
                                         .iter()
                                         .filter(|member| {
@@ -699,7 +698,7 @@ fn coordinated_defense_target(
     current: Option<Target>,
 ) -> Option<(Target, Vec<BuildingId>)> {
     let candidate = |enemy: &UnitObs| {
-        let target_domain = enemy.kind.stats().domain;
+        let target_domain = enemy.body_domain();
         let target_center = enemy.tile.center();
         let mut buildings: Vec<_> = obs
             .my_buildings
@@ -782,7 +781,7 @@ fn can_attack_domain(unit: &UnitObs, domain: crate::stats::Domain) -> bool {
 
 fn can_focus_without_chasing(attacker: &UnitObs, target: &UnitObs) -> bool {
     let distance = attacker.tile.chebyshev(target.tile);
-    let target_domain = target.kind.stats().domain;
+    let target_domain = target.body_domain();
     attacker.kind.stats().weapons.iter().any(|weapon| {
         weapon.targets.covers(target_domain) && distance <= weapon.range.ceil().to_num::<i32>()
     }) || (attacker.kind.stats().demolition
@@ -1076,12 +1075,11 @@ fn matched_strength(mine_units: &[&UnitObs], opposition: &[&UnitObs]) -> (u64, u
     use crate::stats::Domain;
     // Matched pairs: each side is worth what it can actually apply to
     // the domains the other side fields. An interceptor over a pure
-    // ground brawl contributes nothing to either column.
+    // ground brawl contributes nothing to either column, and a parked
+    // airframe counts where it sits, not where its kind flies.
     let domains_of = |units: &[&UnitObs]| {
-        let ground = units
-            .iter()
-            .any(|u| u.kind.stats().domain == Domain::Ground);
-        let air = units.iter().any(|u| u.kind.stats().domain == Domain::Air);
+        let ground = units.iter().any(|u| u.body_domain() == Domain::Ground);
+        let air = units.iter().any(|u| u.body_domain() == Domain::Air);
         (ground, air)
     };
     let (their_ground, their_air) = domains_of(opposition);
@@ -1138,6 +1136,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         }
     }
 
@@ -2122,6 +2121,132 @@ mod tests {
             );
             assert_eq!(variant.armies[0].focus, Some(UnitId(102)));
         }
+    }
+
+    #[test]
+    fn coordinated_focus_accepts_a_parked_airframe_as_a_ground_body() {
+        let staging = TilePos::new(4, 4);
+        let members = vec![
+            unit(
+                1,
+                PlayerId(0),
+                UnitKind::Lancer,
+                TilePos::new(10, 10),
+                UnitKind::Lancer.stats().max_hp,
+                false,
+            ),
+            unit(
+                2,
+                PlayerId(0),
+                UnitKind::Lancer,
+                TilePos::new(10, 11),
+                UnitKind::Lancer.stats().max_hp,
+                false,
+            ),
+        ];
+        let mut parked = unit(
+            101,
+            PlayerId(1),
+            UnitKind::Condor,
+            TilePos::new(13, 10),
+            1,
+            false,
+        );
+        parked.grounded = true;
+        assert!(
+            !UnitKind::Lancer
+                .stats()
+                .can_target(crate::stats::Domain::Air),
+            "premise: the front-liner is a ground-only gun"
+        );
+        let body = army(0, vec![UnitId(1), UnitId(2)], ArmyState::Engaging, staging);
+        let executive = Executive {
+            armies: vec![body],
+            next_army: 1,
+            rear: Vec::new(),
+            exhausted_rear: Vec::new(),
+            player_frame: None,
+        };
+
+        let obs = observation(0, (40, 40), members.clone(), vec![parked.clone()]);
+        let mut grounded = executive.clone();
+        let commands = grounded.maintain_player_facing(PlayerId(0), &obs, staging);
+        assert_eq!(
+            commands,
+            vec![PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Attack {
+                    units: vec![UnitId(1), UnitId(2)],
+                    target: Target::Unit(UnitId(101)),
+                    queue: false,
+                },
+            }],
+            "a parked bomber is a ground target for ground guns: {:?}",
+            grounded.armies
+        );
+        assert_eq!(grounded.armies[0].focus, Some(UnitId(101)));
+
+        let mut airborne = parked;
+        airborne.grounded = false;
+        let obs = observation(0, (40, 40), members, vec![airborne]);
+        let mut flying = executive.clone();
+        let commands = flying.maintain_player_facing(PlayerId(0), &obs, staging);
+        assert!(
+            commands.iter().all(|command| !matches!(
+                &command.command,
+                Command::Attack {
+                    target: Target::Unit(UnitId(101)),
+                    ..
+                }
+            )),
+            "the same airframe aloft is not a focus for ground-only guns: {commands:?}"
+        );
+        assert_eq!(flying.armies[0].focus, None);
+    }
+
+    #[test]
+    fn matched_strength_counts_a_parked_airframe_in_the_ground_column() {
+        let lancer = unit(
+            1,
+            PlayerId(0),
+            UnitKind::Lancer,
+            TilePos::new(10, 10),
+            UnitKind::Lancer.stats().max_hp,
+            false,
+        );
+        let mut condor = unit(
+            101,
+            PlayerId(1),
+            UnitKind::Condor,
+            TilePos::new(12, 10),
+            UnitKind::Condor.stats().max_hp,
+            false,
+        );
+
+        let (mine_aloft, theirs_aloft) = matched_strength(&[&lancer], &[&condor]);
+        assert_eq!(
+            mine_aloft, 0,
+            "a ground-only gun applies nothing to an airborne bomber"
+        );
+        assert!(
+            theirs_aloft > 0,
+            "the bomber still threatens the ground gun"
+        );
+
+        condor.grounded = true;
+        let (mine_parked, theirs_parked) = matched_strength(&[&lancer], &[&condor]);
+        assert_eq!(
+            mine_parked,
+            strength_vs(&lancer, crate::stats::Domain::Ground)
+        );
+        assert_eq!(theirs_parked, theirs_aloft);
+
+        let (parked_vs_ground, ground_vs_parked) = matched_strength(&[&condor], &[&lancer]);
+        assert_eq!(
+            parked_vs_ground,
+            strength_vs(&condor, crate::stats::Domain::Ground)
+        );
+        assert_eq!(ground_vs_parked, mine_parked);
     }
 
     #[test]

@@ -1116,6 +1116,7 @@ mod tests {
             settled: 0,
             heading: 0,
             cargo: Vec::new(),
+            landed: false,
         };
         assert!(tile_adjacent_to_building(builder.tile(), &site));
         assert!(matches!(builder.order, Order::Build { site: id } if id == site.id));

@@ -118,10 +118,26 @@ pub(crate) fn arc_fits(
 }
 
 /// Whether an aircraft in this state can still be flown out of it: a half
-/// turn in at least one direction stays inside the world. Flying parallel
-/// to a wall passes; pointing at one from inside a turn radius does not,
-/// and neither does diving into a corner from inside two.
+/// turn in at least one direction stays inside the world, or straight
+/// flight for one turn diameter does and a half turn fits from there.
+/// Flying parallel to a wall passes, and so does sitting in a corner with
+/// the nose pointed at open ground; pointing at a wall from inside a turn
+/// radius does not, and neither does diving into a corner from inside two.
 pub(crate) fn escapable(map: &Map, pos: Vec2Fx, heading: u8, radius: Fx) -> bool {
+    if half_turn_fits(map, pos, heading, radius) {
+        return true;
+    }
+    let ahead = pos + dir(heading) * (radius + radius);
+    let max_x = Fx::from_num(map.width()) - HALF;
+    let max_y = Fx::from_num(map.height()) - HALF;
+    ahead.x >= HALF
+        && ahead.y >= HALF
+        && ahead.x <= max_x
+        && ahead.y <= max_y
+        && half_turn_fits(map, ahead, heading, radius)
+}
+
+fn half_turn_fits(map: &Map, pos: Vec2Fx, heading: u8, radius: Fx) -> bool {
     arc_fits(map, pos, heading, STEP_POS, HALF_TURN, radius)
         || arc_fits(map, pos, heading, STEP_NEG, HALF_TURN, radius)
 }
@@ -305,6 +321,17 @@ mod tests {
     }
 
     #[test]
+    fn a_half_turn_exactly_reverses_every_compass_direction() {
+        // Bearing-relative choices mirror under a map half-turn only
+        // because the compass table itself is exactly antisymmetric.
+        for k in 0..=255u8 {
+            let d = dir(k);
+            let opposite = dir(k.wrapping_add(128));
+            assert_eq!(opposite, Vec2Fx::new(-d.x, -d.y), "step {k}");
+        }
+    }
+
+    #[test]
     fn heading_of_rounds_to_the_nearest_compass_step() {
         assert_eq!(heading_of(Vec2Fx::new(Fx::lit("3"), Fx::ZERO)), 0);
         assert_eq!(heading_of(Vec2Fx::new(Fx::ZERO, Fx::lit("-2"))), 192);
@@ -331,5 +358,20 @@ mod tests {
         assert_eq!(safest_step(&map, beside_west_wall, 192, R), STEP_POS);
         let open = Vec2Fx::new(Fx::lit("20"), Fx::lit("20"));
         assert_eq!(safest_step(&map, open, 192, R), STEP_POS);
+    }
+
+    #[test]
+    fn a_corner_is_escapable_with_the_nose_toward_open_ground() {
+        let map = open_map(40, 40);
+        let corner = Vec2Fx::new(Fx::lit("38.5"), Fx::lit("38.5"));
+        assert!(
+            escapable(&map, corner, 160, R),
+            "north-west out of the south-east corner"
+        );
+        assert!(!escapable(&map, corner, 32, R), "south-east into it");
+        assert!(
+            !escapable(&map, corner, 64, R),
+            "south along the east wall from the corner"
+        );
     }
 }

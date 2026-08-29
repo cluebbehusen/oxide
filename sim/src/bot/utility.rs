@@ -1528,6 +1528,7 @@ mod tests {
             salvaging: None,
             founding,
             repairing: false,
+            grounded: false,
         }
     }
 
@@ -1545,6 +1546,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         }
     }
 
@@ -2473,6 +2475,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         }));
         for (id, kind, anchor) in [
             (30, BuildingKind::Foundry, home),
@@ -2581,6 +2584,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing,
+            grounded: false,
         };
         let active_tender = ground_unit(
             3,

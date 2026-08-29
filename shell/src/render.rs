@@ -668,7 +668,9 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
     let (view_lo, view_hi) = game.camera.world_rect();
     const CULL_MARGIN: f32 = 2.5;
     for unit in game.state.units() {
-        if unit.kind.stats().domain != domain {
+        // The body's current layer, not its kind's: a parked airframe
+        // draws among ground bodies with no shadow or lift.
+        if unit.domain() != domain {
             continue;
         }
         if unit.player != game.human && !game.all_seeing() && !game.my_vision().visible(unit.tile())

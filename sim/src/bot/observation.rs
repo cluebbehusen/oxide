@@ -18,7 +18,7 @@
 
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::state::{Faction, Order, State};
-use crate::stats::{BuildingKind, UnitKind};
+use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::Tick;
 use chassis::grid::TilePos;
 use serde::{Deserialize, Serialize};
@@ -27,8 +27,9 @@ use serde::{Deserialize, Serialize};
 /// fields or their meaning change so tools can reject incompatible data.
 /// Version 9 added current visibility. Version 10 exposes whether an own unit's
 /// current program is voluntary paid repair work. Version 11 exposes the
-/// team's anonymous, bounded salvage-danger incidents.
-pub const OBSERVATION_VERSION: u32 = 11;
+/// team's anonymous, bounded salvage-danger incidents. Version 12 exposes
+/// whether an airframe is parked on the ground.
+pub const OBSERVATION_VERSION: u32 = 12;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +71,26 @@ pub struct UnitObs {
     /// units only; always false for allies and enemies).
     #[serde(default)]
     pub repairing: bool,
+    /// Whether the airframe is parked on the ground. Unlike `idle` or
+    /// `cargo` this is a physical fact anyone in sight can see, so it is
+    /// reported for allies and enemies too. Always false for kinds that
+    /// cannot land.
+    #[serde(default)]
+    pub grounded: bool,
+}
+
+impl UnitObs {
+    /// The movement layer this body occupies right now: a grounded
+    /// airframe is a ground body for targeting and matchups, whatever its
+    /// kind flies as. Routing and procurement keep reading the kind's
+    /// domain because the next flight is planned in the air.
+    pub fn body_domain(&self) -> Domain {
+        if self.grounded {
+            Domain::Ground
+        } else {
+            self.kind.stats().domain
+        }
+    }
 }
 
 /// One building as a bot sees it. Enemy entries may be memories: `seen`
@@ -489,6 +510,7 @@ fn own_unit(u: &crate::state::Unit) -> UnitObs {
             _ => None,
         },
         repairing: matches!(u.order, Order::Repair { .. } | Order::RepairUnit { .. }),
+        grounded: u.landed,
     }
 }
 
@@ -506,6 +528,7 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
         salvaging: None, // ditto
         founding: None,  // ditto
         repairing: false,
+        grounded: u.landed,
     }
 }
 
@@ -528,6 +551,7 @@ mod tests {
     use crate::command::{Command, PlayerCommand};
     use crate::scenario::{Scenario, UnitSpec};
     use crate::stats::UnitKind;
+    use chassis::grid::TilePos;
 
     fn transport_scenario() -> Scenario {
         let mut scenario = Scenario::skirmish();
@@ -635,5 +659,98 @@ mod tests {
             transport.cargo, 0,
             "an opponent may see the airframe, but not its sealed manifest"
         );
+    }
+
+    #[test]
+    fn a_parked_airframe_is_grounded_for_its_owner_and_for_anyone_who_sees_it() {
+        let mut scenario = Scenario::skirmish();
+        scenario.name = "observation-landing".into();
+        scenario.units = vec![
+            // Mid-basin, clear of both Foundries: nothing in the Condor's
+            // acquisition range, so its move ends in a landing. The
+            // Sentinel watches from inside its sight and outside its aggro.
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Condor,
+                x: 20,
+                y: 12,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Sentinel,
+                x: 14,
+                y: 12,
+            },
+        ];
+        let mut state = scenario.build().expect("the landing scenario builds");
+        let condor = state
+            .units()
+            .iter()
+            .find(|unit| unit.kind == UnitKind::Condor)
+            .expect("the Condor exists")
+            .id;
+        let goal = TilePos::new(20, 12);
+
+        let airborne = Observation::omniscient(&state, PlayerId(1));
+        let flying = airborne
+            .enemy_units
+            .iter()
+            .find(|unit| unit.id == condor)
+            .expect("the complete test view includes the hostile Condor");
+        assert!(!flying.grounded);
+        assert_eq!(flying.body_domain(), crate::stats::Domain::Air);
+
+        state.tick(&[PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Move {
+                units: vec![condor],
+                goal,
+                queue: false,
+            },
+        }]);
+        for _ in 0..1_500 {
+            if state.unit(condor).is_some_and(|unit| unit.landed) {
+                break;
+            }
+            state.tick(&[]);
+        }
+        let parked = state.unit(condor).expect("the Condor survives its landing");
+        assert!(
+            parked.landed,
+            "the Condor sets down within the flight budget"
+        );
+        let tile = parked.tile();
+        assert!(
+            state.vision(PlayerId(1)).visible(tile),
+            "the opponent's Sentinel watches the landing tile"
+        );
+
+        for observation in [
+            Observation::fog_honest(&state, PlayerId(0)),
+            Observation::omniscient(&state, PlayerId(0)),
+        ] {
+            let own = observation
+                .my_units
+                .iter()
+                .find(|unit| unit.id == condor)
+                .expect("the owner observes its Condor");
+            assert!(own.grounded);
+            assert_eq!(own.body_domain(), crate::stats::Domain::Ground);
+        }
+        for observation in [
+            Observation::fog_honest(&state, PlayerId(1)),
+            Observation::omniscient(&state, PlayerId(1)),
+        ] {
+            let seen = observation
+                .enemy_units
+                .iter()
+                .find(|unit| unit.id == condor)
+                .expect("the opponent sees the parked Condor");
+            assert!(
+                seen.grounded,
+                "a parked airframe is a physical fact, not private intent"
+            );
+            assert_eq!(seen.body_domain(), crate::stats::Domain::Ground);
+        }
     }
 }

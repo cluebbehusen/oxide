@@ -31,6 +31,7 @@ fn observed_unit(id: u32, kind: UnitKind, tile: TilePos) -> UnitObs {
         salvaging: None,
         founding: None,
         repairing: false,
+        grounded: false,
     }
 }
 

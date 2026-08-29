@@ -601,6 +601,28 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         "Repair Bay capture never increased patient hp"
     );
 
+    let flight = harness.load(landing_scenario())?;
+    let condor = unit_kind(&flight, 0, UnitKind::Condor)?;
+    harness.command(
+        0,
+        Command::Move {
+            units: vec![condor],
+            goal: TilePos::new(21, 10),
+            queue: false,
+        },
+    )?;
+    harness.capture_stage("11-landed-aircraft", 30, 10)?;
+    assert!(
+        harness
+            .state()?
+            .units
+            .iter()
+            .find(|unit| unit.id == condor.0)
+            .context("landing Condor disappeared")?
+            .landed,
+        "landed-aircraft capture never parked the Condor"
+    );
+
     eprintln!(
         "native animation review written to {}",
         harness.output.display()
@@ -616,6 +638,7 @@ fn generated_animation_capture_scenarios_are_valid() -> Result<()> {
         repair_bay_scenario(),
     ];
     scenarios.extend(ALL_UNIT_KINDS.map(movement_scenario));
+    scenarios.push(landing_scenario());
     scenarios.extend(combat_kinds().map(unit_duel_scenario));
     scenarios.push(sentinel_sidearm_scenario());
     scenarios.extend(
@@ -853,6 +876,10 @@ fn movement_scenario(kind: UnitKind) -> Value {
         vec![unit(0, kind, 15, 10)],
         Vec::new(),
     )
+}
+
+fn landing_scenario() -> Value {
+    movement_scenario(UnitKind::Condor)
 }
 
 fn unit_duel_scenario(attacker: UnitKind) -> Value {

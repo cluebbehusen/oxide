@@ -323,6 +323,16 @@ fn spread_goals(
     domain: Domain,
     reverse: bool,
 ) -> Vec<TilePos> {
+    spread_goals_by(center, count, reverse, |t| state.passable_for(domain, t))
+}
+
+/// [`spread_goals`] over any notion of an open tile.
+fn spread_goals_by(
+    center: TilePos,
+    count: usize,
+    reverse: bool,
+    legal: impl Fn(TilePos) -> bool,
+) -> Vec<TilePos> {
     let mut out = Vec::with_capacity(count);
     'scan: for r in 0..=GOAL_SNAP_RADIUS + 3 {
         for dy in -r..=r {
@@ -332,7 +342,7 @@ fn spread_goals(
                 }
                 let (dx, dy) = if reverse { (-dx, -dy) } else { (dx, dy) };
                 let t = center.offset(dx, dy);
-                if state.passable_for(domain, t) {
+                if legal(t) {
                     out.push(t);
                     if out.len() == count {
                         break 'scan;
@@ -404,6 +414,16 @@ fn group_domain_goal(
             GOAL_SNAP_RADIUS + 3,
         ),
     };
+    group_goal_by(center, radius, reverse, |t| state.passable_for(domain, t))
+}
+
+/// [`group_domain_goal`] over any notion of an open tile.
+fn group_goal_by(
+    center: TilePos,
+    radius: i32,
+    reverse: bool,
+    legal: impl Fn(TilePos) -> bool,
+) -> Option<TilePos> {
     for r in 0..=radius {
         for dy in -r..=r {
             for dx in -r..=r {
@@ -412,7 +432,7 @@ fn group_domain_goal(
                 }
                 let (dx, dy) = if reverse { (-dx, -dy) } else { (dx, dy) };
                 let candidate = center.offset(dx, dy);
-                if state.passable_for(domain, candidate) {
+                if legal(candidate) {
                     return Some(candidate);
                 }
             }
@@ -501,9 +521,7 @@ fn apply_attack(
     // Units that can't fight — or whose weapons can't cover the target's
     // domain — walk to the target area instead.
     let victim_domain = match target {
-        Target::Unit(id) => state
-            .unit(id)
-            .map_or(Domain::Ground, |u| u.kind.stats().domain),
+        Target::Unit(id) => state.unit(id).map_or(Domain::Ground, |u| u.domain()),
         Target::Building(_) => Domain::Ground,
     };
     let walk_goals = [
@@ -908,7 +926,7 @@ pub(super) fn found_site(
     let mut dealt = 0usize;
     for i in 0..state.units.len() {
         let u = &state.units[i];
-        if u.hp == 0 || u.kind.stats().domain != crate::stats::Domain::Ground || !inside(u.tile()) {
+        if u.hp == 0 || u.domain() != crate::stats::Domain::Ground || !inside(u.tile()) {
             continue;
         }
         let (unit_kind, tile) = (u.kind, u.tile());
@@ -1065,7 +1083,9 @@ fn apply_repair_unit(
 ) -> Result<(), RejectReason> {
     let t = state.unit(target).ok_or(RejectReason::InvalidTarget)?;
     let stats = t.kind.stats();
-    if t.player != player || t.hp == 0 || t.hp >= stats.max_hp || stats.domain != Domain::Ground {
+    // A parked airframe is a ground body a welder can reach; an airborne
+    // one is not.
+    if t.player != player || t.hp == 0 || t.hp >= stats.max_hp || t.domain() != Domain::Ground {
         return Err(RejectReason::InvalidTarget);
     }
     let crew: Vec<UnitId> = units.iter().copied().filter(|&id| id != target).collect();

@@ -52,6 +52,7 @@ fn unit_obs(id: u32, player: u8, kind: UnitKind, x: i32, y: i32) -> UnitObs {
         salvaging: None,
         founding: None,
         repairing: false,
+        grounded: false,
     }
 }
 

@@ -365,6 +365,12 @@ fn unit_notes(kind: UnitKind) -> Vec<String> {
             stats.transport_size
         ));
     }
+    if stats.turn_rate > 0 {
+        notes.push(
+            "Sets down on open ground at the end of a move when nothing is in reach; sits as a ground target until its next order lifts it off."
+                .to_string(),
+        );
+    }
     if stats.demolition {
         notes.push("Detonates on its target; always fatal to itself.".to_string());
     }

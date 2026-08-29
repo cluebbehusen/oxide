@@ -589,6 +589,12 @@ fn fly_and_watch(
             unit.pos,
             state.current_tick()
         );
+        // Resting on the ground is not hanging in the air.
+        if unit.landed {
+            still_streak = 0;
+            last_pos = unit.pos;
+            continue;
+        }
         if unit.pos.x == half
             || unit.pos.x == width - half
             || unit.pos.y == half
@@ -632,14 +638,26 @@ fn a_bomber_ordered_onto_a_corner_building_behind_it_never_touches_the_wall() {
     let condor = state.units()[0].id;
     let target = enemy_building(&state, 22, 14);
     state.tick(&[]);
-    state.tick(&[cmd(
-        0,
-        Command::Move {
-            units: vec![condor],
-            goal: chassis::grid::TilePos::new(19, 2),
-            queue: false,
-        },
-    )]);
+    // A lone move would end in a landing; the queued return leg keeps the
+    // first leg a plain northbound flight.
+    state.tick(&[
+        cmd(
+            0,
+            Command::Move {
+                units: vec![condor],
+                goal: chassis::grid::TilePos::new(19, 2),
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Move {
+                units: vec![condor],
+                goal: chassis::grid::TilePos::new(19, 12),
+                queue: true,
+            },
+        ),
+    ]);
     let mut ready = false;
     for _ in 0..200 {
         state.tick(&[]);
@@ -779,7 +797,7 @@ fn a_warm_bomber_retargeted_inside_its_acceptance_ring_keeps_flying() {
 }
 
 #[test]
-fn an_idle_bomber_orbits_instead_of_hanging_in_place() {
+fn an_idle_bomber_orbits_then_lands_itself() {
     // Parked far from the enemy Foundry so nothing enters acquisition range.
     let mut state = arena(1_000, vec![unit(0, UnitKind::Condor, 4, 4)], vec![])
         .build()
@@ -790,7 +808,8 @@ fn an_idle_bomber_orbits_instead_of_hanging_in_place() {
     let rate = UnitKind::Condor.stats().turn_rate;
     let mut heading = state.unit(condor).unwrap().heading;
     let mut last_pos = start;
-    for _ in 0..300 {
+    // The idle orbit: a constant-rate turn that never hangs in place.
+    for _ in 0..u32::from(oxide_sim::stats::AUTO_LAND_IDLE_TICKS) - 5 {
         state.tick(&[]);
         let unit = state.unit(condor).unwrap();
         assert_eq!(
@@ -809,6 +828,26 @@ fn an_idle_bomber_orbits_instead_of_hanging_in_place() {
         heading = unit.heading;
         last_pos = unit.pos;
     }
+    // Then it sets itself down nearby.
+    for _ in 0..600 {
+        state.tick(&[]);
+        if state.unit(condor).unwrap().landed {
+            break;
+        }
+    }
+    let parked = state.unit(condor).unwrap();
+    assert!(
+        parked.landed,
+        "an idle airframe lands itself once the orbit runs out"
+    );
+    assert!(
+        parked
+            .tile()
+            .chebyshev(chassis::grid::TilePos::containing(start))
+            <= oxide_sim::stats::AUTO_LAND_SCAN_RADIUS + 4,
+        "auto-land wandered to {:?}",
+        parked.tile()
+    );
 }
 
 #[test]

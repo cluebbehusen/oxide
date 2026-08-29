@@ -359,6 +359,7 @@ fn home_screen_ready(
         salvaging: None,
         founding: None,
         repairing: false,
+        grounded: false,
     };
     let required =
         super::executive::unit_strength(&sentinel).saturating_mul(home_screen_equivalents(profile));
@@ -592,6 +593,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         }
     }
 

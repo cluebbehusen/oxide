@@ -380,12 +380,7 @@ impl Game {
         // Interpolation cache; pointless during suppressed bulk advances
         // (advance_ticks rebuilds it once at the end).
         if !self.suppress_presentation {
-            self.prev_pos = self
-                .state
-                .units()
-                .iter()
-                .map(|u| (u.id.0, world_vec(u.pos)))
-                .collect();
+            self.remember_previous_tick();
         }
 
         let mut commands = std::mem::take(&mut self.pending.0);
@@ -464,18 +459,7 @@ impl Game {
 
         if !self.suppress_presentation {
             self.animations.observe(&report);
-            for unit in self.state.units() {
-                let now = world_vec(unit.pos);
-                if let Some(prev) = self.prev_pos.get(&unit.id.0) {
-                    let delta = now - *prev;
-                    if delta.length_squared() > 1e-6 {
-                        self.facing.insert(
-                            unit.id.0,
-                            delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
-                        );
-                    }
-                }
-            }
+            self.refresh_facing();
             self.spawn_fx(&report.events);
         }
         // Dead units leave the selection — and so do HOSTILES whose
@@ -531,25 +515,9 @@ impl Game {
     /// the engine produced plus the events it emitted on the way —
     /// shots, deaths, aim, and sound work in playback exactly as live.
     pub fn playback_present(&mut self, state: &oxide_sim::State, events: &[Event]) {
-        self.prev_pos = self
-            .state
-            .units()
-            .iter()
-            .map(|u| (u.id.0, world_vec(u.pos)))
-            .collect();
+        self.remember_previous_tick();
         self.state.0 = state.clone();
-        for unit in self.state.units() {
-            let now = world_vec(unit.pos);
-            if let Some(prev) = self.prev_pos.get(&unit.id.0) {
-                let delta = now - *prev;
-                if delta.length_squared() > 1e-6 {
-                    self.facing.insert(
-                        unit.id.0,
-                        delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
-                    );
-                }
-            }
-        }
+        self.refresh_facing();
         self.animations
             .observe_events(self.state.current_tick(), events);
         self.spawn_fx(events);
@@ -591,13 +559,49 @@ impl Game {
     pub fn replace_state_after_jump(&mut self, state: &State) {
         self.state.0 = state.clone();
         self.drop_presentation();
+        self.remember_previous_tick();
+        self.facing.clear();
+        // Nothing has moved across a jump, but a heading-first airframe
+        // still has a heading to show, parked or flying.
+        self.refresh_facing();
+    }
+
+    /// Sprite rotation for this tick: a heading-first airframe faces where
+    /// the simulation says it does, parked or flying, and everything else
+    /// faces the way it last moved. Live ticks, playback, and seeks all
+    /// agree through this one rule.
+    fn refresh_facing(&mut self) {
+        for unit in self.state.units() {
+            if unit.kind.stats().turn_rate > 0 {
+                let angle = f32::from(unit.heading) * std::f32::consts::TAU / 256.0;
+                self.facing
+                    .insert(unit.id.0, angle + std::f32::consts::FRAC_PI_2);
+                continue;
+            }
+            let now = world_vec(unit.pos);
+            if let Some(prev) = self.prev_pos.get(&unit.id.0) {
+                let delta = now - *prev;
+                if delta.length_squared() > 1e-6 {
+                    self.facing.insert(
+                        unit.id.0,
+                        delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Records what the next tick's presentation needs to know about
+    /// this one: every body's position for interpolation, and which
+    /// airframes were parked for the death effect's fall-or-scatter
+    /// choice.
+    fn remember_previous_tick(&mut self) {
         self.prev_pos = self
             .state
             .units()
             .iter()
             .map(|unit| (unit.id.0, world_vec(unit.pos)))
             .collect();
-        self.facing.clear();
     }
 
     /// The effect clock — what aim holds and recoil age against.
@@ -669,12 +673,7 @@ impl Game {
         // presentation slipped in beforehand doesn't survive the jump.
         self.accum = 0.0;
         self.drop_presentation();
-        self.prev_pos = self
-            .state
-            .units()
-            .iter()
-            .map(|u| (u.id.0, world_vec(u.pos)))
-            .collect();
+        self.remember_previous_tick();
         self.facing.clear();
     }
 
@@ -1180,6 +1179,46 @@ mod tests {
         assert!(game.advance_wall_clock(1.0, Some(5)));
         assert_eq!(game.state.current_tick(), 5);
         assert_eq!(game.tick_fraction(), 0.0);
+    }
+
+    #[test]
+    fn playback_and_seeks_face_a_parked_airframe_by_its_heading() {
+        let mut scenario = Scenario::skirmish();
+        scenario.units = vec![oxide_sim::scenario::UnitSpec {
+            player: 0,
+            kind: oxide_sim::UnitKind::Condor,
+            x: 20,
+            y: 12,
+        }];
+        let mut game = Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+            .expect("the landing scenario builds");
+        let condor = game.state.units()[0].id;
+        for _ in 0..600 {
+            game.advance_ticks(1);
+            if game.state.unit(condor).is_some_and(|u| u.landed) {
+                break;
+            }
+        }
+        let parked = game.state.unit(condor).expect("the Condor survives");
+        assert!(parked.landed, "premise: the idle Condor parks itself");
+        let expected =
+            f32::from(parked.heading) * std::f32::consts::TAU / 256.0 + std::f32::consts::FRAC_PI_2;
+        let snapshot = game.state.0.clone();
+
+        game.replace_state_after_jump(&snapshot);
+        assert_eq!(
+            game.facing.get(&condor.0).copied(),
+            Some(expected),
+            "a seek shows the parked heading, not the default rotation"
+        );
+
+        game.facing.clear();
+        game.playback_present(&snapshot, &[]);
+        assert_eq!(
+            game.facing.get(&condor.0).copied(),
+            Some(expected),
+            "playback faces the airframe as live play does"
+        );
     }
 
     #[test]

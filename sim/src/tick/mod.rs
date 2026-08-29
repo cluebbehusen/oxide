@@ -36,7 +36,8 @@
 
 mod brain;
 mod commands;
-mod flight;
+pub(crate) mod flight;
+pub(crate) mod landing;
 mod movement;
 mod production;
 mod spatial;
@@ -213,7 +214,7 @@ fn detonate_charges(state: &mut State, events: &mut Vec<Event>) {
         let tripped = state.units.iter().any(|u| {
             u.hp > 0
                 && state.hostile(owner, u.player)
-                && u.kind.stats().domain == crate::stats::Domain::Ground
+                && u.domain() == crate::stats::Domain::Ground
                 && u.pos.dist_sq(center) <= trigger_sq
         });
         if !tripped {
@@ -228,7 +229,7 @@ fn detonate_charges(state: &mut State, events: &mut Vec<Event>) {
         for u in state.units.iter_mut() {
             if u.hp > 0
                 && state.players[owner.0 as usize].team != state.players[u.player.0 as usize].team
-                && u.kind.stats().domain == crate::stats::Domain::Ground
+                && u.domain() == crate::stats::Domain::Ground
                 && u.pos.dist_sq(center) <= blast_sq
             {
                 u.hp = u.hp.saturating_sub(CHARGE_DAMAGE);
@@ -262,6 +263,7 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
             kind: unit.kind,
             player: unit.player,
             pos: unit.pos,
+            grounded: unit.domain() == crate::stats::Domain::Ground,
         });
         let value =
             unit.kind.stats().cost * crate::stats::WRECK_VALUE_NUM / crate::stats::WRECK_VALUE_DEN;
@@ -275,6 +277,7 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
                 kind: rider.kind,
                 player: rider.player,
                 pos: unit.pos,
+                grounded: unit.domain() == crate::stats::Domain::Ground,
             });
             let value = rider.kind.stats().cost * crate::stats::WRECK_VALUE_NUM
                 / crate::stats::WRECK_VALUE_DEN;

@@ -242,8 +242,6 @@ pub enum Command {
     /// Fly a transport to a tile and set every carried machine down on
     /// open ground around it. Machines that find no open tile within
     /// [`crate::stats::UNLOAD_SCAN_RADIUS`] stay aboard.
-    /// (Last variant by appending discipline: earlier discriminants keep
-    /// their serialized bytes.)
     Unload {
         /// The carrier.
         transport: UnitId,

@@ -299,7 +299,7 @@ pub(super) fn marching_strength(army: &Army, obs: &Observation) -> u64 {
 fn mutually_relevant(member: &UnitObs, enemy: &UnitObs) -> bool {
     let m = member.kind.stats();
     let e = enemy.kind.stats();
-    (e.can_fight() && m.can_target(e.domain)) || e.can_target(m.domain)
+    (e.can_fight() && m.can_target(enemy.body_domain())) || e.can_target(member.body_domain())
 }
 
 /// Same coin for a standing building (turrets; zero for the unarmed).

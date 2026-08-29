@@ -108,7 +108,9 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
         | oxide_sim::Order::Salvage { .. }
         | oxide_sim::Order::RepairUnit { .. }
         | oxide_sim::Order::Found { .. } => Color::new(0.25, 0.58, 0.51, 0.55),
-        oxide_sim::Order::Board { .. } | oxide_sim::Order::Unload { .. } => BONE_FAINT,
+        oxide_sim::Order::Board { .. }
+        | oxide_sim::Order::Unload { .. }
+        | oxide_sim::Order::Land { .. } => BONE_FAINT,
         oxide_sim::Order::Idle => BONE_FAINT,
     };
     let goal_of = |order: &oxide_sim::Order| {
@@ -126,6 +128,7 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
             oxide_sim::Order::RepairUnit { unit } => game.state.unit(*unit)?.tile(),
             oxide_sim::Order::Board { transport } => game.state.unit(*transport)?.tile(),
             oxide_sim::Order::Unload { at } => *at,
+            oxide_sim::Order::Land { goal } => *goal,
             oxide_sim::Order::Attack { target, .. } => {
                 // A chase target draws only while its ground is
                 // seen — the victim may have slipped back into fog.

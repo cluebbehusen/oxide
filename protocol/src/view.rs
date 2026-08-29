@@ -119,6 +119,11 @@ pub struct UnitView {
     /// is redacted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patrolling: Option<bool>,
+    /// Parked on the ground at its tile center. A physical fact rather
+    /// than an intent: the airframe draws as a ground body and is hit as
+    /// one, so the fog view never redacts it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub landed: bool,
 }
 
 /// One building.
@@ -474,6 +479,7 @@ fn unit_view(u: &Unit) -> UnitView {
         order: Some(u.order),
         queue: u.queue.iter().copied().collect(),
         patrolling: Some(u.looping),
+        landed: u.landed,
     }
 }
 
@@ -733,6 +739,116 @@ mod tests {
             state.tick(&[]);
         }
         panic!("the intruder never reached seat 0's sight");
+    }
+
+    #[test]
+    fn the_fog_view_keeps_a_hostile_landing_while_hiding_its_program() {
+        use oxide_sim::scenario::{PlayerSpec, UnitSpec};
+        // An open field: seat 0's unarmed Harvester holds sight on the
+        // ground a seat-1 Condor is ordered onto, so nothing shoots the
+        // airframe down or draws it back into the air.
+        let player = |name: &str, faction| PlayerSpec {
+            name: name.into(),
+            faction,
+            team: None,
+            scrap: 100,
+            bot: false,
+            bot_config: None,
+        };
+        let scenario = oxide_sim::Scenario {
+            name: "landing-fog".into(),
+            seed: 11,
+            map: vec![
+                "########################".into(),
+                "#1.....................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#..2...................#".into(),
+                "#......................#".into(),
+                "########################".into(),
+            ],
+            players: vec![
+                player("Ferrous", Faction::Ferrous),
+                player("Cupric", Faction::Cupric),
+            ],
+            units: vec![
+                // Beyond the Condor's acquisition range from its landing
+                // tile at (13, 8) and off its approach, inside its own sight.
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Harvester,
+                    x: 18,
+                    y: 6,
+                },
+                UnitSpec {
+                    player: 1,
+                    kind: UnitKind::Condor,
+                    x: 6,
+                    y: 12,
+                },
+            ],
+            buildings: Vec::new(),
+            meta: None,
+        };
+        let mut state = scenario.build().unwrap();
+        let condor = state
+            .units()
+            .iter()
+            .find(|u| u.kind == UnitKind::Condor)
+            .expect("the Condor spawned")
+            .id;
+        state.tick(&[oxide_sim::PlayerCommand {
+            player: PlayerId(1),
+            command: oxide_sim::Command::Move {
+                units: vec![condor],
+                goal: TilePos::new(13, 8),
+                queue: false,
+            },
+        }]);
+        for _ in 0..1_500 {
+            state.tick(&[]);
+            if !state.unit(condor).is_some_and(|u| u.landed) {
+                continue;
+            }
+            let fog = FogView::capture(&state, PlayerId(0));
+            let seen = fog
+                .units
+                .iter()
+                .find(|u| u.id == condor.0)
+                .expect("the parked Condor sits inside seat 0's sight");
+            assert!(seen.landed, "a landing is a physical fact fog never hides");
+            assert_eq!(seen.order, None, "the program behind it stays hidden");
+            assert!(seen.queue.is_empty());
+            assert_eq!(seen.patrolling, None);
+            assert_eq!(serde_json::to_value(seen).unwrap()["landed"], true);
+
+            let harvester = fog.units.iter().find(|u| u.player == 0).unwrap();
+            assert!(!harvester.landed);
+            assert!(
+                serde_json::to_value(harvester)
+                    .unwrap()
+                    .get("landed")
+                    .is_none(),
+                "a machine that is not parked carries no landed field"
+            );
+
+            let omniscient = StateView::capture(&state, StateFilter::default());
+            let full = omniscient.units.iter().find(|u| u.id == condor.0).unwrap();
+            assert!(full.landed);
+            assert!(full.order.is_some(), "omniscient captures keep the program");
+            return;
+        }
+        panic!("the Condor never touched down");
     }
 
     #[test]

@@ -344,11 +344,14 @@ pub(super) fn repair_unit(
     // The self-target guard is defense in depth: commands refuse it,
     // but an order that somehow names its own welder must end, not
     // bill a machine for welding itself.
-    let Some(t) = state
-        .unit(patient)
-        .filter(|t| t.id != id && t.player == me && t.hp > 0 && t.hp < t.kind.stats().max_hp)
-    else {
-        // Healed, dead, or never a patient: the job is over.
+    let Some(t) = state.unit(patient).filter(|t| {
+        t.id != id
+            && t.player == me
+            && t.hp > 0
+            && t.hp < t.kind.stats().max_hp
+            && t.domain() == crate::stats::Domain::Ground
+    }) else {
+        // Healed, dead, taken off, or never a patient: the job is over.
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     };
@@ -412,10 +415,12 @@ pub(super) fn commit_unit_welds(
                 stationary[slot] = false;
                 continue;
             }
-            let Some(t) = state
-                .unit(weld.patient)
-                .filter(|t| t.player == me && t.hp > 0 && t.hp < t.kind.stats().max_hp)
-            else {
+            let Some(t) = state.unit(weld.patient).filter(|t| {
+                t.player == me
+                    && t.hp > 0
+                    && t.hp < t.kind.stats().max_hp
+                    && t.domain() == crate::stats::Domain::Ground
+            }) else {
                 stationary[slot] = false;
                 continue;
             };

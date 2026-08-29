@@ -551,6 +551,16 @@ fn arena() -> State {
     for player in &mut scenario.players {
         player.scrap = 100_000;
     }
+    // A bomber per seat, so landing verbs, auto-land, and takeoff run under
+    // the sampled checklist from the first tick.
+    for (player, (x, y)) in [(0u8, (7, 6)), (1u8, (31, 16))] {
+        scenario.units.push(oxide_sim::scenario::UnitSpec {
+            player,
+            kind: UnitKind::Condor,
+            x,
+            y,
+        });
+    }
     scenario.buildings = vec![
         standing(0, BuildingKind::Turret, 12, 3),
         standing(0, BuildingKind::Fabricator, 8, 12),

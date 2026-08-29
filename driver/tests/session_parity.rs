@@ -116,11 +116,13 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
 
     // Commands stage for the next tick, exactly like a paused shell.
     let command = march_command(&mut client, 0)?;
+    let Command::AttackMove { .. } = command.clone() else {
+        bail!("the march is an attack-move");
+    };
     client.call(Request::SendCommand {
         player: PlayerId(0),
         command,
     })?;
-
     let Reply::Advanced(advanced) = client.call(Request::AdvanceTicks { ticks: 300 })? else {
         bail!("expected an advanced reply");
     };

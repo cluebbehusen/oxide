@@ -472,7 +472,7 @@ fn visible_pressure(obs: &Observation, anchor: TilePos) -> Vec<&UnitObs> {
         .filter(|unit| {
             obs.visible(unit.tile)
                 && unit.tile.chebyshev(anchor) <= PRESSURE_RADIUS
-                && unit.kind.stats().domain == Domain::Ground
+                && unit.body_domain() == Domain::Ground
                 && unit.kind.stats().can_fight()
                 && (unit.kind.stats().can_target(Domain::Ground) || unit.kind.stats().demolition)
         })
@@ -724,6 +724,7 @@ mod tests {
             salvaging: None,
             founding: None,
             repairing: false,
+            grounded: false,
         }
     }
 

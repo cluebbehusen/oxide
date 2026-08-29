@@ -37,6 +37,10 @@ pub enum Event {
         player: PlayerId,
         /// Where it died (for shell effects).
         pos: Vec2Fx,
+        /// Whether it died as a ground body: a parked airframe has no
+        /// altitude to fall from, and its corpse is gone by the time the
+        /// event is read.
+        grounded: bool,
     },
     /// A machine climbed aboard a transport and left the world's unit
     /// list until it is set down again.

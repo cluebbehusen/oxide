@@ -93,7 +93,7 @@ impl State {
         let hostile_in_footprint = self.units.iter().any(|u| {
             u.hp > 0
                 && self.hostile(player, u.player)
-                && u.kind.stats().domain == crate::stats::Domain::Ground
+                && u.domain() == crate::stats::Domain::Ground
                 && {
                     let t = u.tile();
                     t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h
@@ -308,7 +308,7 @@ impl State {
         let hostile_in_sight = self.units.iter().any(|u| {
             u.hp > 0
                 && self.hostile(player, u.player)
-                && u.kind.stats().domain == crate::stats::Domain::Ground
+                && u.domain() == crate::stats::Domain::Ground
                 && {
                     let t = u.tile();
                     covers(anchor, (w, h), t) && vision.visible(t)

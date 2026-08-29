@@ -138,6 +138,17 @@ remain independently viable. When both choose the same objective, coordinate
 only through an explicit target-specific hold, release, or abort signal; neither
 may infer the other's success from missing omniscient state.
 
+Aircraft that can land are ground bodies while parked. `UnitObs::grounded`
+reports that physical fact for own, allied, and visible enemy units, and
+`UnitObs::body_domain` resolves the domain a body occupies right now; hit
+legality, focus fire, matchup strength, and pressure censuses read it, while
+routing, air-defense exposure, and procurement keep the kind's flight domain
+because the next flight is planned in the air. There is no landing command: a
+flier's ground destination is a landing, so the player-facing planner holds its
+bomber wing by moving it to a deterministic pad near the home anchor through
+`Intent::MoveUnits`, while a fixed-wing screen keeps an airborne hold over home.
+The later strike order lifts the parked wing off exactly as a person's would.
+
 Distinguish an empty scout slot from a lost dispatched scout. The planner may
 fill or train the former before commitment. The latter must abort into bounded
 recovery, release its factory bank, return surviving claimed units once, and

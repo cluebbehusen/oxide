@@ -1946,6 +1946,25 @@ pub const BOMB_SALVO_SPACING: Fx = Fx::lit("0.8");
 /// The radius itself must dominate — an acceptance ring smaller than
 /// the turn radius is an orbit trap the aircraft can circle forever.
 pub const BOMBER_ACCEPT_SLACK: Fx = Fx::lit("0.4");
+/// Ticks an idle turn-limited flier orbits before setting itself down.
+pub const AUTO_LAND_IDLE_TICKS: u16 = 60;
+/// How close to the tile center a landing pass must come to touch down.
+pub const LANDING_TOUCHDOWN: Fx = Fx::lit("0.35");
+/// Run-in initial-point distances tried farthest first for attack passes.
+pub const RUN_IN_DISTANCES: [i64; 2] = [7, 5];
+/// Run-in initial-point distances tried nearest first for landings that
+/// cannot be flown straight in; the entry fix twice as far out is what
+/// lines the approach up, so the shorter procedure wins when it fits.
+pub const LANDING_RUN_IN_DISTANCES: [i64; 2] = [5, 7];
+/// Tiles searched around a blocked landing tile for another place to set
+/// down.
+pub const LANDING_REPLAN_RADIUS: i32 = 3;
+/// Tiles searched around an idle flier for somewhere to land on its own.
+pub const AUTO_LAND_SCAN_RADIUS: i32 = 4;
+/// How close to its destination a turn-limited flier hands a ground-goal
+/// order over to a landing on that tile. Matches the longest run-in so the
+/// approach is planned with room to line up.
+pub const LANDING_HANDOFF_REACH: Fx = Fx::lit("7");
 
 /// How close a boarding machine must stand to its transport before the
 /// sling takes it.
