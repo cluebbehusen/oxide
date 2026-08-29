@@ -11,7 +11,7 @@ use super::locomotion::{approach_rect, walk};
 use crate::event::{Event, StallReason};
 use crate::ids::{PlayerId, Target, UnitId};
 use crate::state::{Order, PathFollow, State};
-use crate::stats::{Domain, UnitKind, WeaponStats};
+use crate::stats::{Domain, WeaponStats};
 use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
 
@@ -724,11 +724,11 @@ pub(super) fn acquire_target_from(
     }
     let me = unit.player;
     let acquisition_range = stats.aggro_range;
-    // Acquisition normally rides on the unit's own eyes (vision is wider
-    // than aggro), except for the Bombard, which outshoots its sight. A
-    // pick judged from somewhere else can reach beyond those eyes, so it
-    // must lean on what the player actually sees or it becomes an oracle.
-    let needs_sight = unit.kind == UnitKind::Bombard || pos != unit.pos;
+    // Acquisition normally rides on the unit's own eyes because its vision
+    // covers its aggro range. A long gun whose acquisition horizon outruns
+    // those eyes, or a pick judged from somewhere else, must instead lean on
+    // current team sight or it becomes an oracle.
+    let needs_sight = acquisition_range > Fx::from_num(stats.vision) || pos != unit.pos;
     let aggro_sq = acquisition_range * acquisition_range;
 
     let home = TilePos::containing(pos);
@@ -1923,7 +1923,7 @@ mod tests {
         }
         let (pos, me) = (unit.pos, unit.player);
         let acquisition_range = stats.aggro_range;
-        let needs_shared_sight = unit.kind == UnitKind::Bombard;
+        let needs_shared_sight = acquisition_range > Fx::from_num(stats.vision);
         let aggro_sq = acquisition_range * acquisition_range;
         let unit_target = state
             .units
