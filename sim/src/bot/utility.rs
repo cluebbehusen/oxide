@@ -36,6 +36,7 @@ mod danger;
 mod defense;
 mod economy;
 mod production;
+mod sensor;
 mod support;
 mod terrain;
 

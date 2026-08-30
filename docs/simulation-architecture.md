@@ -497,6 +497,18 @@ public static terrain briefing with fog-honest observed dynamic blockers; public
 resource priors are not treated as live obstacles. The frozen Overseer retains
 its legacy placement rules.
 
+Arrays use a separate player-facing sensor-site scorer because information
+coverage is not weapon coverage. Candidate sites extend up to the Array's radar
+radius from the starting Foundry, preserve ordinary placement, producer-egress,
+and active resource-access rules, and bind the exact route-capable builder
+proven through public static terrain plus observed dynamic danger. The scorer
+first extends radar area not already supplied by an allied Array, then retains
+usable in-map coverage; off-map tiles contribute nothing, while Peaks remain
+useful against aircraft. Current contacts, remembered contacts, and uncleared
+public starting priors break otherwise equivalent sites toward credible hostile
+approaches. Compact maps may use a partial radar disc. The profile-free Overseer
+retains its legacy first-valid placement scan.
+
 The player-facing budget counts each unique deferred construction claim until
 its site is paid and stops voluntary repair programs that could drain that
 commitment. Expansion saving and construction share one exact claim: a legal

@@ -1,6 +1,6 @@
 ---
 created: 2026-08-29T08:00:10
-updated: 2026-08-30T14:25:25
+updated: 2026-08-30T15:14:40
 ---
 
 # Oxide 0.16.0 Scripted Bot Improvement
@@ -409,6 +409,18 @@ surface, and promoting only behavior proven against Overseer and human play.
   - Passed focused adversarial regressions, the complete simulation and
     workspace suites, Clippy, rustdoc, formatting, unit and combined coverage,
     and all canonical skill validators.
+- [x] Place player-facing Arrays for useful sensor coverage rather than
+      first-valid proximity.
+  - Added a dedicated fog-honest sensor-site scorer that searches the full radar
+    radius, maximizes useful and nonredundant in-map coverage, preserves active
+    resource routes, and binds the exact public-terrain-safe builder.
+  - Kept frozen Overseer first-valid placement unchanged; a fresh Skirmish built
+    exactly mirrored Arrays at `(19, 13)` and `(20, 10)` near the map interior.
+  - Covered edge waste, full corner-map coverage, compact maps, allied overlap,
+    hostile-facing ties, symmetry, unreachable sites, active-resource
+    chokepoints, hidden Peaks and Pits, exact builder dispatch, and Overseer
+    parity. The sensor module reached 100% combined coverage and every
+    repository gate passed.
 
 ## Open Questions
 

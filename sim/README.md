@@ -41,7 +41,11 @@ an ordinary command source rather than a separate ruleset.
   promotes only matching worker damage to durable quarantine, preserves the
   union of overlapping incidents, then clears each exact region through a
   bounded current-sight sweep. A recalled recovery scout stays reserved until it
-  is observed safely home, where its retry cooldown begins.
+  is observed safely home, where its retry cooldown begins. Arrays use a
+  separate sensor-site scorer that preserves useful in-map and nonredundant
+  radar coverage, faces equally useful sites toward fog-honest hostile evidence,
+  preserves active resource access, and binds a builder whose route is proven
+  against public terrain.
 - `vision` provides visibility and explored-world state.
 
 Outcome-relevant geometry is also fair under a map half-turn. Fixed-point vector

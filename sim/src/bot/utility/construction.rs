@@ -1030,13 +1030,42 @@ impl UtilityPolicy {
                 && !have_array
                 && let Some(cost) = array_cost
                 && *budget >= cost + TECH_RESERVE
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::Array, home)
+                && let Some((anchor, builder)) = if player_facing {
+                    public_map
+                        .and_then(|briefing| {
+                            self.strategic_array_site(
+                                obs,
+                                briefing,
+                                home,
+                                unit_contacts.unwrap_or(&[]),
+                                building_contacts.unwrap_or(&[]),
+                                &builders,
+                            )
+                        })
+                        .map(|(anchor, builder)| (anchor, Some(builder)))
+                } else {
+                    self.placement_near(obs, BuildingKind::Array, home)
+                        .map(|anchor| (anchor, None))
+                }
             {
                 *budget -= cost;
-                intents.push(Intent::Build {
-                    kind: BuildingKind::Array,
-                    anchor,
-                });
+                if let Some(builder) = builder {
+                    Self::insert_build_before_harvest(
+                        intents,
+                        BuildingKind::Array,
+                        anchor,
+                        Intent::BuildWith {
+                            builder,
+                            kind: BuildingKind::Array,
+                            anchor,
+                        },
+                    );
+                } else {
+                    intents.push(Intent::Build {
+                        kind: BuildingKind::Array,
+                        anchor,
+                    });
+                }
                 return;
             }
         }
@@ -1251,13 +1280,15 @@ impl UtilityPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::Executive;
     use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION, UnitObs};
+    use crate::bot::{Executive, Orientation};
     use crate::event::Event;
     use crate::ids::{BuildingId, PlayerId, UnitId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec};
     use crate::state::{Faction, Order};
     use crate::{Command, PlayerCommand, Scenario};
+
+    use super::super::defense::ResourceAccessGuard;
 
     const HOME: TilePos = TilePos::new(4, 10);
 
@@ -1358,6 +1389,55 @@ mod tests {
         dials
     }
 
+    fn array_dials() -> Dials {
+        let mut dials = focused_dials();
+        dials.radar = true;
+        dials
+    }
+
+    fn array_ready_observation() -> Observation {
+        let mut obs = observation();
+        obs.my_buildings.push(building(
+            2,
+            PlayerId(0),
+            BuildingKind::Fabricator,
+            TilePos::new(8, 3),
+        ));
+        obs.my_queues.push(Vec::new());
+        obs
+    }
+
+    fn in_bounds_disc_tiles(width: i32, height: i32, center: TilePos, radius: i32) -> usize {
+        (0..height)
+            .flat_map(|y| (0..width).map(move |x| TilePos::new(x, y)))
+            .filter(|tile| {
+                let dx = tile.x - center.x;
+                let dy = tile.y - center.y;
+                dx * dx + dy * dy <= radius * radius
+            })
+            .count()
+    }
+
+    fn novel_disc_tiles(
+        width: i32,
+        height: i32,
+        center: TilePos,
+        radius: i32,
+        existing: TilePos,
+    ) -> usize {
+        (0..height)
+            .flat_map(|y| (0..width).map(move |x| TilePos::new(x, y)))
+            .filter(|tile| {
+                let dx = tile.x - center.x;
+                let dy = tile.y - center.y;
+                let existing_dx = tile.x - existing.x;
+                let existing_dy = tile.y - existing.y;
+                dx * dx + dy * dy <= radius * radius
+                    && existing_dx * existing_dx + existing_dy * existing_dy > radius * radius
+            })
+            .count()
+    }
+
     fn construction_intents(
         policy: &mut UtilityPolicy,
         dials: &Dials,
@@ -1426,6 +1506,452 @@ mod tests {
             meta: None,
         };
         PublicMapBriefing::from_scenario(&scenario).expect("construction briefing is valid")
+    }
+
+    fn array_briefing(
+        width: i32,
+        height: i32,
+        home: TilePos,
+        hostile: TilePos,
+        terrain: impl Fn(TilePos) -> char,
+    ) -> PublicMapBriefing {
+        let rows = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| {
+                        let tile = TilePos::new(x, y);
+                        if tile == home {
+                            '1'
+                        } else if tile == hostile {
+                            '2'
+                        } else {
+                            terrain(tile)
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let scenario = Scenario {
+            name: "Array placement fixture".into(),
+            seed: 0,
+            map: rows,
+            players: [Faction::Ferrous, Faction::Cupric]
+                .into_iter()
+                .enumerate()
+                .map(|(index, faction)| PlayerSpec {
+                    name: format!("player {index}"),
+                    faction,
+                    team: None,
+                    scrap: 500,
+                    bot: false,
+                    bot_config: None,
+                })
+                .collect(),
+            units: Vec::new(),
+            buildings: Vec::new(),
+            meta: None,
+        };
+        PublicMapBriefing::from_scenario(&scenario).expect("Array briefing is valid")
+    }
+
+    fn array_observation(
+        width: i32,
+        height: i32,
+        home: TilePos,
+        peaks: Vec<TilePos>,
+    ) -> Observation {
+        let mut obs = observation();
+        obs.map_width = width;
+        obs.map_height = height;
+        obs.visible = vec![true; usize::try_from(width * height).expect("positive map area")];
+        obs.explored = obs.visible.clone();
+        obs.known_scrap.clear();
+        obs.known_rock.clone_from(&peaks);
+        obs.known_peaks = peaks;
+        obs.my_units = vec![harvester(1, home.offset(4, 1), None)];
+        obs.my_buildings = vec![
+            building(0, PlayerId(0), BuildingKind::Foundry, home),
+            building(
+                2,
+                PlayerId(0),
+                BuildingKind::Fabricator,
+                TilePos::new(home.x, 0),
+            ),
+        ];
+        obs.my_queues = vec![Vec::new(), Vec::new()];
+        obs
+    }
+
+    fn scored_array_site(
+        policy: &UtilityPolicy,
+        obs: &Observation,
+        briefing: &PublicMapBriefing,
+        home: TilePos,
+    ) -> Option<TilePos> {
+        let builders = policy.construction_builders(obs, &[], &[]);
+        policy
+            .strategic_array_site(obs, briefing, home, &[], &[], &builders)
+            .map(|(anchor, _)| anchor)
+    }
+
+    fn world_array_site(
+        policy: &UtilityPolicy,
+        raw: &Observation,
+        briefing: &PublicMapBriefing,
+        home: TilePos,
+    ) -> TilePos {
+        let orientation = Orientation::for_home(raw, home);
+        let obs = orientation.observe(raw);
+        let briefing = orientation.briefing(briefing);
+        let oriented_home = orientation.anchor(home, BuildingKind::Foundry.base_stats().size);
+        let anchor = scored_array_site(policy, &obs, &briefing, oriented_home)
+            .expect("the oriented world has a legal Array site");
+        orientation.anchor(anchor, BuildingKind::Array.base_stats().size)
+    }
+
+    #[test]
+    fn player_facing_array_uses_more_of_its_sensor_ring_than_the_legacy_edge_site() {
+        let obs = array_ready_observation();
+        let anchor = assert_build_kind(
+            &construction_intents_with_public_map(
+                &mut UtilityPolicy::new(),
+                &array_dials(),
+                &obs,
+                &construction_briefing(),
+            ),
+            BuildingKind::Array,
+        );
+        let radius = crate::stats::RADAR_DETECT_RADIUS;
+        let legacy = TilePos::new(1, 7);
+        let selected_coverage = in_bounds_disc_tiles(obs.map_width, obs.map_height, anchor, radius);
+        let legacy_coverage = in_bounds_disc_tiles(obs.map_width, obs.map_height, legacy, radius);
+
+        assert!(
+            selected_coverage.saturating_mul(4) >= legacy_coverage.saturating_mul(5),
+            "the player-facing Array must retain materially more useful map coverage than the legacy edge site; selected {anchor} covers {selected_coverage} tiles versus {legacy_coverage}"
+        );
+    }
+
+    #[test]
+    fn profile_free_overseer_keeps_the_legacy_array_site() {
+        let obs = array_ready_observation();
+        let anchor = assert_build_kind(
+            &profile_free_construction_intents_with_public_map(
+                &mut UtilityPolicy::new(),
+                &array_dials(),
+                &obs,
+                &construction_briefing(),
+            ),
+            BuildingKind::Array,
+        );
+
+        assert_eq!(anchor, TilePos::new(1, 7));
+    }
+
+    #[test]
+    fn array_placement_is_exactly_half_turn_symmetric() {
+        let size = BuildingKind::Foundry.base_stats().size;
+        let left_home = TilePos::new(4, 4);
+        let right_home = TilePos::new(40 - size.0 - left_home.x, 24 - size.1 - left_home.y);
+        let briefing = array_briefing(40, 24, left_home, right_home, |_| '.');
+        let left = array_observation(40, 24, left_home, Vec::new());
+        let half_turn = Orientation::for_home(&left, right_home);
+        let right = half_turn.observe(&left);
+        let right_briefing = half_turn.briefing(&briefing);
+
+        let left_site = world_array_site(&UtilityPolicy::new(), &left, &briefing, left_home);
+        let right_site =
+            world_array_site(&UtilityPolicy::new(), &right, &right_briefing, right_home);
+
+        assert_eq!(
+            right_site,
+            half_turn.anchor(left_site, BuildingKind::Array.base_stats().size)
+        );
+    }
+
+    #[test]
+    fn array_placement_falls_back_from_an_unreachable_geometric_favorite() {
+        let home = TilePos::new(4, 4);
+        let hostile = TilePos::new(33, 17);
+        let open_briefing = array_briefing(40, 24, home, hostile, |_| '.');
+        let open = array_observation(40, 24, home, Vec::new());
+        let open_site = scored_array_site(&UtilityPolicy::new(), &open, &open_briefing, home)
+            .expect("the open map has an Array site");
+
+        let wall_x = 11;
+        let peaks: Vec<_> = (0..24).map(|y| TilePos::new(wall_x, y)).collect();
+        let blocked_briefing = array_briefing(40, 24, home, hostile, |tile| {
+            if tile.x == wall_x { '^' } else { '.' }
+        });
+        let blocked = array_observation(40, 24, home, peaks);
+        let blocked_site =
+            scored_array_site(&UtilityPolicy::new(), &blocked, &blocked_briefing, home)
+                .expect("the builder's side of the wall has an Array site");
+
+        assert!(
+            open_site.x > wall_x,
+            "premise: {open_site} is beyond the wall"
+        );
+        assert!(
+            blocked_site.x < wall_x,
+            "the scorer must fall through to the best site its builder can actually reach, got {blocked_site}"
+        );
+    }
+
+    #[test]
+    fn array_placement_works_when_no_full_radar_disc_fits_on_the_map() {
+        let home = TilePos::new(2, 4);
+        let hostile = TilePos::new(13, 4);
+        let briefing = array_briefing(18, 12, home, hostile, |_| '.');
+        let obs = array_observation(18, 12, home, Vec::new());
+        let anchor = scored_array_site(&UtilityPolicy::new(), &obs, &briefing, home)
+            .expect("partial in-bounds coverage is still useful");
+        let covered = in_bounds_disc_tiles(
+            obs.map_width,
+            obs.map_height,
+            anchor,
+            crate::stats::RADAR_DETECT_RADIUS,
+        );
+
+        assert!(covered > 0);
+        let radius = crate::stats::RADAR_DETECT_RADIUS;
+        let diameter = radius * 2 + 1;
+        let full_disc =
+            in_bounds_disc_tiles(diameter, diameter, TilePos::new(radius, radius), radius);
+        assert!(
+            covered < full_disc,
+            "premise: the compact map cannot contain the full radar disc"
+        );
+    }
+
+    #[test]
+    fn array_search_reaches_full_radar_coverage_from_a_corner_start() {
+        let home = TilePos::new(2, 2);
+        let hostile = TilePos::new(55, 55);
+        let briefing = array_briefing(60, 60, home, hostile, |_| '.');
+        let obs = array_observation(60, 60, home, Vec::new());
+        let anchor = scored_array_site(&UtilityPolicy::new(), &obs, &briefing, home)
+            .expect("the large map has a full-coverage Array site");
+        let radius = crate::stats::RADAR_DETECT_RADIUS;
+        let diameter = radius * 2 + 1;
+        let full_disc =
+            in_bounds_disc_tiles(diameter, diameter, TilePos::new(radius, radius), radius);
+
+        assert_eq!(
+            in_bounds_disc_tiles(obs.map_width, obs.map_height, anchor, radius),
+            full_disc,
+            "the search must extend far enough inward to retain the complete radar ring; got {anchor}"
+        );
+    }
+
+    #[test]
+    fn array_placement_does_not_sever_an_active_scrap_route() {
+        let home = TilePos::new(6, 18);
+        let hostile = TilePos::new(35, 18);
+        let choke = TilePos::new(19, 19);
+        let scrap = TilePos::new(20, 19);
+        let briefing = array_briefing(39, 39, home, hostile, |tile| {
+            if tile.x == choke.x && tile != choke {
+                '^'
+            } else {
+                '.'
+            }
+        });
+        let peaks: Vec<_> = (0..39)
+            .map(|y| TilePos::new(choke.x, y))
+            .filter(|tile| *tile != choke)
+            .collect();
+        let mut obs = array_observation(39, 39, home, peaks);
+        obs.known_scrap = vec![(scrap, 500)];
+        obs.my_units = vec![
+            harvester(1, TilePos::new(10, 19), None),
+            harvester(2, TilePos::new(20, 18), None),
+        ];
+        obs.my_units[1].idle = false;
+        obs.my_units[1].harvesting = Some(scrap);
+        let builders = [&obs.my_units[0]];
+        let policy = UtilityPolicy::new();
+        let guard = ResourceAccessGuard::new(&policy, &obs, &briefing);
+
+        assert!(
+            !guard.survives(BuildingKind::Array, choke),
+            "premise: occupying the one-tile pass cuts the Foundry off from active scrap"
+        );
+        let (anchor, builder) = policy
+            .strategic_array_site(&obs, &briefing, home, &[], &[], &builders)
+            .expect("a safe lower-scoring Array site remains available");
+
+        assert_eq!(builder, UnitId(1));
+        assert_ne!(anchor, choke);
+        assert!(guard.survives(BuildingKind::Array, anchor));
+        assert!(
+            in_bounds_disc_tiles(
+                obs.map_width,
+                obs.map_height,
+                choke,
+                crate::stats::RADAR_DETECT_RADIUS
+            ) > in_bounds_disc_tiles(
+                obs.map_width,
+                obs.map_height,
+                anchor,
+                crate::stats::RADAR_DETECT_RADIUS
+            ),
+            "premise: resource safety, not an equal coverage score, rejects the geometric favorite"
+        );
+    }
+
+    #[test]
+    fn array_dispatch_preserves_the_builder_proven_against_public_terrain() {
+        for wall in ['^', '~'] {
+            let home = TilePos::new(2, 18);
+            let hostile = TilePos::new(55, 18);
+            let briefing =
+                array_briefing(
+                    60,
+                    40,
+                    home,
+                    hostile,
+                    |tile| {
+                        if tile.x == 18 { wall } else { '.' }
+                    },
+                );
+            let mut obs = array_observation(60, 40, home, Vec::new());
+            for y in 0..obs.map_height {
+                let index = usize::try_from(y * obs.map_width + 18)
+                    .expect("fixture coordinates are nonnegative");
+                obs.visible[index] = false;
+                obs.explored[index] = false;
+            }
+            obs.my_units = vec![
+                harvester(1, TilePos::new(17, 19), None),
+                harvester(2, TilePos::new(45, 19), None),
+            ];
+
+            let mut policy = UtilityPolicy::new();
+            let mut intents =
+                construction_intents_with_public_map(&mut policy, &array_dials(), &obs, &briefing);
+            let [
+                Intent::BuildWith {
+                    builder,
+                    kind: BuildingKind::Array,
+                    anchor,
+                },
+            ] = intents.as_slice()
+            else {
+                panic!("public terrain must produce one bound Array claim: {intents:?}");
+            };
+            assert_eq!(*builder, UnitId(2));
+            assert!(
+                obs.my_units[0].tile.manhattan(*anchor) < obs.my_units[1].tile.manhattan(*anchor)
+            );
+            assert!(crate::bot::routing::build_command_path_avoids(
+                &obs,
+                &obs.my_units[0],
+                *anchor,
+                BuildingKind::Array.base_stats().size,
+                false,
+                |_| false,
+            ));
+            assert!(
+                !crate::bot::routing::build_command_path_avoids_with_public_terrain(
+                    &obs,
+                    &briefing,
+                    &obs.my_units[0],
+                    *anchor,
+                    BuildingKind::Array.base_stats().size,
+                    false,
+                    |_| false,
+                )
+            );
+            assert!(
+                crate::bot::routing::build_command_path_avoids_with_public_terrain(
+                    &obs,
+                    &briefing,
+                    &obs.my_units[1],
+                    *anchor,
+                    BuildingKind::Array.base_stats().size,
+                    false,
+                    |_| false,
+                )
+            );
+
+            policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
+            assert!(matches!(
+                intents.as_slice(),
+                [Intent::BuildWith {
+                    builder: UnitId(2),
+                    kind: BuildingKind::Array,
+                    ..
+                }]
+            ));
+            let commands =
+                Executive::new().apply_with_reservations(PlayerId(0), &obs, &intents, &[]);
+            assert!(matches!(
+                commands.as_slice(),
+                [PlayerCommand {
+                    command: Command::Build {
+                        units,
+                        kind: BuildingKind::Array,
+                        ..
+                    },
+                    ..
+                }] if units == &vec![UnitId(2)]
+            ));
+        }
+    }
+
+    #[test]
+    fn array_placement_extends_allied_radar_instead_of_repeating_it() {
+        let home = TilePos::new(4, 4);
+        let hostile = TilePos::new(53, 23);
+        let briefing = array_briefing(60, 30, home, hostile, |_| '.');
+        let mut obs = array_observation(60, 30, home, Vec::new());
+        let first = scored_array_site(&UtilityPolicy::new(), &obs, &briefing, home)
+            .expect("the first seat has an Array site");
+        obs.ally_buildings
+            .push(building(20, PlayerId(1), BuildingKind::Array, first));
+        let second = scored_array_site(&UtilityPolicy::new(), &obs, &briefing, home)
+            .expect("the allied radar still leaves another useful site");
+        let radius = crate::stats::RADAR_DETECT_RADIUS;
+
+        assert_ne!(second, first);
+        assert!(
+            novel_disc_tiles(obs.map_width, obs.map_height, second, radius, first)
+                > novel_disc_tiles(obs.map_width, obs.map_height, first, radius, first),
+            "the second Array must extend the team's detection area; first {first}, second {second}"
+        );
+    }
+
+    #[test]
+    fn equally_efficient_array_sites_face_the_public_hostile_approach() {
+        let home = TilePos::new(24, 4);
+        let east = array_briefing(60, 30, home, TilePos::new(53, 23), |_| '.');
+        let west = array_briefing(60, 30, home, TilePos::new(2, 23), |_| '.');
+        let obs = array_observation(60, 30, home, Vec::new());
+        let east_site = scored_array_site(&UtilityPolicy::new(), &obs, &east, home)
+            .expect("the eastern approach has an Array site");
+        let west_site = scored_array_site(&UtilityPolicy::new(), &obs, &west, home)
+            .expect("the western approach has an Array site");
+
+        assert!(
+            east_site.x > west_site.x,
+            "equal sensor area should be broken toward the disclosed hostile approach: east {east_site}, west {west_site}"
+        );
+        assert_eq!(
+            in_bounds_disc_tiles(
+                obs.map_width,
+                obs.map_height,
+                east_site,
+                crate::stats::RADAR_DETECT_RADIUS,
+            ),
+            in_bounds_disc_tiles(
+                obs.map_width,
+                obs.map_height,
+                west_site,
+                crate::stats::RADAR_DETECT_RADIUS,
+            ),
+            "premise: approach direction, not boundary waste, breaks this tie"
+        );
     }
 
     fn barricade_construction_briefing() -> (PublicMapBriefing, Vec<TilePos>) {

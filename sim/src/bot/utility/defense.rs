@@ -76,6 +76,37 @@ struct PlacementFootprint {
     blocks_ground: bool,
 }
 
+pub(super) struct ResourceAccessGuard<'a> {
+    ground: GroundKnowledge<'a>,
+    assets: Vec<DefendedAsset>,
+}
+
+impl<'a> ResourceAccessGuard<'a> {
+    pub(super) fn new(
+        policy: &UtilityPolicy,
+        obs: &'a Observation,
+        briefing: &'a PublicMapBriefing,
+    ) -> Self {
+        let public_starts = policy.uncleared_hostile_starts(briefing, obs.me);
+        let ground = GroundKnowledge::new(obs, briefing, &public_starts);
+        let assets = defended_assets(policy, obs, &ground);
+        Self { ground, assets }
+    }
+
+    pub(super) fn survives(&self, kind: BuildingKind, anchor: TilePos) -> bool {
+        scrap_access_survives(
+            &self.ground,
+            &self.assets,
+            PlacementFootprint {
+                anchor,
+                size: kind.base_stats().size,
+                blocks_ground: !kind.is_stealthy(),
+            },
+            None,
+        )
+    }
+}
+
 impl PlacementFootprint {
     fn blocks(self, tile: TilePos) -> bool {
         self.blocks_ground && footprint_contains(self.anchor, self.size, tile)
@@ -259,7 +290,7 @@ impl<'a> GroundKnowledge<'a> {
     fn new(
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
-        public_starts: &'a [StartingFoundry],
+        public_starts: &[StartingFoundry],
     ) -> Self {
         let mut scrap: BTreeMap<_, _> = briefing.initial_scrap().iter().copied().collect();
         for tile in sorted_tiles(scrap.keys().copied()) {
