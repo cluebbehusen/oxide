@@ -1,6 +1,6 @@
 ---
 created: 2026-08-29T08:00:10
-updated: 2026-08-29T18:13:45
+updated: 2026-08-29T20:28:29
 ---
 
 # Oxide 0.16.0 Scripted Bot Improvement
@@ -111,12 +111,40 @@ surface, and promoting only behavior proven against Overseer and human play.
 - [ ] Rebuild Prime around a strong ordinary opening and macro loop: responsive
       worker saturation, continuous useful spending, adequate defense,
       production uptime, expansion, reinforcement, and critical-mass attacks.
-  - Use the Salvage Triangle human replay as focused macro regressions: losing a
-    supported home Extractor must trigger eventual safe rebuilding, and a
-    wealthy bot with idle builders must keep converting recurring income into
-    useful capital.
-  - Make visible long-range siege a defensive threat even when the attacker
-    stands beyond the fixed Foundry-defense radius.
+  - [x] Keep converting recurring income into useful capital when the bot is
+        wealthy and builders are idle.
+    - Reproduced the 12,840-tick stall: an unactionable Extractor route consumed
+      the construction budget, shadowed the ready Crucible, and was then
+      discarded by final worker safety binding.
+    - Required one exact available Harvester, a safe fog-honest route, and
+      preserved producer egress before charging an Extractor frame. Unsafe
+      frames now yield to the next useful capital rung.
+    - Covered remembered danger, persistent loss quarantine, a safe worker
+      beyond the choke, and the shared Standard/Veteran opening. A fresh Salvage
+      Triangle run kept spending without rejected commands.
+    - Unified construction reserves with exact actionable Extractor and Foundry
+      claims, including builder availability, remembered danger, route safety,
+      and egress, so rejected capital projects cannot freeze the bank.
+    - Made harvest chores preemptible and removed same-tick harvest orders whose
+      resource is consumed by an accepted footprint.
+    - Verified a fresh 23,627-tick Salvage Triangle match ended decisively with
+      no rejected commands and did not reproduce the 12,840-tick bank freeze.
+  - [x] Rebuild a safely recoverable lost home Extractor after its contested
+        region has genuinely cleared.
+    - Confirmed the replay never supplied legal negative evidence: its scout had
+      died, a hidden Avalanche remained nearby, and the complete quarantine
+      region was never currently visible.
+    - Preserved the fail-closed rule: incident expiry and darkness cannot clear
+      a loss. Recovery requires 300 uninterrupted ticks of full current sight
+      with no projected danger.
+    - Added one whole-chain regression from active incident through prolonged
+      partial sight and 299 clear ticks to an exact ordinary Extractor build on
+      the 300-tick boundary.
+    - Required the same exact safe-builder preflight for both the 150-scrap
+      restoration reserve and the eventual build; unavailable crews or unsafe
+      remembered routes release the bank to core production.
+  - [ ] Make visible long-range siege a defensive threat beyond the fixed
+        Foundry-defense radius.
 - [ ] Redefine and calibrate difficulty primarily through fair macro competence,
       with cognitive and execution differences layered on top.
 - [ ] Fix confirmed correctness defects, beginning with orientation-dependent

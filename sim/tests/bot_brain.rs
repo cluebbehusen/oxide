@@ -1076,7 +1076,7 @@ fn a_scripted_brain_cancels_paid_repairs_and_delivers_deferred_capital() {
 }
 
 #[test]
-fn a_build_dropped_during_lowering_does_not_poison_its_preferred_anchor() {
+fn a_dispatched_build_that_never_appears_blacklists_only_its_anchor() {
     let mut scenario = open_arena(
         (0..5)
             .map(|offset| unit(0, UnitKind::Harvester, 3 + offset, 3))
@@ -1089,37 +1089,6 @@ fn a_build_dropped_during_lowering_does_not_poison_its_preferred_anchor() {
     let mut state = scenario.build().expect("the construction arena builds");
     let mut continuing = Brain::balanced(PlayerId(0), scenario.seed);
     let macro_cadence = oxide_sim::bot::difficulty::STRATEGIC_ADMISSION_CADENCE;
-
-    let opening = continuing.act(&state);
-    assert_eq!(
-        opening
-            .iter()
-            .filter(|command| matches!(command.command, Command::Harvest { .. }))
-            .count(),
-        4,
-        "the scout owns one worker and the opening economy claims the rest"
-    );
-    assert_eq!(
-        opening
-            .iter()
-            .filter(|command| matches!(command.command, Command::Move { .. }))
-            .count(),
-        1,
-        "the scout's exact claim must survive the same lowering pass"
-    );
-    assert!(
-        opening
-            .iter()
-            .all(|command| !matches!(command.command, Command::Build { .. })),
-        "with every worker already claimed, the executive cannot dispatch the build"
-    );
-
-    state.tick(&opening);
-    for _ in 1..macro_cadence {
-        state.tick(&[]);
-    }
-    assert_eq!(state.current_tick(), macro_cadence);
-
     let fabricator_anchor = |commands: &[PlayerCommand]| {
         commands.iter().find_map(|command| match command.command {
             Command::Build {
@@ -1130,27 +1099,47 @@ fn a_build_dropped_during_lowering_does_not_poison_its_preferred_anchor() {
             _ => None,
         })
     };
-    let mut fresh = Brain::balanced(PlayerId(0), scenario.seed);
-    let preferred = fabricator_anchor(&fresh.act(&state))
-        .expect("a fresh commander dispatches its preferred Fabricator site");
-    let retried = fabricator_anchor(&continuing.act(&state))
-        .expect("the continuing commander retries the deferred Fabricator");
 
+    let opening = continuing.act(&state);
     assert_eq!(
-        retried, preferred,
-        "an intent that emitted no Build command is not evidence that the site was refused"
+        opening
+            .iter()
+            .filter(|command| matches!(command.command, Command::Harvest { .. }))
+            .count(),
+        3,
+        "the scout and builder each preempt one opening harvest chore"
     );
+    assert_eq!(
+        opening
+            .iter()
+            .filter(|command| matches!(command.command, Command::Move { .. }))
+            .count(),
+        1,
+        "the scout's exact claim must survive the same lowering pass"
+    );
+    let opening_anchor =
+        fabricator_anchor(&opening).expect("capital construction preempts a routine harvest chore");
 
-    // Conversely, an emitted command that produces no site is refusal
-    // evidence. Leave the valid command unapplied to model that outcome;
-    // the next audit must move away from the now-proven bad anchor.
+    // Leave the emitted command unapplied. The next audit should treat the
+    // absent site as a refusal, while a fresh commander still prefers the
+    // untouched geometry.
     for _ in 0..macro_cadence {
         state.tick(&[]);
     }
+    assert_eq!(state.current_tick(), macro_cadence);
+
+    let mut fresh = Brain::balanced(PlayerId(0), scenario.seed);
+    let preferred = fabricator_anchor(&fresh.act(&state))
+        .expect("a fresh commander dispatches its preferred Fabricator site");
     let after_refusal = fabricator_anchor(&continuing.act(&state))
-        .expect("the commander searches for another Fabricator site after refusal");
+        .expect("the continuing commander searches for another Fabricator site after refusal");
+
+    assert_eq!(
+        opening_anchor, preferred,
+        "a fresh commander should still prefer the unapplied command's legal geometry"
+    );
     assert_ne!(
-        after_refusal, retried,
+        after_refusal, opening_anchor,
         "a dispatched Build that never appears must still blacklist its anchor"
     );
 }

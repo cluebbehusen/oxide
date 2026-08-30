@@ -108,6 +108,44 @@ fn player_facing_intents(dials: &Dials, obs: &Observation) -> Vec<Intent> {
     UtilityPolicy::new().think_with_prelude(dials, obs, &[], &[], &[], Vec::new())
 }
 
+fn planned_cost(intent: &Intent) -> u32 {
+    match intent {
+        Intent::TrainAt { kind, .. } => kind.stats().cost,
+        Intent::Build { kind, .. } | Intent::BuildWith { kind, .. } => kind
+            .base_stats()
+            .construction
+            .map_or(0, |construction| construction.cost),
+        _ => 0,
+    }
+}
+
+fn plans_build(intents: &[Intent], kind: BuildingKind, anchor: TilePos) -> bool {
+    intents.iter().any(|intent| {
+        matches!(
+            intent,
+            Intent::Build {
+                kind: planned_kind,
+                anchor: planned_anchor,
+            } | Intent::BuildWith {
+                kind: planned_kind,
+                anchor: planned_anchor,
+                ..
+            } if *planned_kind == kind && *planned_anchor == anchor
+        )
+    })
+}
+
+fn exact_builder_for(intents: &[Intent], kind: BuildingKind, anchor: TilePos) -> Option<UnitId> {
+    intents.iter().find_map(|intent| match intent {
+        Intent::BuildWith {
+            builder,
+            kind: planned_kind,
+            anchor: planned_anchor,
+        } if *planned_kind == kind && *planned_anchor == anchor => Some(*builder),
+        _ => None,
+    })
+}
+
 fn footprint_distance(first: (TilePos, (i32, i32)), second: (TilePos, (i32, i32))) -> i32 {
     let axis = |a: i32, a_len: i32, b: i32, b_len: i32| {
         let a_far = a + a_len - 1;
@@ -156,14 +194,7 @@ fn a_think_never_plans_past_the_bank() {
         let obs = Observation::omniscient(&state, me);
         let mut policy = UtilityPolicy::new();
         let intents = policy.think(&Dials::full(), &obs, &[], &[]);
-        let planned: u32 = intents
-            .iter()
-            .map(|i| match i {
-                Intent::TrainAt { kind, .. } => kind.stats().cost,
-                Intent::Build { kind, .. } => kind.base_stats().construction.map_or(0, |c| c.cost),
-                _ => 0,
-            })
-            .sum();
+        let planned: u32 = intents.iter().map(planned_cost).sum();
         assert!(
             planned <= obs.scrap,
             "priced intents ({planned}) exceed the bank ({})",
@@ -357,27 +388,13 @@ fn standard_opening_can_train_and_restore_its_supported_frame_from_150_scrap() {
         )),
         "the normal opening worker order must remain"
     );
-    assert!(
-        first_intents.iter().any(|intent| matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Extractor,
-                ..
-            }
-        )),
-        "the supported home frame must fit beside that worker order"
+    assert_eq!(
+        exact_builder_for(&first_intents, BuildingKind::Extractor, TilePos::new(8, 4)),
+        Some(UnitId(0)),
+        "the supported home frame must fit beside that worker order with a safe exact builder: \
+         {first_intents:?}"
     );
-    let planned: u32 = first_intents
-        .iter()
-        .map(|intent| match intent {
-            Intent::TrainAt { kind, .. } => kind.stats().cost,
-            Intent::Build { kind, .. } => kind
-                .base_stats()
-                .construction
-                .map_or(0, |construction| construction.cost),
-            _ => 0,
-        })
-        .sum();
+    let planned: u32 = first_intents.iter().map(planned_cost).sum();
     assert_eq!(
         planned, 150,
         "adaptive production must leave exactly the frame restoration fund"
@@ -466,27 +483,17 @@ fn player_facing_restoration_waits_for_the_full_frame_footprint() {
 
     let partial = player_facing_intents(&dials, &obs);
     assert!(
-        partial.iter().all(|intent| !matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Extractor,
-                anchor,
-            } if *anchor == frame
-        )),
+        !plans_build(&partial, BuildingKind::Extractor, frame),
         "a known anchor is not enough to promise an unseen 2x2 footprint: {partial:?}"
     );
 
     obs.explored[hidden_index] = true;
     let complete = player_facing_intents(&dials, &obs);
-    assert!(
-        complete.iter().any(|intent| matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Extractor,
-                anchor,
-            } if *anchor == frame
-        )),
-        "the restoration becomes legal once every footprint tile is known: {complete:?}"
+    assert_eq!(
+        exact_builder_for(&complete, BuildingKind::Extractor, frame),
+        Some(UnitId(5)),
+        "the restoration becomes legal with the nearest safe exact builder once every footprint \
+         tile is known: {complete:?}"
     );
 }
 
@@ -507,13 +514,7 @@ fn player_facing_restoration_waits_for_a_visible_occupant_to_clear() {
 
     let occupied = player_facing_intents(&dials, &obs);
     assert!(
-        occupied.iter().all(|intent| !matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Extractor,
-                anchor,
-            } if *anchor == frame
-        )),
+        !plans_build(&occupied, BuildingKind::Extractor, frame),
         "a visible hostile ground unit temporarily blocks restoration: {occupied:?}"
     );
 
@@ -521,30 +522,25 @@ fn player_facing_restoration_waits_for_a_visible_occupant_to_clear() {
         usize::try_from(obs.enemy_units[0].tile.y * obs.map_width + obs.enemy_units[0].tile.x)
             .unwrap();
     obs.visible[occupant_index] = false;
+    obs.enemy_units.clear();
     let hidden = player_facing_intents(&dials, &obs);
-    assert!(
-        hidden.iter().any(|intent| matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Extractor,
-                anchor,
-            } if *anchor == frame
-        )),
-        "the controller must not treat an unseen unit as current occupancy: {hidden:?}"
+    assert_eq!(
+        exact_builder_for(&hidden, BuildingKind::Extractor, frame),
+        Some(UnitId(5)),
+        "the fog-honest view omits an unseen unit, so stale occupancy must not block the nearest \
+         safe exact builder: {hidden:?}"
     );
 
     obs.visible[occupant_index] = true;
-    obs.enemy_units[0].tile = frame.offset(2, 0);
+    let mut departed = observed_unit(90, UnitKind::Sentinel, TilePos::new(30, 10));
+    departed.player = PlayerId(1);
+    obs.enemy_units.push(departed);
     let cleared = player_facing_intents(&dials, &obs);
-    assert!(
-        cleared.iter().any(|intent| matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Extractor,
-                anchor,
-            } if *anchor == frame
-        )),
-        "the fixed frame is retried after its footprint clears: {cleared:?}"
+    assert_eq!(
+        exact_builder_for(&cleared, BuildingKind::Extractor, frame),
+        Some(UnitId(5)),
+        "the fixed frame is retried with the nearest safe exact builder after the occupant leaves \
+         the footprint and its approach: {cleared:?}"
     );
 }
 
@@ -561,17 +557,7 @@ fn player_facing_restoration_requires_sustained_clear_sight_after_regional_dange
     obs.salvage_incidents.push(frame.offset(2, 1));
     let dials = standard_dials();
     let mut policy = UtilityPolicy::new();
-    let restores_frame = |intents: &[Intent]| {
-        intents.iter().any(|intent| {
-            matches!(
-                intent,
-                Intent::Build {
-                    kind: BuildingKind::Extractor,
-                    anchor,
-                } if *anchor == frame
-            )
-        })
-    };
+    let restores_frame = |intents: &[Intent]| plans_build(intents, BuildingKind::Extractor, frame);
 
     let warned = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
     assert!(
@@ -635,10 +621,11 @@ fn player_facing_restoration_requires_sustained_clear_sight_after_regional_dange
 
     obs.tick += 1;
     let sustained_clear = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
-    assert!(
-        restores_frame(&sustained_clear),
-        "only sustained current sight over the region releases frame restoration: \
-         {sustained_clear:?}"
+    assert_eq!(
+        exact_builder_for(&sustained_clear, BuildingKind::Extractor, frame),
+        Some(UnitId(5)),
+        "only sustained current sight over the region releases the nearest safe exact builder for \
+         frame restoration: {sustained_clear:?}"
     );
 }
 

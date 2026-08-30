@@ -121,10 +121,74 @@ struct ConstructionClaims<'a> {
 }
 
 #[derive(Clone, Copy)]
+struct ConstructionContext<'a> {
+    home: TilePos,
+    claims: ConstructionClaims<'a>,
+    unit_contacts: Option<&'a [UnitContact]>,
+    building_contacts: Option<&'a [BuildingContact]>,
+    unavailable_builders: &'a [UnitId],
+}
+
+impl<'a> ConstructionContext<'a> {
+    const fn new(home: TilePos, claims: ConstructionClaims<'a>) -> Self {
+        Self {
+            home,
+            claims,
+            unit_contacts: None,
+            building_contacts: None,
+            unavailable_builders: &[],
+        }
+    }
+
+    const fn with_intelligence(
+        mut self,
+        unit_contacts: Option<&'a [UnitContact]>,
+        building_contacts: Option<&'a [BuildingContact]>,
+    ) -> Self {
+        self.unit_contacts = unit_contacts;
+        self.building_contacts = building_contacts;
+        self
+    }
+
+    const fn excluding_builders(mut self, unavailable_builders: &'a [UnitId]) -> Self {
+        self.unavailable_builders = unavailable_builders;
+        self
+    }
+}
+
+#[derive(Clone, Copy)]
 struct ProductionContext<'a> {
     home: TilePos,
     claims: ConstructionClaims<'a>,
     outstanding_air_production_ticks: Option<u64>,
+    unit_contacts: Option<&'a [UnitContact]>,
+    building_contacts: Option<&'a [BuildingContact]>,
+}
+
+impl<'a> ProductionContext<'a> {
+    const fn new(
+        home: TilePos,
+        claims: ConstructionClaims<'a>,
+        outstanding_air_production_ticks: Option<u64>,
+    ) -> Self {
+        Self {
+            home,
+            claims,
+            outstanding_air_production_ticks,
+            unit_contacts: None,
+            building_contacts: None,
+        }
+    }
+
+    const fn with_intelligence(
+        mut self,
+        unit_contacts: Option<&'a [UnitContact]>,
+        building_contacts: Option<&'a [BuildingContact]>,
+    ) -> Self {
+        self.unit_contacts = unit_contacts;
+        self.building_contacts = building_contacts;
+        self
+    }
 }
 
 struct AdvancedConstructionContext<'a> {
@@ -132,6 +196,25 @@ struct AdvancedConstructionContext<'a> {
     player_facing: bool,
     builders: &'a [&'a UnitObs],
     reserved: &'a [UnitId],
+    unit_contacts: Option<&'a [UnitContact]>,
+    building_contacts: Option<&'a [BuildingContact]>,
+}
+
+struct ExtractorClaimContext<'a> {
+    home: TilePos,
+    builders: &'a [&'a UnitObs],
+    unit_contacts: Option<&'a [UnitContact]>,
+    building_contacts: Option<&'a [BuildingContact]>,
+}
+
+struct FoundryClaimContext<'a> {
+    home: TilePos,
+    projected_foundries: &'a [TilePos],
+    builders: &'a [&'a UnitObs],
+    support_extractors: bool,
+    ordinary_frontiers: bool,
+    unit_contacts: Option<&'a [UnitContact]>,
+    building_contacts: Option<&'a [BuildingContact]>,
 }
 /// Most Scuttle Charges the lane-mining arm keeps in the ground.
 const MINE_CAP: usize = 3;
@@ -591,7 +674,7 @@ impl UtilityPolicy {
         let original = std::mem::take(intents);
         let mut claimed = Vec::new();
         for intent in &original {
-            Self::claim_explicit_intent_units(intent, &mut claimed);
+            Self::claim_non_preemptible_intent_units(intent, &mut claimed);
         }
         let danger = original
             .iter()
@@ -615,10 +698,6 @@ impl UtilityPolicy {
                     {
                         continue;
                     }
-                    let size = kind.base_stats().size;
-                    let (width, height) = size;
-                    let defer = (0..height)
-                        .any(|dy| (0..width).any(|dx| !obs.visible(anchor.offset(dx, dy))));
                     let mut candidates: Vec<_> = obs
                         .my_units
                         .iter()
@@ -632,31 +711,27 @@ impl UtilityPolicy {
                                 && self.scout != Some(unit.id)
                         })
                         .collect();
-                    candidates.sort_unstable_by_key(|unit| (unit.tile.manhattan(anchor), unit.id));
-                    let builder = candidates.into_iter().find(|unit| {
-                        crate::bot::routing::build_command_path_avoids(
-                            obs,
-                            unit,
-                            anchor,
-                            size,
-                            defer,
-                            |tile| {
-                                self.harvest_location_contested(tile)
-                                    || danger
-                                        .as_ref()
-                                        .expect("an implicit Build prepared worker danger")
-                                        .contains(tile)
-                            },
-                        )
-                    });
-                    if let Some(builder) = builder {
-                        claimed.push(builder.id);
+                    if let Some(builder) = self.safe_implicit_builder(
+                        obs,
+                        kind,
+                        anchor,
+                        &mut candidates,
+                        danger
+                            .as_deref()
+                            .expect("an implicit Build prepared worker danger"),
+                    ) {
+                        claimed.push(builder);
                         accepted_builds.push((kind, anchor));
-                        bound.push(Intent::BuildWith {
-                            builder: builder.id,
+                        Self::insert_build_before_harvest(
+                            &mut bound,
                             kind,
                             anchor,
-                        });
+                            Intent::BuildWith {
+                                builder,
+                                kind,
+                                anchor,
+                            },
+                        );
                     }
                 }
                 intent @ Intent::BuildWith { kind, anchor, .. } => {
@@ -664,25 +739,83 @@ impl UtilityPolicy {
                         .preserves_ground_producer_egress_prepared(&accepted_builds, (kind, anchor))
                     {
                         accepted_builds.push((kind, anchor));
-                        bound.push(intent);
+                        Self::insert_build_before_harvest(&mut bound, kind, anchor, intent);
                     }
                 }
+                Intent::AssignHarvest { node, .. }
+                    if accepted_builds
+                        .iter()
+                        .any(|(kind, anchor)| Self::footprint_contains(*kind, *anchor, node)) => {}
                 intent => bound.push(intent),
             }
         }
         *intents = bound;
     }
 
-    fn claim_explicit_intent_units(intent: &Intent, claimed: &mut Vec<UnitId>) {
+    fn safe_implicit_builder(
+        &self,
+        obs: &Observation,
+        kind: BuildingKind,
+        anchor: TilePos,
+        candidates: &mut [&UnitObs],
+        danger: &danger::HarvestDangerProjection,
+    ) -> Option<UnitId> {
+        let size = kind.base_stats().size;
+        let (width, height) = size;
+        let defer = (0..height).any(|dy| (0..width).any(|dx| !obs.visible(anchor.offset(dx, dy))));
+        candidates.sort_unstable_by_key(|unit| (unit.tile.manhattan(anchor), unit.id));
+        candidates
+            .iter()
+            .copied()
+            .find(|unit| {
+                crate::bot::routing::build_command_path_avoids(
+                    obs,
+                    unit,
+                    anchor,
+                    size,
+                    defer,
+                    |tile| self.harvest_location_contested(tile) || danger.contains(tile),
+                )
+            })
+            .map(|unit| unit.id)
+    }
+
+    fn insert_build_before_harvest(
+        intents: &mut Vec<Intent>,
+        kind: BuildingKind,
+        anchor: TilePos,
+        build: Intent,
+    ) {
+        intents.retain(|intent| {
+            !matches!(
+                intent,
+                Intent::AssignHarvest { node, .. }
+                    if Self::footprint_contains(kind, anchor, *node)
+            )
+        });
+        let before_harvest = intents
+            .iter()
+            .position(|intent| matches!(intent, Intent::AssignHarvest { .. }))
+            .unwrap_or(intents.len());
+        intents.insert(before_harvest, build);
+    }
+
+    fn footprint_contains(kind: BuildingKind, anchor: TilePos, tile: TilePos) -> bool {
+        let (width, height) = kind.base_stats().size;
+        tile.x >= anchor.x
+            && tile.x < anchor.x + width
+            && tile.y >= anchor.y
+            && tile.y < anchor.y + height
+    }
+
+    fn claim_non_preemptible_intent_units(intent: &Intent, claimed: &mut Vec<UnitId>) {
         match intent {
             Intent::MoveUnits { units, .. }
             | Intent::AttackMoveUnits { units, .. }
             | Intent::AttackUnits { units, .. }
             | Intent::StopUnits { units } => claimed.extend(units.iter().copied()),
             Intent::RepairUnits { welders, .. } => claimed.extend(welders.iter().copied()),
-            Intent::AssignHarvest { unit, .. } | Intent::Scout { unit, .. } => {
-                claimed.push(*unit);
-            }
+            Intent::Scout { unit, .. } => claimed.push(*unit),
             Intent::BuildWith { builder, .. } => claimed.push(*builder),
             Intent::Load { transport, riders } => {
                 claimed.push(*transport);
@@ -691,6 +824,7 @@ impl UtilityPolicy {
             Intent::Unload { transport, .. } => claimed.push(*transport),
             Intent::TrainAt { .. }
             | Intent::Build { .. }
+            | Intent::AssignHarvest { .. }
             | Intent::FormArmy { .. }
             | Intent::PushArmy { .. }
             | Intent::Repair { .. }
@@ -977,6 +1111,13 @@ impl UtilityPolicy {
             enlisted,
             reserved,
         };
+        let mut unavailable_builders = Vec::new();
+        for intent in &intents {
+            Self::claim_non_preemptible_intent_units(intent, &mut unavailable_builders);
+        }
+        let construction_context = ConstructionContext::new(home_tile, construction_claims)
+            .with_intelligence(mode.unit_contacts, mode.building_contacts)
+            .excluding_builders(&unavailable_builders);
         let healthy_home_screen = obs
             .my_units
             .iter()
@@ -994,8 +1135,7 @@ impl UtilityPolicy {
             self.construction(
                 dials,
                 obs,
-                home_tile,
-                construction_claims,
+                construction_context,
                 &mut construction_budget,
                 &mut planned_construction,
             );
@@ -1005,11 +1145,12 @@ impl UtilityPolicy {
             self.production_with_air_demand(
                 dials,
                 obs,
-                ProductionContext {
-                    home: home_tile,
-                    claims: construction_claims,
+                ProductionContext::new(
+                    home_tile,
+                    construction_claims,
                     outstanding_air_production_ticks,
-                },
+                )
+                .with_intelligence(mode.unit_contacts, mode.building_contacts),
                 &mut budget,
                 &mut intents,
             );
@@ -1025,19 +1166,19 @@ impl UtilityPolicy {
         }
         if construction_precedes_discretionary {
             intents.extend(planned_construction);
-        } else {
-            self.construction(
-                dials,
-                obs,
-                home_tile,
-                construction_claims,
-                &mut budget,
-                &mut intents,
-            );
+        } else if !intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::Build { .. } | Intent::BuildWith { .. }))
+        {
+            // Active air capacity deliberately precedes ordinary construction.
+            // One build per think keeps its exact worker and footprint claim
+            // authoritative instead of charging a second project that final
+            // command binding would have to discard.
+            self.construction(dials, obs, construction_context, &mut budget, &mut intents);
         }
         let construction_promised = construction_commitment > 0
             || intents.iter().any(|intent| match intent {
-                Intent::Build { kind, anchor } => {
+                Intent::Build { kind, anchor } | Intent::BuildWith { kind, anchor, .. } => {
                     let already_paid = obs.my_buildings.iter().any(|building| {
                         building.kind == *kind
                             && building.anchor == *anchor
@@ -1056,18 +1197,29 @@ impl UtilityPolicy {
             // its promised construction can proceed. Dedicated Tenders keep
             // welding while the bank has scrap beyond the deferred claim, but
             // must stop before repair can consume the claim itself.
+            let bound_builders: Vec<UnitId> = intents
+                .iter()
+                .filter_map(|intent| match intent {
+                    Intent::BuildWith { builder, .. } => Some(*builder),
+                    _ => None,
+                })
+                .collect();
             let repairers: Vec<UnitId> = obs
                 .my_units
                 .iter()
                 .filter(|unit| {
-                    unit.repairing && (unit.kind.stats().harvest.is_some() || obs.scrap == 0)
+                    unit.repairing
+                        && !bound_builders.contains(&unit.id)
+                        && (unit.kind.stats().harvest.is_some() || obs.scrap == 0)
                 })
                 .map(|unit| unit.id)
                 .collect();
             if !repairers.is_empty() {
                 let before_build = intents
                     .iter()
-                    .position(|intent| matches!(intent, Intent::Build { .. }))
+                    .position(|intent| {
+                        matches!(intent, Intent::Build { .. } | Intent::BuildWith { .. })
+                    })
                     .unwrap_or(0);
                 intents.insert(before_build, Intent::StopUnits { units: repairers });
             }
@@ -1563,6 +1715,22 @@ mod tests {
         }
     }
 
+    fn has_supported_restoration(policy: &UtilityPolicy, obs: &Observation, home: TilePos) -> bool {
+        policy
+            .supported_frame_restoration_claim(
+                obs,
+                ConstructionContext::new(
+                    home,
+                    ConstructionClaims {
+                        player_facing: true,
+                        enlisted: &[],
+                        reserved: &[],
+                    },
+                ),
+            )
+            .is_some()
+    }
+
     #[test]
     fn between_shared_boundaries_only_current_danger_may_advance() {
         let home = TilePos::new(5, 5);
@@ -1819,7 +1987,7 @@ mod tests {
     }
 
     #[test]
-    fn builder_binding_respects_explicit_claims_before_and_after_a_build() {
+    fn builder_binding_moves_capital_construction_before_harvest_chores() {
         let anchor = TilePos::new(22, 5);
         let obs = construction_route_observation(&[
             (1, TilePos::new(5, 4)),
@@ -1836,23 +2004,67 @@ mod tests {
             anchor,
         };
         let bound = Intent::BuildWith {
-            builder: UnitId(3),
+            builder: UnitId(2),
             kind: BuildingKind::Turret,
             anchor,
         };
 
-        for (mut intents, expected) in [
-            (
-                vec![explicit.clone(), implicit.clone()],
-                vec![explicit.clone(), bound.clone()],
-            ),
-            (
-                vec![implicit.clone(), explicit.clone()],
-                vec![bound.clone(), explicit.clone()],
-            ),
+        for mut intents in [
+            vec![explicit.clone(), implicit.clone()],
+            vec![implicit.clone(), explicit.clone()],
         ] {
             policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
-            assert_eq!(intents, expected);
+            assert_eq!(intents, vec![bound.clone(), explicit.clone()]);
+        }
+    }
+
+    #[test]
+    fn builder_binding_removes_harvest_work_consumed_by_the_new_footprint() {
+        let anchor = TilePos::new(22, 5);
+        let safe_node = TilePos::new(4, 16);
+        let obs = construction_route_observation(&[
+            (1, TilePos::new(5, 4)),
+            (2, TilePos::new(5, 16)),
+            (3, TilePos::new(4, 16)),
+        ]);
+        let policy = UtilityPolicy::new();
+        let conflicting_harvest = Intent::AssignHarvest {
+            unit: UnitId(3),
+            node: anchor,
+        };
+        let safe_harvest = Intent::AssignHarvest {
+            unit: UnitId(1),
+            node: safe_node,
+        };
+        let implicit_build = Intent::Build {
+            kind: BuildingKind::Turret,
+            anchor,
+        };
+        let exact_build = Intent::BuildWith {
+            builder: UnitId(2),
+            kind: BuildingKind::Turret,
+            anchor,
+        };
+
+        for mut intents in [
+            vec![
+                conflicting_harvest.clone(),
+                implicit_build,
+                safe_harvest.clone(),
+            ],
+            vec![
+                exact_build.clone(),
+                conflicting_harvest,
+                safe_harvest.clone(),
+            ],
+        ] {
+            policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
+
+            assert_eq!(
+                intents,
+                vec![exact_build.clone(), safe_harvest.clone()],
+                "construction must cancel only chores whose resource disappears under its footprint"
+            );
         }
     }
 
@@ -2248,6 +2460,271 @@ mod tests {
         assert_eq!(active.outstanding_air_production_ticks, Some(4_801));
     }
 
+    #[test]
+    fn active_air_capacity_owns_the_sole_builder_before_frame_restoration() {
+        let home = TilePos::new(12, 16);
+        let frame = home.offset(8, 0);
+        let mut worker = harvester(1, None);
+        worker.tile = home.offset(0, 4);
+        let mut obs = obs_with(vec![worker]);
+        obs.map_width = 48;
+        obs.map_height = 32;
+        obs.visible = vec![true; 48 * 32];
+        obs.explored = obs.visible.clone();
+        obs.scrap = 10_000;
+        obs.known_frames = vec![frame];
+        for (id, kind, anchor) in [
+            (10, BuildingKind::Foundry, home),
+            (11, BuildingKind::Fabricator, TilePos::new(2, 2)),
+            (12, BuildingKind::Airworks, TilePos::new(10, 2)),
+            (13, BuildingKind::Crucible, TilePos::new(18, 2)),
+        ] {
+            obs.my_buildings.push(standing_building(id, kind, anchor));
+            obs.my_queues.push(Vec::new());
+        }
+        let mut dials = Dials::full();
+        dials.deep_tech = true;
+        dials.extractors = true;
+        let mut policy = UtilityPolicy::new();
+        assert!(has_supported_restoration(&policy, &obs, home));
+        let capacity_site = policy
+            .placement_near(&obs, BuildingKind::Airworks, home)
+            .expect("the fixture must leave a legal second Airworks footprint");
+        obs.my_units[0].tile = capacity_site.offset(-1, 0);
+        let danger = policy.harvest_danger_projection(&obs, None, None);
+        let mut candidate_builders = vec![&obs.my_units[0]];
+        assert_eq!(
+            policy.safe_implicit_builder(
+                &obs,
+                BuildingKind::Airworks,
+                capacity_site,
+                &mut candidate_builders,
+                &danger,
+            ),
+            Some(UnitId(1)),
+            "the sole worker must have a safe command path to the capacity site"
+        );
+        let mut production_budget = obs.scrap;
+        let mut production_intents = Vec::new();
+        policy.production_with_air_demand(
+            &dials,
+            &obs,
+            ProductionContext::new(
+                home,
+                ConstructionClaims {
+                    player_facing: true,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+                Some(u64::from(crate::TICKS_PER_SECOND) * 120 + 1),
+            ),
+            &mut production_budget,
+            &mut production_intents,
+        );
+        assert!(
+            production_intents.iter().any(|intent| matches!(
+                intent,
+                Intent::BuildWith {
+                    builder: UnitId(1),
+                    kind: BuildingKind::Airworks,
+                    ..
+                }
+            )),
+            "the fixture must have an actionable capacity site: {production_intents:?}"
+        );
+        let context = StrategicUtilityContext::new(&[], &[], &[], Vec::new())
+            .with_outstanding_air_production_ticks(u64::from(crate::TICKS_PER_SECOND) * 120 + 1);
+
+        let mut intents = policy.think_with_intelligence(&dials, &obs, &[], &[], context);
+        policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
+
+        let builds: Vec<_> = intents
+            .iter()
+            .filter(|intent| matches!(intent, Intent::Build { .. } | Intent::BuildWith { .. }))
+            .collect();
+        assert!(
+            matches!(
+                builds.as_slice(),
+                [Intent::BuildWith {
+                    builder: UnitId(1),
+                    kind: BuildingKind::Airworks,
+                    ..
+                }]
+            ),
+            "active capacity must retain the only worker and defer restoration: {intents:?}"
+        );
+        assert!(intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Extractor,
+                ..
+            } | Intent::BuildWith {
+                kind: BuildingKind::Extractor,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn supported_frame_restoration_preempts_the_same_workers_harvest_chore() {
+        let home = TilePos::new(3, 8);
+        let frame = home.offset(8, 0);
+        let source = home.offset(2, 4);
+        let mut worker = harvester(1, None);
+        worker.tile = home.offset(1, 4);
+        let mut units = vec![worker];
+        units.extend((0..3).map(|index| {
+            fighter(
+                10 + index,
+                PlayerId(0),
+                home.offset(i32::try_from(index).unwrap(), 5),
+            )
+        }));
+        let mut obs = obs_with(units);
+        obs.scrap = BuildingKind::Extractor
+            .base_stats()
+            .construction
+            .expect("Extractors have a construction price")
+            .cost;
+        obs.known_frames = vec![frame];
+        obs.known_scrap = vec![(source, 500)];
+        obs.my_buildings
+            .push(standing_building(10, BuildingKind::Foundry, home));
+        obs.my_queues.push(Vec::new());
+        let mut dials = Dials::full();
+        dials.extractors = true;
+        let mut policy = UtilityPolicy::new();
+        assert!(
+            has_supported_restoration(&policy, &obs, home),
+            "the fixture must offer an ordinary supported-frame restoration"
+        );
+
+        let mut intents = policy.think_with_intelligence(
+            &dials,
+            &obs,
+            &[],
+            &[],
+            StrategicUtilityContext::new(&[], &[], &[], Vec::new()),
+        );
+        assert!(intents.contains(&Intent::AssignHarvest {
+            unit: UnitId(1),
+            node: source,
+        }));
+        policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
+
+        assert!(matches!(
+            intents.first(),
+            Some(Intent::BuildWith {
+                builder: UnitId(1),
+                kind: BuildingKind::Extractor,
+                anchor,
+            }) if *anchor == frame
+        ));
+        let commands = Executive::new().apply_with_reservations(PlayerId(0), &obs, &intents, &[]);
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            PlayerCommand {
+                command: Command::Build {
+                units,
+                kind: BuildingKind::Extractor,
+                anchor,
+                ..
+            },
+            ..
+            } if units == &[UnitId(1)] && *anchor == frame
+        )));
+        assert!(commands.iter().all(|command| !matches!(
+            &command.command,
+            Command::Harvest { units, .. } if units.contains(&UnitId(1))
+        )));
+    }
+
+    #[test]
+    fn deferred_exact_restoration_preserves_its_capital_and_builder() {
+        let home = TilePos::new(3, 8);
+        let frame = home.offset(8, 0);
+        let mut founder = harvester(1, None);
+        founder.tile = frame.offset(-1, 2);
+        founder.repairing = true;
+        let mut other_repairer = harvester(2, None);
+        other_repairer.tile = home.offset(0, 4);
+        other_repairer.repairing = true;
+        let mut third = harvester(3, None);
+        third.tile = home.offset(1, 4);
+        let mut fourth = harvester(4, None);
+        fourth.tile = home.offset(2, 4);
+        let mut units = vec![founder, other_repairer, third, fourth];
+        units.extend((0..3).map(|index| {
+            fighter(
+                20 + index,
+                PlayerId(0),
+                home.offset(i32::try_from(index).unwrap(), 5),
+            )
+        }));
+        let mut obs = obs_with(units);
+        obs.scrap = BuildingKind::Extractor
+            .base_stats()
+            .construction
+            .expect("Extractors have a construction price")
+            .cost;
+        obs.known_frames = vec![frame];
+        let mut foundry = standing_building(10, BuildingKind::Foundry, home);
+        foundry.hp -= 10;
+        obs.my_buildings.push(foundry);
+        obs.my_queues.push(Vec::new());
+        let (width, height) = BuildingKind::Extractor.base_stats().size;
+        for dy in 0..height {
+            for dx in 0..width {
+                let tile = frame.offset(dx, dy);
+                let index = (tile.y * obs.map_width + tile.x) as usize;
+                obs.visible[index] = false;
+            }
+        }
+        let mut dials = Dials::full();
+        dials.extractors = true;
+        dials.scouting = false;
+        let mut policy = UtilityPolicy::new();
+        assert!(
+            has_supported_restoration(&policy, &obs, home),
+            "the hidden but explored home frame must retain its ordinary restoration reserve"
+        );
+
+        let mut intents = policy.think_with_intelligence(
+            &dials,
+            &obs,
+            &[],
+            &[],
+            StrategicUtilityContext::new(&[], &[], &[], Vec::new()),
+        );
+        policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
+        let commands = Executive::new().apply_with_reservations(PlayerId(0), &obs, &intents, &[]);
+
+        assert!(
+            commands.iter().any(|command| matches!(
+                &command.command,
+                Command::Build {
+                    units,
+                    kind: BuildingKind::Extractor,
+                    anchor,
+                    defer: true,
+                    ..
+                } if units == &[UnitId(1)] && *anchor == frame
+            )),
+            "the exact deferred build must replace its founder's repair order: {intents:?} -> {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                &command.command,
+                Command::Stop { units } if units == &[UnitId(2)]
+            )),
+            "other voluntary repairers must stop before they drain the deferred fund: {intents:?} -> {commands:?}"
+        );
+        assert!(commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Repair { .. } | Command::RepairUnit { .. }
+        )));
+    }
+
     /// The site audit's deferred-found contract (fog placement Part
     /// B): an anchor whose founder is still walking is a site on its
     /// way — kept pending, never blacklisted — while the same anchor
@@ -2363,12 +2840,14 @@ mod tests {
         policy.construction(
             &Dials::full(),
             &obs,
-            TilePos::new(2, 2),
-            ConstructionClaims {
-                player_facing: false,
-                enlisted: &[],
-                reserved: &[],
-            },
+            ConstructionContext::new(
+                TilePos::new(2, 2),
+                ConstructionClaims {
+                    player_facing: false,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            ),
             &mut budget,
             &mut intents,
         );
@@ -2418,12 +2897,14 @@ mod tests {
             UtilityPolicy::new().construction(
                 dials,
                 world,
-                home,
-                ConstructionClaims {
-                    player_facing: true,
-                    enlisted: &[],
-                    reserved: &[],
-                },
+                ConstructionContext::new(
+                    home,
+                    ConstructionClaims {
+                        player_facing: true,
+                        enlisted: &[],
+                        reserved: &[],
+                    },
+                ),
                 &mut budget,
                 &mut intents,
             );
@@ -2987,12 +3468,14 @@ mod tests {
             UtilityPolicy::new().construction(
                 dials,
                 &obs,
-                home,
-                ConstructionClaims {
-                    player_facing: true,
-                    enlisted: &[],
-                    reserved: &[],
-                },
+                ConstructionContext::new(
+                    home,
+                    ConstructionClaims {
+                        player_facing: true,
+                        enlisted: &[],
+                        reserved: &[],
+                    },
+                ),
                 &mut budget,
                 &mut intents,
             );

@@ -188,11 +188,7 @@ impl UtilityPolicy {
         self.production_with_air_demand(
             dials,
             obs,
-            ProductionContext {
-                home,
-                claims,
-                outstanding_air_production_ticks: None,
-            },
+            ProductionContext::new(home, claims, None),
             budget,
             intents,
         );
@@ -210,6 +206,8 @@ impl UtilityPolicy {
             home,
             claims,
             outstanding_air_production_ticks,
+            unit_contacts,
+            building_contacts,
         } = context;
         let ConstructionClaims {
             player_facing,
@@ -244,14 +242,22 @@ impl UtilityPolicy {
         // fund — with no ground road, the tech chain to the sky is the
         // only road left, and spending its savings on infantry is how
         // forty-seven fighters end up staring at a gulf forever.
+        let mut unavailable_builders = Vec::new();
+        for intent in intents.iter() {
+            Self::claim_non_preemptible_intent_units(intent, &mut unavailable_builders);
+        }
+        let capital_context = ConstructionContext::new(home, claims)
+            .with_intelligence(unit_contacts, building_contacts)
+            .excluding_builders(&unavailable_builders);
         let ordinary_capital = if screen < 3 || (self.desperate && self.desperate_road) {
             0
         } else {
-            self.capital_reserve(dials, obs, home, player_facing, enlisted, reserved)
+            self.capital_reserve(dials, obs, capital_context)
         };
-        let ordinary_capital = if player_facing
-            && dials.extractors
-            && self.supported_frame_restoration_needed(obs, home)
+        let ordinary_capital = if dials.extractors
+            && self
+                .supported_frame_restoration_claim(obs, capital_context)
+                .is_some()
         {
             ordinary_capital.max(
                 BuildingKind::Extractor
@@ -272,12 +278,55 @@ impl UtilityPolicy {
         if let Some(anchor) = capacity_site
             && *budget >= airworks_cost.saturating_add(TECH_RESERVE)
         {
-            *budget -= airworks_cost;
-            intents.push(Intent::Build {
-                kind: BuildingKind::Airworks,
-                anchor,
-            });
-            capacity_site = None;
+            let mut unavailable = Vec::new();
+            for intent in intents.iter() {
+                Self::claim_non_preemptible_intent_units(intent, &mut unavailable);
+            }
+            let mut builders: Vec<_> = self
+                .construction_builders(obs, enlisted, reserved)
+                .into_iter()
+                .filter(|builder| !unavailable.contains(&builder.id))
+                .collect();
+            let accepted_builds: Vec<_> = intents
+                .iter()
+                .filter_map(|intent| match intent {
+                    Intent::Build { kind, anchor } | Intent::BuildWith { kind, anchor, .. } => {
+                        Some((*kind, *anchor))
+                    }
+                    _ => None,
+                })
+                .collect();
+            self.prepare_ground_producer_egress(obs);
+            let preserves_egress = self.preserves_ground_producer_egress_prepared(
+                &accepted_builds,
+                (BuildingKind::Airworks, anchor),
+            );
+            let danger = preserves_egress
+                .then(|| self.harvest_danger_projection(obs, unit_contacts, building_contacts));
+            if preserves_egress
+                && let Some(builder) = self.safe_implicit_builder(
+                    obs,
+                    BuildingKind::Airworks,
+                    anchor,
+                    &mut builders,
+                    danger
+                        .as_deref()
+                        .expect("an actionable capacity site prepared worker danger"),
+                )
+            {
+                *budget -= airworks_cost;
+                Self::insert_build_before_harvest(
+                    intents,
+                    BuildingKind::Airworks,
+                    anchor,
+                    Intent::BuildWith {
+                        builder,
+                        kind: BuildingKind::Airworks,
+                        anchor,
+                    },
+                );
+                capacity_site = None;
+            }
         }
         let capacity_capital = if capacity_site.is_some() {
             airworks_cost.saturating_add(TECH_RESERVE)
@@ -743,11 +792,20 @@ impl UtilityPolicy {
         &self,
         dials: &Dials,
         obs: &Observation,
-        home: TilePos,
-        player_facing: bool,
-        enlisted: &[UnitId],
-        reserved: &[UnitId],
+        context: ConstructionContext<'_>,
     ) -> u32 {
+        let ConstructionContext {
+            home,
+            claims,
+            unit_contacts,
+            building_contacts,
+            unavailable_builders,
+        } = context;
+        let ConstructionClaims {
+            player_facing,
+            enlisted,
+            reserved,
+        } = claims;
         let have = |kind: BuildingKind| Self::projected_count(obs, kind, player_facing) > 0;
         let price =
             |kind: BuildingKind| kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
@@ -777,14 +835,22 @@ impl UtilityPolicy {
             };
             let ordinary_frontier_unlocked = !dials.deep_tech || have(BuildingKind::Airworks);
             let expansion_claim = if player_facing {
-                let builders = self.construction_builders(obs, enlisted, reserved);
+                let builders: Vec<_> = self
+                    .construction_builders(obs, enlisted, reserved)
+                    .into_iter()
+                    .filter(|builder| !unavailable_builders.contains(&builder.id))
+                    .collect();
                 self.player_facing_foundry_claim(
                     obs,
-                    home,
-                    &foundries,
-                    &builders,
-                    have(BuildingKind::Fabricator),
-                    ordinary_frontier_unlocked,
+                    FoundryClaimContext {
+                        home,
+                        projected_foundries: &foundries,
+                        builders: &builders,
+                        support_extractors: have(BuildingKind::Fabricator),
+                        ordinary_frontiers: ordinary_frontier_unlocked,
+                        unit_contacts,
+                        building_contacts,
+                    },
                 )
                 .is_some()
             } else {
@@ -1414,19 +1480,40 @@ mod tests {
         UtilityPolicy::new().production_with_air_demand(
             &Dials::balanced(),
             obs,
-            ProductionContext {
-                home: TilePos::new(1, 1),
-                claims: ConstructionClaims {
+            ProductionContext::new(
+                TilePos::new(1, 1),
+                ConstructionClaims {
                     player_facing: true,
                     enlisted: &[],
                     reserved: &[],
                 },
-                outstanding_air_production_ticks: demand,
-            },
+                demand,
+            ),
             &mut budget,
             &mut intents,
         );
         (budget, intents)
+    }
+
+    fn capital_reserve_for(
+        policy: &UtilityPolicy,
+        dials: &Dials,
+        obs: &Observation,
+        home: TilePos,
+        player_facing: bool,
+    ) -> u32 {
+        policy.capital_reserve(
+            dials,
+            obs,
+            ConstructionContext::new(
+                home,
+                ConstructionClaims {
+                    player_facing,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            ),
+        )
     }
 
     fn airworks_builds(intents: &[Intent]) -> Vec<TilePos> {
@@ -1436,6 +1523,11 @@ mod tests {
                 Intent::Build {
                     kind: BuildingKind::Airworks,
                     anchor,
+                }
+                | Intent::BuildWith {
+                    kind: BuildingKind::Airworks,
+                    anchor,
+                    ..
                 } => Some(*anchor),
                 _ => None,
             })
@@ -1475,15 +1567,15 @@ mod tests {
         policy.production_with_air_demand(
             &dials,
             &obs,
-            ProductionContext {
-                home: TilePos::new(1, 1),
-                claims: ConstructionClaims {
+            ProductionContext::new(
+                TilePos::new(1, 1),
+                ConstructionClaims {
                     player_facing: true,
                     enlisted: &[],
                     reserved: &[],
                 },
-                outstanding_air_production_ticks: Some(4_000),
-            },
+                Some(4_000),
+            ),
             &mut budget,
             &mut intents,
         );
@@ -1533,15 +1625,15 @@ mod tests {
             policy.production_with_air_demand(
                 &dials,
                 &current,
-                ProductionContext {
-                    home: TilePos::new(1, 1),
-                    claims: ConstructionClaims {
+                ProductionContext::new(
+                    TilePos::new(1, 1),
+                    ConstructionClaims {
                         player_facing: true,
                         enlisted: &[],
                         reserved: &[],
                     },
-                    outstanding_air_production_ticks: None,
-                },
+                    None,
+                ),
                 &mut budget,
                 &mut intents,
             );
@@ -1604,15 +1696,15 @@ mod tests {
             policy.production_with_air_demand(
                 &dials,
                 observation,
-                ProductionContext {
+                ProductionContext::new(
                     home,
-                    claims: ConstructionClaims {
+                    ConstructionClaims {
                         player_facing: true,
                         enlisted: &[],
                         reserved: &[],
                     },
-                    outstanding_air_production_ticks: None,
-                },
+                    None,
+                ),
                 &mut budget,
                 &mut intents,
             );
@@ -1802,7 +1894,7 @@ mod tests {
 
         let mut policy = UtilityPolicy::new();
         assert_eq!(
-            policy.capital_reserve(&dials, &obs, home, true, &[], &[]),
+            capital_reserve_for(&policy, &dials, &obs, home, true),
             0,
             "four ordinary fighters must not hoard toward the third Foundry"
         );
@@ -1846,10 +1938,252 @@ mod tests {
             .cost
             + TECH_RESERVE;
         assert_eq!(
-            policy.capital_reserve(&dials, &obs, home, true, &[], &[]),
+            capital_reserve_for(&policy, &dials, &obs, home, true),
             foundry_fund,
             "five live plus one queued ordinary fighter must unlock the exact capital reserve"
         );
+    }
+
+    #[test]
+    fn remembered_danger_releases_an_unsafe_foundry_reserve_to_core_production() {
+        let home = TilePos::new(1, 1);
+        let frontier = TilePos::new(30, 18);
+        let mut obs = completed_tree();
+        obs.map_width = 40;
+        obs.map_height = 24;
+        obs.visible = vec![true; 40 * 24];
+        obs.explored = obs.visible.clone();
+        obs.known_rock.clear();
+        obs.known_scrap = vec![(frontier, 800)];
+        add_building(
+            &mut obs,
+            10,
+            BuildingKind::Foundry,
+            TilePos::new(10, 1),
+            true,
+        );
+        for id in 23..26 {
+            add_unit(
+                &mut obs,
+                id,
+                UnitKind::Sentinel,
+                TilePos::new(5 + i32::try_from(id - 23).unwrap(), 8),
+            );
+        }
+
+        let profile = BotConfig::scripted(BotDifficulty::Standard, BotStance::Turtle, 1_616_304)
+            .resolve_profile();
+        let mut dials = Dials::scripted(
+            &profile,
+            DifficultyTuning::for_level(BotDifficulty::Standard),
+        );
+        dials.extractors = false;
+        dials.upgrades = false;
+        assert_eq!((dials.army_size, dials.foundry_cap), (7, 3));
+
+        let claims = ConstructionClaims {
+            player_facing: true,
+            enlisted: &[],
+            reserved: &[],
+        };
+        let policy = UtilityPolicy::new();
+        let foundry_fund = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundry has construction stats")
+            .cost
+            + TECH_RESERVE;
+        assert_eq!(
+            policy.capital_reserve(&dials, &obs, ConstructionContext::new(home, claims),),
+            foundry_fund,
+            "the safe frontier should reserve the exact third-Foundry fund"
+        );
+
+        let frontier_index = usize::try_from(frontier.y * obs.map_width + frontier.x)
+            .expect("the frontier index is nonnegative");
+        obs.visible[frontier_index] = false;
+        let contacts = [UnitContact {
+            id: UnitId(90),
+            player: PlayerId(1),
+            kind: UnitKind::Avalanche,
+            tile: frontier,
+            hp: UnitKind::Avalanche.stats().max_hp,
+            last_seen: obs.tick,
+            evidence: ContactEvidence::Remembered,
+        }];
+        let context = ProductionContext::new(home, claims, None)
+            .with_intelligence(Some(&contacts), Some(&[]));
+        assert_eq!(
+            policy.capital_reserve(
+                &dials,
+                &obs,
+                ConstructionContext::new(home, claims)
+                    .with_intelligence(Some(&contacts), Some(&[])),
+            ),
+            0,
+            "a Foundry with no danger-safe site or builder route cannot pin capital"
+        );
+
+        obs.scrap = UnitKind::Sentinel.stats().cost;
+        let mut budget = obs.scrap;
+        let mut intents = Vec::new();
+        UtilityPolicy::new().production_with_air_demand(
+            &dials,
+            &obs,
+            context,
+            &mut budget,
+            &mut intents,
+        );
+        assert_eq!(
+            intents,
+            vec![Intent::TrainAt {
+                building: BuildingId(0),
+                kind: UnitKind::Sentinel,
+            }],
+            "the released finite bank should buy the still-missing seventh core fighter"
+        );
+        assert_eq!(budget, 0);
+    }
+
+    #[test]
+    fn unactionable_supported_extractor_releases_its_fund_to_core_production() {
+        let home = TilePos::new(1, 1);
+        let frame = TilePos::new(9, 1);
+        let mut obs = completed_tree();
+        obs.known_rock.clear();
+        obs.known_frames = vec![frame];
+        add_enemy_building(
+            &mut obs,
+            90,
+            BuildingKind::Foundry,
+            TilePos::new(12, 7),
+            true,
+        );
+        obs.scrap = UnitKind::Sentinel.stats().cost;
+
+        let mut dials = Dials::balanced();
+        dials.adaptive_composition = false;
+        dials.expansion = false;
+        dials.upgrades = false;
+        let open_claims = ConstructionClaims {
+            player_facing: true,
+            enlisted: &[],
+            reserved: &[],
+        };
+        let policy = UtilityPolicy::new();
+        assert!(UtilityPolicy::foundry_supports_extractor(home, frame));
+        assert!(
+            policy
+                .supported_frame_restoration_claim(
+                    &obs,
+                    ConstructionContext::new(home, open_claims),
+                )
+                .is_some(),
+            "the clear supported frame must have an exact safe builder before testing reserve release"
+        );
+
+        let mut safe_budget = obs.scrap;
+        let mut safe_intents = Vec::new();
+        UtilityPolicy::new().production(
+            &dials,
+            &obs,
+            home,
+            open_claims,
+            &mut safe_budget,
+            &mut safe_intents,
+        );
+        assert!(safe_intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::TrainAt {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )));
+        assert_eq!(
+            safe_budget, obs.scrap,
+            "an actionable restoration keeps its exact fund out of the ordinary fighter drip"
+        );
+
+        let harvesters: Vec<_> = obs
+            .my_units
+            .iter()
+            .filter(|unit| unit.kind.stats().harvest.is_some())
+            .map(|unit| unit.id)
+            .collect();
+        let claimed_builders = ConstructionClaims {
+            player_facing: true,
+            enlisted: &harvesters,
+            reserved: &[],
+        };
+        assert!(
+            policy
+                .supported_frame_restoration_claim(
+                    &obs,
+                    ConstructionContext::new(home, claimed_builders),
+                )
+                .is_none(),
+            "a frame without one available exact builder is not an actionable capital claim"
+        );
+        let mut claimed_budget = obs.scrap;
+        let mut claimed_intents = Vec::new();
+        UtilityPolicy::new().production(
+            &dials,
+            &obs,
+            home,
+            claimed_builders,
+            &mut claimed_budget,
+            &mut claimed_intents,
+        );
+        assert_eq!(
+            claimed_intents,
+            vec![Intent::TrainAt {
+                building: BuildingId(0),
+                kind: UnitKind::Sentinel,
+            }],
+            "claimed builders must release the unusable restoration fund into the missing core fighter"
+        );
+        assert_eq!(claimed_budget, 0);
+
+        let contact_tile = TilePos::new(7, 2);
+        let contact_index = usize::try_from(contact_tile.y * obs.map_width + contact_tile.x)
+            .expect("the remembered contact index is nonnegative");
+        obs.visible[contact_index] = false;
+        let contacts = [UnitContact {
+            id: UnitId(91),
+            player: PlayerId(1),
+            kind: UnitKind::Avalanche,
+            tile: contact_tile,
+            hp: UnitKind::Avalanche.stats().max_hp,
+            last_seen: obs.tick,
+            evidence: ContactEvidence::Remembered,
+        }];
+        let remembered_context = ConstructionContext::new(home, open_claims)
+            .with_intelligence(Some(&contacts), Some(&[]));
+        assert!(
+            policy
+                .supported_frame_restoration_claim(&obs, remembered_context)
+                .is_none(),
+            "remembered long-range fire must invalidate every unsafe exact route to the frame"
+        );
+        let mut remembered_budget = obs.scrap;
+        let mut remembered_intents = Vec::new();
+        UtilityPolicy::new().production_with_air_demand(
+            &dials,
+            &obs,
+            ProductionContext::new(home, open_claims, None)
+                .with_intelligence(Some(&contacts), Some(&[])),
+            &mut remembered_budget,
+            &mut remembered_intents,
+        );
+        assert_eq!(
+            remembered_intents,
+            vec![Intent::TrainAt {
+                building: BuildingId(0),
+                kind: UnitKind::Sentinel,
+            }],
+            "remembered route danger must release the unusable restoration fund into the missing core fighter"
+        );
+        assert_eq!(remembered_budget, 0);
     }
 
     #[test]
@@ -1896,21 +2230,20 @@ mod tests {
             + TECH_RESERVE;
 
         let mut policy = UtilityPolicy::new();
-        assert_eq!(
-            policy.capital_reserve(&dials, &obs, home, true, &[], &[]),
-            fund
-        );
+        assert_eq!(capital_reserve_for(&policy, &dials, &obs, home, true), fund);
         let mut budget = obs.scrap;
         let mut intents = Vec::new();
         policy.construction(
             &dials,
             &obs,
-            home,
-            ConstructionClaims {
-                player_facing: true,
-                enlisted: &[],
-                reserved: &[],
-            },
+            ConstructionContext::new(
+                home,
+                ConstructionClaims {
+                    player_facing: true,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            ),
             &mut budget,
             &mut intents,
         );
@@ -1938,7 +2271,7 @@ mod tests {
 
         let mut refused = UtilityPolicy::new();
         assert_eq!(
-            refused.capital_reserve(&dials, &obs, home, true, &[], &[]),
+            capital_reserve_for(&refused, &dials, &obs, home, true),
             0,
             "a generic frontier controlled by a nearer known enemy base must not strand the Foundry fund"
         );
@@ -1947,12 +2280,14 @@ mod tests {
         refused.construction(
             &dials,
             &obs,
-            home,
-            ConstructionClaims {
-                player_facing: true,
-                enlisted: &[],
-                reserved: &[],
-            },
+            ConstructionContext::new(
+                home,
+                ConstructionClaims {
+                    player_facing: true,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            ),
             &mut budget,
             &mut intents,
         );
@@ -2012,12 +2347,12 @@ mod tests {
             + TECH_RESERVE;
 
         assert_eq!(
-            policy.capital_reserve(&dials, &obs, home, true, &[], &[]),
+            capital_reserve_for(&policy, &dials, &obs, home, true),
             crucible_fund,
             "a frontier the construction channel cannot reach must yield to the next legal tech rung"
         );
         assert_eq!(
-            policy.capital_reserve(&dials, &obs, home, false, &[], &[]),
+            capital_reserve_for(&policy, &dials, &obs, home, false),
             foundry_fund,
             "the profile-free Overseer's historical reserve remains route-agnostic"
         );

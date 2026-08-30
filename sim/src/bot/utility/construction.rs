@@ -52,28 +52,107 @@ impl UtilityPolicy {
         })
     }
 
-    pub(super) fn supported_frame_restoration_needed(
+    fn player_facing_extractor_claim(
         &self,
         obs: &Observation,
-        home: TilePos,
-    ) -> bool {
+        context: ExtractorClaimContext<'_>,
+        mut eligible: impl FnMut(TilePos) -> bool,
+    ) -> Option<(TilePos, UnitId)> {
+        let ExtractorClaimContext {
+            home,
+            builders,
+            unit_contacts,
+            building_contacts,
+        } = context;
+        if builders.is_empty() {
+            return None;
+        }
         let deferred = Self::deferred_claims(obs);
-        obs.known_frames.iter().any(|frame| {
-            self.player_can_plan_frame_restoration(obs, *frame)
-                && Self::frame_has_foundry_support(obs, *frame)
-                && Self::ground_route_known(obs, home, *frame)
-                && !obs
-                    .my_buildings
+        let candidates: Vec<_> = obs
+            .known_frames
+            .iter()
+            .copied()
+            .filter(|frame| self.player_can_plan_frame_restoration(obs, *frame))
+            .filter(|frame| Self::ground_route_known(obs, home, *frame))
+            .filter(|frame| {
+                !obs.my_buildings
                     .iter()
                     .any(|building| building.anchor == *frame)
-                && !obs
-                    .enemy_buildings
-                    .iter()
-                    .any(|building| building.anchor == *frame)
-                && !deferred
-                    .iter()
-                    .any(|(kind, anchor)| *kind == BuildingKind::Extractor && *anchor == *frame)
-        })
+                    && !obs
+                        .enemy_buildings
+                        .iter()
+                        .any(|building| building.anchor == *frame)
+                    && !deferred
+                        .iter()
+                        .any(|(kind, anchor)| *kind == BuildingKind::Extractor && *anchor == *frame)
+                    && eligible(*frame)
+            })
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let danger = self.harvest_danger_projection(obs, unit_contacts, building_contacts);
+        self.prepare_ground_producer_egress(obs);
+        candidates
+            .into_iter()
+            .filter_map(|frame| {
+                if !self.preserves_ground_producer_egress_prepared(
+                    &[],
+                    (BuildingKind::Extractor, frame),
+                ) {
+                    return None;
+                }
+                let mut candidates = builders.to_vec();
+                self.safe_implicit_builder(
+                    obs,
+                    BuildingKind::Extractor,
+                    frame,
+                    &mut candidates,
+                    &danger,
+                )
+                .map(|builder| (frame, builder))
+            })
+            .min_by_key(|(frame, _)| {
+                (
+                    u8::from(!Self::frame_has_foundry_support(obs, *frame)),
+                    frame.chebyshev(home),
+                    frame.y,
+                    frame.x,
+                )
+            })
+    }
+
+    pub(super) fn supported_frame_restoration_claim(
+        &self,
+        obs: &Observation,
+        context: ConstructionContext<'_>,
+    ) -> Option<(TilePos, UnitId)> {
+        let ConstructionContext {
+            home,
+            claims,
+            unit_contacts,
+            building_contacts,
+            unavailable_builders,
+        } = context;
+        if !claims.player_facing {
+            return None;
+        }
+        let builders: Vec<_> = self
+            .construction_builders(obs, claims.enlisted, claims.reserved)
+            .into_iter()
+            .filter(|builder| !unavailable_builders.contains(&builder.id))
+            .collect();
+        self.player_facing_extractor_claim(
+            obs,
+            ExtractorClaimContext {
+                home,
+                builders: &builders,
+                unit_contacts,
+                building_contacts,
+            },
+            |frame| Self::frame_has_foundry_support(obs, frame),
+        )
     }
 
     fn unsupported_extractors(
@@ -262,8 +341,10 @@ impl UtilityPolicy {
         home: TilePos,
         projected_foundries: &[TilePos],
         builders: &[&UnitObs],
+        unit_contacts: Option<&[UnitContact]>,
+        building_contacts: Option<&[BuildingContact]>,
     ) -> Option<(TilePos, TilePos, UnitId)> {
-        let danger = self.harvest_danger_projection(obs, None, None);
+        let danger = self.harvest_danger_projection(obs, unit_contacts, building_contacts);
         Self::unsupported_extractors(obs, home, projected_foundries)
             .into_iter()
             .filter(|extractor| !self.harvest_location_contested(*extractor))
@@ -276,15 +357,26 @@ impl UtilityPolicy {
     pub(super) fn player_facing_foundry_claim(
         &self,
         obs: &Observation,
-        home: TilePos,
-        projected_foundries: &[TilePos],
-        builders: &[&UnitObs],
-        support_extractors: bool,
-        ordinary_frontiers: bool,
+        context: FoundryClaimContext<'_>,
     ) -> Option<(TilePos, TilePos, UnitId)> {
+        let FoundryClaimContext {
+            home,
+            projected_foundries,
+            builders,
+            support_extractors,
+            ordinary_frontiers,
+            unit_contacts,
+            building_contacts,
+        } = context;
         if support_extractors
-            && let Some(claim) =
-                self.supporting_foundry_claim(obs, home, projected_foundries, builders)
+            && let Some(claim) = self.supporting_foundry_claim(
+                obs,
+                home,
+                projected_foundries,
+                builders,
+                unit_contacts,
+                building_contacts,
+            )
         {
             return Some(claim);
         }
@@ -292,7 +384,7 @@ impl UtilityPolicy {
             return None;
         }
 
-        let danger = self.harvest_danger_projection(obs, None, None);
+        let danger = self.harvest_danger_projection(obs, unit_contacts, building_contacts);
         let mut frontiers: Vec<_> = obs
             .known_scrap
             .iter()
@@ -394,6 +486,8 @@ impl UtilityPolicy {
             player_facing,
             builders,
             reserved,
+            unit_contacts,
+            building_contacts,
         } = context;
         let have = |kind: BuildingKind| Self::projected_count(obs, kind, player_facing) > 0;
         let have_built =
@@ -411,48 +505,63 @@ impl UtilityPolicy {
             // all claimed elsewhere would poison the only anchor the
             // Extractor can ever have. The intent simply re-issues
             // until a standing site claims the frame.
-            let claimed = |anchor: TilePos| {
-                obs.my_buildings.iter().any(|b| b.anchor == anchor)
-                    || obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
-                    || (player_facing
-                        && Self::deferred_claims(obs).iter().any(|(kind, pending)| {
-                            *kind == BuildingKind::Extractor && *pending == anchor
-                        }))
+            let frame = if player_facing {
+                self.player_facing_extractor_claim(
+                    obs,
+                    ExtractorClaimContext {
+                        home,
+                        builders,
+                        unit_contacts,
+                        building_contacts,
+                    },
+                    |frame| {
+                        *budget >= cost + TECH_RESERVE
+                            || (*budget >= cost && Self::frame_has_foundry_support(obs, frame))
+                    },
+                )
+                .map(|(frame, builder)| (frame, Some(builder)))
+            } else {
+                obs.known_frames
+                    .iter()
+                    .filter(|frame| {
+                        !obs.my_buildings
+                            .iter()
+                            .chain(obs.enemy_buildings.iter())
+                            .any(|building| building.anchor == **frame)
+                    })
+                    // A frame no builder can walk to must not be
+                    // claimed: the intent would re-issue forever and
+                    // starve every deeper construction rung (the
+                    // island-map deadlock). The road must be KNOWN —
+                    // the optimistic flood survives any unexplored
+                    // gulf, and a cross-strait frame it admits eats
+                    // every construction think until the map dies.
+                    .filter(|frame| Self::ground_route_known(obs, home, **frame))
+                    .filter(|_| *budget >= cost + TECH_RESERVE)
+                    .min_by_key(|frame| (frame.chebyshev(home), frame.y, frame.x))
+                    .map(|frame| (*frame, None))
             };
-            let frame = obs
-                .known_frames
-                .iter()
-                .filter(|f| !claimed(**f))
-                .filter(|f| !player_facing || self.player_can_plan_frame_restoration(obs, **f))
-                // A frame no builder can walk to must not be
-                // claimed: the intent would re-issue forever and
-                // starve every deeper construction rung (the
-                // island-map deadlock). The road must be KNOWN —
-                // the optimistic flood survives any unexplored
-                // gulf, and a cross-strait frame it admits eats
-                // every construction think until the map dies.
-                .filter(|f| Self::ground_route_known(obs, home, **f))
-                .filter(|f| {
-                    *budget >= cost + TECH_RESERVE
-                        || (player_facing
-                            && *budget >= cost
-                            && Self::frame_has_foundry_support(obs, **f))
-                })
-                .min_by_key(|f| {
-                    (
-                        u8::from(player_facing && !Self::frame_has_foundry_support(obs, **f)),
-                        f.chebyshev(home),
-                        f.y,
-                        f.x,
-                    )
-                })
-                .copied();
-            if let Some(anchor) = frame {
+            if let Some((anchor, builder)) = frame {
                 *budget -= cost;
-                intents.push(Intent::Build {
-                    kind: BuildingKind::Extractor,
-                    anchor,
-                });
+                if let Some(builder) = builder {
+                    let before_harvest = intents
+                        .iter()
+                        .position(|intent| matches!(intent, Intent::AssignHarvest { .. }))
+                        .unwrap_or(intents.len());
+                    intents.insert(
+                        before_harvest,
+                        Intent::BuildWith {
+                            builder,
+                            kind: BuildingKind::Extractor,
+                            anchor,
+                        },
+                    );
+                } else {
+                    intents.push(Intent::Build {
+                        kind: BuildingKind::Extractor,
+                        anchor,
+                    });
+                }
                 return true;
             }
         }
@@ -488,11 +597,16 @@ impl UtilityPolicy {
                     .then(|| {
                         self.player_facing_foundry_claim(
                             obs,
-                            home,
-                            &foundries,
-                            builders,
-                            have_built(BuildingKind::Fabricator),
-                            !dials.deep_tech || have(BuildingKind::Airworks),
+                            FoundryClaimContext {
+                                home,
+                                projected_foundries: &foundries,
+                                builders,
+                                support_extractors: have_built(BuildingKind::Fabricator),
+                                ordinary_frontiers: !dials.deep_tech
+                                    || have(BuildingKind::Airworks),
+                                unit_contacts,
+                                building_contacts,
+                            },
                         )
                     })
                     .flatten();
@@ -603,18 +717,28 @@ impl UtilityPolicy {
         &mut self,
         dials: &Dials,
         obs: &Observation,
-        home: TilePos,
-        claims: ConstructionClaims<'_>,
+        context: ConstructionContext<'_>,
         budget: &mut u32,
         intents: &mut Vec<Intent>,
     ) {
+        let ConstructionContext {
+            home,
+            claims,
+            unit_contacts,
+            building_contacts,
+            unavailable_builders,
+        } = context;
         let ConstructionClaims {
             player_facing,
             enlisted,
             reserved,
         } = claims;
         // Orphan relief is free (resuming an own site charges nothing).
-        let builders = self.construction_builders(obs, enlisted, reserved);
+        let builders: Vec<_> = self
+            .construction_builders(obs, enlisted, reserved)
+            .into_iter()
+            .filter(|builder| !unavailable_builders.contains(&builder.id))
+            .collect();
         let mut routes = crate::bot::routing::RouteProjection::new(obs, Domain::Ground);
         let orphan = obs
             .my_buildings
@@ -648,6 +772,8 @@ impl UtilityPolicy {
                     player_facing,
                     builders: &builders,
                     reserved,
+                    unit_contacts,
+                    building_contacts,
                 },
                 budget,
                 intents,
@@ -1131,16 +1257,34 @@ mod tests {
         policy.construction(
             dials,
             obs,
-            HOME,
-            ConstructionClaims {
-                player_facing,
-                enlisted: &[],
-                reserved: &[],
-            },
+            ConstructionContext::new(
+                HOME,
+                ConstructionClaims {
+                    player_facing,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            ),
             &mut budget,
             &mut intents,
         );
         intents
+    }
+
+    fn has_supported_restoration(policy: &UtilityPolicy, obs: &Observation, home: TilePos) -> bool {
+        policy
+            .supported_frame_restoration_claim(
+                obs,
+                ConstructionContext::new(
+                    home,
+                    ConstructionClaims {
+                        player_facing: true,
+                        enlisted: &[],
+                        reserved: &[],
+                    },
+                ),
+            )
+            .is_some()
     }
 
     fn assert_build_kind(intents: &[Intent], expected: BuildingKind) -> TilePos {
@@ -1191,7 +1335,18 @@ mod tests {
     ) -> Option<(TilePos, TilePos, UnitId)> {
         let (foundries, _) = UtilityPolicy::projected_foundries(obs);
         let builders = policy.construction_builders(obs, &[], &[]);
-        policy.player_facing_foundry_claim(obs, HOME, &foundries, &builders, false, true)
+        policy.player_facing_foundry_claim(
+            obs,
+            FoundryClaimContext {
+                home: HOME,
+                projected_foundries: &foundries,
+                builders: &builders,
+                support_extractors: false,
+                ordinary_frontiers: true,
+                unit_contacts: None,
+                building_contacts: None,
+            },
+        )
     }
 
     #[test]
@@ -1302,12 +1457,14 @@ mod tests {
         policy.construction(
             &expansion_dials(),
             &ready,
-            HOME,
-            ConstructionClaims {
-                player_facing: true,
-                enlisted: &[],
-                reserved: &[],
-            },
+            ConstructionContext::new(
+                HOME,
+                ConstructionClaims {
+                    player_facing: true,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            ),
             &mut budget,
             &mut ordered,
         );
@@ -1339,6 +1496,65 @@ mod tests {
                 ..
             }] if units == &vec![UnitId(1)] && *anchor == expected.1
         ));
+    }
+
+    #[test]
+    fn remembered_danger_blocks_an_expansion_before_it_claims_capital() {
+        let frontier = TilePos::new(32, 12);
+        let mut obs = developed_expansion_observation();
+        obs.known_scrap = vec![(frontier, 800)];
+        let contacts = [UnitContact {
+            id: UnitId(90),
+            player: PlayerId(1),
+            kind: UnitKind::Avalanche,
+            tile: frontier,
+            hp: UnitKind::Avalanche.stats().max_hp,
+            last_seen: obs.tick,
+            evidence: crate::bot::intelligence::ContactEvidence::Remembered,
+        }];
+        let (foundries, _) = UtilityPolicy::projected_foundries(&obs);
+        let mut policy = UtilityPolicy::new();
+        let builders = policy.construction_builders(&obs, &[], &[]);
+        assert!(
+            policy
+                .player_facing_foundry_claim(
+                    &obs,
+                    FoundryClaimContext {
+                        home: HOME,
+                        projected_foundries: &foundries,
+                        builders: &builders,
+                        support_extractors: false,
+                        ordinary_frontiers: true,
+                        unit_contacts: Some(&contacts),
+                        building_contacts: Some(&[]),
+                    },
+                )
+                .is_none(),
+            "a remembered long-range threat must close every unsafe founder route"
+        );
+
+        let mut budget = obs.scrap;
+        let mut intents = Vec::new();
+        policy.construction(
+            &expansion_dials(),
+            &obs,
+            ConstructionContext::new(
+                HOME,
+                ConstructionClaims {
+                    player_facing: true,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            )
+            .with_intelligence(Some(&contacts), Some(&[])),
+            &mut budget,
+            &mut intents,
+        );
+        assert!(intents.is_empty());
+        assert_eq!(
+            budget, obs.scrap,
+            "an unsafe expansion cannot consume its fund"
+        );
     }
 
     #[test]
@@ -1452,29 +1668,33 @@ mod tests {
         let mut ready = observation();
         ready.known_frames.push(frame);
         let policy = UtilityPolicy::new();
-        assert!(policy.supported_frame_restoration_needed(&ready, HOME));
+        assert!(has_supported_restoration(&policy, &ready, HOME));
 
         let mut own_claim = ready.clone();
         own_claim
             .my_buildings
             .push(building(2, PlayerId(0), BuildingKind::Extractor, frame));
-        assert!(!policy.supported_frame_restoration_needed(&own_claim, HOME));
+        assert!(!has_supported_restoration(&policy, &own_claim, HOME));
 
         let mut enemy_claim = ready.clone();
         enemy_claim
             .enemy_buildings
             .push(building(3, PlayerId(1), BuildingKind::Extractor, frame));
-        assert!(!policy.supported_frame_restoration_needed(&enemy_claim, HOME));
+        assert!(!has_supported_restoration(&policy, &enemy_claim, HOME));
 
         let mut deferred_claim = ready.clone();
         deferred_claim.my_units[0].founding = Some((BuildingKind::Extractor, frame));
-        assert!(!policy.supported_frame_restoration_needed(&deferred_claim, HOME));
+        assert!(!has_supported_restoration(&policy, &deferred_claim, HOME));
 
         let mut partially_unknown = ready.clone();
         let unknown = frame.offset(1, 1);
         partially_unknown.explored
             [(unknown.y * partially_unknown.map_width + unknown.x) as usize] = false;
-        assert!(!policy.supported_frame_restoration_needed(&partially_unknown, HOME));
+        assert!(!has_supported_restoration(
+            &policy,
+            &partially_unknown,
+            HOME
+        ));
 
         let mut occupied = ready.clone();
         occupied.enemy_units.push(UnitObs {
@@ -1492,7 +1712,7 @@ mod tests {
             repairing: false,
             grounded: false,
         });
-        assert!(!policy.supported_frame_restoration_needed(&occupied, HOME));
+        assert!(!has_supported_restoration(&policy, &occupied, HOME));
 
         // A parked hostile airframe holds the ground like any body; the
         // same airframe in the air does not.
@@ -1512,18 +1732,216 @@ mod tests {
             repairing: false,
             grounded: true,
         });
-        assert!(!policy.supported_frame_restoration_needed(&parked, HOME));
+        assert!(!has_supported_restoration(&policy, &parked, HOME));
         let mut overflown = parked.clone();
         overflown.enemy_units.last_mut().unwrap().grounded = false;
-        assert!(policy.supported_frame_restoration_needed(&overflown, HOME));
+        assert!(
+            !has_supported_restoration(&policy, &overflown, HOME),
+            "an airborne threat no longer occupies the frame, but its fire still makes the exact \
+             restoration route unsafe"
+        );
 
         let mut recent_battle = ready.clone();
         recent_battle.salvage_incidents.push(frame.offset(2, 0));
-        assert!(!policy.supported_frame_restoration_needed(&recent_battle, HOME));
+        assert!(!has_supported_restoration(&policy, &recent_battle, HOME));
 
         let mut unsupported = ready;
         unsupported.my_buildings[0].anchor = TilePos::new(0, 0);
-        assert!(!policy.supported_frame_restoration_needed(&unsupported, HOME));
+        assert!(!has_supported_restoration(&policy, &unsupported, HOME));
+    }
+
+    #[test]
+    fn a_supported_home_frame_rebuilds_only_after_the_whole_region_is_proven_clear() {
+        let frame = HOME.offset(8, 0);
+        let incident = frame.offset(1, 0);
+        let hidden_corner = incident.offset(CONTESTED_RECON_RADIUS, CONTESTED_RECON_RADIUS);
+        let mut obs = observation();
+        obs.known_frames = vec![frame];
+        obs.salvage_incidents = vec![incident];
+        let mut dials = focused_dials();
+        dials.extractors = true;
+        let mut policy = UtilityPolicy::new();
+
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        assert_eq!(policy.contested_harvest_regions[0].clear_since, None);
+        assert!(
+            construction_intents(&mut policy, &dials, &obs).is_empty(),
+            "an active loss incident must hold the destroyed home frame"
+        );
+
+        obs.salvage_incidents.clear();
+        obs.tick = CONTESTED_CLEAR_CONFIRM_TICKS + 500;
+        let hidden_index = (hidden_corner.y * obs.map_width + hidden_corner.x) as usize;
+        obs.visible[hidden_index] = false;
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        assert_eq!(policy.contested_harvest_regions[0].clear_since, None);
+        assert!(
+            construction_intents(&mut policy, &dials, &obs).is_empty(),
+            "elapsed time under partial sight is not evidence that the loss site is safe"
+        );
+
+        obs.visible[hidden_index] = true;
+        obs.tick += 1;
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        obs.tick += 100;
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        let mut threat = sentinel(20, incident.offset(CONTESTED_RECON_RADIUS + 2, 0));
+        threat.player = PlayerId(1);
+        obs.enemy_units.push(threat);
+        obs.tick += 1;
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        obs.tick += CONTESTED_CLEAR_CONFIRM_TICKS + 500;
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        assert_eq!(policy.contested_harvest_regions[0].clear_since, None);
+        assert!(
+            construction_intents(&mut policy, &dials, &obs).is_empty(),
+            "a known threat must restart a partial clear interval and keep complete sight from \
+             clearing the region"
+        );
+
+        obs.enemy_units.clear();
+        obs.tick += 1;
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        let clear_since = obs.tick;
+        assert_eq!(
+            policy.contested_harvest_regions[0].clear_since,
+            Some(clear_since)
+        );
+        assert!(
+            construction_intents(&mut policy, &dials, &obs).is_empty(),
+            "threat departure starts a new confirmation interval rather than restoring immediately"
+        );
+        obs.tick = clear_since + CONTESTED_CLEAR_CONFIRM_TICKS - 1;
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        assert!(
+            construction_intents(&mut policy, &dials, &obs).is_empty(),
+            "an almost-complete clear look must keep the frame quarantined"
+        );
+
+        obs.tick += 1;
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        assert_eq!(
+            construction_intents(&mut policy, &dials, &obs),
+            vec![Intent::BuildWith {
+                builder: UnitId(1),
+                kind: BuildingKind::Extractor,
+                anchor: frame,
+            }],
+            "continuous full sight should release one ordinary, safely bound restoration"
+        );
+    }
+
+    #[test]
+    fn an_unsafe_frame_route_yields_to_the_next_actionable_capital_rung() {
+        let choke = TilePos::new(30, 12);
+        let frame = TilePos::new(54, 12);
+        let mut obs = observation();
+        obs.map_width = 64;
+        obs.visible = vec![true; (obs.map_width * obs.map_height) as usize];
+        obs.explored = obs.visible.clone();
+        obs.known_rock = (0..obs.map_height)
+            .filter(|y| *y != choke.y)
+            .map(|y| TilePos::new(choke.x, y))
+            .collect();
+        obs.known_frames = vec![frame];
+        for (id, kind, anchor) in [
+            (2, BuildingKind::Fabricator, HOME.offset(0, -4)),
+            (3, BuildingKind::Airworks, HOME.offset(4, -4)),
+        ] {
+            obs.my_buildings
+                .push(building(id, PlayerId(0), kind, anchor));
+            obs.my_queues.push(Vec::new());
+        }
+        let mut dials = focused_dials();
+        dials.tech = true;
+        dials.deep_tech = true;
+        dials.extractors = true;
+        let mut policy = UtilityPolicy::new();
+        policy.contested_harvest_regions = vec![ContestedHarvestRegion {
+            center: choke,
+            last_evidence: obs.tick,
+            clear_since: None,
+        }];
+        assert!(
+            UtilityPolicy::ground_route_known(&obs, HOME, frame),
+            "the authored choke is a known route, not an unreachable-frame case"
+        );
+        assert!(
+            !policy.harvest_location_contested(frame),
+            "the frame itself is safe; only its sole approach is quarantined"
+        );
+
+        let mut intents = construction_intents(&mut policy, &dials, &obs);
+        policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
+        assert!(
+            matches!(
+                intents.as_slice(),
+                [Intent::BuildWith {
+                    kind: BuildingKind::Crucible,
+                    ..
+                }]
+            ),
+            "an unbindable frame must not shadow the safe Crucible rung: {intents:?}"
+        );
+
+        let contacts = [UnitContact {
+            id: UnitId(90),
+            player: PlayerId(1),
+            kind: UnitKind::Avalanche,
+            tile: choke,
+            hp: UnitKind::Avalanche.stats().max_hp,
+            last_seen: obs.tick,
+            evidence: crate::bot::intelligence::ContactEvidence::Remembered,
+        }];
+        let mut remembered_policy = UtilityPolicy::new();
+        let mut remembered_budget = obs.scrap;
+        let mut remembered_intents = Vec::new();
+        remembered_policy.construction(
+            &dials,
+            &obs,
+            ConstructionContext::new(
+                HOME,
+                ConstructionClaims {
+                    player_facing: true,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            )
+            .with_intelligence(Some(&contacts), Some(&[])),
+            &mut remembered_budget,
+            &mut remembered_intents,
+        );
+        remembered_policy.bind_player_facing_builders(
+            &obs,
+            &contacts,
+            &[],
+            &[],
+            &[],
+            &mut remembered_intents,
+        );
+        assert!(
+            matches!(
+                remembered_intents.as_slice(),
+                [Intent::BuildWith {
+                    kind: BuildingKind::Crucible,
+                    ..
+                }]
+            ),
+            "remembered tactical danger must participate in the same preflight as final binding: {remembered_intents:?}"
+        );
+
+        obs.my_units.push(harvester(2, frame.offset(-2, 0), None));
+        let mut intents = construction_intents(&mut policy, &dials, &obs);
+        policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
+        assert_eq!(
+            intents,
+            vec![Intent::BuildWith {
+                builder: UnitId(2),
+                kind: BuildingKind::Extractor,
+                anchor: frame,
+            }],
+            "an exact safe worker on the frame side of the choke makes restoration actionable"
+        );
     }
 
     #[test]
