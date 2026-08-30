@@ -442,7 +442,7 @@ impl Executive {
                         // back along the same line but answers fire.
                         army.state = ArmyState::Withdrawing;
                         army.target = if player_facing {
-                            withdrawal_threat(obs, &members)
+                            withdrawal_threat(obs, &members, centroid_frame)
                         } else {
                             None
                         };
@@ -954,7 +954,16 @@ fn enemies_near(obs: &Observation, members: &[&UnitObs], radius: i32) -> bool {
     touched > 0 && touched * 3 >= members.len()
 }
 
-fn withdrawal_threat(obs: &Observation, members: &[&UnitObs]) -> Option<TilePos> {
+/// The visible threat a withdrawing army answers on its way home: the
+/// nearest one in reach, with equal distances tied in the owner's
+/// home-facing frame like the centroid. A raw row-major key would hand
+/// the two seats of a half-turned map different fights.
+fn withdrawal_threat(
+    obs: &Observation,
+    members: &[&UnitObs],
+    centroid_frame: Option<CentroidFrame>,
+) -> Option<TilePos> {
+    let oriented = |tile: TilePos| centroid_frame.map_or(tile, |frame| frame.tile(tile));
     obs.enemy_units
         .iter()
         .filter(|enemy| obs.visible(enemy.tile))
@@ -965,7 +974,10 @@ fn withdrawal_threat(obs: &Observation, members: &[&UnitObs]) -> Option<TilePos>
                 .map(|member| member.tile.chebyshev(enemy.tile))
                 .min()
                 .filter(|distance| *distance <= ENGAGE_RADIUS)
-                .map(|distance| (distance, enemy.tile.y, enemy.tile.x, enemy.id, enemy.tile))
+                .map(|distance| {
+                    let key = oriented(enemy.tile);
+                    (distance, key.y, key.x, enemy.id, enemy.tile)
+                })
         })
         .min()
         .map(|(.., tile)| tile)
@@ -1441,6 +1453,72 @@ mod tests {
             "Executive state diverged from linear lookup"
         );
         (optimized, commands)
+    }
+
+    #[test]
+    fn withdrawal_threat_ties_are_half_turn_equivariant() {
+        let map_size = (30, 24);
+        let member_tiles = [TilePos::new(10, 10), TilePos::new(10, 11)];
+        // Both threats stand four tiles from the nearest member.
+        let threat_tiles = [TilePos::new(14, 8), TilePos::new(14, 13)];
+        let side = |me: PlayerId, flip: bool| {
+            let place = |t: TilePos| if flip { half_turn(t, map_size) } else { t };
+            let them = PlayerId(1 - me.0);
+            let mine = member_tiles
+                .iter()
+                .enumerate()
+                .map(|(rank, tile)| {
+                    unit(
+                        rank as u32,
+                        me,
+                        UnitKind::Sentinel,
+                        place(*tile),
+                        UnitKind::Sentinel.stats().max_hp,
+                        false,
+                    )
+                })
+                .collect();
+            let theirs = threat_tiles
+                .iter()
+                .enumerate()
+                .map(|(rank, tile)| {
+                    unit(
+                        10 + rank as u32,
+                        them,
+                        UnitKind::Sentinel,
+                        place(*tile),
+                        UnitKind::Sentinel.stats().max_hp,
+                        false,
+                    )
+                })
+                .collect();
+            let mut obs = observation(0, map_size, mine, theirs);
+            obs.me = me;
+            obs
+        };
+        let left_obs = side(PlayerId(0), false);
+        let right_obs = side(PlayerId(1), true);
+        let left_members: Vec<_> = left_obs.my_units.iter().collect();
+        let right_members: Vec<_> = right_obs.my_units.iter().collect();
+        let rear = TilePos::new(3, 3);
+        let left_frame = CentroidFrame::for_rear(&left_obs, rear);
+        let right_frame = CentroidFrame::for_rear(&right_obs, half_turn(rear, map_size));
+
+        let left = withdrawal_threat(&left_obs, &left_members, Some(left_frame))
+            .expect("a threat is in reach");
+        let right = withdrawal_threat(&right_obs, &right_members, Some(right_frame))
+            .expect("a threat is in reach");
+        assert!(threat_tiles.contains(&left));
+        assert_eq!(
+            right,
+            half_turn(left, map_size),
+            "the two seats answer mirrored threats"
+        );
+        assert_ne!(
+            withdrawal_threat(&right_obs, &right_members, None),
+            Some(half_turn(left, map_size)),
+            "premise: a raw row-major tie follows the physical seat"
+        );
     }
 
     #[test]
