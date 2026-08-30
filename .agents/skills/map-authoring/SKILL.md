@@ -12,6 +12,10 @@ description:
 Author a map as a gameplay space first. Use mechanical checks for terrain,
 symmetry, and seat fairness, then play it to judge routes, pressure, and pacing.
 
+This skill governs competitive maps meant for the shipped pool. For a
+non-competitive staging rig — a practice drill or an exact staged scene with a
+passive opponent — use the sandbox-matches skill instead.
+
 ## Use the scenario language exactly
 
 Confirm the live parser in `sim/src/map.rs` and schema in `sim/src/scenario.rs`.
