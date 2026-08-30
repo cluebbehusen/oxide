@@ -27,6 +27,7 @@ from tools.production_sprite_sources import (
     heavy_structures,
     lancer_final,
     structures_base,
+    tender_condor_final,
 )
 
 Registry = dict[str, Image.Image]
@@ -841,3 +842,4 @@ def install_finalized_sprites(registry: Registry, out: Path) -> None:
         _install_units(registry, out, faction)
         _install_working_buildings(registry, out, faction)
         _install_defenses(registry, out, faction)
+    tender_condor_final.install_tender_condor(registry, out)

@@ -105,7 +105,7 @@ pub(crate) enum UnitWorkState {
         target: Vec2Fx,
         cycle: f32,
     },
-    /// A Harvester is actively welding a wounded unit or building.
+    /// A field welder is actively repairing a wounded unit or building.
     Repairing { target: Vec2Fx, cycle: f32 },
     /// A Harvester is actively stripping a friendly structure for scrap.
     Salvaging { target: Vec2Fx, cycle: f32 },
@@ -734,7 +734,7 @@ fn active_unit_construction(state: &State, unit: &Unit) -> Option<(BuildingId, V
 }
 
 fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
-    if unit.kind != UnitKind::Harvester || unit.progress == 0 || unit.path.is_some() {
+    if !unit.kind.stats().welder || unit.progress == 0 || unit.path.is_some() {
         return None;
     }
     match unit.order {

@@ -216,6 +216,10 @@ current actions, then discarded or rebuilt after a timeline jump. Fog rendering
 reads the controlled seat's `Vision` unless an explicit spectator/debug mode is
 active.
 
+Most units draw on one tile-sized canvas. Condor uses a centered two-tile canvas
+with matching shadow, selection, and health-bar geometry, while Tender's tread
+and welding-arm rows are selected from real locomotion and active repair state.
+
 Selection feedback may describe public simulation rules, but dynamic economy
 state remains owner-only. A selected own Extractor names its authoritative
 remote or supported rate, and selected own Extractors and Foundries draw the

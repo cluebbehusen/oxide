@@ -631,10 +631,125 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
 }
 
 #[test]
+#[ignore = "opens a real native window and writes visual review artifacts"]
+fn captures_promoted_tender_and_condor_in_the_real_shell() -> Result<()> {
+    let mut harness = NativeCapture::spawn()?;
+
+    for kind in [UnitKind::Tender, UnitKind::Condor] {
+        let movement = harness.load(movement_scenario(kind))?;
+        let mover = unit_kind(&movement, 0, kind)?;
+        harness.command(
+            0,
+            Command::Move {
+                units: vec![mover],
+                goal: TilePos::new(21, 10),
+                queue: false,
+            },
+        )?;
+        harness.capture_stage(&format!("promoted-movement/{}", kind.name()), 12, 1)?;
+    }
+
+    let repair = harness.load(tender_repair_scenario())?;
+    let attacker = unit_kind(&repair, 1, UnitKind::Sentinel)?;
+    let patient = building(&repair, 0, BuildingKind::Array)?;
+    harness.present(1)?;
+    harness.command(
+        1,
+        Command::Attack {
+            units: vec![attacker],
+            target: Target::Building(patient),
+            queue: false,
+        },
+    )?;
+    let hit = harness.present(1)?;
+    assert!(hit.iter().any(|event| matches!(
+        event,
+        oxide_sim::Event::AttackHit {
+            attacker: source,
+            target: Target::Building(target),
+            ..
+        } if *source == attacker && *target == patient
+    )));
+    harness.command(
+        1,
+        Command::Stop {
+            units: vec![attacker],
+        },
+    )?;
+    harness.present(1)?;
+    let damaged_hp = harness
+        .state()?
+        .buildings
+        .iter()
+        .find(|building| building.id == patient.0)
+        .context("damaged Tender patient disappeared")?
+        .hp;
+    let welder = unit_kind(&harness.state()?, 0, UnitKind::Tender)?;
+    harness.clear_presentation()?;
+    harness.command(
+        0,
+        Command::Repair {
+            units: vec![welder],
+            building: patient,
+            queue: false,
+        },
+    )?;
+    harness.capture_stage("promoted-tender-weld", 16, 1)?;
+    assert!(
+        harness
+            .state()?
+            .buildings
+            .iter()
+            .find(|building| building.id == patient.0)
+            .context("Tender patient disappeared during capture")?
+            .hp
+            > damaged_hp,
+        "Tender capture never accepted a weld"
+    );
+
+    let duel = harness.load(condor_duel_scenario())?;
+    let condor = unit_kind(&duel, 0, UnitKind::Condor)?;
+    let target = duel
+        .units
+        .iter()
+        .find(|unit| unit.player == 1)
+        .map(|unit| UnitId(unit.id))
+        .context("Condor duel has no target")?;
+    harness.command(
+        0,
+        Command::Attack {
+            units: vec![condor],
+            target: Target::Unit(target),
+            queue: false,
+        },
+    )?;
+    let events = harness.capture_schedule(
+        "promoted-condor-bomb-release",
+        &combat_capture_schedule(UnitKind::Condor.stats().weapons[0].cooldown_ticks),
+    )?;
+    assert!(events.iter().any(|event| match event {
+        oxide_sim::Event::AttackHit { attacker, .. } => *attacker == condor,
+        oxide_sim::Event::ShellLaunched {
+            shooter: Target::Unit(shooter),
+            ..
+        } => *shooter == condor,
+        _ => false,
+    }));
+
+    eprintln!(
+        "promoted Tender and Condor review written to {}",
+        harness.output.display()
+    );
+    Ok(())
+}
+
+#[test]
 fn generated_animation_capture_scenarios_are_valid() -> Result<()> {
     let mut scenarios = vec![
         overview_scenario(),
         building_repair_scenario(),
+        tender_repair_scenario(),
+        condor_duel_scenario(),
         repair_bay_scenario(),
     ];
     scenarios.extend(ALL_UNIT_KINDS.map(movement_scenario));
@@ -940,6 +1055,18 @@ fn sentinel_sidearm_scenario() -> Value {
     )
 }
 
+fn condor_duel_scenario() -> Value {
+    scenario(
+        "Native Condor Bomb Release",
+        &[],
+        vec![
+            unit(0, UnitKind::Condor, 15, 10),
+            unit(1, UnitKind::Harvester, 15, 8),
+        ],
+        Vec::new(),
+    )
+}
+
 fn defense_duel_scenario(defense: BuildingKind) -> Value {
     let target = if defense == BuildingKind::FlakTurret {
         UnitKind::Talon
@@ -970,6 +1097,18 @@ fn building_repair_scenario() -> Value {
         vec![
             unit(0, UnitKind::Harvester, 12, 10),
             unit(0, UnitKind::Lancer, 13, 8),
+            unit(1, UnitKind::Sentinel, 18, 10),
+        ],
+        vec![structure(0, BuildingKind::Array, 16, 10)],
+    )
+}
+
+fn tender_repair_scenario() -> Value {
+    scenario(
+        "Native Tender Repair",
+        &[],
+        vec![
+            unit(0, UnitKind::Tender, 15, 10),
             unit(1, UnitKind::Sentinel, 18, 10),
         ],
         vec![structure(0, BuildingKind::Array, 16, 10)],

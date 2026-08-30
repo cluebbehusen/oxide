@@ -121,6 +121,7 @@ pub struct Sprites {
     sylph_action: [[Rect; 3]; 4],
     tender: [Rect; 3],
     tender_move: [[Rect; 3]; 2],
+    tender_action: [[Rect; 3]; 4],
     excavator: [Rect; 3],
     excavator_move: [[Rect; 3]; 2],
     kestrel: [Rect; 3],
@@ -512,12 +513,12 @@ fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
         UnitKind::Warden
         | UnitKind::Shrike
         | UnitKind::Sylph
+        | UnitKind::Tender
         | UnitKind::Condor
         | UnitKind::Moth
         | UnitKind::Breaker
         | UnitKind::Avalanche => &ACTION_SUFFIXES_4,
-        UnitKind::Tender
-        | UnitKind::Excavator
+        UnitKind::Excavator
         | UnitKind::Kestrel
         | UnitKind::Gnat
         | UnitKind::Skyhook
@@ -897,6 +898,7 @@ impl Sprites {
             sylph_action: variant_rows(&rects, unit_stem(UnitKind::Sylph), ACTION_SUFFIXES_4)?,
             tender: unit(UnitKind::Tender)?,
             tender_move: variant_rows(&rects, unit_stem(UnitKind::Tender), MOVE_SUFFIXES)?,
+            tender_action: variant_rows(&rects, unit_stem(UnitKind::Tender), ACTION_SUFFIXES_4)?,
             excavator: unit(UnitKind::Excavator)?,
             excavator_move: variant_rows(&rects, unit_stem(UnitKind::Excavator), MOVE_SUFFIXES)?,
             kestrel: unit(UnitKind::Kestrel)?,
@@ -1347,12 +1349,12 @@ impl Sprites {
             UnitKind::Warden => &self.warden_action,
             UnitKind::Shrike => &self.shrike_action,
             UnitKind::Sylph => &self.sylph_action,
+            UnitKind::Tender => &self.tender_action,
             UnitKind::Condor => &self.condor_action,
             UnitKind::Moth => &self.moth_action,
             UnitKind::Breaker => &self.breaker_action,
             UnitKind::Avalanche => &self.avalanche_action,
-            UnitKind::Tender
-            | UnitKind::Excavator
+            UnitKind::Excavator
             | UnitKind::Kestrel
             | UnitKind::Gnat
             | UnitKind::Skyhook
@@ -1363,8 +1365,8 @@ impl Sprites {
         rows.get(frame)
     }
 
-    /// A unit's zero-based authored weapon-action frame. Harvester and
-    /// invalid frame requests fall back to the ordinary ready sprite.
+    /// A unit's zero-based authored action frame. Harvester and invalid frame
+    /// requests fall back to the ordinary ready sprite.
     pub fn unit_action(&self, kind: UnitKind, faction: Faction, frame: usize) -> Rect {
         self.unit_action_row(kind, frame)
             .unwrap_or_else(|| self.unit_row(kind))[faction_index(faction)]

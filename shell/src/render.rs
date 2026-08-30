@@ -215,7 +215,8 @@ pub(crate) const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
 // legibility, and raising them must never thicken the world's weight.
 const BONE: Color = color_u8!(232, 228, 216, 255);
 const BONE_FAINT: Color = color_u8!(232, 228, 216, 90);
-const UNIT_DRAW_SCALE: f32 = 1.05;
+const DEFAULT_UNIT_DRAW_SCALE: f32 = 1.05;
+const CONDOR_DRAW_SCALE: f32 = 2.0;
 const SCRAP_COLOR: Color = crate::theme::TEXT_ACCENT;
 const HP_BACK: Color = color_u8!(20, 20, 24, 220);
 const DANGER: Color = crate::theme::TEXT_DANGER;
@@ -658,8 +659,32 @@ fn unit_work_facing(
 
 fn unit_selection_radius(kind: oxide_sim::UnitKind, zoom: f32, padding: f32) -> f32 {
     let collision_radius = kind.stats().radius.to_num::<f32>();
-    let visual_radius = UNIT_DRAW_SCALE * 0.5;
+    let visual_radius = unit_draw_scale(kind) * 0.5;
     collision_radius.max(visual_radius) * zoom + padding
+}
+
+pub(crate) fn unit_draw_scale(kind: oxide_sim::UnitKind) -> f32 {
+    if kind == oxide_sim::UnitKind::Condor {
+        CONDOR_DRAW_SCALE
+    } else {
+        DEFAULT_UNIT_DRAW_SCALE
+    }
+}
+
+fn air_presentation(kind: oxide_sim::UnitKind, zoom: f32) -> (Vec2, Vec2, f32) {
+    if kind == oxide_sim::UnitKind::Condor {
+        (
+            vec2(zoom * 1.75, zoom * 1.1875),
+            vec2(zoom * 0.125, zoom * 0.1875),
+            zoom * 0.0625,
+        )
+    } else {
+        (
+            vec2(zoom * 0.9, zoom * 0.9),
+            vec2(zoom * 0.16, zoom * 0.26),
+            zoom * 0.18,
+        )
+    }
 }
 
 fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim::stats::Domain) {
@@ -689,7 +714,8 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             continue;
         }
         let mut screen = game.camera.to_screen(pos);
-        let dest = zoom * UNIT_DRAW_SCALE;
+        let draw_scale = unit_draw_scale(unit.kind);
+        let dest = zoom * draw_scale;
         let current = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
         let moving = game
             .prev_pos
@@ -727,20 +753,20 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             _ => work_facing.unwrap_or_else(|| game.facing.get(&unit.id.0).copied().unwrap_or(0.0)),
         };
         if airborne {
-            let shadow = zoom * 0.9;
+            let (shadow_size, shadow_offset, body_lift) = air_presentation(unit.kind, zoom);
             draw_texture_ex(
                 sprites.texture(),
-                screen.x - shadow * 0.5 + zoom * 0.16,
-                screen.y - shadow * 0.5 + zoom * 0.26,
+                screen.x - shadow_size.x * 0.5 + shadow_offset.x,
+                screen.y - shadow_size.y * 0.5 + shadow_offset.y,
                 WHITE,
                 DrawTextureParams {
-                    dest_size: Some(vec2(shadow, shadow)),
+                    dest_size: Some(shadow_size),
                     source: Some(sprites.air_shadow()),
                     ..Default::default()
                 },
             );
             // The body rides visibly above its shadow.
-            screen.y -= zoom * 0.18;
+            screen.y -= body_lift;
         }
         let body = screen;
         if game.selection.units.contains(&unit.id) {
@@ -824,10 +850,10 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         }
         let max_hp = unit.kind.stats().max_hp;
         if unit.hp < max_hp {
-            let w = zoom * 0.8;
+            let w = zoom * (draw_scale - 0.25).clamp(0.8, 1.4);
             hp_bar(
                 screen.x - w * 0.5,
-                screen.y - zoom * 0.62,
+                screen.y - zoom * (draw_scale * 0.5 + 0.095),
                 w,
                 unit.hp,
                 max_hp,
@@ -998,7 +1024,7 @@ mod tests {
         let zoom = 32.0;
         let padding = 4.0;
         let radius = super::unit_selection_radius(oxide_sim::UnitKind::Harvester, zoom, padding);
-        let visual_radius = super::UNIT_DRAW_SCALE * zoom * 0.5;
+        let visual_radius = super::unit_draw_scale(oxide_sim::UnitKind::Harvester) * zoom * 0.5;
         let collision_radius = oxide_sim::UnitKind::Harvester
             .stats()
             .radius
@@ -1007,6 +1033,20 @@ mod tests {
 
         assert!((radius - (visual_radius + padding)).abs() < 1e-6);
         assert!(radius > collision_radius + padding);
+    }
+
+    #[test]
+    fn condor_uses_its_reviewed_two_tile_canvas_and_large_shadow() {
+        let zoom = 64.0;
+        assert_eq!(super::unit_draw_scale(oxide_sim::UnitKind::Condor), 2.0);
+        let (shadow, offset, lift) = super::air_presentation(oxide_sim::UnitKind::Condor, zoom);
+        assert_eq!(shadow, vec2(112.0, 76.0));
+        assert_eq!(offset, vec2(8.0, 12.0));
+        assert_eq!(lift, 4.0);
+        assert!(
+            super::unit_selection_radius(oxide_sim::UnitKind::Condor, zoom, 4.0)
+                > super::unit_selection_radius(oxide_sim::UnitKind::Harvester, zoom, 4.0)
+        );
     }
 
     #[test]

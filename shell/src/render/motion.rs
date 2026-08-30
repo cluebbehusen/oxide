@@ -86,6 +86,12 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
         return UnitFrame::Harvester { cargo, pose };
     }
 
+    if kind == UnitKind::Tender
+        && let UnitWorkState::Repairing { cycle, .. } = state.work
+    {
+        return tender_work_frame(cycle);
+    }
+
     if let LocomotionState::Moving { cycle } = state.locomotion {
         return match state.propulsion {
             PropulsionState::LiftRotors { cycle } => lift_rotor_frame(kind, cycle),
@@ -183,6 +189,13 @@ fn harvester_work_frame(cycle: f32) -> HarvesterPose {
         0 | 4 => HarvesterPose::Idle,
         1 | 3 => HarvesterPose::Scoop(0),
         _ => HarvesterPose::Scoop(1),
+    }
+}
+
+fn tender_work_frame(cycle: f32) -> UnitFrame {
+    match cycle_index(cycle, 5) {
+        0 => UnitFrame::Idle,
+        phase => UnitFrame::Action(phase - 1),
     }
 }
 
@@ -461,6 +474,22 @@ mod tests {
                 pose: HarvesterPose::Moving(1),
             }
         );
+    }
+
+    #[test]
+    fn tender_welds_only_while_real_repair_work_is_active() {
+        let mut state = unit_state();
+        state.work = UnitWorkState::Repairing {
+            target: chassis::grid::TilePos::new(6, 5).center(),
+            cycle: 0.7,
+        };
+        assert_eq!(unit_frame(UnitKind::Tender, state), UnitFrame::Action(2));
+
+        state.work = UnitWorkState::Idle;
+        assert_eq!(unit_frame(UnitKind::Tender, state), UnitFrame::Idle);
+
+        state.locomotion = LocomotionState::Moving { cycle: 0.75 };
+        assert_eq!(unit_frame(UnitKind::Tender, state), UnitFrame::Moving(1));
     }
 
     #[test]
