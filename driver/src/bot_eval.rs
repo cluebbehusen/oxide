@@ -4,7 +4,7 @@
 //! configuration serialized in an ordinary scenario, stops when the match is
 //! decided, and emits one compact row suitable for JSONL comparison.
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use oxide_kit::GameReplay;
 use oxide_sim::bot::{PublicMapBriefing, ResolvedProfile, SeatBot};
 use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
@@ -265,6 +265,62 @@ pub enum Termination {
     Decided,
     /// The configured tick ceiling was reached first.
     TickLimit,
+    /// One unit stalled the same way often enough to prove a controller
+    /// was re-issuing an impossible order; the leg stopped measuring.
+    StallLoop,
+}
+
+/// Stalls of one reason on one unit that end a leg as a [`Termination::StallLoop`]
+/// when no explicit limit is given. A blocked order that a controller
+/// abandons stalls a handful of times; an order re-issued every think on a
+/// severed map stalls hundreds of times and drowns every other metric.
+pub const DEFAULT_STALL_LOOP_LIMIT: u64 = 200;
+
+/// The order loop that ended a leg: one unit, one stall reason, `count`
+/// occurrences by `tick`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StallLoop {
+    /// Seat whose controller kept re-issuing the order.
+    pub seat: u8,
+    /// The unit that kept stalling.
+    pub unit: u32,
+    /// Stable wire name of the stall reason.
+    pub reason: String,
+    /// Stalls of that reason on that unit when the leg stopped.
+    pub count: u64,
+    /// Simulation tick at which the leg stopped.
+    pub tick: u64,
+}
+
+/// One stall as counted into the evidence: the seat, unit, reason, and the
+/// running total for that unit and reason.
+struct StallSample {
+    seat: u8,
+    unit: u32,
+    reason: String,
+    count: u64,
+}
+
+/// The frozen Overseer has no severed-ground play: its legacy ferry and army
+/// channels re-issue unreachable orders on every think, so on a map whose
+/// seats share no ground route the yardstick measures a missing capability
+/// rather than Prime. Such a cell is refused instead of recorded.
+pub fn ensure_overseer_yardstick_ground(scenario: &Scenario) -> Result<()> {
+    let audit = crate::audit::audit(scenario)
+        .with_context(|| format!("auditing {} for the Overseer yardstick", scenario.name))?;
+    if let Some(route) = audit
+        .routes
+        .iter()
+        .find(|route| route.ground_steps.is_none())
+    {
+        bail!(
+            "{}: seats {} and {} share no ground route, and the frozen Overseer has no severed-ground play; it is not a valid yardstick there, so compare player-facing profiles instead",
+            scenario.name,
+            route.seats.0,
+            route.seats.1
+        );
+    }
+    Ok(())
 }
 
 /// Controller choices for one evaluation cell.
@@ -393,19 +449,27 @@ impl SeatEvidence {
         }
     }
 
-    fn observe(&mut self, event: &Event) {
+    fn observe(&mut self, event: &Event) -> Option<StallSample> {
         match event {
             Event::CommandRejected { reason, .. } => {
                 self.rejections = self.rejections.saturating_add(1);
                 increment(&mut self.rejection_reasons, wire_name(reason));
+                None
             }
             Event::OrderStalled { unit, reason, .. } => {
                 self.stalls = self.stalls.saturating_add(1);
                 let reason = wire_name(reason);
                 increment(&mut self.stall_reasons, reason.clone());
-                increment(self.stall_units.entry(unit.0).or_default(), reason);
+                let per_unit = self.stall_units.entry(unit.0).or_default();
+                increment(per_unit, reason.clone());
+                Some(StallSample {
+                    seat: self.seat,
+                    unit: unit.0,
+                    count: per_unit.get(&reason).copied().unwrap_or(0),
+                    reason,
+                })
             }
-            _ => {}
+            _ => None,
         }
     }
 }
@@ -432,6 +496,9 @@ pub struct EvaluationRow {
     pub scenario_seed: u64,
     /// Requested simulation tick ceiling.
     pub tick_limit: u64,
+    /// Stalls of one reason on one unit that end the leg early; `None` when
+    /// the loop check was disabled.
+    pub stall_loop_limit: Option<u64>,
     /// Seat-pair leg.
     pub leg: EvaluationLeg,
     /// Map-end transform applied to the source scenario.
@@ -442,6 +509,9 @@ pub struct EvaluationRow {
     pub seats: Vec<SeatConfiguration>,
     /// Whether the match decided before the ceiling.
     pub termination: Termination,
+    /// The order loop that stopped the leg, when one did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stall_loop: Option<StallLoop>,
     /// Final game result, absent at the tick ceiling.
     pub result: Option<GameResult>,
     /// Seats on the surviving team, empty for draws and undecided matches.
@@ -504,7 +574,22 @@ pub fn evaluate_plan_artifact(
     tick_limit: u64,
     candidate: &str,
 ) -> Result<(EvaluationRow, GameReplay)> {
+    evaluate_plan_artifact_with(plan, tick_limit, Some(DEFAULT_STALL_LOOP_LIMIT), candidate)
+}
+
+/// [`evaluate_plan_artifact`] with an explicit stall-loop limit; `None`
+/// disables the early stop so a leg always runs to its result or ceiling.
+pub fn evaluate_plan_artifact_with(
+    plan: &EvaluationPlan,
+    tick_limit: u64,
+    stall_loop_limit: Option<u64>,
+    candidate: &str,
+) -> Result<(EvaluationRow, GameReplay)> {
     ensure!(tick_limit > 0, "bot evaluation tick limit must be positive");
+    ensure!(
+        stall_loop_limit != Some(0),
+        "bot evaluation stall-loop limit must be positive or disabled"
+    );
     validate_candidate(candidate)?;
     plan.validate()?;
     let scenario = &plan.scenario;
@@ -529,10 +614,22 @@ pub fn evaluate_plan_artifact(
     let mut evidence: Vec<SeatEvidence> =
         (0..scenario.players.len()).map(SeatEvidence::new).collect();
 
-    while state.current_tick() < tick_limit && state.result().is_none() {
+    let mut stall_loop = None;
+    'run: while state.current_tick() < tick_limit && state.result().is_none() {
         let report = oxide_kit::runner::step(&mut state, &mut bots, Some(&mut replay));
         for event in &report.events {
-            record_evidence_event(&mut evidence, event);
+            if let Some(sample) = record_evidence_event(&mut evidence, event)
+                && stall_loop_limit.is_some_and(|limit| sample.count >= limit)
+            {
+                stall_loop = Some(StallLoop {
+                    seat: sample.seat,
+                    unit: sample.unit,
+                    reason: sample.reason,
+                    count: sample.count,
+                    tick: state.current_tick(),
+                });
+                break 'run;
+            }
         }
     }
 
@@ -553,6 +650,7 @@ pub fn evaluate_plan_artifact(
         execution_fingerprint,
         scenario_seed: scenario.seed,
         tick_limit,
+        stall_loop_limit,
         leg: plan.leg,
         geometry: plan.geometry,
         faction_cell: plan.faction_cell,
@@ -574,11 +672,14 @@ pub fn evaluate_plan_artifact(
                     .map(BotConfig::resolve_profile),
             })
             .collect(),
-        termination: if state.result().is_some() {
+        termination: if stall_loop.is_some() {
+            Termination::StallLoop
+        } else if state.result().is_some() {
             Termination::Decided
         } else {
             Termination::TickLimit
         },
+        stall_loop,
         result: state.result(),
         winner_seats: state.winners().into_iter().map(|seat| seat.0).collect(),
         duration_ticks: state.current_tick(),
@@ -590,16 +691,13 @@ pub fn evaluate_plan_artifact(
     Ok((row, replay))
 }
 
-fn record_evidence_event(evidence: &mut [SeatEvidence], event: &Event) {
+fn record_evidence_event(evidence: &mut [SeatEvidence], event: &Event) -> Option<StallSample> {
     let player = match event {
         Event::CommandRejected { player, .. } | Event::OrderStalled { player, .. } => Some(*player),
         _ => None,
     };
-    if let Some(PlayerId(seat)) = player
-        && let Some(row) = evidence.get_mut(usize::from(seat))
-    {
-        row.observe(event);
-    }
+    let PlayerId(seat) = player?;
+    evidence.get_mut(usize::from(seat))?.observe(event)
 }
 
 /// Builds the single or paired all-bot legs for one exact seed cell.
@@ -2112,5 +2210,88 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("exactly two seats"));
+    }
+
+    #[test]
+    fn a_unit_stalling_the_same_way_repeatedly_is_a_counted_loop() {
+        let mut evidence = vec![SeatEvidence::new(0), SeatEvidence::new(1)];
+        let stall = Event::OrderStalled {
+            unit: oxide_sim::UnitId(4),
+            player: PlayerId(1),
+            pos: chassis::fx::Vec2Fx::new(
+                chassis::fx::Fx::from_num(3),
+                chassis::fx::Fx::from_num(3),
+            ),
+            reason: StallReason::NoRoute,
+        };
+        let mut last = None;
+        for _ in 0..DEFAULT_STALL_LOOP_LIMIT {
+            last = record_evidence_event(&mut evidence, &stall);
+        }
+        let sample = last.expect("a stall is a counted sample");
+        assert_eq!(
+            (sample.seat, sample.unit, sample.reason.as_str()),
+            (1, 4, "no_route")
+        );
+        assert_eq!(sample.count, DEFAULT_STALL_LOOP_LIMIT);
+        assert_eq!(evidence[1].stalls, DEFAULT_STALL_LOOP_LIMIT);
+        let other = Event::OrderStalled {
+            unit: oxide_sim::UnitId(9),
+            player: PlayerId(1),
+            pos: chassis::fx::Vec2Fx::new(
+                chassis::fx::Fx::from_num(3),
+                chassis::fx::Fx::from_num(3),
+            ),
+            reason: StallReason::NoRoute,
+        };
+        let fresh = record_evidence_event(&mut evidence, &other).expect("counted");
+        assert_eq!(fresh.count, 1, "the loop count is per unit, not per seat");
+        assert!(
+            record_evidence_event(
+                &mut evidence,
+                &Event::CommandRejected {
+                    player: PlayerId(0),
+                    reason: oxide_sim::command::RejectReason::NoValidUnits,
+                }
+            )
+            .is_none(),
+            "a rejection is not a stall sample"
+        );
+        assert_eq!(
+            serde_json::to_value(Termination::StallLoop).unwrap(),
+            serde_json::json!("stall_loop")
+        );
+    }
+
+    #[test]
+    fn a_stall_loop_limit_of_zero_is_refused_and_none_disables_the_stop() {
+        let plan = EvaluationPlan::from_scenario(firing_squad(), EvaluationLeg::Single);
+        let error = evaluate_plan_artifact_with(&plan, 100, Some(0), "test-build").unwrap_err();
+        assert!(error.to_string().contains("stall-loop limit"), "{error:#}");
+        let (row, _) = evaluate_plan_artifact_with(&plan, 100, None, "test-build").unwrap();
+        assert_eq!(row.stall_loop_limit, None);
+        assert_eq!(row.stall_loop, None);
+        let (row, _) = evaluate_plan_artifact(&plan, 100, "test-build").unwrap();
+        assert_eq!(row.stall_loop_limit, Some(DEFAULT_STALL_LOOP_LIMIT));
+        assert!(
+            !serde_json::to_string(&row)
+                .unwrap()
+                .contains("\"stall_loop\":"),
+            "an absent loop stays off the wire"
+        );
+    }
+
+    #[test]
+    fn severed_ground_maps_are_refused_for_the_overseer_yardstick() {
+        assert!(ensure_overseer_yardstick_ground(&Scenario::skirmish()).is_ok());
+        let severance = Scenario::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scenarios/severance.json"
+        ))
+        .expect("the shipped Severance map loads");
+        let error = ensure_overseer_yardstick_ground(&severance).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("share no ground route"), "{text}");
+        assert!(text.contains("frozen Overseer"), "{text}");
     }
 }

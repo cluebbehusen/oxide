@@ -292,6 +292,53 @@ fn replay_evidence_requires_its_jsonl_sidecar() {
 }
 
 #[test]
+fn overseer_mode_refuses_a_severed_ground_map() {
+    let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+        .args([
+            "bot-eval",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios/severance.json"),
+            "--ticks",
+            "1",
+            "--against-overseer",
+        ])
+        .output()
+        .expect("run an Overseer evaluation on a severed map");
+    assert!(
+        !output.status.success(),
+        "a severed map was accepted as a yardstick"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("share no ground route") && stderr.contains("frozen Overseer"),
+        "refusal did not explain itself: {stderr}"
+    );
+}
+
+#[test]
+fn a_zero_stall_loop_limit_disables_the_early_stop() {
+    let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+        .args([
+            "bot-eval",
+            "skirmish",
+            "--ticks",
+            "1",
+            "--stall-loop-limit",
+            "0",
+        ])
+        .output()
+        .expect("run a bot evaluation without the loop stop");
+    assert!(
+        output.status.success(),
+        "bot-eval failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("JSONL is UTF-8");
+    let row: Value = serde_json::from_str(stdout.lines().next().expect("one row")).unwrap();
+    assert_eq!(row["stall_loop_limit"], Value::Null);
+    assert_eq!(row["termination"], "tick_limit");
+}
+
+#[test]
 fn overseer_mode_refuses_a_non_two_seat_scenario() {
     let scenario =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scenarios/compass-grand.json");

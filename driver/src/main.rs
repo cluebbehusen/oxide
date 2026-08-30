@@ -53,6 +53,10 @@ enum Cmd {
         /// Maximum ticks per match.
         #[arg(long, default_value_t = 60_000, value_parser = clap::value_parser!(u64).range(1..))]
         ticks: u64,
+        /// Stalls of one reason on one unit that stop a leg as a `stall_loop`
+        /// anomaly instead of running it to the ceiling; 0 disables the stop.
+        #[arg(long, default_value_t = oxide_driver::bot_eval::DEFAULT_STALL_LOOP_LIMIT)]
+        stall_loop_limit: u64,
         /// Consecutive seed cells per scenario for player-facing profile
         /// comparisons.
         #[arg(
@@ -493,6 +497,7 @@ fn main() -> Result<()> {
         Cmd::BotEval {
             scenarios,
             ticks,
+            stall_loop_limit,
             runs,
             scenario_seed_base,
             scenario_seeds,
@@ -512,6 +517,7 @@ fn main() -> Result<()> {
             out,
             replay_dir,
         } => {
+            let stall_loop_limit = (stall_loop_limit > 0).then_some(stall_loop_limit);
             let candidate = match candidate {
                 Some(candidate) => candidate,
                 None if out.is_some() || replay_dir.is_some() => {
@@ -534,6 +540,7 @@ fn main() -> Result<()> {
             for (scenario_index, scenario_name) in scenarios.iter().enumerate() {
                 let source = runner::load_scenario(scenario_name)?;
                 if against_overseer {
+                    oxide_driver::bot_eval::ensure_overseer_yardstick_ground(&source)?;
                     let overseer_policy_seed = overseer_policy_seed.unwrap_or(0);
                     let scenario_seed_values = if scenario_seeds.is_empty() {
                         vec![scenario_seed_base.unwrap_or(source.seed)]
@@ -666,8 +673,12 @@ fn main() -> Result<()> {
             let mut rows = Vec::with_capacity(plans.len());
             let mut evidence = oxide_driver::bot_eval::EvidenceBatch::default();
             for (plan, replay_path) in plans {
-                let (mut row, replay) =
-                    oxide_driver::bot_eval::evaluate_plan_artifact(&plan, ticks, &candidate)?;
+                let (mut row, replay) = oxide_driver::bot_eval::evaluate_plan_artifact_with(
+                    &plan,
+                    ticks,
+                    stall_loop_limit,
+                    &candidate,
+                )?;
                 if let Some(path) = replay_path {
                     evidence.stage_replay(&replay, &path)?;
                     row.replay = Some(path.display().to_string());

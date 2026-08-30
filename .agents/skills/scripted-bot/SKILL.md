@@ -320,7 +320,12 @@ consecutive seed cells outside this controlled workflow. The evaluator must
 refuse nominal axis cells that resolve to the same executable matchup.
 
 Use the per-unit stall breakdown to distinguish one blocked order from a broad
-command failure. Treat rejections, stalls, and outcomes as diagnostic evidence,
+command failure. A leg ends as `termination: stall_loop` once one unit stalls
+the same way `--stall-loop-limit` times (200 by default, 0 disables); that row
+names the seat, unit, reason, count, and tick, and is an anomaly to inspect, not
+a result. `--against-overseer` refuses maps whose seats share no ground route,
+because the frozen Overseer has no severed-ground play and is not a valid
+yardstick there. Treat rejections, stalls, and outcomes as diagnostic evidence,
 not a quality score. Persisted evidence requires an explicit stable
 `--candidate`; replay evidence also requires its JSONL `--out` sidecar. Rows
 record the complete scenario and execution fingerprints, the exact Overseer

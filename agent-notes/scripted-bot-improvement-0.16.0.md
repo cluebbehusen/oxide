@@ -1,6 +1,6 @@
 ---
 created: 2026-08-29T08:00:10
-updated: 2026-08-30T14:11:26
+updated: 2026-08-30T14:25:25
 ---
 
 # Oxide 0.16.0 Scripted Bot Improvement
@@ -57,6 +57,11 @@ surface, and promoting only behavior proven against Overseer and human play.
 - Let fortification-oriented player-facing profiles construct a bounded
   Barricade line through ordinary costs and commands. Keep frozen Overseer's
   Barricade cap at zero.
+- Keep the frozen Overseer unpatched on severed-ground maps. The harness refuses
+  `--against-overseer` where the seats share no ground route and ends a leg as a
+  `stall_loop` anomaly once one unit stalls the same way 200 times, so the
+  yardstick stays comparable and honest instead of burning 120,000 ticks on a
+  controller that has no island game.
 
 ## Findings
 
@@ -120,6 +125,13 @@ surface, and promoting only behavior proven against Overseer and human play.
 - Prime carried a badly wounded combat core for minutes without repair; the
   dedicated repair gap remains open after separating it from the resolved
   long-range siege response.
+- The Severance stall pile-up is the frozen Overseer's legacy ferry: it ranks
+  riders by chebyshev distance with no route check and never brings an empty
+  carrier home, so after one unload on the enemy island every 8-tick think
+  re-issues an unreachable Load; every shared route gate is written
+  `!player_facing || route_check`, and `routing::routable_command_subset` has no
+  caller. A second Overseer-only loop re-issues a refused Extractor frame build
+  hundreds of times and debits the construction budget each think.
 
 ## Actions
 
