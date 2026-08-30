@@ -20,8 +20,6 @@ pub struct Sprites {
     rock: [Rect; 23],
     /// Full-tile exclusion barriers, indexed `neighbor_mask * 2 + variant`.
     peak_barriers: [Rect; 32],
-    /// Bottomless-pit edge tiles, indexed like the peak barriers.
-    pit_edges: [Rect; 32],
     /// The derelict 2x2 Extractor frame bed, drawn on unclaimed frames.
     extractor_frame: Rect,
     /// Tier hulls, keyed by (kind, tier-1) through [`Sprites::building_tiered`].
@@ -247,44 +245,6 @@ const GROUND_BLOCKER_KEYS: [&str; 9] = [
 ];
 
 /// Full-tile barriers, ordered `neighbor_mask * 2 + variant`. The mask is
-/// north/east/south/west in bits 0 through 3.
-const PIT_EDGE_KEYS: [&str; 32] = [
-    "pit_edge_00_0",
-    "pit_edge_00_1",
-    "pit_edge_01_0",
-    "pit_edge_01_1",
-    "pit_edge_02_0",
-    "pit_edge_02_1",
-    "pit_edge_03_0",
-    "pit_edge_03_1",
-    "pit_edge_04_0",
-    "pit_edge_04_1",
-    "pit_edge_05_0",
-    "pit_edge_05_1",
-    "pit_edge_06_0",
-    "pit_edge_06_1",
-    "pit_edge_07_0",
-    "pit_edge_07_1",
-    "pit_edge_08_0",
-    "pit_edge_08_1",
-    "pit_edge_09_0",
-    "pit_edge_09_1",
-    "pit_edge_0a_0",
-    "pit_edge_0a_1",
-    "pit_edge_0b_0",
-    "pit_edge_0b_1",
-    "pit_edge_0c_0",
-    "pit_edge_0c_1",
-    "pit_edge_0d_0",
-    "pit_edge_0d_1",
-    "pit_edge_0e_0",
-    "pit_edge_0e_1",
-    "pit_edge_0f_0",
-    "pit_edge_0f_1",
-];
-
-/// Atlas keys for the terraced pit rims, indexed exactly like
-/// [`PEAK_BARRIER_KEYS`]:
 /// north/east/south/west in bits 0 through 3.
 const PEAK_BARRIER_KEYS: [&str; 32] = [
     "peak_barrier_00_0",
@@ -669,7 +629,6 @@ fn atlas_keys() -> Vec<String> {
         .chain(GROUND_KEYS.iter())
         .chain(ROCK_KEYS.iter())
         .chain(PEAK_BARRIER_KEYS.iter())
-        .chain(PIT_EDGE_KEYS.iter())
         .chain(DECAL_KEYS.iter())
         .chain(THEME_PROP_KEYS.iter())
         .chain(FIELD_DEBRIS_KEYS.iter())
@@ -830,7 +789,6 @@ impl Sprites {
             ground: pick(&rects, GROUND_KEYS)?,
             rock: pick(&rects, ROCK_KEYS)?,
             peak_barriers: pick(&rects, PEAK_BARRIER_KEYS)?,
-            pit_edges: pick(&rects, PIT_EDGE_KEYS)?,
             extractor_frame,
             turret_t1: variant_row(&rects, "turret_t1", "")?,
             turret_t2: variant_row(&rects, "turret_t2", "")?,
@@ -1052,11 +1010,6 @@ impl Sprites {
     /// A full-tile exclusion barrier connected to its peak neighbors.
     pub fn peak_barrier(&self, neighbor_mask: u8, variant: usize) -> Rect {
         self.peak_barriers[usize::from(neighbor_mask & 0x0f) * 2 + variant % 2]
-    }
-
-    /// A pit tile's rim art for its same-terrain neighbor mask.
-    pub fn pit_edge(&self, neighbor_mask: u8, variant: usize) -> Rect {
-        self.pit_edges[usize::from(neighbor_mask & 0x0f) * 2 + variant % 2]
     }
 
     /// The derelict Extractor frame bed (2x2 tiles).

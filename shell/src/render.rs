@@ -191,6 +191,7 @@ mod environment;
 mod minimap;
 mod motion;
 mod panel_draw;
+mod pits;
 mod world;
 use chrome::*;
 use entities::*;
@@ -571,6 +572,7 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     environment::draw_backdrop(game);
     let alpha = game.render_alpha();
     draw_tiles(game, sprites);
+    pits::draw_pits(game);
     crate::render::world::draw_extractor_frames(game, sprites);
     environment::draw_boundary(game);
     draw_scorches(game, sprites);

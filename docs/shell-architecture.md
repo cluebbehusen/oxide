@@ -207,10 +207,14 @@ Hz simulation without changing its state.
 
 All production sprite regions come from one generated atlas loaded by
 `shell/src/assets.rs`. The manifest must match every key the shell resolves, and
-the renderer must not load per-sprite textures. Animation state is driven by
-simulation events and current actions, then discarded or rebuilt after a
-timeline jump. Fog rendering reads the controlled seat's `Vision` unless an
-explicit spectator/debug mode is active.
+the renderer must not load per-sprite textures. The quarry boundary and pit
+terraces are the exception: `render/environment.rs` and `render/pits.rs` draw
+them procedurally as one riser, bench, and lip vocabulary, the boundary rising
+outside the map rect and pits stepping down from a fog-honest distance field
+over explored pit tiles. Animation state is driven by simulation events and
+current actions, then discarded or rebuilt after a timeline jump. Fog rendering
+reads the controlled seat's `Vision` unless an explicit spectator/debug mode is
+active.
 
 Selection feedback may describe public simulation rules, but dynamic economy
 state remains owner-only. A selected own Extractor names its authoritative

@@ -17,12 +17,12 @@ semantics remain recognizable at actual battlefield scale.
 
 ## Establish the control
 
-1. Read `docs/visual-approvals.md`, the relevant production generator code,
-   animation trigger code, and the complete current in-game sequence before
-   designing. For a new machine family, study the finalized Harvester, Lancer,
-   Bombard, Flakhound, Buzzard, Wisp, Foundry, Fabricator, Reclaimer, and Repair
-   Bay as applicable, including their movement, action, work, cargo, charge, or
-   construction states. A single idle PNG is not a sufficient control.
+1. Read the relevant production generator code, animation trigger code, and the
+   complete current in-game sequence before designing. For a new machine family,
+   study the finalized Harvester, Lancer, Bombard, Flakhound, Buzzard, Wisp,
+   Foundry, Fabricator, Reclaimer, and Repair Bay as applicable, including their
+   movement, action, work, cargo, charge, or construction states. A single idle
+   PNG is not a sufficient control.
 2. If Connor called an asset good, close, or finalized, copy that exact design
    into the next comparison as a control. Never recreate it from memory.
 3. Use finalized art as positive evidence for component construction, material
@@ -214,16 +214,15 @@ animation.
 1. Record the source/control SHA-256 and provenance, then present stable
    numbered options with the exact control included. Include animation only for
    assets whose role actually moves.
-2. Record only Connor's explicit approvals in `docs/visual-approvals.md`.
-3. Promote only those approved bytes or their exact code-native source through
+2. Promote only those approved bytes or their exact code-native source through
    `tools/gen_sprites.py` and, where used, `tools/production_sprite_sources/`.
    Assert that regenerated production bytes match the approved source. Do not
    promote an entire review batch because one item was approved.
-4. Keep the production generator, atlas outputs, runtime wiring, tests, and
-   narrow approval ledger in one reviewable change. Commit them together only
-   when the user has explicitly authorized a commit. Leave every experiment in
-   place and uncommitted until a separate cleanup is requested.
-5. Inspect the dirty tree and changed atlas keys before staging. Stage exact
+3. Keep the production generator, atlas outputs, runtime wiring, and tests in
+   one reviewable change. Commit them together only when the user has explicitly
+   authorized a commit. Leave every experiment in place and uncommitted until a
+   separate cleanup is requested.
+4. Inspect the dirty tree and changed atlas keys before staging. Stage exact
    production paths rather than `git add -A`; verify no review generator,
    capture harness, or alternate asset entered the index.
 

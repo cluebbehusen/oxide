@@ -32,22 +32,6 @@ pub(crate) fn draw_fog(game: &Game) {
 
 /// Fog-honest peak connectivity. An explored barrier cannot disclose that
 /// its wall continues into an unexplored neighbor merely through edge art.
-fn pit_neighbor_mask(game: &Game, pos: TilePos) -> u8 {
-    [(0, -1, 1), (1, 0, 2), (0, 1, 4), (-1, 0, 8)]
-        .into_iter()
-        .fold(0, |mask, (dx, dy, bit)| {
-            let neighbor = pos.offset(dx, dy);
-            let known = game.all_seeing() || game.my_vision().explored(neighbor);
-            let connected = known
-                && game
-                    .state
-                    .map()
-                    .tile(neighbor)
-                    .is_some_and(|tile| tile.terrain == oxide_sim::map::Terrain::Pit);
-            if connected { mask | bit } else { mask }
-        })
-}
-
 fn peak_neighbor_mask(game: &Game, pos: TilePos) -> u8 {
     [(0, -1, 1), (1, 0, 2), (0, 1, 4), (-1, 0, 8)]
         .into_iter()
@@ -360,24 +344,6 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                     ..Default::default()
                 },
             );
-            // Bottomless pit: edge-autotiled void, terraced where the
-            // rim meets standing ground and continuous where the cut
-            // carries on — the peak barrier's sibling.
-            if tile.terrain == oxide_sim::map::Terrain::Pit {
-                let mask = pit_neighbor_mask(game, TilePos::new(x, y));
-                let source = sprites.pit_edge(mask, h % 2);
-                draw_texture_ex(
-                    sprites.texture(),
-                    screen.x.floor(),
-                    screen.y.floor(),
-                    WHITE,
-                    DrawTextureParams {
-                        dest_size: Some(vec2(size, size)),
-                        source: Some(source),
-                        ..Default::default()
-                    },
-                );
-            }
             // Ground dressing stays under resources, entities, and the fog
             // veil. Static sprites use no wall clock, so reduced-motion mode
             // needs no alternate path.
@@ -500,7 +466,7 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                     Some(sprites.peak_barrier(peak_neighbor_mask(game, pos), h % 2)),
                     false,
                 ),
-                // The void was already painted under the dressing pass.
+                // Pit terraces are drawn by the environment pass after the tiles.
                 (oxide_sim::map::Terrain::Pit, _) => (None, false),
                 (_, 0) if wreck > 0 => (Some(sprites.wreck_pile()), h % 5 < 2),
                 (_, 0) => (None, false),

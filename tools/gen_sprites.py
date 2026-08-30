@@ -397,58 +397,6 @@ def peak_barrier(mask: int, variant: int) -> None:
     finish(img, px, f"peak_barrier_{mask:02x}_{variant}")
 
 
-def pit_edge(mask: int, variant: int) -> None:
-    """A bottomless flooded cut, edge-autotiled like the peak barrier.
-
-    `mask` is north/east/south/west in the low four bits: a set bit
-    means the neighbor is also pit and the void continues; a clear bit
-    is an exposed rim, carved as two descending terrace strata under a
-    lit lip so the drop reads at play zoom. The interior stays a
-    near-black void with faint deep glints — air passes, fire passes,
-    nothing that walks comes back.
-    """
-    px = 64
-    void = (9, 9, 14)
-    img, d = canvas(px, color=(*void, 255))
-    rng = random.Random(1481 + mask * 67 + variant * 271)
-
-    # Faint deep glints: the void is not a texture, but a truly flat
-    # field at map scale reads as a rendering bug.
-    for _ in range(4 + variant):
-        x, y = rng.randrange(8, 56), rng.randrange(8, 56)
-        d.point([(s(x), s(y))], fill=(22, 24, 34, 255))
-
-    strata = [
-        ((44, 40, 38), 6),  # lit lip
-        ((30, 28, 29), 5),  # first bench
-        ((18, 18, 22), 4),  # last light
-    ]
-    edges = (
-        (1, lambda off: [(0, off), (64, off)]),
-        (2, lambda off: [(64 - off, 0), (64 - off, 64)]),
-        (4, lambda off: [(0, 64 - off), (64, 64 - off)]),
-        (8, lambda off: [(off, 0), (off, 64)]),
-    )
-    for bit, line_at in edges:
-        if mask & bit:
-            continue
-        off = 1
-        for color, width in strata:
-            pts = [(s(x), s(y)) for x, y in line_at(off + width // 2)]
-            d.line(pts, fill=(*color, 255), width=s(width))
-            off += width
-    # Exposed corners get a small collapsed-rubble notch so two meeting
-    # rims read as one carved bowl instead of crossing bands.
-    corners = ((1 | 8, 2, 2), (1 | 2, 62, 2), (4 | 2, 62, 62), (4 | 8, 2, 62))
-    for bits, cx, cy in corners:
-        if mask & bits == 0:
-            d.ellipse(
-                [s(cx - 4), s(cy - 4), s(cx + 4), s(cy + 4)],
-                fill=(*_mix(void, (44, 40, 38), 0.5), 255),
-            )
-    finish(img, px, f"pit_edge_{mask:02x}_{variant}")
-
-
 def extractor_frame_marker() -> None:
     """The derelict frame: a collapsed 2x2 machine bed that says
     'an Extractor can be rebuilt here'. Drawn on the map itself,
@@ -3413,7 +3361,6 @@ def generate(output: Path) -> None:
     for mask in range(16):
         for variant in range(2):
             peak_barrier(mask, variant)
-            pit_edge(mask, variant)
     decal("decal_crack", 41, "crack")
     decal("decal_plate", 42, "plate")
     decal("decal_stain", 43, "stain")

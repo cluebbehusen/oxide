@@ -5,7 +5,7 @@ use crate::game::Game;
 use macroquad::prelude::*;
 
 const SALT: u32 = 347;
-const WAVE_LIFTS: [i16; 6] = [-4, -2, 0, 1, 2, 4];
+pub(super) const WAVE_LIFTS: [i16; 6] = [-4, -2, 0, 1, 2, 4];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct BoundaryInsets {
@@ -78,7 +78,7 @@ impl MapFrame {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Material {
+pub(super) enum Material {
     Riser(usize),
     Bench(usize),
     Vignette(u8),
@@ -86,14 +86,14 @@ enum Material {
 }
 
 #[derive(Clone, Copy)]
-struct Layer {
-    bench_cells: i32,
-    riser: Color,
-    top: Color,
-    lip: Color,
+pub(super) struct Layer {
+    pub(super) bench_cells: i32,
+    pub(super) riser: Color,
+    pub(super) top: Color,
+    pub(super) lip: Color,
 }
 
-const fn rgba(r: u8, g: u8, b: u8) -> Color {
+pub(super) const fn rgba(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgba(r, g, b, 255)
 }
 
@@ -254,7 +254,7 @@ impl TerraceField {
     }
 }
 
-fn shifted(color: Color, amount: i16) -> Color {
+pub(super) fn shifted(color: Color, amount: i16) -> Color {
     let amount = amount as f32 / 255.0;
     Color::new(
         (color.r + amount).clamp(0.0, 1.0),
@@ -264,7 +264,7 @@ fn shifted(color: Color, amount: i16) -> Color {
     )
 }
 
-fn mixed(left: Color, right: Color, amount: f32) -> Color {
+pub(super) fn mixed(left: Color, right: Color, amount: f32) -> Color {
     Color::new(
         left.r + (right.r - left.r) * amount,
         left.g + (right.g - left.g) * amount,
@@ -289,7 +289,7 @@ fn cell_color(material: Material, ix: i32, iy: i32) -> Option<Color> {
     }
 }
 
-fn draw_lip(rect: Rect, direction: (i32, i32), thickness: f32, color: Color) {
+pub(super) fn draw_lip(rect: Rect, direction: (i32, i32), thickness: f32, color: Color) {
     match direction {
         (-1, 0) => draw_rectangle(rect.x, rect.y, thickness, rect.h, color),
         (1, 0) => draw_rectangle(
@@ -321,7 +321,7 @@ fn uniform_bench(field: &TerraceField, ix: i32, iy: i32) -> Option<usize> {
         .then_some(level)
 }
 
-fn draw_missing_slab(rect: Rect, cell: f32, top: Color, value: u32) {
+pub(super) fn draw_missing_slab(rect: Rect, cell: f32, top: Color, value: u32) {
     let (x, y) = if value & 1 == 0 {
         (0.18, 0.42)
     } else {
@@ -351,7 +351,7 @@ fn draw_missing_slab(rect: Rect, cell: f32, top: Color, value: u32) {
     );
 }
 
-fn draw_fracture(rect: Rect, cell: f32, tile: f32, top: Color, value: u32) {
+pub(super) fn draw_fracture(rect: Rect, cell: f32, tile: f32, top: Color, value: u32) {
     let points = if value & 1 == 0 {
         [(0.12, 0.72), (0.7, 0.56), (1.02, 1.1), (1.84, 1.38)]
     } else {
@@ -369,7 +369,7 @@ fn draw_fracture(rect: Rect, cell: f32, tile: f32, top: Color, value: u32) {
     }
 }
 
-fn draw_rebar(rect: Rect, cell: f32, tile: f32) {
+pub(super) fn draw_rebar(rect: Rect, cell: f32, tile: f32) {
     for offset in [0.0, 0.22] {
         for (width, color) in [
             ((tile * 0.04).max(1.0) + 1.0, rgba(48, 38, 39)),
@@ -437,7 +437,7 @@ fn draw_boundary_terraces(frame: MapFrame) {
     }
 }
 
-fn hash(x: i32, y: i32, salt: u32) -> u32 {
+pub(super) fn hash(x: i32, y: i32, salt: u32) -> u32 {
     let mut value = 2_166_136_261u32;
     for word in [x as u32, y as u32, salt] {
         for byte in word.to_le_bytes() {
