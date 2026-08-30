@@ -19,6 +19,7 @@ from PIL import Image, ImageDraw
 from tools import gen_sprites as gen
 from tools.production_sprite_sources import (
     air_final,
+    crucible_final,
     defense_mechanisms,
     economy_mechanisms,
     ground_artillery,
@@ -843,3 +844,4 @@ def install_finalized_sprites(registry: Registry, out: Path) -> None:
         _install_working_buildings(registry, out, faction)
         _install_defenses(registry, out, faction)
     tender_condor_final.install_tender_condor(registry, out)
+    crucible_final.install_crucible_units(registry, out)

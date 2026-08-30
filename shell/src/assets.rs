@@ -1444,7 +1444,7 @@ pub struct Sounds {
     pub attack_warden: Sound,
     /// The Breaker's siege mortar.
     pub attack_breaker: Sound,
-    /// The Avalanche bank leaving its tubes.
+    /// The Avalanche's heavy launch rail.
     pub avalanche_launch: Sound,
     /// A bomber's bay opening and its load dropping away.
     pub bomb_release: Sound,

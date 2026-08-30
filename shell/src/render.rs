@@ -216,7 +216,7 @@ pub(crate) const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
 const BONE: Color = color_u8!(232, 228, 216, 255);
 const BONE_FAINT: Color = color_u8!(232, 228, 216, 90);
 const DEFAULT_UNIT_DRAW_SCALE: f32 = 1.05;
-const CONDOR_DRAW_SCALE: f32 = 2.0;
+const LARGE_UNIT_DRAW_SCALE: f32 = 2.0;
 const SCRAP_COLOR: Color = crate::theme::TEXT_ACCENT;
 const HP_BACK: Color = color_u8!(20, 20, 24, 220);
 const DANGER: Color = crate::theme::TEXT_DANGER;
@@ -664,10 +664,11 @@ fn unit_selection_radius(kind: oxide_sim::UnitKind, zoom: f32, padding: f32) -> 
 }
 
 pub(crate) fn unit_draw_scale(kind: oxide_sim::UnitKind) -> f32 {
-    if kind == oxide_sim::UnitKind::Condor {
-        CONDOR_DRAW_SCALE
-    } else {
-        DEFAULT_UNIT_DRAW_SCALE
+    match kind {
+        oxide_sim::UnitKind::Condor
+        | oxide_sim::UnitKind::Breaker
+        | oxide_sim::UnitKind::Avalanche => LARGE_UNIT_DRAW_SCALE,
+        _ => DEFAULT_UNIT_DRAW_SCALE,
     }
 }
 
@@ -1047,6 +1048,18 @@ mod tests {
             super::unit_selection_radius(oxide_sim::UnitKind::Condor, zoom, 4.0)
                 > super::unit_selection_radius(oxide_sim::UnitKind::Harvester, zoom, 4.0)
         );
+    }
+
+    #[test]
+    fn advanced_ground_units_use_two_tile_canvases() {
+        let zoom = 64.0;
+        for kind in [oxide_sim::UnitKind::Breaker, oxide_sim::UnitKind::Avalanche] {
+            assert_eq!(super::unit_draw_scale(kind), 2.0);
+            assert!(
+                super::unit_selection_radius(kind, zoom, 4.0)
+                    > super::unit_selection_radius(oxide_sim::UnitKind::Sentinel, zoom, 4.0,)
+            );
+        }
     }
 
     #[test]

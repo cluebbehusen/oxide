@@ -9,6 +9,7 @@ from PIL import Image, ImageChops
 from tools import gen_sprites as gen
 from tools.production_sprite_sources import (
     construction_final,
+    crucible_final,
     environment_final,
     finalized,
     tender_condor_final,
@@ -174,7 +175,9 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             for state in tender_condor_final.TENDER_STATES:
                 key = f"tender/{faction}/{state}"
                 digest.update(key.encode())
-                digest.update(tender_condor_final.render_tender(faction, state).tobytes())
+                digest.update(
+                    tender_condor_final.render_tender(faction, state).tobytes()
+                )
             for phase in (1, 2):
                 key = f"tender/{faction}/move{phase}"
                 digest.update(key.encode())
@@ -205,6 +208,63 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 self.assertEqual(
                     self.registry[f"condor_{faction}{suffix}"].tobytes(),
                     tender_condor_final.render_condor(faction, state).tobytes(),
+                )
+
+    def test_promoted_crucible_units_match_the_approved_rgba_source(self) -> None:
+        digest = hashlib.sha256()
+        renderers = (
+            ("breaker", crucible_final.render_breaker),
+            ("avalanche", crucible_final.render_avalanche),
+        )
+        states = (
+            ("idle", 0, 0, ""),
+            ("move1", 1, 0, "_move1"),
+            ("move2", 2, 0, "_move2"),
+            ("action1", 0, 1, "_action1"),
+            ("action2", 0, 2, "_action2"),
+            ("action3", 0, 3, "_action3"),
+            ("action4", 0, 4, "_action4"),
+        )
+        for faction in ("ferrous", "cupric"):
+            for stem, renderer in renderers:
+                for label, move_phase, action, suffix in states:
+                    key = f"{stem}/{faction}/{label}"
+                    image = renderer(faction, move_phase, action)
+                    digest.update(key.encode())
+                    digest.update(image.tobytes())
+                    self.assertEqual(image.size, (128, 128))
+                    self.assertEqual(
+                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
+                        image.tobytes(),
+                    )
+        self.assertEqual(digest.hexdigest(), crucible_final.APPROVED_SOURCE_RGBA_SHA256)
+
+    def test_crucible_units_animate_treads_without_wobbling_the_hull(self) -> None:
+        for stem in ("breaker", "avalanche"):
+            for faction in ("ferrous", "cupric"):
+                idle = self.registry[f"{stem}_{faction}"]
+                move1 = self.registry[f"{stem}_{faction}_move1"]
+                move2 = self.registry[f"{stem}_{faction}_move2"]
+                self.assertEqual(
+                    idle.getchannel("A").tobytes(), move1.getchannel("A").tobytes()
+                )
+                self.assertEqual(
+                    idle.getchannel("A").tobytes(), move2.getchannel("A").tobytes()
+                )
+                self.assertNotEqual(idle.tobytes(), move1.tobytes())
+                self.assertNotEqual(move1.tobytes(), move2.tobytes())
+
+    def test_crucible_unit_actions_preserve_one_decisive_report(self) -> None:
+        for stem in ("breaker", "avalanche"):
+            for faction in ("ferrous", "cupric"):
+                frames = [
+                    self.registry[f"{stem}_{faction}_action{action}"]
+                    for action in range(1, 5)
+                ]
+                self.assertGreaterEqual(len({frame.tobytes() for frame in frames}), 3)
+                self.assertIn(
+                    (*crucible_final.FLASH, 255),
+                    set(frames[1].get_flattened_data()),
                 )
 
     def test_tender_treads_move_without_shifting_the_chassis(self) -> None:
@@ -238,9 +298,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         bright_tool = (*tender_condor_final.WELD, 255)
         bright_scrap = (*tender_condor_final.SCRAP, 255)
         for faction in ("ferrous", "cupric"):
-            idle_pixels = set(
-                self.registry[f"tender_{faction}"].get_flattened_data()
-            )
+            idle_pixels = set(self.registry[f"tender_{faction}"].get_flattened_data())
             self.assertNotIn(bright_tool, idle_pixels)
             self.assertNotIn(bright_scrap, idle_pixels)
             self.assertIn(
@@ -255,7 +313,8 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             self.assertEqual(idle.getbbox(), (8, 18, 121, 96))
             for phase in (1, 2):
                 self.assertEqual(
-                    idle.tobytes(), self.registry[f"condor_{faction}_move{phase}"].tobytes()
+                    idle.tobytes(),
+                    self.registry[f"condor_{faction}_move{phase}"].tobytes(),
                 )
             for action in range(1, 5):
                 frame = self.registry[f"condor_{faction}_action{action}"]
