@@ -56,6 +56,33 @@ fn contested_region_visible(obs: &Observation, center: TilePos) -> bool {
     })
 }
 
+fn ground_weapon_reaches_footprint(unit: &UnitObs, anchor: TilePos, size: (i32, i32)) -> bool {
+    let (unit_min_x, unit_max_x) = (unit.tile.x, unit.tile.x + 1);
+    let (unit_min_y, unit_max_y) = (unit.tile.y, unit.tile.y + 1);
+    let (building_min_x, building_max_x) = (anchor.x, anchor.x + size.0);
+    let (building_min_y, building_max_y) = (anchor.y, anchor.y + size.1);
+    let axis_distances = |unit_min: i32, unit_max: i32, target_min: i32, target_max: i32| {
+        let nearest = (target_min - unit_max).max(unit_min - target_max).max(0);
+        let farthest = (target_min - unit_min).max(unit_max - target_max).max(0);
+        (
+            chassis::fx::Fx::from_num(nearest),
+            chassis::fx::Fx::from_num(farthest),
+        )
+    };
+    // Policy sees only the occupied tile, not sub-tile position. Treat the
+    // tile as the uncertainty rectangle and ask whether any possible point in
+    // it lies inside the simulation's Euclidean firing annulus.
+    let (near_x, far_x) = axis_distances(unit_min_x, unit_max_x, building_min_x, building_max_x);
+    let (near_y, far_y) = axis_distances(unit_min_y, unit_max_y, building_min_y, building_max_y);
+    let nearest_sq = near_x * near_x + near_y * near_y;
+    let farthest_sq = far_x * far_x + far_y * far_y;
+    unit.kind.stats().weapons.iter().any(|weapon| {
+        weapon.targets.covers(Domain::Ground)
+            && nearest_sq <= weapon.range * weapon.range
+            && farthest_sq >= weapon.minimum_range * weapon.minimum_range
+    })
+}
+
 impl UtilityPolicy {
     fn opponent_force_risk(&mut self, dials: &Dials, obs: &Observation) -> u64 {
         if self
@@ -437,7 +464,14 @@ impl UtilityPolicy {
         // army on it. The profile-free Overseer retains its historical
         // home-and-allies base set. Fresh fighters still muster at the rally
         // rather than trickling into the threat one spawn at a time.
-        let bases: Vec<TilePos> = std::iter::once(home)
+        let protected_home = player_facing
+            && obs.my_buildings.iter().any(|building| {
+                building.kind == BuildingKind::Foundry
+                    && building.anchor == home
+                    && building.built
+                    && building.hp > 0
+            });
+        let bases: Vec<(TilePos, bool)> = std::iter::once((home, protected_home))
             .chain(
                 obs.my_buildings
                     .iter()
@@ -448,15 +482,16 @@ impl UtilityPolicy {
                             && b.hp > 0
                             && b.anchor != home
                     })
-                    .map(|b| b.anchor),
+                    .map(|b| (b.anchor, true)),
             )
             .chain(
                 obs.ally_buildings
                     .iter()
                     .filter(|b| b.kind == BuildingKind::Foundry)
-                    .map(|b| b.anchor),
+                    .map(|b| (b.anchor, false)),
             )
             .collect();
+        let foundry_size = BuildingKind::Foundry.base_stats().size;
         let intruder = obs
             .enemy_units
             .iter()
@@ -465,10 +500,15 @@ impl UtilityPolicy {
             .filter_map(|u| {
                 let (distance, base_y, base_x) = bases
                     .iter()
-                    .map(|base| (u.tile.chebyshev(*base), base.y, base.x))
+                    .filter_map(|(base, protects_long_range)| {
+                        let distance = u.tile.chebyshev(*base);
+                        (distance <= DEFENSE_RADIUS
+                            || (*protects_long_range
+                                && ground_weapon_reaches_footprint(u, *base, foundry_size)))
+                        .then_some((distance, base.y, base.x))
+                    })
                     .min()?;
-                (distance <= DEFENSE_RADIUS)
-                    .then_some((distance, u.tile.y, u.tile.x, u.id, base_y, base_x))
+                Some((distance, u.tile.y, u.tile.x, u.id, base_y, base_x))
             })
             .min()
             .map(|(_, y, x, _, base_y, base_x)| (TilePos::new(x, y), TilePos::new(base_x, base_y)));
@@ -1614,6 +1654,199 @@ mod tests {
             )),
             "an unseen mobile contact cannot trigger expansion defense: {hidden_intents:?}"
         );
+    }
+
+    #[test]
+    fn visible_siege_threatens_an_owned_foundry_from_its_weapon_envelope() {
+        let home = TilePos::new(3, 6);
+        let expansion = TilePos::new(20, 12);
+        let units: Vec<_> = (1..=6)
+            .map(|id| fighter(id, TilePos::new(17 + i32::try_from(id % 2).unwrap(), 15)))
+            .collect();
+        let army = Army {
+            id: ArmyId(7),
+            members: units.iter().map(|unit| unit.id).collect(),
+            state: ArmyState::Staging,
+            staging: TilePos::new(18, 15),
+            target: None,
+            focus: None,
+            progress: None,
+            issued: None,
+            bounces: 0,
+        };
+        let mut obs = Observation {
+            version: OBSERVATION_VERSION,
+            tick: 4_200,
+            me: PlayerId(0),
+            scrap: 0,
+            map_width: 40,
+            map_height: 24,
+            my_units: units,
+            my_buildings: vec![own_foundry(0, home), own_foundry(1, expansion)],
+            my_queues: vec![Vec::new(), Vec::new()],
+            ally_units: Vec::new(),
+            ally_buildings: Vec::new(),
+            enemy_units: Vec::new(),
+            enemy_buildings: Vec::new(),
+            visible: vec![true; 40 * 24],
+            explored: vec![true; 40 * 24],
+            known_scrap: Vec::new(),
+            known_rock: Vec::new(),
+            known_frames: Vec::new(),
+            known_peaks: Vec::new(),
+            known_wrecks: Vec::new(),
+            salvage_incidents: Vec::new(),
+            blips: Vec::new(),
+            faction: Faction::Ferrous,
+            my_shells: 0,
+            incoming_shells: Vec::new(),
+        };
+        let mut dials = Dials::full();
+        dials.army_size = 5;
+        let defend = |observation: &Observation, player_facing: bool| {
+            let mut intents = Vec::new();
+            UtilityPolicy::new().army(
+                &dials,
+                observation,
+                std::slice::from_ref(&army),
+                home,
+                if player_facing {
+                    player_mode(None)
+                } else {
+                    profile_free_mode()
+                },
+                &mut intents,
+            );
+            intents
+        };
+
+        let cases = [
+            (UnitKind::Avalanche, TilePos::new(35, 13), true),
+            (UnitKind::Avalanche, TilePos::new(36, 13), true),
+            (UnitKind::Avalanche, TilePos::new(37, 13), false),
+            (UnitKind::Bombard, TilePos::new(31, 13), true),
+            (UnitKind::Bombard, TilePos::new(32, 13), false),
+            (UnitKind::Sentinel, TilePos::new(35, 13), false),
+        ];
+        for (kind, tile, expected) in cases {
+            obs.enemy_units = vec![hostile(20, kind, tile)];
+            assert_eq!(
+                push_target(&defend(&obs, true)),
+                expected.then_some(tile),
+                "{kind:?} at {tile:?} produced the wrong Foundry-defense response"
+            );
+        }
+        assert!(ground_weapon_reaches_footprint(
+            &hostile(20, UnitKind::Avalanche, TilePos::new(31, 23)),
+            expansion,
+            BuildingKind::Foundry.base_stats().size,
+        ));
+        assert!(!ground_weapon_reaches_footprint(
+            &hostile(20, UnitKind::Avalanche, TilePos::new(32, 24)),
+            expansion,
+            BuildingKind::Foundry.base_stats().size,
+        ));
+        assert!(!ground_weapon_reaches_footprint(
+            &hostile(20, UnitKind::Avalanche, TilePos::new(18, 12)),
+            expansion,
+            BuildingKind::Foundry.base_stats().size,
+        ));
+        assert!(ground_weapon_reaches_footprint(
+            &hostile(20, UnitKind::Avalanche, TilePos::new(16, 12)),
+            expansion,
+            BuildingKind::Foundry.base_stats().size,
+        ));
+        assert!(ground_weapon_reaches_footprint(
+            &hostile(20, UnitKind::Bombard, TilePos::new(13, 4)),
+            expansion,
+            BuildingKind::Foundry.base_stats().size,
+        ));
+        assert!(!ground_weapon_reaches_footprint(
+            &hostile(20, UnitKind::Bombard, TilePos::new(12, 4)),
+            expansion,
+            BuildingKind::Foundry.base_stats().size,
+        ));
+
+        let avalanche = TilePos::new(35, 13);
+        obs.enemy_units = vec![hostile(20, UnitKind::Avalanche, avalanche)];
+        obs.visible[usize::try_from(avalanche.y * obs.map_width + avalanche.x).unwrap()] = false;
+        assert_eq!(
+            push_target(&defend(&obs, true)),
+            None,
+            "a hidden siege unit cannot trigger defense"
+        );
+        obs.visible.fill(true);
+
+        assert_eq!(
+            push_target(&defend(&obs, false)),
+            None,
+            "the profile-free Overseer must retain its frozen eight-tile trigger"
+        );
+
+        obs.my_buildings[1].built = false;
+        assert_eq!(
+            push_target(&defend(&obs, true)),
+            None,
+            "an unfinished Foundry is not a protected firing target"
+        );
+        obs.my_buildings[1].built = true;
+        obs.my_buildings[1].hp = 0;
+        assert_eq!(
+            push_target(&defend(&obs, true)),
+            None,
+            "a destroyed Foundry is not a protected firing target"
+        );
+        obs.my_buildings.truncate(1);
+        obs.my_queues.truncate(1);
+        let mut allied_expansion = own_foundry(2, expansion);
+        allied_expansion.player = PlayerId(2);
+        obs.ally_buildings = vec![allied_expansion];
+        assert_eq!(
+            push_target(&defend(&obs, true)),
+            None,
+            "allied Foundries retain the ordinary eight-tile defense contract"
+        );
+    }
+
+    #[test]
+    fn long_range_threat_selection_is_stable_across_observation_order() {
+        let home = TilePos::new(3, 6);
+        let expansion = TilePos::new(20, 12);
+        let (mut obs, mut army) = offensive_position(TilePos::new(35, 18));
+        obs.my_units = (1..=6)
+            .map(|id| fighter(id, TilePos::new(17 + i32::try_from(id % 2).unwrap(), 15)))
+            .collect();
+        army.members = obs.my_units.iter().map(|unit| unit.id).collect();
+        army.staging = TilePos::new(18, 15);
+        obs.my_buildings = vec![own_foundry(0, home), own_foundry(1, expansion)];
+        obs.my_queues = vec![Vec::new(), Vec::new()];
+        let bombard = TilePos::new(31, 13);
+        let avalanche = TilePos::new(35, 13);
+        obs.enemy_units = vec![
+            hostile(21, UnitKind::Avalanche, avalanche),
+            hostile(20, UnitKind::Bombard, bombard),
+        ];
+        let mut nearer_allied_foundry = own_foundry(2, TilePos::new(22, 12));
+        nearer_allied_foundry.player = PlayerId(2);
+        obs.ally_buildings = vec![nearer_allied_foundry];
+        let mut dials = Dials::full();
+        dials.army_size = 5;
+        let target = |observation: &Observation| {
+            let mut intents = Vec::new();
+            UtilityPolicy::new().army(
+                &dials,
+                observation,
+                std::slice::from_ref(&army),
+                home,
+                player_mode(None),
+                &mut intents,
+            );
+            push_target(&intents)
+        };
+
+        assert_eq!(target(&obs), Some(bombard));
+        obs.enemy_units.reverse();
+        assert_eq!(target(&obs), Some(bombard));
     }
 
     #[test]

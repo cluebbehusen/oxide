@@ -1716,6 +1716,66 @@ fn scripted_brain_saves_a_visible_expansion_with_its_local_defenders() {
 }
 
 #[test]
+fn scripted_brain_answers_visible_siege_before_it_enters_the_home_radius() {
+    let mut units: Vec<_> = (0..12)
+        .map(|index| unit(0, UnitKind::Sentinel, 4 + index % 4, 4 + index / 4))
+        .collect();
+    let home_anchor = TilePos::new(1, 1);
+    let siege_tile = TilePos::new(16, 2);
+    units.push(unit(0, UnitKind::Harvester, 3, 2));
+    units.push(unit(0, UnitKind::Kestrel, 15, 2));
+    units.push(unit(1, UnitKind::Avalanche, siege_tile.x, siege_tile.y));
+    let mut scenario = large_open_arena(units);
+    scenario.players[0].scrap = 0;
+    scenario.players[1].scrap = 0;
+    let mut state = scenario.build().expect("the siege defense arena builds");
+    let defenders: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Sentinel)
+        .map(|unit| unit.id)
+        .collect();
+    let observation = Observation::fog_honest(&state, PlayerId(0));
+    assert!(observation.visible(siege_tile));
+    assert!(siege_tile.chebyshev(home_anchor) > 8);
+
+    let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_200);
+    let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+    let mut saw_response = false;
+    let mut emitted = Vec::new();
+    for _ in 0..240 {
+        let commands = brain.act(&state);
+        saw_response |= commands.iter().any(|command| {
+            matches!(
+                &command.command,
+                Command::AttackMove { units, goal, queue: false }
+                    if *goal == siege_tile
+                        && units.iter().any(|unit| defenders.contains(unit))
+            )
+        });
+        emitted.extend(commands.iter().cloned());
+        let report = state.tick(&commands);
+        assert!(
+            report
+                .events
+                .iter()
+                .all(|event| !matches!(event, oxide_sim::Event::CommandRejected { .. })),
+            "siege defense emitted an illegal command: {:?}",
+            report.events
+        );
+        if saw_response {
+            break;
+        }
+    }
+
+    assert!(
+        saw_response,
+        "Prime saw an Avalanche inside its firing envelope but never sent the standing army: armies={:?}, commands={emitted:?}",
+        brain.executive().armies()
+    );
+}
+
+#[test]
 fn scripted_brain_completes_a_real_raid_and_releases_the_pair_for_reuse() {
     let target_tile = TilePos::new(14, 8);
     let mut scenario = large_open_arena(vec![
