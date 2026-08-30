@@ -262,21 +262,51 @@ match decides, emits one compact JSONL row per leg, and can preserve the replay:
 cargo run -p oxide-driver -- bot-eval skirmish \
   --difficulty prime --stance balanced \
   --scenario-seed-base 7000 --personality-seed-base 9000 \
-  --paired --candidate candidate-a --replay-dir replays/bot-eval
+  --paired --candidate candidate-a --out replays/bot-eval.jsonl \
+  --replay-dir replays/bot-eval
 ```
 
-`--paired` is a two-seat comparison: the second leg exchanges the two complete
-resolved profiles while keeping the map, factions, teams, and simulation seed
-fixed. Use `--runs N` for consecutive deterministic seed cells. Use the per-unit
-stall breakdown to distinguish one blocked order from a broad command failure.
-Treat rejections and stalls as anomaly evidence, not a quality score. Persisted
-evidence requires an explicit stable `--candidate`; rows also record the
-complete scenario fingerprint and requested tick limit. The driver stages the
-whole invocation, rolls back normal publication errors, and refuses to replace
-an existing JSONL or replay. This is not a cross-path crash transaction: abrupt
-process termination can leave hidden staging files or a partial replay set.
-Inspect and remove the incomplete batch, then rerun it under a fresh candidate
-rather than treating those files as complete evidence.
+For the maintained Prime-versus-Overseer yardstick, keep Overseer confined to
+the evaluation-only `--against-overseer` path. Do not encode it in `BotConfig`,
+a scenario, or player-facing match setup. Run a controlled paired block across
+both faction assignments and both map-end geometries:
+
+```sh
+cargo run -p oxide-driver -- bot-eval skirmish \
+  --difficulty prime --stance balanced --against-overseer --paired \
+  --ticks 60000 --scenario-seeds 7000,7001 \
+  --personality-seeds 9000,9001 --faction-cells fc,cf \
+  --geometries authored,rot180 --overseer-policy-seed 0 \
+  --candidate prime-overseer-a \
+  --out replays/prime-overseer-a.jsonl \
+  --replay-dir replays/prime-overseer-a
+```
+
+`--paired` exchanges the two complete command sources while holding each
+transformed scenario fixed. `--overseer-policy-seed` fixes Overseer's legacy
+army-size jitter to one identity that moves with the controller; it defaults to
+zero and must not vary with the simulation seed. Crossing
+`--faction-cells fc,cf` with `--geometries authored,rot180` separates controller
+performance from physical seat, faction roster, and authored map end. Supply
+independent `--scenario-seeds` and `--personality-seeds`: simulation randomness
+and Prime's deterministic profile are separate factors, and the evaluator
+crosses the two lists instead of confounding them. Use `--runs N` for simpler
+consecutive seed cells outside this controlled workflow. The evaluator must
+refuse nominal axis cells that resolve to the same executable matchup.
+
+Use the per-unit stall breakdown to distinguish one blocked order from a broad
+command failure. Treat rejections, stalls, and outcomes as diagnostic evidence,
+not a quality score. Persisted evidence requires an explicit stable
+`--candidate`; replay evidence also requires its JSONL `--out` sidecar. Rows
+record the complete scenario and execution fingerprints, the exact Overseer
+policy identity, a seed-independent command-stream hash, and the requested tick
+limit. Use repeated command hashes to identify seed cells that generated the
+same play rather than counting them as independent samples. The driver stages
+the whole invocation, rolls back normal publication errors, and refuses to
+replace an existing JSONL or replay. This is not a cross-path crash transaction:
+abrupt process termination can leave hidden staging files or a partial replay
+set. Inspect and remove the incomplete batch, then rerun it under a fresh
+candidate rather than treating those files as complete evidence.
 
 For each candidate, preserve the scenario, seed, replay, final hash, result,
 duration, and a short behavioral verdict. Compare repeated identical runs for

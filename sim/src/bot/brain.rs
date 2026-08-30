@@ -53,8 +53,17 @@ impl Brain {
     /// Creates the brain for `player`. The scenario seed jitters the
     /// army-size threshold (±1) so mirror matches don't march in
     /// lockstep forever.
-    pub fn new(player: PlayerId, scenario_seed: u64, mut dials: Dials) -> Self {
-        let mut rng = Pcg32::new(scenario_seed, 2000 + u64::from(player.0));
+    pub fn new(player: PlayerId, scenario_seed: u64, dials: Dials) -> Self {
+        Self::with_jitter(player, scenario_seed, 2000 + u64::from(player.0), dials)
+    }
+
+    fn with_jitter(
+        player: PlayerId,
+        jitter_seed: u64,
+        jitter_stream: u64,
+        mut dials: Dials,
+    ) -> Self {
+        let mut rng = Pcg32::new(jitter_seed, jitter_stream);
         dials.army_size = (dials.army_size + rng.next_below(3))
             .saturating_sub(1)
             .max(2);
@@ -101,6 +110,16 @@ impl Brain {
     /// deterministic probes and fairness measurements.
     pub fn overseer(player: PlayerId, scenario_seed: u64) -> Self {
         Self::new(player, scenario_seed, Dials::overseer())
+    }
+
+    /// Creates a frozen Overseer with one explicit policy identity that is
+    /// independent of the physical seat it drives.
+    ///
+    /// Evaluation pairs use this constructor so exchanging controllers does
+    /// not also exchange the legacy seat-derived army-size jitter. Seed `N`
+    /// exactly matches [`Self::overseer`] for seat zero at scenario seed `N`.
+    pub fn overseer_with_policy_seed(player: PlayerId, policy_seed: u64) -> Self {
+        Self::with_jitter(player, policy_seed, 2000, Dials::overseer())
     }
 
     /// The player this brain drives.

@@ -1,6 +1,6 @@
 ---
 created: 2026-08-29T08:00:10
-updated: 2026-08-29T20:28:29
+updated: 2026-08-29T22:12:00
 ---
 
 # Oxide 0.16.0 Scripted Bot Improvement
@@ -83,6 +83,27 @@ surface, and promoting only behavior proven against Overseer and human play.
 - The first post-layout Salvage Triangle match lasted 18:39 and demonstrated the
   intended recovery loop: renewable home and central Extractors let a nearly
   destroyed player rebuild, expand, and pivot into siege.
+- After separating Overseer policy identity from physical seat and simulation
+  seed, the corrected 24-leg Prime-versus-Overseer matrix produced zero Prime
+  wins, 16 Overseer wins, and eight 60,000-tick cutoffs.
+- Clean Skirmish replays reproduced the opening failure on both seats: Prime
+  trained only two additional Sentinels, left its Foundry without core
+  production from 0:36 until after first contact, and spent on remote Extractors
+  plus six infrastructure projects while Overseer reached twenty Sentinels by
+  3:20.
+- Crossing simulation seeds 7100 and 7101 with Prime personalities 9100 and 9101
+  produced identical command streams for each corresponding Skirmish and Cinder
+  Steppe leg. Those 16 rows represent eight effective games, so scenario-seed
+  count cannot be treated as sample count for this opening.
+- The corrected authored-FC Severance pair was still unresolved at 120,000
+  ticks. Overseer accumulated 61,924 and 71,609 stalls, almost entirely
+  no_route, while Prime recorded two stalls per leg; this is a routing liveness
+  failure, not parity.
+- Prime underproduction is a deterministic budget-ordering inversion, not a cap
+  or seed effect. At exactly three fighters, voluntary construction runs before
+  production and the next capital reserve is protected; each purchase leaves too
+  little unreserved scrap for the missing core unit, so a serial capital chain
+  starves the Foundry.
 
 ## Actions
 
@@ -105,9 +126,22 @@ surface, and promoting only behavior proven against Overseer and human play.
     centered Salvage Triangle's shared claim, and preserved deterministic
     scenery on Open Quarry and Twin Forges.
   - Passed the complete map, workspace, coverage, Markdown, and skill gates.
-- [ ] Establish a promotion harness that directly compares Prime with frozen
+- [x] Establish a promotion harness that directly compares Prime with frozen
       Overseer while separating physical seat, faction, spawn geometry, scenario
       seed, and personality.
+  - Added an evaluation-only controller plan so frozen Overseer can use the
+    canonical headless runner without becoming a BotConfig or player-facing
+    match option.
+  - Separated the fixed Overseer policy seed from simulation randomness and
+    moved that exact identity across seats; recorded exact controller provenance
+    in rows, replay descriptions, and replay sidecars.
+  - Added paired FC/CF faction cells and authored/rotated geometry cells,
+    independent crossed seed lists, execution and command fingerprints,
+    effective-cell duplicate refusal, create-only evidence, and end-to-end
+    coverage.
+  - Ran the corrected 24-leg promotion block, a 16-leg two-personality seed
+    cross, and a 120,000-tick Severance extension; preserved only four
+    representative Skirmish and Cinder Steppe replays in temporary storage.
 - [ ] Rebuild Prime around a strong ordinary opening and macro loop: responsive
       worker saturation, continuous useful spending, adequate defense,
       production uptime, expansion, reinforcement, and critical-mass attacks.
@@ -143,8 +177,24 @@ surface, and promoting only behavior proven against Overseer and human play.
     - Required the same exact safe-builder preflight for both the 150-scrap
       restoration reserve and the eventual build; unavailable crews or unsafe
       remembered routes release the bank to core production.
-  - [ ] Make visible long-range siege a defensive threat beyond the fixed
+  - [x] Make visible long-range siege a defensive threat beyond the fixed
         Foundry-defense radius.
+    - Restricted the extended trigger to completed, living owned Foundries and
+      currently visible enemy ground weapons whose Euclidean firing annulus can
+      intersect the Foundry footprint; allied Foundries and frozen Overseer
+      retain the ordinary eight-tile defense rule.
+    - Covered axis-aligned and diagonal maximum range, the Avalanche blind ring,
+      visibility, building completion and destruction, allied ownership,
+      observation-order stability, and a full Brain-to-State response with
+      ordinary accepted commands.
+  - [ ] Protect a difficulty-scaled opening core from voluntary capital
+        reservations and construction-first ordering.
+    - Preserve the supported home Extractor and fourth-worker opening, but
+      escrow missing-core scrap ahead of remote Extractors, deep tech, proactive
+      defenses, and the first expansion; actual emergency defense may bypass it.
+    - Give difficulty its own macro core floor and require the Prime floor live
+      or queued before optional capital work, then keep at least one shallow
+      Foundry queue funded so serial construction cannot idle production.
 - [ ] Redefine and calibrate difficulty primarily through fair macro competence,
       with cognitive and execution differences layered on top.
 - [ ] Fix confirmed correctness defects, beginning with orientation-dependent
@@ -186,8 +236,8 @@ surface, and promoting only behavior proven against Overseer and human play.
     departures recoverable within the map envelope.
   - Behavioral regressions, a five-Condor edge-and-corner lab, and the Deep Cut
     replay show no pinned or motionless ticks.
-- [ ] Review crowded-wing Condor control feel in native play.
-- [ ] Review automatic aircraft landings in native play: final unqueued ground
+- [x] Review crowded-wing Condor control feel in native play.
+- [x] Review automatic aircraft landings in native play: final unqueued ground
       destinations land turn-limited aircraft on open tiles, and idle aircraft
       auto-land.
   - Implemented and committed deterministic landing and takeoff across

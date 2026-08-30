@@ -55,6 +55,29 @@ pub use utility::{Dials, UtilityPolicy};
 pub struct SeatBot(Box<Brain>);
 
 impl SeatBot {
+    /// Creates a seat running the configurable player-facing controller.
+    pub fn scripted(
+        player: crate::ids::PlayerId,
+        scenario_seed: u64,
+        config: crate::scenario::BotConfig,
+    ) -> Self {
+        Self(Box::new(Brain::scripted(player, scenario_seed, config)))
+    }
+
+    /// Creates a seat running the frozen Overseer QA controller.
+    pub fn overseer(player: crate::ids::PlayerId, scenario_seed: u64) -> Self {
+        Self(Box::new(Brain::overseer(player, scenario_seed)))
+    }
+
+    /// Creates the frozen QA controller with a policy identity that stays
+    /// fixed when an evaluation exchanges physical seats.
+    pub fn overseer_with_policy_seed(player: crate::ids::PlayerId, policy_seed: u64) -> Self {
+        Self(Box::new(Brain::overseer_with_policy_seed(
+            player,
+            policy_seed,
+        )))
+    }
+
     /// Commands for this tick.
     pub fn act(&mut self, state: &crate::state::State) -> Vec<crate::command::PlayerCommand> {
         self.0.act(state)
@@ -80,7 +103,7 @@ pub fn seat_bots(scenario: &crate::Scenario) -> Vec<SeatBot> {
         .filter_map(|(i, p)| {
             let player = crate::ids::PlayerId(i as u8);
             p.bot_config
-                .map(|config| SeatBot(Box::new(Brain::scripted(player, scenario.seed, config))))
+                .map(|config| SeatBot::scripted(player, scenario.seed, config))
         })
         .collect()
 }
@@ -90,6 +113,58 @@ mod tests {
     use super::*;
     use crate::scenario::{BotConfig, BotDifficulty, BotStance};
     use crate::{PlayerId, Scenario};
+
+    #[test]
+    fn scripted_constructor_matches_the_direct_brain() {
+        let scenario = Scenario::skirmish();
+        let state = scenario.build().expect("the skirmish builds");
+        let player = PlayerId(1);
+        let config = BotConfig::scripted(BotDifficulty::Veteran, BotStance::Aggressive, 41);
+        let mut seat = SeatBot::scripted(player, scenario.seed, config);
+        let mut direct = Brain::scripted(player, scenario.seed, config);
+
+        assert_eq!(seat.player(), direct.player());
+        assert_eq!(seat.0.profile(), direct.profile());
+        assert_eq!(seat.0.dials(), direct.dials());
+        let commands = seat.act(&state);
+        assert!(!commands.is_empty(), "the opening think should be active");
+        assert_eq!(commands, direct.act(&state));
+    }
+
+    #[test]
+    fn overseer_constructor_matches_the_direct_brain() {
+        let scenario = Scenario::skirmish();
+        let state = scenario.build().expect("the skirmish builds");
+        let player = PlayerId(1);
+        let mut seat = SeatBot::overseer(player, scenario.seed);
+        let mut direct = Brain::overseer(player, scenario.seed);
+
+        assert_eq!(seat.player(), direct.player());
+        assert_eq!(seat.0.profile(), direct.profile());
+        assert_eq!(seat.0.dials(), direct.dials());
+        let commands = seat.act(&state);
+        assert!(!commands.is_empty(), "the opening think should be active");
+        assert_eq!(commands, direct.act(&state));
+    }
+
+    #[test]
+    fn evaluation_overseer_moves_one_policy_identity_between_seats() {
+        let policy_seed = 73;
+        let left = SeatBot::overseer_with_policy_seed(PlayerId(0), policy_seed);
+        let right = SeatBot::overseer_with_policy_seed(PlayerId(1), policy_seed);
+        let legacy_left = Brain::overseer(PlayerId(0), policy_seed);
+        let legacy_right = Brain::overseer(PlayerId(1), policy_seed);
+
+        assert_eq!(left.0.dials(), right.0.dials());
+        assert_eq!(left.0.dials(), legacy_left.dials());
+        assert_ne!(
+            legacy_left.dials(),
+            legacy_right.dials(),
+            "this seed must reproduce the seat-dependent identity the evaluation constructor removes"
+        );
+        assert_eq!(left.player(), PlayerId(0));
+        assert_eq!(right.player(), PlayerId(1));
+    }
 
     #[test]
     fn seating_preserves_each_configured_seats_identity_and_commands() {
