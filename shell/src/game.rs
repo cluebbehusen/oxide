@@ -244,7 +244,7 @@ impl Game {
     fn assemble(scenario: Scenario, viewport: Vec2, human: PlayerId) -> Result<Self> {
         let state = scenario.build()?;
         let live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
-        let bots = seat_bots(&scenario);
+        let bots = seat_bots(&scenario)?;
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
         let focus = state
             .buildings()
@@ -331,7 +331,7 @@ impl Game {
         // The fast-forward lets bots observe every tick to rebuild controller
         // memory. Their generated commands are discarded because the record
         // remains authoritative.
-        let mut bots = seat_bots(&scenario);
+        let mut bots = seat_bots(&scenario)?;
         let mut cursor = replay.cursor();
         let mut live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         for _ in 0..total {

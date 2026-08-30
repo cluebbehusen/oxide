@@ -4,8 +4,8 @@
 //! The player-facing controller is layered:
 //!
 //! ```text
-//! fog-honest Observation
-//!   -> StrategicIntelligence
+//! immutable PublicMapBriefing + fog-honest Observation
+//!   -> oriented public priors + StrategicIntelligence
 //!   -> persistent playbooks + UtilityPolicy Intent
 //!   -> Executive
 //!   -> PlayerCommand[]
@@ -19,6 +19,7 @@
 //! separate QA yardstick.
 
 pub mod brain;
+pub mod briefing;
 pub mod difficulty;
 pub mod executive;
 pub mod intelligence;
@@ -33,6 +34,7 @@ pub mod team;
 pub mod utility;
 
 pub use brain::Brain;
+pub use briefing::{PublicMapBriefing, StartingFoundry};
 pub use difficulty::DifficultyTuning;
 pub use executive::{Army, ArmyId, ArmyState, Executive, Intent};
 pub use intelligence::{
@@ -44,6 +46,7 @@ pub use observation::{BuildingObs, Observation, UnitObs};
 pub use orient::Orientation;
 pub use profile::{PersonalityTraits, ResolvedProfile, Specialty};
 pub use raid::{RaidExitReason, RaidObjective, RaidOperation, RaidPhase, RaidPlanner};
+use std::sync::Arc;
 pub use strategy::{
     AirOperation, AirOperationPhase, AirRecoveryReason, StrategicDecision, StrategicPlanner,
 };
@@ -58,10 +61,10 @@ impl SeatBot {
     /// Creates a seat running the configurable player-facing controller.
     pub fn scripted(
         player: crate::ids::PlayerId,
-        scenario_seed: u64,
         config: crate::scenario::BotConfig,
+        public_map: Arc<PublicMapBriefing>,
     ) -> Self {
-        Self(Box::new(Brain::scripted(player, scenario_seed, config)))
+        Self(Box::new(Brain::scripted(player, config, public_map)))
     }
 
     /// Creates a seat running the frozen Overseer QA controller.
@@ -94,8 +97,11 @@ impl SeatBot {
 /// A configured seat receives the fair rules-based opponent. A `bot`
 /// seat without a config remains an empty chair rather than silently
 /// selecting a controller.
-pub fn seat_bots(scenario: &crate::Scenario) -> Vec<SeatBot> {
-    scenario
+pub fn seat_bots(
+    scenario: &crate::Scenario,
+) -> Result<Vec<SeatBot>, crate::scenario::ScenarioError> {
+    let public_map = Arc::new(PublicMapBriefing::from_scenario(scenario)?);
+    Ok(scenario
         .players
         .iter()
         .enumerate()
@@ -103,9 +109,9 @@ pub fn seat_bots(scenario: &crate::Scenario) -> Vec<SeatBot> {
         .filter_map(|(i, p)| {
             let player = crate::ids::PlayerId(i as u8);
             p.bot_config
-                .map(|config| SeatBot::scripted(player, scenario.seed, config))
+                .map(|config| SeatBot::scripted(player, config, Arc::clone(&public_map)))
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -118,10 +124,13 @@ mod tests {
     fn scripted_constructor_matches_the_direct_brain() {
         let scenario = Scenario::skirmish();
         let state = scenario.build().expect("the skirmish builds");
+        let public_map = Arc::new(
+            PublicMapBriefing::from_scenario(&scenario).expect("the skirmish has a briefing"),
+        );
         let player = PlayerId(1);
         let config = BotConfig::scripted(BotDifficulty::Veteran, BotStance::Aggressive, 41);
-        let mut seat = SeatBot::scripted(player, scenario.seed, config);
-        let mut direct = Brain::scripted(player, scenario.seed, config);
+        let mut seat = SeatBot::scripted(player, config, Arc::clone(&public_map));
+        let mut direct = Brain::scripted(player, config, public_map);
 
         assert_eq!(seat.player(), direct.player());
         assert_eq!(seat.0.profile(), direct.profile());
@@ -179,12 +188,15 @@ mod tests {
         }
         let state = scenario.build().expect("the configured skirmish builds");
         let unchanged = state.hash();
-        let mut seated = seat_bots(&scenario);
+        let public_map = Arc::new(
+            PublicMapBriefing::from_scenario(&scenario).expect("the skirmish has a briefing"),
+        );
+        let mut seated = seat_bots(&scenario).expect("the configured skirmish has a briefing");
 
         assert_eq!(seated.len(), configs.len());
         for (index, (seat, config)) in seated.iter_mut().zip(configs).enumerate() {
             let player = PlayerId(index as u8);
-            let mut direct = Brain::scripted(player, scenario.seed, config);
+            let mut direct = Brain::scripted(player, config, Arc::clone(&public_map));
 
             assert_eq!(seat.player(), player);
             assert_eq!(seat.0.profile(), direct.profile());
@@ -210,7 +222,9 @@ mod tests {
         scenario.players[1].bot_config = None;
 
         assert!(
-            seat_bots(&scenario).is_empty(),
+            seat_bots(&scenario)
+                .expect("the skirmish has a briefing")
+                .is_empty(),
             "a config on a human seat and a config-less bot flag are both empty chairs"
         );
     }

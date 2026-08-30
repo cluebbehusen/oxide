@@ -16,8 +16,10 @@
 //! south half), which also orients the corner seats of future 4-player
 //! maps.
 
+use super::PublicMapBriefing;
 use super::executive::Intent;
 use super::observation::Observation;
+use crate::stats::BuildingKind;
 use chassis::grid::TilePos;
 
 /// Which axes a brain flips to think in home-in-the-northwest space.
@@ -112,6 +114,9 @@ impl Orientation {
             .chain(o.enemy_units.iter_mut())
         {
             u.tile = self.tile(u.tile);
+            if let Some(node) = u.harvesting.as_mut() {
+                *node = self.tile(*node);
+            }
             // A pending found's promise is a footprint, so its anchor
             // flips like a building's — the site audit compares it
             // against anchors recorded in oriented space.
@@ -164,6 +169,40 @@ impl Orientation {
         o.enemy_buildings
             .sort_by_key(|b| (b.anchor.y, b.anchor.x, b.player));
         o
+    }
+
+    /// Orients immutable authored map facts into the same frame as a policy's
+    /// dynamic observation.
+    pub fn briefing(&self, briefing: &PublicMapBriefing) -> PublicMapBriefing {
+        debug_assert_eq!(self.width, briefing.map_width);
+        debug_assert_eq!(self.height, briefing.map_height);
+        if self.is_identity() {
+            return briefing.clone();
+        }
+        let mut oriented = briefing.clone();
+        let foundry_size = BuildingKind::Foundry.base_stats().size;
+        for start in &mut oriented.starting_foundries {
+            start.anchor = self.anchor(start.anchor, foundry_size);
+        }
+        for (position, _) in &mut oriented.non_ground_terrain {
+            *position = self.tile(*position);
+        }
+        for frame in &mut oriented.extractor_frames {
+            *frame = self.anchor(*frame, BuildingKind::Extractor.base_stats().size);
+        }
+        for (position, _) in &mut oriented.initial_scrap {
+            *position = self.tile(*position);
+        }
+        oriented
+            .non_ground_terrain
+            .sort_by_key(|(position, _)| (position.y, position.x));
+        oriented
+            .extractor_frames
+            .sort_by_key(|position| (position.y, position.x));
+        oriented
+            .initial_scrap
+            .sort_by_key(|(position, _)| (position.y, position.x));
+        oriented
     }
 
     /// An army as the oriented policy should see it.
@@ -236,6 +275,7 @@ impl Orientation {
                 // slips through unflipped is a silent seat-bias
                 // regression, so adding a variant must break this match.
                 keep @ (Intent::TrainAt { .. }
+                | Intent::CancelSite { .. }
                 | Intent::Repair { .. }
                 | Intent::Salvage { .. }
                 | Intent::Upgrade { .. }
@@ -251,6 +291,7 @@ impl Orientation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Scenario;
     use crate::bot::executive::{Army, ArmyId, ArmyState};
     use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION, UnitObs};
     use crate::ids::{BuildingId, PlayerId, Target, UnitId};
@@ -272,6 +313,7 @@ mod tests {
             hp: kind.stats().max_hp,
             idle: true,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -336,6 +378,60 @@ mod tests {
     }
 
     #[test]
+    fn public_map_briefing_uses_point_and_footprint_transforms_and_is_involutive() {
+        let scenario = Scenario::skirmish();
+        let briefing = PublicMapBriefing::from_scenario(&scenario).expect("skirmish briefing");
+        let start = briefing.starting_foundries()[0];
+        let frame = briefing.extractor_frames()[0];
+        let scrap = briefing.initial_scrap()[0];
+        let terrain = briefing.non_ground_terrain()[0];
+        let foundry_size = BuildingKind::Foundry.base_stats().size;
+        let extractor_size = BuildingKind::Extractor.base_stats().size;
+
+        for (flip_x, flip_y) in [(true, false), (false, true), (true, true)] {
+            let orientation = Orientation {
+                flip_x,
+                flip_y,
+                width: briefing.map_width(),
+                height: briefing.map_height(),
+            };
+            let oriented = orientation.briefing(&briefing);
+            let oriented_start = oriented
+                .starting_foundries()
+                .iter()
+                .find(|candidate| candidate.player == start.player)
+                .expect("the player identity is unchanged");
+
+            assert_eq!(
+                oriented_start.anchor,
+                orientation.anchor(start.anchor, foundry_size)
+            );
+            assert!(
+                oriented
+                    .extractor_frames()
+                    .contains(&orientation.anchor(frame, extractor_size))
+            );
+            assert!(
+                oriented
+                    .initial_scrap()
+                    .contains(&(orientation.tile(scrap.0), scrap.1))
+            );
+            assert_eq!(
+                oriented.terrain_at(orientation.tile(terrain.0)),
+                Some(terrain.1)
+            );
+            assert_eq!(orientation.briefing(&oriented), briefing);
+            assert!(oriented.non_ground_terrain().windows(2).all(|pair| (
+                pair[0].0.y,
+                pair[0].0.x
+            ) < (
+                pair[1].0.y,
+                pair[1].0.x
+            )));
+        }
+    }
+
+    #[test]
     fn one_axis_orientation_maps_masks_footprints_and_every_positioned_collection() {
         let obs = observation();
         let orientation = Orientation::for_home(&obs, TilePos::new(6, 1));
@@ -383,6 +479,22 @@ mod tests {
         assert_eq!(
             oriented.incoming_shells,
             vec![TilePos::new(2, 5), TilePos::new(6, 5)]
+        );
+        assert_eq!(orientation.observe(&oriented), obs);
+    }
+
+    #[test]
+    fn orientation_transforms_an_own_harvest_node_and_is_involutive() {
+        let mut obs = observation();
+        let node = TilePos::new(2, 4);
+        obs.my_units[0].harvesting = Some(node);
+        let orientation = Orientation::for_home(&obs, TilePos::new(6, 5));
+
+        let oriented = orientation.observe(&obs);
+
+        assert_eq!(
+            oriented.my_units[0].harvesting,
+            Some(orientation.tile(node))
         );
         assert_eq!(orientation.observe(&oriented), obs);
     }

@@ -1,6 +1,6 @@
 ---
 created: 2026-08-29T08:00:10
-updated: 2026-08-29T22:12:00
+updated: 2026-08-30T14:11:26
 ---
 
 # Oxide 0.16.0 Scripted Bot Improvement
@@ -38,6 +38,25 @@ surface, and promoting only behavior proven against Overseer and human play.
 - Large, vast, and grand maps should place additional remote value in otherwise
   empty regions. Clusters of frames that one well-placed forward Foundry can
   enhance are explicitly desirable.
+- Treat fixed defenses as locally scrap-efficient: a Turret should provide
+  substantially more ground firepower and HP per scrap than a Sentinel because
+  immobility, fixed coverage, construction time, builder exposure, and
+  bypassability are its costs.
+- Model defensive placement around exposed strategic value and credible approach
+  lanes rather than a closed list of building kinds or proximity to scrap.
+  Production, technology, support, renewable economy, and active resource
+  regions can all merit protection.
+- Treat the authored starting Foundry anchors and static map preview as public
+  pre-match knowledge available to the player-facing bot. Keep enemy existence,
+  movement, expansions, damage, and live resource depletion behind current sight
+  and memory.
+- Apply threat-facing strategic placement to every defensive building: Turret,
+  Bastion, Flak Turret, Scuttle Charge, and Barricade. Each role scores its own
+  firing, trigger, or route-disruption geometry rather than sharing a generic
+  fallback.
+- Let fortification-oriented player-facing profiles construct a bounded
+  Barricade line through ordinary costs and commands. Keep frozen Overseer's
+  Barricade cap at zero.
 
 ## Findings
 
@@ -70,16 +89,6 @@ surface, and promoting only behavior proven against Overseer and human play.
 - Skyhook Anchorage cannot fit a nearby unsupported natural on each compact
   starting island without changing its topology. Its four additional claims
   remain transport-contested island expansions.
-- Both bots stopped harvesting before four minutes and stopped construction by
-  5:39. The aggressive bot never rebuilt its destroyed supported Extractor; both
-  evacuated workers to distant corners after salvage danger and failed to resume
-  ordinary economy.
-- Prime carried a badly wounded combat core for minutes without repair and
-  failed to answer an Avalanche and Bombard siege it could currently see, losing
-  23 units and four buildings without inflicting a loss.
-- Prime's fixed eight-tile Foundry-defense trigger did not respond to a visible
-  Avalanche shelling from twelve tiles away even though the weapon's range is
-  fourteen tiles.
 - The first post-layout Salvage Triangle match lasted 18:39 and demonstrated the
   intended recovery loop: renewable home and central Extractors let a nearly
   destroyed player rebuild, expand, and pivot into siege.
@@ -104,6 +113,13 @@ surface, and promoting only behavior proven against Overseer and human play.
   production and the next capital reserve is protected; each purchase leaves too
   little unreserved scrap for the missing core unit, so a serial capital chain
   starves the Foundry.
+- The tier-zero Turret currently costs 100 scrap, has 350 HP, and deals 12
+  ground damage every 25 ticks; a Sentinel costs 90, has 60 HP, and deals 10
+  ground damage every 20 ticks. The Turret has 5.25 times the HP per scrap but
+  only 0.86 times the ground damage per second per scrap.
+- Prime carried a badly wounded combat core for minutes without repair; the
+  dedicated repair gap remains open after separating it from the resolved
+  long-range siege response.
 
 ## Actions
 
@@ -163,7 +179,7 @@ surface, and promoting only behavior proven against Overseer and human play.
       resource is consumed by an accepted footprint.
     - Verified a fresh 23,627-tick Salvage Triangle match ended decisively with
       no rejected commands and did not reproduce the 12,840-tick bank freeze.
-  - [x] Rebuild a safely recoverable lost home Extractor after its contested
+  - [ ] Rebuild a safely recoverable lost home Extractor after its contested
         region has genuinely cleared.
     - Confirmed the replay never supplied legal negative evidence: its scout had
       died, a hidden Avalanche remained nearby, and the complete quarantine
@@ -177,6 +193,36 @@ surface, and promoting only behavior proven against Overseer and human play.
     - Required the same exact safe-builder preflight for both the 150-scrap
       restoration reserve and the eventual build; unavailable crews or unsafe
       remembered routes release the bank to core production.
+    - A competitive Skirmish replay exposed a false recovery: overlapping
+      generic casualty incidents quarantined all known home salvage, while the
+      assigned Kestrel left part of the required visibility square unseen so the
+      clear timer never started.
+    - [x] Restrict durable harvest quarantine to evidence that actually implies
+          worker or active-resource danger, while preserving immediate
+          fog-honest avoidance of fresh kill zones.
+      - Durable quarantine now requires Harvester damage or disappearance near
+        the worker or active source; ordinary nearby casualties remain only an
+        immediate short-lived warning.
+      - Allied Harvesters are watched, evacuation avoids projected and
+        quarantined danger, and workers resume once current danger clears.
+    - [x] Make contested reconnaissance deterministically cover every required
+          safe tile or route within a bounded sweep; never wait indefinitely
+          after one displaced scout destination.
+      - Kestrels now sweep uncovered cells across the exact contested region;
+        danger, stalled progress, or eviction causes retreat and a bounded
+        deterministic retry.
+    - A fresh extended match exercised two bounded air-scout recovery cycles.
+      Workers resumed when current danger cleared and withdrew again when
+      attackers returned, so permanent quarantine did not recur.
+    - Kept this task open because the home Extractor survived the match; the
+      complete destroy, scout, and restore chain remains unproven outside
+      focused tests.
+    - [x] Keep a recalled recovery scout reserved until it is observed safely
+          home, with the retry cooldown beginning only after arrival or
+          confirmed loss.
+      - Replaced the opaque retreat tuple with named state, reissued a bounced
+        or idle remote retreat, and covered the full real-State Kestrel
+        vision-to-Harvester recovery chain.
   - [x] Make visible long-range siege a defensive threat beyond the fixed
         Foundry-defense radius.
     - Restricted the extended trigger to completed, living owned Foundries and
@@ -202,17 +248,86 @@ surface, and promoting only behavior proven against Overseer and human play.
 - [ ] Re-evaluate personality and stance only after the shared Prime foundation
       is competent, making style legible without turning it into a strength
       axis.
-- [ ] Look into bot defense placement. The bot tends to place turrets on map
+- [x] Look into bot defense placement. The bot tends to place turrets on map
       edges and clusters mines instead of spreading them. It also places mines
       suboptimally close to its own buildings instead of out further where they
       could actually hit advancing enemies.
+  - Replace nearest-scrap placement with deterministic marginal-coverage scoring
+    over defended fronts: valuable buildings and working resource regions, their
+    credible hostile approach, existing coverage, egress, and builder safety.
+  - [x] Place Turrets with fog-honest strategic coverage scoring while
+        preserving frozen Overseer behavior.
+    - Valued Foundries, production, technology, support, completed Extractors,
+      and actively harvested resource regions; scored real firing envelopes,
+      static-terrain sight lines, hostile approach routes, existing live
+      coverage, builder safety, egress, and resource access.
+    - Ordered threat evidence from current combat contacts through footholds and
+      memory to uncleared public starts, required deterministic supported sites,
+      and rejected arbitrary fallback placement.
+    - Canceled only observably unsafe, unstaffed unfinished Turrets through the
+      ordinary partial-refund command; unfinished defenses no longer count as
+      live coverage, and raid response stays open until its configured completed
+      line exists.
+    - In the final 32-leg Skirmish and Cinder Steppe block, proactive sites
+      mirrored exactly across seat, faction, and half-turn cells; Prime issued
+      no rejected commands but lost all legs because its opening army remained
+      badly outnumbered. No balance values changed.
+  - [x] Extend role-specific strategic placement across every defensive building
+        and verify representative mirrored sites.
+    - [x] Wire a real player-facing Barricade demand and purchase path,
+          including projected-wall planning, without changing the frozen
+          Overseer.
+    - [x] Correct completed-ally coverage, grounded-air evidence, upgraded
+          envelopes, durable Bastion spotting, and known-unit standoff geometry.
+    - [x] Verify all five defensive roles with representative ordinary, siege,
+          mixed-force, terrain, team, upgrade, and mirrored placement
+          regressions.
+    - Routed Turret, Bastion, Flak Turret, Scuttle Charge, and Barricade through
+      threat-facing scoring with role-specific firing, trigger, and
+      path-disruption geometry.
+    - Counted completed allied defenses as live coverage, reserved pending sites
+      without treating them as live, preserved upgraded envelopes, and retained
+      the air threat of grounded aircraft.
+    - Required durable spotting for Bastion outer-range coverage and projected
+      known mobile attackers to legal standoff, including Avalanche blind-ring
+      retreat.
+    - Added deterministic fortification-scaled Barricade demand, ordinary
+      purchasing, and distinct projected wall lanes; frozen Overseer retains a
+      zero cap.
+    - Verified direct, siege, mixed-force, terrain, team, upgrade, and mirrored
+      cases for all five roles without changing combat or economy stats.
+  - Fresh paired and high-fortification matches exercised all five player-facing
+    roles. Equivalent openings produced exact half-turn sites on hostile-facing
+    approaches, and Prime issued no rejected commands or stalls.
+  - This placement slice did not fix Prime's weak opening: Balanced still lost
+    one paired leg quickly, and Turtle lost both high-fortification legs.
+  - [x] Treat current and remembered armed static defenses as stationary threat
+        origins only when their exact legal fire envelope reaches a defended
+        asset.
+    - Covered Turret and Bastion range, minimum range, terrain, tiers,
+      footprints, memory, mirroring, and domain filtering without turning static
+      emplacements into invented mobile approaches.
+  - [x] Bound strategic-site scoring cost on the largest maps without weakening
+        deterministic role-specific placement.
+    - A paired 4,000-tick The Scattering baseline took 218.59 seconds,
+      confirming that repeated pathfinding in the scorer is a real large-map
+      blocker.
+    - Profiled repeated Cartesian-product pathfinding, then added exact
+      lower-bound pruning, cached passability, and reuse of proven disconnected
+      components.
+    - The exact paired The Scattering probe fell from 218.59 seconds to 1.53
+      seconds while preserving both command and final-state hashes.
 - [ ] Run complete human matches against every difficulty and representative
       stance before promotion.
 - [ ] Perform a dedicated bot code-quality cleanup: identify and consolidate
       real duplication, replace brittle state and budget representations, split
       oversized modules and functions, reduce dual-controller branching and
       private-test coupling, remove dead code, and preserve behavior with
-      focused regressions. (See exact Fable comments in References below.)
+      focused regressions.
+  - Audit oversized policy functions, loosely encoded planner state, repeated
+    budget plumbing, private-phase test coupling, hot-loop lookups, and
+    orientation assumptions; verify claimed duplication before introducing
+    abstractions.
 - [x] Reproduce and fix the Avalanche advancing toward an unseen enemy inside
       weapon range, which defeats its low-vision artillery role and forces
       repeated retreat orders.
@@ -245,6 +360,43 @@ surface, and promoting only behavior proven against Overseer and human play.
     ground bodies and weld patients, and the next order initiates takeoff.
   - Behavioral, symmetry, parity, and native-capture tests pass; parked-sprite
     and complete human-match feel still need Connor review.
+- [x] Give the player-facing bot an immutable pre-match map briefing, including
+      authored starting Foundry anchors and the static facts exposed by the map
+      preview, without representing those priors as current sight.
+  - Derived the briefing from the exact transformed scenario and limited it to
+    map dimensions, static terrain, Extractor frames, authored scrap, starting
+    Foundry anchors, and teams.
+  - Kept current and remembered evidence authoritative: a completely visible
+    empty starting footprint retires only that public prior, while visible or
+    remembered enemy structures remain ordinary intelligence.
+  - Sent one eligible Harvester probe toward the nearest hostile public start,
+    escalated an interrupted or disconnected probe to a dedicated flyer, and
+    suppressed completed-scout command churn.
+- [x] Close adversarial recovery, scouting, and defense-route review gaps.
+  - Preserve the full union of overlapping worker-danger incidents until each
+    covered area is swept.
+  - Keep recomputable public-start air demand separate from persistent evidence
+    that a ground probe actually failed.
+  - Predict exact defensive-builder routes with public static terrain and
+    fog-honest dynamic danger.
+  - Guard the diagonal resource-route shortcut with a focused test of its
+    rectangular-footprint invariant.
+  - Retained distinct danger centers, renewed only exact repeats, and covered
+    independent sweep completion so clearing one overlapping region cannot
+    reopen another.
+  - Split air-scout demand into recomputable public-start and contested-region
+    signals plus persistent evidence from an actually failed or unsafe ground
+    probe. Covered depletion, unit eligibility, lost-probe classification,
+    suspension, and production funding transitions.
+  - Combined public static terrain with fog-honest observed dynamic blockers
+    when predicting the exact ordinary defense-builder route, including safe
+    alternate-worker selection.
+  - Confirmed the diagonal-companion shortcut is safe: blocking one companion
+    always leaves the other as a bounded two-cardinal-step detour, and pinned
+    that rectangular-footprint invariant without changing placement logic.
+  - Passed focused adversarial regressions, the complete simulation and
+    workspace suites, Clippy, rustdoc, formatting, unit and combined coverage,
+    and all canonical skill validators.
 
 ## Open Questions
 

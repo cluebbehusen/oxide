@@ -28,8 +28,9 @@ use serde::{Deserialize, Serialize};
 /// Version 9 added current visibility. Version 10 exposes whether an own unit's
 /// current program is voluntary paid repair work. Version 11 exposes the
 /// team's anonymous, bounded salvage-danger incidents. Version 12 exposes
-/// whether an airframe is parked on the ground.
-pub const OBSERVATION_VERSION: u32 = 12;
+/// whether an airframe is parked on the ground. Version 13 exposes an own
+/// Harvester's current work node without revealing allied or enemy orders.
+pub const OBSERVATION_VERSION: u32 = 13;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +52,10 @@ pub struct UnitObs {
     pub idle: bool,
     /// Scrap carried (own harvesters; zero otherwise).
     pub carrying: u32,
+    /// The salvage node this unit is currently harvesting, if any (own units
+    /// only; always `None` for allies and enemies).
+    #[serde(default)]
+    pub harvesting: Option<TilePos>,
     /// Sling room its riders occupy (own transports; zero otherwise).
     #[serde(default)]
     pub cargo: u8,
@@ -496,6 +501,10 @@ fn own_unit(u: &crate::state::Unit) -> UnitObs {
         hp: u.hp,
         idle: u.order == Order::Idle,
         carrying: u.carrying,
+        harvesting: match u.order {
+            Order::Harvest { node, .. } => Some(node),
+            _ => None,
+        },
         cargo: u.cargo.iter().map(|r| r.kind.stats().transport_size).sum(),
         site: match u.order {
             Order::Build { site } => Some(site),
@@ -521,12 +530,13 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
         kind: u.kind,
         tile: u.tile(),
         hp: u.hp,
-        idle: false,     // enemy intent is not observable
-        carrying: 0,     // nor their cargo manifests
-        cargo: 0,        // a sealed sling shows nothing
-        site: None,      // nor their work orders
-        salvaging: None, // ditto
-        founding: None,  // ditto
+        idle: false,      // enemy intent is not observable
+        carrying: 0,      // nor their cargo manifests
+        harvesting: None, // nor their work orders
+        cargo: 0,         // a sealed sling shows nothing
+        site: None,       // nor their work orders
+        salvaging: None,  // ditto
+        founding: None,   // ditto
         repairing: false,
         grounded: u.landed,
     }
@@ -751,6 +761,78 @@ mod tests {
                 "a parked airframe is a physical fact, not private intent"
             );
             assert_eq!(seen.body_domain(), crate::stats::Domain::Ground);
+        }
+    }
+
+    #[test]
+    fn owner_observation_exposes_the_active_harvest_node_without_leaking_enemy_orders() {
+        let mut state = Scenario::skirmish()
+            .build()
+            .expect("the skirmish scenario builds");
+        let worker = |player| {
+            state
+                .units()
+                .iter()
+                .find(|unit| unit.player == player && unit.kind == UnitKind::Harvester)
+                .expect("each skirmish seat starts with a Harvester")
+                .id
+        };
+        let known_node = |player| {
+            state
+                .map()
+                .iter()
+                .find(|(tile, cell)| cell.scrap > 0 && state.vision(player).visible(*tile))
+                .map(|(tile, _)| tile)
+                .expect("each skirmish seat starts with visible salvage")
+        };
+        let p0_worker = worker(PlayerId(0));
+        let p1_worker = worker(PlayerId(1));
+        let p0_node = known_node(PlayerId(0));
+        let p1_node = known_node(PlayerId(1));
+
+        state.tick(&[
+            PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Harvest {
+                    units: vec![p0_worker],
+                    node: p0_node,
+                    queue: false,
+                },
+            },
+            PlayerCommand {
+                player: PlayerId(1),
+                command: Command::Harvest {
+                    units: vec![p1_worker],
+                    node: p1_node,
+                    queue: false,
+                },
+            },
+        ]);
+
+        for (observer, own_worker, own_node, hostile_worker) in [
+            (PlayerId(0), p0_worker, p0_node, p1_worker),
+            (PlayerId(1), p1_worker, p1_node, p0_worker),
+        ] {
+            let observation = Observation::omniscient(&state, observer);
+            assert_eq!(
+                observation
+                    .my_units
+                    .iter()
+                    .find(|unit| unit.id == own_worker)
+                    .expect("the owner observes its Harvester")
+                    .harvesting,
+                Some(own_node)
+            );
+            assert_eq!(
+                observation
+                    .enemy_units
+                    .iter()
+                    .find(|unit| unit.id == hostile_worker)
+                    .expect("the complete test view includes the hostile Harvester")
+                    .harvesting,
+                None,
+                "an enemy's Harvest order remains private even in a complete test view"
+            );
         }
     }
 }

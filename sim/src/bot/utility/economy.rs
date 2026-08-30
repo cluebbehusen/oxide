@@ -312,6 +312,7 @@ impl UtilityPolicy {
                     danger
                         .as_deref()
                         .expect("an actionable capacity site prepared worker danger"),
+                    None,
                 )
             {
                 *budget -= airworks_cost;
@@ -337,10 +338,10 @@ impl UtilityPolicy {
         let allow_repeatable_ground =
             !player_facing || self.ordinary_ground_has_work(dials, obs, home);
 
-        // A ground scout that bounced off a severed route has proved
-        // that the next reconnaissance leg must fly. Keep exactly one
+        // Current public-map or contested work may require air, while a failed
+        // ground look preserves the same demand durably. Keep exactly one
         // faction scout alive or queued once an Airworks can build it.
-        if dials.scouting && self.air_scout_needed && !self.solo_air_scout_suspended {
+        if dials.scouting && self.air_scout_needed() && !self.solo_air_scout_suspended {
             let scout_kind = crate::stats::Role::Scout.unit_for(obs.faction);
             let planned_scouts = intents
                 .iter()
@@ -800,6 +801,7 @@ impl UtilityPolicy {
             unit_contacts,
             building_contacts,
             unavailable_builders,
+            ..
         } = context;
         let ConstructionClaims {
             player_facing,
@@ -912,6 +914,7 @@ mod tests {
             hp: UnitKind::Harvester.stats().max_hp,
             idle: true,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -1176,6 +1179,7 @@ mod tests {
             hp: kind.stats().max_hp,
             idle: true,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -1318,6 +1322,7 @@ mod tests {
             hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -1559,7 +1564,7 @@ mod tests {
             },
         ];
         let mut policy = UtilityPolicy::new();
-        policy.air_scout_needed = true;
+        policy.persistent_air_scout_needed = true;
         let mut dials = Dials::balanced();
         dials.adaptive_composition = true;
         let mut budget = obs.scrap;
@@ -1615,9 +1620,10 @@ mod tests {
 
         let mut dials = Dials::balanced();
         dials.adaptive_composition = true;
-        let decide = |needs_air_scout: bool, scrap: u32| {
+        let decide = |public_start_demand: bool, persistent_demand: bool, scrap: u32| {
             let mut policy = UtilityPolicy::new();
-            policy.air_scout_needed = needs_air_scout;
+            policy.public_start_air_scout_needed = public_start_demand;
+            policy.persistent_air_scout_needed = persistent_demand;
             let mut current = obs.clone();
             current.scrap = scrap;
             let mut budget = scrap;
@@ -1641,7 +1647,7 @@ mod tests {
         };
 
         assert_eq!(
-            decide(false, scout_cost - 1),
+            decide(false, false, scout_cost - 1),
             (
                 scout_cost - 1 - UnitKind::Harvester.stats().cost,
                 vec![Intent::TrainAt {
@@ -1652,12 +1658,12 @@ mod tests {
             "without an owed flyer, the same finite bank can replace the missing worker"
         );
         assert_eq!(
-            decide(true, scout_cost - 1),
+            decide(false, true, scout_cost - 1),
             (0, Vec::new()),
             "an incomplete reconnaissance fund must not leak into a cheaper worker order"
         );
         assert_eq!(
-            decide(true, scout_cost),
+            decide(false, true, scout_cost),
             (
                 0,
                 vec![Intent::TrainAt {
@@ -1666,6 +1672,11 @@ mod tests {
                 }]
             ),
             "the completed fund must become exactly one faction scout at the Airworks"
+        );
+        assert_eq!(
+            decide(true, false, scout_cost),
+            decide(false, true, scout_cost),
+            "a current public-map requirement and proven ground failure share the production mechanism without sharing persistence"
         );
     }
 
@@ -1722,7 +1733,7 @@ mod tests {
         policy.scout = Some(ground_scout);
         policy.scout_dispatch = Some((ground_scout, ground_start, enemy_base));
         policy.scouting(&obs, home, None, &[], &mut Vec::new());
-        assert!(policy.air_scout_needed);
+        assert!(policy.persistent_air_scout_needed);
         assert!(!policy.solo_air_scout_suspended);
         assert_eq!(
             produce(&mut policy, &obs),
@@ -1757,6 +1768,7 @@ mod tests {
             hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -1811,6 +1823,7 @@ mod tests {
             hp: enemy_scout.stats().max_hp,
             idle: false,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -2619,6 +2632,220 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_nearby_losses_do_not_turn_one_warning_into_an_economy_quarantine() {
+        let mut obs = observation();
+        obs.map_width = 24;
+        obs.map_height = 16;
+        obs.visible = vec![true; 24 * 16];
+        obs.explored = vec![true; 24 * 16];
+        obs.known_rock.clear();
+        obs.my_units[0].tile = TilePos::new(3, 4);
+        obs.my_units[0].carrying = 2;
+        for (id, tile, carrying) in [
+            (4, TilePos::new(4, 4), 7),
+            (5, TilePos::new(3, 5), 3),
+            (6, TilePos::new(4, 5), 4),
+        ] {
+            obs.my_units.push(UnitObs {
+                id: UnitId(id),
+                tile,
+                carrying,
+                ..obs.my_units[0].clone()
+            });
+        }
+        obs.known_wrecks = vec![(TilePos::new(8, 2), 400), (TilePos::new(8, 3), 119)];
+        obs.my_units[0].idle = false;
+        obs.my_units[0].harvesting = Some(TilePos::new(8, 3));
+        obs.enemy_units.push(UnitObs {
+            id: UnitId(38),
+            player: PlayerId(1),
+            kind: UnitKind::Gnat,
+            tile: TilePos::new(10, 9),
+            hp: UnitKind::Gnat.stats().max_hp,
+            idle: true,
+            carrying: 0,
+            harvesting: None,
+            cargo: 0,
+            site: None,
+            salvaging: None,
+            founding: None,
+            repairing: false,
+            grounded: false,
+        });
+        let ordinary_loss = TilePos::new(8, 7);
+        let mut policy = UtilityPolicy::new();
+
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        obs.tick = 12;
+        obs.salvage_incidents = vec![ordinary_loss];
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        assert!(
+            policy.contested_harvest_regions.is_empty(),
+            "unchanged worker HP proves the anonymous loss was not a worker-route incident"
+        );
+
+        obs.tick += crate::stats::HARVEST_INCIDENT_MEMORY_TICKS + 1;
+        obs.salvage_incidents.clear();
+        obs.my_units[0].idle = true;
+        obs.my_units[0].harvesting = None;
+        let mut intents = Vec::new();
+        policy.economy(&obs, TilePos::new(1, 1), true, None, None, &mut intents);
+
+        let assigned: Vec<_> = intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::AssignHarvest { unit, node } => Some((*unit, *node)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            assigned.len(),
+            4,
+            "every reachable idle worker should resume"
+        );
+        assert!(
+            assigned.iter().all(|(_, node)| {
+                matches!(*node, TilePos { x: 8, y: 2 } | TilePos { x: 8, y: 3 })
+            })
+        );
+    }
+
+    #[test]
+    fn a_destroyed_active_harvester_keeps_replacements_out_of_the_kill_zone() {
+        let incident = TilePos::new(7, 4);
+        let wreck = TilePos::new(8, 4);
+        let safe_fallback = TilePos::new(2, 9);
+        let mut obs = observation();
+        obs.map_width = 20;
+        obs.map_height = 12;
+        obs.visible = vec![true; 20 * 12];
+        obs.explored = vec![true; 20 * 12];
+        obs.known_rock.clear();
+        obs.known_wrecks = vec![(wreck, 80)];
+        obs.known_scrap = vec![(safe_fallback, 100)];
+        obs.my_units[0].tile = incident;
+        obs.my_units[0].idle = false;
+        obs.my_units[0].harvesting = Some(wreck);
+        obs.my_units.push(UnitObs {
+            id: UnitId(4),
+            tile: TilePos::new(2, 2),
+            idle: true,
+            harvesting: None,
+            ..obs.my_units[0].clone()
+        });
+        let mut policy = UtilityPolicy::new();
+
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        obs.tick = 12;
+        obs.my_units.remove(0);
+        obs.visible.fill(false);
+        obs.salvage_incidents = vec![incident];
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+
+        assert!(policy.harvest_location_contested(wreck));
+        assert_eq!(
+            policy.contested_recon_target(&obs, TilePos::new(1, 1)),
+            None,
+            "recovery reconnaissance must not enter while the incident warning is live"
+        );
+        let mut intents = Vec::new();
+        policy.economy(&obs, TilePos::new(1, 1), true, None, None, &mut intents);
+        assert_eq!(
+            intents,
+            vec![Intent::AssignHarvest {
+                unit: UnitId(4),
+                node: safe_fallback,
+            }]
+        );
+
+        obs.tick += crate::stats::HARVEST_INCIDENT_MEMORY_TICKS + 1;
+        obs.salvage_incidents.clear();
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        intents.clear();
+        policy.economy(&obs, TilePos::new(1, 1), true, None, None, &mut intents);
+        assert_eq!(
+            intents,
+            vec![Intent::AssignHarvest {
+                unit: UnitId(4),
+                node: safe_fallback,
+            }],
+            "warning expiry in darkness must not route a replacement through the worker's death site"
+        );
+        assert!(
+            policy
+                .contested_recon_target(&obs, TilePos::new(1, 1))
+                .is_some(),
+            "the quiet expired region should now request bounded clearance"
+        );
+    }
+
+    #[test]
+    fn a_destroyed_worker_is_matched_to_its_active_source_beyond_its_last_tile() {
+        let source = TilePos::new(16, 4);
+        let last_seen = TilePos::new(3, 4);
+        let mut obs = observation();
+        obs.map_width = 24;
+        obs.map_height = 12;
+        obs.visible = vec![true; 24 * 12];
+        obs.explored = vec![true; 24 * 12];
+        obs.known_rock.clear();
+        obs.my_units[0].tile = last_seen;
+        obs.my_units[0].idle = false;
+        obs.my_units[0].harvesting = Some(source);
+        let mut policy = UtilityPolicy::new();
+
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        obs.tick += 1;
+        obs.my_units.clear();
+        obs.salvage_incidents = vec![source];
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+
+        assert!(
+            last_seen.chebyshev(source) > crate::stats::HARVEST_INCIDENT_DANGER_RADIUS,
+            "the fixture must require active-source evidence rather than last-position proximity"
+        );
+        assert!(policy.harvest_location_contested(source));
+        assert_eq!(
+            policy.contested_harvest_regions,
+            vec![ContestedHarvestRegion {
+                center: source,
+                last_evidence: obs.tick,
+                sweep_started_at: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_visible_allied_worker_loss_seeds_the_team_shared_quarantine() {
+        let incident = TilePos::new(12, 4);
+        let mut obs = observation();
+        obs.map_width = 24;
+        obs.map_height = 12;
+        obs.visible = vec![true; 24 * 12];
+        obs.explored = vec![true; 24 * 12];
+        obs.known_rock.clear();
+        let mut ally = obs.my_units[0].clone();
+        ally.id = UnitId(40);
+        ally.player = PlayerId(1);
+        ally.tile = incident;
+        ally.idle = false;
+        ally.harvesting = None;
+        obs.ally_units.push(ally);
+        let mut policy = UtilityPolicy::new();
+
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        obs.tick += 1;
+        obs.ally_units.clear();
+        obs.salvage_incidents = vec![incident];
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+
+        assert!(
+            policy.harvest_location_contested(incident),
+            "allied units are always in team sight, so disappearance plus a team incident is real worker-loss evidence"
+        );
+    }
+
+    #[test]
     fn completed_first_trip_does_not_hide_a_later_incident_from_replacement_work() {
         let source = TilePos::new(15, 4);
         let wreck = source.offset(1, 0);
@@ -2641,6 +2868,7 @@ mod tests {
         obs.my_units[0].idle = false;
         obs.my_units[0].tile = source;
         policy.audit_harvests(&obs);
+        policy.refresh_contested_harvest_regions(&obs, None, None);
         assert!(policy.last_sent.is_empty());
 
         obs.tick = 80;
@@ -2684,10 +2912,17 @@ mod tests {
             "warning expiry in darkness must not send replacements back into the kill zone"
         );
 
-        // A complete fresh look starts confirmation, but a scout merely
-        // passing between recurring attacks must not reopen the route.
+        let mut attacker = obs.my_units[0].clone();
+        attacker.id = UnitId(90);
+        attacker.player = PlayerId(1);
+        attacker.kind = UnitKind::Sentinel;
+        attacker.tile = source;
+        attacker.hp = UnitKind::Sentinel.stats().max_hp;
+        obs.enemy_units.push(attacker);
         obs.visible.fill(true);
+        obs.tick += 1;
         policy.refresh_contested_harvest_regions(&obs, None, None);
+        assert!(policy.harvest_location_contested(wreck));
         intents.clear();
         policy.economy(&obs, TilePos::new(1, 1), true, None, None, &mut intents);
         assert_eq!(
@@ -2696,34 +2931,21 @@ mod tests {
                 unit: UnitId(4),
                 node: safe_fallback,
             }],
-            "one clear pass must not immediately reopen a recurring kill zone"
+            "full sight of an attacker is danger evidence, not clearance"
         );
 
-        obs.tick += CONTESTED_CLEAR_CONFIRM_TICKS - 1;
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert!(policy.harvest_location_contested(wreck));
-
-        let mut attacker = obs.my_units[0].clone();
-        attacker.id = UnitId(90);
-        attacker.player = PlayerId(1);
-        attacker.kind = UnitKind::Sentinel;
-        attacker.tile = source;
-        attacker.hp = UnitKind::Sentinel.stats().max_hp;
-        obs.enemy_units.push(attacker);
-        obs.tick += 1;
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert!(policy.harvest_location_contested(wreck));
-
         obs.enemy_units.clear();
+        let unseen = source.offset(CONTESTED_RECON_RADIUS, CONTESTED_RECON_RADIUS);
+        let unseen_index = usize::try_from(unseen.y * obs.map_width + unseen.x).unwrap();
+        obs.visible[unseen_index] = false;
         obs.tick += 1;
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        obs.tick += CONTESTED_CLEAR_CONFIRM_TICKS - 1;
         policy.refresh_contested_harvest_regions(&obs, None, None);
         assert!(
             policy.harvest_location_contested(wreck),
-            "renewed danger must restart the uninterrupted-clear clock"
+            "partial coverage after danger leaves must keep the kill zone closed"
         );
 
+        obs.visible[unseen_index] = true;
         obs.tick += 1;
         policy.refresh_contested_harvest_regions(&obs, None, None);
         intents.clear();
@@ -2734,7 +2956,7 @@ mod tests {
                 unit: UnitId(4),
                 node: wreck,
             }],
-            "sustained fresh clear reconnaissance must make the salvage usable again"
+            "one complete recent danger-free sweep must make the salvage usable again"
         );
     }
 
@@ -2822,6 +3044,7 @@ mod tests {
             hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -2876,6 +3099,7 @@ mod tests {
             hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -2937,7 +3161,7 @@ mod tests {
     }
 
     #[test]
-    fn a_contested_loss_covers_the_harvesters_entire_autonomous_work_zone() {
+    fn a_worker_loss_quarantines_only_the_exact_kill_zone() {
         let incident = TilePos::new(20, 10);
         let edge_source = incident.offset(CONTESTED_HARVEST_RADIUS, 0);
         let outside = incident.offset(CONTESTED_HARVEST_RADIUS + 1, 0);
@@ -2950,8 +3174,18 @@ mod tests {
         obs.known_rock.clear();
         obs.known_wrecks = vec![(edge_source, 45)];
         obs.known_scrap = vec![(safe_fallback, 100)];
-        obs.salvage_incidents = vec![incident];
         let mut policy = UtilityPolicy::new();
+        let safe_worker_tile = obs.my_units[0].tile;
+        obs.my_units[0].tile = incident;
+        obs.my_units[0].idle = false;
+        obs.my_units[0].harvesting = Some(edge_source);
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        obs.tick += 1;
+        obs.my_units[0].tile = safe_worker_tile;
+        obs.my_units[0].idle = true;
+        obs.my_units[0].harvesting = None;
+        obs.my_units[0].hp -= 1;
+        obs.salvage_incidents = vec![incident];
         policy.refresh_contested_harvest_regions(&obs, None, None);
 
         assert!(policy.harvest_location_contested(edge_source));
@@ -2964,7 +3198,7 @@ mod tests {
                 unit: UnitId(3),
                 node: safe_fallback,
             }],
-            "a safe source anchor cannot authorize autonomous wandering back into the incident"
+            "a source inside the exact kill zone must stay closed while unrelated work continues"
         );
     }
 
@@ -2994,6 +3228,18 @@ mod tests {
 
         obs.salvage_incidents = vec![incident];
         let mut guarded_policy = UtilityPolicy::new();
+        let safe_worker_tile = obs.my_units[0].tile;
+        obs.salvage_incidents.clear();
+        obs.my_units[0].tile = incident;
+        obs.my_units[0].idle = false;
+        obs.my_units[0].harvesting = Some(source);
+        guarded_policy.refresh_contested_harvest_regions(&obs, None, None);
+        obs.tick += 1;
+        obs.my_units[0].tile = safe_worker_tile;
+        obs.my_units[0].idle = true;
+        obs.my_units[0].harvesting = None;
+        obs.my_units[0].hp -= 1;
+        obs.salvage_incidents = vec![incident];
         guarded_policy.refresh_contested_harvest_regions(&obs, None, None);
         intents.clear();
         guarded_policy.economy(&obs, TilePos::new(1, 1), true, None, None, &mut intents);
@@ -3015,7 +3261,6 @@ mod tests {
         obs.explored = vec![true; 40 * 24];
         obs.known_rock.clear();
         obs.known_scrap = vec![(TilePos::new(5, 5), 100)];
-        obs.salvage_incidents = vec![incident];
         obs.my_units[0].tile = incident;
         obs.my_units[0].idle = false;
         obs.my_units[0].founding = Some((BuildingKind::Foundry, pending));
@@ -3032,15 +3277,26 @@ mod tests {
         policy.scout = Some(UnitId(3));
         policy.scout_dispatch = Some((UnitId(3), incident, pending));
         policy.refresh_contested_harvest_regions(&obs, None, None);
+        obs.tick += 1;
+        obs.my_units[0].hp -= 1;
+        obs.salvage_incidents = vec![incident];
+        policy.refresh_contested_harvest_regions(&obs, None, None);
 
         let mut intents = Vec::new();
         policy.evacuate_contested_workers(&obs, home, None, None, &mut intents);
         assert_eq!(
             intents,
-            vec![Intent::MoveUnits {
-                units: vec![UnitId(3), UnitId(4)],
-                goal: TilePos::new(2, 0),
-            }]
+            vec![
+                Intent::MoveUnits {
+                    units: vec![UnitId(3)],
+                    goal: TilePos::new(16, 2),
+                },
+                Intent::MoveUnits {
+                    units: vec![UnitId(4)],
+                    goal: TilePos::new(16, 14),
+                },
+            ],
+            "each worker must leave by its nearest safe edge instead of crossing deeper danger to group up"
         );
         assert!(policy.pending_sites.is_empty());
         assert_eq!(policy.scout, None);
@@ -3059,7 +3315,7 @@ mod tests {
             intents,
             vec![Intent::MoveUnits {
                 units: vec![UnitId(3)],
-                goal: TilePos::new(2, 0),
+                goal: TilePos::new(16, 2),
             }],
             "an evacuation that bounced while still in danger must be retried"
         );
@@ -3075,6 +3331,87 @@ mod tests {
     }
 
     #[test]
+    fn evacuation_stops_short_of_an_unrelated_kill_zone_instead_of_crossing_it() {
+        let home = TilePos::new(3, 4);
+        let barrier = TilePos::new(14, 4);
+        let worker_region = TilePos::new(26, 4);
+        let mut obs = observation();
+        obs.map_width = 30;
+        obs.map_height = 9;
+        obs.visible = vec![true; 30 * 9];
+        obs.explored = vec![true; 30 * 9];
+        obs.known_rock.clear();
+        obs.my_units[0].tile = worker_region;
+        let policy = UtilityPolicy {
+            contested_harvest_regions: vec![
+                ContestedHarvestRegion {
+                    center: barrier,
+                    last_evidence: obs.tick,
+                    sweep_started_at: None,
+                },
+                ContestedHarvestRegion {
+                    center: worker_region,
+                    last_evidence: obs.tick,
+                    sweep_started_at: None,
+                },
+            ],
+            ..UtilityPolicy::new()
+        };
+        let danger = policy.harvest_danger_projection(&obs, None, None);
+
+        let goal = policy
+            .worker_evacuation_goal(&obs, &obs.my_units[0], home, &danger)
+            .expect("the worker can leave its own kill zone on the near side of the barrier");
+
+        assert_eq!(goal, TilePos::new(20, 4));
+        assert!(
+            goal.x > barrier.x + CONTESTED_HARVEST_RADIUS,
+            "the nearest home-side goal would make the ordinary Move route cross a second quarantine"
+        );
+        assert!(
+            goal.x < worker_region.x - CONTESTED_HARVEST_RADIUS,
+            "the worker should still leave the kill zone it currently occupies"
+        );
+    }
+
+    #[test]
+    fn evacuation_leaves_from_the_near_edge_instead_of_crossing_deeper_danger() {
+        let center = TilePos::new(15, 8);
+        let worker_tile = center.offset(0, -CONTESTED_HARVEST_RADIUS);
+        let home = TilePos::new(15, 16);
+        let mut obs = observation();
+        obs.map_width = 30;
+        obs.map_height = 20;
+        obs.visible = vec![true; 30 * 20];
+        obs.explored = vec![true; 30 * 20];
+        obs.known_rock.clear();
+        obs.my_units[0].tile = worker_tile;
+        let policy = UtilityPolicy {
+            contested_harvest_regions: vec![ContestedHarvestRegion {
+                center,
+                last_evidence: obs.tick,
+                sweep_started_at: None,
+            }],
+            ..UtilityPolicy::new()
+        };
+        let danger = policy.harvest_danger_projection(&obs, None, None);
+
+        let goal = policy
+            .worker_evacuation_goal(&obs, &obs.my_units[0], home, &danger)
+            .expect("open ground has a safe exit immediately away from the incident center");
+
+        assert_eq!(goal, center.offset(0, -CONTESTED_HARVEST_RADIUS - 2));
+        assert!(
+            goal.manhattan(worker_tile) < home.manhattan(worker_tile),
+            "recovery should minimize exposure before preferring the homeward direction"
+        );
+        assert!(
+            goal.y < worker_tile.y,
+            "the direct homeward route enters progressively deeper quarantine before leaving it"
+        );
+    }
+
+    #[test]
     fn repair_does_not_recruit_an_evacuated_worker_back_into_quarantine() {
         let home = TilePos::new(1, 1);
         let incident = TilePos::new(20, 10);
@@ -3085,7 +3422,6 @@ mod tests {
         obs.visible = vec![true; 40 * 24];
         obs.explored = vec![true; 40 * 24];
         obs.known_rock.clear();
-        obs.salvage_incidents = vec![incident];
         obs.scrap = 1_000;
         obs.my_units[0].tile = incident;
         obs.my_units[0].idle = false;
@@ -3099,6 +3435,10 @@ mod tests {
         obs.my_buildings[1].hp = BuildingKind::Extractor.base_stats().max_hp / 2;
 
         let mut policy = UtilityPolicy::new();
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        obs.tick += 1;
+        obs.my_units[0].hp -= 1;
+        obs.salvage_incidents = vec![incident];
         policy.refresh_contested_harvest_regions(&obs, None, None);
         let mut intents = Vec::new();
         policy.evacuate_contested_workers(&obs, home, None, None, &mut intents);
@@ -3130,6 +3470,7 @@ mod tests {
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,
+                public_map: None,
             },
             &mut budget,
             &mut intents,
@@ -3139,11 +3480,9 @@ mod tests {
             "repair must not send the newly safe worker straight back into the durable kill-zone memory"
         );
 
-        // Repair becomes eligible again only after the same sustained clear
-        // reconnaissance that reopens harvesting in this region.
+        // Repair becomes eligible again after the same bounded clear sweep
+        // that reopens harvesting in this region.
         obs.visible.fill(true);
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        obs.tick += CONTESTED_CLEAR_CONFIRM_TICKS;
         policy.refresh_contested_harvest_regions(&obs, None, None);
         policy.repairs(
             &Dials::full(),
@@ -3153,6 +3492,7 @@ mod tests {
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,
+                public_map: None,
             },
             &mut budget,
             &mut intents,
@@ -3183,6 +3523,7 @@ mod tests {
             hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -3202,6 +3543,7 @@ mod tests {
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,
+                public_map: None,
             },
             &mut budget,
             &mut intents,
@@ -3219,6 +3561,7 @@ mod tests {
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,
+                public_map: None,
             },
             &mut budget,
             &mut intents,

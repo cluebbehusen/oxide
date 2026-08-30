@@ -100,6 +100,11 @@ pub enum Intent {
         /// Footprint anchor.
         anchor: TilePos,
     },
+    /// Abandon one own unfinished paid site through the ordinary refund rule.
+    CancelSite {
+        /// Exact construction site to cancel.
+        building: crate::ids::BuildingId,
+    },
     /// Draft idle, un-enlisted fighters (nearest first, up to `size`)
     /// into the army staged at this rally point — reinforcing it if one
     /// is already staging there, creating it otherwise. Repeating the

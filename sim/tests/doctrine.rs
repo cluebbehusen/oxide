@@ -4,9 +4,10 @@
 
 use chassis::grid::TilePos;
 use oxide_sim::bot::observation::OBSERVATION_VERSION;
-use oxide_sim::bot::{BuildingObs, Intent, Observation, Orientation, UnitObs};
+use oxide_sim::bot::{BuildingObs, Intent, Observation, Orientation, PublicMapBriefing, UnitObs};
+use oxide_sim::scenario::PlayerSpec;
 use oxide_sim::stats::BuildingKind;
-use oxide_sim::{BuildingId, Command, Faction, PlayerId, Target, UnitId, UnitKind};
+use oxide_sim::{BuildingId, Command, Faction, PlayerId, Scenario, Target, UnitId, UnitKind};
 
 fn obs_base() -> Observation {
     Observation {
@@ -38,6 +39,31 @@ fn obs_base() -> Observation {
     }
 }
 
+fn public_map(obs: &Observation) -> PublicMapBriefing {
+    let width = usize::try_from(obs.map_width).expect("the test map has a positive width");
+    let height = usize::try_from(obs.map_height).expect("the test map has a positive height");
+    assert!(width >= 2 && height >= 2);
+    let mut map = vec![".".repeat(width); height];
+    map[0].replace_range(..1, "1");
+    PublicMapBriefing::from_scenario(&Scenario {
+        name: "doctrine test map".into(),
+        seed: 0,
+        map,
+        players: vec![PlayerSpec {
+            name: "test seat".into(),
+            faction: obs.faction,
+            team: None,
+            scrap: 0,
+            bot: false,
+            bot_config: None,
+        }],
+        units: Vec::new(),
+        buildings: Vec::new(),
+        meta: None,
+    })
+    .expect("the focused observation has a matching public map")
+}
+
 fn unit_obs(id: u32, player: u8, kind: UnitKind, x: i32, y: i32) -> UnitObs {
     UnitObs {
         id: UnitId(id),
@@ -47,6 +73,7 @@ fn unit_obs(id: u32, player: u8, kind: UnitKind, x: i32, y: i32) -> UnitObs {
         hp: kind.stats().max_hp,
         idle: true,
         carrying: 0,
+        harvesting: None,
         cargo: 0,
         site: None,
         salvaging: None,
@@ -274,7 +301,7 @@ fn think(policy: &mut UtilityPolicy, obs: &Observation) -> Vec<Intent> {
 }
 
 fn player_think(policy: &mut UtilityPolicy, dials: &Dials, obs: &Observation) -> Vec<Intent> {
-    policy.think_with_prelude(dials, obs, &[], &[], &[], Vec::new())
+    policy.think_player_facing(dials, obs, &[], &[], &[], &public_map(obs))
 }
 
 #[test]
@@ -494,8 +521,14 @@ fn strategic_air_reservations_do_not_complete_a_utility_raid_wing() {
     let mut dials = Dials::full();
     dials.air_wing = 2;
 
-    let reserved =
-        UtilityPolicy::new().think_with_prelude(&dials, &obs, &[], &[], &[UnitId(0)], Vec::new());
+    let reserved = UtilityPolicy::new().think_player_facing(
+        &dials,
+        &obs,
+        &[],
+        &[],
+        &[UnitId(0)],
+        &public_map(&obs),
+    );
     assert!(
         reserved
             .iter()
@@ -503,7 +536,8 @@ fn strategic_air_reservations_do_not_complete_a_utility_raid_wing() {
         "one reserved bomber plus one free bomber is not a utility wing: {reserved:?}"
     );
 
-    let free = UtilityPolicy::new().think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
+    let free =
+        UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert!(
         free.iter().any(|intent| matches!(
             intent,
@@ -648,7 +682,7 @@ fn staged_ground_push_intents(obs: &Observation) -> Vec<Intent> {
     let mut dials = Dials::overseer();
     dials.own_strength_scale = u16::MAX;
     dials.enemy_strength_scale = 0;
-    UtilityPolicy::new().think_with_prelude(&dials, obs, &[army], &[], &[], Vec::new())
+    UtilityPolicy::new().think_player_facing(&dials, obs, &[army], &[], &[], &public_map(obs))
 }
 
 #[test]
@@ -806,13 +840,13 @@ fn ground_armies_only_push_enemy_sites_in_their_own_known_component() {
             .any(|intent| matches!(intent, Intent::PushArmy { .. })),
         "the profile-free Overseer keeps its frozen preflight behavior: {legacy:?}"
     );
-    let blocked = UtilityPolicy::new().think_with_prelude(
+    let blocked = UtilityPolicy::new().think_player_facing(
         &dials,
         &home_side,
         &[army(ids.clone(), TilePos::new(7, 6))],
         &[],
         &[],
-        Vec::new(),
+        &public_map(&home_side),
     );
     assert!(
         blocked
@@ -833,13 +867,13 @@ fn ground_armies_only_push_enemy_sites_in_their_own_known_component() {
             )
         })
         .collect();
-    let local = UtilityPolicy::new().think_with_prelude(
+    let local = UtilityPolicy::new().think_player_facing(
         &dials,
         &landed,
         &[army(ids, TilePos::new(16, 7))],
         &[],
         &[],
-        Vec::new(),
+        &public_map(&landed),
     );
     assert!(
         local.iter().any(|intent| matches!(
@@ -921,8 +955,14 @@ fn only_the_player_facing_controller_route_checks_defensive_retargets() {
         } if *target == TilePos::new(5, 4)
     )));
 
-    let player_facing =
-        UtilityPolicy::new().think_with_prelude(&dials, &obs, &[army], &[], &[], Vec::new());
+    let player_facing = UtilityPolicy::new().think_player_facing(
+        &dials,
+        &obs,
+        &[army],
+        &[],
+        &[],
+        &public_map(&obs),
+    );
     assert!(
         player_facing
             .iter()
@@ -959,13 +999,13 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     ));
 
     let enlisted: Vec<_> = exec.enlisted().collect();
-    let intents = UtilityPolicy::new().think_with_prelude(
+    let intents = UtilityPolicy::new().think_player_facing(
         &Dials::overseer(),
         &obs,
         exec.armies(),
         &enlisted,
         &[],
-        Vec::new(),
+        &public_map(&obs),
     );
     assert!(
         intents.iter().all(|intent| !matches!(
@@ -1006,13 +1046,13 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     assert!(settled.is_empty());
     assert_eq!(exec.armies()[0].state, ArmyState::Withdrawing);
     let enlisted: Vec<_> = exec.enlisted().collect();
-    let player_facing = UtilityPolicy::new().think_with_prelude(
+    let player_facing = UtilityPolicy::new().think_player_facing(
         &Dials::overseer(),
         &obs,
         exec.armies(),
         &enlisted,
         &[],
-        Vec::new(),
+        &public_map(&obs),
     );
     assert!(
         player_facing.iter().all(|intent| !matches!(
@@ -1068,13 +1108,13 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     assert!(contact.is_empty());
     assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
     let enlisted: Vec<_> = exec.enlisted().collect();
-    let engaged = UtilityPolicy::new().think_with_prelude(
+    let engaged = UtilityPolicy::new().think_player_facing(
         &Dials::overseer(),
         &obs,
         exec.armies(),
         &enlisted,
         &[],
-        Vec::new(),
+        &public_map(&obs),
     );
     assert!(
         engaged.iter().all(|intent| !matches!(
@@ -1163,13 +1203,13 @@ fn a_routed_defender_musters_before_retrying_the_same_remote_fight() {
     );
 
     let enlisted: Vec<_> = exec.enlisted().collect();
-    let outmatched = UtilityPolicy::new().think_with_prelude(
+    let outmatched = UtilityPolicy::new().think_player_facing(
         &Dials::overseer(),
         &obs,
         exec.armies(),
         &enlisted,
         &[],
-        Vec::new(),
+        &public_map(&obs),
     );
     assert!(
         outmatched.iter().all(|intent| !matches!(
@@ -1206,13 +1246,13 @@ fn a_routed_defender_musters_before_retrying_the_same_remote_fight() {
         .expect("fresh production musters separately from the routed body")
         .id;
     let enlisted: Vec<_> = exec.enlisted().collect();
-    let reinforced = UtilityPolicy::new().think_with_prelude(
+    let reinforced = UtilityPolicy::new().think_player_facing(
         &Dials::overseer(),
         &obs,
         exec.armies(),
         &enlisted,
         &[],
-        Vec::new(),
+        &public_map(&obs),
     );
     assert!(
         reinforced.iter().any(|intent| matches!(
@@ -1277,13 +1317,13 @@ fn player_facing_army_at_a_live_objective_is_not_reissued_every_think() {
     dials.own_strength_scale = u16::MAX;
     dials.enemy_strength_scale = 0;
     let enlisted: Vec<_> = exec.enlisted().collect();
-    let player_facing = UtilityPolicy::new().think_with_prelude(
+    let player_facing = UtilityPolicy::new().think_player_facing(
         &dials,
         &obs,
         exec.armies(),
         &enlisted,
         &[],
-        Vec::new(),
+        &public_map(&obs),
     );
     assert!(
         player_facing.iter().all(|intent| !matches!(

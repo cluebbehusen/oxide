@@ -6,12 +6,13 @@
 
 use anyhow::{Context, Result, ensure};
 use oxide_kit::GameReplay;
-use oxide_sim::bot::{ResolvedProfile, SeatBot};
+use oxide_sim::bot::{PublicMapBriefing, ResolvedProfile, SeatBot};
 use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
 use oxide_sim::{Event, Faction, GameResult, PlayerId, SIM_VERSION, Scenario};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_CANDIDATE_LEN: usize = 128;
@@ -94,9 +95,9 @@ impl EvaluationController {
         }
     }
 
-    fn seat_bot(self, player: PlayerId, scenario_seed: u64) -> SeatBot {
+    fn seat_bot(self, player: PlayerId, public_map: &Arc<PublicMapBriefing>) -> SeatBot {
         match self {
-            Self::Scripted { config } => SeatBot::scripted(player, scenario_seed, config),
+            Self::Scripted { config } => SeatBot::scripted(player, config, Arc::clone(public_map)),
             Self::Overseer { policy_seed } => {
                 SeatBot::overseer_with_policy_seed(player, policy_seed)
             }
@@ -239,16 +240,20 @@ impl EvaluationPlan {
         Ok(())
     }
 
-    fn seat_bots(&self) -> Vec<SeatBot> {
-        self.controllers
+    fn seat_bots(&self) -> Result<Vec<SeatBot>> {
+        let public_map = Arc::new(
+            PublicMapBriefing::from_scenario(&self.scenario)
+                .context("building evaluation public map briefing")?,
+        );
+        Ok(self
+            .controllers
             .iter()
             .copied()
             .enumerate()
             .filter_map(|(seat, controller)| {
-                controller
-                    .map(|controller| controller.seat_bot(PlayerId(seat as u8), self.scenario.seed))
+                controller.map(|controller| controller.seat_bot(PlayerId(seat as u8), &public_map))
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -510,7 +515,7 @@ pub fn evaluate_plan_artifact(
     let mut state = scenario
         .build()
         .context("building bot evaluation scenario")?;
-    let mut bots = plan.seat_bots();
+    let mut bots = plan.seat_bots()?;
     let mut replay = GameReplay::new(SIM_VERSION, scenario.clone());
     replay.meta.kind = Some("bot-eval".into());
     let controllers = serde_json::to_string(&plan.controllers)

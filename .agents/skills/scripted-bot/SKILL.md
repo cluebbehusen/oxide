@@ -20,19 +20,21 @@ The bot is an ordinary command source. It receives a fog-honest observation and
 may issue only shared `PlayerCommand` values. It gets no hidden income, vision,
 stats, prerequisites, queue space, build privileges, movement, or combat rules.
 
-Public map knowledge such as authored starting anchors may be passed explicitly.
-Current enemy state, unobserved terrain facts, and omniscient driver views may
-not influence a decision. When behavior needs information the observation does
-not contain, either add a fog-honest observation with tests or design behavior
-that does not require it.
+`PublicMapBriefing` may explicitly provide the authored facts disclosed before
+play: static terrain, Extractor frames, initial scrap, teams, and starting
+Foundry anchors. Treat starts and resources as priors, never as current enemy
+contacts or live amounts. Other hidden state and omniscient driver views may not
+influence a decision. When behavior needs dynamic information the observation
+does not contain, either add a fog-honest observation with tests or design
+behavior that does not require it.
 
 ## Know the controller stack
 
 The maintained path is:
 
 ```text
-fog-honest Observation
-  -> StrategicIntelligence
+immutable PublicMapBriefing + fog-honest Observation
+  -> oriented public priors + StrategicIntelligence
   -> persistent playbooks + UtilityPolicy Intent
   -> Executive
   -> PlayerCommand[]
@@ -103,12 +105,31 @@ ground-attack-air cohorts; a persistent air or lift operation owns those cohorts
 and its outstanding Airworks capacity. A shallow independently useful
 air-defense purchase is allowed only when no operation owns that capacity.
 
-Defend every completed owned Foundry, not only the starting base. Harvest work
-must also respect anonymous regional loss evidence: a wreck near a dead worker
-is not automatically a safe replacement source. Derive that evidence only from
-allied damage and retain no attacker identity. Keep a contested region through
-darkness; clear it only after one continuous, bounded interval with the whole
-region currently visible and free of known danger.
+Defend every completed owned Foundry, not only the starting base. Choose sites
+for Turrets, Bastions, Flak Turrets, Scuttle Charges, and Barricades from
+exposed strategic value and credible hostile approaches. Score each kind's
+actual firing, spotting, trigger, or path-disruption geometry; preserve builder
+egress and resource access; and treat unfinished defenses as reservations rather
+than live fire. Predict the exact ordinary builder route with the public static
+terrain the bot was briefed on, while taking dynamic blockers only from current
+observation. Current contacts and remembered sites remain stronger evidence than
+an uncleared public starting prior. Keep the frozen Overseer's legacy placements
+separate from this player-facing policy.
+
+Harvest work must also respect anonymous regional loss evidence, but a wreck
+near a dead combat unit is not automatically a dangerous replacement source. Use
+an authoritative incident as immediate short-lived caution, and promote it to a
+durable quarantine only when a matching own or visible allied Harvester lost HP
+or disappeared near its position or active source. Retain no attacker identity.
+Keep distinct incident centers when their danger regions overlap; coalescing
+them to one center can reopen part of a kill zone before it is swept. Renew only
+an exactly repeated center. After current warnings and projected danger clear,
+scout every still unseen safe tile in the exact quarantined region through a
+bounded, deterministically ordered sweep. Clear the region on complete safe
+coverage; danger, an unreachable target, or no progress must recall the scout,
+reserve it until it is observed back in the safe home area, and only then
+schedule a bounded retry. An idle body or elapsed timer in the field must not
+release it into another role or a replacement loop.
 
 Treat severed-ground attacks as coordinated operations, not a singleton ferry.
 Let a lift's payload and matching carrier target grow while it remains in
@@ -161,8 +182,12 @@ first dedicated flyer is dispatched and lost, suspend that production channel
 and release its Airworks capital. Rearm only after actionable current enemy
 sight has gone dark after the loss and later returns; persistent sight,
 remembered ghosts, and cross-sight between opposing dedicated scouts do not
-count. Exercise this through the whole `Brain` or utility economy path because
-an isolated strategic-planner test cannot see the solo scout conveyor.
+count. Keep recomputable demand from public-start connectivity and current
+contested-recon eligibility separate from the persistent latch set by a proven
+ground-probe failure. Temporary map priors must clear when current sight changes
+their route, while a lost or unsafe probe must remain learned. Exercise this
+through the whole `Brain` or utility economy path because an isolated
+strategic-planner test cannot see the solo scout conveyor.
 
 ## Keep identity and difficulty honest
 

@@ -182,7 +182,9 @@ mod tests {
             "a scenario bench must field a mind in every chair"
         );
         assert_eq!(
-            oxide_sim::bot::seat_bots(&scenario).len(),
+            oxide_sim::bot::seat_bots(&scenario)
+                .expect("the valid bench scenario has a public map briefing")
+                .len(),
             scenario.players.iter().filter(|p| p.bot).count(),
             "every configured bot seat gets a command source"
         );

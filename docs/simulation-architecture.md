@@ -312,6 +312,17 @@ therefore distinguish current sight from remembered terrain without consulting
 authoritative state; seat orientation transforms both masks with the rest of the
 observed world.
 
+The maintained player-facing controller also receives a `PublicMapBriefing`
+derived from the final authored `Scenario`. It contains static terrain,
+Extractor frames, initial scrap locations and amounts, teams, and each seat's
+starting Foundry anchor. These are the same facts available through the
+pre-match map and roster: a starting anchor is a reconnaissance prior rather
+than a current enemy contact, and an initial resource amount says nothing about
+later depletion. The briefing is immutable, stays separate from
+`StrategicIntelligence`, and is transformed once into the same latched seat
+orientation as the dynamic observation. The profile-free Overseer receives no
+briefing.
+
 Enemy buildings remain as last-seen ghosts until their footprint is observed
 again. Scrap and wreck amounts likewise freeze at the last visible value. Arrays
 add sorted, deduplicated radar contact tiles outside true sight; a contact
@@ -328,7 +339,10 @@ Bots live outside `State::tick`. A bot reads a state-derived observation and
 emits ordinary `PlayerCommand` values, which the shell or runner records before
 the simulation sees them. A configured seat carries one strict `BotConfig` with
 a difficulty, stance, and personality seed. `seat_bots` passes that exact setup
-to the fog-honest `Brain::scripted` controller.
+and one shared immutable scenario briefing to the fog-honest `Brain::scripted`
+controller. Resume rebuilds that briefing from the scenario embedded in the
+replay before fast-forwarding controller memory, so it adds no hidden save state
+or ambient input.
 
 Profile resolution turns the seed into six bounded preferences: air, siege,
 support, fortification, greed, and guile. Stance bounds their strategic posture;
@@ -434,24 +448,54 @@ does the same. Recovery releases factory capital, sends routable survivors home
 once, has a finite completion bound, and then observes the normal operation
 cooldown.
 
-The separate utility scouting channel may fund its first dedicated flyer after a
-ground probe proves that reconnaissance must cross severed terrain. If that
-dispatched flyer dies, the channel releases its Airworks claim and capital and
-stays suspended until actionable current enemy sight first goes dark after the
-loss and later returns. Persistent sight, remembered ghosts, and cross-sight
-between opposing dedicated scouts cannot restart the replacement cycle.
+The separate utility scouting channel may fund its first dedicated flyer when a
+public-start route is currently disconnected, when no current unit can perform a
+contested-region sweep, or after a ground probe proves that reconnaissance must
+cross severed terrain. The first two demands are recomputed from current
+knowledge and eligibility; only an actual failed or unsafe ground probe is
+persistent. If a dispatched flyer dies, the channel releases its Airworks claim
+and capital and stays suspended until actionable current enemy sight first goes
+dark after the loss and later returns. Persistent sight, remembered ghosts, and
+cross-sight between opposing dedicated scouts cannot restart the replacement
+cycle.
 
 The fog-honest observation carries the same bounded, anonymous salvage-danger
 incidents that authoritative vision records for autonomous Harvest. The
-player-facing economy rejects sources inside those regional warnings as well as
+player-facing economy rejects sources inside a current warning as well as
 current radar and mobile pressure and remembered static weapon envelopes. An
 incident contains only an allied impact tile, never the unseen attacker's
-identity. The controller's contested-region memory survives later darkness;
-clearing it requires one continuous interval during which the whole region is
-currently visible and free of known danger. This keeps replacement workers away
-from adjacent fresh wrecks even when the lost Harvester had already completed
-earlier trips. Lowering remembers a dispatched Harvest only long enough to audit
-an immediate no-route bounce.
+identity. The controller promotes that warning to persistent contested-region
+memory only when a matching own or visible allied Harvester lost HP or
+disappeared near its previous position, current position, or active source.
+Ordinary combat losses therefore expire instead of quarantining nearby salvage
+forever. Distinct incident centers remain distinct even when their danger
+regions overlap, so merging evidence cannot shrink the union that recovery must
+prove safe.
+
+Once the warning and projected danger clear, recovery reconnaissance visits
+deterministically ordered unseen cells across the exact danger region and
+accumulates only current safe sight. Complete coverage clears the quarantine.
+Fresh danger, an unreachable next cell, or a bounded no-progress timeout recalls
+the scout. The controller reserves that exact unit until current observation
+places it back in the safe home area; neither an idle body in the field nor an
+elapsed timer releases it. The bounded retry delay starts after safe return.
+Worker evacuation and later Harvest routes avoid both projected danger and
+quarantined cells, so recovery cannot cross the same kill zone it is trying to
+prove safe. Lowering remembers a dispatched Harvest only long enough to audit an
+immediate no-route bounce.
+
+Player-facing static-defense construction uses one fog-honest strategic site
+scorer for Turrets, Bastions, Flak Turrets, Scuttle Charges, and Barricades. It
+values owned production, technology, support, renewable economy, and active
+resource work; then intersects credible hostile approaches with each kind's
+actual weapon, spotting, trigger, or path-disruption geometry. Current contacts,
+remembered enemy sites, and uncleared public starts form descending evidence
+tiers. Existing defenses reduce marginal value, while unfinished sites reserve
+coverage without pretending to fire. Candidate footprints must preserve builder
+access, egress, and resource routes. Exact builder-route prediction combines the
+public static terrain briefing with fog-honest observed dynamic blockers; public
+resource priors are not treated as live obstacles. The frozen Overseer retains
+its legacy placement rules.
 
 The player-facing budget counts each unique deferred construction claim until
 its site is paid and stops voluntary repair programs that could drain that
@@ -492,5 +536,5 @@ map rather than an exhaustive test inventory.
 | Harvesting, income, salvage, and repair            | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs`                                                                                                                  | `sim/tests/harvest_zones.rs`, `sim/tests/salvage.rs`, `sim/tests/repair_unit.rs`, `sim/tests/repair_bay.rs`, `sim/tests/smelter.rs` |
 | Weapons and simultaneous resolution                | `sim/src/stats.rs`, `sim/src/tick/brain/combat.rs`                                                                                                                             | `sim/tests/behavior_combat.rs`, `sim/tests/combat_edges.rs`, `sim/tests/shells.rs`, `sim/tests/peaks.rs`                            |
 | Fog, memory, radar, and stealth                    | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                                                        | `sim/tests/bot_brain.rs`, `sim/tests/bastion_acquisition.rs`, `sim/tests/mines_015.rs`                                              |
-| Bot knowledge, profiles, and fair difficulty       | `sim/src/bot/observation.rs`, `sim/src/bot/intelligence.rs`, `sim/src/bot/profile.rs`, `sim/src/bot/difficulty.rs`                                                             | inline module tests, `sim/tests/bot_brain.rs`                                                                                       |
+| Bot knowledge, profiles, and fair difficulty       | `sim/src/bot/briefing.rs`, `sim/src/bot/observation.rs`, `sim/src/bot/intelligence.rs`, `sim/src/bot/orient.rs`, `sim/src/bot/profile.rs`, `sim/src/bot/difficulty.rs`         | inline module tests, `sim/tests/bot_brain.rs`                                                                                       |
 | Bot playbooks, routing, reservations, and lowering | `sim/src/bot/strategy.rs`, `sim/src/bot/lift.rs`, `sim/src/bot/raid.rs`, `sim/src/bot/team.rs`, `sim/src/bot/routing.rs`, `sim/src/bot/utility.rs`, `sim/src/bot/executive.rs` | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |

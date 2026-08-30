@@ -7,6 +7,7 @@
 //! utility policy for remaining work, and lets the executive reserve exact
 //! units and lower intents to commands.
 
+use super::PublicMapBriefing;
 use super::difficulty::DifficultyTuning;
 use super::executive::{Army, ArmyState, Executive, Intent};
 use super::intelligence::StrategicIntelligence;
@@ -27,6 +28,7 @@ use crate::scenario::BotConfig;
 use crate::state::State;
 use chassis::grid::TilePos;
 use chassis::rng::Pcg32;
+use std::sync::Arc;
 
 /// One brain, driving one player.
 #[derive(Debug, Clone)]
@@ -47,6 +49,11 @@ pub struct Brain {
     /// space, and a mid-game flip when the home Foundry changes would
     /// silently mirror all of it.
     orientation: Option<Orientation>,
+    /// Authored pre-match facts are a separate channel from live fog and
+    /// memory. Only the player-facing controller receives one.
+    public_map: Option<Arc<PublicMapBriefing>>,
+    /// The immutable briefing transformed once into the latched policy frame.
+    oriented_public_map: Option<PublicMapBriefing>,
 }
 
 impl Brain {
@@ -83,16 +90,22 @@ impl Brain {
             policy: UtilityPolicy::new(),
             exec: Executive::default(),
             orientation: None,
+            public_map: None,
+            oriented_public_map: None,
         }
     }
 
     /// The default Standard, Balanced, seed-zero player-facing profile.
-    pub fn balanced(player: PlayerId, scenario_seed: u64) -> Self {
-        Self::scripted(player, scenario_seed, BotConfig::default())
+    pub fn balanced(player: PlayerId, public_map: Arc<PublicMapBriefing>) -> Self {
+        Self::scripted(player, BotConfig::default(), public_map)
     }
 
     /// Creates the player-facing opponent for an exact authored configuration.
-    pub fn scripted(player: PlayerId, _scenario_seed: u64, config: BotConfig) -> Self {
+    pub fn scripted(
+        player: PlayerId,
+        config: BotConfig,
+        public_map: Arc<PublicMapBriefing>,
+    ) -> Self {
         let profile = config.resolve_profile();
         let dials = Dials::scripted(&profile, DifficultyTuning::for_level(config.difficulty));
         let mut brain = Self::with_dials(player, dials);
@@ -102,6 +115,7 @@ impl Brain {
         brain.lifts = Some(LiftPlanner::new());
         brain.team = Some(TeamReliefPlanner::new());
         brain.raids = Some(RaidPlanner::new());
+        brain.public_map = Some(public_map);
         brain
     }
 
@@ -192,6 +206,18 @@ impl Brain {
         // the same logic runs for both seats, so its compass-flavored
         // tie-breaks cannot systematically favor either one.
         let oriented = orientation.observe(&obs);
+        let oriented_public_map = if self.profile.is_some() {
+            let public_map = self
+                .public_map
+                .as_deref()
+                .expect("a player-facing brain requires a public map briefing");
+            Some(
+                self.oriented_public_map
+                    .get_or_insert_with(|| orientation.briefing(public_map)),
+            )
+        } else {
+            None
+        };
         let armies: Vec<_> = self
             .exec
             .armies()
@@ -455,6 +481,8 @@ impl Brain {
             &reservations,
             intelligence.units(),
             intelligence.buildings(),
+            oriented_public_map
+                .expect("the player-facing utility path has an oriented map briefing"),
             strategic.intents,
         );
         let utility_context = if air_active || lift_active {
@@ -756,10 +784,21 @@ mod tests {
     use crate::stats::{BuildingKind, UnitKind};
     use chassis::grid::TilePos;
 
-    fn operation_identity_brain(player: PlayerId, scenario_seed: u64) -> Brain {
+    fn public_map(scenario: &Scenario) -> Arc<PublicMapBriefing> {
+        Arc::new(
+            PublicMapBriefing::from_scenario(scenario)
+                .expect("the focused scenario has a public map briefing"),
+        )
+    }
+
+    fn scripted_brain(scenario: &Scenario, player: PlayerId, config: BotConfig) -> Brain {
+        Brain::scripted(player, config, public_map(scenario))
+    }
+
+    fn operation_identity_brain(player: PlayerId, scenario: &Scenario) -> Brain {
         let difficulty = BotDifficulty::Prime;
         let config = BotConfig::scripted(difficulty, BotStance::Balanced, 20_024);
-        let brain = Brain::scripted(player, scenario_seed, config);
+        let brain = scripted_brain(scenario, player, config);
         let profile = brain
             .profile
             .as_ref()
@@ -789,6 +828,148 @@ mod tests {
         assert_eq!(after.policy, before.policy);
         assert_eq!(after.exec, before.exec);
         assert_eq!(after.orientation, before.orientation);
+        assert_eq!(after.public_map, before.public_map);
+        assert_eq!(after.oriented_public_map, before.oriented_public_map);
+    }
+
+    #[test]
+    fn only_the_player_facing_controller_receives_the_public_map_briefing() {
+        let scenario = Scenario::skirmish();
+        let public_map = public_map(&scenario);
+        let scripted = Brain::scripted(PlayerId(0), BotConfig::default(), Arc::clone(&public_map));
+        let overseer = Brain::overseer(PlayerId(0), scenario.seed);
+
+        assert!(Arc::ptr_eq(
+            scripted
+                .public_map
+                .as_ref()
+                .expect("the scripted controller owns the briefing"),
+            &public_map
+        ));
+        assert!(scripted.oriented_public_map.is_none());
+        assert!(overseer.public_map.is_none());
+        assert!(overseer.oriented_public_map.is_none());
+    }
+
+    #[test]
+    fn interrupted_unsafe_turret_is_resolved_through_an_ordinary_state_command() {
+        let mut scenario = Scenario::skirmish();
+        scenario.players[0].scrap = 1_000;
+        scenario.buildings.push(BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Turret,
+            x: 12,
+            y: 5,
+        });
+        let mut state = scenario
+            .build()
+            .expect("the interrupted-site fixture builds");
+        let requested_builder = state
+            .units()
+            .iter()
+            .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Harvester)
+            .expect("the home economy has a builder")
+            .id;
+        let anchor = TilePos::new(7, 5);
+        let placed = state.tick(&[PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Build {
+                units: vec![requested_builder],
+                kind: BuildingKind::Turret,
+                anchor,
+                queue: false,
+                defer: false,
+            },
+        }]);
+        assert!(
+            placed
+                .events
+                .iter()
+                .all(|event| !matches!(event, crate::event::Event::CommandRejected { .. })),
+            "the paid Turret site must enter through the ordinary command boundary: {placed:?}"
+        );
+        let site = state
+            .buildings()
+            .iter()
+            .find(|building| {
+                building.player == PlayerId(0)
+                    && building.kind == BuildingKind::Turret
+                    && building.anchor == anchor
+            })
+            .expect("the accepted command placed the intended Turret")
+            .id;
+
+        let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 9_001);
+        let mut brain = scripted_brain(&scenario, PlayerId(0), config);
+        while state.current_tick() < 12 {
+            state.tick(&[]);
+        }
+        let active_builder = state
+            .units()
+            .iter()
+            .find(|unit| matches!(unit.order, crate::state::Order::Build { site: target } if target == site))
+            .map(|unit| unit.id)
+            .expect("the builder is still working when danger interrupts the site");
+        let evacuation = brain.act(&state);
+        assert!(
+            evacuation.iter().any(|command| matches!(
+                &command.command,
+                Command::Move { units, .. } if units.contains(&active_builder)
+            )),
+            "the visible gun must evacuate the active builder: {evacuation:?}"
+        );
+        assert!(
+            evacuation.iter().all(|command| !matches!(
+                command.command,
+                Command::Cancel { building } if building == site
+            )),
+            "the staffed site is interrupted before it becomes an orphan"
+        );
+        state.tick(&evacuation);
+
+        while state.current_tick() < 24 {
+            state.tick(&[]);
+        }
+        assert!(matches!(
+            state
+                .unit(active_builder)
+                .expect("the active builder survived")
+                .order,
+            crate::state::Order::Idle | crate::state::Order::Move { .. }
+        ));
+        assert!(
+            state.building(site).is_some_and(|building| !building.built),
+            "the interruption must leave a paid unfinished site"
+        );
+
+        let resolution = brain.act(&state);
+        assert!(
+            resolution.iter().any(|command| matches!(
+                command.command,
+                Command::Cancel { building } if building == site
+            )),
+            "an observably unsafe orphan Turret must be resolved instead of decaying forever: {resolution:?}"
+        );
+        let resolved = state.tick(&resolution);
+        assert!(
+            resolved
+                .events
+                .iter()
+                .all(|event| !matches!(event, crate::event::Event::CommandRejected { .. })),
+            "the ordinary cancellation must be accepted by State: {resolved:?}"
+        );
+        assert!(state.building(site).is_none());
+        assert!(
+            resolved.events.iter().any(|event| matches!(
+                event,
+                crate::event::Event::BuildCancelled {
+                    building,
+                    player: PlayerId(0),
+                    refund,
+                } if *building == site && *refund > 0
+            )),
+            "the ordinary partial-refund event must account for the abandoned investment: {resolved:?}"
+        );
     }
 
     fn remote_expansion_defense_scenario() -> Scenario {
@@ -869,7 +1050,7 @@ mod tests {
         for difficulty in BotDifficulty::ALL {
             for personality_seed in 0..64 {
                 let config = BotConfig::scripted(difficulty, BotStance::Balanced, personality_seed);
-                let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+                let mut brain = scripted_brain(&scenario, PlayerId(0), config);
                 let staging = TilePos::new(8, 7);
                 let muster = brain.exec.apply_with_reservations(
                     PlayerId(0),
@@ -996,9 +1177,10 @@ mod tests {
             unit.hp = wounded_hp;
         }
         let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201);
+        let public_map = public_map(&scenario);
         let mut brains = [
-            Brain::scripted(PlayerId(0), scenario.seed, config),
-            Brain::scripted(PlayerId(1), scenario.seed, config),
+            Brain::scripted(PlayerId(0), config, Arc::clone(&public_map)),
+            Brain::scripted(PlayerId(1), config, public_map),
         ];
         for (index, brain) in brains.iter_mut().enumerate() {
             let (player, staging) = if index == 0 {
@@ -1072,7 +1254,7 @@ mod tests {
         let scenario = Scenario::skirmish();
         let mut state = scenario.build().expect("the skirmish builds");
         let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 20_042);
-        let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+        let mut brain = scripted_brain(&scenario, PlayerId(0), config);
 
         let _ = brain.act(&state);
         assert_eq!(
@@ -1100,7 +1282,7 @@ mod tests {
             let scenario = Scenario::skirmish();
             let mut state = scenario.build().expect("the skirmish builds");
             let config = BotConfig::scripted(difficulty, BotStance::Balanced, 20_042);
-            let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+            let mut brain = scripted_brain(&scenario, PlayerId(0), config);
             let cadence = DifficultyTuning::for_level(difficulty).cadence;
             assert_eq!(brain.dials.cadence, cadence);
 
@@ -1317,8 +1499,8 @@ mod tests {
         let prime_config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 20_042);
         let veteran_config =
             BotConfig::scripted(BotDifficulty::Veteran, BotStance::Balanced, 20_042);
-        let mut prime = Brain::scripted(PlayerId(0), scenario.seed, prime_config);
-        let mut veteran = Brain::scripted(PlayerId(0), scenario.seed, veteran_config);
+        let mut prime = scripted_brain(&scenario, PlayerId(0), prime_config);
+        let mut veteran = scripted_brain(&scenario, PlayerId(0), veteran_config);
 
         let prime_commands = prime.act(&state);
         let focus = prime_commands
@@ -1378,8 +1560,8 @@ mod tests {
         );
 
         let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 20_042);
-        let mut baseline = Brain::scripted(PlayerId(0), scenario.seed, config);
-        let mut changed = Brain::scripted(PlayerId(0), scenario.seed, config);
+        let mut baseline = scripted_brain(&scenario, PlayerId(0), config);
+        let mut changed = scripted_brain(&scenario, PlayerId(0), config);
         assert_eq!(baseline.act(&state), changed.act(&counterfactual));
         assert_brain_unchanged(&baseline, &changed);
     }
@@ -1550,24 +1732,25 @@ mod tests {
         let scenario = calibration_open_ferrous();
         let mut state = scenario.build().expect("the calibration opening builds");
         let personality_seed = 1_616_201;
+        let public_map = public_map(&scenario);
         let mut brains = [
             Brain::scripted(
                 PlayerId(0),
-                scenario.seed,
                 BotConfig::scripted(
                     BotDifficulty::Standard,
                     BotStance::Balanced,
                     personality_seed,
                 ),
+                Arc::clone(&public_map),
             ),
             Brain::scripted(
                 PlayerId(1),
-                scenario.seed,
                 BotConfig::scripted(
                     BotDifficulty::Veteran,
                     BotStance::Balanced,
                     personality_seed,
                 ),
+                public_map,
             ),
         ];
         let orientations = [PlayerId(0), PlayerId(1)].map(|player| {
@@ -1585,9 +1768,11 @@ mod tests {
         let mut foundry_started: [Vec<u64>; 2] = Default::default();
         let mut foundry_completed: [Vec<u64>; 2] = Default::default();
         let mut equivalent_harvest_admissions = 0;
-        let mut contact_tick = None;
 
-        while state.current_tick() < OPENING_END && contact_tick.is_none() {
+        // The current opening can make contact before its first expansion.
+        // Stop at the guarded macro milestone instead of letting that early
+        // skirmish skip the part of the opening this test exists to compare.
+        while state.current_tick() < OPENING_END && foundry_completed.iter().any(Vec::is_empty) {
             let tick = state.current_tick();
             let harvest_snapshots = [0, 1].map(|seat| {
                 opening_harvest_snapshot(
@@ -1658,7 +1843,6 @@ mod tests {
                         kind: BuildingKind::Foundry,
                         ..
                     } => foundry_completed[usize::from(player.0)].push(tick),
-                    crate::Event::AttackHit { .. } => contact_tick = Some(tick),
                     crate::Event::CommandRejected { player, reason } => {
                         panic!("seat {player} issued a rejected opening command: {reason:?}")
                     }
@@ -1666,11 +1850,6 @@ mod tests {
                 }
             }
         }
-
-        assert!(
-            contact_tick.is_some() || state.current_tick() >= OPENING_END,
-            "the opening stopped before contact or its safety ceiling"
-        );
 
         assert_eq!(
             macro_commands[0], macro_commands[1],
@@ -1682,11 +1861,11 @@ mod tests {
         );
         assert!(
             hauled[1] >= hauled[0],
-            "Veteran hauled less than Standard before contact: {hauled:?}"
+            "Veteran hauled less than Standard through the first expansion: {hauled:?}"
         );
         assert!(
             state.player(PlayerId(1)).scrap >= state.player(PlayerId(0)).scrap,
-            "Veteran banked less than Standard before contact: Standard={}, Veteran={}",
+            "Veteran banked less than Standard through the first expansion: Standard={}, Veteran={}",
             state.player(PlayerId(0)).scrap,
             state.player(PlayerId(1)).scrap,
         );
@@ -2297,7 +2476,7 @@ mod tests {
         );
 
         let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 17);
-        let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+        let mut brain = scripted_brain(&scenario, PlayerId(0), config);
         while !super::super::difficulty::strategic_admission_tick(state.current_tick()) {
             state.tick(&[]);
         }
@@ -2400,7 +2579,7 @@ mod tests {
             state.tick(&[]);
         }
 
-        let mut brain = operation_identity_brain(PlayerId(0), scenario.seed);
+        let mut brain = operation_identity_brain(PlayerId(0), &scenario);
 
         let commands = brain.act(&state);
 
@@ -2465,7 +2644,7 @@ mod tests {
         for difficulty in BotDifficulty::ALL {
             for load in [PrimaryLoad::None, PrimaryLoad::Air, PrimaryLoad::AirAndLift] {
                 let config = BotConfig::scripted(difficulty, BotStance::Balanced, 20_024);
-                let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+                let mut brain = scripted_brain(&scenario, PlayerId(0), config);
                 brain.team = None;
                 match load {
                     PrimaryLoad::None => {
@@ -2518,7 +2697,7 @@ mod tests {
 
         for difficulty in BotDifficulty::ALL {
             let config = BotConfig::scripted(difficulty, BotStance::Balanced, 20_024);
-            let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+            let mut brain = scripted_brain(&scenario, PlayerId(0), config);
             brain.team = None;
             let profile = *brain
                 .profile
@@ -2610,7 +2789,7 @@ mod tests {
         let mut spending_by_difficulty = Vec::new();
         for difficulty in BotDifficulty::ALL {
             let config = BotConfig::scripted(difficulty, BotStance::Balanced, 20_024);
-            let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+            let mut brain = scripted_brain(&scenario, PlayerId(0), config);
             assert!(
                 state.current_tick().is_multiple_of(brain.dials().cadence),
                 "the shared snapshot must be a think tick for {difficulty:?}"
@@ -2716,7 +2895,7 @@ mod tests {
             state.tick(&[]);
         }
 
-        let mut brain = operation_identity_brain(PlayerId(0), scenario.seed);
+        let mut brain = operation_identity_brain(PlayerId(0), &scenario);
 
         let mut shared_target = None;
         let mut bomber_release = false;
@@ -2901,7 +3080,7 @@ mod tests {
                 .filter(|unit| unit.player == PlayerId(0))
                 .all(|unit| unit.kind.stats().transport_size == 0)
         );
-        let mut brain = operation_identity_brain(PlayerId(0), scenario.seed);
+        let mut brain = operation_identity_brain(PlayerId(0), &scenario);
 
         let mut launched = None;
         for _ in 0..4_000 {
@@ -2988,7 +3167,7 @@ mod tests {
             state.tick(&[]);
         }
 
-        let mut brain = operation_identity_brain(PlayerId(0), scenario.seed);
+        let mut brain = operation_identity_brain(PlayerId(0), &scenario);
         let profile = *brain
             .profile
             .as_ref()
@@ -3049,7 +3228,8 @@ mod tests {
         );
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
 
-        let mut brain = operation_identity_brain(PlayerId(0), 0x0A16_0016);
+        let briefing_scenario = Scenario::skirmish();
+        let mut brain = operation_identity_brain(PlayerId(0), &briefing_scenario);
         let profile = *brain
             .profile
             .as_ref()
@@ -3109,7 +3289,7 @@ mod tests {
         });
         let mut state = scenario.build().expect("double-booking scenario builds");
         let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 17);
-        let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+        let mut brain = scripted_brain(&scenario, PlayerId(0), config);
         let obs = Observation::fog_honest(&state, PlayerId(0));
         let staging = TilePos::new(8, 15);
 
@@ -3129,13 +3309,16 @@ mod tests {
         assert_eq!(army.target, None);
         let enlisted: Vec<_> = brain.exec.enlisted().collect();
         let mut policy_probe = brain.policy.clone();
-        let unreserved = policy_probe.think_with_prelude(
+        let unreserved = policy_probe.think_player_facing(
             brain.dials(),
             &obs,
             std::slice::from_ref(&army),
             &enlisted,
             &[],
-            Vec::new(),
+            brain
+                .public_map
+                .as_deref()
+                .expect("scripted brains own a public map briefing"),
         );
         assert!(
             unreserved.iter().any(|intent| matches!(
@@ -3571,6 +3754,7 @@ mod tests {
             hp: kind.stats().max_hp,
             idle: true,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,

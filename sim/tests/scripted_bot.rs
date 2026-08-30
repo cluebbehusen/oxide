@@ -1,15 +1,26 @@
 //! Player-facing scripted opponent contracts.
 
-use oxide_sim::bot::{Brain, Dials, seat_bots};
-use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance, BuildingSpec, UnitSpec};
+use chassis::grid::TilePos;
+use oxide_sim::bot::{Brain, Dials, Observation, PublicMapBriefing, seat_bots};
+use oxide_sim::scenario::{
+    BotConfig, BotDifficulty, BotStance, BuildingSpec, PlayerSpec, UnitSpec,
+};
 use oxide_sim::{
-    BuildingKind, Command, Event, GameResult, PlayerId, Scenario, TICKS_PER_SECOND, Target,
-    UnitKind,
+    BuildingKind, Command, Event, Faction, GameResult, Order, PlayerId, Scenario, TICKS_PER_SECOND,
+    Target, UnitKind,
 };
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_SCENARIO: AtomicU64 = AtomicU64::new(0);
+
+fn public_map(scenario: &Scenario) -> Arc<PublicMapBriefing> {
+    Arc::new(
+        PublicMapBriefing::from_scenario(scenario)
+            .expect("the focused scenario has a public map briefing"),
+    )
+}
 
 struct TempScenario(PathBuf);
 
@@ -37,13 +48,13 @@ fn seating_keeps_scripted_and_empty_chairs_distinct() {
     scenario.players[1].bot = true;
     scenario.players[1].bot_config = Some(BotConfig::default());
 
-    let bots = seat_bots(&scenario);
+    let bots = seat_bots(&scenario).expect("the skirmish has a briefing");
     assert_eq!(bots.len(), 2);
     assert_eq!(bots[0].player(), PlayerId(0));
     assert_eq!(bots[1].player(), PlayerId(1));
 
     scenario.players[0].bot_config = None;
-    let bots = seat_bots(&scenario);
+    let bots = seat_bots(&scenario).expect("the skirmish has a briefing");
     assert_eq!(
         bots.len(),
         1,
@@ -146,7 +157,8 @@ fn standard_uses_the_full_fog_honest_tree_without_redefining_the_overseer() {
     assert!(balanced.ferry);
     assert!(balanced.mines);
 
-    let scripted = Brain::balanced(PlayerId(1), 73);
+    let scenario = Scenario::skirmish();
+    let scripted = Brain::balanced(PlayerId(1), public_map(&scenario));
     let overseer = Brain::overseer(PlayerId(1), 73);
     let profile = scripted
         .profile()
@@ -178,8 +190,10 @@ fn scripted_profile_is_seat_symmetric_while_overseer_keeps_legacy_jitter() {
         stance: BotStance::Aggressive,
         personality_seed: 8_675_309,
     };
-    let left = Brain::scripted(PlayerId(0), 1, config);
-    let right = Brain::scripted(PlayerId(1), 1, config);
+    let scenario = Scenario::skirmish();
+    let public_map = public_map(&scenario);
+    let left = Brain::scripted(PlayerId(0), config, Arc::clone(&public_map));
+    let right = Brain::scripted(PlayerId(1), config, public_map);
 
     assert_eq!(left.profile(), right.profile());
     assert_eq!(left.dials(), right.dials());
@@ -200,8 +214,8 @@ fn scripted_seat_is_deterministic_and_makes_progress_past_the_opening() {
     scenario.players[1].bot_config = Some(BotConfig::default());
     let mut left = scenario.build().expect("skirmish builds");
     let mut right = scenario.build().expect("skirmish builds again");
-    let mut left_bots = seat_bots(&scenario);
-    let mut right_bots = seat_bots(&scenario);
+    let mut left_bots = seat_bots(&scenario).expect("the skirmish has a briefing");
+    let mut right_bots = seat_bots(&scenario).expect("the skirmish has a briefing");
     let starting_units = left.units().len();
     let starting_buildings = left.buildings().len();
     let mut active_thinks = 0_u32;
@@ -252,6 +266,342 @@ fn scripted_seat_is_deterministic_and_makes_progress_past_the_opening() {
 }
 
 #[test]
+fn prime_skirmish_places_an_accepted_turret_on_the_hostile_approach() {
+    let mut scenario = Scenario::skirmish();
+    scenario.players[0].bot = true;
+    scenario.players[0].bot_config = Some(BotConfig::scripted(
+        BotDifficulty::Prime,
+        BotStance::Balanced,
+        9_000,
+    ));
+    scenario.players[1].bot = false;
+    scenario.players[1].bot_config = None;
+
+    let briefing = public_map(&scenario);
+    let own_start = briefing
+        .starting_foundries()
+        .iter()
+        .find(|start| start.player == PlayerId(0))
+        .expect("Skirmish has the Prime seat's public starting Foundry")
+        .anchor;
+    let hostile_start = briefing
+        .hostile_starting_foundries(PlayerId(0))
+        .next()
+        .expect("Skirmish has a public hostile starting Foundry")
+        .anchor;
+    let config = scenario.players[0].bot_config.expect("Prime is configured");
+    let mut brain = Brain::scripted(PlayerId(0), config, briefing);
+    let mut state = scenario.build().expect("Skirmish builds");
+    let mut turret_anchor = None;
+    let mut rejected = Vec::new();
+
+    for _ in 0..TICKS_PER_SECOND * 4 * 60 {
+        let commands = brain.act(&state);
+        let proposed = commands.iter().find_map(|command| match command.command {
+            Command::Build {
+                kind: BuildingKind::Turret,
+                anchor,
+                ..
+            } if command.player == PlayerId(0) => Some(anchor),
+            _ => None,
+        });
+        if let Some(anchor) = proposed {
+            if let Some(expected) = turret_anchor {
+                assert_eq!(
+                    anchor, expected,
+                    "Prime should keep the accepted strategic site while its founder walks"
+                );
+            } else {
+                let observation = Observation::fog_honest(&state, PlayerId(0));
+                assert!(
+                    observation.enemy_units.is_empty() && observation.enemy_buildings.is_empty(),
+                    "the first Turret should use the public approach before live hostile contact"
+                );
+                turret_anchor = Some(anchor);
+            }
+        }
+        let report = state.tick(&commands);
+        rejected.extend(report.events.into_iter().filter_map(|event| match event {
+            Event::CommandRejected {
+                player: PlayerId(0),
+                reason,
+            } => Some((report.tick, reason)),
+            _ => None,
+        }));
+        if turret_anchor.is_some_and(|anchor| {
+            state.buildings().iter().any(|building| {
+                building.player == PlayerId(0)
+                    && building.kind == BuildingKind::Turret
+                    && building.anchor == anchor
+            })
+        }) {
+            break;
+        }
+    }
+
+    let turret_anchor = turret_anchor.expect("Prime proposed its bounded pre-contact Turret");
+    assert_eq!(
+        turret_anchor,
+        TilePos::new(14, 7),
+        "Skirmish's strategic Turret should cover the hostile approach beside established value"
+    );
+    assert!(
+        rejected.is_empty(),
+        "Prime issued rejected commands before its Turret: {rejected:?}"
+    );
+    assert!(
+        state.buildings().iter().any(|building| {
+            building.player == PlayerId(0)
+                && building.kind == BuildingKind::Turret
+                && building.anchor == turret_anchor
+        }),
+        "the ordinary Build command should place the strategic Turret site"
+    );
+    assert_ne!(
+        turret_anchor,
+        TilePos::new(4, 1),
+        "the public hostile approach should replace the old rear-corner placement"
+    );
+
+    let foundry_size = BuildingKind::Foundry.base_stats().size;
+    let turret_size = BuildingKind::Turret.base_stats().size;
+    let own_center = (
+        own_start.x * 2 + foundry_size.0,
+        own_start.y * 2 + foundry_size.1,
+    );
+    let hostile_center = (
+        hostile_start.x * 2 + foundry_size.0,
+        hostile_start.y * 2 + foundry_size.1,
+    );
+    let turret_center = (
+        turret_anchor.x * 2 + turret_size.0,
+        turret_anchor.y * 2 + turret_size.1,
+    );
+    let hostile_direction = (
+        i64::from(hostile_center.0 - own_center.0),
+        i64::from(hostile_center.1 - own_center.1),
+    );
+    let turret_direction = (
+        i64::from(turret_center.0 - own_center.0),
+        i64::from(turret_center.1 - own_center.1),
+    );
+    let forward_progress =
+        hostile_direction.0 * turret_direction.0 + hostile_direction.1 * turret_direction.1;
+    assert!(
+        forward_progress > 0,
+        "the Turret at {turret_anchor:?} must face the public hostile approach from {own_start:?} toward {hostile_start:?}"
+    );
+}
+
+#[test]
+fn prime_skirmish_recalls_one_public_probe_without_reprobing_during_a_chase() {
+    let mut scenario = Scenario::skirmish();
+    scenario.seed = 7_000;
+    let briefing = public_map(&scenario);
+    let own_start = briefing
+        .starting_foundries()
+        .iter()
+        .find(|start| start.player == PlayerId(0))
+        .expect("Skirmish has the Prime seat's public starting Foundry")
+        .anchor;
+    let hostile_start = briefing
+        .hostile_starting_foundries(PlayerId(0))
+        .next()
+        .expect("Skirmish has a public hostile starting Foundry")
+        .anchor;
+    let (dx, dy) = (hostile_start.x - own_start.x, hostile_start.y - own_start.y);
+    let distance = dx.abs().max(dy.abs());
+    let public_probe = TilePos::new(
+        hostile_start.x - dx * 5 / distance,
+        hostile_start.y - dy * 5 / distance,
+    );
+    let mut state = scenario.build().expect("Skirmish builds");
+    let starting_harvesters: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Harvester)
+        .map(|unit| unit.id)
+        .collect();
+    let mut prime = Brain::scripted(
+        PlayerId(0),
+        BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 9_000),
+        Arc::clone(&briefing),
+    );
+    let mut overseer = Brain::overseer_with_policy_seed(PlayerId(1), 0);
+    let mut probes = Vec::new();
+    let mut recalls = Vec::new();
+    let mut probed_workers = None;
+
+    for tick in 0..1_200 {
+        let mut commands = prime.act(&state);
+        for command in &commands {
+            let Command::Move { units, goal, .. } = &command.command else {
+                continue;
+            };
+            if !units.iter().any(|unit| starting_harvesters.contains(unit)) {
+                continue;
+            }
+            if *goal == public_probe {
+                probes.push((tick, units.clone()));
+                probed_workers = Some(units.clone());
+            } else if probed_workers
+                .as_ref()
+                .is_some_and(|probed| units.iter().any(|unit| probed.contains(unit)))
+            {
+                recalls.push((tick, units.clone(), *goal));
+            }
+        }
+        commands.extend(overseer.act(&state));
+        state.tick(&commands);
+    }
+
+    assert_eq!(
+        probes.len(),
+        1,
+        "Prime must not cycle replacement Harvesters through the same public probe: {probes:?}"
+    );
+    assert!(
+        !recalls.is_empty(),
+        "current danger should recall the assigned public probe"
+    );
+    assert!(
+        recalls.iter().all(|(_, units, _)| *units == probes[0].1),
+        "only the assigned scout should receive the chase evacuation: {recalls:?}"
+    );
+    assert!(
+        recalls
+            .windows(2)
+            .all(|pair| { pair[1].2.chebyshev(own_start) < pair[0].2.chebyshev(own_start) }),
+        "continued pursuit may require another evacuation, but every goal must make strict progress home: {recalls:?}"
+    );
+}
+
+#[test]
+fn southeast_brain_maps_public_start_recon_through_an_ordinary_state_command() {
+    const WIDTH: usize = 40;
+    const HEIGHT: usize = 24;
+    let northwest = TilePos::new(4, 4);
+    let southeast = TilePos::new(34, 18);
+    let mut rows = vec![vec![b'.'; WIDTH]; HEIGHT];
+    rows[northwest.y as usize][northwest.x as usize] = b'1';
+    rows[southeast.y as usize][southeast.x as usize] = b'2';
+    let scenario = Scenario {
+        name: "seat-one public recon orientation".into(),
+        seed: 91,
+        map: rows
+            .into_iter()
+            .map(|row| String::from_utf8(row).expect("ASCII map"))
+            .collect(),
+        players: vec![
+            PlayerSpec {
+                name: "northwest".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            },
+            PlayerSpec {
+                name: "southeast".into(),
+                faction: Faction::Cupric,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            },
+        ],
+        units: vec![
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Harvester,
+                x: 28,
+                y: 16,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Harvester,
+                x: 29,
+                y: 16,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Harvester,
+                x: 30,
+                y: 16,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Harvester,
+                x: 31,
+                y: 16,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Gnat,
+                x: 30,
+                y: 18,
+            },
+        ],
+        buildings: Vec::new(),
+        meta: None,
+    };
+    let mut state = scenario
+        .build()
+        .expect("the open orientation fixture builds");
+    assert!(
+        Observation::fog_honest(&state, PlayerId(1))
+            .enemy_buildings
+            .is_empty(),
+        "the northwest Foundry begins outside current sight"
+    );
+    let scout = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(1) && unit.kind == UnitKind::Gnat)
+        .expect("the southeast seat owns a dedicated scout")
+        .id;
+    let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 9_001);
+    let mut brain = Brain::scripted(PlayerId(1), config, public_map(&scenario));
+
+    let commands = brain.act(&state);
+    let expected_goal = TilePos::new(0, 3);
+    assert!(
+        commands.iter().any(|command| {
+            command.player == PlayerId(1)
+                && matches!(
+                    &command.command,
+                    Command::Move {
+                        units,
+                        goal,
+                        queue: false,
+                    } if units == &vec![scout] && *goal == expected_goal
+                )
+        }),
+        "the oriented public start should lower back to the southeast seat's world-space rear look: {commands:?}"
+    );
+
+    let report = state.tick(&commands);
+    assert!(
+        !report.events.iter().any(|event| matches!(
+            event,
+            Event::CommandRejected {
+                player: PlayerId(1),
+                ..
+            }
+        )),
+        "the mapped reconnaissance command must be accepted: {:?}",
+        report.events
+    );
+    assert_eq!(
+        state.unit(scout).expect("the scout remains alive").order,
+        Order::Move {
+            goal: expected_goal,
+        },
+        "State must receive the same world-space goal emitted by the rotated Brain"
+    );
+}
+
+#[test]
 fn balanced_mirror_plays_a_complete_decisive_match() {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
@@ -259,7 +609,7 @@ fn balanced_mirror_plays_a_complete_decisive_match() {
         player.bot_config = Some(BotConfig::default());
     }
     let mut state = scenario.build().expect("skirmish builds");
-    let mut bots = seat_bots(&scenario);
+    let mut bots = seat_bots(&scenario).expect("the skirmish has a briefing");
     let mut rejected_commands = Vec::new();
 
     for _ in 0..30_000 {
@@ -474,8 +824,8 @@ fn prime_air_operation_suppresses_visible_flak_before_committing_bombers() {
     bombers.sort_unstable();
     let mut brain = Brain::scripted(
         PlayerId(0),
-        scenario.seed,
         scenario.players[0].bot_config.expect("bot is configured"),
+        public_map(&scenario),
     );
     let mut first_suppression = None;
     let mut flak_destroyed = None;
@@ -628,8 +978,8 @@ fn support_identity_reserves_an_exact_relief_group_for_a_visible_allied_emergenc
         .collect();
     let mut brain = Brain::scripted(
         PlayerId(0),
-        scenario.seed,
         scenario.players[0].bot_config.expect("bot is configured"),
+        public_map(&scenario),
     );
 
     let mut relief = None;
@@ -720,8 +1070,8 @@ fn scripted_lift_launches_three_full_manifests_together_and_returns_every_carrie
     carriers.sort_unstable();
     let mut brain = Brain::scripted(
         PlayerId(0),
-        scenario.seed,
         scenario.players[0].bot_config.unwrap(),
+        public_map(&scenario),
     );
     let mut loads = Vec::new();
     let mut boarded = Vec::new();

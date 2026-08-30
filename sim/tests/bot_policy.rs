@@ -2,9 +2,10 @@
 
 use chassis::grid::TilePos;
 use oxide_sim::bot::{
-    BuildingObs, Dials, DifficultyTuning, Executive, Intent, Observation, UnitObs, UtilityPolicy,
+    BuildingObs, Dials, DifficultyTuning, Executive, Intent, Observation, PublicMapBriefing,
+    UnitObs, UtilityPolicy,
 };
-use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
+use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec};
 use oxide_sim::stats::{BuildingKind, EXTRACTOR_SUPPORT_RADIUS};
 use oxide_sim::{BuildingId, Command, Event, Faction, PlayerId, Scenario, UnitId, UnitKind};
 
@@ -26,6 +27,7 @@ fn observed_unit(id: u32, kind: UnitKind, tile: TilePos) -> UnitObs {
         hp: kind.stats().max_hp,
         idle: true,
         carrying: 0,
+        harvesting: None,
         cargo: 0,
         site: None,
         salvaging: None,
@@ -99,13 +101,38 @@ fn construction_observation(scrap: u32) -> Observation {
     }
 }
 
+fn public_map(obs: &Observation) -> PublicMapBriefing {
+    let width = usize::try_from(obs.map_width).expect("the test map has a positive width");
+    let height = usize::try_from(obs.map_height).expect("the test map has a positive height");
+    assert!(width >= 2 && height >= 2);
+    let mut map = vec![".".repeat(width); height];
+    map[0].replace_range(..1, "1");
+    PublicMapBriefing::from_scenario(&Scenario {
+        name: "policy test map".into(),
+        seed: 0,
+        map,
+        players: vec![PlayerSpec {
+            name: "test seat".into(),
+            faction: obs.faction,
+            team: None,
+            scrap: 0,
+            bot: false,
+            bot_config: None,
+        }],
+        units: Vec::new(),
+        buildings: Vec::new(),
+        meta: None,
+    })
+    .expect("the focused observation has a matching public map")
+}
+
 fn add_building(obs: &mut Observation, building: BuildingObs) {
     obs.my_buildings.push(building);
     obs.my_queues.push(Vec::new());
 }
 
 fn player_facing_intents(dials: &Dials, obs: &Observation) -> Vec<Intent> {
-    UtilityPolicy::new().think_with_prelude(dials, obs, &[], &[], &[], Vec::new())
+    UtilityPolicy::new().think_player_facing(dials, obs, &[], &[], &[], &public_map(obs))
 }
 
 fn planned_cost(intent: &Intent) -> u32 {
@@ -243,7 +270,7 @@ fn scouts_do_not_create_sticky_anti_air_demand_but_armed_flyers_do() {
             player: PlayerId(1),
             ..observed_unit(200, scout, TilePos::new(18, 10))
         }];
-        let current = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
+        let current = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
         assert!(
             !has_aa_response(&current),
             "an unarmed {scout:?} must not divert the economy into AA: {current:?}"
@@ -251,7 +278,7 @@ fn scouts_do_not_create_sticky_anti_air_demand_but_armed_flyers_do() {
 
         obs.tick += 24;
         obs.enemy_units.clear();
-        let remembered = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
+        let remembered = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
         assert!(
             !has_aa_response(&remembered),
             "seeing {scout:?} must not leave sticky hostile-air evidence: {remembered:?}"
@@ -263,7 +290,7 @@ fn scouts_do_not_create_sticky_anti_air_demand_but_armed_flyers_do() {
         player: PlayerId(1),
         ..observed_unit(201, UnitKind::Condor, TilePos::new(18, 10))
     }];
-    let current = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
+    let current = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert!(
         current
             .iter()
@@ -283,7 +310,7 @@ fn scouts_do_not_create_sticky_anti_air_demand_but_armed_flyers_do() {
 
     obs.tick += 24;
     obs.enemy_units.clear();
-    let remembered = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
+    let remembered = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert!(
         has_aa_response(&remembered),
         "an armed flyer should leave bounded sticky AA evidence: {remembered:?}"
@@ -377,7 +404,8 @@ fn standard_opening_can_train_and_restore_its_supported_frame_from_150_scrap() {
 
     let first_obs = Observation::fog_honest(&state, me);
     assert_eq!(first_obs.scrap, 150);
-    let first_intents = policy.think_with_prelude(&dials, &first_obs, &[], &[], &[], Vec::new());
+    let first_intents =
+        policy.think_player_facing(&dials, &first_obs, &[], &[], &[], &public_map(&first_obs));
     assert!(
         first_intents.iter().any(|intent| matches!(
             intent,
@@ -424,8 +452,14 @@ fn standard_opening_can_train_and_restore_its_supported_frame_from_150_scrap() {
             state.tick(&[]);
         }
         let second_obs = Observation::fog_honest(&state, me);
-        let second_intents =
-            policy.think_with_prelude(&dials, &second_obs, &[], &[], &[], Vec::new());
+        let second_intents = policy.think_player_facing(
+            &dials,
+            &second_obs,
+            &[],
+            &[],
+            &[],
+            &public_map(&second_obs),
+        );
         let second_commands =
             executive.apply_with_reservations(me, &second_obs, &second_intents, &[]);
         assert!(second_commands.iter().any(|command| matches!(
@@ -545,24 +579,32 @@ fn player_facing_restoration_waits_for_a_visible_occupant_to_clear() {
 }
 
 #[test]
-fn player_facing_restoration_requires_sustained_clear_sight_after_regional_danger() {
+fn player_facing_restoration_requires_a_clean_bounded_sweep_after_worker_damage() {
     let home = TilePos::new(2, 10);
     let frame = TilePos::new(8, 10);
+    let incident = frame.offset(2, 1);
+    let hidden_corner = incident.offset(
+        oxide_sim::stats::HARVEST_INCIDENT_DANGER_RADIUS,
+        oxide_sim::stats::HARVEST_INCIDENT_DANGER_RADIUS,
+    );
     let mut obs = construction_observation(1_000);
     add_building(
         &mut obs,
         observed_building(0, BuildingKind::Foundry, home, true),
     );
     obs.known_frames.push(frame);
-    obs.salvage_incidents.push(frame.offset(2, 1));
     let dials = standard_dials();
     let mut policy = UtilityPolicy::new();
     let restores_frame = |intents: &[Intent]| plans_build(intents, BuildingKind::Extractor, frame);
 
-    let warned = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
+    let _ = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    obs.tick = oxide_sim::bot::difficulty::strategic_admission_at_or_after(obs.tick + 1);
+    obs.my_units[5].hp -= 1;
+    obs.salvage_incidents.push(incident);
+    let warned = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert!(
         !restores_frame(&warned),
-        "a recent nearby loss pauses both restoration and its capital claim: {warned:?}"
+        "a nearby worker hit pauses both restoration and its capital claim: {warned:?}"
     );
     let overseer = UtilityPolicy::new().think(&dials, &obs, &[], &[]);
     assert!(
@@ -575,7 +617,7 @@ fn player_facing_restoration_requires_sustained_clear_sight_after_regional_dange
     );
     obs.salvage_incidents.clear();
     obs.visible.fill(false);
-    let expired_in_fog = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
+    let expired_in_fog = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert!(
         !restores_frame(&expired_in_fog),
         "warning expiry in fog must not send another builder into the contested frame: \
@@ -583,49 +625,24 @@ fn player_facing_restoration_requires_sustained_clear_sight_after_regional_dange
     );
 
     obs.visible.fill(true);
-    let first_clear_look = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
+    let hidden_index = usize::try_from(hidden_corner.y * obs.map_width + hidden_corner.x).unwrap();
+    obs.visible[hidden_index] = false;
+    obs.tick = oxide_sim::bot::difficulty::strategic_admission_at_or_after(obs.tick + 1);
+    let partial_sweep = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert!(
-        !restores_frame(&first_clear_look),
-        "one clear look must not reopen a recently contested frame: {first_clear_look:?}"
+        !restores_frame(&partial_sweep),
+        "partial current sight cannot reopen a worker kill zone: {partial_sweep:?}"
     );
 
-    obs.tick += oxide_sim::stats::HARVEST_INCIDENT_MEMORY_TICKS - 1;
-    let almost_confirmed = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
-    assert!(
-        !restores_frame(&almost_confirmed),
-        "clear sight must persist for the full confirmation interval: {almost_confirmed:?}"
-    );
-
-    obs.tick += 1;
-    obs.visible.fill(false);
-    let interrupted = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
-    assert!(
-        !restores_frame(&interrupted),
-        "losing sight at the confirmation boundary must restart the clear clock: \
-         {interrupted:?}"
-    );
-
-    obs.visible.fill(true);
-    let restarted = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
-    assert!(
-        !restores_frame(&restarted),
-        "reacquiring the region starts a new confirmation interval: {restarted:?}"
-    );
-
-    obs.tick += oxide_sim::stats::HARVEST_INCIDENT_MEMORY_TICKS - 1;
-    let still_waiting = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
-    assert!(
-        !restores_frame(&still_waiting),
-        "the restarted interval must also run in full: {still_waiting:?}"
-    );
-
-    obs.tick += 1;
-    let sustained_clear = policy.think_with_prelude(&dials, &obs, &[], &[], &[], Vec::new());
+    obs.visible[hidden_index] = true;
+    obs.tick = oxide_sim::bot::difficulty::strategic_admission_at_or_after(obs.tick + 1);
+    let completed_sweep =
+        policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert_eq!(
-        exact_builder_for(&sustained_clear, BuildingKind::Extractor, frame),
+        exact_builder_for(&completed_sweep, BuildingKind::Extractor, frame),
         Some(UnitId(5)),
-        "only sustained current sight over the region releases the nearest safe exact builder for \
-         frame restoration: {sustained_clear:?}"
+        "one bounded danger-free sweep releases the nearest safe exact builder without a second \
+         cooldown: {completed_sweep:?}"
     );
 }
 

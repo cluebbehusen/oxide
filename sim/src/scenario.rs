@@ -375,6 +375,31 @@ pub enum ScenarioError {
 }
 
 impl Scenario {
+    /// Parses the map and proves that its authored Foundry anchors match the
+    /// declared player table. Shared by state construction and the immutable
+    /// pre-match bot briefing so those two views cannot disagree.
+    pub(crate) fn parse_map_and_anchors(
+        &self,
+    ) -> Result<(Map, Vec<(PlayerId, TilePos)>), ScenarioError> {
+        if self.players.is_empty() || self.players.len() > 16 {
+            return Err(ScenarioError::PlayerCount(self.players.len()));
+        }
+        let (map, anchors) = Map::parse(&self.map)?;
+        if let Some((player, _)) = anchors
+            .iter()
+            .find(|(player, _)| usize::from(player.0) >= self.players.len())
+        {
+            return Err(ScenarioError::ExtraAnchor(*player, self.players.len()));
+        }
+        for index in 0..self.players.len() {
+            let player = PlayerId(index as u8);
+            if !anchors.iter().any(|(anchored, _)| *anchored == player) {
+                return Err(ScenarioError::MissingAnchor(player));
+            }
+        }
+        Ok((map, anchors))
+    }
+
     /// Parses a scenario from JSON text.
     pub fn from_json(text: &str) -> Result<Self, ScenarioError> {
         Ok(serde_json::from_str(text)?)
@@ -416,17 +441,7 @@ impl Scenario {
     /// Building the same scenario twice yields bit-identical states (a test
     /// enforces this).
     pub fn build(&self) -> Result<State, ScenarioError> {
-        if self.players.is_empty() || self.players.len() > 16 {
-            return Err(ScenarioError::PlayerCount(self.players.len()));
-        }
-        let (map, anchors) = Map::parse(&self.map)?;
-
-        if let Some((player, _)) = anchors
-            .iter()
-            .find(|(p, _)| (p.0 as usize) >= self.players.len())
-        {
-            return Err(ScenarioError::ExtraAnchor(*player, self.players.len()));
-        }
+        let (map, anchors) = self.parse_map_and_anchors()?;
         // Teams normalize to dense ids by first appearance: seats naming
         // the same explicit id share one, and every omitted seat gets a
         // fresh singleton — an authored id can never alias a "team of

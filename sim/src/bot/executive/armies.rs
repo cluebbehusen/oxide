@@ -1131,6 +1131,7 @@ mod tests {
             hp,
             idle,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,

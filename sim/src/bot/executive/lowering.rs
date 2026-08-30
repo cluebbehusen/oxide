@@ -174,6 +174,12 @@ impl Executive {
                         },
                     });
                 }
+                Intent::CancelSite { building } => out.push(PlayerCommand {
+                    player: me,
+                    command: Command::Cancel {
+                        building: *building,
+                    },
+                }),
                 Intent::FormArmy { staging, size } => {
                     // `size` is a target strength, not an increment: an
                     // army already staging here only drafts the shortfall.
@@ -768,6 +774,7 @@ mod tests {
             hp: UnitKind::Lancer.stats().max_hp,
             idle,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -786,6 +793,7 @@ mod tests {
             hp,
             idle: true,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,

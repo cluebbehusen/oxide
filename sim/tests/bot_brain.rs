@@ -2,13 +2,23 @@
 //! driven through the public API.
 
 use chassis::grid::TilePos;
-use oxide_sim::bot::{ArmyState, Brain, Executive, Intent, Observation, Specialty};
+use oxide_sim::bot::{
+    ArmyState, Brain, Executive, Intent, Observation, PublicMapBriefing, Specialty,
+};
 use oxide_sim::scenario::{
     BotConfig, BotDifficulty, BotStance, BuildingSpec, PlayerSpec, UnitSpec,
 };
 use oxide_sim::{
     BuildingKind, Command, Faction, Order, PlayerCommand, PlayerId, Scenario, State, UnitKind,
 };
+use std::sync::Arc;
+
+fn public_map(scenario: &Scenario) -> Arc<PublicMapBriefing> {
+    Arc::new(
+        PublicMapBriefing::from_scenario(scenario)
+            .expect("the focused scenario has a public map briefing"),
+    )
+}
 
 fn open_arena(units: Vec<UnitSpec>) -> Scenario {
     Scenario {
@@ -398,8 +408,8 @@ fn a_later_trip_loss_keeps_replacement_workers_out_of_the_same_kill_zone() {
     }
     let mut brain = Brain::scripted(
         PlayerId(0),
-        scenario.seed,
         BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 7),
+        public_map(&scenario),
     );
     let commands = brain.act(&state);
     let assigned: Vec<_> = commands
@@ -870,8 +880,9 @@ fn a_stranded_brain_spends_only_on_one_recovery_harvester() {
 
     let mut short = open_arena(Vec::new());
     short.players[0].scrap = price - 1;
+    let short_public_map = public_map(&short);
     let short = short.build().expect("the stranded arena builds");
-    let mut brain = Brain::balanced(PlayerId(0), 91);
+    let mut brain = Brain::balanced(PlayerId(0), short_public_map);
     assert_eq!(
         brain.act(&short),
         Vec::new(),
@@ -880,6 +891,7 @@ fn a_stranded_brain_spends_only_on_one_recovery_harvester() {
 
     let mut funded = open_arena(Vec::new());
     funded.players[0].scrap = price;
+    let funded_public_map = public_map(&funded);
     let funded = funded.build().expect("the funded arena builds");
     let foundry = funded
         .buildings()
@@ -887,7 +899,7 @@ fn a_stranded_brain_spends_only_on_one_recovery_harvester() {
         .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Foundry)
         .expect("the stranded seat retains its Foundry")
         .id;
-    let mut brain = Brain::balanced(PlayerId(0), 91);
+    let mut brain = Brain::balanced(PlayerId(0), funded_public_map);
     assert_eq!(
         brain.act(&funded),
         vec![PlayerCommand {
@@ -1019,7 +1031,7 @@ fn a_scripted_brain_cancels_paid_repairs_and_delivers_deferred_capital() {
     );
 
     let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 0);
-    let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+    let mut brain = Brain::scripted(PlayerId(0), config, public_map(&scenario));
     while !oxide_sim::bot::difficulty::strategic_admission_tick(state.current_tick()) {
         state.tick(&[]);
     }
@@ -1087,7 +1099,7 @@ fn a_dispatched_build_that_never_appears_blacklists_only_its_anchor() {
     salvage_row[12] = b's';
     scenario.map[6] = String::from_utf8(salvage_row).unwrap();
     let mut state = scenario.build().expect("the construction arena builds");
-    let mut continuing = Brain::balanced(PlayerId(0), scenario.seed);
+    let mut continuing = Brain::balanced(PlayerId(0), public_map(&scenario));
     let macro_cadence = oxide_sim::bot::difficulty::STRATEGIC_ADMISSION_CADENCE;
     let fabricator_anchor = |commands: &[PlayerCommand]| {
         commands.iter().find_map(|command| match command.command {
@@ -1128,7 +1140,7 @@ fn a_dispatched_build_that_never_appears_blacklists_only_its_anchor() {
     }
     assert_eq!(state.current_tick(), macro_cadence);
 
-    let mut fresh = Brain::balanced(PlayerId(0), scenario.seed);
+    let mut fresh = Brain::balanced(PlayerId(0), public_map(&scenario));
     let preferred = fabricator_anchor(&fresh.act(&state))
         .expect("a fresh commander dispatches its preferred Fabricator site");
     let after_refusal = fabricator_anchor(&continuing.act(&state))
@@ -1172,7 +1184,7 @@ fn a_brain_without_an_authored_aircraft_discovers_an_island_opponent() {
         },
     ]);
     let mut state = scenario.build().expect("the island arena builds");
-    let mut brain = Brain::balanced(PlayerId(0), scenario.seed);
+    let mut brain = Brain::balanced(PlayerId(0), public_map(&scenario));
     assert!(
         Observation::fog_honest(&state, PlayerId(0))
             .enemy_buildings
@@ -1207,8 +1219,8 @@ fn a_brain_without_an_authored_aircraft_discovers_an_island_opponent() {
     }
 
     assert!(
-        saw_no_route,
-        "the ground sweep must prove the severed route"
+        !saw_no_route,
+        "the public terrain briefing should avoid a doomed ground probe"
     );
     assert!(
         saw_scout_flyer,
@@ -1355,6 +1367,7 @@ fn qa_rear_line_stays_frozen_while_player_facing_releases_repaired_units() {
         hp,
         idle: true,
         carrying: 0,
+        harvesting: None,
         cargo: 0,
         site: None,
         salvaging: None,
@@ -1496,7 +1509,7 @@ fn scripted_brain_repairs_a_timed_out_rear_unit_before_redrafting_it() {
     }
     let mut state: State = serde_json::from_value(document).unwrap();
     let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_305);
-    let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+    let mut brain = Brain::scripted(PlayerId(0), config, public_map(&scenario));
     let mut saw_initial_muster = false;
     let mut saw_retreat = false;
 
@@ -1643,7 +1656,7 @@ fn scripted_brain_saves_a_visible_expansion_with_its_local_defenders() {
         .map(|unit| unit.id)
         .collect();
     let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_200);
-    let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+    let mut brain = Brain::scripted(PlayerId(0), config, public_map(&scenario));
     let mut saw_local_muster = false;
     let intruder_max_hp = state.unit(intruder).unwrap().kind.stats().max_hp;
     let mut saw_intruder_damage = false;
@@ -1740,7 +1753,7 @@ fn scripted_brain_answers_visible_siege_before_it_enters_the_home_radius() {
     assert!(siege_tile.chebyshev(home_anchor) > 8);
 
     let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_200);
-    let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+    let mut brain = Brain::scripted(PlayerId(0), config, public_map(&scenario));
     let mut saw_response = false;
     let mut emitted = Vec::new();
     for _ in 0..240 {
@@ -1817,7 +1830,7 @@ fn scripted_brain_completes_a_real_raid_and_releases_the_pair_for_reuse() {
     let profile = config.resolve_profile();
     assert_eq!(profile.primary, Specialty::Guile);
     assert!(profile.traits.guile >= 65);
-    let mut brain = Brain::scripted(PlayerId(0), scenario.seed, config);
+    let mut brain = Brain::scripted(PlayerId(0), config, public_map(&scenario));
     let home = state
         .buildings()
         .iter()

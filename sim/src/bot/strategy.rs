@@ -2234,6 +2234,7 @@ mod tests {
             hp: kind.stats().max_hp,
             idle: true,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,

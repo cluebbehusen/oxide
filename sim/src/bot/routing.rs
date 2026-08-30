@@ -1,5 +1,6 @@
 //! Fog-honest projection of movement-command routing.
 
+use super::PublicMapBriefing;
 use super::observation::{BuildingObs, Observation, UnitObs};
 use crate::ids::UnitId;
 use crate::stats::{Domain, GOAL_SNAP_RADIUS};
@@ -249,6 +250,36 @@ pub(super) fn build_command_path_avoids(
     anchor: TilePos,
     size: (i32, i32),
     defer: bool,
+    blocked: impl FnMut(TilePos) -> bool,
+) -> bool {
+    build_command_path_avoids_with_briefing(obs, unit, anchor, size, defer, None, blocked)
+}
+
+/// The exact Build-command route with immutable authored terrain included.
+///
+/// A fog-honest observation learns static terrain only after exploration, but
+/// a player-facing bot receives the complete terrain map before play. Dynamic
+/// blockers still come exclusively from `obs`; starting resources and
+/// Foundries remain priors rather than live obstacles.
+pub(super) fn build_command_path_avoids_with_public_terrain(
+    obs: &Observation,
+    briefing: &PublicMapBriefing,
+    unit: &UnitObs,
+    anchor: TilePos,
+    size: (i32, i32),
+    defer: bool,
+    blocked: impl FnMut(TilePos) -> bool,
+) -> bool {
+    build_command_path_avoids_with_briefing(obs, unit, anchor, size, defer, Some(briefing), blocked)
+}
+
+fn build_command_path_avoids_with_briefing(
+    obs: &Observation,
+    unit: &UnitObs,
+    anchor: TilePos,
+    size: (i32, i32),
+    defer: bool,
+    briefing: Option<&PublicMapBriefing>,
     mut blocked: impl FnMut(TilePos) -> bool,
 ) -> bool {
     if unit.kind.stats().domain != Domain::Ground || !in_bounds(obs, unit.tile) {
@@ -260,7 +291,14 @@ pub(super) fn build_command_path_avoids(
             && tile.y >= anchor.y
             && tile.y < anchor.y + size.1
     };
-    let open = |tile: TilePos| domain_open(obs, Domain::Ground, tile) && (defer || !inside(tile));
+    let open = |tile: TilePos| {
+        domain_open(obs, Domain::Ground, tile)
+            && briefing.is_none_or(|map| {
+                map.terrain_at(tile)
+                    .is_some_and(|terrain| !terrain.blocks_ground())
+            })
+            && (defer || !inside(tile))
+    };
     let mut candidates: Vec<_> = crate::tick::rect_adjacent_tiles(anchor, size)
         .filter(|tile| open(*tile))
         .collect();
@@ -590,6 +628,7 @@ mod tests {
             hp: kind.stats().max_hp,
             idle: true,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,

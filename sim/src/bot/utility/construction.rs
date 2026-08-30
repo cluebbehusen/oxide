@@ -3,6 +3,15 @@
 use super::*;
 
 impl UtilityPolicy {
+    fn unfinished_turret_currently_unsafe(obs: &Observation, site: &BuildingObs) -> bool {
+        let (width, height) = site.kind.base_stats().size;
+        (-1..=height).any(|dy| {
+            (-1..=width).any(|dx| {
+                danger::current_location_has_known_danger(obs, site.anchor.offset(dx, dy), 0)
+            })
+        })
+    }
+
     fn frame_contains(frame: TilePos, tile: TilePos) -> bool {
         let (width, height) = BuildingKind::Extractor.base_stats().size;
         tile.x >= frame.x
@@ -110,6 +119,7 @@ impl UtilityPolicy {
                     frame,
                     &mut candidates,
                     &danger,
+                    None,
                 )
                 .map(|builder| (frame, builder))
             })
@@ -134,6 +144,7 @@ impl UtilityPolicy {
             unit_contacts,
             building_contacts,
             unavailable_builders,
+            public_map: _,
         } = context;
         if !claims.player_facing {
             return None;
@@ -710,9 +721,8 @@ impl UtilityPolicy {
         false
     }
 
-    /// Construction channel: orphaned sites first (paid-for progress
-    /// must not strand), then the Fabricator, then a turret answer to
-    /// raids. One build per think.
+    /// Construction channel: recover paid work first, then choose at most one
+    /// economy, tech, support, or role-specific fortification project.
     pub(super) fn construction(
         &mut self,
         dials: &Dials,
@@ -727,6 +737,7 @@ impl UtilityPolicy {
             unit_contacts,
             building_contacts,
             unavailable_builders,
+            public_map,
         } = context;
         let ConstructionClaims {
             player_facing,
@@ -739,6 +750,22 @@ impl UtilityPolicy {
             .into_iter()
             .filter(|builder| !unavailable_builders.contains(&builder.id))
             .collect();
+        if player_facing
+            && let Some(site) = obs
+                .my_buildings
+                .iter()
+                .filter(|site| {
+                    site.kind == BuildingKind::Turret
+                        && !site.built
+                        && site.tier == 0
+                        && !obs.my_units.iter().any(|unit| unit.site == Some(site.id))
+                        && Self::unfinished_turret_currently_unsafe(obs, site)
+                })
+                .min_by_key(|site| (site.anchor.y, site.anchor.x, site.id))
+        {
+            intents.push(Intent::CancelSite { building: site.id });
+            return;
+        }
         let mut routes = crate::bot::routing::RouteProjection::new(obs, Domain::Ground);
         let orphan = obs
             .my_buildings
@@ -808,10 +835,12 @@ impl UtilityPolicy {
             }
         }
 
+        let public_enemy_start = public_map
+            .is_some_and(|briefing| !self.uncleared_hostile_starts(briefing, obs.me).is_empty());
         let proactive_turret_cap = usize::from(
             dials.adaptive_composition
                 && dials.turret_cap > 0
-                && Self::enemy_site(obs, home).is_some(),
+                && (Self::enemy_site(obs, home).is_some() || public_enemy_start),
         );
         let turret_limit = if self.raided {
             dials.turret_cap
@@ -827,12 +856,62 @@ impl UtilityPolicy {
             if let Some(cost) = turret_cost
                 && turrets < turret_limit
                 && *budget >= cost + UnitKind::Harvester.stats().cost
-                && let Some(node) = self.nearest_scrap(obs, home)
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::Turret, node)
+                && let Some(anchor) = if player_facing {
+                    public_map.and_then(|briefing| {
+                        self.strategic_defense_site(
+                            BuildingKind::Turret,
+                            obs,
+                            briefing,
+                            unit_contacts.unwrap_or(&[]),
+                            building_contacts.unwrap_or(&[]),
+                            &builders,
+                        )
+                    })
+                } else {
+                    self.nearest_scrap(obs, home)
+                        .and_then(|node| self.placement_near(obs, BuildingKind::Turret, node))
+                }
             {
                 *budget -= cost;
                 intents.push(Intent::Build {
                     kind: BuildingKind::Turret,
+                    anchor,
+                });
+                return;
+            }
+        }
+
+        // Fortification-heavy player-facing identities may spend a mature
+        // harvest line on route-shaping walls. The frozen Overseer has no
+        // Barricade appetite and therefore retains its exact build order.
+        if player_facing && dials.barricade_cap > 0 {
+            let barricades = Self::projected_count(obs, BuildingKind::Barricade, true);
+            let cost = BuildingKind::Barricade
+                .base_stats()
+                .construction
+                .map(|construction| construction.cost);
+            let enemy_site = Self::enemy_site(obs, home);
+            let route_known =
+                enemy_site.is_some_and(|site| Self::ground_route_known(obs, home, site));
+            if harvesters >= immediate_harvester_target(dials) as usize
+                && barricades < dials.barricade_cap
+                && (self.raided || route_known || public_enemy_start)
+                && let Some(cost) = cost
+                && *budget >= cost + UnitKind::Harvester.stats().cost
+                && let Some(anchor) = public_map.and_then(|briefing| {
+                    self.strategic_defense_site(
+                        BuildingKind::Barricade,
+                        obs,
+                        briefing,
+                        unit_contacts.unwrap_or(&[]),
+                        building_contacts.unwrap_or(&[]),
+                        &builders,
+                    )
+                })
+            {
+                *budget -= cost;
+                intents.push(Intent::Build {
+                    kind: BuildingKind::Barricade,
                     anchor,
                 });
                 return;
@@ -863,15 +942,28 @@ impl UtilityPolicy {
                 let site = Self::enemy_site(obs, home);
                 let route_known = site.is_some_and(|s| Self::ground_route_known(obs, home, s));
                 if self.raided || route_known {
-                    // Raided blind (no site known), the field centers on
-                    // the map's middle — the only approach there is.
-                    let toward =
-                        site.unwrap_or(TilePos::new(obs.map_width / 2, obs.map_height / 2));
-                    let lean = |from: i32, to: i32| from + (to - from).clamp(-MINE_LEAN, MINE_LEAN);
-                    let focus = TilePos::new(lean(home.x, toward.x), lean(home.y, toward.y));
-                    if let Some(anchor) =
+                    let anchor = if player_facing {
+                        public_map.and_then(|briefing| {
+                            self.strategic_defense_site(
+                                BuildingKind::ScuttleCharge,
+                                obs,
+                                briefing,
+                                unit_contacts.unwrap_or(&[]),
+                                building_contacts.unwrap_or(&[]),
+                                &builders,
+                            )
+                        })
+                    } else {
+                        // The frozen Overseer retains its map-center fallback
+                        // after a blind raid and its fixed lean toward a known site.
+                        let toward =
+                            site.unwrap_or(TilePos::new(obs.map_width / 2, obs.map_height / 2));
+                        let lean =
+                            |from: i32, to: i32| from + (to - from).clamp(-MINE_LEAN, MINE_LEAN);
+                        let focus = TilePos::new(lean(home.x, toward.x), lean(home.y, toward.y));
                         self.placement_near(obs, BuildingKind::ScuttleCharge, focus)
-                    {
+                    };
+                    if let Some(anchor) = anchor {
                         *budget -= cost;
                         intents.push(Intent::Build {
                             kind: BuildingKind::ScuttleCharge,
@@ -897,8 +989,21 @@ impl UtilityPolicy {
             if let Some(cost) = flak_cost
                 && flak < dials.flak_cap
                 && *budget >= cost + UnitKind::Harvester.stats().cost
-                && let Some(node) = self.nearest_scrap(obs, home)
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::FlakTurret, node)
+                && let Some(anchor) = if player_facing {
+                    public_map.and_then(|briefing| {
+                        self.strategic_defense_site(
+                            BuildingKind::FlakTurret,
+                            obs,
+                            briefing,
+                            unit_contacts.unwrap_or(&[]),
+                            building_contacts.unwrap_or(&[]),
+                            &builders,
+                        )
+                    })
+                } else {
+                    self.nearest_scrap(obs, home)
+                        .and_then(|node| self.placement_near(obs, BuildingKind::FlakTurret, node))
+                }
             {
                 *budget -= cost;
                 intents.push(Intent::Build {
@@ -983,7 +1088,20 @@ impl UtilityPolicy {
                 && Self::enemy_site(obs, home).is_some()
                 && let Some(cost) = cost
                 && *budget >= cost + TECH_RESERVE
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::Bastion, home)
+                && let Some(anchor) = if player_facing {
+                    public_map.and_then(|briefing| {
+                        self.strategic_defense_site(
+                            BuildingKind::Bastion,
+                            obs,
+                            briefing,
+                            unit_contacts.unwrap_or(&[]),
+                            building_contacts.unwrap_or(&[]),
+                            &builders,
+                        )
+                    })
+                } else {
+                    self.placement_near(obs, BuildingKind::Bastion, home)
+                }
             {
                 *budget -= cost;
                 intents.push(Intent::Build {
@@ -1137,7 +1255,7 @@ mod tests {
     use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION, UnitObs};
     use crate::event::Event;
     use crate::ids::{BuildingId, PlayerId, UnitId};
-    use crate::scenario::{BotConfig, BotDifficulty, BotStance};
+    use crate::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec};
     use crate::state::{Faction, Order};
     use crate::{Command, PlayerCommand, Scenario};
 
@@ -1182,6 +1300,7 @@ mod tests {
             hp: UnitKind::Harvester.stats().max_hp,
             idle: founding.is_none(),
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -1200,6 +1319,7 @@ mod tests {
             hp: UnitKind::Sentinel.stats().max_hp,
             idle: true,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -1265,6 +1385,157 @@ mod tests {
                     reserved: &[],
                 },
             ),
+            &mut budget,
+            &mut intents,
+        );
+        intents
+    }
+
+    fn construction_briefing() -> PublicMapBriefing {
+        const WIDTH: usize = 40;
+        const HEIGHT: usize = 24;
+        const HOSTILE: TilePos = TilePos::new(32, 10);
+
+        let mut rows = vec![vec![b'.'; WIDTH]; HEIGHT];
+        rows[usize::try_from(HOME.y).expect("home y is in bounds")]
+            [usize::try_from(HOME.x).expect("home x is in bounds")] = b'1';
+        rows[usize::try_from(HOSTILE.y).expect("hostile y is in bounds")]
+            [usize::try_from(HOSTILE.x).expect("hostile x is in bounds")] = b'2';
+        rows[10][10] = b's';
+        let scenario = Scenario {
+            name: "construction fixture".into(),
+            seed: 0,
+            map: rows
+                .into_iter()
+                .map(|row| String::from_utf8(row).expect("ASCII map"))
+                .collect(),
+            players: [Faction::Ferrous, Faction::Cupric]
+                .into_iter()
+                .enumerate()
+                .map(|(index, faction)| PlayerSpec {
+                    name: format!("player {index}"),
+                    faction,
+                    team: None,
+                    scrap: 500,
+                    bot: false,
+                    bot_config: None,
+                })
+                .collect(),
+            units: Vec::new(),
+            buildings: Vec::new(),
+            meta: None,
+        };
+        PublicMapBriefing::from_scenario(&scenario).expect("construction briefing is valid")
+    }
+
+    fn barricade_construction_briefing() -> (PublicMapBriefing, Vec<TilePos>) {
+        const WIDTH: i32 = 40;
+        const HEIGHT: i32 = 24;
+        const HOSTILE: TilePos = TilePos::new(32, 10);
+        let terrain = |tile: TilePos| {
+            let bypass =
+                tile.y == 9 && ((11..=13).contains(&tile.x) || (26..=28).contains(&tile.x));
+            let main_lane = (10..=11).contains(&tile.y);
+            let bottleneck = tile.y == 11 && matches!(tile.x, 12 | 27);
+            if (main_lane || bypass) && !bottleneck {
+                '.'
+            } else {
+                '^'
+            }
+        };
+        let rows = (0..HEIGHT)
+            .map(|y| {
+                (0..WIDTH)
+                    .map(|x| {
+                        let tile = TilePos::new(x, y);
+                        if tile == HOME {
+                            '1'
+                        } else if tile == HOSTILE {
+                            '2'
+                        } else {
+                            terrain(tile)
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let scenario = Scenario {
+            name: "Barricade construction fixture".into(),
+            seed: 0,
+            map: rows,
+            players: [Faction::Ferrous, Faction::Cupric]
+                .into_iter()
+                .enumerate()
+                .map(|(index, faction)| PlayerSpec {
+                    name: format!("player {index}"),
+                    faction,
+                    team: None,
+                    scrap: 500,
+                    bot: false,
+                    bot_config: None,
+                })
+                .collect(),
+            units: Vec::new(),
+            buildings: Vec::new(),
+            meta: None,
+        };
+        let peaks = (0..HEIGHT)
+            .flat_map(|y| (0..WIDTH).map(move |x| TilePos::new(x, y)))
+            .filter(|tile| terrain(*tile) == '^')
+            .collect();
+        (
+            PublicMapBriefing::from_scenario(&scenario)
+                .expect("Barricade construction briefing is valid"),
+            peaks,
+        )
+    }
+
+    fn construction_intents_with_public_map(
+        policy: &mut UtilityPolicy,
+        dials: &Dials,
+        obs: &Observation,
+        public_map: &PublicMapBriefing,
+    ) -> Vec<Intent> {
+        let mut budget = obs.scrap;
+        let mut intents = Vec::new();
+        policy.construction(
+            dials,
+            obs,
+            ConstructionContext::new(
+                HOME,
+                ConstructionClaims {
+                    player_facing: true,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            )
+            .with_public_map(Some(public_map)),
+            &mut budget,
+            &mut intents,
+        );
+        intents
+    }
+
+    fn profile_free_construction_intents_with_public_map(
+        policy: &mut UtilityPolicy,
+        dials: &Dials,
+        obs: &Observation,
+        public_map: &PublicMapBriefing,
+    ) -> Vec<Intent> {
+        let mut budget = obs.scrap;
+        let mut intents = Vec::new();
+        policy.construction(
+            dials,
+            obs,
+            ConstructionContext::new(
+                HOME,
+                ConstructionClaims {
+                    player_facing: false,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            )
+            .with_public_map(Some(public_map)),
             &mut budget,
             &mut intents,
         );
@@ -1395,7 +1666,7 @@ mod tests {
             .push(ContestedHarvestRegion {
                 center: frontier,
                 last_evidence: ready.tick,
-                clear_since: None,
+                sweep_started_at: None,
             });
 
         let mut enemy_side = ready.clone();
@@ -1415,6 +1686,7 @@ mod tests {
             hp: UnitKind::Avalanche.stats().max_hp,
             idle: false,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -1705,6 +1977,7 @@ mod tests {
             hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -1725,6 +1998,7 @@ mod tests {
             hp: UnitKind::Condor.stats().max_hp,
             idle: true,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -1757,42 +2031,51 @@ mod tests {
         let hidden_corner = incident.offset(CONTESTED_RECON_RADIUS, CONTESTED_RECON_RADIUS);
         let mut obs = observation();
         obs.known_frames = vec![frame];
-        obs.salvage_incidents = vec![incident];
         let mut dials = focused_dials();
         dials.extractors = true;
         let mut policy = UtilityPolicy::new();
 
+        let worker_tile = obs.my_units[0].tile;
+        obs.my_units[0].tile = incident;
+        obs.my_units[0].idle = false;
+        obs.my_units[0].harvesting = Some(frame);
         policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert_eq!(policy.contested_harvest_regions[0].clear_since, None);
+        obs.tick = 1;
+        obs.my_units[0].tile = worker_tile;
+        obs.my_units[0].idle = true;
+        obs.my_units[0].harvesting = None;
+        obs.my_units[0].hp -= 1;
+        obs.salvage_incidents = vec![incident];
+        policy.refresh_contested_harvest_regions(&obs, None, None);
+        assert_eq!(policy.contested_harvest_regions[0].sweep_started_at, None);
         assert!(
             construction_intents(&mut policy, &dials, &obs).is_empty(),
             "an active loss incident must hold the destroyed home frame"
         );
 
         obs.salvage_incidents.clear();
-        obs.tick = CONTESTED_CLEAR_CONFIRM_TICKS + 500;
+        obs.tick += crate::stats::HARVEST_INCIDENT_MEMORY_TICKS + 1;
         let hidden_index = (hidden_corner.y * obs.map_width + hidden_corner.x) as usize;
         obs.visible[hidden_index] = false;
         policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert_eq!(policy.contested_harvest_regions[0].clear_since, None);
+        assert_eq!(policy.contested_harvest_regions.len(), 1);
+        assert!(
+            !policy
+                .contested_harvest_clear_tiles
+                .contains(&(incident, hidden_corner))
+        );
         assert!(
             construction_intents(&mut policy, &dials, &obs).is_empty(),
             "elapsed time under partial sight is not evidence that the loss site is safe"
         );
 
-        obs.visible[hidden_index] = true;
-        obs.tick += 1;
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        obs.tick += 100;
-        policy.refresh_contested_harvest_regions(&obs, None, None);
         let mut threat = sentinel(20, incident.offset(CONTESTED_RECON_RADIUS + 2, 0));
         threat.player = PlayerId(1);
         obs.enemy_units.push(threat);
+        obs.visible[hidden_index] = true;
         obs.tick += 1;
         policy.refresh_contested_harvest_regions(&obs, None, None);
-        obs.tick += CONTESTED_CLEAR_CONFIRM_TICKS + 500;
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert_eq!(policy.contested_harvest_regions[0].clear_since, None);
+        assert_eq!(policy.contested_harvest_regions[0].sweep_started_at, None);
         assert!(
             construction_intents(&mut policy, &dials, &obs).is_empty(),
             "a known threat must restart a partial clear interval and keep complete sight from \
@@ -1802,24 +2085,6 @@ mod tests {
         obs.enemy_units.clear();
         obs.tick += 1;
         policy.refresh_contested_harvest_regions(&obs, None, None);
-        let clear_since = obs.tick;
-        assert_eq!(
-            policy.contested_harvest_regions[0].clear_since,
-            Some(clear_since)
-        );
-        assert!(
-            construction_intents(&mut policy, &dials, &obs).is_empty(),
-            "threat departure starts a new confirmation interval rather than restoring immediately"
-        );
-        obs.tick = clear_since + CONTESTED_CLEAR_CONFIRM_TICKS - 1;
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert!(
-            construction_intents(&mut policy, &dials, &obs).is_empty(),
-            "an almost-complete clear look must keep the frame quarantined"
-        );
-
-        obs.tick += 1;
-        policy.refresh_contested_harvest_regions(&obs, None, None);
         assert_eq!(
             construction_intents(&mut policy, &dials, &obs),
             vec![Intent::BuildWith {
@@ -1827,7 +2092,7 @@ mod tests {
                 kind: BuildingKind::Extractor,
                 anchor: frame,
             }],
-            "continuous full sight should release one ordinary, safely bound restoration"
+            "one complete danger-free sweep should release one ordinary, safely bound restoration"
         );
     }
 
@@ -1860,7 +2125,7 @@ mod tests {
         policy.contested_harvest_regions = vec![ContestedHarvestRegion {
             center: choke,
             last_evidence: obs.tick,
-            clear_since: None,
+            sweep_started_at: None,
         }];
         assert!(
             UtilityPolicy::ground_route_known(&obs, HOME, frame),
@@ -2020,6 +2285,7 @@ mod tests {
 
     #[test]
     fn bastion_requires_both_completed_tech_and_a_located_enemy() {
+        let public_map = construction_briefing();
         let mut dials = focused_dials();
         dials.adaptive_composition = true;
         dials.siege_target = 3;
@@ -2042,9 +2308,22 @@ mod tests {
             BuildingKind::Foundry,
             TilePos::new(32, 10),
         ));
+        assert!(
+            construction_intents(&mut UtilityPolicy::new(), &dials, &obs).is_empty(),
+            "player-facing siege defense must not fall back to the legacy home ring without a public-map briefing"
+        );
         let anchor = assert_build_kind(
-            &construction_intents(&mut UtilityPolicy::new(), &dials, &obs),
+            &construction_intents_with_public_map(
+                &mut UtilityPolicy::new(),
+                &dials,
+                &obs,
+                &public_map,
+            ),
             BuildingKind::Bastion,
+        );
+        assert!(
+            anchor.x > HOME.x + 1,
+            "the Bastion should face the hostile eastern approach instead of taking a rear home-ring site: {anchor:?}"
         );
 
         obs.my_units.push(harvester(
@@ -2053,13 +2332,20 @@ mod tests {
             Some((BuildingKind::Bastion, anchor)),
         ));
         assert!(
-            construction_intents(&mut UtilityPolicy::new(), &dials, &obs).is_empty(),
+            construction_intents_with_public_map(
+                &mut UtilityPolicy::new(),
+                &dials,
+                &obs,
+                &public_map,
+            )
+            .is_empty(),
             "a promised Bastion must count against the one-emplacement plan"
         );
     }
 
     #[test]
     fn anti_air_response_counts_only_own_or_promised_flak_toward_its_cap() {
+        let public_map = construction_briefing();
         let mut dials = focused_dials();
         dials.aa_response = true;
         dials.flak_cap = 2;
@@ -2077,7 +2363,7 @@ mod tests {
         let mut policy = UtilityPolicy::new();
         policy.seen_air = true;
         let first = assert_build_kind(
-            &construction_intents(&mut policy, &dials, &threatened),
+            &construction_intents_with_public_map(&mut policy, &dials, &threatened, &public_map),
             BuildingKind::FlakTurret,
         );
 
@@ -2093,13 +2379,15 @@ mod tests {
             Some((BuildingKind::FlakTurret, first)),
         ));
         assert!(
-            construction_intents(&mut policy, &dials, &threatened).is_empty(),
+            construction_intents_with_public_map(&mut policy, &dials, &threatened, &public_map)
+                .is_empty(),
             "one standing and one promised own Flak exhaust the cap; enemy Flak does not"
         );
     }
 
     #[test]
     fn player_facing_blip_waits_for_confirmed_air_before_funding_flak() {
+        let public_map = construction_briefing();
         let mut dials = focused_dials();
         dials.aa_response = true;
         dials.flak_cap = 3;
@@ -2113,6 +2401,7 @@ mod tests {
             hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
@@ -2135,14 +2424,14 @@ mod tests {
         policy.seen_air = true;
         for id in 2..=4 {
             let anchor = assert_build_kind(
-                &construction_intents(&mut policy, &dials, &obs),
+                &construction_intents_with_public_map(&mut policy, &dials, &obs, &public_map),
                 BuildingKind::FlakTurret,
             );
             obs.my_buildings
                 .push(building(id, PlayerId(0), BuildingKind::FlakTurret, anchor));
         }
         assert!(
-            construction_intents(&mut policy, &dials, &obs).is_empty(),
+            construction_intents_with_public_map(&mut policy, &dials, &obs, &public_map).is_empty(),
             "confirmed hostile air unlocks exactly the configured AA cap"
         );
     }
@@ -2172,6 +2461,7 @@ mod tests {
 
     #[test]
     fn every_player_facing_identity_gets_one_bounded_proactive_turret() {
+        let public_map = construction_briefing();
         for cap in 1..=4 {
             let mut dials = focused_dials();
             dials.turret_response = true;
@@ -2187,20 +2477,252 @@ mod tests {
             ));
             let mut policy = UtilityPolicy::new();
             let anchor = assert_build_kind(
-                &construction_intents(&mut policy, &dials, &obs),
+                &construction_intents_with_public_map(&mut policy, &dials, &obs, &public_map),
                 BuildingKind::Turret,
             );
             obs.my_buildings
                 .push(building(2, PlayerId(0), BuildingKind::Turret, anchor));
             assert!(
-                construction_intents(&mut policy, &dials, &obs).is_empty(),
+                construction_intents_with_public_map(&mut policy, &dials, &obs, &public_map)
+                    .is_empty(),
                 "cap {cap} must allow exactly one proactive turret before a raid"
             );
         }
     }
 
     #[test]
+    fn fortification_identities_build_distinct_promised_barricades_to_their_cap() {
+        let (public_map, peaks) = barricade_construction_briefing();
+        let mut dials = focused_dials();
+        dials.harvester_target = 1;
+        dials.barricade_cap = 2;
+        let mut obs = observation();
+        obs.known_rock = peaks.clone();
+        obs.known_peaks = peaks;
+        let mut policy = UtilityPolicy::new();
+
+        let first = assert_build_kind(
+            &construction_intents_with_public_map(&mut policy, &dials, &obs, &public_map),
+            BuildingKind::Barricade,
+        );
+        obs.my_units[0].founding = Some((BuildingKind::Barricade, first));
+        obs.my_units.push(harvester(2, HOME.offset(3, 2), None));
+        let second = assert_build_kind(
+            &construction_intents_with_public_map(&mut policy, &dials, &obs, &public_map),
+            BuildingKind::Barricade,
+        );
+        assert_ne!(first, second);
+
+        obs.my_units[1].founding = Some((BuildingKind::Barricade, second));
+        obs.my_units.push(harvester(3, HOME.offset(3, 1), None));
+        assert!(
+            construction_intents_with_public_map(&mut policy, &dials, &obs, &public_map).is_empty(),
+            "deferred claims must consume the cap before either wall becomes a building"
+        );
+
+        let mut overseer = Dials::overseer();
+        overseer.tech = false;
+        overseer.turret_response = false;
+        overseer.aa_response = false;
+        overseer.radar = false;
+        overseer.reclaimers = false;
+        overseer.mines = false;
+        assert_eq!(overseer.barricade_cap, 0);
+        assert!(
+            construction_intents_for(&mut UtilityPolicy::new(), &overseer, &observation(), false)
+                .iter()
+                .all(|intent| !matches!(
+                    intent,
+                    Intent::Build {
+                        kind: BuildingKind::Barricade,
+                        ..
+                    }
+                )),
+            "the frozen profile-free controller has no Barricade purchase branch"
+        );
+    }
+
+    #[test]
+    fn profile_free_overseer_keeps_the_exact_nearest_scrap_turret_site() {
+        let public_map = construction_briefing();
+        let dials = Dials::overseer();
+
+        let mut obs = observation();
+        obs.enemy_buildings.push(building(
+            20,
+            PlayerId(1),
+            BuildingKind::Foundry,
+            TilePos::new(32, 10),
+        ));
+        let mut policy = UtilityPolicy::new();
+        policy.raided = true;
+        let nearest_scrap = policy
+            .nearest_scrap(&obs, HOME)
+            .expect("the legacy fixture has a salvage focus");
+        assert_eq!(nearest_scrap, TilePos::new(10, 10));
+        let legacy_site = policy
+            .placement_near(&obs, BuildingKind::Turret, nearest_scrap)
+            .expect("the legacy ring scan has a legal Turret site");
+        assert_eq!(legacy_site, TilePos::new(7, 7));
+
+        let builders = policy.construction_builders(&obs, &[], &[]);
+        let strategic_site = policy
+            .strategic_defense_site(BuildingKind::Turret, &obs, &public_map, &[], &[], &builders)
+            .expect("the same fixture also admits a strategic player-facing site");
+        assert_ne!(
+            strategic_site, legacy_site,
+            "the fixture must distinguish the legacy and strategic placement branches"
+        );
+
+        let mut budget = obs.scrap;
+        let mut intents = Vec::new();
+        policy.construction(
+            &dials,
+            &obs,
+            ConstructionContext::new(
+                HOME,
+                ConstructionClaims {
+                    player_facing: false,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            )
+            .with_public_map(Some(&public_map)),
+            &mut budget,
+            &mut intents,
+        );
+
+        assert_eq!(
+            intents,
+            vec![Intent::Build {
+                kind: BuildingKind::Turret,
+                anchor: legacy_site,
+            }],
+            "even an accidentally supplied briefing must not move the frozen Overseer off its nearest-scrap ring scan"
+        );
+    }
+
+    #[test]
+    fn profile_free_overseer_keeps_the_exact_legacy_scuttle_site() {
+        let public_map = construction_briefing();
+        let mut dials = focused_dials();
+        dials.mines = true;
+        dials.harvester_target = 1;
+        dials.mine_cap = 1;
+        let mut obs = observation();
+        obs.my_buildings.push(building(
+            2,
+            PlayerId(0),
+            BuildingKind::Fabricator,
+            HOME.offset(5, -5),
+        ));
+        obs.my_queues.push(Vec::new());
+        let mut policy = UtilityPolicy::new();
+        policy.raided = true;
+
+        assert_eq!(
+            profile_free_construction_intents_with_public_map(
+                &mut policy,
+                &dials,
+                &obs,
+                &public_map,
+            ),
+            vec![Intent::Build {
+                kind: BuildingKind::ScuttleCharge,
+                anchor: TilePos::new(6, 9),
+            }]
+        );
+    }
+
+    #[test]
+    fn profile_free_overseer_keeps_the_exact_legacy_flak_site() {
+        let public_map = construction_briefing();
+        let mut dials = focused_dials();
+        dials.aa_response = true;
+        dials.flak_cap = 1;
+        let mut obs = observation();
+        obs.blips.push(TilePos::new(20, 10));
+
+        assert_eq!(
+            profile_free_construction_intents_with_public_map(
+                &mut UtilityPolicy::new(),
+                &dials,
+                &obs,
+                &public_map,
+            ),
+            vec![Intent::Build {
+                kind: BuildingKind::FlakTurret,
+                anchor: TilePos::new(7, 7),
+            }]
+        );
+    }
+
+    #[test]
+    fn profile_free_overseer_keeps_the_exact_legacy_bastion_site() {
+        let public_map = construction_briefing();
+        let mut dials = focused_dials();
+        dials.adaptive_composition = true;
+        dials.siege_target = 3;
+        dials.support_target = 0;
+        let mut obs = observation();
+        obs.my_buildings.push(building(
+            2,
+            PlayerId(0),
+            BuildingKind::Fabricator,
+            HOME.offset(5, -5),
+        ));
+        obs.my_queues.push(Vec::new());
+        obs.enemy_buildings.push(building(
+            20,
+            PlayerId(1),
+            BuildingKind::Foundry,
+            TilePos::new(32, 10),
+        ));
+
+        assert_eq!(
+            profile_free_construction_intents_with_public_map(
+                &mut UtilityPolicy::new(),
+                &dials,
+                &obs,
+                &public_map,
+            ),
+            vec![Intent::Build {
+                kind: BuildingKind::Bastion,
+                anchor: TilePos::new(1, 7),
+            }]
+        );
+    }
+
+    #[test]
+    fn profile_free_overseer_still_closes_a_raid_response_after_one_new_site() {
+        let dials = Dials::overseer();
+        let mut obs = observation();
+        let mut policy = UtilityPolicy::new();
+        obs.my_units.push(harvester(2, TilePos::new(9, 11), None));
+        policy.audit_raids(&dials, &obs, false);
+
+        obs.my_units.pop();
+        policy.audit_raids(&dials, &obs, false);
+        assert!(policy.raided, "the Harvester loss must latch a raid");
+
+        let anchor = assert_build_kind(
+            &construction_intents_for(&mut policy, &dials, &obs, false),
+            BuildingKind::Turret,
+        );
+        let mut site = building(2, PlayerId(0), BuildingKind::Turret, anchor);
+        site.built = false;
+        obs.my_buildings.push(site);
+        policy.audit_raids(&dials, &obs, false);
+
+        assert!(
+            !policy.raided,
+            "the frozen profile-free controller must retain its historical one-site response"
+        );
+    }
+
+    #[test]
     fn a_real_raid_unlocks_each_configured_turret_cap() {
+        let public_map = construction_briefing();
         for cap in [2, 3, 4] {
             let mut dials = focused_dials();
             dials.turret_response = true;
@@ -2209,21 +2731,45 @@ mod tests {
 
             let mut obs = observation();
             let mut policy = UtilityPolicy::new();
-            policy.raided = true;
+            obs.my_units.push(harvester(2, TilePos::new(9, 11), None));
+            policy.audit_raids(&dials, &obs, true);
+            obs.my_units.pop();
+            policy.audit_raids(&dials, &obs, true);
+            assert!(policy.raided, "the Harvester loss must latch a raid");
+
             for index in 0..cap {
                 let anchor = assert_build_kind(
-                    &construction_intents(&mut policy, &dials, &obs),
+                    &construction_intents_with_public_map(&mut policy, &dials, &obs, &public_map),
                     BuildingKind::Turret,
                 );
-                obs.my_buildings.push(building(
+                let mut site = building(
                     2 + u32::try_from(index).expect("small configured cap fits u32"),
                     PlayerId(0),
                     BuildingKind::Turret,
                     anchor,
-                ));
+                );
+                site.built = false;
+                obs.my_buildings.push(site);
+                policy.audit_raids(&dials, &obs, true);
+                assert!(
+                    policy.raided,
+                    "an unfinished site must not consume the response after {index} of {cap} Turrets"
+                );
+
+                obs.my_buildings
+                    .last_mut()
+                    .expect("the focused Turret site remains")
+                    .built = true;
+                policy.audit_raids(&dials, &obs, true);
+                assert_eq!(
+                    policy.raided,
+                    index + 1 < cap,
+                    "the raid latch must clear exactly when all {cap} Turrets stand"
+                );
             }
             assert!(
-                construction_intents(&mut policy, &dials, &obs).is_empty(),
+                construction_intents_with_public_map(&mut policy, &dials, &obs, &public_map)
+                    .is_empty(),
                 "a recorded raid unlocks all {cap} configured turrets, but never another"
             );
         }
@@ -2231,7 +2777,10 @@ mod tests {
 
     #[test]
     fn exact_bound_construction_command_is_accepted_by_state() {
-        let mut state = Scenario::skirmish().build().expect("skirmish builds");
+        let scenario = Scenario::skirmish();
+        let public_map =
+            PublicMapBriefing::from_scenario(&scenario).expect("skirmish briefing builds");
+        let mut state = scenario.build().expect("skirmish builds");
         let mut obs = Observation::omniscient(&state, PlayerId(0));
         assert!(
             !obs.known_scrap.is_empty(),
@@ -2243,7 +2792,8 @@ mod tests {
         dials.flak_cap = 1;
         let mut policy = UtilityPolicy::new();
         policy.seen_air = true;
-        let mut intents = construction_intents(&mut policy, &dials, &obs);
+        let mut intents =
+            construction_intents_with_public_map(&mut policy, &dials, &obs, &public_map);
         let anchor = assert_build_kind(&intents, BuildingKind::FlakTurret);
 
         policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);

@@ -382,6 +382,14 @@ impl UtilityPolicy {
     }
 }
 
+pub(super) fn current_location_has_known_danger(
+    obs: &Observation,
+    node: TilePos,
+    additional_margin: i32,
+) -> bool {
+    location_has_known_danger(obs, node, additional_margin, None, None, true)
+}
+
 #[cfg(test)]
 pub(super) fn direct_location_has_known_danger(
     obs: &Observation,
@@ -389,6 +397,24 @@ pub(super) fn direct_location_has_known_danger(
     additional_margin: i32,
     unit_contacts: Option<&[UnitContact]>,
     building_contacts: Option<&[BuildingContact]>,
+) -> bool {
+    location_has_known_danger(
+        obs,
+        node,
+        additional_margin,
+        unit_contacts,
+        building_contacts,
+        false,
+    )
+}
+
+fn location_has_known_danger(
+    obs: &Observation,
+    node: TilePos,
+    additional_margin: i32,
+    unit_contacts: Option<&[UnitContact]>,
+    building_contacts: Option<&[BuildingContact]>,
+    visible_buildings_only: bool,
 ) -> bool {
     if obs.blips.iter().any(|contact| {
         contact.chebyshev(node) <= crate::stats::HARVEST_RADAR_DANGER_RADIUS + additional_margin
@@ -419,6 +445,9 @@ pub(super) fn direct_location_has_known_danger(
         return true;
     }
     obs.enemy_buildings.iter().any(|building| {
+        if visible_buildings_only && !building.seen {
+            return false;
+        }
         let tier = if building.seen {
             building.tier
         } else {
@@ -445,7 +474,6 @@ pub(super) fn direct_location_has_known_danger(
     })
 }
 
-#[cfg(test)]
 fn distance_to_footprint(node: TilePos, anchor: TilePos, size: (i32, i32)) -> i32 {
     let far_x = anchor.x + size.0 - 1;
     let far_y = anchor.y + size.1 - 1;
@@ -503,6 +531,7 @@ mod tests {
             hp: kind.stats().max_hp,
             idle: false,
             carrying: 0,
+            harvesting: None,
             cargo: 0,
             site: None,
             salvaging: None,
