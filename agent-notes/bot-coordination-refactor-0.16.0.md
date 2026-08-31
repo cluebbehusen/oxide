@@ -1,6 +1,6 @@
 ---
 created: 2026-08-31T06:45:14
-updated: 2026-08-31T17:00:37
+updated: 2026-08-31T17:43:40
 ---
 
 # Oxide 0.16.0 Bot Coordination Refactor
@@ -152,6 +152,18 @@ frozen Overseer behavior.
       through the shared coin (three more formula copies unified; regression
       pins the remembered Moth), and the command fold now includes each tick so
       timing drift moves the fixture.
+- [x] Part 2 (branch 0.16.0-refactor-2): the remaining hash-neutral
+      consolidation approved after the merge.
+  - 9e308c4 memoizes route-projection passability per projection (scripted
+    fixture 28.9s to 21.3s wall); the prototype cross-projection cache was
+    rejected as an aliasing hazard, and its residual sharing win stays on the
+    table for an explicitly threaded design.
+  - e4cbed4 and a98d34f stage the two budget pipelines (production 483 to 209
+    lines, construction 531 to 156) with an open_producer helper owning the
+    producer tie-break.
+  - 4060797 gives Observation a test-base Default and spreads the in-module
+    fixtures over it (383 restated default lines deleted); the orientation flip
+    literal deliberately stays exhaustive.
 
 ## Open Questions
 
