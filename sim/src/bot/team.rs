@@ -573,6 +573,10 @@ fn allied_foundry_stands(obs: &Observation, relief: &TeamReliefOperation) -> boo
     })
 }
 
+// Deliberately a linear scan, not the id-order binary search the other
+// planners use: this module's tests feed permuted rosters to prove
+// relief selection ranks by role rather than storage position, and the
+// lookup is far too cold to justify losing that probe.
 fn own_unit(obs: &Observation, id: UnitId) -> Option<&UnitObs> {
     obs.my_units.iter().find(|unit| unit.id == id)
 }

@@ -2175,7 +2175,7 @@ mod tests {
 
     #[test]
     fn lift_ownership_keeps_landed_assault_riders_in_the_prior_planner_ledger() {
-        use super::super::lift::{LiftManifest, LiftOperation, LiftPhase};
+        use super::super::lift::{LiftManifest, LiftOperation, LiftPhase, UnitIdSet};
 
         let lift = LiftOperation {
             target_player: PlayerId(1),
@@ -2187,7 +2187,7 @@ mod tests {
             deadline: 2_000,
             pickup_component: TilePos::new(5, 5),
             desired_carriers: 2,
-            payload: vec![UnitId(2), UnitId(3), UnitId(4), UnitId(5)],
+            payload: UnitIdSet::from_ids(vec![UnitId(2), UnitId(3), UnitId(4), UnitId(5)]),
             payload_target: 4,
             ground_payload_target: 4,
             planned_drops: vec![TilePos::new(18, 7), TilePos::new(19, 7)],
@@ -2238,7 +2238,7 @@ mod tests {
         let mut provisioning = lift;
         provisioning.phase = LiftPhase::Provision;
         provisioning.manifests.clear();
-        provisioning.payload = vec![UnitId(6), UnitId(7), UnitId(8)];
+        provisioning.payload = UnitIdSet::from_ids(vec![UnitId(6), UnitId(7), UnitId(8)]);
         assert_eq!(
             prior_planner_claims(&[], None, &[], &[], Some(&provisioning)),
             [UnitId(6), UnitId(7), UnitId(8)],
@@ -4234,7 +4234,7 @@ mod tests {
                 )),
                 "think {think} double-booked the frozen lift payload: {commands:?}"
             );
-            let mut strategic_claims = operation.payload.clone();
+            let mut strategic_claims = operation.payload.to_vec();
             if let Some(air) = brain
                 .strategy
                 .as_ref()
