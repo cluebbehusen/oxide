@@ -1,6 +1,6 @@
 ---
 created: 2026-08-29T08:00:10
-updated: 2026-08-30T20:12:00
+updated: 2026-08-31T05:19:21
 ---
 
 # Oxide 0.16.0 Scripted Bot Improvement
@@ -74,6 +74,10 @@ surface, and promoting only behavior proven against Overseer and human play.
   After the floor is met, optional capital must leave one shallow Sentinel
   reinforcement queued or its exact cost affordable unless no honest ground
   objective exists.
+- Treat the behavior-preserving refactor as the final implementation slice on
+  0.16.0, then open the PR. The remaining bot behavior, calibration, and
+  correctness work belongs in contained follow-up patches and does not block
+  this PR.
 
 ## Findings
 
