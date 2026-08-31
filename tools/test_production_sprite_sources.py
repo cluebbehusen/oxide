@@ -12,6 +12,7 @@ from tools.production_sprite_sources import (
     crucible_final,
     environment_final,
     finalized,
+    moth_warden_final,
     tender_condor_final,
 )
 
@@ -293,6 +294,71 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                     "Tender locomotion must move its tread cleats, not wobble the hull",
                 )
             self.assertNotEqual(phases[0].tobytes(), phases[1].tobytes())
+
+    def test_promoted_moth_and_warden_match_the_approved_rgba_source(self) -> None:
+        self.assertEqual(
+            moth_warden_final.source_rgba_digest(),
+            moth_warden_final.APPROVED_SOURCE_RGBA_SHA256,
+        )
+        for faction in ("ferrous", "cupric"):
+            for stem, renderer, action_count in (
+                ("moth", moth_warden_final.render_moth, 6),
+                ("warden", moth_warden_final.render_warden, 4),
+            ):
+                states = (
+                    ("", 0, 0),
+                    ("_move1", 1, 0),
+                    ("_move2", 2, 0),
+                    *(
+                        (f"_action{action}", 0, action)
+                        for action in range(1, action_count + 1)
+                    ),
+                )
+                for suffix, move_phase, action in states:
+                    image = renderer(faction, move_phase, action)
+                    self.assertEqual(image.size, (128, 128))
+                    self.assertEqual(
+                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
+                        image.tobytes(),
+                    )
+
+    def test_moth_and_warden_move_without_wobbling_the_hull(self) -> None:
+        for stem in ("moth", "warden"):
+            for faction in ("ferrous", "cupric"):
+                idle = self.registry[f"{stem}_{faction}"]
+                phases = [
+                    self.registry[f"{stem}_{faction}_move{phase}"] for phase in (1, 2)
+                ]
+                for frame in phases:
+                    self.assertEqual(
+                        idle.getchannel("A").tobytes(),
+                        frame.getchannel("A").tobytes(),
+                    )
+                self.assertTrue(
+                    any(idle.tobytes() != frame.tobytes() for frame in phases)
+                )
+                self.assertNotEqual(phases[0].tobytes(), phases[1].tobytes())
+
+    def test_moth_empties_all_six_bays_and_warden_reports_once(self) -> None:
+        bomb_centers = ((49, 45), (79, 45), (49, 59), (79, 59), (49, 73), (79, 73))
+        for faction in ("ferrous", "cupric"):
+            for action in range(1, 7):
+                frame = self.registry[f"moth_{faction}_action{action}"]
+                remaining = sum(
+                    frame.getpixel(center) == (*moth_warden_final.BONE, 255)
+                    for center in bomb_centers
+                )
+                self.assertEqual(remaining, 6 - action)
+            for action in range(1, 5):
+                pixels = set(
+                    self.registry[
+                        f"warden_{faction}_action{action}"
+                    ].get_flattened_data()
+                )
+                self.assertEqual(
+                    (*moth_warden_final.FLASH, 255) in pixels,
+                    action == 2,
+                )
 
     def test_tender_reserves_its_bright_tool_color_for_welding(self) -> None:
         bright_tool = (*tender_condor_final.WELD, 255)

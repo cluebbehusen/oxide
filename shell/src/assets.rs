@@ -133,7 +133,7 @@ pub struct Sprites {
     condor_action: [[Rect; 3]; 4],
     moth: [Rect; 3],
     moth_move: [[Rect; 3]; 2],
-    moth_action: [[Rect; 3]; 4],
+    moth_action: [[Rect; 3]; 6],
     breaker: [Rect; 3],
     breaker_move: [[Rect; 3]; 2],
     breaker_action: [[Rect; 3]; 4],
@@ -515,9 +515,9 @@ fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
         | UnitKind::Sylph
         | UnitKind::Tender
         | UnitKind::Condor
-        | UnitKind::Moth
         | UnitKind::Breaker
         | UnitKind::Avalanche => &ACTION_SUFFIXES_4,
+        UnitKind::Moth => &ACTION_SUFFIXES_6,
         UnitKind::Excavator
         | UnitKind::Kestrel
         | UnitKind::Gnat
@@ -910,7 +910,7 @@ impl Sprites {
             condor_action: variant_rows(&rects, unit_stem(UnitKind::Condor), ACTION_SUFFIXES_4)?,
             moth: unit(UnitKind::Moth)?,
             moth_move: variant_rows(&rects, unit_stem(UnitKind::Moth), MOVE_SUFFIXES)?,
-            moth_action: variant_rows(&rects, unit_stem(UnitKind::Moth), ACTION_SUFFIXES_4)?,
+            moth_action: variant_rows(&rects, unit_stem(UnitKind::Moth), ACTION_SUFFIXES_6)?,
             breaker: unit(UnitKind::Breaker)?,
             breaker_move: variant_rows(&rects, unit_stem(UnitKind::Breaker), MOVE_SUFFIXES)?,
             breaker_action: variant_rows(&rects, unit_stem(UnitKind::Breaker), ACTION_SUFFIXES_4)?,

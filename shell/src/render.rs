@@ -216,6 +216,7 @@ pub(crate) const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
 const BONE: Color = color_u8!(232, 228, 216, 255);
 const BONE_FAINT: Color = color_u8!(232, 228, 216, 90);
 const DEFAULT_UNIT_DRAW_SCALE: f32 = 1.05;
+const HEAVY_UNIT_DRAW_SCALE: f32 = 1.5;
 const LARGE_UNIT_DRAW_SCALE: f32 = 2.0;
 const SCRAP_COLOR: Color = crate::theme::TEXT_ACCENT;
 const HP_BACK: Color = color_u8!(20, 20, 24, 220);
@@ -666,25 +667,31 @@ fn unit_selection_radius(kind: oxide_sim::UnitKind, zoom: f32, padding: f32) -> 
 pub(crate) fn unit_draw_scale(kind: oxide_sim::UnitKind) -> f32 {
     match kind {
         oxide_sim::UnitKind::Condor
+        | oxide_sim::UnitKind::Moth
         | oxide_sim::UnitKind::Breaker
         | oxide_sim::UnitKind::Avalanche => LARGE_UNIT_DRAW_SCALE,
+        oxide_sim::UnitKind::Warden => HEAVY_UNIT_DRAW_SCALE,
         _ => DEFAULT_UNIT_DRAW_SCALE,
     }
 }
 
 fn air_presentation(kind: oxide_sim::UnitKind, zoom: f32) -> (Vec2, Vec2, f32) {
-    if kind == oxide_sim::UnitKind::Condor {
-        (
+    match kind {
+        oxide_sim::UnitKind::Condor => (
             vec2(zoom * 1.75, zoom * 1.1875),
             vec2(zoom * 0.125, zoom * 0.1875),
             zoom * 0.0625,
-        )
-    } else {
-        (
+        ),
+        oxide_sim::UnitKind::Moth => (
+            vec2(zoom * 1.55, zoom),
+            vec2(zoom * 0.11, zoom * 0.17),
+            zoom * 0.08,
+        ),
+        _ => (
             vec2(zoom * 0.9, zoom * 0.9),
             vec2(zoom * 0.16, zoom * 0.26),
             zoom * 0.18,
-        )
+        ),
     }
 }
 
@@ -1051,6 +1058,20 @@ mod tests {
     }
 
     #[test]
+    fn moth_uses_its_two_tile_canvas_and_bomber_shadow() {
+        let zoom = 64.0;
+        assert_eq!(super::unit_draw_scale(oxide_sim::UnitKind::Moth), 2.0);
+        let (shadow, offset, lift) = super::air_presentation(oxide_sim::UnitKind::Moth, zoom);
+        assert_eq!(shadow, vec2(99.2, 64.0));
+        assert_eq!(offset, vec2(7.04, 10.88));
+        assert_eq!(lift, 5.12);
+        assert!(
+            super::unit_selection_radius(oxide_sim::UnitKind::Moth, zoom, 4.0)
+                > super::unit_selection_radius(oxide_sim::UnitKind::Harvester, zoom, 4.0)
+        );
+    }
+
+    #[test]
     fn advanced_ground_units_use_two_tile_canvases() {
         let zoom = 64.0;
         for kind in [oxide_sim::UnitKind::Breaker, oxide_sim::UnitKind::Avalanche] {
@@ -1060,6 +1081,20 @@ mod tests {
                     > super::unit_selection_radius(oxide_sim::UnitKind::Sentinel, zoom, 4.0,)
             );
         }
+    }
+
+    #[test]
+    fn warden_is_larger_than_standard_armor_but_smaller_than_crucible_heavies() {
+        let zoom = 64.0;
+        assert_eq!(super::unit_draw_scale(oxide_sim::UnitKind::Warden), 1.5);
+        assert!(
+            super::unit_selection_radius(oxide_sim::UnitKind::Warden, zoom, 4.0)
+                > super::unit_selection_radius(oxide_sim::UnitKind::Sentinel, zoom, 4.0)
+        );
+        assert!(
+            super::unit_selection_radius(oxide_sim::UnitKind::Warden, zoom, 4.0)
+                < super::unit_selection_radius(oxide_sim::UnitKind::Breaker, zoom, 4.0)
+        );
     }
 
     #[test]

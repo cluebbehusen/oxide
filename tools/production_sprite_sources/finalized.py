@@ -27,6 +27,7 @@ from tools.production_sprite_sources import (
     ground_final,
     heavy_structures,
     lancer_final,
+    moth_warden_final,
     structures_base,
     tender_condor_final,
 )
@@ -845,3 +846,4 @@ def install_finalized_sprites(registry: Registry, out: Path) -> None:
         _install_defenses(registry, out, faction)
     tender_condor_final.install_tender_condor(registry, out)
     crucible_final.install_crucible_units(registry, out)
+    moth_warden_final.install_moth_warden(registry, out)

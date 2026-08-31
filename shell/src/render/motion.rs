@@ -253,9 +253,9 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Shrike
             | UnitKind::Sylph
             | UnitKind::Condor
-            | UnitKind::Moth
             | UnitKind::Breaker
             | UnitKind::Avalanche => 1,
+            UnitKind::Moth => cycle_index(progress, 3),
             UnitKind::Harvester
             | UnitKind::Tender
             | UnitKind::Excavator
@@ -278,9 +278,9 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Shrike
             | UnitKind::Sylph
             | UnitKind::Condor
-            | UnitKind::Moth
             | UnitKind::Breaker
             | UnitKind::Avalanche => 2 + cycle_index(progress, 2),
+            UnitKind::Moth => 3 + cycle_index(progress, 3),
             UnitKind::Harvester
             | UnitKind::Tender
             | UnitKind::Excavator
@@ -570,6 +570,34 @@ mod tests {
                 }
                 assert!(unit_preparation_frame(kind, progress) < count);
             }
+        }
+    }
+
+    #[test]
+    fn moth_uses_all_six_payload_frames_across_report_and_recovery() {
+        for (progress, expected) in [(0.0, 0), (0.34, 1), (0.67, 2)] {
+            assert_eq!(
+                unit_attack_frame(
+                    UnitKind::Moth,
+                    AttackPhase::Report {
+                        weapon: 0,
+                        progress,
+                    },
+                ),
+                expected,
+            );
+        }
+        for (progress, expected) in [(0.0, 3), (0.34, 4), (0.67, 5)] {
+            assert_eq!(
+                unit_attack_frame(
+                    UnitKind::Moth,
+                    AttackPhase::Recover {
+                        weapon: 0,
+                        progress,
+                    },
+                ),
+                expected,
+            );
         }
     }
 
