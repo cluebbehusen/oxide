@@ -438,7 +438,7 @@ impl UtilityPolicy {
             .base_stats()
             .construction
             .map_or(0, |construction| construction.cost);
-        let capacity_guard = voluntary_scrap_guard.unwrap_or(TECH_RESERVE);
+        let capacity_guard = voluntary_scrap_guard.amount(TECH_RESERVE);
         let mut capacity_site =
             self.airworks_capacity_site(dials, obs, home, claims, outstanding_air_production_ticks);
         if let Some(anchor) = capacity_site
@@ -493,7 +493,7 @@ impl UtilityPolicy {
                     },
                 );
                 capacity_site = None;
-                if capacity_guard > 0 && voluntary_scrap_guard.is_some() {
+                if capacity_guard > 0 && voluntary_scrap_guard.is_exact() {
                     return;
                 }
             }
@@ -503,7 +503,7 @@ impl UtilityPolicy {
         } else {
             0
         };
-        let voluntary_guard = voluntary_scrap_guard.unwrap_or(0);
+        let voluntary_guard = voluntary_scrap_guard.amount(0);
         let capital = ordinary_capital.max(capacity_capital).max(voluntary_guard);
         let allow_repeatable_ground =
             !player_facing || self.has_honest_ground_objective(dials, obs, home, public_map);
@@ -578,7 +578,7 @@ impl UtilityPolicy {
                     || (self.desperate && !self.desperate_road))
             {
                 let price = UnitKind::Skyhook.stats().cost + TECH_RESERVE;
-                if *budget >= price && obs.my_queues[qi].len() < 2 {
+                if *budget >= price && obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH {
                     *budget -= UnitKind::Skyhook.stats().cost;
                     intents.push(Intent::TrainAt {
                         building: airworks.id,
@@ -623,7 +623,7 @@ impl UtilityPolicy {
                 .filter(|(_, b)| b.kind == BuildingKind::Fabricator && b.built)
                 .min_by_key(|(_, b)| b.id);
             if let Some((qi, fabricator)) = fabricator
-                && obs.my_queues[qi].len() < 2
+                && obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH
                 && alive(UnitKind::Warden) + queued(UnitKind::Warden) < 4
                 && *budget
                     >= UnitKind::Warden
@@ -656,7 +656,7 @@ impl UtilityPolicy {
                     .any(|b| b.kind == BuildingKind::Crucible && b.built);
                 if let Some((qi, airworks)) = airworks
                     && crucible_stands
-                    && obs.my_queues[qi].len() < 2
+                    && obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH
                     && alive(bomber_kind) + queued(bomber_kind) < 2
                     && *budget
                         >= bomber_kind
@@ -681,7 +681,7 @@ impl UtilityPolicy {
             .filter(|(_, b)| b.kind == BuildingKind::Foundry && b.built)
             .min_by_key(|(_, b)| b.id);
         if let Some((qi, foundry)) = foundry
-            && obs.my_queues[qi].len() < 2
+            && obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH
         {
             if harvesters < immediate_harvester_target(dials) as usize
                 && *budget >= UnitKind::Harvester.stats().cost
@@ -738,15 +738,16 @@ impl UtilityPolicy {
             .count();
         if let Some((qi, fab)) = fabricator {
             use crate::stats::Role;
-            let fab_open = obs.my_queues[qi].len() < 2;
-            let foundry_open = foundry.filter(|(fqi, _)| obs.my_queues[*fqi].len() < 2);
+            let fab_open = obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH;
+            let foundry_open =
+                foundry.filter(|(fqi, _)| obs.my_queues[*fqi].len() < SHALLOW_QUEUE_DEPTH);
             let airworks_open = obs
                 .my_buildings
                 .iter()
                 .enumerate()
                 .filter(|(_, b)| b.kind == BuildingKind::Airworks && b.built)
                 .min_by_key(|(_, b)| b.id)
-                .filter(|(aqi, _)| obs.my_queues[*aqi].len() < 2);
+                .filter(|(aqi, _)| obs.my_queues[*aqi].len() < SHALLOW_QUEUE_DEPTH);
             let aa_kind = Role::AntiAir.unit_for(obs.faction);
             let wing_kind = Role::AirGround.unit_for(obs.faction);
             let lancer = UnitKind::Lancer.stats().cost;
@@ -1714,7 +1715,7 @@ mod tests {
                 },
                 demand,
             )
-            .with_voluntary_scrap_guard(guard),
+            .with_voluntary_scrap_guard(Reserve::Exact(guard)),
             &mut budget,
             &mut intents,
         );
@@ -1930,7 +1931,7 @@ mod tests {
                     },
                     None,
                 )
-                .with_voluntary_scrap_guard(guard),
+                .with_voluntary_scrap_guard(Reserve::Exact(guard)),
                 &mut budget,
                 &mut intents,
             );
@@ -1972,7 +1973,7 @@ mod tests {
                     },
                     None,
                 )
-                .with_voluntary_scrap_guard(guard),
+                .with_voluntary_scrap_guard(Reserve::Exact(guard)),
                 &mut budget,
                 &mut intents,
             );

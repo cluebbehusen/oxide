@@ -60,6 +60,10 @@ const TURRET_CAP: usize = 2;
 /// Scrap kept banked past a Fabricator's price before teching — the
 /// fighting reserve that keeps the sentinel drip alive.
 const TECH_RESERVE: u32 = 70;
+/// A production queue this shallow accepts another order; deeper queues
+/// hoard scrap in trains that cannot be redirected. The strategic air
+/// and lift planners keep their own equal constants for their queues.
+const SHALLOW_QUEUE_DEPTH: usize = 2;
 /// Most flak turrets the policy will pay for against an air threat.
 const FLAK_CAP: usize = 2;
 /// Most Reclaimers the policy will run at once.
@@ -156,6 +160,32 @@ struct ConstructionClaims<'a> {
     reserved: &'a [UnitId],
 }
 
+/// How a spending gate treats the reserve it must leave untouched.
+/// `Ordinary` applies the gate's own baseline (usually `TECH_RESERVE`);
+/// `Exact(n)` replaces that baseline outright, so `Exact(0)` holds back
+/// nothing at all — the two zeros are different decisions and the type
+/// forces the caller to say which one it means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reserve {
+    Ordinary,
+    Exact(u32),
+}
+
+impl Reserve {
+    /// The scrap this reserve actually withholds at a gate whose own
+    /// baseline is `ordinary`.
+    const fn amount(self, ordinary: u32) -> u32 {
+        match self {
+            Self::Ordinary => ordinary,
+            Self::Exact(scrap) => scrap,
+        }
+    }
+
+    const fn is_exact(self) -> bool {
+        matches!(self, Self::Exact(_))
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ConstructionContext<'a> {
     home: TilePos,
@@ -166,7 +196,7 @@ struct ConstructionContext<'a> {
     unavailable_builders: &'a [UnitId],
     public_map: Option<&'a PublicMapBriefing>,
     scope: ConstructionScope,
-    voluntary_scrap_guard: Option<u32>,
+    voluntary_scrap_guard: Reserve,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,7 +219,7 @@ impl<'a> ConstructionContext<'a> {
             unavailable_builders: &[],
             public_map: None,
             scope: ConstructionScope::Full,
-            voluntary_scrap_guard: None,
+            voluntary_scrap_guard: Reserve::Ordinary,
         }
     }
 
@@ -226,8 +256,8 @@ impl<'a> ConstructionContext<'a> {
         self
     }
 
-    const fn with_voluntary_scrap_guard(mut self, scrap: u32) -> Self {
-        self.voluntary_scrap_guard = Some(scrap);
+    const fn with_voluntary_scrap_guard(mut self, guard: Reserve) -> Self {
+        self.voluntary_scrap_guard = guard;
         self
     }
 }
@@ -241,7 +271,7 @@ struct ProductionContext<'a> {
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
     public_map: Option<&'a PublicMapBriefing>,
-    voluntary_scrap_guard: Option<u32>,
+    voluntary_scrap_guard: Reserve,
 }
 
 impl<'a> ProductionContext<'a> {
@@ -258,7 +288,7 @@ impl<'a> ProductionContext<'a> {
             unit_contacts: None,
             building_contacts: None,
             public_map: None,
-            voluntary_scrap_guard: None,
+            voluntary_scrap_guard: Reserve::Ordinary,
         }
     }
 
@@ -282,8 +312,8 @@ impl<'a> ProductionContext<'a> {
         self
     }
 
-    const fn with_voluntary_scrap_guard(mut self, scrap: u32) -> Self {
-        self.voluntary_scrap_guard = Some(scrap);
+    const fn with_voluntary_scrap_guard(mut self, guard: Reserve) -> Self {
+        self.voluntary_scrap_guard = guard;
         self
     }
 }
@@ -295,7 +325,7 @@ struct AdvancedConstructionContext<'a> {
     combat_core_exclusions: &'a [UnitId],
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
-    voluntary_scrap_guard: Option<u32>,
+    voluntary_scrap_guard: Reserve,
 }
 
 struct ExtractorClaimContext<'a> {
@@ -2045,7 +2075,7 @@ impl UtilityPolicy {
                 .with_combat_core_exclusions(combat_core_exclusions)
                 .with_intelligence(mode.unit_contacts, mode.building_contacts)
                 .with_public_map(mode.public_map)
-                .with_voluntary_scrap_guard(production_guard),
+                .with_voluntary_scrap_guard(Reserve::Exact(production_guard)),
                 &mut budget,
                 &mut intents,
             );
@@ -2054,7 +2084,8 @@ impl UtilityPolicy {
                 self.construction(
                     dials,
                     obs,
-                    construction_context.with_voluntary_scrap_guard(production_guard),
+                    construction_context
+                        .with_voluntary_scrap_guard(Reserve::Exact(production_guard)),
                     &mut budget,
                     &mut intents,
                 );

@@ -2,8 +2,8 @@
 
 use super::*;
 
-fn can_fund(budget: u32, cost: u32, ordinary_reserve: u32, voluntary_guard: Option<u32>) -> bool {
-    budget >= cost.saturating_add(voluntary_guard.unwrap_or(ordinary_reserve))
+fn can_fund(budget: u32, cost: u32, ordinary_reserve: u32, voluntary_guard: Reserve) -> bool {
+    budget >= cost.saturating_add(voluntary_guard.amount(ordinary_reserve))
 }
 
 impl UtilityPolicy {
