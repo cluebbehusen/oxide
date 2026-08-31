@@ -22,13 +22,16 @@ fn ground_capable_members(army: &Army, obs: &Observation) -> usize {
         .count()
 }
 
+// Priced through the same salvo-aware coin as live fight estimates, so
+// a remembered bomber force keeps the threat weight it demonstrated
+// while visible instead of collapsing when sight is lost.
 fn demonstrated_ground_strength(unit: &UnitObs) -> u64 {
     let stats = unit.kind.stats();
     let damage_per_100_ticks = stats
         .weapons
         .iter()
         .filter(|weapon| weapon.targets.covers(Domain::Ground))
-        .map(|weapon| u64::from(weapon.damage) * 100 / u64::from(weapon.cooldown_ticks))
+        .map(crate::bot::executive::weapon_burst_dps100)
         .sum::<u64>();
     u64::from(stats.max_hp) * damage_per_100_ticks
 }
@@ -852,8 +855,8 @@ impl UtilityPolicy {
                 && obs.tick.saturating_sub(self.scouted_at) < 2 * SCOUT_REFRESH);
         let sentinel = UnitKind::Sentinel.stats();
         let atk = sentinel.weapons.first().expect("sentinels fight");
-        let sentinel_worth = u64::from(sentinel.max_hp)
-            * (u64::from(atk.damage) * 100 / u64::from(atk.cooldown_ticks));
+        let sentinel_worth =
+            u64::from(sentinel.max_hp) * crate::bot::executive::weapon_burst_dps100(atk);
         let floor = (if intel_fresh { 3 } else { 6 }) * sentinel_worth;
         // Patience decays the demanded margin from 2.0× down to 1.0×
         // over the match: two flawless defenders would otherwise wait
@@ -1060,7 +1063,7 @@ fn objective_building_strength(building: &BuildingObs, mode: PolicyMode<'_>, now
             .weapons
             .iter()
             .filter(|weapon| weapon.targets.ground)
-            .map(|weapon| u64::from(weapon.damage) * 100 / u64::from(weapon.cooldown_ticks))
+            .map(crate::bot::executive::weapon_burst_dps100)
             .sum();
         u64::from(building.hp) * damage_per_100
     } else {
@@ -1096,6 +1099,23 @@ mod tests {
     use crate::ids::{BuildingId, PlayerId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec, Scenario};
     use crate::state::Faction;
+
+    #[test]
+    fn remembered_strength_counts_the_full_salvo() {
+        let stats = UnitKind::Moth.stats();
+        let weapon = &stats.weapons[0];
+        assert!(weapon.salvo > 1, "the probe needs a salvo weapon");
+        let mut moth = fighter(1, TilePos::new(4, 4));
+        moth.kind = UnitKind::Moth;
+        moth.hp = stats.max_hp;
+        assert_eq!(
+            demonstrated_ground_strength(&moth),
+            u64::from(stats.max_hp)
+                * (u64::from(weapon.damage) * u64::from(weapon.salvo) * 100
+                    / u64::from(weapon.cooldown_ticks)),
+            "a bomber leaving sight must keep the threat weight it demonstrated while visible"
+        );
+    }
 
     fn fighter(id: u32, tile: TilePos) -> UnitObs {
         UnitObs {
