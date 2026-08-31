@@ -85,12 +85,16 @@ impl UtilityPolicy {
             return None;
         }
         let deferred = Self::deferred_claims(obs);
+        // One component flood answers every candidate frame; the
+        // per-frame flood re-walked the whole component per candidate
+        // and dominated think time on frame-dense maps.
+        let reach = Self::known_road_reach(obs, home);
         let candidates: Vec<_> = obs
             .known_frames
             .iter()
             .copied()
             .filter(|frame| self.player_can_plan_frame_restoration(obs, *frame))
-            .filter(|frame| Self::ground_route_known(obs, home, *frame))
+            .filter(|frame| reach.frame_reached(*frame))
             .filter(|frame| {
                 !obs.my_buildings
                     .iter()
