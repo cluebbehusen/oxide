@@ -18,6 +18,10 @@ use chassis::grid::TilePos;
 
 const RAID_GROUP_SIZE: usize = 2;
 const HOME_SCREEN_RADIUS: i32 = 8;
+// The team planner keeps its own deliberately different pair (3 tiles,
+// 400 ticks); these are not shared values that drifted.
+const RETURN_RADIUS: i32 = 2;
+const WITHDRAWAL_TIMEOUT: Tick = 500;
 
 #[derive(Clone, Copy)]
 pub(super) struct RaidPlanningContext<'a> {
@@ -269,10 +273,9 @@ impl RaidPlanner {
         }
 
         let mut decision = StrategicDecision::default();
-        let already_home = raid
-            .members
-            .iter()
-            .all(|id| own_unit(obs, *id).is_some_and(|unit| unit.tile.chebyshev(home) <= 2));
+        let already_home = raid.members.iter().all(|id| {
+            own_unit(obs, *id).is_some_and(|unit| unit.tile.chebyshev(home) <= RETURN_RADIUS)
+        });
         let return_route = raid.phase != RaidPhase::Egress
             || raid.members.is_empty()
             || already_home
@@ -332,7 +335,7 @@ impl RaidPlanner {
             && (raid.members.is_empty()
                 || already_home
                 || !return_route
-                || obs.tick.saturating_sub(raid.phase_started_at) >= 500);
+                || obs.tick.saturating_sub(raid.phase_started_at) >= WITHDRAWAL_TIMEOUT);
         if home_safe {
             self.cooldown_until = obs.tick.saturating_add(cooldown(profile, tuning));
         } else {
@@ -408,24 +411,8 @@ fn home_screen_ready(
     home: TilePos,
     muster: &[UnitId],
 ) -> bool {
-    let sentinel = UnitObs {
-        id: UnitId(u32::MAX),
-        player: obs.me,
-        kind: UnitKind::Sentinel,
-        tile: home,
-        hp: UnitKind::Sentinel.stats().max_hp,
-        idle: true,
-        carrying: 0,
-        harvesting: None,
-        cargo: 0,
-        site: None,
-        salvaging: None,
-        founding: None,
-        repairing: false,
-        grounded: false,
-    };
-    let required =
-        super::executive::unit_strength(&sentinel).saturating_mul(home_screen_equivalents(profile));
+    let required = super::executive::full_ground_strength(UnitKind::Sentinel)
+        .saturating_mul(home_screen_equivalents(profile));
     let available = obs
         .my_units
         .iter()

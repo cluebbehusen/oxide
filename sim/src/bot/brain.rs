@@ -30,17 +30,42 @@ use chassis::grid::TilePos;
 use chassis::rng::Pcg32;
 use std::sync::Arc;
 
+/// Everything only the player-facing controller owns: personality,
+/// intelligence, the strategic planners, and the authored map briefing.
+/// Living inside [`Controller::PlayerFacing`] makes a half-built
+/// player-facing brain unrepresentable — the profile-free QA path has
+/// nothing here to silently degrade into. The four planners stay
+/// individually optional because focused tests null one planner at a
+/// time to isolate another.
+#[derive(Debug, Clone, PartialEq)]
+struct PlayerFacingMind {
+    profile: ResolvedProfile,
+    intelligence: StrategicIntelligence,
+    strategy: Option<StrategicPlanner>,
+    lifts: Option<LiftPlanner>,
+    team: Option<TeamReliefPlanner>,
+    raids: Option<RaidPlanner>,
+    /// Authored pre-match facts are a separate channel from live fog and
+    /// memory. Only the player-facing controller receives one.
+    public_map: Arc<PublicMapBriefing>,
+    /// The immutable briefing transformed once into the latched policy frame.
+    oriented_public_map: Option<PublicMapBriefing>,
+}
+
+/// Which controller a brain runs: the frozen profile-free QA policy, or
+/// the configurable player-facing opponent with its strategic mind.
+#[derive(Debug, Clone, PartialEq)]
+enum Controller {
+    ProfileFree,
+    PlayerFacing(Box<PlayerFacingMind>),
+}
+
 /// One brain, driving one player.
 #[derive(Debug, Clone)]
 pub struct Brain {
     player: PlayerId,
     dials: Dials,
-    profile: Option<ResolvedProfile>,
-    intelligence: Option<StrategicIntelligence>,
-    strategy: Option<StrategicPlanner>,
-    lifts: Option<LiftPlanner>,
-    team: Option<TeamReliefPlanner>,
-    raids: Option<RaidPlanner>,
+    controller: Controller,
     policy: UtilityPolicy,
     exec: Executive,
     /// The seat's frame of reference, latched at the first act and
@@ -49,11 +74,6 @@ pub struct Brain {
     /// space, and a mid-game flip when the home Foundry changes would
     /// silently mirror all of it.
     orientation: Option<Orientation>,
-    /// Authored pre-match facts are a separate channel from live fog and
-    /// memory. Only the player-facing controller receives one.
-    public_map: Option<Arc<PublicMapBriefing>>,
-    /// The immutable briefing transformed once into the latched policy frame.
-    oriented_public_map: Option<PublicMapBriefing>,
 }
 
 impl Brain {
@@ -81,17 +101,10 @@ impl Brain {
         Self {
             player,
             dials,
-            profile: None,
-            intelligence: None,
-            strategy: None,
-            lifts: None,
-            team: None,
-            raids: None,
+            controller: Controller::ProfileFree,
             policy: UtilityPolicy::new(),
             exec: Executive::default(),
             orientation: None,
-            public_map: None,
-            oriented_public_map: None,
         }
     }
 
@@ -109,13 +122,16 @@ impl Brain {
         let profile = config.resolve_profile();
         let dials = Dials::scripted(&profile, DifficultyTuning::for_level(config.difficulty));
         let mut brain = Self::with_dials(player, dials);
-        brain.profile = Some(profile);
-        brain.intelligence = Some(StrategicIntelligence::new());
-        brain.strategy = Some(StrategicPlanner::new());
-        brain.lifts = Some(LiftPlanner::new());
-        brain.team = Some(TeamReliefPlanner::new());
-        brain.raids = Some(RaidPlanner::new());
-        brain.public_map = Some(public_map);
+        brain.controller = Controller::PlayerFacing(Box::new(PlayerFacingMind {
+            profile,
+            intelligence: StrategicIntelligence::new(),
+            strategy: Some(StrategicPlanner::new()),
+            lifts: Some(LiftPlanner::new()),
+            team: Some(TeamReliefPlanner::new()),
+            raids: Some(RaidPlanner::new()),
+            public_map,
+            oriented_public_map: None,
+        }));
         brain
     }
 
@@ -148,7 +164,26 @@ impl Brain {
 
     /// The resolved player-facing personality, absent on custom and QA brains.
     pub fn profile(&self) -> Option<&ResolvedProfile> {
-        self.profile.as_ref()
+        match &self.controller {
+            Controller::PlayerFacing(mind) => Some(&mind.profile),
+            Controller::ProfileFree => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn mind(&self) -> &PlayerFacingMind {
+        let Controller::PlayerFacing(mind) = &self.controller else {
+            panic!("a profile-free brain has no player-facing mind");
+        };
+        mind
+    }
+
+    #[cfg(test)]
+    fn mind_mut(&mut self) -> &mut PlayerFacingMind {
+        let Controller::PlayerFacing(mind) = &mut self.controller else {
+            panic!("a profile-free brain has no player-facing mind");
+        };
+        mind
     }
 
     /// The executive's current bookkeeping (armies, rear line) — for
@@ -182,12 +217,13 @@ impl Brain {
         let orientation = *self
             .orientation
             .get_or_insert_with(|| Orientation::for_home(&obs, rear_anchor));
-        let rear = if self.profile.is_some() {
+        let player_facing = matches!(&self.controller, Controller::PlayerFacing(_));
+        let rear = if player_facing {
             player_facing_rear_tile(orientation, rear_anchor, rear_size)
         } else {
             rear_anchor
         };
-        let mut commands = if self.profile.is_some() {
+        let mut commands = if player_facing {
             self.exec.maintain_player_facing_with_tactics(
                 self.player,
                 &obs,
@@ -206,18 +242,6 @@ impl Brain {
         // the same logic runs for both seats, so its compass-flavored
         // tie-breaks cannot systematically favor either one.
         let oriented = orientation.observe(&obs);
-        let oriented_public_map = if self.profile.is_some() {
-            let public_map = self
-                .public_map
-                .as_deref()
-                .expect("a player-facing brain requires a public map briefing");
-            Some(
-                self.oriented_public_map
-                    .get_or_insert_with(|| orientation.briefing(public_map)),
-            )
-        } else {
-            None
-        };
         let armies: Vec<_> = self
             .exec
             .armies()
@@ -225,7 +249,7 @@ impl Brain {
             .map(|a| orientation.army(a.clone()))
             .collect();
         let enlisted: Vec<_> = self.exec.enlisted().collect();
-        if self.profile.is_none() {
+        let Controller::PlayerFacing(mind) = &mut self.controller else {
             let intents = self
                 .policy
                 .think(&self.dials, &oriented, &armies, &enlisted);
@@ -240,7 +264,20 @@ impl Brain {
             }
             commands.extend(lowered);
             return commands;
-        }
+        };
+        let PlayerFacingMind {
+            profile,
+            intelligence,
+            strategy,
+            lifts,
+            team,
+            raids,
+            public_map,
+            oriented_public_map,
+        } = mind.as_mut();
+        let profile = &*profile;
+        let oriented_public_map: &PublicMapBriefing =
+            oriented_public_map.get_or_insert_with(|| orientation.briefing(public_map));
         let oriented_home = oriented
             .my_buildings
             .iter()
@@ -248,42 +285,19 @@ impl Brain {
             .min_by_key(|building| building.id)
             .map(|building| building.anchor)
             .unwrap_or(TilePos::new(0, 0));
-        let profile = self
-            .profile
-            .as_ref()
-            .expect("the profile-free controller returned through its legacy path");
         let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let prior_team_core_claims = self
-            .team
+        let prior_team_core_claims = team
             .as_ref()
             .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
-        let team_external_claims = prior_planner_claims(
-            &enlisted,
-            self.strategy
-                .as_ref()
-                .and_then(StrategicPlanner::air_operation),
-            &[],
-            self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            self.lifts.as_ref().and_then(LiftPlanner::operation),
-        );
-        let team_other_core_exclusions = prior_planner_claims(
-            &[],
-            self.strategy
-                .as_ref()
-                .and_then(StrategicPlanner::air_operation),
-            &[],
-            self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            self.lifts.as_ref().and_then(LiftPlanner::operation),
-        );
-        let prior_team_core_exclusions = prior_planner_claims(
-            &[],
-            self.strategy
-                .as_ref()
-                .and_then(StrategicPlanner::air_operation),
-            &prior_team_core_claims,
-            self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            self.lifts.as_ref().and_then(LiftPlanner::operation),
-        );
+        let claims = ClaimLedger {
+            enlisted: &enlisted,
+            strategy,
+            raids,
+            lifts,
+        };
+        let team_external_claims = claims.external_to_team();
+        let team_other_core_exclusions = claims.core_exclusions(&[]);
+        let prior_team_core_exclusions = claims.core_exclusions(&prior_team_core_claims);
         let allow_team_admission = combat_core_status(
             &oriented,
             &prior_team_core_exclusions,
@@ -291,8 +305,8 @@ impl Brain {
             u64::from(self.dials.minimum_core_equivalents),
         )
         .ready;
-        let team_before_decision = self.team.clone();
-        let mut team_decision = if let Some(team) = self.team.as_mut() {
+        let team_before_decision = team.clone();
+        let mut team_decision = if let Some(team) = team.as_mut() {
             team.think_with_admission(
                 profile,
                 tuning,
@@ -309,61 +323,25 @@ impl Brain {
         } else {
             StrategicDecision::default()
         };
-        let mut team_core_claims = self
-            .team
+        let mut team_core_claims = team
             .as_ref()
             .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
         if prior_team_core_claims.is_empty() && !team_core_claims.is_empty() {
-            let candidate_core_exclusions = prior_planner_claims(
-                &[],
-                self.strategy
-                    .as_ref()
-                    .and_then(StrategicPlanner::air_operation),
-                &team_core_claims,
-                self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
-                self.lifts.as_ref().and_then(LiftPlanner::operation),
-            );
-            if !combat_core_status(
+            let candidate_core_exclusions = claims.core_exclusions(&team_core_claims);
+            roll_back_unless_core_ready(
                 &oriented,
                 &candidate_core_exclusions,
-                &[],
                 u64::from(self.dials.minimum_core_equivalents),
-            )
-            .ready
-            {
-                self.team = team_before_decision;
-                team_decision = StrategicDecision::default();
-                team_core_claims.clear();
-            }
+                team,
+                team_before_decision,
+                &mut team_decision,
+                Some(&mut team_core_claims),
+            );
         }
         let team_claims = team_decision.reservations.clone();
-        let prior_non_lift_claims = prior_planner_claims(
-            &enlisted,
-            self.strategy
-                .as_ref()
-                .and_then(StrategicPlanner::air_operation),
-            &team_claims,
-            self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            None,
-        );
-        let planner_claims = prior_planner_claims(
-            &enlisted,
-            self.strategy
-                .as_ref()
-                .and_then(StrategicPlanner::air_operation),
-            &team_claims,
-            self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            self.lifts.as_ref().and_then(LiftPlanner::operation),
-        );
-        let strategic_core_exclusions = prior_planner_claims(
-            &[],
-            self.strategy
-                .as_ref()
-                .and_then(StrategicPlanner::air_operation),
-            &team_core_claims,
-            self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            self.lifts.as_ref().and_then(LiftPlanner::operation),
-        );
+        let prior_non_lift_claims = claims.without_lift(&team_claims);
+        let planner_claims = claims.all(&team_claims);
+        let strategic_core_exclusions = claims.core_exclusions(&team_core_claims);
         let opening_core = combat_core_status(
             &oriented,
             &strategic_core_exclusions,
@@ -371,71 +349,52 @@ impl Brain {
             u64::from(self.dials.minimum_core_equivalents),
         );
         let allow_new_voluntary_operations = opening_core.ready;
-        let shallow_sentinel_reserve = if allow_new_voluntary_operations {
-            self.policy.shallow_sentinel_capital_reserve(
+        let mut ledger = ScrapLedger {
+            bank: oriented.scrap,
+            frozen: !allow_new_voluntary_operations,
+            ..ScrapLedger::default()
+        };
+        if allow_new_voluntary_operations {
+            ledger.shallow_sentinel = self.policy.shallow_sentinel_capital_reserve(
                 &self.dials,
                 &oriented,
                 oriented_home,
-                oriented_public_map
-                    .as_deref()
-                    .expect("the player-facing brain owns an oriented map briefing"),
-            )
-        } else {
-            0
-        };
-        let opening_bootstrap_reserve = if allow_new_voluntary_operations {
-            self.policy.strategic_opening_bootstrap_reserve(
+                oriented_public_map,
+            );
+            ledger.opening_bootstrap = self.policy.strategic_opening_bootstrap_reserve(
                 &self.dials,
                 &oriented,
                 oriented_home,
-                oriented_public_map
-                    .as_deref()
-                    .expect("the player-facing brain owns an oriented map briefing"),
-            )
-        } else {
-            0
-        };
+                oriented_public_map,
+            );
+        }
         let prior_lift_unavailable =
             lift_unavailable(&oriented, &armies, &enlisted, &prior_non_lift_claims);
-        let construction_commitment = UtilityPolicy::deferred_construction_commitment(&oriented);
-        let active_air_production_ticks = self
-            .strategy
+        ledger.deferred_construction = UtilityPolicy::deferred_construction_commitment(&oriented);
+        let active_air_production_ticks = strategy
             .as_ref()
             .map_or(0, |strategy| strategy.remaining_airwork_ticks(&oriented))
-            .saturating_add(self.lifts.as_ref().map_or(0, |lifts| {
+            .saturating_add(lifts.as_ref().map_or(0, |lifts| {
                 lifts.remaining_airwork_ticks(&oriented, &prior_lift_unavailable)
             }));
-        let air_capacity_active = self
-            .strategy
+        let air_capacity_active = strategy
             .as_ref()
             .is_some_and(|strategy| strategy.air_operation().is_some())
-            || self
-                .lifts
+            || lifts
                 .as_ref()
                 .is_some_and(|lifts| lifts.operation().is_some());
-        let airworks_capacity_commitment = if allow_new_voluntary_operations {
-            self.policy.airworks_capacity_commitment(
+        if allow_new_voluntary_operations {
+            ledger.airworks_capacity = self.policy.airworks_capacity_commitment(
                 &self.dials,
                 &oriented,
                 oriented_home,
                 air_capacity_active.then_some(active_air_production_ticks),
                 &planner_claims,
-            )
-        } else {
-            0
-        };
-        let mut strategic_observation = oriented.clone();
-        strategic_observation.scrap = strategic_observation
-            .scrap
-            .saturating_sub(construction_commitment)
-            .saturating_sub(airworks_capacity_commitment)
-            .saturating_sub(shallow_sentinel_reserve)
-            .saturating_sub(opening_bootstrap_reserve);
-        if !allow_new_voluntary_operations {
-            strategic_observation.scrap = 0;
+            );
         }
-        let lift_support_request = self
-            .lifts
+        let mut strategic_observation = oriented.clone();
+        strategic_observation.scrap = ledger.strategic_spendable();
+        let lift_support_request = lifts
             .as_ref()
             .and_then(LiftPlanner::operation)
             .filter(|operation| operation.phase <= super::lift::LiftPhase::AwaitSupport)
@@ -445,38 +404,35 @@ impl Brain {
                 planned_drops: operation.planned_drops.clone(),
             });
         let lift_was_active = lift_support_request.is_some();
-        let mut strategic = match (self.intelligence.as_mut(), self.strategy.as_mut()) {
-            (Some(intelligence), Some(strategy)) => {
-                intelligence.update(&oriented);
-                strategy.think_with_lift_support(
-                    profile,
-                    tuning,
-                    &strategic_observation,
-                    intelligence,
-                    oriented_home,
-                    StrategicCoordination {
-                        enlisted: &planner_claims,
-                        lift_support: lift_support_request.as_ref(),
-                        allow_new_operation: allow_new_voluntary_operations,
-                    },
-                )
-            }
-            _ => Default::default(),
+        // Intelligence ages with the strategic think: a test that nulls
+        // the strategic planner also expects contact memory to hold
+        // still, so the update stays inside the planner's arm.
+        let mut strategic = if let Some(strategy) = strategy.as_mut() {
+            intelligence.update(&oriented);
+            strategy.think_with_lift_support(
+                profile,
+                tuning,
+                &strategic_observation,
+                intelligence,
+                oriented_home,
+                StrategicCoordination {
+                    enlisted: &planner_claims,
+                    lift_support: lift_support_request.as_ref(),
+                    allow_new_operation: allow_new_voluntary_operations,
+                },
+            )
+        } else {
+            Default::default()
         };
-        let air_active = self
-            .strategy
+        let air_active = strategy
             .as_ref()
             .is_some_and(|strategy| strategy.air_operation().is_some());
         merge_strategic(&mut strategic, team_decision);
-        let team_active = self
-            .team
-            .as_ref()
-            .is_some_and(|team| team.operation().is_some());
+        let team_active = team.as_ref().is_some_and(|team| team.operation().is_some());
         // A raid group already mustering or under way keeps ownership while a
         // new lift is planned. A merely optional new raid does not get to
         // shrink the primary island assault before the lift sees the roster.
-        let prior_raid_reservations: Vec<_> = self
-            .raids
+        let prior_raid_reservations: Vec<_> = raids
             .as_ref()
             .into_iter()
             .flat_map(|raids| raids.reservations().iter().copied())
@@ -488,22 +444,20 @@ impl Brain {
         let lift_unavailable =
             lift_unavailable(&oriented, &armies, &enlisted, &reservations_before_lift);
         let prospective_carrier_commitment = if allow_new_voluntary_operations {
-            self.strategy
+            strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation)
                 .filter(|operation| {
                     operation.phase == AirOperationPhase::Recon && !operation.assault_admitted
                 })
                 .and_then(|operation| {
-                    self.intelligence.as_ref().and_then(|intelligence| {
-                        intelligence.buildings().iter().find(|contact| {
-                            contact.player == operation.target_player
-                                && contact.anchor == operation.target
-                        })
+                    intelligence.buildings().iter().find(|contact| {
+                        contact.player == operation.target_player
+                            && contact.anchor == operation.target
                     })
                 })
                 .and_then(|target| {
-                    self.lifts.as_ref().map(|lifts| {
+                    lifts.as_ref().map(|lifts| {
                         lifts.prospective_first_carrier_commitment(
                             &oriented,
                             oriented_home,
@@ -528,14 +482,12 @@ impl Brain {
         lift_observation.scrap = lift_observation
             .scrap
             .saturating_sub(strategic.committed_scrap);
-        let mut support = self
-            .strategy
+        let mut support = strategy
             .as_ref()
             .map_or(LiftAirSupport::Independent, |strategy| {
                 air_support(strategy.air_operation(), strategy.terminal_outcome())
             });
-        let air_accepts_new_lift = self
-            .strategy
+        let air_accepts_new_lift = strategy
             .as_ref()
             .and_then(StrategicPlanner::air_operation)
             .is_some_and(|operation| operation.phase != AirOperationPhase::Recover);
@@ -548,12 +500,11 @@ impl Brain {
                 _ => LiftAirSupport::Independent,
             };
         }
-        let lift_operation_was_active = self
-            .lifts
+        let lift_operation_was_active = lifts
             .as_ref()
             .is_some_and(|lifts| lifts.operation().is_some());
-        let lifts_before_decision = self.lifts.clone();
-        let mut lift_decision = if let Some(lifts) = self.lifts.as_mut() {
+        let lifts_before_decision = lifts.clone();
+        let mut lift_decision = if let Some(lifts) = lifts.as_mut() {
             lifts.think_with_admission(
                 &lift_observation,
                 oriented_home,
@@ -569,48 +520,43 @@ impl Brain {
             StrategicDecision::default()
         };
         if !lift_operation_was_active
-            && self
-                .lifts
+            && lifts
                 .as_ref()
                 .is_some_and(|lifts| lifts.operation().is_some())
         {
-            let candidate_core_exclusions = prior_planner_claims(
-                &[],
-                self.strategy
-                    .as_ref()
-                    .and_then(StrategicPlanner::air_operation),
-                &team_core_claims,
-                self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
-                self.lifts.as_ref().and_then(LiftPlanner::operation),
-            );
-            if !combat_core_status(
+            // Rebuilt rather than reused: the strategic and lift thinks
+            // have both mutated their planners since the pre-think ledger.
+            let claims = ClaimLedger {
+                enlisted: &enlisted,
+                strategy,
+                raids,
+                lifts,
+            };
+            let candidate_core_exclusions = claims.core_exclusions(&team_core_claims);
+            roll_back_unless_core_ready(
                 &oriented,
                 &candidate_core_exclusions,
-                &[],
                 u64::from(self.dials.minimum_core_equivalents),
-            )
-            .ready
-            {
-                self.lifts = lifts_before_decision;
-                lift_decision = StrategicDecision::default();
-            }
+                lifts,
+                lifts_before_decision,
+                &mut lift_decision,
+                None,
+            );
         }
         merge_strategic(&mut strategic, lift_decision);
-        let lift_active = self
-            .lifts
+        let lift_active = lifts
             .as_ref()
             .is_some_and(|lifts| lifts.operation().is_some());
 
         let strategic_load =
             usize::from(air_active) + usize::from(team_active) + usize::from(lift_active);
-        let raid_claimed = self
-            .raids
+        let raid_claimed = raids
             .as_ref()
             .is_some_and(|raids| !raids.reservations().is_empty());
         let can_begin_raid =
             allow_new_voluntary_operations && can_admit_optional_raid(tuning, strategic_load);
         if (raid_claimed || can_begin_raid)
-            && let Some(raids) = self.raids.as_mut()
+            && let Some(raids) = raids.as_mut()
         {
             let raid = raids.think_with_admission(
                 RaidPlanningContext::new(
@@ -625,11 +571,10 @@ impl Brain {
             );
             merge_strategic(&mut strategic, raid);
         }
-        let outstanding_air_production_ticks = self
-            .strategy
+        let outstanding_air_production_ticks = strategy
             .as_ref()
             .map_or(0, |strategy| strategy.remaining_airwork_ticks(&oriented))
-            .saturating_add(self.lifts.as_ref().map_or(0, |lifts| {
+            .saturating_add(lifts.as_ref().map_or(0, |lifts| {
                 lifts.remaining_airwork_ticks(&oriented, &lift_unavailable)
             }));
         let mut policy_observation = oriented.clone();
@@ -637,17 +582,12 @@ impl Brain {
             .scrap
             .saturating_sub(strategic.committed_scrap);
         let mut reservations = strategic.reservations;
-        let intelligence = self
-            .intelligence
-            .as_ref()
-            .expect("the player-facing controller owns strategic intelligence");
+        let intelligence = &*intelligence;
         let utility_context = StrategicUtilityContext::new(
             &reservations,
             intelligence.units(),
             intelligence.buildings(),
-            oriented_public_map
-                .as_deref()
-                .expect("the player-facing utility path has an oriented map briefing"),
+            oriented_public_map,
             strategic.intents,
         )
         .with_combat_core_exclusions(&strategic_core_exclusions);
@@ -801,6 +741,155 @@ fn merge_strategic(into: &mut StrategicDecision, mut additional: StrategicDecisi
         .saturating_add(additional.committed_scrap);
 }
 
+/// The per-think scrap holds the brain places against the oriented bank
+/// before the strategic planners see a doctored observation. Each hold
+/// keeps the exact inputs and position of the computation it replaces.
+/// The policy layer deliberately re-derives the shallow-sentinel and
+/// opening-bootstrap reserves later in the same think with live intent
+/// context, so the two sides can legitimately disagree within one
+/// think; reconciling them is a behavior change owned by the roadmap,
+/// not by this ledger.
+#[derive(Debug, Default)]
+struct ScrapLedger {
+    /// The oriented bank before any hold.
+    bank: u32,
+    /// Scrap already promised to accepted deferred construction.
+    deferred_construction: u32,
+    /// The held fund for an extra Airworks while air production runs hot.
+    airworks_capacity: u32,
+    /// One shallow Sentinel kept affordable after the opening core stands.
+    shallow_sentinel: u32,
+    /// The protected home-Extractor restoration fund.
+    opening_bootstrap: u32,
+    /// An unmet opening core closes every voluntary channel outright.
+    frozen: bool,
+}
+
+impl ScrapLedger {
+    /// What the strategic planners may spend: the bank behind every
+    /// hold, or nothing while the opening core is unmet. The saturating
+    /// chain reproduces the historical subtraction order exactly.
+    fn strategic_spendable(&self) -> u32 {
+        if self.frozen {
+            return 0;
+        }
+        self.bank
+            .saturating_sub(self.deferred_construction)
+            .saturating_sub(self.airworks_capacity)
+            .saturating_sub(self.shallow_sentinel)
+            .saturating_sub(self.opening_bootstrap)
+    }
+}
+
+/// The speculative-admission rollback shared by the team and lift
+/// thinks: when the opening core is no longer met against the candidate
+/// exclusions, the planner is restored to its pre-think snapshot, its
+/// decision is discarded, and any claims derived from the discarded
+/// think are cleared in the same settlement — a derived local a caller
+/// must remember to reset by hand is a silent claim leak waiting to
+/// happen. The admission trigger stays at each call site; only the
+/// measure-and-restore leg is shared.
+fn roll_back_unless_core_ready<P>(
+    oriented: &Observation,
+    candidate_core_exclusions: &[UnitId],
+    minimum_core_equivalents: u64,
+    planner: &mut Option<P>,
+    snapshot: Option<P>,
+    decision: &mut StrategicDecision,
+    derived_claims: Option<&mut Vec<UnitId>>,
+) {
+    if combat_core_status(
+        oriented,
+        candidate_core_exclusions,
+        &[],
+        minimum_core_equivalents,
+    )
+    .ready
+    {
+        return;
+    }
+    *planner = snapshot;
+    *decision = StrategicDecision::default();
+    if let Some(claims) = derived_claims {
+        claims.clear();
+    }
+}
+
+/// One view over every unit the planners currently claim, so each
+/// admission question composes its exclusion set through a named
+/// selector instead of a hand-picked five-argument tuple. Rebuild it
+/// after a planner mutates; a new claiming planner is a new field here,
+/// and the compiler then walks every selector.
+struct ClaimLedger<'a> {
+    enlisted: &'a [UnitId],
+    strategy: &'a Option<StrategicPlanner>,
+    raids: &'a Option<RaidPlanner>,
+    lifts: &'a Option<LiftPlanner>,
+}
+
+impl ClaimLedger<'_> {
+    fn air(&self) -> Option<&super::strategy::AirOperation> {
+        self.strategy
+            .as_ref()
+            .and_then(StrategicPlanner::air_operation)
+    }
+
+    fn raid_reservations(&self) -> &[UnitId] {
+        self.raids.as_ref().map_or(&[], RaidPlanner::reservations)
+    }
+
+    fn lift(&self) -> Option<&LiftOperation> {
+        self.lifts.as_ref().and_then(LiftPlanner::operation)
+    }
+
+    /// Everything spoken for from the team planner's point of view:
+    /// executive enlistment plus every other planner's claims.
+    fn external_to_team(&self) -> Vec<UnitId> {
+        prior_planner_claims(
+            self.enlisted,
+            self.air(),
+            &[],
+            self.raid_reservations(),
+            self.lift(),
+        )
+    }
+
+    /// The units excluded from the opening-core measurement: planner
+    /// claims only — enlisted fighters still stand in the core.
+    fn core_exclusions(&self, relief: &[UnitId]) -> Vec<UnitId> {
+        prior_planner_claims(
+            &[],
+            self.air(),
+            relief,
+            self.raid_reservations(),
+            self.lift(),
+        )
+    }
+
+    /// Every claim except the lift planner's own, for sizing what a
+    /// prospective lift could still recruit.
+    fn without_lift(&self, relief: &[UnitId]) -> Vec<UnitId> {
+        prior_planner_claims(
+            self.enlisted,
+            self.air(),
+            relief,
+            self.raid_reservations(),
+            None,
+        )
+    }
+
+    /// Every claim from every source.
+    fn all(&self, relief: &[UnitId]) -> Vec<UnitId> {
+        prior_planner_claims(
+            self.enlisted,
+            self.air(),
+            relief,
+            self.raid_reservations(),
+            self.lift(),
+        )
+    }
+}
+
 fn prior_planner_claims(
     enlisted: &[UnitId],
     air: Option<&super::strategy::AirOperation>,
@@ -820,6 +909,11 @@ fn prior_planner_claims(
         if operation.manifests.is_empty() {
             claims.extend(operation.payload.iter().copied());
         } else {
+            // This rider predicate deliberately differs from
+            // `LiftPlanner::reservations`, which releases riders once an
+            // attack is issued; the brain keeps un-aborted assault riders
+            // claimed so no other planner recruits mid-drop. Reconciling
+            // the two readings is a behavior change, not a cleanup.
             for manifest in &operation.manifests {
                 if !manifest.closed {
                     claims.push(manifest.carrier);
@@ -968,8 +1062,7 @@ mod tests {
         let config = BotConfig::scripted(difficulty, BotStance::Balanced, 20_024);
         let brain = scripted_brain(scenario, player, config);
         let profile = brain
-            .profile
-            .as_ref()
+            .profile()
             .expect("the scripted brain owns a resolved profile");
         assert_eq!(
             (profile.primary, profile.secondary),
@@ -1014,17 +1107,10 @@ mod tests {
     fn assert_brain_unchanged(before: &Brain, after: &Brain) {
         assert_eq!(after.player, before.player);
         assert_eq!(after.dials, before.dials);
-        assert_eq!(after.profile, before.profile);
-        assert_eq!(after.intelligence, before.intelligence);
-        assert_eq!(after.strategy, before.strategy);
-        assert_eq!(after.lifts, before.lifts);
-        assert_eq!(after.team, before.team);
-        assert_eq!(after.raids, before.raids);
+        assert_eq!(after.controller, before.controller);
         assert_eq!(after.policy, before.policy);
         assert_eq!(after.exec, before.exec);
         assert_eq!(after.orientation, before.orientation);
-        assert_eq!(after.public_map, before.public_map);
-        assert_eq!(after.oriented_public_map, before.oriented_public_map);
     }
 
     #[test]
@@ -1034,16 +1120,9 @@ mod tests {
         let scripted = Brain::scripted(PlayerId(0), BotConfig::default(), Arc::clone(&public_map));
         let overseer = Brain::overseer(PlayerId(0), scenario.seed);
 
-        assert!(Arc::ptr_eq(
-            scripted
-                .public_map
-                .as_ref()
-                .expect("the scripted controller owns the briefing"),
-            &public_map
-        ));
-        assert!(scripted.oriented_public_map.is_none());
-        assert!(overseer.public_map.is_none());
-        assert!(overseer.oriented_public_map.is_none());
+        assert!(Arc::ptr_eq(&scripted.mind().public_map, &public_map));
+        assert!(scripted.mind().oriented_public_map.is_none());
+        assert!(matches!(overseer.controller, Controller::ProfileFree));
     }
 
     #[test]
@@ -1453,10 +1532,7 @@ mod tests {
 
         let _ = brain.act(&state);
         assert_eq!(
-            brain
-                .intelligence
-                .as_ref()
-                .and_then(StrategicIntelligence::observed_at),
+            brain.mind().intelligence.observed_at(),
             Some(0),
             "the fixture must populate real strategic memory before the match ends"
         );
@@ -1487,10 +1563,7 @@ mod tests {
                 let commands = brain.act(&state);
                 if tick.is_multiple_of(cadence) {
                     assert_eq!(
-                        brain
-                            .intelligence
-                            .as_ref()
-                            .and_then(StrategicIntelligence::observed_at),
+                        brain.mind().intelligence.observed_at(),
                         Some(tick),
                         "{difficulty:?} did not observe on its cadence"
                     );
@@ -2175,7 +2248,7 @@ mod tests {
 
     #[test]
     fn lift_ownership_keeps_landed_assault_riders_in_the_prior_planner_ledger() {
-        use super::super::lift::{LiftManifest, LiftOperation, LiftPhase};
+        use super::super::lift::{LiftManifest, LiftOperation, LiftPhase, UnitIdSet};
 
         let lift = LiftOperation {
             target_player: PlayerId(1),
@@ -2187,7 +2260,7 @@ mod tests {
             deadline: 2_000,
             pickup_component: TilePos::new(5, 5),
             desired_carriers: 2,
-            payload: vec![UnitId(2), UnitId(3), UnitId(4), UnitId(5)],
+            payload: UnitIdSet::from_ids(vec![UnitId(2), UnitId(3), UnitId(4), UnitId(5)]),
             payload_target: 4,
             ground_payload_target: 4,
             planned_drops: vec![TilePos::new(18, 7), TilePos::new(19, 7)],
@@ -2238,7 +2311,7 @@ mod tests {
         let mut provisioning = lift;
         provisioning.phase = LiftPhase::Provision;
         provisioning.manifests.clear();
-        provisioning.payload = vec![UnitId(6), UnitId(7), UnitId(8)];
+        provisioning.payload = UnitIdSet::from_ids(vec![UnitId(6), UnitId(7), UnitId(8)]);
         assert_eq!(
             prior_planner_claims(&[], None, &[], &[], Some(&provisioning)),
             [UnitId(6), UnitId(7), UnitId(8)],
@@ -2421,10 +2494,10 @@ mod tests {
 
         let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 20_024);
         let mut control = scripted_brain(&scenario, PlayerId(0), config);
-        control.strategy = None;
-        control.team = None;
-        control.lifts = None;
-        control.raids = None;
+        control.mind_mut().strategy = None;
+        control.mind_mut().team = None;
+        control.mind_mut().lifts = None;
+        control.mind_mut().raids = None;
         let control_commands = control.act(&state);
         assert!(
             control_commands.iter().any(|command| matches!(
@@ -2435,10 +2508,10 @@ mod tests {
         );
 
         let mut protected_brain = scripted_brain(&scenario, PlayerId(0), config);
-        protected_brain.strategy = None;
-        protected_brain.team = None;
-        protected_brain.lifts = Some(lifts);
-        protected_brain.raids = None;
+        protected_brain.mind_mut().strategy = None;
+        protected_brain.mind_mut().team = None;
+        protected_brain.mind_mut().lifts = Some(lifts);
+        protected_brain.mind_mut().raids = None;
         let commands = protected_brain.act(&state);
         assert!(commands.iter().any(|command| matches!(
             command.command,
@@ -2677,6 +2750,7 @@ mod tests {
         );
 
         let lifts = brain
+            .mind_mut()
             .lifts
             .as_mut()
             .expect("scripted brains own lift planners");
@@ -2752,11 +2826,13 @@ mod tests {
         let commands = brain.act(&state);
 
         let air = brain
+            .mind()
             .strategy
             .as_ref()
             .and_then(StrategicPlanner::air_operation)
             .expect("the wealthy disconnected match starts the bomber operation");
         let lift = brain
+            .mind()
             .lifts
             .as_ref()
             .and_then(LiftPlanner::operation)
@@ -2771,6 +2847,7 @@ mod tests {
         assert_eq!(lift.planned_drops.len(), lift.desired_carriers);
         assert!(
             brain
+                .mind()
                 .raids
                 .as_ref()
                 .and_then(RaidPlanner::operation)
@@ -2814,24 +2891,26 @@ mod tests {
                 let config = BotConfig::scripted(difficulty, BotStance::Balanced, 20_024);
                 let mut brain = scripted_brain(&scenario, PlayerId(0), config);
                 enlist_opening_core(&mut brain, &prepared);
-                brain.team = None;
+                brain.mind_mut().team = None;
                 match load {
                     PrimaryLoad::None => {
-                        brain.strategy = None;
-                        brain.lifts = None;
+                        brain.mind_mut().strategy = None;
+                        brain.mind_mut().lifts = None;
                     }
-                    PrimaryLoad::Air => brain.lifts = None,
+                    PrimaryLoad::Air => brain.mind_mut().lifts = None,
                     PrimaryLoad::AirAndLift => {}
                 }
 
                 let _ = brain.act(&prepared);
 
                 let air_active = brain
+                    .mind()
                     .strategy
                     .as_ref()
                     .and_then(StrategicPlanner::air_operation)
                     .is_some();
                 let lift_active = brain
+                    .mind()
                     .lifts
                     .as_ref()
                     .and_then(LiftPlanner::operation)
@@ -2854,6 +2933,7 @@ mod tests {
                 };
                 assert_eq!(
                     brain
+                        .mind()
                         .raids
                         .as_ref()
                         .and_then(RaidPlanner::operation)
@@ -2868,10 +2948,9 @@ mod tests {
             let config = BotConfig::scripted(difficulty, BotStance::Balanced, 20_024);
             let mut brain = scripted_brain(&scenario, PlayerId(0), config);
             enlist_opening_core(&mut brain, &prepared);
-            brain.team = None;
+            brain.mind_mut().team = None;
             let profile = *brain
-                .profile
-                .as_ref()
+                .profile()
                 .expect("scripted brains own a resolved profile");
             let tuning = DifficultyTuning::for_level(difficulty);
             let obs = Observation::fog_honest(&prepared, PlayerId(0));
@@ -2892,12 +2971,13 @@ mod tests {
                 .expect("zero load admits the raid on every rung")
                 .members
                 .clone();
-            brain.raids = Some(prior_raid);
+            brain.mind_mut().raids = Some(prior_raid);
 
             let _ = brain.act(&prepared);
 
             assert!(
                 brain
+                    .mind()
                     .strategy
                     .as_ref()
                     .and_then(StrategicPlanner::air_operation)
@@ -2906,6 +2986,7 @@ mod tests {
             );
             assert!(
                 brain
+                    .mind()
                     .lifts
                     .as_ref()
                     .and_then(LiftPlanner::operation)
@@ -2914,6 +2995,7 @@ mod tests {
             );
             assert_eq!(
                 brain
+                    .mind()
                     .raids
                     .as_ref()
                     .and_then(RaidPlanner::operation)
@@ -2987,19 +3069,11 @@ mod tests {
                 tier: enemy_foundry.tier,
             });
             let prior = orientation.observe(&prior);
-            brain
-                .intelligence
-                .as_mut()
-                .expect("scripted brains own strategic intelligence")
-                .update(&prior);
+            brain.mind_mut().intelligence.update(&prior);
 
             let oriented = orientation.observe(&raw);
             let oriented_home = orientation.anchor(home, BuildingKind::Foundry.base_stats().size);
-            let mut expected_intelligence = brain
-                .intelligence
-                .as_ref()
-                .expect("scripted brains own strategic intelligence")
-                .clone();
+            let mut expected_intelligence = brain.mind().intelligence.clone();
             expected_intelligence.update(&oriented);
             let target = expected_intelligence
                 .buildings()
@@ -3007,6 +3081,7 @@ mod tests {
                 .expect("the synthetic prior sighting creates one contact");
             assert_eq!(
                 brain
+                    .mind()
                     .lifts
                     .as_ref()
                     .expect("scripted brains own lift planners")
@@ -3024,6 +3099,7 @@ mod tests {
 
             let commands = brain.act(&state);
             let operation = brain
+                .mind()
                 .strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation)
@@ -3032,6 +3108,7 @@ mod tests {
             assert!(!operation.assault_admitted, "{difficulty:?}");
             assert!(
                 brain
+                    .mind()
                     .lifts
                     .as_ref()
                     .and_then(LiftPlanner::operation)
@@ -3090,10 +3167,11 @@ mod tests {
             if shared_target.is_none()
                 && let (Some(air), Some(lift)) = (
                     brain
+                        .mind()
                         .strategy
                         .as_ref()
                         .and_then(StrategicPlanner::air_operation),
-                    brain.lifts.as_ref().and_then(LiftPlanner::operation),
+                    brain.mind().lifts.as_ref().and_then(LiftPlanner::operation),
                 )
             {
                 assert_eq!(
@@ -3109,6 +3187,7 @@ mod tests {
 
             if let Some((target_id, target)) = shared_target {
                 lift_held_before_air_release |= brain
+                    .mind()
                     .lifts
                     .as_ref()
                     .and_then(LiftPlanner::operation)
@@ -3304,6 +3383,7 @@ mod tests {
 
             assert!(
                 brain
+                    .mind()
                     .lifts
                     .as_ref()
                     .and_then(LiftPlanner::operation)
@@ -3349,14 +3429,15 @@ mod tests {
         }
 
         let mut brain = operation_identity_brain(PlayerId(0), &scenario);
-        brain.team = None;
-        brain.lifts = None;
-        brain.raids = None;
+        brain.mind_mut().team = None;
+        brain.mind_mut().lifts = None;
+        brain.mind_mut().raids = None;
 
         let mut prepaid_operation_queue = None;
         for _ in 0..1_000 {
             let commands = brain.act(&state);
             let active = brain
+                .mind()
                 .strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation);
@@ -3381,6 +3462,7 @@ mod tests {
             )));
             if prepaid_operation_queue.is_some()
                 && brain
+                    .mind()
                     .strategy
                     .as_ref()
                     .and_then(StrategicPlanner::air_operation)
@@ -3503,12 +3585,17 @@ mod tests {
         let post_loss_exclusions = prior_planner_claims(
             &[],
             brain
+                .mind()
                 .strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation),
             &[],
-            brain.raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            brain.lifts.as_ref().and_then(LiftPlanner::operation),
+            brain
+                .mind()
+                .raids
+                .as_ref()
+                .map_or(&[], RaidPlanner::reservations),
+            brain.mind().lifts.as_ref().and_then(LiftPlanner::operation),
         );
         let post_loss_oriented = post_loss_orientation.observe(&post_loss_observation);
         let post_loss_core = combat_core_status(
@@ -3525,6 +3612,7 @@ mod tests {
         );
         assert!(
             brain
+                .mind()
                 .strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation)
@@ -3548,12 +3636,17 @@ mod tests {
             let recovery_exclusions = prior_planner_claims(
                 &[],
                 brain
+                    .mind()
                     .strategy
                     .as_ref()
                     .and_then(StrategicPlanner::air_operation),
                 &[],
-                brain.raids.as_ref().map_or(&[], RaidPlanner::reservations),
-                brain.lifts.as_ref().and_then(LiftPlanner::operation),
+                brain
+                    .mind()
+                    .raids
+                    .as_ref()
+                    .map_or(&[], RaidPlanner::reservations),
+                brain.mind().lifts.as_ref().and_then(LiftPlanner::operation),
             );
             let core_deficient = !combat_core_status(
                 &post_loss_orientation.observe(&recovery_observation),
@@ -3563,6 +3656,7 @@ mod tests {
             )
             .ready;
             let operation_was_active = brain
+                .mind()
                 .strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation)
@@ -3570,6 +3664,7 @@ mod tests {
             let commands = brain.act(&state);
             if core_deficient && operation_was_active {
                 let strategy = brain
+                    .mind()
                     .strategy
                     .as_ref()
                     .expect("the active operation retains its planner");
@@ -3680,6 +3775,7 @@ mod tests {
         let commands = gated.act(&state);
         assert!(
             gated
+                .mind()
                 .strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation)
@@ -3687,6 +3783,7 @@ mod tests {
         );
         assert!(
             gated
+                .mind()
                 .lifts
                 .as_ref()
                 .and_then(LiftPlanner::operation)
@@ -3694,6 +3791,7 @@ mod tests {
         );
         assert!(
             gated
+                .mind()
                 .raids
                 .as_ref()
                 .and_then(RaidPlanner::operation)
@@ -3717,6 +3815,7 @@ mod tests {
         for _ in 0..4_000 {
             let commands = admitted.act(&control);
             if admitted
+                .mind()
                 .strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation)
@@ -3728,6 +3827,7 @@ mod tests {
         }
         assert!(
             admitted
+                .mind()
                 .strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation)
@@ -3761,9 +3861,9 @@ mod tests {
         }
 
         let mut brain = operation_identity_brain(PlayerId(0), &scenario);
-        brain.team = None;
-        brain.lifts = None;
-        brain.raids = None;
+        brain.mind_mut().team = None;
+        brain.mind_mut().lifts = None;
+        brain.mind_mut().raids = None;
         for _ in 0..1_000 {
             let commands = brain.act(&scouting_state);
             let report = scouting_state.tick(&commands);
@@ -3775,6 +3875,7 @@ mod tests {
                 }
             )));
             if brain
+                .mind()
                 .strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation)
@@ -3785,6 +3886,7 @@ mod tests {
         }
         assert!(
             brain
+                .mind()
                 .strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation)
@@ -3948,19 +4050,15 @@ mod tests {
             .expect("opening-core team-relief scenario builds");
 
         let mut control = operation_identity_brain(PlayerId(0), &scenario);
-        control.strategy = None;
-        control.raids = None;
-        control.lifts = None;
-        control
-            .profile
-            .as_mut()
-            .expect("the scripted brain owns a profile")
-            .traits
-            .support = 70;
+        control.mind_mut().strategy = None;
+        control.mind_mut().raids = None;
+        control.mind_mut().lifts = None;
+        control.mind_mut().profile.traits.support = 70;
         control.dials.minimum_core_equivalents = 0;
         control.act(&state);
         assert!(
             control
+                .mind()
                 .team
                 .as_ref()
                 .is_some_and(|team| !team.reservations().is_empty()),
@@ -3968,18 +4066,14 @@ mod tests {
         );
 
         let mut gated = operation_identity_brain(PlayerId(0), &scenario);
-        gated.strategy = None;
-        gated.raids = None;
-        gated.lifts = None;
-        gated
-            .profile
-            .as_mut()
-            .expect("the scripted brain owns a profile")
-            .traits
-            .support = 70;
+        gated.mind_mut().strategy = None;
+        gated.mind_mut().raids = None;
+        gated.mind_mut().lifts = None;
+        gated.mind_mut().profile.traits.support = 70;
         gated.act(&state);
 
         let relief = gated
+            .mind()
             .team
             .as_ref()
             .expect("scripted brains own team planners");
@@ -3996,13 +4090,14 @@ mod tests {
         let state = scenario.build().expect("opening-core lift scenario builds");
 
         let mut control = operation_identity_brain(PlayerId(0), &scenario);
-        control.strategy = None;
-        control.raids = None;
-        control.team = None;
+        control.mind_mut().strategy = None;
+        control.mind_mut().raids = None;
+        control.mind_mut().team = None;
         control.dials.minimum_core_equivalents = 0;
         control.act(&state);
         assert!(
             control
+                .mind()
                 .lifts
                 .as_ref()
                 .and_then(LiftPlanner::operation)
@@ -4011,13 +4106,14 @@ mod tests {
         );
 
         let mut gated = operation_identity_brain(PlayerId(0), &scenario);
-        gated.strategy = None;
-        gated.raids = None;
-        gated.team = None;
+        gated.mind_mut().strategy = None;
+        gated.mind_mut().raids = None;
+        gated.mind_mut().team = None;
         let commands = gated.act(&state);
 
         assert!(
             gated
+                .mind()
                 .lifts
                 .as_ref()
                 .and_then(LiftPlanner::operation)
@@ -4046,8 +4142,7 @@ mod tests {
         let mut brain = operation_identity_brain(PlayerId(0), &scenario);
         enlist_opening_core(&mut brain, &state);
         let profile = *brain
-            .profile
-            .as_ref()
+            .profile()
             .expect("the scripted brain owns a resolved profile");
         let obs = Observation::fog_honest(&state, PlayerId(0));
         let home = obs
@@ -4071,11 +4166,12 @@ mod tests {
             .members
             .clone();
         assert_eq!(prior_members.len(), 2);
-        brain.raids = Some(prior_raid);
+        brain.mind_mut().raids = Some(prior_raid);
 
         brain.act(&state);
 
         let lift = brain
+            .mind()
             .lifts
             .as_ref()
             .and_then(LiftPlanner::operation)
@@ -4108,11 +4204,14 @@ mod tests {
         let briefing_scenario = Scenario::skirmish();
         let mut brain = operation_identity_brain(PlayerId(0), &briefing_scenario);
         let profile = *brain
-            .profile
-            .as_ref()
+            .profile()
             .expect("the scripted brain owns a resolved profile");
         let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let raids = brain.raids.as_mut().expect("scripted brains own raids");
+        let raids = brain
+            .mind_mut()
+            .raids
+            .as_mut()
+            .expect("scripted brains own raids");
         let partial = raids.think(&profile, tuning, &obs, TEST_HOME, &[], &[]);
         assert_eq!(partial.reservations, [UnitId(1)]);
         assert!(partial.intents.is_empty());
@@ -4143,6 +4242,7 @@ mod tests {
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         let enlisted: Vec<_> = brain.exec.enlisted().collect();
         let complete = brain
+            .mind_mut()
             .raids
             .as_mut()
             .expect("scripted brains own raids")
@@ -4192,10 +4292,7 @@ mod tests {
             std::slice::from_ref(&army),
             &enlisted,
             &[],
-            brain
-                .public_map
-                .as_deref()
-                .expect("scripted brains own a public map briefing"),
+            &brain.mind().public_map,
         );
         assert!(
             unreserved.iter().any(|intent| matches!(
@@ -4214,6 +4311,7 @@ mod tests {
             }
             let commands = brain.act(&state);
             let operation = brain
+                .mind()
                 .lifts
                 .as_ref()
                 .and_then(LiftPlanner::operation)
@@ -4234,8 +4332,9 @@ mod tests {
                 )),
                 "think {think} double-booked the frozen lift payload: {commands:?}"
             );
-            let mut strategic_claims = operation.payload.clone();
+            let mut strategic_claims = operation.payload.to_vec();
             if let Some(air) = brain
+                .mind()
                 .strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation)
@@ -4244,10 +4343,15 @@ mod tests {
                 strategic_claims.extend(air.artillery.iter().copied());
                 strategic_claims.extend(air.bombers.iter().copied());
             }
-            if let Some(relief) = brain.team.as_ref().and_then(TeamReliefPlanner::operation) {
+            if let Some(relief) = brain
+                .mind()
+                .team
+                .as_ref()
+                .and_then(TeamReliefPlanner::operation)
+            {
                 strategic_claims.extend(relief.members.iter().copied());
             }
-            if let Some(raid) = brain.raids.as_ref().and_then(RaidPlanner::operation) {
+            if let Some(raid) = brain.mind().raids.as_ref().and_then(RaidPlanner::operation) {
                 strategic_claims.extend(raid.members.iter().copied());
             }
             strategic_claims.sort_unstable();

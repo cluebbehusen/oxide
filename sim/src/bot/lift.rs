@@ -115,7 +115,7 @@ pub struct LiftOperation {
     /// Carrier requirement, frozen once exact manifests are assigned.
     pub desired_carriers: usize,
     /// Exact canonical home-side riders owned before carriers finish training.
-    pub payload: Vec<UnitId>,
+    pub payload: UnitIdSet,
     /// Sling-room target retained while deterministic replacements exist.
     pub payload_target: u32,
     /// Ground-capable sling room, frozen once exact manifests are assigned.
@@ -126,6 +126,69 @@ pub struct LiftOperation {
     pub manifests: Vec<LiftManifest>,
     /// Whether the boarding barrier released this wave toward the objective.
     pub launched: bool,
+}
+
+/// Sorted, deduplicated unit ids. Readers binary-search the slice, so
+/// ordering is a type invariant here rather than a convention every
+/// mutation site re-establishes by hand.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnitIdSet(Vec<UnitId>);
+
+impl UnitIdSet {
+    /// Canonicalizes arbitrary ids into a set.
+    pub fn from_ids(mut ids: Vec<UnitId>) -> Self {
+        ids.sort_unstable();
+        ids.dedup();
+        Self(ids)
+    }
+
+    /// Inserts in id order; `false` when the id is already present.
+    pub fn insert(&mut self, id: UnitId) -> bool {
+        match self.0.binary_search(&id) {
+            Ok(_) => false,
+            Err(index) => {
+                self.0.insert(index, id);
+                true
+            }
+        }
+    }
+
+    /// Removes and returns the highest id.
+    pub fn pop_last(&mut self) -> Option<UnitId> {
+        self.0.pop()
+    }
+}
+
+impl std::ops::Deref for UnitIdSet {
+    type Target = [UnitId];
+
+    fn deref(&self) -> &[UnitId] {
+        &self.0
+    }
+}
+
+impl FromIterator<UnitId> for UnitIdSet {
+    fn from_iter<I: IntoIterator<Item = UnitId>>(ids: I) -> Self {
+        Self::from_ids(ids.into_iter().collect())
+    }
+}
+
+impl PartialEq<[UnitId]> for UnitIdSet {
+    fn eq(&self, other: &[UnitId]) -> bool {
+        self.0 == other
+    }
+}
+
+impl PartialEq<Vec<UnitId>> for UnitIdSet {
+    fn eq(&self, other: &Vec<UnitId>) -> bool {
+        &self.0 == other
+    }
+}
+
+impl<const N: usize> PartialEq<[UnitId; N]> for UnitIdSet {
+    fn eq(&self, other: &[UnitId; N]) -> bool {
+        self.0 == other
+    }
 }
 
 /// Controller-local owner of a persistent transport wave.
@@ -302,7 +365,7 @@ impl LiftPlanner {
                     deadline: provision_deadline(obs, &unavailable, plan.desired_carriers),
                     pickup_component: plan.pickup,
                     desired_carriers: plan.desired_carriers,
-                    payload: plan.payload,
+                    payload: UnitIdSet::from_ids(plan.payload),
                     payload_target: plan.payload_target,
                     ground_payload_target,
                     planned_drops,
@@ -328,31 +391,26 @@ impl LiftPlanner {
                 minimum_core_equivalents,
             )
         {
-            operation.phase = LiftPhase::Recover;
-            operation.phase_started_at = obs.tick;
+            enter(&mut operation, LiftPhase::Recover, obs.tick);
         }
         if operation.phase == LiftPhase::Boarding
             && boarding_payload(&operation, obs) < MIN_EARLY_PAYLOAD
         {
-            operation.phase = LiftPhase::Recover;
-            operation.phase_started_at = obs.tick;
+            enter(&mut operation, LiftPhase::Recover, obs.tick);
         }
         if matches!(operation.phase, LiftPhase::Provision | LiftPhase::Boarding)
             && obs.tick >= operation.deadline
         {
-            operation.phase = LiftPhase::Recover;
-            operation.phase_started_at = obs.tick;
+            enter(&mut operation, LiftPhase::Recover, obs.tick);
         }
         if operation.phase < LiftPhase::Landing && !target_remains_disconnected(obs, &operation) {
-            operation.phase = LiftPhase::Recover;
-            operation.phase_started_at = obs.tick;
+            enter(&mut operation, LiftPhase::Recover, obs.tick);
         }
         if operation.phase <= LiftPhase::AwaitSupport {
             let (carrier_lost, released_riders) = close_missing_manifests(&mut operation, obs);
             if carrier_lost {
-                operation.phase_started_at = obs.tick;
                 if boarding_complete(&operation, obs) {
-                    operation.phase = LiftPhase::Landing;
+                    enter(&mut operation, LiftPhase::Landing, obs.tick);
                     operation.launched = true;
                     if !released_riders.is_empty() {
                         decision.intents.push(Intent::StopUnits {
@@ -360,7 +418,7 @@ impl LiftPlanner {
                         });
                     }
                 } else {
-                    operation.phase = LiftPhase::Recover;
+                    enter(&mut operation, LiftPhase::Recover, obs.tick);
                 }
             }
         }
@@ -381,8 +439,7 @@ impl LiftPlanner {
                         self.support_latched = false;
                         self.support_released = false;
                         if !target_is_current(obs, &operation) {
-                            operation.phase = LiftPhase::Recover;
-                            operation.phase_started_at = obs.tick;
+                            enter(&mut operation, LiftPhase::Recover, obs.tick);
                         }
                     }
                 }
@@ -396,8 +453,7 @@ impl LiftPlanner {
                     provision(&operation, obs, &unavailable, &mut decision);
                 }
                 if assign_manifests(&mut operation, obs, home, &unavailable) {
-                    operation.phase = LiftPhase::Boarding;
-                    operation.phase_started_at = obs.tick;
+                    enter(&mut operation, LiftPhase::Boarding, obs.tick);
                     operation.deadline = operation
                         .deadline
                         .max(obs.tick.saturating_add(boarding_grace()));
@@ -409,8 +465,7 @@ impl LiftPlanner {
                 if boarding_complete(&operation, obs) {
                     match support_directive {
                         SupportDirective::Hold => {
-                            operation.phase = LiftPhase::AwaitSupport;
-                            operation.phase_started_at = obs.tick;
+                            enter(&mut operation, LiftPhase::AwaitSupport, obs.tick);
                         }
                         SupportDirective::Abort => launch_or_recover(
                             &mut operation,
@@ -420,31 +475,26 @@ impl LiftPlanner {
                             SUPPORT_ABORT_MIN_CARRIERS,
                         ),
                         SupportDirective::Release => {
-                            operation.phase = LiftPhase::Landing;
-                            operation.phase_started_at = obs.tick;
+                            enter(&mut operation, LiftPhase::Landing, obs.tick);
                             operation.launched = true;
                             land(&mut operation, obs, &mut decision, &mut handoff);
                         }
                         SupportDirective::Independent | SupportDirective::Unmatched => {
                             if self.support_released {
-                                operation.phase = LiftPhase::Landing;
-                                operation.phase_started_at = obs.tick;
+                                enter(&mut operation, LiftPhase::Landing, obs.tick);
                                 operation.launched = true;
                                 land(&mut operation, obs, &mut decision, &mut handoff);
                             } else if self.support_latched {
-                                operation.phase = LiftPhase::AwaitSupport;
-                                operation.phase_started_at = obs.tick;
+                                enter(&mut operation, LiftPhase::AwaitSupport, obs.tick);
                             } else {
-                                operation.phase = LiftPhase::Landing;
-                                operation.phase_started_at = obs.tick;
+                                enter(&mut operation, LiftPhase::Landing, obs.tick);
                                 operation.launched = true;
                                 land(&mut operation, obs, &mut decision, &mut handoff);
                             }
                         }
                     }
                 } else if boarding_resolved(&operation, obs) {
-                    operation.phase = LiftPhase::Recover;
-                    operation.phase_started_at = obs.tick;
+                    enter(&mut operation, LiftPhase::Recover, obs.tick);
                 }
             }
             LiftPhase::AwaitSupport => match support_directive {
@@ -460,8 +510,7 @@ impl LiftPlanner {
                     }
                 }
                 SupportDirective::Release => {
-                    operation.phase = LiftPhase::Landing;
-                    operation.phase_started_at = obs.tick;
+                    enter(&mut operation, LiftPhase::Landing, obs.tick);
                     operation.launched = true;
                     land(&mut operation, obs, &mut decision, &mut handoff);
                 }
@@ -493,7 +542,7 @@ impl LiftPlanner {
                     .iter()
                     .all(|manifest| manifest.closed || carrier_cargo(obs, manifest.carrier) == 0)
                 {
-                    operation.phase = LiftPhase::Recover;
+                    enter(&mut operation, LiftPhase::Recover, obs.tick);
                 }
             }
             LiftPhase::Recover => {
@@ -920,7 +969,7 @@ fn refresh_provision_payload(
         .ground_payload_target
         .min(current_ground_payload_limit);
 
-    let mut payload = Vec::new();
+    let mut payload = UnitIdSet::default();
     let mut filled = 0u32;
     let mut ground_filled = 0u32;
     let mut projected_core_reservations: Vec<_> = core_reservations
@@ -939,7 +988,7 @@ fn refresh_provision_payload(
         if filled.saturating_add(size) <= target
             && (!ground_capable || ground_filled.saturating_add(size) <= ground_target)
         {
-            payload.push(id);
+            payload.insert(id);
             if let Err(index) = projected_core_reservations.binary_search(&id) {
                 projected_core_reservations.insert(index, id);
             }
@@ -979,8 +1028,7 @@ fn refresh_provision_payload(
                     }
                     continue;
                 }
-                payload.push(member.id);
-                payload.sort_unstable();
+                payload.insert(member.id);
                 filled += size;
                 if ground_capable {
                     ground_filled += size;
@@ -994,7 +1042,7 @@ fn refresh_provision_payload(
         if pack(&members, usize::MAX).len() <= operation.desired_carriers {
             break;
         }
-        payload.pop();
+        payload.pop_last();
     }
     filled = payload
         .iter()
@@ -1261,6 +1309,14 @@ fn loaded_payload(operation: &LiftOperation, obs: &Observation) -> u32 {
         .sum()
 }
 
+/// The one legal phase transition: every entry stamps its start tick,
+/// so a phase-dwell read can never see a stale stamp from two phases
+/// ago. Direct `.phase =` writes outside this helper are a bug.
+fn enter(operation: &mut LiftOperation, phase: LiftPhase, now: Tick) {
+    operation.phase = phase;
+    operation.phase_started_at = now;
+}
+
 fn launch_or_recover(
     operation: &mut LiftOperation,
     obs: &Observation,
@@ -1268,18 +1324,17 @@ fn launch_or_recover(
     handoff: &mut Vec<UnitId>,
     minimum_loaded_carriers: usize,
 ) {
-    operation.phase_started_at = obs.tick;
     let loaded_carriers = operation
         .manifests
         .iter()
         .filter(|manifest| carrier_cargo(obs, manifest.carrier) > 0)
         .count();
     if boarding_complete(operation, obs) && loaded_carriers >= minimum_loaded_carriers {
-        operation.phase = LiftPhase::Landing;
+        enter(operation, LiftPhase::Landing, obs.tick);
         operation.launched = true;
         land(operation, obs, decision, handoff);
     } else {
-        operation.phase = LiftPhase::Recover;
+        enter(operation, LiftPhase::Recover, obs.tick);
     }
 }
 
@@ -1741,7 +1796,10 @@ fn carrier_cargo(obs: &Observation, carrier: UnitId) -> u8 {
 }
 
 fn unit(obs: &Observation, id: UnitId) -> Option<&UnitObs> {
-    obs.my_units.iter().find(|unit| unit.id == id)
+    obs.my_units
+        .binary_search_by_key(&id, |unit| unit.id)
+        .ok()
+        .map(|index| &obs.my_units[index])
 }
 
 fn landing_slots(obs: &Observation, from: TilePos, target: TilePos, count: usize) -> Vec<TilePos> {
@@ -2279,7 +2337,7 @@ mod tests {
 
         assert_eq!(operation.phase, LiftPhase::Provision);
         assert_eq!(home_ground_room, 4);
-        assert_eq!(decision.reservations, operation.payload);
+        assert_eq!(decision.reservations, *operation.payload);
     }
 
     #[test]
@@ -2573,7 +2631,7 @@ mod tests {
                 .all(|(index, drop)| !operation.planned_drops[..index].contains(drop))
         );
         assert!(operation.payload.windows(2).all(|ids| ids[0] < ids[1]));
-        assert_eq!(first_decision.reservations, operation.payload);
+        assert_eq!(first_decision.reservations, *operation.payload);
         assert_eq!(first_decision, second_decision);
         assert_eq!(first, second);
     }
@@ -2717,7 +2775,7 @@ mod tests {
                 expected.1,
                 "{difficulty:?}"
             );
-            assert_eq!(decision.reservations, operation.payload, "{difficulty:?}");
+            assert_eq!(decision.reservations, *operation.payload, "{difficulty:?}");
             assert!(operation.manifests.is_empty(), "{difficulty:?}");
             snapshots.push((operation.desired_carriers, operation.payload.clone()));
         }
@@ -2803,7 +2861,7 @@ mod tests {
         assert_eq!(retained.payload_target, smaller.payload_target);
         assert_eq!(retained.planned_drops, smaller.planned_drops);
         assert!(retained.manifests.is_empty());
-        assert_eq!(decision.reservations, retained.payload);
+        assert_eq!(decision.reservations, *retained.payload);
     }
 
     #[test]
@@ -2888,7 +2946,7 @@ mod tests {
                 .filter(|id| **id != lost)
                 .all(|id| operation.payload.contains(id))
         );
-        assert_eq!(refilled.reservations, operation.payload);
+        assert_eq!(refilled.reservations, *operation.payload);
 
         let survivors: Vec<_> = operation.payload.iter().copied().take(3).collect();
         obs.my_units.retain(|unit| survivors.contains(&unit.id));
@@ -3955,7 +4013,7 @@ mod tests {
                 deadline: boarding_grace(),
                 pickup_component: HOME.offset(0, -2),
                 desired_carriers: 1,
-                payload: vec![UnitId(1), UnitId(2), UnitId(3)],
+                payload: UnitIdSet::from_ids(vec![UnitId(1), UnitId(2), UnitId(3)]),
                 payload_target: 3,
                 ground_payload_target: 3,
                 planned_drops: vec![initial_drop],
@@ -4018,7 +4076,7 @@ mod tests {
                 deadline: boarding_grace(),
                 pickup_component: HOME.offset(0, -2),
                 desired_carriers: 1,
-                payload: vec![UnitId(1)],
+                payload: UnitIdSet::from_ids(vec![UnitId(1)]),
                 payload_target: 1,
                 ground_payload_target: 1,
                 planned_drops: vec![TARGET.offset(-2, -2)],
@@ -4515,7 +4573,7 @@ mod tests {
         assert!(operation.desired_carriers >= 3);
         assert!(!planner.support_latched);
         assert!(!planner.support_released);
-        assert_eq!(independent.reservations, operation.payload);
+        assert_eq!(independent.reservations, *operation.payload);
         assert!(independent.intents.iter().any(|intent| matches!(
             intent,
             Intent::TrainAt {
@@ -5238,7 +5296,7 @@ mod tests {
                 deadline: boarding_grace(),
                 pickup_component: HOME.offset(0, -2),
                 desired_carriers: 1,
-                payload: Vec::new(),
+                payload: UnitIdSet::default(),
                 payload_target: 0,
                 ground_payload_target: 0,
                 planned_drops: vec![TARGET.offset(-2, 0)],
@@ -5284,7 +5342,7 @@ mod tests {
                 deadline: boarding_grace(),
                 pickup_component: pickup,
                 desired_carriers: 1,
-                payload: riders.clone(),
+                payload: UnitIdSet::from_ids(riders.clone()),
                 payload_target: 3,
                 ground_payload_target: 3,
                 planned_drops: vec![drop],

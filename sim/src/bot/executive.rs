@@ -263,19 +263,39 @@ impl Executive {
     }
 }
 
+/// Damage per 100 ticks of one weapon's full salvo — the single copy of
+/// the fight-strength coin's per-weapon term, shared with the
+/// air-defense estimate in `intelligence`. The cooldown guard is purely
+/// defensive; no shipped weapon has a zero cooldown.
+pub(super) fn weapon_burst_dps100(w: &crate::stats::WeaponStats) -> u64 {
+    u64::from(w.damage) * u64::from(w.salvo) * 100 / u64::from(w.cooldown_ticks.max(1))
+}
+
+/// Damage per 100 ticks a weapon set brings against the given movement
+/// domain.
+fn weapon_dps100(weapons: &[crate::stats::WeaponStats], domain: crate::stats::Domain) -> u64 {
+    weapons
+        .iter()
+        .filter(|w| w.targets.covers(domain))
+        .map(weapon_burst_dps100)
+        .sum()
+}
+
 /// hp-weighted dps a unit can bring against the given movement domain —
 /// the shared coin every fight estimate is priced in. Damage per 100
 /// ticks keeps it in integers (cooldowns divide 100 unevenly — close
 /// enough for margin calls that carry hysteresis).
 fn strength_vs(u: &UnitObs, domain: crate::stats::Domain) -> u64 {
-    let stats = u.kind.stats();
-    let dps100: u64 = stats
-        .weapons
-        .iter()
-        .filter(|w| w.targets.covers(domain))
-        .map(|w| u64::from(w.damage) * 100 / u64::from(w.cooldown_ticks))
-        .sum();
-    u64::from(u.hp) * dps100
+    u64::from(u.hp) * weapon_dps100(u.kind.stats().weapons, domain)
+}
+
+/// The same coin for a full-health unit of `kind` that need not exist:
+/// strength floors and production targets are priced in it without
+/// fabricating an observation.
+pub(super) fn full_ground_strength(kind: UnitKind) -> u64 {
+    let stats = kind.stats();
+    u64::from(stats.max_hp)
+        .saturating_mul(weapon_dps100(stats.weapons, crate::stats::Domain::Ground))
 }
 
 /// Ground-battle strength. Weapons that can only look up contribute
@@ -312,19 +332,25 @@ pub(super) fn building_strength(b: &super::observation::BuildingObs) -> u64 {
     if !b.built {
         return 0;
     }
-    let dps100: u64 = b
-        .kind
-        .base_stats()
-        .weapons
-        .iter()
-        .filter(|w| w.targets.ground)
-        .map(|w| u64::from(w.damage) * 100 / u64::from(w.cooldown_ticks))
-        .sum();
-    u64::from(b.hp) * dps100
+    u64::from(b.hp) * weapon_dps100(b.kind.base_stats().weapons, crate::stats::Domain::Ground)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fight_strength_counts_the_full_salvo() {
+        let stats = UnitKind::Moth.stats();
+        let weapon = &stats.weapons[0];
+        assert!(weapon.salvo > 1, "the probe needs a salvo weapon");
+        assert_eq!(
+            full_ground_strength(UnitKind::Moth),
+            u64::from(stats.max_hp)
+                * (u64::from(weapon.damage) * u64::from(weapon.salvo) * 100
+                    / u64::from(weapon.cooldown_ticks)),
+            "a bombing stick prices all its bombs, not just the first"
+        );
+    }
 
     #[test]
     fn wedge_clock_arms_tracks_and_expires() {

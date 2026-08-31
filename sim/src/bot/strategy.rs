@@ -342,11 +342,20 @@ pub(super) struct StrategicCoordination<'a> {
     pub allow_new_operation: bool,
 }
 
+/// A live operation and the plan it was admitted under. They exist only
+/// together; holding them as one value makes the half-set state — which
+/// a fallback once papered over by silently substituting a combined
+/// plan for a possibly-island one — unrepresentable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveAirOperation {
+    op: AirOperation,
+    plan: AirPlan,
+}
+
 /// Controller-local owner of the active operation and its cooldown.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StrategicPlanner {
-    air: Option<AirOperation>,
-    air_plan: Option<AirPlan>,
+    air: Option<ActiveAirOperation>,
     standby: AirStandby,
     cooldown_until: Tick,
     terminal_outcome: Option<AirOperationOutcome>,
@@ -360,7 +369,22 @@ impl StrategicPlanner {
 
     /// Active operation for replay diagnostics.
     pub fn air_operation(&self) -> Option<&AirOperation> {
-        self.air.as_ref()
+        self.air.as_ref().map(|active| &active.op)
+    }
+
+    #[cfg(test)]
+    fn air_plan(&self) -> Option<&AirPlan> {
+        self.air.as_ref().map(|active| &active.plan)
+    }
+
+    #[cfg(test)]
+    fn air_op_mut(&mut self) -> Option<&mut AirOperation> {
+        self.air.as_mut().map(|active| &mut active.op)
+    }
+
+    #[cfg(test)]
+    fn air_plan_mut(&mut self) -> Option<&mut AirPlan> {
+        self.air.as_mut().map(|active| &mut active.plan)
     }
 
     /// Earliest tick at which another operation may start.
@@ -376,7 +400,7 @@ impl StrategicPlanner {
     /// Queued units remain factory work and therefore still contribute to the
     /// capacity signal; only completed members reduce it.
     pub(super) fn remaining_airwork_ticks(&self, obs: &Observation) -> Tick {
-        let (Some(op), Some(plan)) = (&self.air, &self.air_plan) else {
+        let Some(ActiveAirOperation { op, plan }) = &self.air else {
             return 0;
         };
         if op.phase > AirOperationPhase::Assemble {
@@ -505,8 +529,7 @@ impl StrategicPlanner {
             }
             let standby = core::mem::take(&mut self.standby);
             let assault_admitted = target.evidence == ContactEvidence::Current;
-            self.air_plan = Some(plan);
-            self.air = Some(AirOperation {
+            let op = AirOperation {
                 target_player: target.player,
                 target_kind: target.kind,
                 target: target.anchor,
@@ -531,15 +554,12 @@ impl StrategicPlanner {
                 },
                 strike_issued_at: None,
                 recovery_reason: None,
-            });
+            };
+            self.air = Some(ActiveAirOperation { op, plan });
         }
-        let Some(mut op) = self.air.take() else {
+        let Some(ActiveAirOperation { mut op, mut plan }) = self.air.take() else {
             return StrategicDecision::default();
         };
-        let mut plan = self
-            .air_plan
-            .take()
-            .unwrap_or_else(|| AirPlan::combined(profile, obs));
         plan.screen.retain(|id| {
             unit(obs, *id)
                 .is_some_and(|member| member.kind == Role::AirGround.unit_for(obs.faction))
@@ -630,8 +650,7 @@ impl StrategicPlanner {
         } else if recovered {
             self.terminal_outcome = Some(air_operation_outcome(&op));
         } else {
-            self.air = Some(op);
-            self.air_plan = Some(plan);
+            self.air = Some(ActiveAirOperation { op, plan });
         }
         out
     }
@@ -805,16 +824,16 @@ fn assemble(
             recover(op, AirRecoveryReason::UnreachableStaging, obs.tick);
             return;
         };
-        let ArtilleryStaging::Ready(staging) = staging else {
-            let ArtilleryStaging::NeedsRecon(goal) = staging else {
-                unreachable!();
-            };
-            if !dispatch_scout_to(op, obs, goal, out) {
-                recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
+        let staging = match staging {
+            ArtilleryStaging::NeedsRecon(goal) => {
+                if !dispatch_scout_to(op, obs, goal, out) {
+                    recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
+                    return;
+                }
+                hold_bombers(op, obs, *home, out);
                 return;
             }
-            hold_bombers(op, obs, *home, out);
-            return;
+            ArtilleryStaging::Ready(staging) => staging,
         };
         if !dispatch_scout(op, obs, intel, landing_sites, out) {
             recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
@@ -1013,18 +1032,17 @@ fn strike(
             recover(op, AirRecoveryReason::UnreachableStaging, obs.tick);
             return;
         };
-        let ArtilleryStaging::Ready(staging) = staging else {
-            let ArtilleryStaging::NeedsRecon(goal) = staging else {
-                unreachable!();
-            };
-            if !dispatch_scout_to(op, obs, goal, out) {
-                recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
+        match staging {
+            ArtilleryStaging::NeedsRecon(goal) => {
+                if !dispatch_scout_to(op, obs, goal, out) {
+                    recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
+                    return;
+                }
+                hold_bombers(op, obs, home, out);
                 return;
             }
-            hold_bombers(op, obs, home, out);
-            return;
-        };
-        Some(staging)
+            ArtilleryStaging::Ready(staging) => Some(staging),
+        }
     };
     if plan.airborne() && targetable_corridor_flak(intel, home, op.target, landing_sites).is_some()
     {
@@ -2324,8 +2342,10 @@ mod tests {
     fn with_operation(phase: AirOperationPhase, tick: Tick) -> StrategicPlanner {
         let observation = obs(tick);
         StrategicPlanner {
-            air: Some(operation(phase, tick)),
-            air_plan: Some(AirPlan::combined(&profile(), &observation)),
+            air: Some(ActiveAirOperation {
+                op: operation(phase, tick),
+                plan: AirPlan::combined(&profile(), &observation),
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -2368,8 +2388,10 @@ mod tests {
         plan.desired_screen = 5;
         plan.screen = (200..205).map(UnitId).collect();
         let planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -2591,7 +2613,7 @@ mod tests {
             .push(own(5, UnitKind::Kestrel, TilePos::new(5, 10)));
         let intel = knowledge(&observation);
         let mut planner = with_operation(AirOperationPhase::Recon, 100);
-        planner.air.as_mut().unwrap().scout_dispatch = Some((UnitId(1), TARGET));
+        planner.air_op_mut().unwrap().scout_dispatch = Some((UnitId(1), TARGET));
 
         let decision = think(&mut planner, &observation, &intel);
 
@@ -2627,7 +2649,7 @@ mod tests {
         observation.scrap = UnitKind::Kestrel.stats().cost;
         let intel = knowledge(&observation);
         let mut planner = with_operation(AirOperationPhase::Recon, 100);
-        planner.air.as_mut().unwrap().scout_dispatch = Some((UnitId(1), TARGET));
+        planner.air_op_mut().unwrap().scout_dispatch = Some((UnitId(1), TARGET));
 
         let decision = think(&mut planner, &observation, &intel);
 
@@ -3037,7 +3059,7 @@ mod tests {
         waiting.my_units.remove(0);
         intel.update(&waiting);
         let mut planner = with_operation(AirOperationPhase::Recon, 100);
-        let operation = planner.air.as_mut().unwrap();
+        let operation = planner.air_op_mut().unwrap();
         operation.started_at = 100;
         operation.phase_started_at = 100;
 
@@ -3083,7 +3105,7 @@ mod tests {
         current.scrap = UnitKind::Kestrel.stats().cost;
         let mut intelligence = knowledge(&current);
         let mut planner = with_operation(AirOperationPhase::Recon, current.tick);
-        let operation = planner.air.as_mut().unwrap();
+        let operation = planner.air_op_mut().unwrap();
         operation.scout = None;
         operation.scout_dispatch = None;
         operation.phase_started_at = current.tick.saturating_sub(tuning.reaction_delay + 1);
@@ -3176,7 +3198,7 @@ mod tests {
                 observation.my_units.retain(|unit| unit.id != UnitId(1));
                 let intelligence = knowledge(&observation);
                 let mut planner = with_operation(AirOperationPhase::Recon, observation.tick);
-                let operation = planner.air.as_mut().unwrap();
+                let operation = planner.air_op_mut().unwrap();
                 operation.scout = None;
                 operation.scout_dispatch = None;
                 operation.phase_started_at =
@@ -3361,7 +3383,7 @@ mod tests {
         let obs = obs(late);
         let intel = knowledge(&obs);
         let mut timed_out = with_operation(AirOperationPhase::Recon, late);
-        timed_out.air.as_mut().unwrap().started_at = 0;
+        timed_out.air_op_mut().unwrap().started_at = 0;
         think(&mut timed_out, &obs, &intel);
         let op = timed_out.air_operation().unwrap();
         assert_eq!(op.phase, AirOperationPhase::Recover);
@@ -3381,7 +3403,7 @@ mod tests {
         let intel = knowledge(&settled);
         let mut planner = with_operation(AirOperationPhase::Recover, settled.tick);
         planner.cooldown_until = 1_000;
-        planner.air.as_mut().unwrap().recovery_reason = Some(AirRecoveryReason::Complete);
+        planner.air_op_mut().unwrap().recovery_reason = Some(AirRecoveryReason::Complete);
 
         let decision = think(&mut planner, &settled, &intel);
 
@@ -3416,7 +3438,7 @@ mod tests {
         let observation = obs(400);
         let intel = knowledge(&observation);
         let mut planner = with_operation(AirOperationPhase::Recover, 400);
-        planner.air.as_mut().unwrap().recovery_reason = Some(AirRecoveryReason::NewAirDefense);
+        planner.air_op_mut().unwrap().recovery_reason = Some(AirRecoveryReason::NewAirDefense);
 
         think(&mut planner, &observation, &intel);
 
@@ -3453,7 +3475,7 @@ mod tests {
         settled.scrap = UnitKind::Condor.stats().cost;
         let mut planner = with_operation(AirOperationPhase::Recover, settled.tick);
         planner.cooldown_until = 500;
-        let operation = planner.air.as_mut().unwrap();
+        let operation = planner.air_op_mut().unwrap();
         operation.artillery = vec![UnitId(2), UnitId(5)];
         operation.bombers = vec![UnitId(3)];
         operation.recovery_reason = Some(AirRecoveryReason::Timeout);
@@ -3491,7 +3513,7 @@ mod tests {
         let mut settled = obs(408);
         let mut planner = with_operation(AirOperationPhase::Recover, settled.tick);
         planner.cooldown_until = 500;
-        planner.air.as_mut().unwrap().recovery_reason = Some(AirRecoveryReason::Complete);
+        planner.air_op_mut().unwrap().recovery_reason = Some(AirRecoveryReason::Complete);
         let intel = knowledge(&settled);
         think(&mut planner, &settled, &intel);
 
@@ -3937,8 +3959,7 @@ mod tests {
             &[],
         );
         let siege_plan = siege_planner
-            .air_plan
-            .as_ref()
+            .air_plan()
             .expect("the resolved Siege identity enters the connected playbook");
         assert_eq!(
             (siege_plan.desired_artillery, siege_plan.desired_bombers),
@@ -4098,8 +4119,10 @@ mod tests {
         let plan = AirPlan::combined(&identity, &battle);
         assert_eq!((plan.desired_artillery, plan.desired_bombers), (2, 1));
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -4161,8 +4184,10 @@ mod tests {
         assert_eq!(preferred_artillery(&identity, &battle), UnitKind::Bombard);
         assert_eq!(plan.desired_artillery, 2);
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -4224,10 +4249,7 @@ mod tests {
                 .target,
             TARGET
         );
-        let plan = planner
-            .air_plan
-            .as_ref()
-            .expect("the operation owns a plan");
+        let plan = planner.air_plan().expect("the operation owns a plan");
         assert_eq!(plan.suppression, AirSuppression::Airborne);
         assert!(plan.desired_bombers >= 4);
         assert_eq!(plan.desired_artillery, 0);
@@ -4269,7 +4291,7 @@ mod tests {
             planner.air_operation().is_none(),
             "an objective with no known ground doorstep must not start either assault playbook"
         );
-        assert!(planner.air_plan.is_none());
+        assert!(planner.air_plan().is_none());
     }
 
     #[test]
@@ -4303,7 +4325,7 @@ mod tests {
         assert_eq!(operation.target, request.target);
         assert_eq!(operation.target_id, Some(BuildingId(81)));
         assert_eq!(
-            planner.air_plan.as_ref().map(|plan| plan.suppression),
+            planner.air_plan().map(|plan| plan.suppression),
             Some(AirSuppression::Airborne)
         );
     }
@@ -4380,7 +4402,7 @@ mod tests {
         assert_eq!(operation.target_id, Some(BuildingId(81)));
         assert_eq!(operation.target, island_foundry);
         assert_eq!(
-            planner.air_plan.as_ref().map(|plan| plan.suppression),
+            planner.air_plan().map(|plan| plan.suppression),
             Some(AirSuppression::Airborne)
         );
     }
@@ -4632,7 +4654,7 @@ mod tests {
             let admitted = planner.air_operation().unwrap();
             assert!(admitted.assault_admitted, "{difficulty:?}");
             assert_eq!(admitted.started_at, 5_016, "{difficulty:?}");
-            let plan = planner.air_plan.as_ref().unwrap();
+            let plan = planner.air_plan().unwrap();
             snapshots.push((
                 admitted.artillery.clone(),
                 admitted.bombers.clone(),
@@ -4694,7 +4716,7 @@ mod tests {
         assert!(!operation.assault_admitted);
         assert_eq!(recon.reservations, [UnitId(1)]);
         assert_eq!(
-            planner.air_plan.as_ref().map(|plan| plan.suppression),
+            planner.air_plan().map(|plan| plan.suppression),
             Some(AirSuppression::GroundArtillery)
         );
 
@@ -4715,7 +4737,7 @@ mod tests {
             .expect("current sight admits the connected assault");
         assert!(admitted.assault_admitted);
         assert_eq!(admitted.started_at, current.tick);
-        let plan = planner.air_plan.as_ref().expect("the assault owns a plan");
+        let plan = planner.air_plan().expect("the assault owns a plan");
         assert_eq!(plan.suppression, AirSuppression::GroundArtillery);
         assert!(plan.desired_artillery > 0);
         assert_eq!(plan.desired_screen, 0);
@@ -4742,10 +4764,7 @@ mod tests {
             &[],
         );
 
-        let plan = planner
-            .air_plan
-            .as_ref()
-            .expect("the operation owns a plan");
+        let plan = planner.air_plan().expect("the operation owns a plan");
         assert_eq!(plan.desired_bombers, 6);
         assert_eq!(plan.desired_screen, 2);
         let training: Vec<_> = decision
@@ -4836,7 +4855,7 @@ mod tests {
             }
             let expected = AirPlan::island(&identity, &shared);
             let operation = planner.air_operation().unwrap();
-            let plan = planner.air_plan.as_ref().unwrap();
+            let plan = planner.air_plan().unwrap();
 
             assert_eq!(operation.started_at, 5_016, "{difficulty:?}");
             assert_eq!(plan.desired_bombers, expected.desired_bombers);
@@ -4856,7 +4875,7 @@ mod tests {
         let mut intel = knowledge(&reinforced);
         let mut planner = StrategicPlanner::new();
         planner.think(&identity, tuning, &reinforced, &intel, HOME, &[]);
-        let frozen = planner.air_plan.clone().unwrap();
+        let frozen = planner.air_plan().cloned().unwrap();
 
         reinforced.my_units.extend((100..=139).map(|id| {
             own(
@@ -4873,7 +4892,7 @@ mod tests {
         let current = AirPlan::island(&identity, &reinforced);
         assert!(current.desired_bombers > frozen.desired_bombers);
         assert!(current.desired_screen > frozen.desired_screen);
-        assert_eq!(planner.air_plan.as_ref().unwrap(), &frozen);
+        assert_eq!(planner.air_plan().unwrap(), &frozen);
     }
 
     #[test]
@@ -4893,7 +4912,7 @@ mod tests {
         let mut intel = knowledge(&wealthy);
         let mut planner = StrategicPlanner::new();
         planner.think(&identity, tuning, &wealthy, &intel, HOME, &[]);
-        let frozen = planner.air_plan.clone().unwrap();
+        let frozen = planner.air_plan().cloned().unwrap();
 
         let depleted = wealthy_island_obs(5_019, 1);
         let current = AirPlan::island(&identity, &depleted);
@@ -4905,7 +4924,7 @@ mod tests {
         intel.update(&depleted);
         planner.think(&identity, tuning, &depleted, &intel, HOME, &[]);
 
-        assert_eq!(planner.air_plan.as_ref().unwrap(), &frozen);
+        assert_eq!(planner.air_plan().unwrap(), &frozen);
     }
 
     #[test]
@@ -4936,8 +4955,10 @@ mod tests {
         let frozen_fighters = plan.observed_fighters;
         let frozen_timeout = plan.assembly_timeout;
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -4961,8 +4982,7 @@ mod tests {
         think(&mut planner, &battle, &intel);
 
         let committed = planner
-            .air_plan
-            .as_ref()
+            .air_plan()
             .expect("the committed operation retains its frozen plan");
         assert_eq!(committed.desired_bombers, frozen_bombers);
         assert_eq!(committed.desired_screen, frozen_screen);
@@ -4995,8 +5015,10 @@ mod tests {
         let mut operation = operation(AirOperationPhase::SuppressAa, battle.tick);
         operation.artillery.clear();
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -5086,8 +5108,10 @@ mod tests {
             plan.desired_screen = 0;
             plan.screen.clear();
             StrategicPlanner {
-                air: Some(operation),
-                air_plan: Some(plan),
+                air: Some(ActiveAirOperation {
+                    op: operation,
+                    plan,
+                }),
                 standby: AirStandby::default(),
                 cooldown_until: 0,
                 terminal_outcome: None,
@@ -5097,8 +5121,8 @@ mod tests {
                       observation: &Observation,
                       intelligence: &StrategicIntelligence| {
             airborne_corridor_status(
-                planner.air.as_ref().unwrap(),
-                planner.air_plan.as_ref().unwrap(),
+                &planner.air.as_ref().unwrap().op,
+                planner.air_plan().unwrap(),
                 observation,
                 intelligence,
                 HOME,
@@ -5215,8 +5239,10 @@ mod tests {
         let planner_for = |tick| {
             let observation = obs(tick);
             StrategicPlanner {
-                air: Some(operation(AirOperationPhase::SuppressAa, tick)),
-                air_plan: Some(AirPlan::combined(&profile(), &observation)),
+                air: Some(ActiveAirOperation {
+                    op: operation(AirOperationPhase::SuppressAa, tick),
+                    plan: AirPlan::combined(&profile(), &observation),
+                }),
                 standby: AirStandby::default(),
                 cooldown_until: 0,
                 terminal_outcome: None,
@@ -5337,8 +5363,7 @@ mod tests {
         stale.visible[flak_index] = false;
         intel.update(&stale);
         let operation = planner
-            .air
-            .as_mut()
+            .air_op_mut()
             .expect("the test operation remains active");
         operation.started_at = stale.tick - 50;
         operation.phase_started_at = stale.tick - 50;
@@ -5355,8 +5380,8 @@ mod tests {
         }));
         assert_eq!(
             airborne_corridor_status(
-                planner.air.as_ref().unwrap(),
-                planner.air_plan.as_ref().unwrap(),
+                &planner.air.as_ref().unwrap().op,
+                planner.air_plan().unwrap(),
                 &stale,
                 &intel,
                 HOME,
@@ -5397,8 +5422,10 @@ mod tests {
         let mut operation = operation(AirOperationPhase::SuppressAa, battle.tick);
         operation.artillery.clear();
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -5424,15 +5451,15 @@ mod tests {
     fn an_assembled_wealthy_wave_accepts_mobile_aa_but_still_suppresses_current_flak() {
         let (battle, mut planner) =
             wealthy_airborne_operation(AirOperationPhase::Assemble, UnitKind::Sentinel, 12);
-        planner.air.as_mut().unwrap().bombers.clear();
-        planner.air_plan.as_mut().unwrap().screen.clear();
+        planner.air_op_mut().unwrap().bombers.clear();
+        planner.air_plan_mut().unwrap().screen.clear();
         let intel = knowledge(&battle);
 
         let assembly = think(&mut planner, &battle, &intel);
         let frozen = planner.air_operation().unwrap();
         assert_eq!(frozen.phase, AirOperationPhase::SuppressAa);
         assert_eq!(frozen.bombers.len(), 10);
-        assert_eq!(planner.air_plan.as_ref().unwrap().screen.len(), 5);
+        assert_eq!(planner.air_plan().unwrap().screen.len(), 5);
         let expected: Vec<_> = std::iter::once(UnitId(1))
             .chain((100..110).chain(200..205).map(UnitId))
             .collect();
@@ -5475,8 +5502,8 @@ mod tests {
 
         let (mut defended, mut flak_planner) =
             wealthy_airborne_operation(AirOperationPhase::Assemble, UnitKind::Sentinel, 12);
-        flak_planner.air.as_mut().unwrap().bombers.clear();
-        flak_planner.air_plan.as_mut().unwrap().screen.clear();
+        flak_planner.air_op_mut().unwrap().bombers.clear();
+        flak_planner.air_plan_mut().unwrap().screen.clear();
         defended.enemy_buildings.push(building(
             81,
             1,
@@ -5570,8 +5597,10 @@ mod tests {
         plan.desired_screen = 0;
         plan.screen.clear();
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -5716,8 +5745,10 @@ mod tests {
         plan.desired_screen = 0;
         plan.screen.clear();
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -5743,8 +5774,10 @@ mod tests {
         plan.desired_screen = 0;
         plan.screen.clear();
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -5801,8 +5834,10 @@ mod tests {
         plan.desired_screen = 0;
         plan.screen.clear();
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -5870,8 +5905,10 @@ mod tests {
         plan.desired_screen = 0;
         plan.screen.clear();
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -5921,8 +5958,10 @@ mod tests {
         let mut operation = operation(AirOperationPhase::SuppressAa, battle.tick);
         operation.artillery.clear();
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -5991,7 +6030,6 @@ mod tests {
         let stale_intel = knowledge(&obs(100));
         let mut planner = StrategicPlanner {
             air: None,
-            air_plan: None,
             standby: AirStandby {
                 scout: Some(UnitId(1)),
                 artillery: vec![UnitId(2)],
@@ -6023,8 +6061,10 @@ mod tests {
         let mut operation = operation(AirOperationPhase::Assemble, battle.tick);
         operation.artillery.clear();
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -6095,8 +6135,10 @@ mod tests {
         operation.scout_dispatch = None;
         operation.artillery.clear();
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -6136,8 +6178,10 @@ mod tests {
         operation.scout_dispatch = Some((UnitId(99), TARGET));
         operation.artillery.clear();
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -6317,8 +6361,10 @@ mod tests {
             plan.desired_screen = 0;
             plan.screen.clear();
             let mut planner = StrategicPlanner {
-                air: Some(operation),
-                air_plan: Some(plan),
+                air: Some(ActiveAirOperation {
+                    op: operation,
+                    plan,
+                }),
                 standby: AirStandby::default(),
                 cooldown_until: 0,
                 terminal_outcome: None,
@@ -6380,8 +6426,10 @@ mod tests {
             plan.desired_screen = 0;
             plan.screen.clear();
             let mut planner = StrategicPlanner {
-                air: Some(operation),
-                air_plan: Some(plan),
+                air: Some(ActiveAirOperation {
+                    op: operation,
+                    plan,
+                }),
                 standby: AirStandby::default(),
                 cooldown_until: 0,
                 terminal_outcome: None,
@@ -6418,7 +6466,7 @@ mod tests {
         ));
         let intel = knowledge(&battle);
         let mut planner = with_operation(AirOperationPhase::SuppressAa, battle.tick);
-        planner.air.as_mut().unwrap().phase_started_at = battle.tick;
+        planner.air_op_mut().unwrap().phase_started_at = battle.tick;
 
         let decision = planner.think(
             &profile(),
@@ -6522,8 +6570,10 @@ mod tests {
         plan.desired_bombers = 2;
         plan.desired_screen = 0;
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
@@ -6561,8 +6611,10 @@ mod tests {
         plan.desired_bombers = 2;
         plan.desired_screen = 0;
         let mut planner = StrategicPlanner {
-            air: Some(operation),
-            air_plan: Some(plan),
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,

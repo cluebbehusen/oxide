@@ -5,6 +5,34 @@ use crate::bot::routing;
 
 type PlannedFootprint = (BuildingKind, TilePos);
 
+/// Membership form of the known-road flood: one BFS from home answers
+/// [`UtilityPolicy::ground_route_known`] for every candidate anchor.
+/// `None` inside mirrors the degenerate-map and out-of-bounds cases
+/// where the per-target flood reports nothing reachable.
+pub(super) struct KnownRoadReach {
+    component: Option<Vec<bool>>,
+    width: i32,
+    height: i32,
+}
+
+impl KnownRoadReach {
+    /// Whether the 2x2 footprint at `anchor` touches home's known-road
+    /// component — the exact question the per-anchor flood answered,
+    /// including the home-inside-the-footprint case, because the flood
+    /// seeds home as seen before consulting the enter predicate.
+    pub(super) fn frame_reached(&self, anchor: TilePos) -> bool {
+        self.component.as_ref().is_some_and(|seen| {
+            (anchor.y..anchor.y + 2).any(|y| {
+                (anchor.x..anchor.x + 2).any(|x| {
+                    (0..self.width).contains(&x)
+                        && (0..self.height).contains(&y)
+                        && seen[(y * self.width + x) as usize]
+                })
+            })
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GroundProducerEgress {
     ring: Vec<TilePos>,
@@ -168,22 +196,27 @@ impl UtilityPolicy {
         if sites.is_empty() {
             return None;
         }
-        let (w, h) = (obs.map_width, obs.map_height);
-        let component =
-            Self::ground_component(obs, home, |t| obs.explored(t) && !obs.known_rock_at(t));
-        let footprint_reached = |anchor: TilePos| {
-            component.as_ref().is_some_and(|seen| {
-                (anchor.y..anchor.y + 2).any(|y| {
-                    (anchor.x..anchor.x + 2).any(|x| {
-                        (0..w).contains(&x) && (0..h).contains(&y) && seen[(y * w + x) as usize]
-                    })
-                })
-            })
-        };
+        let reach = Self::known_road_reach(obs, home);
         sites
             .into_iter()
             .map(|(_, y, x)| TilePos::new(x, y))
-            .find(|anchor| !footprint_reached(*anchor))
+            .find(|anchor| !reach.frame_reached(*anchor))
+    }
+
+    /// Home's known-road component in membership form, answering
+    /// [`Self::ground_route_known`] for any number of anchors with one
+    /// flood. Use this wherever candidates are filtered by known ground
+    /// reachability from a fixed origin: the per-anchor flood re-walks
+    /// the same component once per candidate, which on frame-dense maps
+    /// dominates the whole think.
+    pub(super) fn known_road_reach(obs: &Observation, home: TilePos) -> KnownRoadReach {
+        KnownRoadReach {
+            component: Self::ground_component(obs, home, |t| {
+                obs.explored(t) && !obs.known_rock_at(t)
+            }),
+            width: obs.map_width,
+            height: obs.map_height,
+        }
     }
 
     /// Home's full walkable component under `enter`, as a seen-tile
