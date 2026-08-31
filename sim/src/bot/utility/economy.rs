@@ -355,85 +355,41 @@ impl UtilityPolicy {
         }
     }
 
-    pub(super) fn production_with_air_demand(
+    /// The lowest-id built producer of `kind` with its queue index — the
+    /// canonical choice every purchase stage shares, so no stage can
+    /// restate the id tie-break slightly differently.
+    fn open_producer(obs: &Observation, kind: BuildingKind) -> Option<(usize, &BuildingObs)> {
+        obs.my_buildings
+            .iter()
+            .enumerate()
+            .filter(|(_, building)| building.kind == kind && building.built)
+            .min_by_key(|(_, building)| building.id)
+    }
+
+    /// The Airworks capacity purchase: buys the held extra Airworks when
+    /// the site is actionable, and reports either the capital the still
+    /// unbought site keeps reserved, or that this think's voluntary
+    /// spending ends with the purchase (the exact-guard early return).
+    fn airworks_capacity_stage(
         &mut self,
         dials: &Dials,
         obs: &Observation,
         context: ProductionContext<'_>,
         budget: &mut u32,
         intents: &mut Vec<Intent>,
-    ) {
+    ) -> std::ops::ControlFlow<(), u32> {
         let ProductionContext {
             home,
             claims,
-            combat_core_exclusions,
             outstanding_air_production_ticks,
             unit_contacts,
             building_contacts,
-            public_map,
             voluntary_scrap_guard,
+            ..
         } = context;
         let ConstructionClaims {
-            player_facing,
-            enlisted,
-            reserved,
+            enlisted, reserved, ..
         } = claims;
-        let queued = |kind: UnitKind| -> usize {
-            obs.my_queues
-                .iter()
-                .flat_map(|q| q.iter())
-                .filter(|k| **k == kind)
-                .count()
-        };
-        let alive =
-            |kind: UnitKind| -> usize { obs.my_units.iter().filter(|u| u.kind == kind).count() };
-        let harvesters = alive(UnitKind::Harvester) + queued(UnitKind::Harvester);
-        // Survival outranks saving: with the home screen thin, the drip
-        // spends freely — a banked Fabricator is worthless underneath a
-        // Sentinel rush.
-        let screen = obs
-            .my_units
-            .iter()
-            .filter(|u| {
-                let stats = u.kind.stats();
-                stats.domain == Domain::Ground && stats.can_fight()
-            })
-            .count();
-        // A desperate economy with a road to march releases the capital
-        // fund: saving for the next tech rung is saving for a purchase
-        // no income will ever complete, while the freed bank buys the
-        // bodies that end the game now. Island desperation keeps the
-        // fund — with no ground road, the tech chain to the sky is the
-        // only road left, and spending its savings on infantry is how
-        // forty-seven fighters end up staring at a gulf forever.
-        let mut unavailable_builders = Vec::new();
-        for intent in intents.iter() {
-            Self::claim_non_preemptible_intent_units(intent, &mut unavailable_builders);
-        }
-        let capital_context = ConstructionContext::new(home, claims)
-            .with_combat_core_exclusions(combat_core_exclusions)
-            .with_intelligence(unit_contacts, building_contacts)
-            .excluding_builders(&unavailable_builders);
-        let ordinary_capital = if screen < 3 || (self.desperate && self.desperate_road) {
-            0
-        } else {
-            self.capital_reserve(dials, obs, capital_context)
-        };
-        let ordinary_capital = if dials.extractors
-            && self
-                .supported_frame_restoration_claim(obs, capital_context)
-                .is_some()
-        {
-            ordinary_capital.max(
-                BuildingKind::Extractor
-                    .base_stats()
-                    .construction
-                    .map_or(0, |construction| construction.cost),
-            )
-        } else {
-            ordinary_capital
-        };
-
         let airworks_cost = BuildingKind::Airworks
             .base_stats()
             .construction
@@ -494,238 +450,123 @@ impl UtilityPolicy {
                 );
                 capacity_site = None;
                 if capacity_guard > 0 && voluntary_scrap_guard.is_exact() {
-                    return;
+                    return std::ops::ControlFlow::Break(());
                 }
             }
         }
-        let capacity_capital = if capacity_site.is_some() {
+        std::ops::ControlFlow::Continue(if capacity_site.is_some() {
             airworks_cost.saturating_add(capacity_guard)
         } else {
             0
-        };
-        let voluntary_guard = voluntary_scrap_guard.amount(0);
-        let capital = ordinary_capital.max(capacity_capital).max(voluntary_guard);
-        let allow_repeatable_ground =
-            !player_facing || self.has_honest_ground_objective(dials, obs, home, public_map);
+        })
+    }
 
-        // Current public-map or contested work may require air, while a failed
-        // ground look preserves the same demand durably. Keep exactly one
-        // faction scout alive or queued once an Airworks can build it.
-        if dials.scouting && self.air_scout_needed() && !self.solo_air_scout_suspended {
-            let scout_kind = crate::stats::Role::Scout.unit_for(obs.faction);
-            let planned_scouts = intents
-                .iter()
-                .filter(|intent| {
-                    matches!(
-                        intent,
-                        Intent::TrainAt { kind, .. } if *kind == scout_kind
-                    )
-                })
-                .count();
-            let scout_count = alive(scout_kind) + queued(scout_kind) + planned_scouts;
-            let airworks = obs
-                .my_buildings
-                .iter()
-                .enumerate()
-                .filter(|(_, building)| building.kind == BuildingKind::Airworks && building.built)
-                .min_by_key(|(_, building)| building.id);
-            if scout_count == 0
-                && let Some((queue_index, airworks)) = airworks
-                && obs.my_queues[queue_index]
-                    .len()
-                    .saturating_add(super::production::planned_at(intents, airworks.id))
-                    < 2
-            {
-                let price = scout_kind.stats().cost;
-                if *budget >= price.saturating_add(voluntary_guard) {
-                    *budget -= price;
-                    intents.push(Intent::TrainAt {
-                        building: airworks.id,
-                        kind: scout_kind,
-                    });
-                } else {
-                    // Reconnaissance is the prerequisite for every
-                    // target-driven island purchase, so cheaper drips
-                    // must not spend its partial fund.
-                    *budget = (*budget).min(voluntary_guard);
-                }
-            }
-        }
+    fn alive_count(obs: &Observation, kind: UnitKind) -> usize {
+        obs.my_units.iter().filter(|u| u.kind == kind).count()
+    }
 
-        // The ferry fund: with a built Airworks, a known island target,
-        // a squad worth lifting, and no lifter, the Skyhook's price is
-        // banked ahead of every other military purchase — the wing and
-        // AA arms otherwise skim the bank at their own smaller reserves
-        // forever and the lifter never arrives (the Severance probe's
-        // exact stall). Bought the moment the Airworks has room; the
-        // hold ends with the purchase. The squad gate keeps the order
-        // right and the seat alive: a lifter without riders is dead
-        // capital, so while the last squad lies dead on the far shore
-        // the fund stands down and the drip rebuilds fighters first.
-        if !player_facing
-            && dials.ferry
-            && screen >= FERRY_SQUAD
-            && alive(UnitKind::Skyhook) + queued(UnitKind::Skyhook) < 1
-        {
-            let airworks = obs
-                .my_buildings
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| b.kind == BuildingKind::Airworks && b.built)
-                .min_by_key(|(_, b)| b.id);
-            if let Some((qi, airworks)) = airworks
-                && (Self::island_target(obs, home).is_some()
-                    || (self.desperate && !self.desperate_road))
-            {
-                let price = UnitKind::Skyhook.stats().cost + TECH_RESERVE;
-                if *budget >= price && obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH {
-                    *budget -= UnitKind::Skyhook.stats().cost;
-                    intents.push(Intent::TrainAt {
-                        building: airworks.id,
-                        kind: UnitKind::Skyhook,
-                    });
-                } else {
-                    *budget = budget.saturating_sub(price);
-                }
-            }
-        }
-
-        // One Warden per think from a standing Fabricator, and one
-        // Breaker whenever the Crucible is idle and the bank can take it.
-        // Deep-tech production runs before the basic military drip.
-        if dials.deep_tech && !dials.adaptive_composition {
-            let crucible = obs
-                .my_buildings
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| b.kind == BuildingKind::Crucible && b.built)
-                .min_by_key(|(_, b)| b.id);
-            if let Some((qi, crucible)) = crucible
-                && obs.my_queues[qi].is_empty()
-                && alive(UnitKind::Breaker) + queued(UnitKind::Breaker) < 2
-                && *budget
-                    >= UnitKind::Breaker
-                        .stats()
-                        .cost
-                        .saturating_add(TECH_RESERVE)
-                        .saturating_add(voluntary_guard)
-            {
-                *budget -= UnitKind::Breaker.stats().cost;
-                intents.push(Intent::TrainAt {
-                    building: crucible.id,
-                    kind: UnitKind::Breaker,
-                });
-            }
-            let fabricator = obs
-                .my_buildings
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| b.kind == BuildingKind::Fabricator && b.built)
-                .min_by_key(|(_, b)| b.id);
-            if let Some((qi, fabricator)) = fabricator
-                && obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH
-                && alive(UnitKind::Warden) + queued(UnitKind::Warden) < 4
-                && *budget
-                    >= UnitKind::Warden
-                        .stats()
-                        .cost
-                        .saturating_add(UnitKind::Harvester.stats().cost)
-                        .saturating_add(voluntary_guard)
-            {
-                *budget -= UnitKind::Warden.stats().cost;
-                intents.push(Intent::TrainAt {
-                    building: fabricator.id,
-                    kind: UnitKind::Warden,
-                });
-            }
-            // Once the whole tree stands, a small bomber wing: the
-            // payload that decides sieges — and island wars, where no
-            // crawler ever crosses.
-            {
-                use crate::stats::Role;
-                let bomber_kind = Role::Bomber.unit_for(obs.faction);
-                let airworks = obs
-                    .my_buildings
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, b)| b.kind == BuildingKind::Airworks && b.built)
-                    .min_by_key(|(_, b)| b.id);
-                let crucible_stands = obs
-                    .my_buildings
-                    .iter()
-                    .any(|b| b.kind == BuildingKind::Crucible && b.built);
-                if let Some((qi, airworks)) = airworks
-                    && crucible_stands
-                    && obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH
-                    && alive(bomber_kind) + queued(bomber_kind) < 2
-                    && *budget
-                        >= bomber_kind
-                            .stats()
-                            .cost
-                            .saturating_add(TECH_RESERVE)
-                            .saturating_add(voluntary_guard)
-                {
-                    *budget -= bomber_kind.stats().cost;
-                    intents.push(Intent::TrainAt {
-                        building: airworks.id,
-                        kind: bomber_kind,
-                    });
-                }
-            }
-        }
-
-        let foundry = obs
-            .my_buildings
+    fn queued_count(obs: &Observation, kind: UnitKind) -> usize {
+        obs.my_queues
             .iter()
-            .enumerate()
-            .filter(|(_, b)| b.kind == BuildingKind::Foundry && b.built)
-            .min_by_key(|(_, b)| b.id);
-        if let Some((qi, foundry)) = foundry
-            && obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH
-        {
-            if harvesters < immediate_harvester_target(dials) as usize
-                && *budget >= UnitKind::Harvester.stats().cost
-            {
-                *budget -= UnitKind::Harvester.stats().cost;
-                intents.push(Intent::TrainAt {
-                    building: foundry.id,
-                    kind: UnitKind::Harvester,
-                });
-            } else if !dials.adaptive_composition
-                && allow_repeatable_ground
-                && *budget >= UnitKind::Sentinel.stats().cost + capital
-            {
-                *budget -= UnitKind::Sentinel.stats().cost;
-                intents.push(Intent::TrainAt {
-                    building: foundry.id,
-                    kind: UnitKind::Sentinel,
-                });
-            }
-        }
+            .flat_map(|q| q.iter())
+            .filter(|k| **k == kind)
+            .count()
+    }
 
-        if !dials.tech {
-            if dials.adaptive_composition {
-                self.adaptive_production(
-                    dials,
-                    obs,
-                    super::production::AdaptiveProductionContext::new(
-                        combat_core_exclusions,
-                        outstanding_air_production_ticks.is_none(),
-                        capital,
-                    )
-                    .with_repeatable_ground(allow_repeatable_ground),
-                    budget,
-                    intents,
-                );
-            }
+    /// One Warden per think from a standing Fabricator, and one Breaker
+    /// whenever the Crucible is idle and the bank can take it. Deep-tech
+    /// production runs before the basic military drip.
+    fn deep_tech_drip(
+        dials: &Dials,
+        obs: &Observation,
+        voluntary_guard: u32,
+        budget: &mut u32,
+        intents: &mut Vec<Intent>,
+    ) {
+        if !dials.deep_tech || dials.adaptive_composition {
             return;
         }
-        let fabricator = obs
+        let alive = |kind| Self::alive_count(obs, kind);
+        let queued = |kind| Self::queued_count(obs, kind);
+        let crucible = Self::open_producer(obs, BuildingKind::Crucible);
+        if let Some((qi, crucible)) = crucible
+            && obs.my_queues[qi].is_empty()
+            && alive(UnitKind::Breaker) + queued(UnitKind::Breaker) < 2
+            && *budget
+                >= UnitKind::Breaker
+                    .stats()
+                    .cost
+                    .saturating_add(TECH_RESERVE)
+                    .saturating_add(voluntary_guard)
+        {
+            *budget -= UnitKind::Breaker.stats().cost;
+            intents.push(Intent::TrainAt {
+                building: crucible.id,
+                kind: UnitKind::Breaker,
+            });
+        }
+        let fabricator = Self::open_producer(obs, BuildingKind::Fabricator);
+        if let Some((qi, fabricator)) = fabricator
+            && obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH
+            && alive(UnitKind::Warden) + queued(UnitKind::Warden) < 4
+            && *budget
+                >= UnitKind::Warden
+                    .stats()
+                    .cost
+                    .saturating_add(UnitKind::Harvester.stats().cost)
+                    .saturating_add(voluntary_guard)
+        {
+            *budget -= UnitKind::Warden.stats().cost;
+            intents.push(Intent::TrainAt {
+                building: fabricator.id,
+                kind: UnitKind::Warden,
+            });
+        }
+        // Once the whole tree stands, a small bomber wing: the payload
+        // that decides sieges — and island wars, where no crawler ever
+        // crosses.
+        use crate::stats::Role;
+        let bomber_kind = Role::Bomber.unit_for(obs.faction);
+        let airworks = Self::open_producer(obs, BuildingKind::Airworks);
+        let crucible_stands = obs
             .my_buildings
             .iter()
-            .enumerate()
-            .filter(|(_, b)| b.kind == BuildingKind::Fabricator && b.built)
-            .min_by_key(|(_, b)| b.id);
+            .any(|b| b.kind == BuildingKind::Crucible && b.built);
+        if let Some((qi, airworks)) = airworks
+            && crucible_stands
+            && obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH
+            && alive(bomber_kind) + queued(bomber_kind) < 2
+            && *budget
+                >= bomber_kind
+                    .stats()
+                    .cost
+                    .saturating_add(TECH_RESERVE)
+                    .saturating_add(voluntary_guard)
+        {
+            *budget -= bomber_kind.stats().cost;
+            intents.push(Intent::TrainAt {
+                building: airworks.id,
+                kind: bomber_kind,
+            });
+        }
+    }
+
+    /// The Fabricator-era priority ladder: anti-air first, turret
+    /// breakers, then the closed tree's raiders, harass wing, and
+    /// repeatable Lancer drip.
+    fn fabricator_drip(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        voluntary_guard: u32,
+        capital: u32,
+        budget: &mut u32,
+        intents: &mut Vec<Intent>,
+    ) {
+        let alive = |kind| Self::alive_count(obs, kind);
+        let queued = |kind| Self::queued_count(obs, kind);
+        let foundry = Self::open_producer(obs, BuildingKind::Foundry);
+        let fabricator = Self::open_producer(obs, BuildingKind::Fabricator);
         let enemy_turrets = obs
             .enemy_buildings
             .iter()
@@ -741,12 +582,7 @@ impl UtilityPolicy {
             let fab_open = obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH;
             let foundry_open =
                 foundry.filter(|(fqi, _)| obs.my_queues[*fqi].len() < SHALLOW_QUEUE_DEPTH);
-            let airworks_open = obs
-                .my_buildings
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| b.kind == BuildingKind::Airworks && b.built)
-                .min_by_key(|(_, b)| b.id)
+            let airworks_open = Self::open_producer(obs, BuildingKind::Airworks)
                 .filter(|(aqi, _)| obs.my_queues[*aqi].len() < SHALLOW_QUEUE_DEPTH);
             let aa_kind = Role::AntiAir.unit_for(obs.faction);
             let wing_kind = Role::AirGround.unit_for(obs.faction);
@@ -824,6 +660,202 @@ impl UtilityPolicy {
                 });
             }
         }
+    }
+
+    pub(super) fn production_with_air_demand(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        context: ProductionContext<'_>,
+        budget: &mut u32,
+        intents: &mut Vec<Intent>,
+    ) {
+        let ProductionContext {
+            home,
+            claims,
+            combat_core_exclusions,
+            outstanding_air_production_ticks,
+            unit_contacts,
+            building_contacts,
+            public_map,
+            voluntary_scrap_guard,
+        } = context;
+        let ConstructionClaims { player_facing, .. } = claims;
+        let queued = |kind| Self::queued_count(obs, kind);
+        let alive = |kind| Self::alive_count(obs, kind);
+        let harvesters = alive(UnitKind::Harvester) + queued(UnitKind::Harvester);
+        // Survival outranks saving: with the home screen thin, the drip
+        // spends freely — a banked Fabricator is worthless underneath a
+        // Sentinel rush.
+        let screen = obs
+            .my_units
+            .iter()
+            .filter(|u| {
+                let stats = u.kind.stats();
+                stats.domain == Domain::Ground && stats.can_fight()
+            })
+            .count();
+        // A desperate economy with a road to march releases the capital
+        // fund: saving for the next tech rung is saving for a purchase
+        // no income will ever complete, while the freed bank buys the
+        // bodies that end the game now. Island desperation keeps the
+        // fund — with no ground road, the tech chain to the sky is the
+        // only road left, and spending its savings on infantry is how
+        // forty-seven fighters end up staring at a gulf forever.
+        let mut unavailable_builders = Vec::new();
+        for intent in intents.iter() {
+            Self::claim_non_preemptible_intent_units(intent, &mut unavailable_builders);
+        }
+        let capital_context = ConstructionContext::new(home, claims)
+            .with_combat_core_exclusions(combat_core_exclusions)
+            .with_intelligence(unit_contacts, building_contacts)
+            .excluding_builders(&unavailable_builders);
+        let ordinary_capital = if screen < 3 || (self.desperate && self.desperate_road) {
+            0
+        } else {
+            self.capital_reserve(dials, obs, capital_context)
+        };
+        let ordinary_capital = if dials.extractors
+            && self
+                .supported_frame_restoration_claim(obs, capital_context)
+                .is_some()
+        {
+            ordinary_capital.max(
+                BuildingKind::Extractor
+                    .base_stats()
+                    .construction
+                    .map_or(0, |construction| construction.cost),
+            )
+        } else {
+            ordinary_capital
+        };
+
+        let capacity_capital =
+            match self.airworks_capacity_stage(dials, obs, context, budget, intents) {
+                std::ops::ControlFlow::Break(()) => return,
+                std::ops::ControlFlow::Continue(capital) => capital,
+            };
+        let voluntary_guard = voluntary_scrap_guard.amount(0);
+        let capital = ordinary_capital.max(capacity_capital).max(voluntary_guard);
+        let allow_repeatable_ground =
+            !player_facing || self.has_honest_ground_objective(dials, obs, home, public_map);
+
+        // Current public-map or contested work may require air, while a failed
+        // ground look preserves the same demand durably. Keep exactly one
+        // faction scout alive or queued once an Airworks can build it.
+        if dials.scouting && self.air_scout_needed() && !self.solo_air_scout_suspended {
+            let scout_kind = crate::stats::Role::Scout.unit_for(obs.faction);
+            let planned_scouts = intents
+                .iter()
+                .filter(|intent| {
+                    matches!(
+                        intent,
+                        Intent::TrainAt { kind, .. } if *kind == scout_kind
+                    )
+                })
+                .count();
+            let scout_count = alive(scout_kind) + queued(scout_kind) + planned_scouts;
+            let airworks = Self::open_producer(obs, BuildingKind::Airworks);
+            if scout_count == 0
+                && let Some((queue_index, airworks)) = airworks
+                && obs.my_queues[queue_index]
+                    .len()
+                    .saturating_add(super::production::planned_at(intents, airworks.id))
+                    < 2
+            {
+                let price = scout_kind.stats().cost;
+                if *budget >= price.saturating_add(voluntary_guard) {
+                    *budget -= price;
+                    intents.push(Intent::TrainAt {
+                        building: airworks.id,
+                        kind: scout_kind,
+                    });
+                } else {
+                    // Reconnaissance is the prerequisite for every
+                    // target-driven island purchase, so cheaper drips
+                    // must not spend its partial fund.
+                    *budget = (*budget).min(voluntary_guard);
+                }
+            }
+        }
+
+        // The ferry fund: with a built Airworks, a known island target,
+        // a squad worth lifting, and no lifter, the Skyhook's price is
+        // banked ahead of every other military purchase — the wing and
+        // AA arms otherwise skim the bank at their own smaller reserves
+        // forever and the lifter never arrives (the Severance probe's
+        // exact stall). Bought the moment the Airworks has room; the
+        // hold ends with the purchase. The squad gate keeps the order
+        // right and the seat alive: a lifter without riders is dead
+        // capital, so while the last squad lies dead on the far shore
+        // the fund stands down and the drip rebuilds fighters first.
+        if !player_facing
+            && dials.ferry
+            && screen >= FERRY_SQUAD
+            && alive(UnitKind::Skyhook) + queued(UnitKind::Skyhook) < 1
+        {
+            let airworks = Self::open_producer(obs, BuildingKind::Airworks);
+            if let Some((qi, airworks)) = airworks
+                && (Self::island_target(obs, home).is_some()
+                    || (self.desperate && !self.desperate_road))
+            {
+                let price = UnitKind::Skyhook.stats().cost + TECH_RESERVE;
+                if *budget >= price && obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH {
+                    *budget -= UnitKind::Skyhook.stats().cost;
+                    intents.push(Intent::TrainAt {
+                        building: airworks.id,
+                        kind: UnitKind::Skyhook,
+                    });
+                } else {
+                    *budget = budget.saturating_sub(price);
+                }
+            }
+        }
+
+        Self::deep_tech_drip(dials, obs, voluntary_guard, budget, intents);
+
+        let foundry = Self::open_producer(obs, BuildingKind::Foundry);
+        if let Some((qi, foundry)) = foundry
+            && obs.my_queues[qi].len() < SHALLOW_QUEUE_DEPTH
+        {
+            if harvesters < immediate_harvester_target(dials) as usize
+                && *budget >= UnitKind::Harvester.stats().cost
+            {
+                *budget -= UnitKind::Harvester.stats().cost;
+                intents.push(Intent::TrainAt {
+                    building: foundry.id,
+                    kind: UnitKind::Harvester,
+                });
+            } else if !dials.adaptive_composition
+                && allow_repeatable_ground
+                && *budget >= UnitKind::Sentinel.stats().cost + capital
+            {
+                *budget -= UnitKind::Sentinel.stats().cost;
+                intents.push(Intent::TrainAt {
+                    building: foundry.id,
+                    kind: UnitKind::Sentinel,
+                });
+            }
+        }
+
+        if !dials.tech {
+            if dials.adaptive_composition {
+                self.adaptive_production(
+                    dials,
+                    obs,
+                    super::production::AdaptiveProductionContext::new(
+                        combat_core_exclusions,
+                        outstanding_air_production_ticks.is_none(),
+                        capital,
+                    )
+                    .with_repeatable_ground(allow_repeatable_ground),
+                    budget,
+                    intents,
+                );
+            }
+            return;
+        }
+        self.fabricator_drip(dials, obs, voluntary_guard, capital, budget, intents);
         if dials.adaptive_composition {
             self.adaptive_production(
                 dials,
@@ -1096,7 +1128,7 @@ impl UtilityPolicy {
 mod tests {
     use super::*;
     use crate::bot::intelligence::{ContactEvidence, StrategicIntelligence};
-    use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION};
+    use crate::bot::observation::BuildingObs;
     use crate::ids::{BuildingId, PlayerId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance};
     use crate::state::Faction;
@@ -1119,10 +1151,7 @@ mod tests {
             grounded: false,
         };
         Observation {
-            version: OBSERVATION_VERSION,
             tick: 0,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 16,
             map_height: 10,
             my_units: vec![harvester],
@@ -1137,22 +1166,10 @@ mod tests {
                 tier: 0,
             }],
             my_queues: vec![Vec::new()],
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
-            enemy_buildings: Vec::new(),
             visible: vec![true; 16 * 10],
             explored: vec![true; 16 * 10],
-            known_scrap: Vec::new(),
             known_rock: (0..10).map(|y| TilePos::new(7, y)).collect(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

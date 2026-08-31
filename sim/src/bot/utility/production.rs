@@ -647,38 +647,20 @@ fn ally_role_count(obs: &Observation, role: Role) -> usize {
 mod tests {
     use super::*;
     use crate::bot::Specialty;
-    use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION, UnitObs};
+    use crate::bot::observation::{BuildingObs, UnitObs};
     use crate::ids::{PlayerId, UnitId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance};
     use crate::state::Faction;
 
     fn observation() -> Observation {
         Observation {
-            version: OBSERVATION_VERSION,
             tick: 200,
-            me: PlayerId(0),
             scrap: 20_000,
             map_width: 24,
             map_height: 14,
-            my_units: Vec::new(),
-            my_buildings: Vec::new(),
-            my_queues: Vec::new(),
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
-            enemy_buildings: Vec::new(),
             visible: vec![true; 24 * 14],
             explored: vec![true; 24 * 14],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

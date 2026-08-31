@@ -64,9 +64,8 @@ impl UtilityPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::observation::OBSERVATION_VERSION;
+
     use crate::ids::{PlayerId, UnitId};
-    use crate::state::Faction;
 
     fn unit(id: u32, kind: UnitKind, tile: TilePos, hp: u32) -> UnitObs {
         UnitObs {
@@ -89,9 +88,7 @@ mod tests {
 
     fn observation() -> Observation {
         Observation {
-            version: OBSERVATION_VERSION,
             tick: 0,
-            me: PlayerId(0),
             scrap: 200,
             map_width: 20,
             map_height: 12,
@@ -101,24 +98,9 @@ mod tests {
                 unit(10, UnitKind::Sentinel, TilePos::new(4, 2), 20),
                 unit(11, UnitKind::Bombard, TilePos::new(11, 8), 10),
             ],
-            my_buildings: Vec::new(),
-            my_queues: Vec::new(),
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
-            enemy_buildings: Vec::new(),
             visible: vec![true; 20 * 12],
             explored: vec![true; 20 * 12],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

@@ -940,6 +940,31 @@ impl UtilityPolicy {
             return;
         }
 
+        if self.fabricator_step(dials, obs, context, budget, intents) {
+            return;
+        }
+        if self.defensive_rungs(dials, obs, context, &builders, budget, intents) {
+            return;
+        }
+        self.late_tech_rungs(dials, obs, context, &builders, budget, intents);
+    }
+
+    /// The first tech rung: one Fabricator once the harvest line stands.
+    fn fabricator_step(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        context: ConstructionContext<'_>,
+        budget: &mut u32,
+        intents: &mut Vec<Intent>,
+    ) -> bool {
+        let ConstructionContext {
+            home,
+            claims,
+            voluntary_scrap_guard,
+            ..
+        } = context;
+        let player_facing = claims.player_facing;
         let harvesters = obs
             .my_units
             .iter()
@@ -962,10 +987,39 @@ impl UtilityPolicy {
                     kind: BuildingKind::Fabricator,
                     anchor,
                 });
-                return;
+                return true;
             }
         }
+        false
+    }
 
+    /// The threat-answering rungs, priciest evidence first: Turret,
+    /// Barricade line, Scuttle Charges, then flak over the harvest line.
+    /// One purchase per think.
+    fn defensive_rungs(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        context: ConstructionContext<'_>,
+        builders: &[&UnitObs],
+        budget: &mut u32,
+        intents: &mut Vec<Intent>,
+    ) -> bool {
+        let ConstructionContext {
+            home,
+            claims,
+            unit_contacts,
+            building_contacts,
+            public_map,
+            voluntary_scrap_guard,
+            ..
+        } = context;
+        let player_facing = claims.player_facing;
+        let harvesters = obs
+            .my_units
+            .iter()
+            .filter(|u| u.kind.stats().harvest.is_some())
+            .count();
         let public_enemy_start = public_map
             .is_some_and(|briefing| !self.uncleared_hostile_starts(briefing, obs.me).is_empty());
         let proactive_turret_cap = usize::from(
@@ -1000,7 +1054,7 @@ impl UtilityPolicy {
                             briefing,
                             unit_contacts.unwrap_or(&[]),
                             building_contacts.unwrap_or(&[]),
-                            &builders,
+                            builders,
                         )
                     })
                 } else {
@@ -1013,7 +1067,7 @@ impl UtilityPolicy {
                     kind: BuildingKind::Turret,
                     anchor,
                 });
-                return;
+                return true;
             }
         }
 
@@ -1046,7 +1100,7 @@ impl UtilityPolicy {
                         briefing,
                         unit_contacts.unwrap_or(&[]),
                         building_contacts.unwrap_or(&[]),
-                        &builders,
+                        builders,
                     )
                 })
             {
@@ -1055,7 +1109,7 @@ impl UtilityPolicy {
                     kind: BuildingKind::Barricade,
                     anchor,
                 });
-                return;
+                return true;
             }
         }
 
@@ -1091,7 +1145,7 @@ impl UtilityPolicy {
                                 briefing,
                                 unit_contacts.unwrap_or(&[]),
                                 building_contacts.unwrap_or(&[]),
-                                &builders,
+                                builders,
                             )
                         })
                     } else {
@@ -1110,7 +1164,7 @@ impl UtilityPolicy {
                             kind: BuildingKind::ScuttleCharge,
                             anchor,
                         });
-                        return;
+                        return true;
                     }
                 }
             }
@@ -1143,7 +1197,7 @@ impl UtilityPolicy {
                             briefing,
                             unit_contacts.unwrap_or(&[]),
                             building_contacts.unwrap_or(&[]),
-                            &builders,
+                            builders,
                         )
                     })
                 } else {
@@ -1156,10 +1210,33 @@ impl UtilityPolicy {
                     kind: BuildingKind::FlakTurret,
                     anchor,
                 });
-                return;
+                return true;
             }
         }
+        false
+    }
 
+    /// The developed-base rungs: Array, Repair Bay, Bastion, and
+    /// Reclaimers, one purchase per think once their tech stands.
+    fn late_tech_rungs(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        context: ConstructionContext<'_>,
+        builders: &[&UnitObs],
+        budget: &mut u32,
+        intents: &mut Vec<Intent>,
+    ) -> bool {
+        let ConstructionContext {
+            home,
+            claims,
+            unit_contacts,
+            building_contacts,
+            public_map,
+            voluntary_scrap_guard,
+            ..
+        } = context;
+        let player_facing = claims.player_facing;
         // One Array once teched: the early-warning ring and the eyes
         // long guns fire on.
         if dials.radar {
@@ -1185,7 +1262,7 @@ impl UtilityPolicy {
                                 home,
                                 unit_contacts.unwrap_or(&[]),
                                 building_contacts.unwrap_or(&[]),
-                                &builders,
+                                builders,
                             )
                         })
                         .map(|(anchor, builder)| (anchor, Some(builder)))
@@ -1212,7 +1289,7 @@ impl UtilityPolicy {
                         anchor,
                     });
                 }
-                return;
+                return true;
             }
         }
 
@@ -1241,7 +1318,7 @@ impl UtilityPolicy {
                     kind: BuildingKind::RepairBay,
                     anchor,
                 });
-                return;
+                return true;
             }
         }
 
@@ -1271,7 +1348,7 @@ impl UtilityPolicy {
                             briefing,
                             unit_contacts.unwrap_or(&[]),
                             building_contacts.unwrap_or(&[]),
-                            &builders,
+                            builders,
                         )
                     })
                 } else {
@@ -1283,7 +1360,7 @@ impl UtilityPolicy {
                     kind: BuildingKind::Bastion,
                     anchor,
                 });
-                return;
+                return true;
             }
         }
 
@@ -1320,8 +1397,10 @@ impl UtilityPolicy {
                     kind: BuildingKind::Reclaimer,
                     anchor,
                 });
+                return true;
             }
         }
+        false
     }
 
     /// Repair channel: one weld order per think for the most wounded
@@ -1426,7 +1505,7 @@ impl UtilityPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION, UnitObs};
+    use crate::bot::observation::{BuildingObs, UnitObs};
     use crate::bot::{Executive, Orientation};
     use crate::event::Event;
     use crate::ids::{BuildingId, PlayerId, UnitId};
@@ -1440,31 +1519,18 @@ mod tests {
 
     fn observation() -> Observation {
         Observation {
-            version: OBSERVATION_VERSION,
             tick: 0,
-            me: PlayerId(0),
             scrap: 10_000,
             map_width: 40,
             map_height: 24,
             my_units: vec![harvester(1, TilePos::new(8, 11), None)],
             my_buildings: vec![building(0, PlayerId(0), BuildingKind::Foundry, HOME)],
             my_queues: vec![Vec::new()],
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
-            enemy_buildings: Vec::new(),
             visible: vec![true; 40 * 24],
             explored: vec![true; 40 * 24],
             known_scrap: vec![(TilePos::new(10, 10), 200)],
             known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

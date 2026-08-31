@@ -528,36 +528,17 @@ fn air_firepower_covering(weapons: &[WeaponStats], distance_sq: Fx) -> u32 {
 mod tests {
     use super::super::observation::{BuildingObs, UnitObs};
     use super::*;
-    use crate::state::Faction;
+
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     fn observation(tick: Tick) -> Observation {
         Observation {
-            version: OBSERVATION_VERSION,
             tick,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 20,
             map_height: 12,
-            my_units: Vec::new(),
-            my_buildings: Vec::new(),
-            my_queues: Vec::new(),
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
-            enemy_buildings: Vec::new(),
             visible: vec![false; 20 * 12],
             explored: vec![false; 20 * 12],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

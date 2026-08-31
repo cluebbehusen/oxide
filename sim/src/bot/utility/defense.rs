@@ -2028,11 +2028,10 @@ fn sorted_tiles(tiles: impl IntoIterator<Item = TilePos>) -> Vec<TilePos> {
 mod tests {
     use super::*;
     use crate::bot::Orientation;
-    use crate::bot::observation::OBSERVATION_VERSION;
+
     use crate::command::{Command, PlayerCommand};
     use crate::ids::{BuildingId, PlayerId, Target, UnitId};
     use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
-    use crate::state::Faction;
     use chassis::Tick;
 
     const WIDTH: i32 = 40;
@@ -2089,7 +2088,7 @@ mod tests {
             players: vec![
                 PlayerSpec {
                     name: "left".into(),
-                    faction: Faction::Ferrous,
+                    faction: crate::state::Faction::Ferrous,
                     team: None,
                     scrap: 10_000,
                     bot: true,
@@ -2097,7 +2096,7 @@ mod tests {
                 },
                 PlayerSpec {
                     name: "right".into(),
-                    faction: Faction::Cupric,
+                    faction: crate::state::Faction::Cupric,
                     team: None,
                     scrap: 10_000,
                     bot: true,
@@ -2204,7 +2203,6 @@ mod tests {
         let mut worker = unit(1, me, UnitKind::Harvester, worker_tile);
         worker.idle = true;
         Observation {
-            version: OBSERVATION_VERSION,
             tick: 1_000,
             me,
             scrap: 10_000,
@@ -2213,26 +2211,14 @@ mod tests {
             my_units: vec![worker],
             my_buildings: vec![building(0, me, BuildingKind::Foundry, home)],
             my_queues: vec![Vec::new()],
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
-            enemy_buildings: Vec::new(),
             visible: vec![false; (WIDTH * HEIGHT) as usize],
             explored: vec![true; (WIDTH * HEIGHT) as usize],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
             faction: if me == PlayerId(0) {
-                Faction::Ferrous
+                crate::state::Faction::Ferrous
             } else {
-                Faction::Cupric
+                crate::state::Faction::Cupric
             },
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

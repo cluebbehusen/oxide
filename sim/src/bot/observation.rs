@@ -205,6 +205,44 @@ pub struct Observation {
     pub incoming_shells: Vec<TilePos>,
 }
 
+/// An empty zero-sized observation: the shared base every test fixture
+/// spreads over, so a new field is declared here once instead of fanning
+/// out across every hand-built literal. The struct-literal orientation
+/// test in `orient` deliberately does not use it — a new field must
+/// still declare its seat flip exhaustively there before this default
+/// can carry it anywhere else.
+impl Default for Observation {
+    fn default() -> Self {
+        Self {
+            version: OBSERVATION_VERSION,
+            tick: 0,
+            me: PlayerId(0),
+            scrap: 0,
+            map_width: 0,
+            map_height: 0,
+            my_units: Vec::new(),
+            my_buildings: Vec::new(),
+            my_queues: Vec::new(),
+            ally_units: Vec::new(),
+            ally_buildings: Vec::new(),
+            enemy_units: Vec::new(),
+            enemy_buildings: Vec::new(),
+            visible: Vec::new(),
+            explored: Vec::new(),
+            known_scrap: Vec::new(),
+            known_rock: Vec::new(),
+            known_frames: Vec::new(),
+            known_peaks: Vec::new(),
+            known_wrecks: Vec::new(),
+            salvage_incidents: Vec::new(),
+            blips: Vec::new(),
+            faction: crate::state::Faction::Ferrous,
+            my_shells: 0,
+            incoming_shells: Vec::new(),
+        }
+    }
+}
+
 impl Observation {
     /// Whether `tile` is known impassable terrain — a binary point lookup
     /// into `known_rock`, which is sorted by (y, x) both by row-major

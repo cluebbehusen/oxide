@@ -1095,7 +1095,7 @@ mod tests {
     use super::*;
     use crate::bot::executive::ArmyId;
     use crate::bot::intelligence::StrategicIntelligence;
-    use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION};
+    use crate::bot::observation::BuildingObs;
     use crate::ids::{BuildingId, PlayerId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec, Scenario};
     use crate::state::Faction;
@@ -1237,34 +1237,17 @@ mod tests {
             bounces: 0,
         };
         let obs = Observation {
-            version: OBSERVATION_VERSION,
             tick: 20_000,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 40,
             map_height: 24,
             my_units: units,
-            my_buildings: Vec::new(),
-            my_queues: Vec::new(),
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
             enemy_buildings: vec![
                 defense(20, BuildingKind::Turret, TilePos::new(12, 6)),
                 defense(21, BuildingKind::Bastion, remote_defense),
             ],
             visible: vec![true; 40 * 24],
             explored: vec![true; 40 * 24],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         };
         (obs, army)
     }
@@ -2286,17 +2269,12 @@ mod tests {
             bounces: 0,
         };
         let mut obs = Observation {
-            version: OBSERVATION_VERSION,
             tick: 4_200,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 40,
             map_height: 24,
             my_units: members,
             my_buildings: vec![own_foundry(0, home), own_foundry(1, expansion)],
             my_queues: vec![Vec::new(), Vec::new()],
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
             enemy_units: vec![
                 hostile(20, UnitKind::Scuttler, TilePos::new(29, 12)),
                 hostile(21, UnitKind::Scuttler, TilePos::new(30, 13)),
@@ -2304,19 +2282,9 @@ mod tests {
                 hostile(23, UnitKind::Scuttler, TilePos::new(30, 15)),
                 hostile(24, UnitKind::Scuttler, TilePos::new(29, 16)),
             ],
-            enemy_buildings: Vec::new(),
             visible: vec![true; 40 * 24],
             explored: vec![true; 40 * 24],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         };
         let mut dials = Dials::full();
         dials.army_size = 5;
@@ -2475,31 +2443,15 @@ mod tests {
             bounces: 0,
         };
         let mut obs = Observation {
-            version: OBSERVATION_VERSION,
             tick: 4_200,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 40,
             map_height: 24,
             my_units: units,
             my_buildings: vec![own_foundry(0, home), own_foundry(1, expansion)],
             my_queues: vec![Vec::new(), Vec::new()],
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
-            enemy_buildings: Vec::new(),
             visible: vec![true; 40 * 24],
             explored: vec![true; 40 * 24],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         };
         let mut dials = Dials::full();
         dials.army_size = 5;
@@ -2738,31 +2690,16 @@ mod tests {
             (units, army)
         };
         let observation = |units: Vec<UnitObs>, enemy_units: Vec<UnitObs>| Observation {
-            version: OBSERVATION_VERSION,
             tick: 4_200,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 40,
             map_height: 24,
             my_units: units,
             my_buildings: vec![own_foundry(0, home), own_foundry(1, expansion)],
             my_queues: vec![Vec::new(), Vec::new()],
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
             enemy_units,
-            enemy_buildings: Vec::new(),
             visible: vec![true; 40 * 24],
             explored: vec![true; 40 * 24],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         };
         let mut dials = Dials::full();
         dials.army_size = 5;
