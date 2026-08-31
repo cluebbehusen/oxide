@@ -383,16 +383,7 @@ fn ordinary_core_unit(kind: UnitKind) -> bool {
     matches!(kind.role(), Role::Sentinel | Role::Warden | Role::Breaker)
 }
 
-fn full_ground_strength(kind: UnitKind) -> u64 {
-    let stats = kind.stats();
-    let damage_per_hundred_ticks = stats
-        .weapons
-        .iter()
-        .filter(|weapon| weapon.targets.covers(crate::stats::Domain::Ground))
-        .map(|weapon| u64::from(weapon.damage) * 100 / u64::from(weapon.cooldown_ticks))
-        .sum::<u64>();
-    u64::from(stats.max_hp).saturating_mul(damage_per_hundred_ticks)
-}
+use crate::bot::executive::full_ground_strength;
 
 fn best_candidate(
     dials: &Dials,

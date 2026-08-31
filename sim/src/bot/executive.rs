@@ -263,19 +263,35 @@ impl Executive {
     }
 }
 
+/// Damage per 100 ticks a weapon set brings against the given movement
+/// domain — the single copy of the fight-strength coin's per-weapon
+/// term. Salvo weapons count as single shots here; the air-defense
+/// estimate in `intelligence` deliberately multiplies by salvo, and
+/// that divergence is a known open balance question, not an accident to
+/// reconcile in passing.
+fn weapon_dps100(weapons: &[crate::stats::WeaponStats], domain: crate::stats::Domain) -> u64 {
+    weapons
+        .iter()
+        .filter(|w| w.targets.covers(domain))
+        .map(|w| u64::from(w.damage) * 100 / u64::from(w.cooldown_ticks))
+        .sum()
+}
+
 /// hp-weighted dps a unit can bring against the given movement domain —
 /// the shared coin every fight estimate is priced in. Damage per 100
 /// ticks keeps it in integers (cooldowns divide 100 unevenly — close
 /// enough for margin calls that carry hysteresis).
 fn strength_vs(u: &UnitObs, domain: crate::stats::Domain) -> u64 {
-    let stats = u.kind.stats();
-    let dps100: u64 = stats
-        .weapons
-        .iter()
-        .filter(|w| w.targets.covers(domain))
-        .map(|w| u64::from(w.damage) * 100 / u64::from(w.cooldown_ticks))
-        .sum();
-    u64::from(u.hp) * dps100
+    u64::from(u.hp) * weapon_dps100(u.kind.stats().weapons, domain)
+}
+
+/// The same coin for a full-health unit of `kind` that need not exist:
+/// strength floors and production targets are priced in it without
+/// fabricating an observation.
+pub(super) fn full_ground_strength(kind: UnitKind) -> u64 {
+    let stats = kind.stats();
+    u64::from(stats.max_hp)
+        .saturating_mul(weapon_dps100(stats.weapons, crate::stats::Domain::Ground))
 }
 
 /// Ground-battle strength. Weapons that can only look up contribute
@@ -312,15 +328,7 @@ pub(super) fn building_strength(b: &super::observation::BuildingObs) -> u64 {
     if !b.built {
         return 0;
     }
-    let dps100: u64 = b
-        .kind
-        .base_stats()
-        .weapons
-        .iter()
-        .filter(|w| w.targets.ground)
-        .map(|w| u64::from(w.damage) * 100 / u64::from(w.cooldown_ticks))
-        .sum();
-    u64::from(b.hp) * dps100
+    u64::from(b.hp) * weapon_dps100(b.kind.base_stats().weapons, crate::stats::Domain::Ground)
 }
 #[cfg(test)]
 mod tests {
