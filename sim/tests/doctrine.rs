@@ -1634,16 +1634,25 @@ fn player_facing_ground_armies_do_not_pursue_aircraft_over_unstandable_ground() 
     );
     assert_eq!(exec.armies()[0].focus, None);
 
+    // Salvo-priced fight strength reads the Moth's full bombing stick as
+    // a real threat, so the legacy arm no longer commits a direct pursuit
+    // Attack: it withdraws to its own staging ground through an
+    // attack-move that answers fire on the way, and never paths onto the
+    // aircraft's unstandable tile.
     assert!(matches!(
         legacy
             .maintain(PlayerId(0), &obs, TilePos::new(2, 2))
             .as_slice(),
         [oxide_sim::PlayerCommand {
-            command: Command::Attack { units, target, queue: false },
+            command: Command::AttackMove { units, goal, queue: false },
             ..
         }] if units == &(1..=7).map(UnitId).collect::<Vec<_>>()
-            && *target == Target::Unit(aircraft)
+            && *goal == TilePos::new(6, 5)
     ));
+    assert_eq!(
+        legacy.armies()[0].state,
+        oxide_sim::bot::ArmyState::Withdrawing
+    );
 }
 
 #[test]
