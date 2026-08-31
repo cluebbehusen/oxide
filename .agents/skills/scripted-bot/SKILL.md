@@ -147,12 +147,11 @@ Treat an Array as a persistent sensor, not as an unarmed defense. Search within
 its radar radius of home for the most usable map coverage, preferring coverage
 not already supplied by an allied Array and using current contacts, remembered
 contacts, then uncleared public starts to break equally useful ties toward a
-credible approach. Off-map area provides no detection value, while in-map Peaks
-still matter because aircraft can cross them. Preserve active resource access
-and bind the exact ordinary route-capable builder proven through public terrain
-and current dynamic danger. Allow partial coverage on maps smaller than the
-radar diameter. Keep the frozen Overseer's first-valid Array placement
-unchanged.
+credible approach. Off-map area and Peaks provide no detection value because no
+unit can occupy them. Preserve active resource access and bind the exact
+ordinary route-capable builder proven through public terrain and current dynamic
+danger. Allow partial coverage on maps smaller than the radar diameter. Keep the
+frozen Overseer's first-valid Array placement unchanged.
 
 Harvest work must also respect anonymous regional loss evidence, but a wreck
 near a dead combat unit is not automatically a dangerous replacement source. Use

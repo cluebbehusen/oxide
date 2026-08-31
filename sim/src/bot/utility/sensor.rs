@@ -6,6 +6,7 @@ use crate::stats::RADAR_DETECT_RADIUS;
 use std::cmp::Reverse;
 
 use super::defense::ResourceAccessGuard;
+use crate::map::Terrain;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ArraySiteCandidate {
@@ -192,8 +193,9 @@ fn array_coverage(
                 continue;
             }
             let tile = anchor.offset(dx, dy);
-            if briefing.terrain_at(tile).is_none() {
-                continue;
+            match briefing.terrain_at(tile) {
+                Some(Terrain::Peak) | None => continue,
+                Some(Terrain::Ground | Terrain::Rock | Terrain::Pit) => {}
             }
             usable_radar += 1;
             if existing_arrays.iter().all(|existing| {
@@ -209,4 +211,52 @@ fn array_coverage(
         }
     }
     (usable_radar, novel_radar, unexplored_sight)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scenario::{PlayerSpec, Scenario};
+    use crate::state::Faction;
+
+    fn briefing_with(center: char) -> PublicMapBriefing {
+        let mut map = vec![".......".to_owned(); 7];
+        map[0].replace_range(0..1, "1");
+        map[3].replace_range(3..4, &center.to_string());
+        PublicMapBriefing::from_scenario(&Scenario {
+            name: "Array terrain coverage".into(),
+            seed: 0,
+            map,
+            players: vec![PlayerSpec {
+                name: "player".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            }],
+            units: Vec::new(),
+            buildings: Vec::new(),
+            meta: None,
+        })
+        .expect("coverage fixture is a valid public map")
+    }
+
+    #[test]
+    fn array_coverage_excludes_peaks_that_no_unit_can_occupy() {
+        let obs = Observation {
+            map_width: 7,
+            map_height: 7,
+            visible: vec![false; 49],
+            explored: vec![false; 49],
+            ..Observation::default()
+        };
+        let anchor = TilePos::new(3, 3);
+        let ground = array_coverage(&obs, &briefing_with('.'), anchor, &[]);
+        let peak = array_coverage(&obs, &briefing_with('^'), anchor, &[]);
+
+        assert_eq!(ground.0, peak.0 + 1);
+        assert_eq!(ground.1, peak.1 + 1);
+        assert_eq!(ground.2, peak.2 + 1);
+    }
 }
