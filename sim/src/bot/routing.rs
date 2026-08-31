@@ -340,6 +340,19 @@ pub(super) fn first_reachable_group(
     size: usize,
     goal: TilePos,
 ) -> Option<Vec<UnitId>> {
+    first_reachable_group_where(routes, candidates, size, goal, |_| true)
+}
+
+/// First reachable fixed-size subgroup that also satisfies `accept`.
+/// Candidate preference remains the outer ordering, so rejecting one exact
+/// group continues the same deterministic combination search.
+pub(super) fn first_reachable_group_where(
+    routes: &mut RouteProjection<'_>,
+    candidates: &[UnitId],
+    size: usize,
+    goal: TilePos,
+    mut accept: impl FnMut(&[UnitId]) -> bool,
+) -> Option<Vec<UnitId>> {
     fn search(
         routes: &mut RouteProjection<'_>,
         candidates: &[UnitId],
@@ -347,19 +360,20 @@ pub(super) fn first_reachable_group(
         goal: TilePos,
         start: usize,
         chosen: &mut Vec<UnitId>,
+        accept: &mut impl FnMut(&[UnitId]) -> bool,
     ) -> Option<Vec<UnitId>> {
         if chosen.len() == size {
-            if !routes.group_reaches_command_goal(chosen, goal) {
-                return None;
-            }
             let mut group = chosen.clone();
             group.sort_unstable();
+            if !accept(&group) || !routes.group_reaches_command_goal(chosen, goal) {
+                return None;
+            }
             return Some(group);
         }
         let needed = size - chosen.len();
         for index in start..=candidates.len().saturating_sub(needed) {
             chosen.push(candidates[index]);
-            if let Some(group) = search(routes, candidates, size, goal, index + 1, chosen) {
+            if let Some(group) = search(routes, candidates, size, goal, index + 1, chosen, accept) {
                 return Some(group);
             }
             chosen.pop();
@@ -375,6 +389,7 @@ pub(super) fn first_reachable_group(
         goal,
         0,
         &mut Vec::with_capacity(size),
+        &mut accept,
     )
 }
 

@@ -19,6 +19,43 @@ use chassis::grid::TilePos;
 const RAID_GROUP_SIZE: usize = 2;
 const HOME_SCREEN_RADIUS: i32 = 8;
 
+#[derive(Clone, Copy)]
+pub(super) struct RaidPlanningContext<'a> {
+    profile: &'a ResolvedProfile,
+    tuning: DifficultyTuning,
+    obs: &'a Observation,
+    home: TilePos,
+    enlisted: &'a [UnitId],
+    additionally_reserved: &'a [UnitId],
+    allow_new_operation: bool,
+}
+
+impl<'a> RaidPlanningContext<'a> {
+    pub(super) const fn new(
+        profile: &'a ResolvedProfile,
+        tuning: DifficultyTuning,
+        obs: &'a Observation,
+        home: TilePos,
+        enlisted: &'a [UnitId],
+        additionally_reserved: &'a [UnitId],
+    ) -> Self {
+        Self {
+            profile,
+            tuning,
+            obs,
+            home,
+            enlisted,
+            additionally_reserved,
+            allow_new_operation: true,
+        }
+    }
+
+    pub(super) const fn with_admission(mut self, allow_new_operation: bool) -> Self {
+        self.allow_new_operation = allow_new_operation;
+        self
+    }
+}
+
 /// The active phase of a harassment operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RaidPhase {
@@ -145,8 +182,33 @@ impl RaidPlanner {
         enlisted: &[UnitId],
         additionally_reserved: &[UnitId],
     ) -> StrategicDecision {
+        self.think_with_admission(RaidPlanningContext::new(
+            profile,
+            tuning,
+            obs,
+            home,
+            enlisted,
+            additionally_reserved,
+        ))
+    }
+
+    pub(super) fn think_with_admission(
+        &mut self,
+        context: RaidPlanningContext<'_>,
+    ) -> StrategicDecision {
+        let RaidPlanningContext {
+            profile,
+            tuning,
+            obs,
+            home,
+            enlisted,
+            additionally_reserved,
+            allow_new_operation,
+        } = context;
         let mut routes = RouteProjection::new(obs, Domain::Ground);
-        if self.active.is_none()
+        self.muster.retain(|id| own_unit(obs, *id).is_some());
+        if allow_new_operation
+            && self.active.is_none()
             && obs.tick >= self.cooldown_until
             && strategic_admission_tick(obs.tick)
         {
@@ -680,6 +742,58 @@ mod tests {
         assert!(obs.my_units[2..].iter().all(|unit| {
             unit.kind == UnitKind::Sentinel && !decision.reservations.contains(&unit.id)
         }));
+    }
+
+    #[test]
+    fn closed_admission_blocks_a_new_raid_but_an_active_raid_reaches_strike() {
+        let mut obs = observation(200);
+        let identity = profile(80);
+        let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
+        let mut blocked = RaidPlanner::new();
+
+        assert_eq!(
+            blocked.think_with_admission(
+                RaidPlanningContext::new(&identity, tuning, &obs, HOME, &[], &[])
+                    .with_admission(false),
+            ),
+            StrategicDecision::default()
+        );
+        assert!(blocked.reservations().is_empty());
+        assert!(blocked.operation().is_none());
+
+        let mut active = RaidPlanner::new();
+        active.think_with_admission(RaidPlanningContext::new(
+            &identity,
+            tuning,
+            &obs,
+            HOME,
+            &[],
+            &[],
+        ));
+        let members = active
+            .operation()
+            .expect("open admission starts the eligible raid")
+            .members
+            .clone();
+        for member in &mut obs.my_units {
+            if members.contains(&member.id) {
+                member.tile = TARGET.offset(-2, 0);
+            }
+        }
+        obs.tick = obs
+            .tick
+            .saturating_add(tuning.reaction_delay + tuning.commitment_hesitation);
+
+        let continued = active.think_with_admission(
+            RaidPlanningContext::new(&identity, tuning, &obs, HOME, &[], &[]).with_admission(false),
+        );
+
+        assert_eq!(continued.reservations, members);
+        assert!(continued.intents.is_empty());
+        assert_eq!(
+            active.operation().map(|operation| operation.phase),
+            Some(RaidPhase::Strike)
+        );
     }
 
     #[test]

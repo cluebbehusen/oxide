@@ -914,7 +914,7 @@ fn a_stranded_brain_spends_only_on_one_recovery_harvester() {
 }
 
 #[test]
-fn a_scripted_brain_cancels_paid_repairs_and_delivers_deferred_capital() {
+fn a_fallen_opening_core_stops_repairs_and_unpaid_deferred_capital() {
     let mut scenario = open_arena(vec![
         unit(0, UnitKind::Harvester, 4, 3),
         unit(0, UnitKind::Harvester, 4, 10),
@@ -1041,50 +1041,63 @@ fn a_scripted_brain_cancels_paid_repairs_and_delivers_deferred_capital() {
             &command.command,
             Command::Stop { units } if units == &[repairer]
         )),
-        "the real player-facing brain cancels upkeep while construction is unpaid: {commands:?}"
+        "the real player-facing brain cancels voluntary upkeep while its core is deficient: \
+         {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            &command.command,
+            Command::Stop { units } if units == &[founder]
+        )),
+        "the unpaid remote founder must release its claim while the core recovers: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )),
+        "released capital must immediately fund the missing combat core: {commands:?}"
     );
     assert!(
         commands.iter().all(|command| !matches!(
             command.command,
-            Command::Train { .. }
-                | Command::Build { .. }
-                | Command::Repair { .. }
-                | Command::RepairUnit { .. }
-                | Command::UpgradeBuilding { .. }
+            Command::Build {
+                kind: BuildingKind::Foundry,
+                anchor: requested,
+                ..
+            } if requested == anchor
         )),
-        "no command may spend the deferred claim's bank: {commands:?}"
+        "the same think must not recreate the paused expansion: {commands:?}"
     );
 
-    let mut insufficient = false;
-    let mut claimed = false;
-    for _ in 0..1_000 {
-        let commands = brain.act(&state);
-        let report = state.tick(&commands);
-        insufficient |= report.events.iter().any(|event| {
-            matches!(
-                event,
-                oxide_sim::Event::OrderStalled {
-                    unit,
-                    reason: oxide_sim::StallReason::InsufficientScrap,
-                    ..
-                } if *unit == founder
-            )
-        });
-        claimed = state.buildings().iter().any(|building| {
-            building.player == PlayerId(0)
-                && building.kind == BuildingKind::Foundry
-                && building.anchor == anchor
-        });
-        if claimed {
-            break;
-        }
-    }
-    assert!(claimed, "the deferred Foundry reaches and claims its site");
+    let report = state.tick(&commands);
     assert!(
-        !insufficient,
-        "voluntary upkeep must not starve its arrival"
+        report
+            .events
+            .iter()
+            .all(|event| !matches!(event, oxide_sim::Event::CommandRejected { .. })),
+        "the recovery commands must all be legal: {:?}",
+        report.events
     );
-    assert_eq!(state.player(PlayerId(0)).scrap, 0);
+    assert!(!matches!(
+        state.unit(founder).unwrap().order,
+        Order::Found {
+            kind: BuildingKind::Foundry,
+            anchor: requested,
+        } if requested == anchor
+    ));
+    assert!(!matches!(
+        state.unit(repairer).unwrap().order,
+        Order::Repair { .. }
+    ));
+    assert!(state.buildings().iter().all(|building| {
+        building.player != PlayerId(0)
+            || building.kind != BuildingKind::Foundry
+            || building.anchor != anchor
+    }));
 }
 
 #[test]
@@ -1092,6 +1105,7 @@ fn a_dispatched_build_that_never_appears_blacklists_only_its_anchor() {
     let mut scenario = open_arena(
         (0..5)
             .map(|offset| unit(0, UnitKind::Harvester, 3 + offset, 3))
+            .chain((0..5).map(|offset| unit(0, UnitKind::Sentinel, 3 + offset, 5)))
             .collect(),
     );
     scenario.players[0].scrap = 2_000;
@@ -1826,7 +1840,7 @@ fn scripted_brain_completes_a_real_raid_and_releases_the_pair_for_reuse() {
         .collect();
     raiders.sort_unstable();
 
-    let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_203);
+    let config = BotConfig::scripted(BotDifficulty::Scrapheap, BotStance::Balanced, 1_616_203);
     let profile = config.resolve_profile();
     assert_eq!(profile.primary, Specialty::Guile);
     assert!(profile.traits.guile >= 65);
@@ -1841,10 +1855,12 @@ fn scripted_brain_completes_a_real_raid_and_releases_the_pair_for_reuse() {
     let mut destroyed_at = None;
     let mut saw_egress = false;
     let mut released_at = None;
+    let mut emitted = Vec::new();
 
     for _ in 0..8_000 {
         let tick = state.current_tick();
         let commands = brain.act(&state);
+        emitted.extend(commands.iter().cloned());
         for command in &commands {
             match &command.command {
                 Command::Attack {
@@ -1852,6 +1868,13 @@ fn scripted_brain_completes_a_real_raid_and_releases_the_pair_for_reuse() {
                     target: oxide_sim::Target::Unit(candidate),
                     queue: false,
                 } if units == &raiders && *candidate == target => {
+                    strike_at.get_or_insert(tick);
+                }
+                Command::AttackMove {
+                    units,
+                    goal,
+                    queue: false,
+                } if units == &raiders && *goal == target_tile => {
                     strike_at.get_or_insert(tick);
                 }
                 Command::Move {
@@ -1871,7 +1894,8 @@ fn scripted_brain_completes_a_real_raid_and_releases_the_pair_for_reuse() {
                     .armies()
                     .iter()
                     .all(|army| army.members.iter().all(|unit| !raiders.contains(unit))),
-                "the generic army stole a member of the active raid"
+                "the generic army stole a member of the active raid at {tick}: commands={commands:?}, armies={:?}",
+                brain.executive().armies()
             );
         }
         let report = state.tick(&commands);
@@ -1898,7 +1922,9 @@ fn scripted_brain_completes_a_real_raid_and_releases_the_pair_for_reuse() {
         }
     }
 
-    let strike = strike_at.expect("the exact raiding pair attacked the exposed worker");
+    let strike = strike_at.unwrap_or_else(|| {
+        panic!("the exact raiding pair never attacked the exposed worker: {emitted:?}")
+    });
     let destroyed = destroyed_at.expect("the raid completed its objective");
     assert!(strike < destroyed);
     assert!(

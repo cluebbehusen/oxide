@@ -609,7 +609,7 @@ impl UtilityPolicy {
         }
     }
 
-    fn public_start_ground_connected(
+    pub(super) fn public_start_ground_connected(
         public_map: &PublicMapBriefing,
         obs: &Observation,
         home: TilePos,

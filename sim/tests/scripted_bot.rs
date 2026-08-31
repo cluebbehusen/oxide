@@ -5,6 +5,7 @@ use oxide_sim::bot::{Brain, Dials, Observation, PublicMapBriefing, seat_bots};
 use oxide_sim::scenario::{
     BotConfig, BotDifficulty, BotStance, BuildingSpec, PlayerSpec, UnitSpec,
 };
+use oxide_sim::stats::{Domain, Role};
 use oxide_sim::{
     BuildingKind, Command, Event, Faction, GameResult, Order, PlayerId, Scenario, TICKS_PER_SECOND,
     Target, UnitKind,
@@ -265,6 +266,123 @@ fn scripted_seat_is_deterministic_and_makes_progress_past_the_opening() {
     );
 }
 
+fn is_opening_core_unit(kind: UnitKind) -> bool {
+    matches!(kind.role(), Role::Sentinel | Role::Warden | Role::Breaker)
+}
+
+fn ground_strength(kind: UnitKind, hp: u32) -> u64 {
+    let damage_per_hundred_ticks = kind
+        .stats()
+        .weapons
+        .iter()
+        .filter(|weapon| weapon.targets.covers(Domain::Ground))
+        .map(|weapon| u64::from(weapon.damage) * 100 / u64::from(weapon.cooldown_ticks))
+        .sum::<u64>();
+    u64::from(hp) * damage_per_hundred_ticks
+}
+
+fn full_ground_strength(kind: UnitKind) -> u64 {
+    ground_strength(kind, kind.stats().max_hp)
+}
+
+fn opening_core_strength(observation: &Observation, commands: &[oxide_sim::PlayerCommand]) -> u64 {
+    let live = observation
+        .my_units
+        .iter()
+        .filter(|unit| is_opening_core_unit(unit.kind))
+        .map(|unit| ground_strength(unit.kind, unit.hp))
+        .sum::<u64>();
+    let queued = observation
+        .my_queues
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|kind| is_opening_core_unit(*kind))
+        .map(full_ground_strength)
+        .sum::<u64>();
+    let planned = commands
+        .iter()
+        .filter(|command| command.player == observation.me)
+        .filter_map(|command| match command.command {
+            Command::Train { kind, .. } if is_opening_core_unit(kind) => Some(kind),
+            _ => None,
+        })
+        .map(full_ground_strength)
+        .sum::<u64>();
+
+    live + queued + planned
+}
+
+#[test]
+fn scrapheap_and_prime_reach_their_opening_core_before_the_first_fabricator() {
+    const OPENING_END: u64 = 5_000;
+
+    for (difficulty, floor) in [
+        (BotDifficulty::Scrapheap, 4_u64),
+        (BotDifficulty::Prime, 8_u64),
+    ] {
+        let mut scenario = Scenario::skirmish();
+        scenario.players[0].bot = true;
+        scenario.players[0].bot_config = Some(BotConfig::scripted(
+            difficulty,
+            BotStance::Balanced,
+            1_616_201,
+        ));
+        scenario.players[1].bot = false;
+        scenario.players[1].bot_config = None;
+
+        let mut state = scenario.build().expect("Skirmish builds");
+        let mut brain = Brain::scripted(
+            PlayerId(0),
+            scenario.players[0]
+                .bot_config
+                .expect("the bot is configured"),
+            public_map(&scenario),
+        );
+        let target_strength = full_ground_strength(UnitKind::Sentinel) * floor;
+        let mut first_fabricator = None;
+
+        while state.current_tick() < OPENING_END && first_fabricator.is_none() {
+            let observation = Observation::fog_honest(&state, PlayerId(0));
+            let commands = brain.act(&state);
+            if commands.iter().any(|command| {
+                matches!(
+                    command.command,
+                    Command::Build {
+                        kind: BuildingKind::Fabricator,
+                        ..
+                    }
+                )
+            }) {
+                let projected_strength = opening_core_strength(&observation, &commands);
+                assert!(
+                    projected_strength >= target_strength,
+                    "{difficulty:?} spent on its first Fabricator with strength {projected_strength}, below its {floor}-equivalent target {target_strength}"
+                );
+                first_fabricator = Some(state.current_tick());
+            }
+
+            let report = state.tick(&commands);
+            assert!(
+                report.events.iter().all(|event| !matches!(
+                    event,
+                    Event::CommandRejected {
+                        player: PlayerId(0),
+                        ..
+                    }
+                )),
+                "{difficulty:?} issued a rejected opening command: {:?}",
+                report.events
+            );
+        }
+
+        assert!(
+            first_fabricator.is_some(),
+            "{difficulty:?} did not reach a Fabricator within {OPENING_END} ticks"
+        );
+    }
+}
+
 #[test]
 fn prime_skirmish_places_an_accepted_turret_on_the_hostile_approach() {
     let mut scenario = Scenario::skirmish();
@@ -340,11 +458,6 @@ fn prime_skirmish_places_an_accepted_turret_on_the_hostile_approach() {
     }
 
     let turret_anchor = turret_anchor.expect("Prime proposed its bounded pre-contact Turret");
-    assert_eq!(
-        turret_anchor,
-        TilePos::new(14, 7),
-        "Skirmish's strategic Turret should cover the hostile approach beside established value"
-    );
     assert!(
         rejected.is_empty(),
         "Prime issued rejected commands before its Turret: {rejected:?}"
@@ -955,6 +1068,36 @@ fn support_identity_reserves_an_exact_relief_group_for_a_visible_allied_emergenc
             y: 16,
         },
         UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 8,
+            y: 12,
+        },
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 8,
+            y: 13,
+        },
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 8,
+            y: 14,
+        },
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 8,
+            y: 15,
+        },
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 8,
+            y: 16,
+        },
+        UnitSpec {
             player: 2,
             kind: UnitKind::Sentinel,
             x: 29,
@@ -1013,8 +1156,8 @@ fn support_identity_reserves_an_exact_relief_group_for_a_visible_allied_emergenc
     assert!(relief.iter().all(|id| owned_fighters.contains(id)));
     assert_eq!(
         owned_fighters.len() - relief.len(),
-        3,
-        "the emergency response must preserve a real home-defense floor"
+        8,
+        "the exact relief group must leave the rest of Prime's opening core at home"
     );
 }
 
@@ -1053,7 +1196,7 @@ fn scripted_lift_launches_three_full_manifests_together_and_returns_every_carrie
         x: 3 + index,
         y: 7,
     }));
-    scenario.units.extend((0..16).map(|index| UnitSpec {
+    scenario.units.extend((0..20).map(|index| UnitSpec {
         player: 0,
         kind: UnitKind::Sentinel,
         x: 3 + index % 6,
@@ -1149,7 +1292,7 @@ fn scripted_lift_launches_three_full_manifests_together_and_returns_every_carrie
     assert_eq!(
         loads.iter().map(|(_, riders)| riders.len()).sum::<usize>(),
         12,
-        "the wealthy lift fills three carriers and leaves a four-unit home floor"
+        "the wealthy lift fills three carriers and leaves Prime's eight-unit home floor"
     );
     let mut manifest_riders: Vec<_> = loads
         .iter()

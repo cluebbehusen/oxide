@@ -346,21 +346,26 @@ or ambient input.
 
 Profile resolution turns the seed into six bounded preferences: air, siege,
 support, fortification, greed, and guile. Stance bounds their strategic posture;
-difficulty changes fair cognitive and execution limits such as reaction,
-attention, memory, estimate accuracy, and commitment timing. Scrapheap also uses
-a reduced decision cadence; Standard, Veteran, and Prime share one competent
-cadence. Neither mechanism grants information, resources, capabilities, or
-stronger units. Personality also does not vary private competence: each
-difficulty uses one fixed conservative strength-estimation error. The traits
-leave visible signatures rather than unlocking private strategies: air changes
-ordinary and island strike composition and timing; siege changes artillery
-volume and preference; support changes support-unit, flak, and allied relief
-investment; fortification changes turrets, mines, and defensive reserve; greed
-changes worker and renewable expansion targets; and guile changes raid size,
-timing, withdrawal, and some mine or airborne-screen emphasis. Every adaptive
-identity receives one perimeter turret after locating the enemy; only an
-observed raid unlocks the remainder of its fortification target. A player-facing
-controller requires confirmed air before investing in flak, so an anonymous
+difficulty changes fair cognitive, execution, and macro-competence limits such
+as reaction, attention, memory, estimate accuracy, commitment timing, and the
+minimum ordinary opening force protected from voluntary spending. Scrapheap also
+uses a reduced decision cadence; Standard, Veteran, and Prime share one
+competent cadence. Neither mechanism grants information, resources,
+capabilities, or stronger units. Personality also does not vary private
+competence: each difficulty uses one fixed conservative strength-estimation
+error. The traits leave visible signatures rather than unlocking private
+strategies: air changes ordinary and island strike composition and timing; siege
+changes artillery volume and preference; support changes support-unit, flak, and
+allied relief investment; fortification changes turrets, mines, and defensive
+reserve; greed changes worker and renewable expansion targets; and guile changes
+raid size, timing, withdrawal, and some mine or airborne-screen emphasis. Every
+adaptive identity receives one perimeter turret after locating the enemy and
+completing its protected opening core; only an observed raid unlocks the
+remainder of its fortification target. Before that core exists, a current
+visible threat may justify one matching emergency Turret, while emergency Flak
+requires a current visible aircraft capable of attacking ground. A pure
+air-to-air flyer cannot unlock that exception. A player-facing controller
+requires this actionable air evidence before investing in flak, so an anonymous
 radar blip cannot turn a small seeded preference into an opening economy cliff.
 
 Difficulty schedules are structurally monotone. Scrapheap thinks every 24 ticks;
@@ -369,20 +374,26 @@ invert the difficulty ladder. Every decision tick available to a lower rung
 remains available to the next higher rung, while reaction and commitment delays
 shrink and attention and memory never shrink. Private uncertainty is fixed per
 rung and conservative: a lower rung never estimates its own force as stronger,
-or a hostile force as weaker, than a higher rung using the same evidence.
-Veteran and Prime coordinate engaged army fire. Prime also uses the ordinary
-focus-fire command to direct an overlapping static-defense line at one current
-visible ground threat; the simulation retains ordinary acquisition whenever that
-preference is blocked or out of range. Veteran and Prime share the same
-optional-operation attention ceiling, so Prime does not split off a raid while
-air and lift work already run together.
+or a hostile force as weaker, than a higher rung using the same evidence. Their
+stance- and personality-independent opening floors are respectively four, five,
+six, and eight Sentinel-equivalents, so the protected macro commitment is
+monotone as well. Veteran and Prime coordinate engaged army fire. Prime also
+uses the ordinary focus-fire command to direct an overlapping static-defense
+line at one current visible ground threat; the simulation retains ordinary
+acquisition whenever that preference is blocked or out of range. Veteran and
+Prime share the same optional-operation attention ceiling, so Prime does not
+split off a raid while air and lift work already run together.
 
 Every ordinary difficulty cadence divides a shared 24-tick strategic admission
 interval. New air, lift, and raid operations, a remembered air objective's
 promotion to a current assault, and the start of a team-relief pressure watch
 use those common boundaries. This lets every rung freeze the same world snapshot
 before its own reaction and commitment delays take effect; private controller
-cadence never grants an earlier strategic observation boundary.
+cadence never grants an earlier strategic observation boundary. A team-relief
+credibility watch admitted at such a boundary may persist while its exact
+assignment remains available even if the opening-core gate closes later. It does
+not become a new relief operation until admission reopens, and the fighters
+explicitly held home by that watch continue to count toward the protected core.
 
 The player-facing controller distinguishes current sight from remembered
 evidence in `StrategicIntelligence`. Persistent planners retain phased air,
@@ -402,17 +413,46 @@ enlisted there but does not absorb the next generation of fighters, which forms
 a separate muster closer to home.
 
 Adaptive production first projects an ordinary core in Sentinel-equivalent
-ground strength. It counts unreserved live hull, queued units, and orders
-already planned during the same decision, then fills shallow Foundry queues
-breadth-first before discretionary production can spend the remaining bank.
-Raiders, artillery, anti-air, support, and persistent-operation reservations do
-not stand in for that line. Generic production may buy a shallow defensive
-interceptor, but bomber and ground-attack-air cohorts belong to persistent
-operations; while an air or lift plan has outstanding factory work, that plan
-owns Airworks capacity. Support production keeps one baseline Tender and adds
-another, up to the seeded ceiling, for each distinct currently wounded ground
-combatant reachable from a Tender or Fabricator. Live, queued, and same-think
-Tenders count once. The profile-free Overseer retains its legacy order.
+ground strength. It HP-weights live Sentinel, Warden, and Breaker hulls, counts
+queued units and orders already planned during the same decision exactly once,
+and excludes exact persistent-operation reservations without excluding ordinary
+Executive armies or units merely held as a Team operation's home watch. It then
+fills shallow Foundry queues breadth-first before discretionary production can
+spend the remaining bank. Raiders, artillery, anti-air, support, and actual
+outbound persistent-operation reservations do not stand in for that line.
+
+Before the difficulty floor is projected, the player-facing policy pauses new
+voluntary construction and upgrades, discretionary production, mobile support,
+and paid repairs. New air, lift, raid, and team-relief operations are not
+admitted. Existing operations may advance, withdraw, or release their units but
+receive no purchase budget, while already paid sites and queues are never
+canceled merely because the core fell. A separately unsafe, unattended defense
+site may still be canceled by its ordinary current-danger rule. Automatic Repair
+Bay pulses remain ordinary simulation behavior. The opening preserves a fourth
+Harvester and one safe Extractor frame supported by the exact living authored
+starting Foundry. At most one Turret for a current visible ground threat and one
+Flak Turret for a current visible ground-attack aircraft may bypass the floor;
+pure air-to-air aircraft, memory, public starts, radar blips, and raid history
+cannot. A think that starts below the floor stays recovery-gated through that
+decision. Core orders issued during the think count toward projected strength
+and prevent duplicate purchases, but voluntary spending and strategic admission
+do not reopen until the next observation confirms the floor. After the floor,
+voluntary capital must leave a Sentinel that will remain shallow after the
+upcoming production phase or keep its exact cost unspent, unless fog-honest
+knowledge plus public terrain proves there is no ground objective. A lone
+existing front-slot Sentinel can complete before a deferred founder pays and
+therefore does not satisfy that condition. An unpaid deferred project keeps the
+exact reserve as bank escrow through its walk; once it becomes a paid site, the
+reserve returns to shallow production before another voluntary project. Losing
+enough core strength reapplies the same gate.
+
+Generic production may buy a shallow defensive interceptor, but bomber and
+ground-attack-air cohorts belong to persistent operations; while an air or lift
+plan has outstanding factory work, that plan owns Airworks capacity. Support
+production keeps one baseline Tender and adds another, up to the seeded ceiling,
+for each distinct currently wounded ground combatant reachable from a Tender or
+Fabricator. Live, queued, and same-think Tenders count once. The profile-free
+Overseer retains its legacy order.
 
 On severed ground, wealthy bots may run two independent operations. The air
 planner builds a screen and bomber wing, scouts the route, attacks currently
@@ -496,6 +536,12 @@ access, egress, and resource routes. Exact builder-route prediction combines the
 public static terrain briefing with fog-honest observed dynamic blockers; public
 resource priors are not treated as live obstacles. The frozen Overseer retains
 its legacy placement rules.
+
+The pre-core emergency path is deliberately narrower than that full scorer. It
+uses only a current visible armed ground threat for a Turret or a current
+visible ground-attack aircraft for Flak, places only the matching defense, and
+cannot inherit threat authority from pure air-to-air aircraft, memory, public
+starts, radar blips, or raid history.
 
 Arrays use a separate player-facing sensor-site scorer because information
 coverage is not weapon coverage. Candidate sites extend up to the Array's radar

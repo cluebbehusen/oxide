@@ -6,6 +6,7 @@ use super::intelligence::{BuildingContact, ContactEvidence};
 use super::observation::{BuildingObs, Observation, UnitObs};
 use super::routing::{self, RouteProjection};
 use super::strategy::StrategicDecision;
+use super::utility::combat_core_status;
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::Tick;
@@ -137,6 +138,13 @@ pub struct LiftPlanner {
     retry_not_before: Tick,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct LiftAdmission<'a> {
+    pub(super) allow_new_commitments: bool,
+    pub(super) core_reservations: &'a [UnitId],
+    pub(super) minimum_core_equivalents: u64,
+}
+
 impl LiftPlanner {
     /// Creates an idle lift planner.
     pub fn new() -> Self {
@@ -156,6 +164,8 @@ impl LiftPlanner {
         obs: &Observation,
         home: TilePos,
         unavailable: &[UnitId],
+        core_reservations: &[UnitId],
+        minimum_core_equivalents: u64,
         target: &BuildingContact,
     ) -> u32 {
         if self.operation.is_some()
@@ -175,7 +185,13 @@ impl LiftPlanner {
         {
             return 0;
         }
-        let Some(plan) = initial_payload_plan(obs, home, unavailable) else {
+        let Some(plan) = initial_payload_plan_preserving_core(
+            obs,
+            home,
+            unavailable,
+            core_reservations,
+            minimum_core_equivalents,
+        ) else {
             return 0;
         };
         if !ground_disconnection_is_proven(obs, plan.pickup, target) {
@@ -212,14 +228,47 @@ impl LiftPlanner {
         unavailable: &[UnitId],
         support: LiftAirSupport,
     ) -> StrategicDecision {
+        self.think_with_admission(
+            obs,
+            home,
+            unavailable,
+            support,
+            LiftAdmission {
+                allow_new_commitments: true,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+        )
+    }
+
+    pub(super) fn think_with_admission(
+        &mut self,
+        obs: &Observation,
+        home: TilePos,
+        unavailable: &[UnitId],
+        support: LiftAirSupport,
+        admission: LiftAdmission<'_>,
+    ) -> StrategicDecision {
+        let LiftAdmission {
+            allow_new_commitments,
+            core_reservations,
+            minimum_core_equivalents,
+        } = admission;
         let mut unavailable = unavailable.to_vec();
         unavailable.sort_unstable();
         unavailable.dedup();
 
-        if self.operation.is_none()
+        if allow_new_commitments
+            && self.operation.is_none()
             && obs.tick >= self.retry_not_before
             && strategic_admission_tick(obs.tick)
-            && let Some(plan) = initial_payload_plan(obs, home, &unavailable)
+            && let Some(plan) = initial_payload_plan_preserving_core(
+                obs,
+                home,
+                &unavailable,
+                core_reservations,
+                minimum_core_equivalents,
+            )
             && let Some(target) = select_target(obs, home, plan.pickup, support)
         {
             let ground_payload_target = plan
@@ -270,7 +319,14 @@ impl LiftPlanner {
         let mut handoff = Vec::new();
 
         if operation.phase == LiftPhase::Provision
-            && !refresh_provision_payload(&mut operation, obs, &unavailable)
+            && !refresh_provision_payload(
+                &mut operation,
+                obs,
+                &unavailable,
+                allow_new_commitments,
+                core_reservations,
+                minimum_core_equivalents,
+            )
         {
             operation.phase = LiftPhase::Recover;
             operation.phase_started_at = obs.tick;
@@ -336,7 +392,9 @@ impl LiftPlanner {
 
         match operation.phase {
             LiftPhase::Provision => {
-                provision(&operation, obs, &unavailable, &mut decision);
+                if allow_new_commitments {
+                    provision(&operation, obs, &unavailable, &mut decision);
+                }
                 if assign_manifests(&mut operation, obs, home, &unavailable) {
                     operation.phase = LiftPhase::Boarding;
                     operation.phase_started_at = obs.tick;
@@ -591,14 +649,33 @@ fn initial_payload(
     })
 }
 
+#[cfg(test)]
 fn initial_payload_plan(
     obs: &Observation,
     home: TilePos,
     unavailable: &[UnitId],
 ) -> Option<PickupPlan> {
+    initial_payload_plan_preserving_core(obs, home, unavailable, &[], 0)
+}
+
+fn initial_payload_plan_preserving_core(
+    obs: &Observation,
+    home: TilePos,
+    unavailable: &[UnitId],
+    core_reservations: &[UnitId],
+    minimum_core_equivalents: u64,
+) -> Option<PickupPlan> {
     pickup_component_anchors(obs, home)
         .into_iter()
-        .filter_map(|pickup| payload_plan_for_component(obs, pickup, unavailable))
+        .filter_map(|pickup| {
+            payload_plan_for_component(
+                obs,
+                pickup,
+                unavailable,
+                core_reservations,
+                minimum_core_equivalents,
+            )
+        })
         .min_by_key(|plan| {
             (
                 Reverse(plan.strength),
@@ -614,12 +691,20 @@ fn payload_plan_for_component(
     obs: &Observation,
     pickup: TilePos,
     unavailable: &[UnitId],
+    core_reservations: &[UnitId],
+    minimum_core_equivalents: u64,
 ) -> Option<PickupPlan> {
     if !routing::ground_open(obs, pickup) {
         return None;
     }
     let candidates = lift_candidates(obs, pickup, unavailable);
-    let selected = select_payload(&candidates, usize::MAX);
+    let selected = select_payload(
+        obs,
+        &candidates,
+        usize::MAX,
+        core_reservations,
+        minimum_core_equivalents,
+    );
     let desired = pack(&selected, usize::MAX).len();
     let target = selected
         .iter()
@@ -683,18 +768,48 @@ fn lift_candidates<'a>(
     candidates
 }
 
-fn select_payload<'a>(candidates: &[&'a UnitObs], carrier_limit: usize) -> Vec<&'a UnitObs> {
+fn select_payload<'a>(
+    obs: &'a Observation,
+    candidates: &[&'a UnitObs],
+    carrier_limit: usize,
+    core_reservations: &[UnitId],
+    minimum_core_equivalents: u64,
+) -> Vec<&'a UnitObs> {
     let (mut remaining, mut ground_remaining) = payload_limits(candidates, carrier_limit);
     let mut selected = Vec::new();
+    let mut projected_core_reservations = core_reservations.to_vec();
+    projected_core_reservations.sort_unstable();
+    projected_core_reservations.dedup();
     for &unit in candidates {
         let size = u32::from(unit.kind.stats().transport_size);
         let ground_capable = can_defend_ground(unit);
-        if size <= remaining && (!ground_capable || size <= ground_remaining) {
-            selected.push(unit);
-            remaining -= size;
-            if ground_capable {
-                ground_remaining -= size;
+        if size > remaining || (ground_capable && size > ground_remaining) {
+            continue;
+        }
+        let insertion = match projected_core_reservations.binary_search(&unit.id) {
+            Ok(_) => None,
+            Err(index) => {
+                projected_core_reservations.insert(index, unit.id);
+                Some(index)
             }
+        };
+        if !combat_core_status(
+            obs,
+            &projected_core_reservations,
+            &[],
+            minimum_core_equivalents,
+        )
+        .ready
+        {
+            if let Some(index) = insertion {
+                projected_core_reservations.remove(index);
+            }
+            continue;
+        }
+        selected.push(unit);
+        remaining -= size;
+        if ground_capable {
+            ground_remaining -= size;
         }
     }
     selected
@@ -766,6 +881,9 @@ fn refresh_provision_payload(
     operation: &mut LiftOperation,
     obs: &Observation,
     unavailable: &[UnitId],
+    allow_growth: bool,
+    core_reservations: &[UnitId],
+    minimum_core_equivalents: u64,
 ) -> bool {
     let pickup = operation.pickup_component;
     if !routing::ground_open(obs, pickup) {
@@ -805,6 +923,13 @@ fn refresh_provision_payload(
     let mut payload = Vec::new();
     let mut filled = 0u32;
     let mut ground_filled = 0u32;
+    let mut projected_core_reservations: Vec<_> = core_reservations
+        .iter()
+        .copied()
+        .filter(|id| operation.payload.binary_search(id).is_err())
+        .collect();
+    projected_core_reservations.sort_unstable();
+    projected_core_reservations.dedup();
     for id in operation.payload.iter().copied() {
         let Some(member) = available.iter().copied().find(|unit| unit.id == id) else {
             continue;
@@ -815,26 +940,51 @@ fn refresh_provision_payload(
             && (!ground_capable || ground_filled.saturating_add(size) <= ground_target)
         {
             payload.push(id);
+            if let Err(index) = projected_core_reservations.binary_search(&id) {
+                projected_core_reservations.insert(index, id);
+            }
             filled += size;
             if ground_capable {
                 ground_filled += size;
             }
         }
     }
-    for member in available {
-        if payload.binary_search(&member.id).is_ok() {
-            continue;
-        }
-        let size = u32::from(member.kind.stats().transport_size);
-        let ground_capable = can_defend_ground(member);
-        if filled.saturating_add(size) <= target
-            && (!ground_capable || ground_filled.saturating_add(size) <= ground_target)
-        {
-            payload.push(member.id);
-            payload.sort_unstable();
-            filled += size;
-            if ground_capable {
-                ground_filled += size;
+    if allow_growth {
+        for member in available {
+            if payload.binary_search(&member.id).is_ok() {
+                continue;
+            }
+            let size = u32::from(member.kind.stats().transport_size);
+            let ground_capable = can_defend_ground(member);
+            if filled.saturating_add(size) <= target
+                && (!ground_capable || ground_filled.saturating_add(size) <= ground_target)
+            {
+                let insertion = match projected_core_reservations.binary_search(&member.id) {
+                    Ok(_) => None,
+                    Err(index) => {
+                        projected_core_reservations.insert(index, member.id);
+                        Some(index)
+                    }
+                };
+                if !combat_core_status(
+                    obs,
+                    &projected_core_reservations,
+                    &[],
+                    minimum_core_equivalents,
+                )
+                .ready
+                {
+                    if let Some(index) = insertion {
+                        projected_core_reservations.remove(index);
+                    }
+                    continue;
+                }
+                payload.push(member.id);
+                payload.sort_unstable();
+                filled += size;
+                if ground_capable {
+                    ground_filled += size;
+                }
             }
         }
     }
@@ -1730,7 +1880,7 @@ mod tests {
         let planner = LiftPlanner::new();
 
         assert_eq!(
-            planner.prospective_first_carrier_commitment(&obs, HOME, &[], &target),
+            planner.prospective_first_carrier_commitment(&obs, HOME, &[], &[], 0, &target),
             UnitKind::Skyhook.stats().cost
         );
         assert!(planner.operation().is_none());
@@ -1740,7 +1890,7 @@ mod tests {
             .expect("the Airworks has a matching queue")
             .push(UnitKind::Skyhook);
         assert_eq!(
-            planner.prospective_first_carrier_commitment(&obs, HOME, &[], &target),
+            planner.prospective_first_carrier_commitment(&obs, HOME, &[], &[], 0, &target),
             0,
             "an already-paid queued carrier releases the prospective escrow"
         );
@@ -1754,7 +1904,7 @@ mod tests {
             .expect("the Airworks has a matching queue")
             .clear();
         assert_eq!(
-            planner.prospective_first_carrier_commitment(&obs, HOME, &[], &target),
+            planner.prospective_first_carrier_commitment(&obs, HOME, &[], &[], 0, &target),
             UnitKind::Skyhook.stats().cost,
             "removing the queued carrier restores exactly one carrier's escrow"
         );
@@ -1762,7 +1912,7 @@ mod tests {
         let mut current = target.clone();
         current.evidence = ContactEvidence::Current;
         assert_eq!(
-            planner.prospective_first_carrier_commitment(&obs, HOME, &[], &current),
+            planner.prospective_first_carrier_commitment(&obs, HOME, &[], &[], 0, &current),
             0,
             "current sight belongs to ordinary lift admission"
         );
@@ -1782,7 +1932,7 @@ mod tests {
         let mut reachable = obs.clone();
         reachable.known_rock.clear();
         assert_eq!(
-            planner.prospective_first_carrier_commitment(&reachable, HOME, &[], &target,),
+            planner.prospective_first_carrier_commitment(&reachable, HOME, &[], &[], 0, &target,),
             0,
             "a known open ground route needs no transport escrow"
         );
@@ -1790,7 +1940,7 @@ mod tests {
         let mut unknown = reachable;
         unknown.explored.fill(false);
         assert_eq!(
-            planner.prospective_first_carrier_commitment(&unknown, HOME, &[], &target),
+            planner.prospective_first_carrier_commitment(&unknown, HOME, &[], &[], 0, &target),
             0,
             "unknown terrain remains optimistically traversable"
         );
@@ -1798,7 +1948,7 @@ mod tests {
         let mut expired = obs;
         expired.tick = 3_601;
         assert_eq!(
-            planner.prospective_first_carrier_commitment(&expired, HOME, &[], &target),
+            planner.prospective_first_carrier_commitment(&expired, HOME, &[], &[], 0, &target),
             0,
             "expired building memory cannot bank carrier capital"
         );
@@ -1816,6 +1966,70 @@ mod tests {
             desired_carriers(&wealthy, HOME, &[]),
             46,
             "230 one-slot fighters keep 20% home and demand 46 full Skyhooks"
+        );
+    }
+
+    #[test]
+    fn protected_prime_core_bounds_the_largest_admissible_lift_payload() {
+        let plan_for = |fighters| {
+            let mut obs = island_obs();
+            add_fighters(&mut obs, fighters);
+            let plan = initial_payload_plan_preserving_core(&obs, HOME, &[], &[], 8);
+            (obs, plan)
+        };
+
+        let (_, exact) = plan_for(8);
+        assert!(
+            exact.is_none(),
+            "Prime's exact opening core cannot supply the minimum lift payload"
+        );
+
+        for (fighters, payload, carriers) in [(12, 4, 1), (20, 12, 3)] {
+            let (obs, plan) = plan_for(fighters);
+            let plan = plan.expect("the surplus above Prime's core admits a lift");
+            assert_eq!(plan.payload.len(), payload, "{fighters} fighters");
+            assert_eq!(plan.payload_target, payload as u32, "{fighters} fighters");
+            assert_eq!(plan.desired_carriers, carriers, "{fighters} fighters");
+            assert!(
+                combat_core_status(&obs, &plan.payload, &[], 8).ready,
+                "the admitted {fighters}-fighter payload must leave Prime's exact core projected"
+            );
+        }
+    }
+
+    #[test]
+    fn provisioning_loss_cannot_refill_a_lift_from_the_protected_home_core() {
+        let mut obs = island_obs();
+        add_fighters(&mut obs, 12);
+        add_airworks(&mut obs, 200, Vec::new());
+        let admission = LiftAdmission {
+            allow_new_commitments: true,
+            core_reservations: &[],
+            minimum_core_equivalents: 8,
+        };
+        let mut planner = LiftPlanner::new();
+
+        planner.think_with_admission(&obs, HOME, &[], LiftAirSupport::Independent, admission);
+        let initial_payload = planner
+            .operation()
+            .expect("the four-unit surplus starts a lift")
+            .payload
+            .clone();
+        assert_eq!(initial_payload.len(), 4);
+
+        let lost = initial_payload[0];
+        obs.my_units.retain(|unit| unit.id != lost);
+        obs.tick += 1;
+        planner.think_with_admission(&obs, HOME, &[], LiftAirSupport::Independent, admission);
+
+        let replacement_payload = &planner
+            .operation()
+            .expect("the surviving lift remains active")
+            .payload;
+        assert_eq!(replacement_payload.len(), 3);
+        assert!(
+            combat_core_status(&obs, replacement_payload, &[], 8).ready,
+            "the operation may keep its surviving riders but cannot draft a replacement from the exact home core"
         );
     }
 
@@ -2362,6 +2576,111 @@ mod tests {
         assert_eq!(first_decision.reservations, operation.payload);
         assert_eq!(first_decision, second_decision);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn closed_admission_blocks_a_new_lift_but_an_active_lift_starts_boarding() {
+        let mut obs = island_obs();
+        add_fighters(&mut obs, 12);
+        add_airworks(&mut obs, 10, Vec::new());
+        obs.scrap = 10_000;
+        let mut blocked = LiftPlanner::new();
+
+        assert_eq!(
+            blocked.think_with_admission(
+                &obs,
+                HOME,
+                &[],
+                LiftAirSupport::Independent,
+                LiftAdmission {
+                    allow_new_commitments: false,
+                    core_reservations: &[],
+                    minimum_core_equivalents: 0,
+                },
+            ),
+            StrategicDecision::default()
+        );
+        assert!(blocked.operation().is_none());
+
+        obs.scrap = 0;
+        let mut active = LiftPlanner::new();
+        active.think_with_admission(
+            &obs,
+            HOME,
+            &[],
+            LiftAirSupport::Independent,
+            LiftAdmission {
+                allow_new_commitments: true,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+        );
+        assert_eq!(
+            active.operation().map(|operation| operation.phase),
+            Some(LiftPhase::Provision)
+        );
+
+        obs.scrap = UnitKind::Skyhook.stats().cost;
+        obs.tick += 1;
+        let paused = active.think_with_admission(
+            &obs,
+            HOME,
+            &[],
+            LiftAirSupport::Independent,
+            LiftAdmission {
+                allow_new_commitments: false,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+        );
+        assert_eq!(
+            active.operation().map(|operation| operation.phase),
+            Some(LiftPhase::Provision)
+        );
+        assert_eq!(paused.committed_scrap, 0);
+        assert!(
+            paused
+                .intents
+                .iter()
+                .all(|intent| !matches!(intent, Intent::TrainAt { .. }))
+        );
+
+        obs.my_units.extend([
+            own(900, UnitKind::Skyhook, HOME),
+            own(901, UnitKind::Skyhook, HOME.offset(1, 0)),
+        ]);
+        obs.my_units.sort_unstable_by_key(|unit| unit.id);
+        obs.tick += 1;
+        let continued = active.think_with_admission(
+            &obs,
+            HOME,
+            &[],
+            LiftAirSupport::Independent,
+            LiftAdmission {
+                allow_new_commitments: false,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+        );
+
+        let operation = active
+            .operation()
+            .expect("closed admission preserves the in-flight lift");
+        assert_eq!(operation.phase, LiftPhase::Boarding);
+        assert_eq!(operation.manifests.len(), operation.desired_carriers);
+        assert_eq!(continued.committed_scrap, 0);
+        assert!(
+            continued
+                .intents
+                .iter()
+                .all(|intent| !matches!(intent, Intent::TrainAt { .. }))
+        );
+        assert!(
+            continued
+                .intents
+                .iter()
+                .any(|intent| matches!(intent, Intent::MoveUnits { .. } | Intent::Load { .. }))
+        );
     }
 
     #[test]

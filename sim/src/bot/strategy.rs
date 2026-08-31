@@ -339,6 +339,7 @@ pub(super) struct LiftSupportRequest {
 pub(super) struct StrategicCoordination<'a> {
     pub enlisted: &'a [UnitId],
     pub lift_support: Option<&'a LiftSupportRequest>,
+    pub allow_new_operation: bool,
 }
 
 /// Controller-local owner of the active operation and its cooldown.
@@ -428,6 +429,7 @@ impl StrategicPlanner {
             StrategicCoordination {
                 enlisted,
                 lift_support: None,
+                allow_new_operation: true,
             },
         )
     }
@@ -444,6 +446,7 @@ impl StrategicPlanner {
         let StrategicCoordination {
             enlisted,
             lift_support,
+            allow_new_operation,
         } = coordination;
         self.terminal_outcome = None;
         self.standby.prune(obs);
@@ -454,6 +457,12 @@ impl StrategicPlanner {
             };
         }
         if self.air.is_none() {
+            if !allow_new_operation {
+                return StrategicDecision {
+                    reservations: self.standby.reservations(),
+                    ..StrategicDecision::default()
+                };
+            }
             if obs.tick < self.cooldown_until {
                 return StrategicDecision {
                     reservations: self.standby.reservations(),
@@ -577,6 +586,11 @@ impl StrategicPlanner {
             AirOperationPhase::Verify => verify(&mut op, &mut plan, &context, &mut out),
             AirOperationPhase::Strike => strike(&mut op, &mut plan, &context, &mut out),
             AirOperationPhase::Recover => {}
+        }
+        if !allow_new_operation {
+            out.intents
+                .retain(|intent| !matches!(intent, Intent::TrainAt { .. }));
+            out.committed_scrap = 0;
         }
         if op.phase == AirOperationPhase::Recover {
             if !began_in_recovery {
@@ -2432,6 +2446,7 @@ mod tests {
         StrategicCoordination {
             enlisted: &[],
             lift_support,
+            allow_new_operation: true,
         }
     }
 
@@ -2447,6 +2462,124 @@ mod tests {
             think(&mut second, &obs, &intel)
         );
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn closed_admission_blocks_a_new_air_plan_but_an_active_plan_reaches_strike() {
+        let eligible = wealthy_island_obs(
+            super::super::difficulty::strategic_admission_at_or_after(5_000),
+            2,
+        );
+        let eligible_intelligence = knowledge(&eligible);
+        let mut blocked = StrategicPlanner::new();
+
+        assert_eq!(
+            blocked.think_with_lift_support(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &eligible,
+                &eligible_intelligence,
+                HOME,
+                StrategicCoordination {
+                    enlisted: &[],
+                    lift_support: None,
+                    allow_new_operation: false,
+                },
+            ),
+            StrategicDecision::default()
+        );
+        assert!(blocked.air_operation().is_none());
+
+        let mut battle = obs(100);
+        see_approach(&mut battle);
+        let intelligence = knowledge(&battle);
+        let mut active = with_operation(AirOperationPhase::Verify, battle.tick);
+        let continued = active.think_with_lift_support(
+            &profile(),
+            DifficultyTuning::for_level(BotDifficulty::Prime),
+            &battle,
+            &intelligence,
+            HOME,
+            StrategicCoordination {
+                enlisted: &[],
+                lift_support: None,
+                allow_new_operation: false,
+            },
+        );
+
+        assert_eq!(
+            active.air_operation().map(|operation| operation.phase),
+            Some(AirOperationPhase::Strike)
+        );
+        assert_eq!(continued.committed_scrap, 0);
+        assert_eq!(
+            continued.reservations,
+            [UnitId(1), UnitId(2), UnitId(3), UnitId(4)]
+        );
+        assert!(
+            continued
+                .intents
+                .iter()
+                .all(|intent| !matches!(intent, Intent::TrainAt { .. }))
+        );
+        let mut incomplete = obs(200);
+        incomplete.scrap = 50_000;
+        incomplete.my_units.retain(|unit| unit.id == UnitId(1));
+        incomplete.my_buildings = vec![
+            building(10, 0, BuildingKind::Fabricator, TilePos::new(2, 2), true),
+            building(11, 0, BuildingKind::Airworks, TilePos::new(5, 2), true),
+            building(12, 0, BuildingKind::Crucible, TilePos::new(8, 2), true),
+        ];
+        incomplete.my_queues = vec![Vec::new(); incomplete.my_buildings.len()];
+        see_approach(&mut incomplete);
+        let incomplete_intelligence = knowledge(&incomplete);
+        let mut assembling = with_operation(AirOperationPhase::Assemble, incomplete.tick);
+        let held = assembling.think_with_lift_support(
+            &profile(),
+            DifficultyTuning::for_level(BotDifficulty::Prime),
+            &incomplete,
+            &incomplete_intelligence,
+            HOME,
+            StrategicCoordination {
+                enlisted: &[],
+                lift_support: None,
+                allow_new_operation: false,
+            },
+        );
+        assert_eq!(held.committed_scrap, 0);
+        assert!(
+            held.intents
+                .iter()
+                .all(|intent| !matches!(intent, Intent::TrainAt { .. })),
+            "an active incomplete operation cannot replenish while spending is closed: {held:?}"
+        );
+        assert!(assembling.air_operation().is_some());
+
+        let mut damaged = obs(300);
+        damaged
+            .my_units
+            .retain(|unit| !matches!(unit.id, UnitId(3) | UnitId(4)));
+        let damaged_intelligence = knowledge(&damaged);
+        let mut recovering = with_operation(AirOperationPhase::SuppressAa, damaged.tick);
+        let retreat = recovering.think_with_lift_support(
+            &profile(),
+            DifficultyTuning::for_level(BotDifficulty::Prime),
+            &damaged,
+            &damaged_intelligence,
+            HOME,
+            StrategicCoordination {
+                enlisted: &[],
+                lift_support: None,
+                allow_new_operation: false,
+            },
+        );
+        assert!(
+            retreat
+                .intents
+                .iter()
+                .any(|intent| matches!(intent, Intent::MoveUnits { .. })),
+            "closing purchases must preserve the active operation's recovery order: {retreat:?}"
+        );
     }
 
     #[test]

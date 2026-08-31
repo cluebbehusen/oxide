@@ -1,6 +1,6 @@
 ---
 created: 2026-08-29T08:00:10
-updated: 2026-08-30T15:14:40
+updated: 2026-08-30T20:12:00
 ---
 
 # Oxide 0.16.0 Scripted Bot Improvement
@@ -62,6 +62,18 @@ surface, and promoting only behavior proven against Overseer and human play.
   `stall_loop` anomaly once one unit stalls the same way 200 times, so the
   yardstick stays comparable and honest instead of burning 120,000 ticks on a
   controller that has no island game.
+- Set difficulty-specific opening core floors to four, five, six, and eight
+  Sentinel-equivalents for Scrapheap, Standard, Veteran, and Prime. Keep the
+  floor independent of stance and personality.
+- Treat the first Fabricator and every other non-home capital project as
+  voluntary investment protected by the opening core escrow.
+- Permit at most one Turret against a current ground threat and one Flak Turret
+  against a current air threat before the core floor. Remembered threats, public
+  starts, radar blips, and raid history do not bypass the escrow.
+- Preserve the exact fourth-Harvester plus safe starting-home Extractor opening.
+  After the floor is met, optional capital must leave one shallow Sentinel
+  reinforcement queued or its exact cost affordable unless no honest ground
+  objective exists.
 
 ## Findings
 
@@ -245,7 +257,7 @@ surface, and promoting only behavior proven against Overseer and human play.
       visibility, building completion and destruction, allied ownership,
       observation-order stability, and a full Brain-to-State response with
       ordinary accepted commands.
-  - [ ] Protect a difficulty-scaled opening core from voluntary capital
+  - [x] Protect a difficulty-scaled opening core from voluntary capital
         reservations and construction-first ordering.
     - Preserve the supported home Extractor and fourth-worker opening, but
       escrow missing-core scrap ahead of remote Extractors, deep tech, proactive
@@ -253,6 +265,23 @@ surface, and promoting only behavior proven against Overseer and human play.
     - Give difficulty its own macro core floor and require the Prime floor live
       or queued before optional capital work, then keep at least one shallow
       Foundry queue funded so serial construction cannot idle production.
+    - Approved the four/five/six/eight core floors, exact home-Extractor
+      exception, current-threat-only defensive bypass, shallow reinforcement
+      guard, and severed-ground escape hatch before implementation.
+    - Implemented fixed four/five/six/eight difficulty floors, a whole-think
+      recovery latch, the fourth-worker and safe home-Extractor exception,
+      current-threat defense bypasses, and the post-floor shallow reinforcement
+      guard.
+    - Kept paid construction and active operations alive while closing fresh
+      voluntary spending; exact outbound strategic reservations, including
+      landed lift riders, no longer satisfy the protected home core.
+    - The corrected 16-leg paired Skirmish and Cinder Steppe block ended 14
+      Prime wins and two losses with no cutoffs, split evenly across physical
+      seats, without changing unit stats, maps, or frozen Overseer.
+    - Replay review showed both losses were equivalent 13-minute Skirmish games:
+      Prime reached its eight-Sentinel core, traded evenly in the first clash,
+      recovered, and lost only after repeated battles. Human play remains the
+      promotion test.
 - [ ] Redefine and calibrate difficulty primarily through fair macro competence,
       with cognitive and execution differences layered on top.
 - [ ] Fix confirmed correctness defects, beginning with orientation-dependent

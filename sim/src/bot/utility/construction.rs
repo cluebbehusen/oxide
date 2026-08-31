@@ -2,6 +2,10 @@
 
 use super::*;
 
+fn can_fund(budget: u32, cost: u32, ordinary_reserve: u32, voluntary_guard: Option<u32>) -> bool {
+    budget >= cost.saturating_add(voluntary_guard.unwrap_or(ordinary_reserve))
+}
+
 impl UtilityPolicy {
     fn unfinished_turret_currently_unsafe(obs: &Observation, site: &BuildingObs) -> bool {
         let (width, height) = site.kind.base_stats().size;
@@ -20,7 +24,11 @@ impl UtilityPolicy {
             && tile.y < frame.y + height
     }
 
-    fn player_can_plan_frame_restoration(&self, obs: &Observation, frame: TilePos) -> bool {
+    pub(super) fn player_can_plan_frame_restoration(
+        &self,
+        obs: &Observation,
+        frame: TilePos,
+    ) -> bool {
         let (width, height) = BuildingKind::Extractor.base_stats().size;
         let footprint_explored =
             (0..height).all(|dy| (0..width).all(|dx| obs.explored(frame.offset(dx, dy))));
@@ -144,7 +152,7 @@ impl UtilityPolicy {
             unit_contacts,
             building_contacts,
             unavailable_builders,
-            public_map: _,
+            ..
         } = context;
         if !claims.player_facing {
             return None;
@@ -163,6 +171,57 @@ impl UtilityPolicy {
                 building_contacts,
             },
             |frame| Self::frame_has_foundry_support(obs, frame),
+        )
+    }
+
+    pub(super) fn starting_home_frame_restoration_claim(
+        &self,
+        obs: &Observation,
+        context: ConstructionContext<'_>,
+    ) -> Option<(TilePos, UnitId)> {
+        let ConstructionContext {
+            home,
+            claims,
+            unit_contacts,
+            building_contacts,
+            unavailable_builders,
+            public_map,
+            ..
+        } = context;
+        if !claims.player_facing {
+            return None;
+        }
+        let briefing = public_map?;
+        let starting_home = briefing
+            .starting_foundries()
+            .iter()
+            .find(|start| start.player == obs.me)?
+            .anchor;
+        if starting_home != home
+            || !obs.my_buildings.iter().any(|building| {
+                building.kind == BuildingKind::Foundry
+                    && building.anchor == starting_home
+                    && building.built
+                    && building.hp > 0
+            })
+        {
+            return None;
+        }
+
+        let builders: Vec<_> = self
+            .construction_builders(obs, claims.enlisted, claims.reserved)
+            .into_iter()
+            .filter(|builder| !unavailable_builders.contains(&builder.id))
+            .collect();
+        self.player_facing_extractor_claim(
+            obs,
+            ExtractorClaimContext {
+                home,
+                builders: &builders,
+                unit_contacts,
+                building_contacts,
+            },
+            |frame| Self::foundry_supports_extractor(starting_home, frame),
         )
     }
 
@@ -496,9 +555,10 @@ impl UtilityPolicy {
             home,
             player_facing,
             builders,
-            reserved,
+            combat_core_exclusions,
             unit_contacts,
             building_contacts,
+            voluntary_scrap_guard,
         } = context;
         let have = |kind: BuildingKind| Self::projected_count(obs, kind, player_facing) > 0;
         let have_built =
@@ -526,8 +586,9 @@ impl UtilityPolicy {
                         building_contacts,
                     },
                     |frame| {
-                        *budget >= cost + TECH_RESERVE
-                            || (*budget >= cost && Self::frame_has_foundry_support(obs, frame))
+                        can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
+                            || (can_fund(*budget, cost, 0, voluntary_scrap_guard)
+                                && Self::frame_has_foundry_support(obs, frame))
                     },
                 )
                 .map(|(frame, builder)| (frame, Some(builder)))
@@ -548,7 +609,7 @@ impl UtilityPolicy {
                     // gulf, and a cross-strait frame it admits eats
                     // every construction think until the map dies.
                     .filter(|frame| Self::ground_route_known(obs, home, **frame))
-                    .filter(|_| *budget >= cost + TECH_RESERVE)
+                    .filter(|_| can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard))
                     .min_by_key(|frame| (frame.chebyshev(home), frame.y, frame.x))
                     .map(|frame| (*frame, None))
             };
@@ -601,8 +662,12 @@ impl UtilityPolicy {
             if pending_foundries == 0
                 && foundries.len() < dials.foundry_cap
                 && (!player_facing
-                    || super::production::extra_foundry_core_ready(obs, reserved, foundries.len()))
-                && *budget >= cost + TECH_RESERVE
+                    || super::production::extra_foundry_core_ready(
+                        obs,
+                        combat_core_exclusions,
+                        foundries.len(),
+                    ))
+                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
             {
                 let player_claim = player_facing
                     .then(|| {
@@ -684,7 +749,7 @@ impl UtilityPolicy {
                     continue;
                 }
                 let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
-                if *budget >= cost + TECH_RESERVE
+                if can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
                     && let Some(anchor) = self.placement_near(obs, kind, home)
                 {
                     *budget -= cost;
@@ -703,7 +768,7 @@ impl UtilityPolicy {
                 if upgrade.requires.iter().any(|req| !have_built(*req)) {
                     continue;
                 }
-                if *budget < upgrade.cost + TECH_RESERVE {
+                if !can_fund(*budget, upgrade.cost, TECH_RESERVE, voluntary_scrap_guard) {
                     continue;
                 }
                 let target = obs
@@ -734,10 +799,13 @@ impl UtilityPolicy {
         let ConstructionContext {
             home,
             claims,
+            combat_core_exclusions,
             unit_contacts,
             building_contacts,
             unavailable_builders,
             public_map,
+            scope,
+            voluntary_scrap_guard,
         } = context;
         let ConstructionClaims {
             player_facing,
@@ -789,6 +857,64 @@ impl UtilityPolicy {
             return;
         }
 
+        if let ConstructionScope::OpeningCore {
+            ground_emergency,
+            air_emergency,
+        } = scope
+        {
+            let bootstrap_reserve = self.opening_bootstrap_reserve(dials, obs, context, intents);
+            for (allowed, kind) in [
+                (ground_emergency, BuildingKind::Turret),
+                (air_emergency, BuildingKind::FlakTurret),
+            ] {
+                let cost = kind
+                    .base_stats()
+                    .construction
+                    .map_or(0, |construction| construction.cost);
+                if allowed
+                    && Self::projected_count(obs, kind, true) == 0
+                    && *budget >= cost.saturating_add(bootstrap_reserve)
+                    && let Some(anchor) = public_map.and_then(|briefing| {
+                        self.emergency_defense_site(
+                            kind,
+                            obs,
+                            briefing,
+                            unit_contacts.unwrap_or(&[]),
+                            building_contacts.unwrap_or(&[]),
+                            &builders,
+                        )
+                    })
+                {
+                    *budget -= cost;
+                    intents.push(Intent::Build { kind, anchor });
+                    return;
+                }
+            }
+
+            let extractor_cost = BuildingKind::Extractor
+                .base_stats()
+                .construction
+                .map_or(0, |construction| construction.cost);
+            if dials.extractors
+                && *budget >= extractor_cost
+                && let Some((anchor, builder)) =
+                    self.starting_home_frame_restoration_claim(obs, context)
+            {
+                *budget -= extractor_cost;
+                Self::insert_build_before_harvest(
+                    intents,
+                    BuildingKind::Extractor,
+                    anchor,
+                    Intent::BuildWith {
+                        builder,
+                        kind: BuildingKind::Extractor,
+                        anchor,
+                    },
+                );
+            }
+            return;
+        }
+
         // One advanced construction rung per think, cheapest gate first.
         if (dials.deep_tech || dials.extractors || dials.upgrades || dials.expansion)
             && self.advanced_construction(
@@ -798,9 +924,10 @@ impl UtilityPolicy {
                     home,
                     player_facing,
                     builders: &builders,
-                    reserved,
+                    combat_core_exclusions,
                     unit_contacts,
                     building_contacts,
+                    voluntary_scrap_guard,
                 },
                 budget,
                 intents,
@@ -823,7 +950,7 @@ impl UtilityPolicy {
             if let Some(cost) = fab_cost
                 && !have_fab
                 && harvesters >= dials.harvester_target.min(3) as usize
-                && *budget >= cost + TECH_RESERVE
+                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
                 && let Some(anchor) = self.placement_near(obs, BuildingKind::Fabricator, home)
             {
                 *budget -= cost;
@@ -855,7 +982,12 @@ impl UtilityPolicy {
             let turrets = Self::projected_count(obs, BuildingKind::Turret, player_facing);
             if let Some(cost) = turret_cost
                 && turrets < turret_limit
-                && *budget >= cost + UnitKind::Harvester.stats().cost
+                && can_fund(
+                    *budget,
+                    cost,
+                    UnitKind::Harvester.stats().cost,
+                    voluntary_scrap_guard,
+                )
                 && let Some(anchor) = if player_facing {
                     public_map.and_then(|briefing| {
                         self.strategic_defense_site(
@@ -897,7 +1029,12 @@ impl UtilityPolicy {
                 && barricades < dials.barricade_cap
                 && (self.raided || route_known || public_enemy_start)
                 && let Some(cost) = cost
-                && *budget >= cost + UnitKind::Harvester.stats().cost
+                && can_fund(
+                    *budget,
+                    cost,
+                    UnitKind::Harvester.stats().cost,
+                    voluntary_scrap_guard,
+                )
                 && let Some(anchor) = public_map.and_then(|briefing| {
                     self.strategic_defense_site(
                         BuildingKind::Barricade,
@@ -937,7 +1074,7 @@ impl UtilityPolicy {
                 && have_fab
                 && charges < dials.mine_cap
                 && let Some(cost) = charge_cost
-                && *budget >= cost + TECH_RESERVE
+                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
             {
                 let site = Self::enemy_site(obs, home);
                 let route_known = site.is_some_and(|s| Self::ground_route_known(obs, home, s));
@@ -988,7 +1125,12 @@ impl UtilityPolicy {
             let flak = Self::projected_count(obs, BuildingKind::FlakTurret, player_facing);
             if let Some(cost) = flak_cost
                 && flak < dials.flak_cap
-                && *budget >= cost + UnitKind::Harvester.stats().cost
+                && can_fund(
+                    *budget,
+                    cost,
+                    UnitKind::Harvester.stats().cost,
+                    voluntary_scrap_guard,
+                )
                 && let Some(anchor) = if player_facing {
                     public_map.and_then(|briefing| {
                         self.strategic_defense_site(
@@ -1029,7 +1171,7 @@ impl UtilityPolicy {
             if have_fab
                 && !have_array
                 && let Some(cost) = array_cost
-                && *budget >= cost + TECH_RESERVE
+                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
                 && let Some((anchor, builder)) = if player_facing {
                     public_map
                         .and_then(|briefing| {
@@ -1087,7 +1229,7 @@ impl UtilityPolicy {
             if have_fabricator
                 && !have_repair_bay
                 && let Some(cost) = cost
-                && *budget >= cost + TECH_RESERVE
+                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
                 && let Some(anchor) = self.placement_near(obs, BuildingKind::RepairBay, home)
             {
                 *budget -= cost;
@@ -1116,7 +1258,7 @@ impl UtilityPolicy {
                 && !have_bastion
                 && Self::enemy_site(obs, home).is_some()
                 && let Some(cost) = cost
-                && *budget >= cost + TECH_RESERVE
+                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
                 && let Some(anchor) = if player_facing {
                     public_map.and_then(|briefing| {
                         self.strategic_defense_site(
@@ -1166,7 +1308,7 @@ impl UtilityPolicy {
             if near_home < SALVAGE_LOW
                 && needs_income
                 && let Some(cost) = rec_cost
-                && *budget >= cost + TECH_RESERVE
+                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
                 && let Some(anchor) = self.placement_near(obs, BuildingKind::Reclaimer, home)
             {
                 *budget -= cost;

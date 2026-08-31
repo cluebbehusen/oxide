@@ -194,6 +194,167 @@ impl UtilityPolicy {
         );
     }
 
+    pub(super) fn opening_core_production(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        context: ProductionContext<'_>,
+        budget: &mut u32,
+        intents: &mut Vec<Intent>,
+    ) -> CombatCoreStatus {
+        let ProductionContext {
+            home,
+            claims,
+            combat_core_exclusions,
+            unit_contacts,
+            building_contacts,
+            public_map,
+            ..
+        } = context;
+        let capital_context = ConstructionContext::new(home, claims)
+            .with_combat_core_exclusions(combat_core_exclusions)
+            .with_intelligence(unit_contacts, building_contacts)
+            .with_public_map(public_map);
+        let home_extractor_reserve =
+            self.opening_home_extractor_reserve(dials, obs, capital_context, intents);
+
+        let queued_harvesters = obs
+            .my_queues
+            .iter()
+            .flatten()
+            .filter(|kind| **kind == UnitKind::Harvester)
+            .count();
+        let planned_harvesters = intents
+            .iter()
+            .filter(|intent| {
+                matches!(
+                    intent,
+                    Intent::TrainAt {
+                        kind: UnitKind::Harvester,
+                        ..
+                    }
+                )
+            })
+            .count();
+        let harvesters = obs
+            .my_units
+            .iter()
+            .filter(|unit| unit.kind == UnitKind::Harvester)
+            .count()
+            .saturating_add(queued_harvesters)
+            .saturating_add(planned_harvesters);
+        if harvesters < immediate_harvester_target(dials) as usize {
+            let harvester_cost = UnitKind::Harvester.stats().cost;
+            let mut foundries: Vec<_> = obs
+                .my_buildings
+                .iter()
+                .enumerate()
+                .filter(|(_, building)| building.built && building.kind == BuildingKind::Foundry)
+                .map(|(queue_index, building)| {
+                    (
+                        building.id,
+                        obs.my_queues
+                            .get(queue_index)
+                            .map_or(2, Vec::len)
+                            .saturating_add(super::production::planned_at(intents, building.id)),
+                    )
+                })
+                .collect();
+            foundries.sort_unstable_by_key(|(building, _)| *building);
+            if let Some((building, _)) = foundries.into_iter().find(|(_, depth)| *depth < 2)
+                && *budget >= harvester_cost.saturating_add(home_extractor_reserve)
+            {
+                *budget -= harvester_cost;
+                intents.push(Intent::TrainAt {
+                    building,
+                    kind: UnitKind::Harvester,
+                });
+            }
+        }
+
+        super::production::fill_combat_core(
+            obs,
+            combat_core_exclusions,
+            u64::from(dials.minimum_core_equivalents),
+            home_extractor_reserve,
+            budget,
+            intents,
+        )
+    }
+
+    pub(super) fn opening_bootstrap_reserve(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        context: ConstructionContext<'_>,
+        intents: &[Intent],
+    ) -> u32 {
+        let harvesters = obs
+            .my_units
+            .iter()
+            .filter(|unit| unit.kind == UnitKind::Harvester)
+            .count()
+            + obs
+                .my_queues
+                .iter()
+                .flatten()
+                .filter(|kind| **kind == UnitKind::Harvester)
+                .count()
+            + intents
+                .iter()
+                .filter(|intent| {
+                    matches!(
+                        intent,
+                        Intent::TrainAt {
+                            kind: UnitKind::Harvester,
+                            ..
+                        }
+                    )
+                })
+                .count();
+        let harvester_reserve = if harvesters < immediate_harvester_target(dials) as usize {
+            UnitKind::Harvester.stats().cost
+        } else {
+            0
+        };
+        harvester_reserve
+            .saturating_add(self.opening_home_extractor_reserve(dials, obs, context, intents))
+    }
+
+    fn opening_home_extractor_reserve(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        context: ConstructionContext<'_>,
+        intents: &[Intent],
+    ) -> u32 {
+        let extractor_planned = intents.iter().any(|intent| {
+            matches!(
+                intent,
+                Intent::Build {
+                    kind: BuildingKind::Extractor,
+                    ..
+                } | Intent::BuildWith {
+                    kind: BuildingKind::Extractor,
+                    ..
+                }
+            )
+        });
+        if !extractor_planned
+            && dials.extractors
+            && self
+                .starting_home_frame_restoration_claim(obs, context)
+                .is_some()
+        {
+            BuildingKind::Extractor
+                .base_stats()
+                .construction
+                .map_or(0, |construction| construction.cost)
+        } else {
+            0
+        }
+    }
+
     pub(super) fn production_with_air_demand(
         &mut self,
         dials: &Dials,
@@ -205,9 +366,12 @@ impl UtilityPolicy {
         let ProductionContext {
             home,
             claims,
+            combat_core_exclusions,
             outstanding_air_production_ticks,
             unit_contacts,
             building_contacts,
+            public_map,
+            voluntary_scrap_guard,
         } = context;
         let ConstructionClaims {
             player_facing,
@@ -247,6 +411,7 @@ impl UtilityPolicy {
             Self::claim_non_preemptible_intent_units(intent, &mut unavailable_builders);
         }
         let capital_context = ConstructionContext::new(home, claims)
+            .with_combat_core_exclusions(combat_core_exclusions)
             .with_intelligence(unit_contacts, building_contacts)
             .excluding_builders(&unavailable_builders);
         let ordinary_capital = if screen < 3 || (self.desperate && self.desperate_road) {
@@ -273,10 +438,11 @@ impl UtilityPolicy {
             .base_stats()
             .construction
             .map_or(0, |construction| construction.cost);
+        let capacity_guard = voluntary_scrap_guard.unwrap_or(TECH_RESERVE);
         let mut capacity_site =
             self.airworks_capacity_site(dials, obs, home, claims, outstanding_air_production_ticks);
         if let Some(anchor) = capacity_site
-            && *budget >= airworks_cost.saturating_add(TECH_RESERVE)
+            && *budget >= airworks_cost.saturating_add(capacity_guard)
         {
             let mut unavailable = Vec::new();
             for intent in intents.iter() {
@@ -327,16 +493,20 @@ impl UtilityPolicy {
                     },
                 );
                 capacity_site = None;
+                if capacity_guard > 0 && voluntary_scrap_guard.is_some() {
+                    return;
+                }
             }
         }
         let capacity_capital = if capacity_site.is_some() {
-            airworks_cost.saturating_add(TECH_RESERVE)
+            airworks_cost.saturating_add(capacity_guard)
         } else {
             0
         };
-        let capital = ordinary_capital.max(capacity_capital);
+        let voluntary_guard = voluntary_scrap_guard.unwrap_or(0);
+        let capital = ordinary_capital.max(capacity_capital).max(voluntary_guard);
         let allow_repeatable_ground =
-            !player_facing || self.ordinary_ground_has_work(dials, obs, home);
+            !player_facing || self.has_honest_ground_objective(dials, obs, home, public_map);
 
         // Current public-map or contested work may require air, while a failed
         // ground look preserves the same demand durably. Keep exactly one
@@ -367,7 +537,7 @@ impl UtilityPolicy {
                     < 2
             {
                 let price = scout_kind.stats().cost;
-                if *budget >= price {
+                if *budget >= price.saturating_add(voluntary_guard) {
                     *budget -= price;
                     intents.push(Intent::TrainAt {
                         building: airworks.id,
@@ -377,7 +547,7 @@ impl UtilityPolicy {
                     // Reconnaissance is the prerequisite for every
                     // target-driven island purchase, so cheaper drips
                     // must not spend its partial fund.
-                    *budget = 0;
+                    *budget = (*budget).min(voluntary_guard);
                 }
             }
         }
@@ -433,7 +603,12 @@ impl UtilityPolicy {
             if let Some((qi, crucible)) = crucible
                 && obs.my_queues[qi].is_empty()
                 && alive(UnitKind::Breaker) + queued(UnitKind::Breaker) < 2
-                && *budget >= UnitKind::Breaker.stats().cost + TECH_RESERVE
+                && *budget
+                    >= UnitKind::Breaker
+                        .stats()
+                        .cost
+                        .saturating_add(TECH_RESERVE)
+                        .saturating_add(voluntary_guard)
             {
                 *budget -= UnitKind::Breaker.stats().cost;
                 intents.push(Intent::TrainAt {
@@ -450,7 +625,12 @@ impl UtilityPolicy {
             if let Some((qi, fabricator)) = fabricator
                 && obs.my_queues[qi].len() < 2
                 && alive(UnitKind::Warden) + queued(UnitKind::Warden) < 4
-                && *budget >= UnitKind::Warden.stats().cost + UnitKind::Harvester.stats().cost
+                && *budget
+                    >= UnitKind::Warden
+                        .stats()
+                        .cost
+                        .saturating_add(UnitKind::Harvester.stats().cost)
+                        .saturating_add(voluntary_guard)
             {
                 *budget -= UnitKind::Warden.stats().cost;
                 intents.push(Intent::TrainAt {
@@ -478,7 +658,12 @@ impl UtilityPolicy {
                     && crucible_stands
                     && obs.my_queues[qi].len() < 2
                     && alive(bomber_kind) + queued(bomber_kind) < 2
-                    && *budget >= bomber_kind.stats().cost + TECH_RESERVE
+                    && *budget
+                        >= bomber_kind
+                            .stats()
+                            .cost
+                            .saturating_add(TECH_RESERVE)
+                            .saturating_add(voluntary_guard)
                 {
                     *budget -= bomber_kind.stats().cost;
                     intents.push(Intent::TrainAt {
@@ -524,7 +709,7 @@ impl UtilityPolicy {
                     dials,
                     obs,
                     super::production::AdaptiveProductionContext::new(
-                        reserved,
+                        combat_core_exclusions,
                         outstanding_air_production_ticks.is_none(),
                         capital,
                     )
@@ -583,7 +768,7 @@ impl UtilityPolicy {
             if dials.aa_response
                 && fab_open
                 && alive(aa_kind) + queued(aa_kind) < want_aa
-                && *budget >= aa_kind.stats().cost
+                && *budget >= aa_kind.stats().cost.saturating_add(voluntary_guard)
             {
                 *budget -= aa_kind.stats().cost;
                 intents.push(Intent::TrainAt {
@@ -592,7 +777,7 @@ impl UtilityPolicy {
                 });
             } else if fab_open
                 && enemy_turrets > alive(UnitKind::Lancer) + queued(UnitKind::Lancer)
-                && *budget >= lancer
+                && *budget >= lancer.saturating_add(voluntary_guard)
             {
                 *budget -= lancer;
                 intents.push(Intent::TrainAt {
@@ -643,7 +828,7 @@ impl UtilityPolicy {
                 dials,
                 obs,
                 super::production::AdaptiveProductionContext::new(
-                    reserved,
+                    combat_core_exclusions,
                     outstanding_air_production_ticks.is_none(),
                     capital,
                 )
@@ -661,7 +846,12 @@ impl UtilityPolicy {
     /// hundreds of idle bodies. A current island objective also qualifies
     /// while ordinary transport capacity exists, but a dark ghost alone does
     /// not authorize an endless next wave.
-    fn ordinary_ground_has_work(&self, dials: &Dials, obs: &Observation, home: TilePos) -> bool {
+    pub(super) fn ordinary_ground_has_work(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        home: TilePos,
+    ) -> bool {
         if self.desperate && self.desperate_road {
             return true;
         }
@@ -798,6 +988,7 @@ impl UtilityPolicy {
         let ConstructionContext {
             home,
             claims,
+            combat_core_exclusions,
             unit_contacts,
             building_contacts,
             unavailable_builders,
@@ -879,7 +1070,11 @@ impl UtilityPolicy {
                 && expansion_claim
                 && foundries.len() < foundry_cap
                 && (!player_facing
-                    || super::production::extra_foundry_core_ready(obs, reserved, foundries.len()))
+                    || super::production::extra_foundry_core_ready(
+                        obs,
+                        combat_core_exclusions,
+                        foundries.len(),
+                    ))
                 && have(BuildingKind::Foundry)
             {
                 return price(BuildingKind::Foundry) + TECH_RESERVE;
@@ -1500,6 +1695,32 @@ mod tests {
         (budget, intents)
     }
 
+    fn guarded_capacity_decision(
+        obs: &Observation,
+        demand: Option<u64>,
+        guard: u32,
+        mut intents: Vec<Intent>,
+    ) -> (u32, Vec<Intent>) {
+        let mut budget = obs.scrap;
+        UtilityPolicy::new().production_with_air_demand(
+            &Dials::balanced(),
+            obs,
+            ProductionContext::new(
+                TilePos::new(1, 1),
+                ConstructionClaims {
+                    player_facing: true,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+                demand,
+            )
+            .with_voluntary_scrap_guard(guard),
+            &mut budget,
+            &mut intents,
+        );
+        (budget, intents)
+    }
+
     fn capital_reserve_for(
         policy: &UtilityPolicy,
         dials: &Dials,
@@ -1678,6 +1899,97 @@ mod tests {
             decide(false, true, scout_cost),
             "a current public-map requirement and proven ground failure share the production mechanism without sharing persistence"
         );
+    }
+
+    #[test]
+    fn voluntary_guard_survives_scout_and_current_air_response_priorities() {
+        let guard = UnitKind::Sentinel.stats().cost;
+        let scout = crate::stats::Role::Scout.unit_for(Faction::Ferrous);
+        let scout_cost = scout.stats().cost;
+        let aa = crate::stats::Role::AntiAir.unit_for(Faction::Ferrous);
+        let aa_cost = aa.stats().cost;
+        let mut dials = Dials::balanced();
+        dials.adaptive_composition = true;
+
+        let scout_decision = |scrap| {
+            let mut obs = completed_tree();
+            obs.scrap = scrap;
+            let mut policy = UtilityPolicy::new();
+            policy.persistent_air_scout_needed = true;
+            let mut budget = scrap;
+            let mut intents = Vec::new();
+            policy.production_with_air_demand(
+                &dials,
+                &obs,
+                ProductionContext::new(
+                    TilePos::new(1, 1),
+                    ConstructionClaims {
+                        player_facing: true,
+                        enlisted: &[],
+                        reserved: &[],
+                    },
+                    None,
+                )
+                .with_voluntary_scrap_guard(guard),
+                &mut budget,
+                &mut intents,
+            );
+            (budget, intents)
+        };
+        let (guarded_budget, guarded_scout) = scout_decision(scout_cost + guard - 1);
+        assert_eq!(guarded_budget, guard);
+        assert!(guarded_scout.iter().all(|intent| !matches!(
+            intent,
+            Intent::TrainAt { kind, .. } if *kind == scout
+        )));
+        let (funded_budget, funded_scout) = scout_decision(scout_cost + guard);
+        assert_eq!(funded_budget, guard);
+        assert!(funded_scout.iter().any(|intent| matches!(
+            intent,
+            Intent::TrainAt { kind, .. } if *kind == scout
+        )));
+
+        let aa_decision = |scrap| {
+            let mut obs = completed_tree();
+            obs.scrap = scrap;
+            add_unit(&mut obs, 90, UnitKind::Condor, TilePos::new(7, 7));
+            let enemy = obs.my_units.pop().expect("the air contact was appended");
+            obs.enemy_units.push(UnitObs {
+                player: PlayerId(1),
+                ..enemy
+            });
+            let mut budget = scrap;
+            let mut intents = Vec::new();
+            UtilityPolicy::new().production_with_air_demand(
+                &dials,
+                &obs,
+                ProductionContext::new(
+                    TilePos::new(1, 1),
+                    ConstructionClaims {
+                        player_facing: true,
+                        enlisted: &[],
+                        reserved: &[],
+                    },
+                    None,
+                )
+                .with_voluntary_scrap_guard(guard),
+                &mut budget,
+                &mut intents,
+            );
+            (budget, intents)
+        };
+        let (guarded_budget, guarded_aa) = aa_decision(aa_cost + guard - 1);
+        assert_eq!(guarded_budget, aa_cost + guard - 1);
+        assert!(guarded_aa.iter().all(|intent| !matches!(
+            intent,
+            Intent::TrainAt { kind, .. } if *kind == aa
+        )));
+        let (funded_budget, funded_aa) = aa_decision(aa_cost + guard);
+        assert_eq!(funded_budget, guard);
+        assert!(funded_aa.iter().any(|intent| matches!(
+            intent,
+            Intent::TrainAt { kind, .. } if *kind == aa
+        )));
     }
 
     #[test]
@@ -2401,6 +2713,53 @@ mod tests {
                 .all(|intent| !matches!(intent, Intent::TrainAt { .. })),
             "the exact capacity fund must not be skimmed by routine production"
         );
+    }
+
+    #[test]
+    fn active_airworks_capacity_preserves_the_opening_reinforcement_guard() {
+        let mut obs = completed_tree();
+        let demand = Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS.saturating_add(1));
+        let airworks_cost = BuildingKind::Airworks
+            .base_stats()
+            .construction
+            .expect("Airworks has construction stats")
+            .cost;
+        let sentinel_cost = UnitKind::Sentinel.stats().cost;
+
+        obs.scrap = airworks_cost + sentinel_cost - 1;
+        let (short_budget, short) =
+            guarded_capacity_decision(&obs, demand, sentinel_cost, Vec::new());
+        assert!(airworks_builds(&short).is_empty());
+        assert_eq!(short_budget, obs.scrap);
+
+        obs.scrap += 1;
+        let (exact_budget, exact) =
+            guarded_capacity_decision(&obs, demand, sentinel_cost, Vec::new());
+        assert_eq!(airworks_builds(&exact).len(), 1);
+        assert_eq!(exact_budget, sentinel_cost);
+        assert!(
+            exact
+                .iter()
+                .all(|intent| !matches!(intent, Intent::TrainAt { .. })),
+            "the exact unqueued reinforcement fund remains untouched after capacity: {exact:?}"
+        );
+
+        obs.scrap = airworks_cost;
+        obs.my_queues[0] = vec![UnitKind::Sentinel];
+        let (queued_budget, queued) = guarded_capacity_decision(&obs, demand, 0, Vec::new());
+        assert_eq!(airworks_builds(&queued).len(), 1);
+        assert_eq!(queued_budget, 0);
+
+        obs.my_queues[0].clear();
+        let planned_sentinel = Intent::TrainAt {
+            building: obs.my_buildings[0].id,
+            kind: UnitKind::Sentinel,
+        };
+        let (planned_budget, planned) =
+            guarded_capacity_decision(&obs, demand, 0, vec![planned_sentinel.clone()]);
+        assert_eq!(airworks_builds(&planned).len(), 1);
+        assert_eq!(planned_budget, 0);
+        assert!(planned.contains(&planned_sentinel));
     }
 
     #[test]

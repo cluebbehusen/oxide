@@ -9,8 +9,9 @@ use super::difficulty::{DifficultyTuning, strategic_admission_tick};
 use super::executive::Intent;
 use super::observation::{BuildingObs, Observation, UnitObs};
 use super::profile::ResolvedProfile;
-use super::routing::{RouteProjection, first_reachable_group};
+use super::routing::{RouteProjection, first_reachable_group_where};
 use super::strategy::StrategicDecision;
+use super::utility::combat_core_status;
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::stats::{BuildingKind, Domain};
 use chassis::Tick;
@@ -109,6 +110,14 @@ pub struct TeamReliefPlanner {
 }
 
 #[derive(Clone, Copy)]
+pub(super) struct TeamReliefAdmission<'a> {
+    pub(super) additionally_reserved: &'a [UnitId],
+    pub(super) allow_new_operation: bool,
+    pub(super) core_reservations: &'a [UnitId],
+    pub(super) minimum_core_equivalents: u64,
+}
+
+#[derive(Clone, Copy)]
 struct ReliefContext<'a> {
     profile: &'a ResolvedProfile,
     tuning: DifficultyTuning,
@@ -116,6 +125,8 @@ struct ReliefContext<'a> {
     home: TilePos,
     enlisted: &'a [UnitId],
     additionally_reserved: &'a [UnitId],
+    core_reservations: &'a [UnitId],
+    minimum_core_equivalents: u64,
 }
 
 impl TeamReliefPlanner {
@@ -130,12 +141,28 @@ impl TeamReliefPlanner {
     }
 
     /// Exact units owned by an active relief or its credibility watch.
+    #[cfg(test)]
     pub(super) fn reservations(&self) -> Vec<UnitId> {
         self.active.as_ref().map_or_else(
             || {
                 self.watch
                     .as_ref()
                     .map_or_else(Vec::new, |watch| pending_reservations(&watch.relief))
+            },
+            |operation| operation.members.clone(),
+        )
+    }
+
+    /// Exact fighters that would be absent from the home combat core if the
+    /// current relief assignment proceeds. Pending home defenders remain
+    /// reserved from other planners but still count as the screen they are
+    /// explicitly staying behind to provide.
+    pub(super) fn core_reservations(&self) -> Vec<UnitId> {
+        self.active.as_ref().map_or_else(
+            || {
+                self.watch
+                    .as_ref()
+                    .map_or_else(Vec::new, |watch| watch.relief.members.clone())
             },
             |operation| operation.members.clone(),
         )
@@ -156,6 +183,36 @@ impl TeamReliefPlanner {
         enlisted: &[UnitId],
         additionally_reserved: &[UnitId],
     ) -> StrategicDecision {
+        self.think_with_admission(
+            profile,
+            tuning,
+            obs,
+            home,
+            enlisted,
+            TeamReliefAdmission {
+                additionally_reserved,
+                allow_new_operation: true,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+        )
+    }
+
+    pub(super) fn think_with_admission(
+        &mut self,
+        profile: &ResolvedProfile,
+        tuning: DifficultyTuning,
+        obs: &Observation,
+        home: TilePos,
+        enlisted: &[UnitId],
+        admission: TeamReliefAdmission<'_>,
+    ) -> StrategicDecision {
+        let TeamReliefAdmission {
+            additionally_reserved,
+            allow_new_operation,
+            core_reservations,
+            minimum_core_equivalents,
+        } = admission;
         let mut routes = RouteProjection::new(obs, Domain::Ground);
         let context = ReliefContext {
             profile,
@@ -164,9 +221,11 @@ impl TeamReliefPlanner {
             home,
             enlisted,
             additionally_reserved,
+            core_reservations,
+            minimum_core_equivalents,
         };
         if self.active.is_none() {
-            self.observe_pressure(&context, &mut routes);
+            self.observe_pressure(&context, &mut routes, allow_new_operation);
         }
         let Some(mut relief) = self.active.take() else {
             return StrategicDecision {
@@ -282,7 +341,12 @@ impl TeamReliefPlanner {
         decision
     }
 
-    fn observe_pressure(&mut self, context: &ReliefContext<'_>, routes: &mut RouteProjection<'_>) {
+    fn observe_pressure(
+        &mut self,
+        context: &ReliefContext<'_>,
+        routes: &mut RouteProjection<'_>,
+        allow_new_operation: bool,
+    ) {
         let ReliefContext {
             profile,
             tuning,
@@ -295,7 +359,7 @@ impl TeamReliefPlanner {
         }
 
         if self.watch.is_none() {
-            if !strategic_admission_tick(obs.tick) {
+            if !allow_new_operation || !strategic_admission_tick(obs.tick) {
                 return;
             }
             let Some(relief) = candidate_relief(context, routes) else {
@@ -327,6 +391,10 @@ impl TeamReliefPlanner {
             .as_ref()
             .is_some_and(|watch| !pending_assignment_is_available(context, &watch.relief));
         if refresh {
+            if !allow_new_operation {
+                self.watch = None;
+                return;
+            }
             let watch = self
                 .watch
                 .take()
@@ -351,7 +419,7 @@ impl TeamReliefPlanner {
         let ready = self.watch.as_ref().is_some_and(|watch| {
             obs.tick.saturating_sub(watch.first_seen_at) >= pressure_response_delay(tuning)
         });
-        if ready {
+        if ready && allow_new_operation {
             self.active = self.watch.take().map(|watch| watch.relief);
         }
     }
@@ -369,6 +437,8 @@ fn begin(
         home,
         enlisted,
         additionally_reserved,
+        core_reservations,
+        minimum_core_equivalents,
     } = *context;
     let mut available: Vec<_> = obs
         .my_units
@@ -398,9 +468,15 @@ fn begin(
     });
     let desired = desired_group_size(profile).min(sendable.len());
     let candidates: Vec<_> = sendable.iter().map(|unit| unit.id).collect();
-    let members = (MIN_RELIEF_GROUP..=desired)
-        .rev()
-        .find_map(|size| first_reachable_group(routes, &candidates, size, foundry.anchor))?;
+    let members = (MIN_RELIEF_GROUP..=desired).rev().find_map(|size| {
+        first_reachable_group_where(routes, &candidates, size, foundry.anchor, |members| {
+            let mut projected_reservations = core_reservations.to_vec();
+            projected_reservations.extend_from_slice(members);
+            projected_reservations.sort_unstable();
+            projected_reservations.dedup();
+            combat_core_status(obs, &projected_reservations, &[], minimum_core_equivalents).ready
+        })
+    })?;
     let committed_max_hp = members.iter().fold(0_u32, |total, id| {
         total.saturating_add(
             own_unit(obs, *id)
@@ -789,6 +865,232 @@ mod tests {
             .clone();
         assert_eq!(members.len(), 3, "the budget fixture commits three units");
         (obs, planner, members)
+    }
+
+    #[test]
+    fn closed_admission_blocks_new_relief_but_an_active_relief_withdraws() {
+        let mut eligible = observation(100);
+        add_fighters(
+            &mut eligible,
+            &[
+                (1, TilePos::new(3, 9)),
+                (2, TilePos::new(3, 11)),
+                (3, TilePos::new(20, 9)),
+                (4, TilePos::new(20, 11)),
+                (5, TilePos::new(21, 10)),
+            ],
+        );
+        let identity = profile();
+        let tuning = tuning();
+        let mut blocked = TeamReliefPlanner::new();
+
+        assert_eq!(
+            blocked.think_with_admission(
+                &identity,
+                tuning,
+                &eligible,
+                HOME,
+                &[],
+                TeamReliefAdmission {
+                    additionally_reserved: &[],
+                    allow_new_operation: false,
+                    core_reservations: &[],
+                    minimum_core_equivalents: 0,
+                },
+            ),
+            StrategicDecision::default()
+        );
+        assert!(blocked.reservations().is_empty());
+        assert!(blocked.operation().is_none());
+
+        let mut watched = TeamReliefPlanner::new();
+        let pending = watched.think_with_admission(
+            &identity,
+            tuning,
+            &eligible,
+            HOME,
+            &[],
+            TeamReliefAdmission {
+                additionally_reserved: &[],
+                allow_new_operation: true,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+        );
+        assert!(!pending.reservations.is_empty());
+        eligible.tick += pressure_response_delay(tuning);
+        let held = watched.think_with_admission(
+            &identity,
+            tuning,
+            &eligible,
+            HOME,
+            &[],
+            TeamReliefAdmission {
+                additionally_reserved: &[],
+                allow_new_operation: false,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+        );
+        assert_eq!(held.reservations, pending.reservations);
+        assert!(held.intents.is_empty());
+        assert!(watched.operation().is_none());
+
+        let (mut active_obs, mut active, members) = active_three_member_relief();
+        active_obs.tick += 1;
+        active_obs.enemy_units.clear();
+
+        let continued = active.think_with_admission(
+            &identity,
+            tuning,
+            &active_obs,
+            HOME,
+            &[],
+            TeamReliefAdmission {
+                additionally_reserved: &[],
+                allow_new_operation: false,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+        );
+
+        assert_eq!(continued.reservations, members);
+        assert_eq!(
+            continued.intents,
+            [Intent::MoveUnits {
+                units: members,
+                goal: HOME,
+            }]
+        );
+        assert_eq!(
+            active.operation().map(|operation| operation.phase),
+            Some(TeamReliefPhase::Withdrawing)
+        );
+    }
+
+    #[test]
+    fn protected_prime_core_bounds_the_largest_admissible_relief_group() {
+        let decision_for = |fighters| {
+            let mut obs = observation(100);
+            let specs: Vec<_> = (0..fighters)
+                .map(|index| {
+                    (
+                        1 + index,
+                        TilePos::new(
+                            3 + i32::try_from(index % 4).unwrap(),
+                            12 + i32::try_from(index / 4).unwrap(),
+                        ),
+                    )
+                })
+                .collect();
+            add_fighters(&mut obs, &specs);
+            let mut planner = TeamReliefPlanner::new();
+            let decision = planner.think_with_admission(
+                &profile(),
+                tuning(),
+                &obs,
+                HOME,
+                &[],
+                TeamReliefAdmission {
+                    additionally_reserved: &[],
+                    allow_new_operation: true,
+                    core_reservations: &[],
+                    minimum_core_equivalents: 8,
+                },
+            );
+            (obs, planner, decision)
+        };
+
+        let (_, exact, exact_decision) = decision_for(8);
+        assert_eq!(exact_decision, StrategicDecision::default());
+        assert!(exact.core_reservations().is_empty());
+
+        for (fighters, expected_members) in [(10, 2), (11, 3)] {
+            let (obs, planner, decision) = decision_for(fighters);
+            let members = planner.core_reservations();
+            assert_eq!(members.len(), expected_members, "{fighters} fighters");
+            assert!(!decision.reservations.is_empty(), "{fighters} fighters");
+            assert!(
+                combat_core_status(&obs, &members, &[], 8).ready,
+                "the admitted {fighters}-fighter relief must leave Prime's exact core projected"
+            );
+        }
+    }
+
+    #[test]
+    fn relief_skips_a_preferred_core_draining_group_for_a_same_size_alternative() {
+        let mut obs = observation(100);
+        add_fighters(
+            &mut obs,
+            &[
+                (1, TilePos::new(3, 9)),
+                (2, TilePos::new(3, 11)),
+                (3, TilePos::new(20, 9)),
+                (4, TilePos::new(20, 11)),
+                (5, TilePos::new(19, 8)),
+                (6, TilePos::new(19, 12)),
+                (7, TilePos::new(18, 9)),
+                (8, TilePos::new(18, 11)),
+            ],
+        );
+        obs.my_units.extend([
+            unit(
+                20,
+                PlayerId(0),
+                UnitKind::Scuttler,
+                TilePos::new(17, 8),
+                true,
+            ),
+            unit(
+                21,
+                PlayerId(0),
+                UnitKind::Scuttler,
+                TilePos::new(17, 10),
+                true,
+            ),
+            unit(
+                22,
+                PlayerId(0),
+                UnitKind::Scuttler,
+                TilePos::new(17, 12),
+                true,
+            ),
+        ]);
+        obs.my_units.sort_unstable_by_key(|unit| unit.id);
+
+        let preferred = [UnitId(3), UnitId(4), UnitId(5)];
+        let mut routes = RouteProjection::new(&obs, Domain::Ground);
+        assert!(routes.group_reaches_command_goal(&preferred, ALLY_BASE));
+        assert!(
+            !combat_core_status(&obs, &preferred, &[], 8).ready,
+            "the route-safe preferred group would consume Prime's protected core"
+        );
+
+        let mut planner = TeamReliefPlanner::new();
+        let decision = planner.think_with_admission(
+            &profile(),
+            tuning(),
+            &obs,
+            HOME,
+            &[],
+            TeamReliefAdmission {
+                additionally_reserved: &[],
+                allow_new_operation: true,
+                core_reservations: &[],
+                minimum_core_equivalents: 8,
+            },
+        );
+
+        assert_eq!(
+            planner.core_reservations(),
+            [UnitId(20), UnitId(21), UnitId(22)]
+        );
+        assert_eq!(
+            decision.reservations,
+            [UnitId(1), UnitId(2), UnitId(20), UnitId(21), UnitId(22)],
+            "the credibility watch keeps its ordinary home screen and the same-size relief group"
+        );
+        assert!(combat_core_status(&obs, &planner.core_reservations(), &[], 8).ready);
     }
 
     #[test]

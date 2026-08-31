@@ -72,11 +72,13 @@ and commitment latency afterward. This keeps a faster controller from freezing a
 different roster or contact merely because it sampled between shared boundaries.
 
 Treat renewable economy as a strategic demand problem, not a bot-only entity
-cap. The player-facing opening may reserve the exact cost of a visible home
-Extractor restoration. Restore only after the whole frame is explored, and pause
-while current sight or recent local salvage evidence makes its footprint unsafe.
-Keep persistent combat rally points off known frames so restoring one cannot
-invalidate an existing order.
+cap. The player-facing opening preserves the exact costs of its fourth Harvester
+and a visible home Extractor restoration while establishing its difficulty core.
+The frame must be supported by the exact living authored starting Foundry and
+have an exact safe builder. Restore only after the whole frame is explored, and
+pause while current sight or recent local salvage evidence makes its footprint
+unsafe. Keep persistent combat rally points off known frames so restoring one
+cannot invalidate an existing order.
 
 Once a built Fabricator unlocks expansion Foundries, an owned completed
 Extractor without completed or projected support is a priority objective, but
@@ -93,12 +95,37 @@ impose a fixed count ceiling that a human player does not share. Preserve
 Overseer's documented legacy policy when evolving these rules.
 
 For adaptive profiles, fill an ordinary unreserved ground core before optional
-specialties. Project live HP, queued units, and same-think orders exactly once,
-and keep strategic reservations, raiders, artillery, anti-air, and support out
-of that core. Keep one baseline Tender; each additional Tender up to the seeded
-support ceiling needs a distinct currently wounded ground combatant reachable
-over known terrain. Count live, queued, and same-think Tenders once, and release
-the specialist fund when that demand disappears. Fill shallow Foundry queues
+specialties. HP-weight live Sentinel, Warden, and Breaker hulls; count queued
+and same-think orders exactly once; exclude exact persistent-operation
+reservations but not ordinary Executive armies. Protect difficulty floors of
+four, five, six, and eight Sentinel-equivalents for Scrapheap, Standard,
+Veteran, and Prime. Stance and personality must not alter those floors.
+
+While below the floor, pause voluntary capital, upgrades, discretionary
+production, mobile support, paid repairs, and new strategic operations. Existing
+operations may advance or release units but must not purchase, and paid sites or
+queues remain intact merely because the core fell; independent current-danger
+safety rules may still cancel an unsafe unattended defense site. Permit only the
+fourth Harvester, the exact safe authored home Extractor, one Turret for a
+current visible ground threat, and one Flak Turret for a current visible
+ground-attack aircraft. Pure air-to-air aircraft do not threaten the defended
+ground assets and cannot unlock emergency Flak. Memory, public starts, radar
+blips, and raid history are not emergency evidence. A think that begins below
+the floor remains recovery-gated until the next observation: same-think core
+orders count toward the projected floor so the bot does not over-order, but they
+do not reopen voluntary spending or strategic admission during that think. Once
+the floor is observed, voluntary capital must leave a Sentinel that remains
+shallow after the upcoming production phase or preserve its exact cost, unless
+honest known routing proves no ground objective exists. A lone existing
+front-slot Sentinel may complete before a deferred founder pays and is not
+enough. Keep the exact reserve in the bank while an unpaid founder travels;
+after payment, return it to shallow production before another voluntary project.
+Reapply the gate whenever projected core strength later falls.
+
+Keep one baseline Tender; each additional Tender up to the seeded support
+ceiling needs a distinct currently wounded ground combatant reachable over known
+terrain. Count live, queued, and same-think Tenders once, and release the
+specialist fund when that demand disappears. Fill shallow Foundry queues
 breadth-first and reserve a remaining shortfall without double-counting the
 ordinary fighting reserve. Generic production must not create partial bomber or
 ground-attack-air cohorts; a persistent air or lift operation owns those cohorts
@@ -213,11 +240,14 @@ greed in worker and renewable expansion targets; and guile in raid size, timing,
 withdrawal, and some mine or airborne-screen emphasis. Store the seed in the
 scenario and replay rather than serializing resolved traits or planner state.
 
-Keep early defensive choices bounded across identities. One perimeter turret may
-precede contact once the enemy has been located; unlock the remainder of a
-fortification target only after a real raid. For a player-facing controller,
-anonymous radar blips are not confirmed air and must not independently trigger
-flak construction.
+Keep early defensive choices bounded across identities. After the protected core
+is projected, one perimeter turret may precede contact once the enemy has been
+located; unlock the remainder of a fortification target only after a real raid.
+Below the core, only current visible armed evidence may justify the one matching
+emergency Turret or Flak Turret. Emergency Flak specifically requires an
+aircraft capable of attacking ground; a pure air-superiority flyer is not a
+threat to the defended ground assets. Anonymous radar blips are not confirmed
+air and must not independently trigger flak construction.
 
 Scrapheap, Standard, Veteran, and Prime use the same strategic repertoire.
 Scrapheap alone thinks less often; Standard, Veteran, and Prime intentionally
@@ -233,19 +263,28 @@ rules advantage or lose an entire strategy merely to become easier.
 
 Keep those limits structurally monotone. Lower-rung decision ticks must nest
 inside higher-rung schedules; reaction and commitment windows must become no
-slower as difficulty rises; and attention and memory must become no smaller.
-Lower rungs use a fixed deterministic underestimate of their own force, so they
-may miss a marginal opening; Veteran and Prime coordinate whole-army focus,
-while Scrapheap and Standard rely on ordinary unit acquisition. Veteran and
-Prime share the same optional-operation attention ceiling: neither peels a raid
-off while air and lift work already run together. Personality must never change
-these competence limits.
+slower as difficulty rises; and attention and memory must become no smaller. The
+four, five, six, and eight opening-core floors must remain monotone and
+independent of stance and personality. Lower rungs use a fixed deterministic
+underestimate of their own force, so they may miss a marginal opening; Veteran
+and Prime coordinate whole-army focus, while Scrapheap and Standard rely on
+ordinary unit acquisition. Veteran and Prime share the same optional-operation
+attention ceiling: neither peels a raid off while air and lift work already run
+together. Personality must never change these competence limits.
 
 A successful New Match chooses new personality seeds. Restart, Rematch, save
 loading, and replay reconstruction must preserve the recorded difficulty,
 stance, and seed.
 
 ## Change one behavior at a time
+
+For opening-economy work, cover exact floor boundaries, HP weighting,
+live/queued/same-think accounting, strategic-reservation exclusions, and every
+blocked spend channel. Exercise both current-threat emergency domains and
+noncurrent negatives; exact home-frame identity and builder safety; shallow
+Sentinel, exact-remainder, and no-ground-objective boundaries; a later core
+loss; and active planners advancing without purchases while new admissions stay
+closed.
 
 State the player-visible problem before tuning. Good targets are concrete:
 

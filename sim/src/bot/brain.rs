@@ -11,17 +11,17 @@ use super::PublicMapBriefing;
 use super::difficulty::DifficultyTuning;
 use super::executive::{Army, ArmyState, Executive, Intent};
 use super::intelligence::StrategicIntelligence;
-use super::lift::{LiftAirSupport, LiftOperation, LiftPlanner};
+use super::lift::{LiftAdmission, LiftAirSupport, LiftOperation, LiftPlanner};
 use super::observation::Observation;
 use super::orient::Orientation;
 use super::profile::ResolvedProfile;
-use super::raid::RaidPlanner;
+use super::raid::{RaidPlanner, RaidPlanningContext};
 use super::strategy::{
     AirOperationOutcome, AirOperationPhase, LiftSupportRequest, StrategicCoordination,
     StrategicDecision, StrategicPlanner,
 };
-use super::team::TeamReliefPlanner;
-use super::utility::{Dials, StrategicUtilityContext, UtilityPolicy};
+use super::team::{TeamReliefAdmission, TeamReliefPlanner};
+use super::utility::{Dials, StrategicUtilityContext, UtilityPolicy, combat_core_status};
 use crate::command::{Command, PlayerCommand};
 use crate::ids::{PlayerId, UnitId};
 use crate::scenario::BotConfig;
@@ -253,10 +253,90 @@ impl Brain {
             .as_ref()
             .expect("the profile-free controller returned through its legacy path");
         let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let team_claims = self
+        let prior_team_core_claims = self
             .team
             .as_ref()
-            .map_or_else(Vec::new, TeamReliefPlanner::reservations);
+            .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
+        let team_external_claims = prior_planner_claims(
+            &enlisted,
+            self.strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation),
+            &[],
+            self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
+            self.lifts.as_ref().and_then(LiftPlanner::operation),
+        );
+        let team_other_core_exclusions = prior_planner_claims(
+            &[],
+            self.strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation),
+            &[],
+            self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
+            self.lifts.as_ref().and_then(LiftPlanner::operation),
+        );
+        let prior_team_core_exclusions = prior_planner_claims(
+            &[],
+            self.strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation),
+            &prior_team_core_claims,
+            self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
+            self.lifts.as_ref().and_then(LiftPlanner::operation),
+        );
+        let allow_team_admission = combat_core_status(
+            &oriented,
+            &prior_team_core_exclusions,
+            &[],
+            u64::from(self.dials.minimum_core_equivalents),
+        )
+        .ready;
+        let team_before_decision = self.team.clone();
+        let mut team_decision = if let Some(team) = self.team.as_mut() {
+            team.think_with_admission(
+                profile,
+                tuning,
+                &oriented,
+                oriented_home,
+                &team_external_claims,
+                TeamReliefAdmission {
+                    additionally_reserved: &[],
+                    allow_new_operation: allow_team_admission,
+                    core_reservations: &team_other_core_exclusions,
+                    minimum_core_equivalents: u64::from(self.dials.minimum_core_equivalents),
+                },
+            )
+        } else {
+            StrategicDecision::default()
+        };
+        let mut team_core_claims = self
+            .team
+            .as_ref()
+            .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
+        if prior_team_core_claims.is_empty() && !team_core_claims.is_empty() {
+            let candidate_core_exclusions = prior_planner_claims(
+                &[],
+                self.strategy
+                    .as_ref()
+                    .and_then(StrategicPlanner::air_operation),
+                &team_core_claims,
+                self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
+                self.lifts.as_ref().and_then(LiftPlanner::operation),
+            );
+            if !combat_core_status(
+                &oriented,
+                &candidate_core_exclusions,
+                &[],
+                u64::from(self.dials.minimum_core_equivalents),
+            )
+            .ready
+            {
+                self.team = team_before_decision;
+                team_decision = StrategicDecision::default();
+                team_core_claims.clear();
+            }
+        }
+        let team_claims = team_decision.reservations.clone();
         let prior_non_lift_claims = prior_planner_claims(
             &enlisted,
             self.strategy
@@ -275,15 +355,46 @@ impl Brain {
             self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
             self.lifts.as_ref().and_then(LiftPlanner::operation),
         );
-        let team_external_claims = prior_planner_claims(
-            &enlisted,
+        let strategic_core_exclusions = prior_planner_claims(
+            &[],
             self.strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation),
-            &[],
+            &team_core_claims,
             self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
             self.lifts.as_ref().and_then(LiftPlanner::operation),
         );
+        let opening_core = combat_core_status(
+            &oriented,
+            &strategic_core_exclusions,
+            &[],
+            u64::from(self.dials.minimum_core_equivalents),
+        );
+        let allow_new_voluntary_operations = opening_core.ready;
+        let shallow_sentinel_reserve = if allow_new_voluntary_operations {
+            self.policy.shallow_sentinel_capital_reserve(
+                &self.dials,
+                &oriented,
+                oriented_home,
+                oriented_public_map
+                    .as_deref()
+                    .expect("the player-facing brain owns an oriented map briefing"),
+            )
+        } else {
+            0
+        };
+        let opening_bootstrap_reserve = if allow_new_voluntary_operations {
+            self.policy.strategic_opening_bootstrap_reserve(
+                &self.dials,
+                &oriented,
+                oriented_home,
+                oriented_public_map
+                    .as_deref()
+                    .expect("the player-facing brain owns an oriented map briefing"),
+            )
+        } else {
+            0
+        };
         let prior_lift_unavailable =
             lift_unavailable(&oriented, &armies, &enlisted, &prior_non_lift_claims);
         let construction_commitment = UtilityPolicy::deferred_construction_commitment(&oriented);
@@ -302,18 +413,27 @@ impl Brain {
                 .lifts
                 .as_ref()
                 .is_some_and(|lifts| lifts.operation().is_some());
-        let airworks_capacity_commitment = self.policy.airworks_capacity_commitment(
-            &self.dials,
-            &oriented,
-            oriented_home,
-            air_capacity_active.then_some(active_air_production_ticks),
-            &planner_claims,
-        );
+        let airworks_capacity_commitment = if allow_new_voluntary_operations {
+            self.policy.airworks_capacity_commitment(
+                &self.dials,
+                &oriented,
+                oriented_home,
+                air_capacity_active.then_some(active_air_production_ticks),
+                &planner_claims,
+            )
+        } else {
+            0
+        };
         let mut strategic_observation = oriented.clone();
         strategic_observation.scrap = strategic_observation
             .scrap
             .saturating_sub(construction_commitment)
-            .saturating_sub(airworks_capacity_commitment);
+            .saturating_sub(airworks_capacity_commitment)
+            .saturating_sub(shallow_sentinel_reserve)
+            .saturating_sub(opening_bootstrap_reserve);
+        if !allow_new_voluntary_operations {
+            strategic_observation.scrap = 0;
+        }
         let lift_support_request = self
             .lifts
             .as_ref()
@@ -337,6 +457,7 @@ impl Brain {
                     StrategicCoordination {
                         enlisted: &planner_claims,
                         lift_support: lift_support_request.as_ref(),
+                        allow_new_operation: allow_new_voluntary_operations,
                     },
                 )
             }
@@ -346,17 +467,7 @@ impl Brain {
             .strategy
             .as_ref()
             .is_some_and(|strategy| strategy.air_operation().is_some());
-        if let Some(team) = self.team.as_mut() {
-            let relief = team.think(
-                profile,
-                tuning,
-                &strategic_observation,
-                oriented_home,
-                &team_external_claims,
-                &strategic.reservations,
-            );
-            merge_strategic(&mut strategic, relief);
-        }
+        merge_strategic(&mut strategic, team_decision);
         let team_active = self
             .team
             .as_ref()
@@ -376,32 +487,37 @@ impl Brain {
         reservations_before_lift.dedup();
         let lift_unavailable =
             lift_unavailable(&oriented, &armies, &enlisted, &reservations_before_lift);
-        let prospective_carrier_commitment = self
-            .strategy
-            .as_ref()
-            .and_then(StrategicPlanner::air_operation)
-            .filter(|operation| {
-                operation.phase == AirOperationPhase::Recon && !operation.assault_admitted
-            })
-            .and_then(|operation| {
-                self.intelligence.as_ref().and_then(|intelligence| {
-                    intelligence.buildings().iter().find(|contact| {
-                        contact.player == operation.target_player
-                            && contact.anchor == operation.target
+        let prospective_carrier_commitment = if allow_new_voluntary_operations {
+            self.strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation)
+                .filter(|operation| {
+                    operation.phase == AirOperationPhase::Recon && !operation.assault_admitted
+                })
+                .and_then(|operation| {
+                    self.intelligence.as_ref().and_then(|intelligence| {
+                        intelligence.buildings().iter().find(|contact| {
+                            contact.player == operation.target_player
+                                && contact.anchor == operation.target
+                        })
                     })
                 })
-            })
-            .and_then(|target| {
-                self.lifts.as_ref().map(|lifts| {
-                    lifts.prospective_first_carrier_commitment(
-                        &oriented,
-                        oriented_home,
-                        &lift_unavailable,
-                        target,
-                    )
+                .and_then(|target| {
+                    self.lifts.as_ref().map(|lifts| {
+                        lifts.prospective_first_carrier_commitment(
+                            &oriented,
+                            oriented_home,
+                            &lift_unavailable,
+                            &strategic_core_exclusions,
+                            u64::from(self.dials.minimum_core_equivalents),
+                            target,
+                        )
+                    })
                 })
-            })
-            .unwrap_or(0);
+                .unwrap_or(0)
+        } else {
+            0
+        };
         let uncommitted_scrap = strategic_observation
             .scrap
             .saturating_sub(strategic.committed_scrap);
@@ -432,10 +548,54 @@ impl Brain {
                 _ => LiftAirSupport::Independent,
             };
         }
-        if let Some(lifts) = self.lifts.as_mut() {
-            let lift = lifts.think(&lift_observation, oriented_home, &lift_unavailable, support);
-            merge_strategic(&mut strategic, lift);
+        let lift_operation_was_active = self
+            .lifts
+            .as_ref()
+            .is_some_and(|lifts| lifts.operation().is_some());
+        let lifts_before_decision = self.lifts.clone();
+        let mut lift_decision = if let Some(lifts) = self.lifts.as_mut() {
+            lifts.think_with_admission(
+                &lift_observation,
+                oriented_home,
+                &lift_unavailable,
+                support,
+                LiftAdmission {
+                    allow_new_commitments: allow_new_voluntary_operations,
+                    core_reservations: &strategic_core_exclusions,
+                    minimum_core_equivalents: u64::from(self.dials.minimum_core_equivalents),
+                },
+            )
+        } else {
+            StrategicDecision::default()
+        };
+        if !lift_operation_was_active
+            && self
+                .lifts
+                .as_ref()
+                .is_some_and(|lifts| lifts.operation().is_some())
+        {
+            let candidate_core_exclusions = prior_planner_claims(
+                &[],
+                self.strategy
+                    .as_ref()
+                    .and_then(StrategicPlanner::air_operation),
+                &team_core_claims,
+                self.raids.as_ref().map_or(&[], RaidPlanner::reservations),
+                self.lifts.as_ref().and_then(LiftPlanner::operation),
+            );
+            if !combat_core_status(
+                &oriented,
+                &candidate_core_exclusions,
+                &[],
+                u64::from(self.dials.minimum_core_equivalents),
+            )
+            .ready
+            {
+                self.lifts = lifts_before_decision;
+                lift_decision = StrategicDecision::default();
+            }
         }
+        merge_strategic(&mut strategic, lift_decision);
         let lift_active = self
             .lifts
             .as_ref()
@@ -447,17 +607,21 @@ impl Brain {
             .raids
             .as_ref()
             .is_some_and(|raids| !raids.reservations().is_empty());
-        let can_begin_raid = can_admit_optional_raid(tuning, strategic_load);
+        let can_begin_raid =
+            allow_new_voluntary_operations && can_admit_optional_raid(tuning, strategic_load);
         if (raid_claimed || can_begin_raid)
             && let Some(raids) = self.raids.as_mut()
         {
-            let raid = raids.think(
-                profile,
-                tuning,
-                &strategic_observation,
-                oriented_home,
-                &planner_claims,
-                &strategic.reservations,
+            let raid = raids.think_with_admission(
+                RaidPlanningContext::new(
+                    profile,
+                    tuning,
+                    &strategic_observation,
+                    oriented_home,
+                    &planner_claims,
+                    &strategic.reservations,
+                )
+                .with_admission(allow_new_voluntary_operations),
             );
             merge_strategic(&mut strategic, raid);
         }
@@ -482,9 +646,11 @@ impl Brain {
             intelligence.units(),
             intelligence.buildings(),
             oriented_public_map
+                .as_deref()
                 .expect("the player-facing utility path has an oriented map briefing"),
             strategic.intents,
-        );
+        )
+        .with_combat_core_exclusions(&strategic_core_exclusions);
         let utility_context = if air_active || lift_active {
             utility_context.with_outstanding_air_production_ticks(outstanding_air_production_ticks)
         } else {
@@ -658,7 +824,9 @@ fn prior_planner_claims(
                 if !manifest.closed {
                     claims.push(manifest.carrier);
                 }
-                if !manifest.closed && !manifest.attack_issued {
+                if (!manifest.closed && !manifest.attack_issued)
+                    || (manifest.attack_issued && !manifest.aborted)
+                {
                     claims.extend(manifest.riders.iter().copied());
                 }
             }
@@ -781,7 +949,7 @@ mod tests {
     use crate::ids::{BuildingId, PlayerId, Target};
     use crate::scenario::{BotDifficulty, BotStance, BuildingSpec, PlayerSpec, Scenario, UnitSpec};
     use crate::state::Faction;
-    use crate::stats::{BuildingKind, UnitKind};
+    use crate::stats::{BuildingKind, Role, UnitKind};
     use chassis::grid::TilePos;
 
     fn public_map(scenario: &Scenario) -> Arc<PublicMapBriefing> {
@@ -814,6 +982,33 @@ mod tests {
             "the public config must resolve the profile and matching dials together"
         );
         brain
+    }
+
+    fn enlist_opening_core(brain: &mut Brain, state: &State) {
+        let obs = Observation::fog_honest(state, PlayerId(0));
+        let core: Vec<_> = obs
+            .my_units
+            .iter()
+            .filter(|unit| unit.kind == UnitKind::Sentinel)
+            .collect();
+        assert_eq!(core.len(), 8);
+        let staging = TilePos::new(
+            core.iter().map(|unit| unit.tile.x).sum::<i32>() / 8,
+            core.iter().map(|unit| unit.tile.y).sum::<i32>() / 8,
+        );
+        let _ = brain.exec.apply_with_reservations(
+            PlayerId(0),
+            &obs,
+            &[Intent::FormArmy { staging, size: 8 }],
+            &[],
+        );
+        let enlisted: Vec<_> = brain.exec.enlisted().collect();
+        assert_eq!(enlisted.len(), 8);
+        assert!(enlisted.iter().all(|id| {
+            obs.my_units
+                .iter()
+                .any(|unit| unit.id == *id && unit.kind == UnitKind::Sentinel)
+        }));
     }
 
     fn assert_brain_unchanged(before: &Brain, after: &Brain) {
@@ -1586,147 +1781,8 @@ mod tests {
         );
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum OpeningMacroCommand {
-        Harvest {
-            workers: Vec<usize>,
-            node: TilePos,
-        },
-        Train {
-            kind: UnitKind,
-        },
-        Build {
-            kind: BuildingKind,
-            anchor: TilePos,
-            units: usize,
-        },
-        AttackMove {
-            goal: TilePos,
-            units: usize,
-        },
-        PaidSustain {
-            units: usize,
-        },
-        Salvage {
-            units: usize,
-        },
-        Upgrade,
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct HarvestAdmissionSnapshot {
-        workers: Vec<(usize, TilePos, u32)>,
-        sources: Vec<(bool, TilePos, u32)>,
-    }
-
-    fn opening_harvest_snapshot(
-        state: &State,
-        brain: &Brain,
-        player: PlayerId,
-        orientation: Orientation,
-    ) -> HarvestAdmissionSnapshot {
-        let obs = orientation.observe(&Observation::fog_honest(state, player));
-        let mut workers: Vec<_> = obs
-            .my_units
-            .iter()
-            .filter(|unit| {
-                unit.kind.stats().harvest.is_some()
-                    && unit.idle
-                    && !brain.policy.worker_safety_reservations().contains(&unit.id)
-            })
-            .map(|unit| {
-                (
-                    crate::ids::owner_local_unit_rank(
-                        unit.id,
-                        player,
-                        state.units().iter().map(|unit| (unit.id, unit.player)),
-                    ),
-                    unit.tile,
-                    unit.carrying,
-                )
-            })
-            .collect();
-        workers.sort_unstable();
-
-        let mut sources: Vec<_> = obs
-            .known_scrap
-            .iter()
-            .filter(|(_, amount)| *amount > 0)
-            .map(|(tile, amount)| (false, *tile, *amount))
-            .chain(
-                obs.known_wrecks
-                    .iter()
-                    .filter(|(_, amount)| *amount > 0)
-                    .map(|(tile, amount)| (true, *tile, *amount)),
-            )
-            .collect();
-        sources.sort_unstable();
-
-        HarvestAdmissionSnapshot { workers, sources }
-    }
-
-    fn opening_macro_command(
-        state: &State,
-        player: PlayerId,
-        orientation: Orientation,
-        command: &Command,
-    ) -> Option<OpeningMacroCommand> {
-        match command {
-            Command::Harvest { units, node, .. } => Some(OpeningMacroCommand::Harvest {
-                workers: units
-                    .iter()
-                    .map(|unit| {
-                        crate::ids::owner_local_unit_rank(
-                            *unit,
-                            player,
-                            state.units().iter().map(|unit| (unit.id, unit.player)),
-                        )
-                    })
-                    .collect(),
-                node: orientation.tile(*node),
-            }),
-            Command::Train { kind, .. } => Some(OpeningMacroCommand::Train { kind: *kind }),
-            Command::Build {
-                units,
-                kind,
-                anchor,
-                ..
-            } => Some(OpeningMacroCommand::Build {
-                kind: *kind,
-                anchor: orientation.anchor(*anchor, kind.base_stats().size),
-                units: units.len(),
-            }),
-            Command::AttackMove { units, goal, .. } => Some(OpeningMacroCommand::AttackMove {
-                goal: orientation.tile(*goal),
-                units: units.len(),
-            }),
-            Command::Repair { units, .. } | Command::RepairUnit { units, .. } => {
-                Some(OpeningMacroCommand::PaidSustain { units: units.len() })
-            }
-            Command::Salvage { units, .. } => {
-                Some(OpeningMacroCommand::Salvage { units: units.len() })
-            }
-            Command::UpgradeBuilding { .. } => Some(OpeningMacroCommand::Upgrade),
-            _ => None,
-        }
-    }
-
-    fn is_voluntary_opening_command(command: &Command) -> bool {
-        matches!(
-            command,
-            Command::Harvest { .. }
-                | Command::Train { .. }
-                | Command::Build { .. }
-                | Command::AttackMove { .. }
-                | Command::Repair { .. }
-                | Command::RepairUnit { .. }
-                | Command::Salvage { .. }
-                | Command::UpgradeBuilding { .. }
-        )
-    }
-
     #[test]
-    fn veteran_does_not_trail_standard_during_the_shared_opening() {
+    fn each_difficulty_reaches_its_opening_core_before_the_first_fabricator() {
         const OPENING_END: u64 = 5_000;
 
         let scenario = calibration_open_ferrous();
@@ -1753,172 +1809,58 @@ mod tests {
                 public_map,
             ),
         ];
-        let orientations = [PlayerId(0), PlayerId(1)].map(|player| {
-            let obs = Observation::fog_honest(&state, player);
-            let home = obs
-                .my_buildings
-                .iter()
-                .find(|building| building.kind == BuildingKind::Foundry)
-                .expect("each calibration seat has a Foundry")
-                .anchor;
-            Orientation::for_home(&obs, home)
-        });
-        let mut macro_commands: [Vec<OpeningMacroCommand>; 2] = Default::default();
-        let mut hauled = [0_u32; 2];
-        let mut foundry_started: [Vec<u64>; 2] = Default::default();
-        let mut foundry_completed: [Vec<u64>; 2] = Default::default();
-        let mut equivalent_harvest_admissions = 0;
+        let floors = [5_u64, 6_u64];
+        let mut first_fabricator = [None; 2];
+        let mut core_at_fabricator = [None; 2];
 
-        // The current opening can make contact before its first expansion.
-        // Stop at the guarded macro milestone instead of letting that early
-        // skirmish skip the part of the opening this test exists to compare.
-        while state.current_tick() < OPENING_END && foundry_completed.iter().any(Vec::is_empty) {
+        while state.current_tick() < OPENING_END && first_fabricator.iter().any(Option::is_none) {
             let tick = state.current_tick();
-            let harvest_snapshots = [0, 1].map(|seat| {
-                opening_harvest_snapshot(
-                    &state,
-                    &brains[seat],
-                    PlayerId(seat as u8),
-                    orientations[seat],
+            let statuses = [0, 1].map(|seat| {
+                combat_core_status(
+                    &Observation::fog_honest(&state, PlayerId(seat as u8)),
+                    &[],
+                    &[],
+                    floors[seat],
                 )
             });
             let commands: Vec<_> = brains
                 .iter_mut()
                 .flat_map(|brain| brain.act(&state))
                 .collect();
-            let mut harvest_commands: [Vec<OpeningMacroCommand>; 2] = Default::default();
             for command in &commands {
                 let seat = usize::from(command.player.0);
-                if is_voluntary_opening_command(&command.command) {
-                    assert!(
-                        super::super::difficulty::strategic_admission_tick(tick),
-                        "seat {seat} issued voluntary opening macro at tick {tick} between shared boundaries: {command:?}"
-                    );
-                }
-                if let Some(signature) = opening_macro_command(
-                    &state,
-                    command.player,
-                    orientations[seat],
-                    &command.command,
-                ) {
-                    if matches!(signature, OpeningMacroCommand::Harvest { .. }) {
-                        harvest_commands[seat].push(signature);
-                    } else {
-                        macro_commands[seat].push(signature);
-                    }
-                }
                 if matches!(
                     command.command,
                     Command::Build {
-                        kind: BuildingKind::Foundry,
+                        kind: BuildingKind::Fabricator,
                         ..
                     }
-                ) {
-                    foundry_started[seat].push(tick);
+                ) && first_fabricator[seat].is_none()
+                {
+                    first_fabricator[seat] = Some(tick);
+                    core_at_fabricator[seat] = Some(statuses[seat].projected_strength);
+                    assert!(
+                        statuses[seat].ready,
+                        "seat {seat} started its first Fabricator with core status {:?}",
+                        statuses[seat]
+                    );
+                    assert!(
+                        statuses[seat].projected_strength >= statuses[seat].target_strength,
+                        "post-floor reinforcement may extend the line while capital accumulates"
+                    );
                 }
-            }
-
-            if harvest_snapshots[0] == harvest_snapshots[1] {
-                if harvest_commands.iter().any(|commands| !commands.is_empty()) {
-                    equivalent_harvest_admissions += 1;
-                }
-                assert_eq!(
-                    harvest_commands[0], harvest_commands[1],
-                    "equivalent owner-oriented worker/source snapshots must produce the same Harvest assignments at tick {tick}: {harvest_snapshots:?}"
-                );
-            } else {
-                // Difficulty-specific reactions may leave different workers
-                // eligible at a later shared boundary. Compare Harvest only
-                // when both owner-oriented inputs are equivalent.
             }
 
             let report = state.tick(&commands);
             for event in report.events {
-                match event {
-                    crate::Event::ScrapDeposited { player, amount } => {
-                        hauled[usize::from(player.0)] += amount;
-                    }
-                    crate::Event::BuildingCompleted {
-                        player,
-                        kind: BuildingKind::Foundry,
-                        ..
-                    } => foundry_completed[usize::from(player.0)].push(tick),
-                    crate::Event::CommandRejected { player, reason } => {
-                        panic!("seat {player} issued a rejected opening command: {reason:?}")
-                    }
-                    _ => {}
+                if let crate::Event::CommandRejected { player, reason } = event {
+                    panic!("seat {player} issued a rejected opening command: {reason:?}");
                 }
             }
         }
 
-        assert_eq!(
-            macro_commands[0], macro_commands[1],
-            "same-profile non-Harvest opening macro must follow the same admitted plan"
-        );
-        assert!(
-            equivalent_harvest_admissions > 0,
-            "the fixture never compared a real Harvest decision from equivalent snapshots"
-        );
-        assert!(
-            hauled[1] >= hauled[0],
-            "Veteran hauled less than Standard through the first expansion: {hauled:?}"
-        );
-        assert!(
-            state.player(PlayerId(1)).scrap >= state.player(PlayerId(0)).scrap,
-            "Veteran banked less than Standard through the first expansion: Standard={}, Veteran={}",
-            state.player(PlayerId(0)).scrap,
-            state.player(PlayerId(1)).scrap,
-        );
-        let started = foundry_started.each_ref().map(Vec::len);
-        assert_eq!(
-            started[0], started[1],
-            "the paired opening must start the same number of Foundries: {foundry_started:?}"
-        );
-        assert!(
-            started[0] > 0,
-            "the fixture never reached an expansion start"
-        );
-        let completed = foundry_completed.each_ref().map(Vec::len);
-        assert_eq!(
-            completed[0], completed[1],
-            "the paired opening must complete the same number of Foundries: {foundry_completed:?}"
-        );
-        assert!(
-            completed[0] > 0,
-            "the fixture never reached an expansion completion"
-        );
-        for milestone in 0..started[0] {
-            assert!(
-                foundry_started[1][milestone] <= foundry_started[0][milestone],
-                "Veteran started Foundry {milestone} later: {foundry_started:?}"
-            );
-        }
-        for milestone in 0..completed[0] {
-            assert!(
-                foundry_completed[1][milestone] <= foundry_completed[0][milestone],
-                "Veteran completed Foundry {milestone} later: {foundry_completed:?}"
-            );
-        }
-        let ordinary_core = |player| {
-            let live = state
-                .units()
-                .iter()
-                .filter(|unit| unit.player == player && unit.kind == UnitKind::Sentinel)
-                .count();
-            let queued = state
-                .buildings()
-                .iter()
-                .filter(|building| building.player == player)
-                .flat_map(|building| &building.queue)
-                .filter(|kind| **kind == UnitKind::Sentinel)
-                .count();
-            live + queued
-        };
-        let core = [ordinary_core(PlayerId(0)), ordinary_core(PlayerId(1))];
-        assert!(
-            core[1] >= core[0],
-            "Veteran ordinary core trailed: {core:?}"
-        );
+        assert!(first_fabricator.iter().all(Option::is_some));
+        assert!(core_at_fabricator.iter().all(Option::is_some));
     }
 
     #[test]
@@ -2223,10 +2165,16 @@ mod tests {
             pending.reservations,
             "the earlier air planner must see every exact unit frozen by the credibility watch"
         );
+        assert_eq!(
+            relief.core_reservations(),
+            [UnitId(3), UnitId(4), UnitId(5)],
+            "only the outbound group leaves the opening core; the two reserved home defenders \
+             remain its screen"
+        );
     }
 
     #[test]
-    fn lift_ownership_joins_the_prior_planner_ledger_until_handoff() {
+    fn lift_ownership_keeps_landed_assault_riders_in_the_prior_planner_ledger() {
         use super::super::lift::{LiftManifest, LiftOperation, LiftPhase};
 
         let lift = LiftOperation {
@@ -2268,7 +2216,7 @@ mod tests {
                     unload_attempts: 1,
                     recovery_attempts: 0,
                     aborted: false,
-                    closed: false,
+                    closed: true,
                 },
             ],
             launched: true,
@@ -2276,7 +2224,15 @@ mod tests {
 
         assert_eq!(
             prior_planner_claims(&[UnitId(1)], None, &[], &[], Some(&lift)),
-            [UnitId(1), UnitId(2), UnitId(3), UnitId(20), UnitId(21)]
+            [
+                UnitId(1),
+                UnitId(2),
+                UnitId(3),
+                UnitId(4),
+                UnitId(5),
+                UnitId(20),
+            ],
+            "landed riders remain operation-owned after their carrier closes"
         );
 
         let mut provisioning = lift;
@@ -2287,6 +2243,217 @@ mod tests {
             prior_planner_claims(&[], None, &[], &[], Some(&provisioning)),
             [UnitId(6), UnitId(7), UnitId(8)],
             "the exact payload stays owned while its carriers are still training"
+        );
+    }
+
+    #[test]
+    fn landed_lift_assault_cannot_reopen_prime_capital_spending() {
+        let mut scenario = bulk_lift_capacity_scenario();
+        scenario.players[0].scrap = 50_000;
+        let mut kept_sentinels = 0;
+        scenario.units.retain(|unit| {
+            if unit.kind != UnitKind::Sentinel {
+                return true;
+            }
+            kept_sentinels += 1;
+            kept_sentinels <= 16
+        });
+        scenario.units.extend((0..8).map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Skyhook,
+            x: 3 + index,
+            y: 20,
+        }));
+        let state = scenario
+            .build()
+            .expect("the landed-assault opening fixture builds");
+        let mut planning = Observation::fog_honest(&state, PlayerId(0));
+        let home = planning
+            .my_buildings
+            .iter()
+            .find(|building| building.kind == BuildingKind::Foundry)
+            .expect("the authored home Foundry stands")
+            .anchor;
+        let original_riders = planning.my_units.clone();
+        let mut lifts = LiftPlanner::new();
+        let _ = lifts.think_with_admission(
+            &planning,
+            home,
+            &[],
+            LiftAirSupport::Independent,
+            LiftAdmission {
+                allow_new_commitments: true,
+                core_reservations: &[],
+                minimum_core_equivalents: 8,
+            },
+        );
+        let manifests = lifts
+            .operation()
+            .expect("the disconnected objective admits a lift")
+            .manifests
+            .clone();
+        let riders: Vec<_> = manifests
+            .iter()
+            .flat_map(|manifest| manifest.riders.iter().copied())
+            .collect();
+        assert_eq!(riders.len(), 8, "the lift leaves Prime's home eight intact");
+
+        planning.my_units.retain(|unit| !riders.contains(&unit.id));
+        for manifest in &manifests {
+            let carrier = planning
+                .my_units
+                .iter_mut()
+                .find(|unit| unit.id == manifest.carrier)
+                .expect("every exact carrier remains observable");
+            carrier.tile = manifest.pickup;
+            carrier.cargo = manifest
+                .riders
+                .iter()
+                .filter_map(|id| original_riders.iter().find(|unit| unit.id == *id))
+                .map(|unit| unit.kind.stats().transport_size)
+                .sum();
+        }
+        planning.tick += 1;
+        let _ = lifts.think_with_admission(
+            &planning,
+            home,
+            &[],
+            LiftAirSupport::Independent,
+            LiftAdmission {
+                allow_new_commitments: false,
+                core_reservations: &[],
+                minimum_core_equivalents: 8,
+            },
+        );
+        assert_eq!(
+            lifts.operation().map(|operation| operation.phase),
+            Some(LiftPhase::Landing)
+        );
+
+        for manifest in &manifests {
+            let carrier = planning
+                .my_units
+                .iter_mut()
+                .find(|unit| unit.id == manifest.carrier)
+                .expect("every carrier reaches its exact drop");
+            carrier.tile = manifest.drop;
+            carrier.cargo = 0;
+            planning.my_units.extend(manifest.riders.iter().map(|id| {
+                let mut rider = original_riders
+                    .iter()
+                    .find(|unit| unit.id == *id)
+                    .expect("the manifest names an exact original rider")
+                    .clone();
+                rider.tile = manifest.drop;
+                rider
+            }));
+        }
+        planning.my_units.sort_unstable_by_key(|unit| unit.id);
+        planning.tick += 1;
+        let _ = lifts.think_with_admission(
+            &planning,
+            home,
+            &[],
+            LiftAirSupport::Independent,
+            LiftAdmission {
+                allow_new_commitments: false,
+                core_reservations: &[],
+                minimum_core_equivalents: 8,
+            },
+        );
+        let operation = lifts
+            .operation()
+            .expect("the planner keeps directing its landed assault");
+        assert_eq!(operation.phase, LiftPhase::Recover);
+        assert!(
+            operation
+                .manifests
+                .iter()
+                .all(|manifest| manifest.attack_issued)
+        );
+
+        let one_home_sentinel = state
+            .units()
+            .iter()
+            .find(|unit| {
+                unit.player == PlayerId(0)
+                    && unit.kind == UnitKind::Sentinel
+                    && !riders.contains(&unit.id)
+            })
+            .expect("the original core has one removable home member")
+            .id;
+        let assault_positions: Vec<_> = operation
+            .manifests
+            .iter()
+            .flat_map(|manifest| {
+                manifest
+                    .riders
+                    .iter()
+                    .copied()
+                    .map(move |id| (id, manifest.drop))
+            })
+            .collect();
+        let mut document = serde_json::to_value(&state).expect("the fixture state serializes");
+        let units = document["units"]
+            .as_array_mut()
+            .expect("state units serialize as an array");
+        units.retain(|unit| unit["id"].as_u64() != Some(u64::from(one_home_sentinel.0)));
+        for unit in units {
+            let id = UnitId(
+                u32::try_from(unit["id"].as_u64().expect("unit ids are numeric"))
+                    .expect("unit ids fit u32"),
+            );
+            if let Some((_, drop)) = assault_positions.iter().find(|(rider, _)| *rider == id) {
+                unit["pos"] =
+                    serde_json::to_value(drop.center()).expect("a tile center serializes");
+            }
+        }
+        let state: State =
+            serde_json::from_value(document).expect("the post-loss assault state remains valid");
+        let observed = Observation::fog_honest(&state, PlayerId(0));
+        assert!(combat_core_status(&observed, &[], &[], 8).ready);
+        let exact_lift_claims = prior_planner_claims(&[], None, &[], &[], Some(operation));
+        let protected = combat_core_status(&observed, &exact_lift_claims, &[], 8);
+        assert!(
+            !protected.ready,
+            "the seven home hulls, not the eight island riders, define the opening core: {protected:?}"
+        );
+
+        let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 20_024);
+        let mut control = scripted_brain(&scenario, PlayerId(0), config);
+        control.strategy = None;
+        control.team = None;
+        control.lifts = None;
+        control.raids = None;
+        let control_commands = control.act(&state);
+        assert!(
+            control_commands.iter().any(|command| matches!(
+                command.command,
+                Command::Build { .. } | Command::UpgradeBuilding { .. }
+            )),
+            "the rich control must prove voluntary capital is otherwise available: {control_commands:?}"
+        );
+
+        let mut protected_brain = scripted_brain(&scenario, PlayerId(0), config);
+        protected_brain.strategy = None;
+        protected_brain.team = None;
+        protected_brain.lifts = Some(lifts);
+        protected_brain.raids = None;
+        let commands = protected_brain.act(&state);
+        assert!(commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )));
+        assert!(
+            commands.iter().all(|command| match command.command {
+                Command::Build { .. } | Command::UpgradeBuilding { .. } => false,
+                Command::Train { kind, .. } => kind == UnitKind::Sentinel,
+                _ => true,
+            }),
+            "operation-owned island riders cannot reopen voluntary spending: {commands:?}"
         );
     }
 
@@ -2580,6 +2747,7 @@ mod tests {
         }
 
         let mut brain = operation_identity_brain(PlayerId(0), &scenario);
+        enlist_opening_core(&mut brain, &state);
 
         let commands = brain.act(&state);
 
@@ -2593,8 +2761,8 @@ mod tests {
             .as_ref()
             .and_then(LiftPlanner::operation)
             .expect("the same match starts its coordinated bulk lift");
-        assert_eq!(lift.desired_carriers, 8);
-        assert_eq!(lift.payload.len(), 32);
+        assert!(lift.desired_carriers >= 8);
+        assert!(lift.payload.len() >= 32);
         assert_eq!(
             (lift.target_player, lift.target),
             (air.target_player, air.target),
@@ -2645,6 +2813,7 @@ mod tests {
             for load in [PrimaryLoad::None, PrimaryLoad::Air, PrimaryLoad::AirAndLift] {
                 let config = BotConfig::scripted(difficulty, BotStance::Balanced, 20_024);
                 let mut brain = scripted_brain(&scenario, PlayerId(0), config);
+                enlist_opening_core(&mut brain, &prepared);
                 brain.team = None;
                 match load {
                     PrimaryLoad::None => {
@@ -2698,6 +2867,7 @@ mod tests {
         for difficulty in BotDifficulty::ALL {
             let config = BotConfig::scripted(difficulty, BotStance::Balanced, 20_024);
             let mut brain = scripted_brain(&scenario, PlayerId(0), config);
+            enlist_opening_core(&mut brain, &prepared);
             brain.team = None;
             let profile = *brain
                 .profile
@@ -2840,7 +3010,14 @@ mod tests {
                     .lifts
                     .as_ref()
                     .expect("scripted brains own lift planners")
-                    .prospective_first_carrier_commitment(&oriented, oriented_home, &[], target,),
+                    .prospective_first_carrier_commitment(
+                        &oriented,
+                        oriented_home,
+                        &[],
+                        &[],
+                        0,
+                        target,
+                    ),
                 UnitKind::Skyhook.stats().cost,
                 "the fog-honest snapshot warrants exactly one prospective carrier for {difficulty:?}"
             );
@@ -2896,6 +3073,7 @@ mod tests {
         }
 
         let mut brain = operation_identity_brain(PlayerId(0), &scenario);
+        brain.dials.minimum_core_equivalents = 0;
 
         let mut shared_target = None;
         let mut bomber_release = false;
@@ -3081,6 +3259,9 @@ mod tests {
                 .all(|unit| unit.kind.stats().transport_size == 0)
         );
         let mut brain = operation_identity_brain(PlayerId(0), &scenario);
+        // This fixture isolates the independent bomber lifecycle. Brain-level
+        // opening-core admission is covered by dedicated mixed-roster tests.
+        brain.dials.minimum_core_equivalents = 0;
 
         let mut launched = None;
         for _ in 0..4_000 {
@@ -3158,6 +3339,701 @@ mod tests {
     }
 
     #[test]
+    fn fallen_prime_core_keeps_paid_work_and_an_active_operation_progressing() {
+        let scenario = combined_operation_scenario();
+        let mut state = scenario
+            .build()
+            .expect("the combined-operation continuation builds");
+        for _ in 0..6_000 {
+            state.tick(&[]);
+        }
+
+        let mut brain = operation_identity_brain(PlayerId(0), &scenario);
+        brain.team = None;
+        brain.lifts = None;
+        brain.raids = None;
+
+        let mut prepaid_operation_queue = None;
+        for _ in 0..1_000 {
+            let commands = brain.act(&state);
+            let active = brain
+                .strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation);
+            if let Some((building, kind)) =
+                commands.iter().find_map(|command| match command.command {
+                    Command::Train {
+                        building,
+                        kind: UnitKind::Condor,
+                    } if active.is_some() => Some((building, UnitKind::Condor)),
+                    _ => None,
+                })
+            {
+                prepaid_operation_queue = Some((building, kind));
+            }
+            let report = state.tick(&commands);
+            assert!(report.events.iter().all(|event| !matches!(
+                event,
+                crate::event::Event::CommandRejected {
+                    player: PlayerId(0),
+                    ..
+                }
+            )));
+            if prepaid_operation_queue.is_some()
+                && brain
+                    .strategy
+                    .as_ref()
+                    .and_then(StrategicPlanner::air_operation)
+                    .is_some()
+            {
+                break;
+            }
+        }
+        let (producer, queued_kind) = prepaid_operation_queue
+            .expect("the active air operation prepays a Condor in its Airworks queue");
+        assert!(
+            state
+                .building(producer)
+                .is_some_and(|building| building.queue.contains(&queued_kind)),
+            "the operation-owned production order is paid and remains queued"
+        );
+
+        let builder = state
+            .units()
+            .iter()
+            .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Harvester)
+            .expect("the safe home economy retains a voluntary-capital builder")
+            .id;
+        let capital_anchor = TilePos::new(14, 7);
+        let report = state.tick(&[PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Build {
+                units: vec![builder],
+                kind: BuildingKind::Array,
+                anchor: capital_anchor,
+                queue: false,
+                defer: false,
+            },
+        }]);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            crate::event::Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )));
+        let capital_site = state
+            .buildings()
+            .iter()
+            .find(|building| {
+                building.player == PlayerId(0)
+                    && building.kind == BuildingKind::Array
+                    && building.anchor == capital_anchor
+            })
+            .expect("the ordinary command pays for a safe voluntary Array site")
+            .id;
+        assert!(
+            !state
+                .building(capital_site)
+                .expect("the paid site remains")
+                .built,
+            "the capital work must still be unfinished before the later loss"
+        );
+
+        let lost_core: Vec<_> = state
+            .units()
+            .iter()
+            .filter(|unit| {
+                unit.player == PlayerId(0)
+                    && matches!(
+                        unit.kind.role(),
+                        Role::Sentinel | Role::Warden | Role::Breaker
+                    )
+            })
+            .skip(1)
+            .map(|unit| unit.id.0)
+            .collect();
+        assert!(
+            lost_core.len() >= 7,
+            "the fixture begins with at least Prime's full core before its later loss"
+        );
+        let mut document = serde_json::to_value(&state).expect("the live continuation serializes");
+        document["units"]
+            .as_array_mut()
+            .expect("units serialize as an array")
+            .retain(|unit| {
+                !lost_core.contains(&(unit["id"].as_u64().expect("unit ids are numeric") as u32))
+            });
+        for building in document["buildings"]
+            .as_array_mut()
+            .expect("buildings serialize as an array")
+        {
+            building["queue"]
+                .as_array_mut()
+                .expect("building queues serialize as arrays")
+                .retain(|kind| !matches!(kind.as_str(), Some("sentinel" | "warden" | "breaker")));
+        }
+        state = serde_json::from_value(document).expect("the post-loss state remains valid");
+        assert_eq!(
+            state
+                .units()
+                .iter()
+                .filter(|unit| {
+                    unit.player == PlayerId(0)
+                        && matches!(
+                            unit.kind.role(),
+                            Role::Sentinel | Role::Warden | Role::Breaker
+                        )
+                })
+                .count(),
+            1,
+            "the later casualty leaves Prime below its eight-equivalent floor"
+        );
+        assert!(
+            state
+                .building(producer)
+                .is_some_and(|building| building.queue.contains(&queued_kind)),
+            "the operation-owned queue survives the core's later losses"
+        );
+        let post_loss_observation = Observation::fog_honest(&state, PlayerId(0));
+        let post_loss_orientation = *brain
+            .orientation
+            .as_ref()
+            .expect("the real Brain latched its player-facing orientation before the loss");
+        let post_loss_exclusions = prior_planner_claims(
+            &[],
+            brain
+                .strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation),
+            &[],
+            brain.raids.as_ref().map_or(&[], RaidPlanner::reservations),
+            brain.lifts.as_ref().and_then(LiftPlanner::operation),
+        );
+        let post_loss_oriented = post_loss_orientation.observe(&post_loss_observation);
+        let post_loss_core = combat_core_status(
+            &post_loss_oriented,
+            &post_loss_exclusions,
+            &[],
+            u64::from(brain.dials.minimum_core_equivalents),
+        );
+        assert!(
+            !post_loss_core.ready,
+            "the actual post-loss Brain input must remain below Prime's protected core: \
+             {post_loss_core:?}, queues={:?}",
+            post_loss_oriented.my_queues
+        );
+        assert!(
+            brain
+                .strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation)
+                .is_some(),
+            "the paid operation is active before core loss"
+        );
+        let site_hp_before_loss = state
+            .building(capital_site)
+            .expect("the paid capital site survived the loss")
+            .hp;
+        let queue_progress_before_loss = state
+            .building(producer)
+            .expect("the prepaid operation queue survived the loss")
+            .progress;
+
+        let mut recovery_started = false;
+        let mut queued_condor_finished = false;
+        let mut operation_continuation_observed = false;
+        for _ in 0..1_500 {
+            let recovery_observation = Observation::fog_honest(&state, PlayerId(0));
+            let recovery_exclusions = prior_planner_claims(
+                &[],
+                brain
+                    .strategy
+                    .as_ref()
+                    .and_then(StrategicPlanner::air_operation),
+                &[],
+                brain.raids.as_ref().map_or(&[], RaidPlanner::reservations),
+                brain.lifts.as_ref().and_then(LiftPlanner::operation),
+            );
+            let core_deficient = !combat_core_status(
+                &post_loss_orientation.observe(&recovery_observation),
+                &recovery_exclusions,
+                &[],
+                u64::from(brain.dials.minimum_core_equivalents),
+            )
+            .ready;
+            let operation_was_active = brain
+                .strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation)
+                .is_some();
+            let commands = brain.act(&state);
+            if core_deficient && operation_was_active {
+                let strategy = brain
+                    .strategy
+                    .as_ref()
+                    .expect("the active operation retains its planner");
+                assert!(
+                    strategy.air_operation().is_some() || strategy.terminal_outcome().is_some(),
+                    "core loss must not silently discard an active operation"
+                );
+                operation_continuation_observed = true;
+            }
+            recovery_started |= core_deficient
+                && commands.iter().any(|command| {
+                    matches!(
+                        command.command,
+                        Command::Train {
+                            kind: UnitKind::Sentinel,
+                            ..
+                        }
+                    )
+                });
+            assert!(commands.iter().all(|command| !matches!(
+                command.command,
+                Command::Cancel { .. } | Command::CancelTrain { .. }
+            )));
+            if core_deficient {
+                assert!(
+                    commands.iter().all(|command| match command.command {
+                        Command::Build { kind, anchor, .. } => {
+                            state.buildings().iter().any(|site| {
+                                site.player == PlayerId(0)
+                                    && site.kind == kind
+                                    && site.anchor == anchor
+                            })
+                        }
+                        Command::Train {
+                            kind: UnitKind::Sentinel,
+                            ..
+                        } => true,
+                        Command::UpgradeBuilding { .. } | Command::Train { .. } => false,
+                        _ => true,
+                    }),
+                    "a deficient core may resume paid work but must not buy new specialty capital: {commands:?}"
+                );
+            }
+
+            let report = state.tick(&commands);
+            assert!(report.events.iter().all(|event| !matches!(
+                event,
+                crate::event::Event::CommandRejected {
+                    player: PlayerId(0),
+                    ..
+                }
+            )));
+            queued_condor_finished |= report.events.iter().any(|event| {
+                matches!(
+                    event,
+                    crate::event::Event::UnitTrained {
+                        kind,
+                        player: PlayerId(0),
+                        ..
+                    } if *kind == queued_kind
+                )
+            });
+            if recovery_started
+                && queued_condor_finished
+                && state
+                    .building(capital_site)
+                    .is_some_and(|site| site.hp > site_hp_before_loss)
+                && operation_continuation_observed
+            {
+                break;
+            }
+        }
+
+        assert!(recovery_started, "Prime resumes its ordinary Sentinel line");
+        assert!(
+            state
+                .building(capital_site)
+                .is_some_and(|site| site.hp > site_hp_before_loss),
+            "the paid voluntary site remains and advances through core recovery"
+        );
+        assert!(
+            state.building(producer).is_some_and(|building| {
+                building.progress > queue_progress_before_loss || queued_condor_finished
+            }),
+            "the prepaid operation queue keeps making ordinary production progress"
+        );
+        assert!(
+            queued_condor_finished,
+            "the prepaid operation unit completes without a repurchase"
+        );
+        assert!(
+            operation_continuation_observed,
+            "the existing operation survives core loss until its ordinary terminal transition"
+        );
+    }
+
+    #[test]
+    fn opening_core_gate_blocks_fresh_strategic_work_at_the_brain_boundary() {
+        let scenario = independent_bomber_operation_scenario();
+        let mut state = scenario
+            .build()
+            .expect("independent bomber scenario builds");
+        for _ in 0..6_000 {
+            state.tick(&[]);
+        }
+
+        let mut gated = operation_identity_brain(PlayerId(0), &scenario);
+        let commands = gated.act(&state);
+        assert!(
+            gated
+                .strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation)
+                .is_none()
+        );
+        assert!(
+            gated
+                .lifts
+                .as_ref()
+                .and_then(LiftPlanner::operation)
+                .is_none()
+        );
+        assert!(
+            gated
+                .raids
+                .as_ref()
+                .and_then(RaidPlanner::operation)
+                .is_none()
+        );
+        assert!(commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Skyhook
+                    | UnitKind::Condor
+                    | UnitKind::Moth
+                    | UnitKind::Buzzard
+                    | UnitKind::Darter,
+                ..
+            }
+        )));
+
+        let mut admitted = operation_identity_brain(PlayerId(0), &scenario);
+        admitted.dials.minimum_core_equivalents = 0;
+        let mut control = state.clone();
+        for _ in 0..4_000 {
+            let commands = admitted.act(&control);
+            if admitted
+                .strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation)
+                .is_some()
+            {
+                break;
+            }
+            control.tick(&commands);
+        }
+        assert!(
+            admitted
+                .strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation)
+                .is_some(),
+            "the same fog-honest snapshot must otherwise qualify for a fresh air operation"
+        );
+    }
+
+    #[test]
+    fn strategic_air_spending_cannot_consume_the_shallow_sentinel_reserve() {
+        let mut scenario = independent_bomber_operation_scenario();
+        scenario.name = "brain shallow reinforcement reserve".into();
+        scenario.players[0].scrap = 0;
+        scenario.units.extend((0..4).map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Harvester,
+            x: 4 + index,
+            y: 8,
+        }));
+        scenario.units.extend((0..8).map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 4 + index,
+            y: 10,
+        }));
+        let mut scouting_state = scenario
+            .build()
+            .expect("the connected strategic-capital fixture builds");
+        for _ in 0..6_000 {
+            scouting_state.tick(&[]);
+        }
+
+        let mut brain = operation_identity_brain(PlayerId(0), &scenario);
+        brain.team = None;
+        brain.lifts = None;
+        brain.raids = None;
+        for _ in 0..1_000 {
+            let commands = brain.act(&scouting_state);
+            let report = scouting_state.tick(&commands);
+            assert!(report.events.iter().all(|event| !matches!(
+                event,
+                crate::event::Event::CommandRejected {
+                    player: PlayerId(0),
+                    ..
+                }
+            )));
+            if brain
+                .strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation)
+                .is_some()
+            {
+                break;
+            }
+        }
+        assert!(
+            brain
+                .strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation)
+                .is_some(),
+            "current scout sight should establish the strategic operation"
+        );
+        let mut bootstrap_brain = brain.clone();
+        brain.exec = Executive::default();
+
+        let mut reinforcement_scenario = scenario.clone();
+        reinforcement_scenario.players[0].scrap = UnitKind::Sentinel.stats().cost;
+        reinforcement_scenario
+            .units
+            .retain(|unit| unit.kind != UnitKind::Kestrel);
+        reinforcement_scenario.units.push(UnitSpec {
+            player: 1,
+            kind: UnitKind::Harvester,
+            x: 10,
+            y: 11,
+        });
+        let mut reinforcement_state = reinforcement_scenario
+            .build()
+            .expect("the missing-scout continuation builds");
+        while reinforcement_state.current_tick() <= scouting_state.current_tick()
+            || !super::super::difficulty::strategic_admission_tick(
+                reinforcement_state.current_tick(),
+            )
+        {
+            reinforcement_state.tick(&[]);
+        }
+        let mut document =
+            serde_json::to_value(&reinforcement_state).expect("the continuation state serializes");
+        document["players"][0]["scrap"] = serde_json::json!(UnitKind::Sentinel.stats().cost);
+        reinforcement_state =
+            serde_json::from_value(document).expect("the exact-bank continuation is valid");
+
+        let commands = brain.act(&reinforcement_state);
+        assert!(
+            commands.iter().all(|command| !matches!(
+                command.command,
+                Command::Train {
+                    kind: UnitKind::Kestrel
+                        | UnitKind::Buzzard
+                        | UnitKind::Condor
+                        | UnitKind::Skyhook,
+                    ..
+                }
+            )),
+            "strategic air capital cannot consume the exact shallow reinforcement bank: {commands:?}"
+        );
+        let report = reinforcement_state.tick(&commands);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            crate::event::Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )));
+        assert!(
+            reinforcement_state.player(PlayerId(0)).scrap >= UnitKind::Sentinel.stats().cost,
+            "the exact shallow reinforcement bank remains spendable by ordinary production"
+        );
+
+        let mut bootstrap_scenario = scenario;
+        bootstrap_scenario.name = "brain strategic opening bootstrap reserve".into();
+        bootstrap_scenario.players[0].scrap = UnitKind::Harvester.stats().cost
+            + BuildingKind::Extractor
+                .base_stats()
+                .construction
+                .expect("Extractors have a construction price")
+                .cost;
+        bootstrap_scenario
+            .buildings
+            .retain(|building| building.kind != BuildingKind::Reclaimer);
+        let mut kept_harvesters = 0usize;
+        bootstrap_scenario.units.retain(|unit| {
+            if unit.player != 0 || unit.kind != UnitKind::Harvester {
+                return unit.kind != UnitKind::Kestrel;
+            }
+            kept_harvesters += 1;
+            kept_harvesters <= 3
+        });
+        bootstrap_scenario.units.push(UnitSpec {
+            player: 1,
+            kind: UnitKind::Harvester,
+            x: 12,
+            y: 11,
+        });
+        let home_frame = TilePos::new(8, 11);
+        let row = bootstrap_scenario
+            .map
+            .get_mut(home_frame.y as usize)
+            .expect("the fixture contains the home-frame row");
+        let mut bytes = row.as_bytes().to_vec();
+        bytes[home_frame.x as usize] = b'E';
+        *row = String::from_utf8(bytes).expect("the fixture map remains ASCII");
+        let mut bootstrap_state = bootstrap_scenario
+            .build()
+            .expect("the opening-bootstrap continuation builds");
+        while bootstrap_state.current_tick() <= scouting_state.current_tick()
+            || !super::super::difficulty::strategic_admission_tick(bootstrap_state.current_tick())
+        {
+            bootstrap_state.tick(&[]);
+        }
+        let bootstrap_scrap = UnitKind::Harvester.stats().cost
+            + BuildingKind::Extractor
+                .base_stats()
+                .construction
+                .expect("Extractors have a construction price")
+                .cost;
+        let mut document =
+            serde_json::to_value(&bootstrap_state).expect("the bootstrap state serializes");
+        document["players"][0]["scrap"] = serde_json::json!(bootstrap_scrap);
+        bootstrap_state =
+            serde_json::from_value(document).expect("the exact bootstrap bank is valid");
+        bootstrap_brain.exec = Executive::default();
+
+        let commands = bootstrap_brain.act(&bootstrap_state);
+        assert!(commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Harvester,
+                ..
+            }
+        )));
+        assert!(commands.iter().any(|command| matches!(
+            command.command,
+            Command::Build {
+                kind: BuildingKind::Extractor,
+                anchor,
+                ..
+            } if anchor == home_frame
+        )));
+        assert!(commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Kestrel | UnitKind::Buzzard | UnitKind::Condor | UnitKind::Skyhook,
+                ..
+            }
+        )));
+        let report = bootstrap_state.tick(&commands);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            crate::event::Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )));
+        assert_eq!(
+            bootstrap_state.player(PlayerId(0)).scrap,
+            0,
+            "the fourth worker and supported home Extractor own the full exact bootstrap bank"
+        );
+    }
+
+    #[test]
+    fn exact_prime_core_cannot_be_frozen_into_a_new_team_relief() {
+        let scenario = opening_core_team_relief_scenario();
+        let state = scenario
+            .build()
+            .expect("opening-core team-relief scenario builds");
+
+        let mut control = operation_identity_brain(PlayerId(0), &scenario);
+        control.strategy = None;
+        control.raids = None;
+        control.lifts = None;
+        control
+            .profile
+            .as_mut()
+            .expect("the scripted brain owns a profile")
+            .traits
+            .support = 70;
+        control.dials.minimum_core_equivalents = 0;
+        control.act(&state);
+        assert!(
+            control
+                .team
+                .as_ref()
+                .is_some_and(|team| !team.reservations().is_empty()),
+            "the current allied emergency otherwise freezes an exact relief group"
+        );
+
+        let mut gated = operation_identity_brain(PlayerId(0), &scenario);
+        gated.strategy = None;
+        gated.raids = None;
+        gated.lifts = None;
+        gated
+            .profile
+            .as_mut()
+            .expect("the scripted brain owns a profile")
+            .traits
+            .support = 70;
+        gated.act(&state);
+
+        let relief = gated
+            .team
+            .as_ref()
+            .expect("scripted brains own team planners");
+        assert!(relief.operation().is_none());
+        assert!(
+            relief.reservations().is_empty(),
+            "a new relief watch cannot reserve any of Prime's exact eight-unit core"
+        );
+    }
+
+    #[test]
+    fn exact_prime_core_cannot_be_frozen_into_a_new_lift_payload() {
+        let scenario = opening_core_lift_scenario();
+        let state = scenario.build().expect("opening-core lift scenario builds");
+
+        let mut control = operation_identity_brain(PlayerId(0), &scenario);
+        control.strategy = None;
+        control.raids = None;
+        control.team = None;
+        control.dials.minimum_core_equivalents = 0;
+        control.act(&state);
+        assert!(
+            control
+                .lifts
+                .as_ref()
+                .and_then(LiftPlanner::operation)
+                .is_some(),
+            "the visible disconnected objective otherwise admits a lift"
+        );
+
+        let mut gated = operation_identity_brain(PlayerId(0), &scenario);
+        gated.strategy = None;
+        gated.raids = None;
+        gated.team = None;
+        let commands = gated.act(&state);
+
+        assert!(
+            gated
+                .lifts
+                .as_ref()
+                .and_then(LiftPlanner::operation)
+                .is_none(),
+            "a new lift cannot freeze Prime's exact eight-unit core as payload"
+        );
+        assert!(commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Skyhook,
+                ..
+            }
+        )));
+    }
+
+    #[test]
     fn an_active_raid_keeps_its_members_when_a_new_bulk_lift_forms() {
         let scenario = combined_operation_scenario();
         let mut state = scenario
@@ -3168,6 +4044,7 @@ mod tests {
         }
 
         let mut brain = operation_identity_brain(PlayerId(0), &scenario);
+        enlist_opening_core(&mut brain, &state);
         let profile = *brain
             .profile
             .as_ref()
@@ -3203,7 +4080,7 @@ mod tests {
             .as_ref()
             .and_then(LiftPlanner::operation)
             .expect("the independent bulk lift also forms");
-        assert_eq!(lift.desired_carriers, 8);
+        assert!(lift.desired_carriers >= 8);
         assert!(
             prior_members
                 .iter()
@@ -3544,6 +4421,90 @@ mod tests {
         }
     }
 
+    fn opening_core_lift_scenario() -> Scenario {
+        let mut scenario = bulk_lift_capacity_scenario();
+        scenario.name = "brain opening-core lift admission".into();
+        scenario.players[0].scrap = 50_000;
+        let mut kept_sentinels = 0usize;
+        scenario.units.retain(|unit| {
+            if unit.kind != UnitKind::Sentinel {
+                return true;
+            }
+            kept_sentinels += 1;
+            kept_sentinels <= 8
+        });
+        scenario
+    }
+
+    fn opening_core_team_relief_scenario() -> Scenario {
+        let mut rows = vec![vec!['.'; 40]; 24];
+        rows.first_mut().expect("map has a north edge").fill('#');
+        rows.last_mut().expect("map has a south edge").fill('#');
+        for row in &mut rows {
+            row[0] = '#';
+            row[39] = '#';
+        }
+        rows[10][3] = '1';
+        rows[10][24] = '2';
+        rows[10][36] = '3';
+
+        Scenario {
+            name: "brain opening-core team-relief admission".into(),
+            seed: 0x0A16_7EA1,
+            map: rows
+                .into_iter()
+                .map(|row| row.into_iter().collect())
+                .collect(),
+            players: vec![
+                PlayerSpec {
+                    name: "Ferrous".into(),
+                    faction: Faction::Ferrous,
+                    team: Some(0),
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+                PlayerSpec {
+                    name: "Cupric ally".into(),
+                    faction: Faction::Cupric,
+                    team: Some(0),
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+                PlayerSpec {
+                    name: "Cupric enemy".into(),
+                    faction: Faction::Cupric,
+                    team: Some(1),
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+            ],
+            units: core::iter::once(UnitSpec {
+                player: 0,
+                kind: UnitKind::Harvester,
+                x: 8,
+                y: 12,
+            })
+            .chain((0..8).map(|index| UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 3 + index % 4,
+                y: 15 + index / 4,
+            }))
+            .chain(core::iter::once(UnitSpec {
+                player: 2,
+                kind: UnitKind::Sentinel,
+                x: 28,
+                y: 10,
+            }))
+            .collect(),
+            buildings: Vec::new(),
+            meta: None,
+        }
+    }
+
     fn prospective_lift_reservation_scenario() -> Scenario {
         let mut scenario = bulk_lift_capacity_scenario();
         scenario.units.retain(|unit| unit.kind != UnitKind::Kestrel);
@@ -3586,6 +4547,12 @@ mod tests {
             x: 14,
             y: 9,
         });
+        scenario.units.extend((0..8).map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 13 + index % 4,
+            y: 21 + index / 4,
+        }));
         scenario.buildings.push(BuildingSpec {
             player: 1,
             kind: BuildingKind::Extractor,

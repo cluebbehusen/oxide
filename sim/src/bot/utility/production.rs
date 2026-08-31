@@ -20,6 +20,20 @@ struct Producer {
     depth: usize,
 }
 
+/// Exact ordinary-combat strength projected after the intents already emitted
+/// during this think.
+///
+/// `missing_scrap` prices the remaining strength in whole Sentinels, because
+/// that is the unit the ordinary-core pass can add without further tech.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::bot) struct CombatCoreStatus {
+    pub(in crate::bot) projected_strength: u64,
+    pub(in crate::bot) target_strength: u64,
+    pub(in crate::bot) missing_strength: u64,
+    pub(in crate::bot) missing_scrap: u32,
+    pub(in crate::bot) ready: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct AdaptiveProductionContext<'a> {
     reserved: &'a [UnitId],
@@ -121,8 +135,15 @@ impl UtilityPolicy {
             allow_repeatable_ground,
             capital_reserve,
         } = context;
-        let core_reserve =
-            fill_ordinary_core(dials, obs, reserved, capital_reserve, budget, intents);
+        let core_reserve = fill_combat_core(
+            obs,
+            reserved,
+            u64::from(dials.army_size),
+            capital_reserve,
+            budget,
+            intents,
+        )
+        .missing_scrap;
         if dials.discretionary_slots == 0 {
             return;
         }
@@ -226,20 +247,20 @@ impl UtilityPolicy {
 /// support pieces do not discharge this obligation: they have other owners or
 /// need a line in front of them. This pass is independent of discretionary
 /// attention, so a higher rung extends the same core instead of replacing it.
-fn fill_ordinary_core(
-    dials: &Dials,
+pub(super) fn fill_combat_core(
     obs: &Observation,
     reserved: &[UnitId],
+    sentinel_equivalent_floor: u64,
     capital_reserve: u32,
     budget: &mut u32,
     intents: &mut Vec<Intent>,
-) -> u32 {
+) -> CombatCoreStatus {
     let sentinel_strength = full_ground_strength(UnitKind::Sentinel);
-    let target = sentinel_strength.saturating_mul(u64::from(dials.army_size));
-    let mut projected = projected_core_strength(obs, reserved, intents);
-    if projected >= target {
-        return 0;
+    let status = combat_core_status(obs, reserved, intents, sentinel_equivalent_floor);
+    if status.ready {
+        return status;
     }
+    let mut projected_strength = status.projected_strength;
 
     let mut foundries: Vec<Producer> = obs
         .my_buildings
@@ -258,13 +279,13 @@ fn fill_ordinary_core(
         .collect();
     foundries.sort_by_key(|producer| producer.id);
     if foundries.is_empty() {
-        return 0;
+        return status;
     }
 
     let sentinel_cost = UnitKind::Sentinel.stats().cost;
     'depths: for target_depth in 1..=PLANNING_DEPTH {
         for foundry in &mut foundries {
-            if projected >= target {
+            if projected_strength >= status.target_strength {
                 break 'depths;
             }
             if foundry.depth >= target_depth
@@ -278,17 +299,25 @@ fn fill_ordinary_core(
                 kind: UnitKind::Sentinel,
             });
             foundry.depth += 1;
-            projected = projected.saturating_add(sentinel_strength);
+            projected_strength = projected_strength.saturating_add(sentinel_strength);
         }
     }
 
-    let missing = target.saturating_sub(projected).div_ceil(sentinel_strength);
-    u32::try_from(missing)
-        .unwrap_or(u32::MAX)
-        .saturating_mul(sentinel_cost)
+    combat_core_status(obs, reserved, intents, sentinel_equivalent_floor)
 }
 
-fn projected_core_strength(obs: &Observation, reserved: &[UnitId], intents: &[Intent]) -> u64 {
+/// Measure an explicit Sentinel-equivalent floor without inferring ownership
+/// from army bookkeeping. Callers exclude only the exact units committed to a
+/// strategic operation; ordinary Executive armies therefore remain part of the
+/// available fighting line.
+pub(in crate::bot) fn combat_core_status(
+    obs: &Observation,
+    reserved: &[UnitId],
+    intents: &[Intent],
+    sentinel_equivalent_floor: u64,
+) -> CombatCoreStatus {
+    let sentinel_strength = full_ground_strength(UnitKind::Sentinel);
+    let target_strength = sentinel_strength.saturating_mul(sentinel_equivalent_floor);
     let live = obs
         .my_units
         .iter()
@@ -311,7 +340,26 @@ fn projected_core_strength(obs: &Observation, reserved: &[UnitId], intents: &[In
         })
         .map(full_ground_strength)
         .sum::<u64>();
-    live.saturating_add(queued).saturating_add(planned)
+    let projected_strength = live.saturating_add(queued).saturating_add(planned);
+    let missing_strength = target_strength.saturating_sub(projected_strength);
+    CombatCoreStatus {
+        projected_strength,
+        target_strength,
+        missing_strength,
+        missing_scrap: missing_core_scrap(
+            missing_strength,
+            sentinel_strength,
+            UnitKind::Sentinel.stats().cost,
+        ),
+        ready: missing_strength == 0,
+    }
+}
+
+fn missing_core_scrap(missing_strength: u64, sentinel_strength: u64, sentinel_cost: u32) -> u32 {
+    let missing_sentinels = missing_strength.div_ceil(sentinel_strength);
+    u32::try_from(missing_sentinels)
+        .unwrap_or(u32::MAX)
+        .saturating_mul(sentinel_cost)
 }
 
 /// Whether the ordinary fighting line can support one more Foundry.
@@ -328,9 +376,7 @@ pub(super) fn extra_foundry_core_ready(
     let required_equivalents = u64::try_from(extra_expansions)
         .unwrap_or(u64::MAX)
         .saturating_mul(SENTINEL_EQUIVALENTS_PER_EXTRA_FOUNDRY);
-    let required_strength =
-        full_ground_strength(UnitKind::Sentinel).saturating_mul(required_equivalents);
-    projected_core_strength(obs, reserved, &[]) >= required_strength
+    combat_core_status(obs, reserved, &[], required_equivalents).ready
 }
 
 fn ordinary_core_unit(kind: UnitKind) -> bool {
@@ -922,6 +968,8 @@ mod tests {
                     let mut lower_composition = lower_dials.clone();
                     lower_composition.cadence = higher_dials.cadence;
                     lower_composition.discretionary_slots = higher_dials.discretionary_slots;
+                    lower_composition.minimum_core_equivalents =
+                        higher_dials.minimum_core_equivalents;
                     lower_composition.own_strength_scale = higher_dials.own_strength_scale;
                     lower_composition.enemy_strength_scale = higher_dials.enemy_strength_scale;
                     lower_composition.opponent_force_memory = higher_dials.opponent_force_memory;
@@ -1305,10 +1353,7 @@ mod tests {
             "the replay-derived four-Sentinel line must be completed before another specialist"
         );
         assert_eq!(budget, UnitKind::Scuttler.stats().cost);
-        assert!(
-            projected_core_strength(&obs, &[], &intents)
-                >= full_ground_strength(UnitKind::Sentinel) * u64::from(dials.army_size)
-        );
+        assert!(combat_core_status(&obs, &[], &intents, u64::from(dials.army_size)).ready);
     }
 
     #[test]
@@ -1345,6 +1390,155 @@ mod tests {
             budget,
             UnitKind::Sentinel.stats().cost,
             "exactly one missing unreserved Sentinel-equivalent was purchased"
+        );
+    }
+
+    #[test]
+    fn combat_core_status_reports_empty_exact_and_saturated_boundaries() {
+        let mut obs = observation();
+        let sentinel_strength = full_ground_strength(UnitKind::Sentinel);
+        let sentinel_cost = UnitKind::Sentinel.stats().cost;
+
+        let empty_floor = combat_core_status(&obs, &[], &[], 0);
+        assert_eq!(
+            empty_floor,
+            CombatCoreStatus {
+                projected_strength: 0,
+                target_strength: 0,
+                missing_strength: 0,
+                missing_scrap: 0,
+                ready: true,
+            }
+        );
+
+        obs.my_units.push(unit(10, 0, UnitKind::Sentinel));
+        let short = combat_core_status(&obs, &[], &[], 2);
+        assert_eq!(short.projected_strength, sentinel_strength);
+        assert_eq!(short.target_strength, sentinel_strength * 2);
+        assert_eq!(short.missing_strength, sentinel_strength);
+        assert_eq!(short.missing_scrap, sentinel_cost);
+        assert!(!short.ready);
+
+        add_building(&mut obs, 1, BuildingKind::Foundry, vec![UnitKind::Sentinel]);
+        let exact = combat_core_status(&obs, &[], &[], 2);
+        assert_eq!(exact.projected_strength, exact.target_strength);
+        assert_eq!(exact.missing_strength, 0);
+        assert_eq!(exact.missing_scrap, 0);
+        assert!(exact.ready);
+
+        let saturated = combat_core_status(&observation(), &[], &[], u64::MAX);
+        assert_eq!(saturated.target_strength, u64::MAX);
+        assert_eq!(saturated.missing_scrap, u32::MAX);
+        assert!(!saturated.ready);
+    }
+
+    #[test]
+    fn combat_core_status_hp_weights_every_line_hull_and_ignores_specialists() {
+        let mut obs = observation();
+        let mut wounded = unit(10, 0, UnitKind::Sentinel);
+        wounded.hp /= 2;
+        let warden = unit(11, 0, UnitKind::Warden);
+        let breaker = unit(12, 0, UnitKind::Breaker);
+        obs.my_units.extend([
+            wounded.clone(),
+            warden.clone(),
+            breaker.clone(),
+            unit(13, 0, UnitKind::Lancer),
+            unit(14, 0, UnitKind::Bombard),
+            unit(15, 0, UnitKind::Tender),
+        ]);
+
+        let expected = crate::bot::executive::unit_strength(&wounded)
+            .saturating_add(crate::bot::executive::unit_strength(&warden))
+            .saturating_add(crate::bot::executive::unit_strength(&breaker));
+        let sentinel_strength = full_ground_strength(UnitKind::Sentinel);
+        assert_eq!(
+            crate::bot::executive::unit_strength(&wounded),
+            sentinel_strength / 2,
+            "a wounded line hull contributes only its remaining HP fraction"
+        );
+
+        let floor = expected / sentinel_strength + 1;
+        let status = combat_core_status(&obs, &[], &[], floor);
+        assert_eq!(status.projected_strength, expected);
+        assert_eq!(status.missing_strength, status.target_strength - expected);
+        assert_eq!(status.missing_scrap, UnitKind::Sentinel.stats().cost);
+        assert!(!status.ready);
+
+        let without_warden = combat_core_status(&obs, &[warden.id], &[], floor);
+        assert_eq!(
+            without_warden.projected_strength,
+            expected - crate::bot::executive::unit_strength(&warden),
+            "only the explicitly reserved line hull leaves the ordinary core"
+        );
+    }
+
+    #[test]
+    fn combat_core_status_counts_queues_and_each_same_think_order_once() {
+        let mut obs = observation();
+        let ordinary_army_member = unit(10, 0, UnitKind::Sentinel);
+        let strategically_reserved = unit(11, 0, UnitKind::Warden);
+        obs.my_units
+            .extend([ordinary_army_member.clone(), strategically_reserved.clone()]);
+        add_building(
+            &mut obs,
+            1,
+            BuildingKind::Foundry,
+            vec![UnitKind::Sentinel, UnitKind::Harvester],
+        );
+        add_building(
+            &mut obs,
+            2,
+            BuildingKind::Fabricator,
+            vec![UnitKind::Warden, UnitKind::Tender],
+        );
+        add_building(&mut obs, 3, BuildingKind::Crucible, Vec::new());
+        let intents = vec![
+            Intent::TrainAt {
+                building: BuildingId(1),
+                kind: UnitKind::Sentinel,
+            },
+            Intent::TrainAt {
+                building: BuildingId(3),
+                kind: UnitKind::Breaker,
+            },
+            Intent::FormArmy {
+                staging: TilePos::new(3, 3),
+                size: 8,
+            },
+        ];
+
+        let expected = crate::bot::executive::unit_strength(&ordinary_army_member)
+            .saturating_add(full_ground_strength(UnitKind::Sentinel))
+            .saturating_add(full_ground_strength(UnitKind::Warden))
+            .saturating_add(full_ground_strength(UnitKind::Sentinel))
+            .saturating_add(full_ground_strength(UnitKind::Breaker));
+        let status = combat_core_status(
+            &obs,
+            &[strategically_reserved.id, UnitId(u32::MAX)],
+            &intents,
+            100,
+        );
+        assert_eq!(status.projected_strength, expected);
+        assert_eq!(status.missing_strength, status.target_strength - expected);
+        assert_eq!(
+            status.missing_scrap,
+            u32::try_from(
+                status
+                    .missing_strength
+                    .div_ceil(full_ground_strength(UnitKind::Sentinel))
+            )
+            .unwrap()
+            .saturating_mul(UnitKind::Sentinel.stats().cost)
+        );
+
+        let including_ordinary_army = combat_core_status(&obs, &[], &intents, 100);
+        assert_eq!(
+            including_ordinary_army.projected_strength,
+            expected.saturating_add(crate::bot::executive::unit_strength(
+                &strategically_reserved
+            )),
+            "ordinary Executive armies count unless the caller explicitly reserves their units"
         );
     }
 
@@ -1508,10 +1702,7 @@ mod tests {
                     kind: *kind,
                 })
                 .collect();
-            assert!(
-                projected_core_strength(&obs, &[], &intents)
-                    >= full_ground_strength(UnitKind::Sentinel) * u64::from(dials.army_size)
-            );
+            assert!(combat_core_status(&obs, &[], &intents, u64::from(dials.army_size)).ready);
             assert!(
                 orders
                     .iter()

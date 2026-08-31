@@ -28,7 +28,7 @@ use crate::ids::{PlayerId, UnitId};
 use crate::scenario::BotStance;
 use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::grid::TilePos;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
 mod combat;
 mod construction;
@@ -39,6 +39,8 @@ mod production;
 mod sensor;
 mod support;
 mod terrain;
+
+pub(in crate::bot) use production::{CombatCoreStatus, combat_core_status};
 
 /// How far from home an enemy unit counts as an intruder (Chebyshev).
 const DEFENSE_RADIUS: i32 = 8;
@@ -158,10 +160,22 @@ struct ConstructionClaims<'a> {
 struct ConstructionContext<'a> {
     home: TilePos,
     claims: ConstructionClaims<'a>,
+    combat_core_exclusions: &'a [UnitId],
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
     unavailable_builders: &'a [UnitId],
     public_map: Option<&'a PublicMapBriefing>,
+    scope: ConstructionScope,
+    voluntary_scrap_guard: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConstructionScope {
+    Full,
+    OpeningCore {
+        ground_emergency: bool,
+        air_emergency: bool,
+    },
 }
 
 impl<'a> ConstructionContext<'a> {
@@ -169,11 +183,19 @@ impl<'a> ConstructionContext<'a> {
         Self {
             home,
             claims,
+            combat_core_exclusions: claims.reserved,
             unit_contacts: None,
             building_contacts: None,
             unavailable_builders: &[],
             public_map: None,
+            scope: ConstructionScope::Full,
+            voluntary_scrap_guard: None,
         }
+    }
+
+    const fn with_combat_core_exclusions(mut self, exclusions: &'a [UnitId]) -> Self {
+        self.combat_core_exclusions = exclusions;
+        self
     }
 
     const fn with_intelligence(
@@ -195,15 +217,31 @@ impl<'a> ConstructionContext<'a> {
         self.public_map = public_map;
         self
     }
+
+    const fn during_opening_core(mut self, ground_emergency: bool, air_emergency: bool) -> Self {
+        self.scope = ConstructionScope::OpeningCore {
+            ground_emergency,
+            air_emergency,
+        };
+        self
+    }
+
+    const fn with_voluntary_scrap_guard(mut self, scrap: u32) -> Self {
+        self.voluntary_scrap_guard = Some(scrap);
+        self
+    }
 }
 
 #[derive(Clone, Copy)]
 struct ProductionContext<'a> {
     home: TilePos,
     claims: ConstructionClaims<'a>,
+    combat_core_exclusions: &'a [UnitId],
     outstanding_air_production_ticks: Option<u64>,
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
+    public_map: Option<&'a PublicMapBriefing>,
+    voluntary_scrap_guard: Option<u32>,
 }
 
 impl<'a> ProductionContext<'a> {
@@ -215,10 +253,18 @@ impl<'a> ProductionContext<'a> {
         Self {
             home,
             claims,
+            combat_core_exclusions: claims.reserved,
             outstanding_air_production_ticks,
             unit_contacts: None,
             building_contacts: None,
+            public_map: None,
+            voluntary_scrap_guard: None,
         }
+    }
+
+    const fn with_combat_core_exclusions(mut self, exclusions: &'a [UnitId]) -> Self {
+        self.combat_core_exclusions = exclusions;
+        self
     }
 
     const fn with_intelligence(
@@ -230,15 +276,26 @@ impl<'a> ProductionContext<'a> {
         self.building_contacts = building_contacts;
         self
     }
+
+    const fn with_public_map(mut self, public_map: Option<&'a PublicMapBriefing>) -> Self {
+        self.public_map = public_map;
+        self
+    }
+
+    const fn with_voluntary_scrap_guard(mut self, scrap: u32) -> Self {
+        self.voluntary_scrap_guard = Some(scrap);
+        self
+    }
 }
 
 struct AdvancedConstructionContext<'a> {
     home: TilePos,
     player_facing: bool,
     builders: &'a [&'a UnitObs],
-    reserved: &'a [UnitId],
+    combat_core_exclusions: &'a [UnitId],
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
+    voluntary_scrap_guard: Option<u32>,
 }
 
 struct ExtractorClaimContext<'a> {
@@ -256,6 +313,15 @@ struct FoundryClaimContext<'a> {
     ordinary_frontiers: bool,
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
+}
+
+#[derive(Clone, Copy)]
+struct OpeningClaimContext<'a> {
+    dials: &'a Dials,
+    home: TilePos,
+    unit_contacts: Option<&'a [UnitContact]>,
+    building_contacts: Option<&'a [BuildingContact]>,
+    public_map: Option<&'a PublicMapBriefing>,
 }
 /// Most Scuttle Charges the lane-mining arm keeps in the ground.
 const MINE_CAP: usize = 3;
@@ -285,6 +351,10 @@ pub struct Dials {
     pub harvester_target: u32,
     /// Fighters gathered before an army is committed.
     pub army_size: u32,
+    /// Ordinary ground strength required before voluntary capital spending,
+    /// measured in full-health Sentinel equivalents. Profile-free policies
+    /// leave this at zero to preserve their existing build order.
+    pub minimum_core_equivalents: u32,
     /// Ground-attack flyers gathered before an ordinary harassment sortie.
     pub air_wing: usize,
     /// Bombers kept alive or queued once the late-tech gate stands.
@@ -383,6 +453,7 @@ impl Dials {
             cadence: 8,
             harvester_target: 5,
             army_size: 5,
+            minimum_core_equivalents: 0,
             air_wing: AIR_WING,
             bomber_target: 2,
             siege_target: 2,
@@ -427,6 +498,7 @@ impl Dials {
             cadence: 8,
             harvester_target: 4,
             army_size: 5,
+            minimum_core_equivalents: 0,
             air_wing: AIR_WING,
             bomber_target: 2,
             siege_target: 2,
@@ -501,6 +573,7 @@ impl Dials {
             cadence: tuning.cadence,
             harvester_target,
             army_size: stance_army,
+            minimum_core_equivalents: tuning.minimum_core_equivalents,
             air_wing: (5usize.saturating_sub(usize::from(traits.air) / 25)).clamp(2, 4),
             bomber_target: (1 + usize::from(traits.air) / 30).clamp(1, 4),
             siege_target: 1
@@ -679,6 +752,7 @@ struct ThinkContext<'a> {
     armies: &'a [Army],
     enlisted: &'a [UnitId],
     reserved: &'a [UnitId],
+    combat_core_exclusions: &'a [UnitId],
     outstanding_air_production_ticks: Option<u64>,
     prelude: Vec<Intent>,
     mode: PolicyMode<'a>,
@@ -696,6 +770,7 @@ struct PolicyMode<'a> {
 
 pub(super) struct StrategicUtilityContext<'a> {
     reserved: &'a [UnitId],
+    combat_core_exclusions: &'a [UnitId],
     unit_contacts: &'a [UnitContact],
     building_contacts: &'a [BuildingContact],
     public_map: &'a PublicMapBriefing,
@@ -713,12 +788,18 @@ impl<'a> StrategicUtilityContext<'a> {
     ) -> Self {
         Self {
             reserved,
+            combat_core_exclusions: reserved,
             unit_contacts,
             building_contacts,
             public_map,
             outstanding_air_production_ticks: None,
             prelude,
         }
+    }
+
+    pub(super) const fn with_combat_core_exclusions(mut self, exclusions: &'a [UnitId]) -> Self {
+        self.combat_core_exclusions = exclusions;
+        self
     }
 
     /// Supplies the work still owed by one active, justified strategic air
@@ -761,6 +842,260 @@ impl UtilityPolicy {
             })
             .copied()
             .collect()
+    }
+
+    fn has_honest_ground_objective(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        home: TilePos,
+        public_map: Option<&PublicMapBriefing>,
+    ) -> bool {
+        if self.ordinary_ground_has_work(dials, obs, home) {
+            return true;
+        }
+        let Some(briefing) = public_map else {
+            return false;
+        };
+        let reaches =
+            |anchor, size| Self::public_ground_terrain_reaches(briefing, obs, home, anchor, size);
+        self.uncleared_hostile_starts(briefing, obs.me)
+            .into_iter()
+            .any(|start| reaches(start.anchor, BuildingKind::Foundry.base_stats().size))
+            || obs.enemy_buildings.iter().any(|building| {
+                building.hp > 0
+                    && reaches(
+                        building.anchor,
+                        building.kind.tier_stats(building.tier).size,
+                    )
+            })
+            || obs.enemy_units.iter().any(|unit| {
+                unit.hp > 0
+                    && unit.kind.stats().domain == Domain::Ground
+                    && reaches(unit.tile, (1, 1))
+            })
+    }
+
+    fn public_ground_terrain_reaches(
+        public_map: &PublicMapBriefing,
+        obs: &Observation,
+        home: TilePos,
+        target: TilePos,
+        target_size: (i32, i32),
+    ) -> bool {
+        let (width, height) = (public_map.map_width(), public_map.map_height());
+        if width != obs.map_width
+            || height != obs.map_height
+            || width <= 0
+            || height <= 0
+            || target_size.0 <= 0
+            || target_size.1 <= 0
+        {
+            return false;
+        }
+        let open = |tile: TilePos| {
+            public_map
+                .terrain_at(tile)
+                .is_some_and(|terrain| !terrain.blocks_ground())
+        };
+        if !open(home) {
+            return false;
+        }
+        let goal = |tile: TilePos| {
+            tile.x >= target.x
+                && tile.x < target.x + target_size.0
+                && tile.y >= target.y
+                && tile.y < target.y + target_size.1
+        };
+        let cells = usize::try_from(width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .unwrap_or(0);
+        let mut visited = vec![false; cells];
+        let index = |tile: TilePos| usize::try_from(tile.y * width + tile.x).ok();
+        let Some(home_index) = index(home).filter(|index| *index < visited.len()) else {
+            return false;
+        };
+        visited[home_index] = true;
+        let mut frontier = VecDeque::from([home]);
+        while let Some(tile) = frontier.pop_front() {
+            if goal(tile) {
+                return true;
+            }
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let next = tile.offset(dx, dy);
+                let Some(next_index) = index(next).filter(|index| *index < visited.len()) else {
+                    continue;
+                };
+                if !visited[next_index] && open(next) {
+                    visited[next_index] = true;
+                    frontier.push_back(next);
+                }
+            }
+        }
+        false
+    }
+
+    fn shallow_sentinel_reinforcement(obs: &Observation, intents: &[Intent]) -> bool {
+        obs.my_buildings
+            .iter()
+            .enumerate()
+            .filter(|(_, building)| building.built && building.kind == BuildingKind::Foundry)
+            .any(|(queue_index, building)| {
+                let queue = obs
+                    .my_queues
+                    .get(queue_index)
+                    .map_or(&[][..], Vec::as_slice);
+                // Production can finish the front item before a deferred
+                // founder pays later in the same tick. Only a Sentinel behind
+                // that item is guaranteed to remain queued across the phase.
+                if queue
+                    .iter()
+                    .skip(1)
+                    .take(1)
+                    .any(|kind| *kind == UnitKind::Sentinel)
+                {
+                    return true;
+                }
+                let remaining = 2usize.saturating_sub(queue.len().min(2));
+                intents
+                    .iter()
+                    .filter_map(|intent| match intent {
+                        Intent::TrainAt {
+                            building: producer,
+                            kind,
+                        } if *producer == building.id => Some(*kind),
+                        _ => None,
+                    })
+                    .take(remaining)
+                    .any(|kind| kind == UnitKind::Sentinel)
+            })
+    }
+
+    fn unpaid_deferred_construction(obs: &Observation, intents: &[Intent]) -> bool {
+        intents.iter().any(|intent| match intent {
+            Intent::Build { kind, anchor } | Intent::BuildWith { kind, anchor, .. } => {
+                let already_paid = obs.my_buildings.iter().any(|building| {
+                    building.kind == *kind
+                        && building.anchor == *anchor
+                        && !building.built
+                        && building.tier == 0
+                });
+                let (width, height) = kind.base_stats().size;
+                !already_paid
+                    && (0..height)
+                        .any(|dy| (0..width).any(|dx| !obs.visible(anchor.offset(dx, dy))))
+            }
+            _ => false,
+        })
+    }
+
+    pub(super) fn shallow_sentinel_capital_reserve(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        home: TilePos,
+        public_map: &PublicMapBriefing,
+    ) -> u32 {
+        if dials.minimum_core_equivalents == 0
+            || !self.has_honest_ground_objective(dials, obs, home, Some(public_map))
+            || Self::shallow_sentinel_reinforcement(obs, &[])
+        {
+            return 0;
+        }
+        UnitKind::Sentinel.stats().cost
+    }
+
+    pub(super) fn strategic_opening_bootstrap_reserve(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        home: TilePos,
+        public_map: &PublicMapBriefing,
+    ) -> u32 {
+        if dials.minimum_core_equivalents == 0 {
+            return 0;
+        }
+        self.opening_bootstrap_reserve(
+            dials,
+            obs,
+            ConstructionContext::new(
+                home,
+                ConstructionClaims {
+                    player_facing: true,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            )
+            .with_public_map(Some(public_map)),
+            &[],
+        )
+    }
+
+    fn maintain_shallow_sentinel_reinforcement(
+        obs: &Observation,
+        budget: &mut u32,
+        intents: &mut Vec<Intent>,
+    ) -> bool {
+        if Self::shallow_sentinel_reinforcement(obs, intents) {
+            return true;
+        }
+        let sentinel_cost = UnitKind::Sentinel.stats().cost;
+        if *budget < sentinel_cost {
+            return false;
+        }
+        let producer = obs
+            .my_buildings
+            .iter()
+            .enumerate()
+            .filter(|(_, building)| building.built && building.kind == BuildingKind::Foundry)
+            .filter_map(|(queue_index, building)| {
+                let depth = obs
+                    .my_queues
+                    .get(queue_index)
+                    .map_or(2, Vec::len)
+                    .saturating_add(production::planned_at(intents, building.id));
+                (depth < 2).then_some((depth, building.id))
+            })
+            .min();
+        let Some((_, building)) = producer else {
+            return false;
+        };
+
+        *budget -= sentinel_cost;
+        let before_capital = intents
+            .iter()
+            .position(|intent| {
+                matches!(
+                    intent,
+                    Intent::Build { .. } | Intent::BuildWith { .. } | Intent::Upgrade { .. }
+                )
+            })
+            .unwrap_or(intents.len());
+        intents.insert(
+            before_capital,
+            Intent::TrainAt {
+                building,
+                kind: UnitKind::Sentinel,
+            },
+        );
+        true
+    }
+
+    fn construction_channel_spent(intents: &[Intent]) -> bool {
+        intents.iter().any(|intent| {
+            matches!(
+                intent,
+                Intent::Build { .. }
+                    | Intent::BuildWith { .. }
+                    | Intent::CancelSite { .. }
+                    | Intent::Upgrade { .. }
+            )
+        })
     }
 
     /// Workers whose active escape must outrank every implicit utility claim.
@@ -982,6 +1317,291 @@ impl UtilityPolicy {
         claims
     }
 
+    fn deferred_claims_commitment(claims: &[(BuildingKind, TilePos)]) -> u32 {
+        claims
+            .iter()
+            .map(|(kind, _)| {
+                kind.base_stats()
+                    .construction
+                    .map_or(0, |construction| construction.cost)
+            })
+            .fold(0, u32::saturating_add)
+    }
+
+    fn deferred_claim_has_safe_founder(
+        &self,
+        obs: &Observation,
+        claim: (BuildingKind, TilePos),
+        unit_contacts: Option<&[UnitContact]>,
+        building_contacts: Option<&[BuildingContact]>,
+        public_map: &PublicMapBriefing,
+    ) -> bool {
+        let (kind, anchor) = claim;
+        let mut founders: Vec<_> = obs
+            .my_units
+            .iter()
+            .filter(|unit| unit.founding == Some(claim))
+            .collect();
+        if founders.is_empty() {
+            return false;
+        }
+        let danger = self.harvest_danger_projection(obs, unit_contacts, building_contacts);
+        self.safe_implicit_builder(obs, kind, anchor, &mut founders, &danger, Some(public_map))
+            .is_some()
+    }
+
+    fn safe_starting_home_extractor_claim(
+        &self,
+        obs: &Observation,
+        home: TilePos,
+        claim: (BuildingKind, TilePos),
+        unit_contacts: Option<&[UnitContact]>,
+        building_contacts: Option<&[BuildingContact]>,
+        public_map: &PublicMapBriefing,
+    ) -> bool {
+        let (kind, anchor) = claim;
+        let (frame_width, frame_height) = BuildingKind::Extractor.base_stats().size;
+        let frame_is_occupied = obs
+            .my_buildings
+            .iter()
+            .chain(obs.ally_buildings.iter())
+            .chain(obs.enemy_buildings.iter())
+            .any(|building| {
+                let (width, height) = building.kind.tier_stats(building.tier).size;
+                building.hp > 0
+                    && anchor.x < building.anchor.x + width
+                    && anchor.x + frame_width > building.anchor.x
+                    && anchor.y < building.anchor.y + height
+                    && anchor.y + frame_height > building.anchor.y
+            });
+        if kind != BuildingKind::Extractor
+            || !public_map.extractor_frames().contains(&anchor)
+            || !self.player_can_plan_frame_restoration(obs, anchor)
+            || !Self::ground_route_known(obs, home, anchor)
+            || frame_is_occupied
+        {
+            return false;
+        }
+        let Some(starting_home) = public_map
+            .starting_foundries()
+            .iter()
+            .find(|start| start.player == obs.me)
+            .map(|start| start.anchor)
+        else {
+            return false;
+        };
+        starting_home == home
+            && Self::foundry_supports_extractor(starting_home, anchor)
+            && obs.my_buildings.iter().any(|building| {
+                building.kind == BuildingKind::Foundry
+                    && building.anchor == starting_home
+                    && building.built
+                    && building.hp > 0
+            })
+            && self.deferred_claim_has_safe_founder(
+                obs,
+                claim,
+                unit_contacts,
+                building_contacts,
+                public_map,
+            )
+    }
+
+    fn opening_core_deferred_claims(
+        &self,
+        obs: &Observation,
+        context: OpeningClaimContext<'_>,
+        intents: &mut Vec<Intent>,
+    ) -> Vec<(BuildingKind, TilePos)> {
+        let OpeningClaimContext {
+            dials,
+            home,
+            unit_contacts,
+            building_contacts,
+            public_map,
+        } = context;
+        let claims = Self::deferred_claims(obs);
+        let Some(public_map) = public_map else {
+            let founders: Vec<_> = obs
+                .my_units
+                .iter()
+                .filter(|unit| unit.founding.is_some())
+                .map(|unit| unit.id)
+                .collect();
+            if !founders.is_empty() {
+                intents.insert(0, Intent::StopUnits { units: founders });
+            }
+            return Vec::new();
+        };
+
+        let ground_emergency = dials.turret_response
+            && self.current_emergency_defense_required(BuildingKind::Turret, obs, public_map);
+        let air_emergency = dials.aa_response
+            && self.current_emergency_defense_required(BuildingKind::FlakTurret, obs, public_map);
+        let mut kept_home_extractor = false;
+        let mut kept_ground_emergency = false;
+        let mut kept_air_emergency = false;
+        let mut retained = Vec::new();
+        for claim @ (kind, _) in claims {
+            let keep = match kind {
+                BuildingKind::Extractor if !kept_home_extractor => {
+                    let safe = self.safe_starting_home_extractor_claim(
+                        obs,
+                        home,
+                        claim,
+                        unit_contacts,
+                        building_contacts,
+                        public_map,
+                    );
+                    kept_home_extractor = safe;
+                    safe
+                }
+                BuildingKind::Turret if ground_emergency && !kept_ground_emergency => {
+                    let safe = self
+                        .current_emergency_defense_claim_is_useful(kind, claim.1, obs, public_map)
+                        && self.deferred_claim_has_safe_founder(
+                            obs,
+                            claim,
+                            unit_contacts,
+                            building_contacts,
+                            public_map,
+                        );
+                    kept_ground_emergency = safe;
+                    safe
+                }
+                BuildingKind::FlakTurret if air_emergency && !kept_air_emergency => {
+                    let safe = self
+                        .current_emergency_defense_claim_is_useful(kind, claim.1, obs, public_map)
+                        && self.deferred_claim_has_safe_founder(
+                            obs,
+                            claim,
+                            unit_contacts,
+                            building_contacts,
+                            public_map,
+                        );
+                    kept_air_emergency = safe;
+                    safe
+                }
+                _ => false,
+            };
+            if keep {
+                retained.push(claim);
+            }
+        }
+
+        let stopped: Vec<_> = obs
+            .my_units
+            .iter()
+            .filter(|unit| {
+                unit.founding
+                    .is_some_and(|claim| !retained.contains(&claim))
+            })
+            .map(|unit| unit.id)
+            .collect();
+        if !stopped.is_empty() {
+            intents.insert(0, Intent::StopUnits { units: stopped });
+        }
+        retained
+    }
+
+    fn post_floor_deferred_claims(
+        &self,
+        obs: &Observation,
+        home: TilePos,
+        unit_contacts: Option<&[UnitContact]>,
+        building_contacts: Option<&[BuildingContact]>,
+        public_map: Option<&PublicMapBriefing>,
+        intents: &mut Vec<Intent>,
+    ) -> Vec<(BuildingKind, TilePos)> {
+        let claims = Self::deferred_claims(obs);
+        let mut exceptions = Vec::new();
+        let mut voluntary = Vec::new();
+        let mut kept_home_extractor = false;
+        let mut kept_ground_emergency = false;
+        let mut kept_air_emergency = false;
+        for claim @ (kind, anchor) in claims {
+            let exception = public_map.is_some_and(|briefing| match kind {
+                BuildingKind::Extractor if !kept_home_extractor => {
+                    let keep = self.safe_starting_home_extractor_claim(
+                        obs,
+                        home,
+                        claim,
+                        unit_contacts,
+                        building_contacts,
+                        briefing,
+                    );
+                    kept_home_extractor = keep;
+                    keep
+                }
+                BuildingKind::Turret if !kept_ground_emergency => {
+                    let keep = self
+                        .current_emergency_defense_claim_is_useful(kind, anchor, obs, briefing)
+                        && self.deferred_claim_has_safe_founder(
+                            obs,
+                            claim,
+                            unit_contacts,
+                            building_contacts,
+                            briefing,
+                        );
+                    kept_ground_emergency = keep;
+                    keep
+                }
+                BuildingKind::FlakTurret if !kept_air_emergency => {
+                    let keep = self
+                        .current_emergency_defense_claim_is_useful(kind, anchor, obs, briefing)
+                        && self.deferred_claim_has_safe_founder(
+                            obs,
+                            claim,
+                            unit_contacts,
+                            building_contacts,
+                            briefing,
+                        );
+                    kept_air_emergency = keep;
+                    keep
+                }
+                _ => false,
+            });
+            if exception {
+                exceptions.push(claim);
+            } else {
+                voluntary.push(claim);
+            }
+        }
+
+        let claim_cost = |kind: BuildingKind| {
+            kind.base_stats()
+                .construction
+                .map_or(0, |construction| construction.cost)
+        };
+        let mut available = exceptions.iter().fold(obs.scrap, |scrap, (kind, _)| {
+            scrap.saturating_sub(claim_cost(*kind))
+        });
+        let sentinel_reserve = UnitKind::Sentinel.stats().cost;
+        let mut retained = exceptions;
+        for claim @ (kind, _) in voluntary {
+            let cost = claim_cost(kind);
+            if available >= cost.saturating_add(sentinel_reserve) {
+                available -= cost;
+                retained.push(claim);
+            }
+        }
+        retained.sort_unstable();
+
+        let stopped: Vec<_> = obs
+            .my_units
+            .iter()
+            .filter(|unit| {
+                unit.founding
+                    .is_some_and(|claim| !retained.contains(&claim))
+            })
+            .map(|unit| unit.id)
+            .collect();
+        if !stopped.is_empty() {
+            intents.insert(0, Intent::StopUnits { units: stopped });
+        }
+        retained
+    }
+
     /// Foundry anchors already paid for or promised by deferred founders,
     /// plus the number of promises whose cost is still outstanding.
     fn projected_foundries(obs: &Observation) -> (Vec<TilePos>, usize) {
@@ -1005,14 +1625,7 @@ impl UtilityPolicy {
     /// Scrap promised to deferred construction but not charged until the
     /// founders reach their destinations.
     pub(crate) fn deferred_construction_commitment(obs: &Observation) -> u32 {
-        Self::deferred_claims(obs)
-            .into_iter()
-            .map(|(kind, _)| {
-                kind.base_stats()
-                    .construction
-                    .map_or(0, |construction| construction.cost)
-            })
-            .fold(0, u32::saturating_add)
+        Self::deferred_claims_commitment(&Self::deferred_claims(obs))
     }
 
     fn projected_count(obs: &Observation, kind: BuildingKind, player_facing: bool) -> usize {
@@ -1048,6 +1661,7 @@ impl UtilityPolicy {
                 armies,
                 enlisted,
                 reserved: &[],
+                combat_core_exclusions: &[],
                 outstanding_air_production_ticks: None,
                 prelude: Vec::new(),
                 mode: PolicyMode {
@@ -1079,6 +1693,7 @@ impl UtilityPolicy {
                 armies,
                 enlisted,
                 reserved,
+                combat_core_exclusions: reserved,
                 outstanding_air_production_ticks: None,
                 prelude: Vec::new(),
                 mode: PolicyMode {
@@ -1109,6 +1724,7 @@ impl UtilityPolicy {
                 armies,
                 enlisted,
                 reserved: context.reserved,
+                combat_core_exclusions: context.combat_core_exclusions,
                 outstanding_air_production_ticks: context.outstanding_air_production_ticks,
                 prelude: context.prelude,
                 mode: PolicyMode {
@@ -1132,11 +1748,22 @@ impl UtilityPolicy {
             armies,
             enlisted,
             reserved,
+            combat_core_exclusions,
             outstanding_air_production_ticks,
             prelude,
             mode,
         } = context;
         let player_facing = mode.player_facing;
+        let strategic_capital_advanced = player_facing
+            && prelude.iter().any(|intent| {
+                matches!(
+                    intent,
+                    Intent::TrainAt { .. }
+                        | Intent::Build { .. }
+                        | Intent::BuildWith { .. }
+                        | Intent::Upgrade { .. }
+                )
+            });
         let mut intents = prelude;
         let Some(home) = obs
             .my_buildings
@@ -1206,10 +1833,58 @@ impl UtilityPolicy {
         self.audit_sites(obs);
         self.audit_raids(dials, obs, player_facing);
 
-        let construction_commitment = Self::deferred_construction_commitment(obs);
+        let has_ground_objective = player_facing
+            && dials.minimum_core_equivalents > 0
+            && self.has_honest_ground_objective(dials, obs, home_tile, mode.public_map);
+
+        let opening_core_at_start = combat_core_status(
+            obs,
+            combat_core_exclusions,
+            &intents,
+            u64::from(dials.minimum_core_equivalents),
+        );
+        let opening_core_active =
+            player_facing && dials.minimum_core_equivalents > 0 && !opening_core_at_start.ready;
+        let retained_deferred_claims = if opening_core_active {
+            self.opening_core_deferred_claims(
+                obs,
+                OpeningClaimContext {
+                    dials,
+                    home: home_tile,
+                    unit_contacts: mode.unit_contacts,
+                    building_contacts: mode.building_contacts,
+                    public_map: mode.public_map,
+                },
+                &mut intents,
+            )
+        } else if player_facing
+            && dials.minimum_core_equivalents > 0
+            && has_ground_objective
+            && !Self::shallow_sentinel_reinforcement(obs, &intents)
+        {
+            self.post_floor_deferred_claims(
+                obs,
+                home_tile,
+                mode.unit_contacts,
+                mode.building_contacts,
+                mode.public_map,
+                &mut intents,
+            )
+        } else {
+            Self::deferred_claims(obs)
+        };
+        let construction_commitment = Self::deferred_claims_commitment(&retained_deferred_claims);
         let mut spendable = obs.clone();
         if player_facing {
             spendable.scrap = spendable.scrap.saturating_sub(construction_commitment);
+            for unit in &mut spendable.my_units {
+                if unit
+                    .founding
+                    .is_some_and(|claim| !retained_deferred_claims.contains(&claim))
+                {
+                    unit.founding = None;
+                }
+            }
         }
         let obs = &spendable;
         let mut budget = obs.scrap;
@@ -1264,33 +1939,68 @@ impl UtilityPolicy {
             Self::claim_non_preemptible_intent_units(intent, &mut unavailable_builders);
         }
         let construction_context = ConstructionContext::new(home_tile, construction_claims)
+            .with_combat_core_exclusions(combat_core_exclusions)
             .with_intelligence(mode.unit_contacts, mode.building_contacts)
             .with_public_map(mode.public_map)
             .excluding_builders(&unavailable_builders);
-        let healthy_home_screen = obs
-            .my_units
-            .iter()
-            .filter(|unit| {
-                let stats = unit.kind.stats();
-                stats.domain == Domain::Ground && stats.can_fight()
-            })
-            .count()
-            >= 3;
-        let construction_precedes_discretionary =
-            player_facing && healthy_home_screen && outstanding_air_production_ticks.is_none();
-        let mut planned_construction = Vec::new();
-        if construction_precedes_discretionary {
-            let mut construction_budget = budget;
+        let manages_opening = player_facing && dials.minimum_core_equivalents > 0;
+        let mut opening_core_deficient = false;
+
+        if manages_opening {
             self.construction(
                 dials,
                 obs,
-                construction_context,
-                &mut construction_budget,
-                &mut planned_construction,
+                construction_context.during_opening_core(dials.turret_response, dials.aa_response),
+                &mut budget,
+                &mut intents,
             );
-            budget = construction_budget;
+            let status = self.opening_core_production(
+                dials,
+                obs,
+                ProductionContext::new(home_tile, construction_claims, None)
+                    .with_combat_core_exclusions(combat_core_exclusions)
+                    .with_intelligence(mode.unit_contacts, mode.building_contacts)
+                    .with_public_map(mode.public_map),
+                &mut budget,
+                &mut intents,
+            );
+            // Recovering the last missing equivalent does not reopen every
+            // voluntary spending channel in the same decision. Let the paid
+            // line order become part of the next observation first, so a
+            // later casualty cannot pair its recovery purchase with fresh
+            // tech, support, or upgrade spending.
+            opening_core_deficient = opening_core_active || !status.ready;
         }
-        if outstanding_air_production_ticks.is_some() {
+
+        let opening_bootstrap_reserve = if manages_opening {
+            self.opening_bootstrap_reserve(dials, obs, construction_context, &intents)
+        } else {
+            0
+        };
+        let opening_bootstrap_active = opening_bootstrap_reserve > 0;
+        let paid_site_needs_shallow_reinforcement = has_ground_objective
+            && construction_commitment == 0
+            && !Self::unpaid_deferred_construction(obs, &intents)
+            && obs
+                .my_buildings
+                .iter()
+                .any(|building| !building.built && building.tier == 0);
+        if manages_opening
+            && !opening_core_deficient
+            && !opening_bootstrap_active
+            && paid_site_needs_shallow_reinforcement
+        {
+            Self::maintain_shallow_sentinel_reinforcement(obs, &mut budget, &mut intents);
+        }
+        let shallow_capital_guard =
+            if has_ground_objective && !Self::shallow_sentinel_reinforcement(obs, &intents) {
+                UnitKind::Sentinel.stats().cost
+            } else {
+                0
+            };
+
+        if manages_opening && !opening_core_deficient && !opening_bootstrap_active {
+            let production_guard = shallow_capital_guard.max(opening_bootstrap_reserve);
             self.production_with_air_demand(
                 dials,
                 obs,
@@ -1299,53 +2009,105 @@ impl UtilityPolicy {
                     construction_claims,
                     outstanding_air_production_ticks,
                 )
-                .with_intelligence(mode.unit_contacts, mode.building_contacts),
+                .with_combat_core_exclusions(combat_core_exclusions)
+                .with_intelligence(mode.unit_contacts, mode.building_contacts)
+                .with_public_map(mode.public_map)
+                .with_voluntary_scrap_guard(production_guard),
                 &mut budget,
                 &mut intents,
             );
-        } else {
-            self.production(
-                dials,
-                obs,
-                home_tile,
-                construction_claims,
-                &mut budget,
-                &mut intents,
-            );
+
+            if !Self::construction_channel_spent(&intents) {
+                self.construction(
+                    dials,
+                    obs,
+                    construction_context.with_voluntary_scrap_guard(production_guard),
+                    &mut budget,
+                    &mut intents,
+                );
+            }
+            let capital_advanced = strategic_capital_advanced
+                || construction_commitment > 0
+                || intents.iter().any(|intent| {
+                    matches!(
+                        intent,
+                        Intent::Build { .. } | Intent::BuildWith { .. } | Intent::Upgrade { .. }
+                    )
+                });
+            let unpaid_deferred_capital =
+                construction_commitment > 0 || Self::unpaid_deferred_construction(obs, &intents);
+            if has_ground_objective && capital_advanced && !unpaid_deferred_capital {
+                Self::maintain_shallow_sentinel_reinforcement(obs, &mut budget, &mut intents);
+            }
+        } else if !player_facing || dials.minimum_core_equivalents == 0 {
+            // Preserve the profile-free controller's frozen ordering, and
+            // keep zero-floor policy fixtures useful for testing individual
+            // channels without implicitly enabling the player-facing escrow.
+            let healthy_home_screen = obs
+                .my_units
+                .iter()
+                .filter(|unit| {
+                    let stats = unit.kind.stats();
+                    stats.domain == Domain::Ground && stats.can_fight()
+                })
+                .count()
+                >= 3;
+            let construction_precedes_discretionary =
+                player_facing && healthy_home_screen && outstanding_air_production_ticks.is_none();
+            let mut planned_construction = Vec::new();
+            if construction_precedes_discretionary {
+                let mut construction_budget = budget;
+                self.construction(
+                    dials,
+                    obs,
+                    construction_context,
+                    &mut construction_budget,
+                    &mut planned_construction,
+                );
+                budget = construction_budget;
+            }
+            if outstanding_air_production_ticks.is_some() {
+                self.production_with_air_demand(
+                    dials,
+                    obs,
+                    ProductionContext::new(
+                        home_tile,
+                        construction_claims,
+                        outstanding_air_production_ticks,
+                    )
+                    .with_combat_core_exclusions(combat_core_exclusions)
+                    .with_intelligence(mode.unit_contacts, mode.building_contacts)
+                    .with_public_map(mode.public_map),
+                    &mut budget,
+                    &mut intents,
+                );
+            } else {
+                self.production(
+                    dials,
+                    obs,
+                    home_tile,
+                    construction_claims,
+                    &mut budget,
+                    &mut intents,
+                );
+            }
+            if construction_precedes_discretionary {
+                intents.extend(planned_construction);
+            } else if !Self::construction_channel_spent(&intents) {
+                self.construction(dials, obs, construction_context, &mut budget, &mut intents);
+            }
         }
-        if construction_precedes_discretionary {
-            intents.extend(planned_construction);
-        } else if !intents
-            .iter()
-            .any(|intent| matches!(intent, Intent::Build { .. } | Intent::BuildWith { .. }))
+        let construction_promised =
+            construction_commitment > 0 || Self::unpaid_deferred_construction(obs, &intents);
+        if player_facing
+            && (construction_promised
+                || opening_core_deficient
+                || opening_bootstrap_active
+                || shallow_capital_guard > 0)
         {
-            // Active air capacity deliberately precedes ordinary construction.
-            // One build per think keeps its exact worker and footprint claim
-            // authoritative instead of charging a second project that final
-            // command binding would have to discard.
-            self.construction(dials, obs, construction_context, &mut budget, &mut intents);
-        }
-        let construction_promised = construction_commitment > 0
-            || intents.iter().any(|intent| match intent {
-                Intent::Build { kind, anchor } | Intent::BuildWith { kind, anchor, .. } => {
-                    let already_paid = obs.my_buildings.iter().any(|building| {
-                        building.kind == *kind
-                            && building.anchor == *anchor
-                            && !building.built
-                            && building.tier == 0
-                    });
-                    let (width, height) = kind.base_stats().size;
-                    !already_paid
-                        && (0..height)
-                            .any(|dy| (0..width).any(|dx| !obs.visible(anchor.offset(dx, dy))))
-                }
-                _ => false,
-            });
-        if player_facing && construction_promised {
-            // A building crew's voluntary repair program may be preempted so
-            // its promised construction can proceed. Dedicated Tenders keep
-            // welding while the bank has scrap beyond the deferred claim, but
-            // must stop before repair can consume the claim itself.
+            // A promised construction preempts its builders and protects its
+            // deferred fund from new repair work. A deficient opening core
+            // stops every paid repairer so training can spend the full bank.
             let bound_builders: Vec<UnitId> = intents
                 .iter()
                 .filter_map(|intent| match intent {
@@ -1359,23 +2121,35 @@ impl UtilityPolicy {
                 .filter(|unit| {
                     unit.repairing
                         && !bound_builders.contains(&unit.id)
-                        && (unit.kind.stats().harvest.is_some() || obs.scrap == 0)
+                        && (opening_core_deficient
+                            || opening_bootstrap_active
+                            || shallow_capital_guard > 0
+                            || unit.kind.stats().harvest.is_some()
+                            || obs.scrap == 0)
                 })
                 .map(|unit| unit.id)
                 .collect();
             if !repairers.is_empty() {
-                let before_build = intents
+                let before_spend = intents
                     .iter()
                     .position(|intent| {
-                        matches!(intent, Intent::Build { .. } | Intent::BuildWith { .. })
+                        matches!(
+                            intent,
+                            Intent::TrainAt { .. }
+                                | Intent::Build { .. }
+                                | Intent::BuildWith { .. }
+                                | Intent::Upgrade { .. }
+                        )
                     })
                     .unwrap_or(0);
-                intents.insert(before_build, Intent::StopUnits { units: repairers });
+                intents.insert(before_spend, Intent::StopUnits { units: repairers });
             }
         } else {
             self.repairs(dials, obs, mode, &mut budget, &mut intents);
         }
-        self.mobile_support(dials, obs, player_facing, &mut intents);
+        if !opening_core_deficient && !opening_bootstrap_active && shallow_capital_guard == 0 {
+            self.mobile_support(dials, obs, player_facing, &mut intents);
+        }
         self.salvage(dials, obs, &mut intents);
         if !player_facing && dials.scouting && harvesters >= dials.harvester_target as usize {
             self.scouting(obs, home_tile, None, enlisted, &mut intents);
@@ -1389,7 +2163,9 @@ impl UtilityPolicy {
         };
         self.ferry(dials, obs, armies, home_tile, ferry_claims, &mut intents);
         self.army(dials, obs, armies, home_tile, mode, &mut intents);
-        self.air_raid(dials, obs, home_tile, enlisted, reserved, &mut intents);
+        if !opening_core_deficient {
+            self.air_raid(dials, obs, home_tile, enlisted, reserved, &mut intents);
+        }
         intents
     }
 
@@ -2064,6 +2840,128 @@ mod tests {
         .expect("the focused observation has a matching public map")
     }
 
+    fn public_map_with_home_and_frames(
+        obs: &Observation,
+        home: TilePos,
+        frames: &[TilePos],
+    ) -> PublicMapBriefing {
+        let width = usize::try_from(obs.map_width).expect("the test map has a positive width");
+        let height = usize::try_from(obs.map_height).expect("the test map has a positive height");
+        let mut map = vec![vec![b'.'; width]; height];
+        map[home.y as usize][home.x as usize] = b'1';
+        for frame in frames {
+            map[frame.y as usize][frame.x as usize] = b'E';
+        }
+        PublicMapBriefing::from_scenario(&Scenario {
+            name: "utility test map with frames".into(),
+            seed: 0,
+            map: map
+                .into_iter()
+                .map(|row| String::from_utf8(row).expect("the fixture map is ASCII"))
+                .collect(),
+            players: vec![PlayerSpec {
+                name: "test seat".into(),
+                faction: obs.faction,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            }],
+            units: Vec::new(),
+            buildings: Vec::new(),
+            meta: None,
+        })
+        .expect("the focused observation has a matching framed public map")
+    }
+
+    fn corridor_briefing(home: TilePos, enemy: TilePos, blocker: char) -> PublicMapBriefing {
+        let mut map = vec![vec![b'#'; 32]; 20];
+        for y in home.y..home.y + BuildingKind::Foundry.base_stats().size.1 {
+            map[y as usize].fill(b'.');
+            if blocker != '.' {
+                map[y as usize][16] = blocker as u8;
+            }
+        }
+        map[home.y as usize][home.x as usize] = b'1';
+        map[enemy.y as usize][enemy.x as usize] = b'2';
+        PublicMapBriefing::from_scenario(&Scenario {
+            name: "opening guard corridor".into(),
+            seed: 0,
+            map: map
+                .into_iter()
+                .map(|row| String::from_utf8(row).expect("the fixture map is ASCII"))
+                .collect(),
+            players: vec![
+                PlayerSpec {
+                    name: "home".into(),
+                    faction: crate::Faction::Ferrous,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+                PlayerSpec {
+                    name: "enemy".into(),
+                    faction: crate::Faction::Cupric,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+            ],
+            units: Vec::new(),
+            buildings: Vec::new(),
+            meta: None,
+        })
+        .expect("the corridor briefing builds")
+    }
+
+    #[test]
+    fn shallow_reinforcement_escape_requires_proven_static_disconnection() {
+        let home = TilePos::new(2, 10);
+        let enemy_start = TilePos::new(29, 10);
+        let mut obs = obs_with(Vec::new());
+        obs.visible.fill(false);
+        obs.explored.fill(false);
+        obs.my_buildings = vec![standing_building(0, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![Vec::new()];
+        let policy = UtilityPolicy::new();
+        let dials = Dials::full();
+
+        let scrap_choke = corridor_briefing(home, enemy_start, 's');
+        assert!(!UtilityPolicy::public_start_ground_connected(
+            &scrap_choke,
+            &obs,
+            home,
+            enemy_start
+        ));
+        assert!(policy.has_honest_ground_objective(&dials, &obs, home, Some(&scrap_choke)));
+
+        let mut cleared = policy;
+        cleared.cleared_hostile_starts.push(PlayerId(1));
+        obs.enemy_buildings.push(BuildingObs {
+            id: BuildingId(20),
+            player: PlayerId(1),
+            kind: BuildingKind::Foundry,
+            anchor: enemy_start.offset(-4, 0),
+            hp: BuildingKind::Foundry.base_stats().max_hp,
+            built: true,
+            seen: true,
+            tier: 0,
+        });
+        assert!(!cleared.ordinary_ground_has_work(&dials, &obs, home));
+        assert!(
+            cleared.has_honest_ground_objective(&dials, &obs, home, Some(&scrap_choke)),
+            "a known expansion across unexplored but public open terrain still needs reinforcement"
+        );
+
+        let divided = corridor_briefing(home, enemy_start, '#');
+        assert!(
+            !cleared.has_honest_ground_objective(&dials, &obs, home, Some(&divided)),
+            "only permanent public terrain disconnection may waive the shallow guard"
+        );
+    }
+
     fn harvester(id: u32, founding: Option<(BuildingKind, TilePos)>) -> UnitObs {
         UnitObs {
             id: UnitId(id),
@@ -2081,6 +2979,732 @@ mod tests {
             repairing: false,
             grounded: false,
         }
+    }
+
+    #[test]
+    fn a_deficient_core_keeps_only_a_safe_unoccupied_starting_home_extractor_claim() {
+        let home = TilePos::new(3, 3);
+        let frame = TilePos::new(10, 3);
+        let claim = (BuildingKind::Extractor, frame);
+        let mut obs = obs_with(vec![UnitObs {
+            tile: TilePos::new(7, 6),
+            ..harvester(1, Some(claim))
+        }]);
+        obs.known_frames = vec![frame];
+        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![Vec::new()];
+        let map = public_map_with_home_and_frames(&obs, home, &[frame]);
+        let dials = Dials::full();
+
+        let mut safe_intents = Vec::new();
+        let safe = UtilityPolicy::new().opening_core_deferred_claims(
+            &obs,
+            OpeningClaimContext {
+                dials: &dials,
+                home,
+                unit_contacts: None,
+                building_contacts: None,
+                public_map: Some(&map),
+            },
+            &mut safe_intents,
+        );
+        assert_eq!(safe, [claim]);
+        assert!(safe_intents.is_empty());
+
+        let mut occupied = obs.clone();
+        let mut blocker = standing_building(11, BuildingKind::RepairBay, frame);
+        blocker.player = PlayerId(2);
+        occupied.ally_buildings.push(blocker);
+        let mut occupied_intents = Vec::new();
+        let retained = UtilityPolicy::new().opening_core_deferred_claims(
+            &occupied,
+            OpeningClaimContext {
+                dials: &dials,
+                home,
+                unit_contacts: None,
+                building_contacts: None,
+                public_map: Some(&map),
+            },
+            &mut occupied_intents,
+        );
+        assert!(retained.is_empty());
+        assert_eq!(
+            occupied_intents,
+            [Intent::StopUnits {
+                units: vec![UnitId(1)]
+            }]
+        );
+
+        let mut contested_policy = UtilityPolicy::new();
+        contested_policy.contested_harvest_regions = vec![ContestedHarvestRegion {
+            center: frame,
+            last_evidence: obs.tick,
+            sweep_started_at: None,
+        }];
+        let mut contested_intents = Vec::new();
+        let retained = contested_policy.opening_core_deferred_claims(
+            &obs,
+            OpeningClaimContext {
+                dials: &dials,
+                home,
+                unit_contacts: None,
+                building_contacts: None,
+                public_map: Some(&map),
+            },
+            &mut contested_intents,
+        );
+        assert!(retained.is_empty());
+        assert_eq!(
+            contested_intents,
+            [Intent::StopUnits {
+                units: vec![UnitId(1)]
+            }]
+        );
+    }
+
+    #[test]
+    fn a_deficient_core_rejects_stale_deferred_defenses_despite_current_threats() {
+        let home = TilePos::new(3, 10);
+        let claims = [
+            (BuildingKind::Turret, TilePos::new(3, 16)),
+            (BuildingKind::Turret, TilePos::new(6, 16)),
+            (BuildingKind::FlakTurret, TilePos::new(9, 16)),
+            (BuildingKind::FlakTurret, TilePos::new(12, 16)),
+        ];
+        let mut obs = obs_with(
+            claims
+                .into_iter()
+                .enumerate()
+                .map(|(index, claim)| UnitObs {
+                    tile: claim.1.offset(0, 2),
+                    ..harvester(u32::try_from(index + 1).unwrap(), Some(claim))
+                })
+                .collect(),
+        );
+        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![Vec::new()];
+        obs.enemy_units = vec![
+            fighter(20, PlayerId(1), TilePos::new(9, 10)),
+            UnitObs {
+                id: UnitId(21),
+                player: PlayerId(1),
+                kind: UnitKind::Condor,
+                tile: TilePos::new(9, 9),
+                hp: UnitKind::Condor.stats().max_hp,
+                idle: true,
+                carrying: 0,
+                harvesting: None,
+                cargo: 0,
+                site: None,
+                salvaging: None,
+                founding: None,
+                repairing: false,
+                grounded: false,
+            },
+        ];
+        let map = public_map_with_home_and_frames(&obs, home, &[]);
+        let dials = Dials::full();
+
+        let mut current_intents = Vec::new();
+        let retained = UtilityPolicy::new().opening_core_deferred_claims(
+            &obs,
+            OpeningClaimContext {
+                dials: &dials,
+                home,
+                unit_contacts: None,
+                building_contacts: None,
+                public_map: Some(&map),
+            },
+            &mut current_intents,
+        );
+        assert!(retained.is_empty());
+        let stopped = current_intents
+            .iter()
+            .find_map(|intent| match intent {
+                Intent::StopUnits { units } => Some(units),
+                _ => None,
+            })
+            .expect("the stale claims are stopped");
+        assert_eq!(stopped.len(), 4);
+
+        let mut noncurrent = obs;
+        noncurrent.enemy_units.clear();
+        noncurrent.blips = vec![TilePos::new(9, 10), TilePos::new(9, 9)];
+        let mut noncurrent_intents = Vec::new();
+        let retained = UtilityPolicy::new().opening_core_deferred_claims(
+            &noncurrent,
+            OpeningClaimContext {
+                dials: &dials,
+                home,
+                unit_contacts: None,
+                building_contacts: None,
+                public_map: Some(&map),
+            },
+            &mut noncurrent_intents,
+        );
+        assert!(retained.is_empty());
+        assert_eq!(
+            noncurrent_intents,
+            [Intent::StopUnits {
+                units: vec![UnitId(1), UnitId(2), UnitId(3), UnitId(4)]
+            }]
+        );
+    }
+
+    #[test]
+    fn a_travelling_capital_claim_requires_a_shallow_bank_after_reinforcement_finishes() {
+        let home = TilePos::new(3, 3);
+        let claim = (BuildingKind::Fabricator, TilePos::new(9, 3));
+        let mut units: Vec<_> = (0..8)
+            .map(|id| {
+                fighter(
+                    id,
+                    PlayerId(0),
+                    TilePos::new(5 + i32::try_from(id).expect("small fixture id"), 8),
+                )
+            })
+            .collect();
+        units.push(UnitObs {
+            tile: TilePos::new(6, 4),
+            ..harvester(20, Some(claim))
+        });
+        units.extend((21..24).map(|id| UnitObs {
+            tile: TilePos::new(6 + i32::try_from(id - 20).expect("small fixture id"), 5),
+            ..harvester(id, None)
+        }));
+        let mut obs = obs_with(units);
+        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![Vec::new()];
+        let mut enemy = standing_building(30, BuildingKind::Foundry, TilePos::new(24, 12));
+        enemy.player = PlayerId(1);
+        obs.enemy_buildings.push(enemy);
+        let capital_cost = BuildingKind::Fabricator
+            .base_stats()
+            .construction
+            .expect("Fabricators have a construction price")
+            .cost;
+        let sentinel_cost = UnitKind::Sentinel.stats().cost;
+        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201)
+            .resolve_profile();
+        let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
+        let map = public_map(&obs);
+
+        obs.scrap = capital_cost;
+        let paused = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+        assert!(paused.iter().any(|intent| matches!(
+            intent,
+            Intent::StopUnits { units } if units == &[UnitId(20)]
+        )));
+        assert!(paused.iter().all(|intent| !matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Fabricator,
+                ..
+            } | Intent::BuildWith {
+                kind: BuildingKind::Fabricator,
+                ..
+            }
+        )));
+
+        obs.scrap = capital_cost + sentinel_cost;
+        let retained = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+        assert!(retained.iter().all(
+            |intent| !matches!(intent, Intent::StopUnits { units } if units == &[UnitId(20)])
+        ));
+        assert!(
+            retained.iter().all(|intent| !matches!(
+                intent,
+                Intent::TrainAt { .. }
+                    | Intent::Build { .. }
+                    | Intent::BuildWith { .. }
+                    | Intent::Upgrade { .. }
+            )),
+            "the exact surviving reserve stays banked until the deferred capital pays: {retained:?}"
+        );
+    }
+
+    #[test]
+    fn a_paid_site_turns_its_shallow_bank_into_reinforcement_before_more_capital() {
+        let home = TilePos::new(3, 3);
+        let mut units: Vec<_> = (0..8)
+            .map(|id| {
+                fighter(
+                    id,
+                    PlayerId(0),
+                    TilePos::new(5 + i32::try_from(id).expect("small fixture id"), 8),
+                )
+            })
+            .collect();
+        units.extend((20..24).map(|id| harvester(id, None)));
+        let builder = units
+            .iter_mut()
+            .find(|unit| unit.id == UnitId(20))
+            .expect("the paid site has a builder");
+        builder.idle = false;
+        builder.site = Some(BuildingId(13));
+        units.sort_unstable_by_key(|unit| unit.id);
+
+        let mut paid_site = standing_building(13, BuildingKind::Turret, TilePos::new(9, 3));
+        paid_site.built = false;
+        paid_site.hp /= 2;
+        let mut obs = obs_with(units);
+        obs.my_buildings = vec![
+            standing_building(10, BuildingKind::Foundry, home),
+            standing_building(11, BuildingKind::Fabricator, TilePos::new(4, 3)),
+            standing_building(12, BuildingKind::Airworks, TilePos::new(6, 3)),
+            paid_site,
+        ];
+        obs.my_queues = vec![
+            vec![UnitKind::Harvester],
+            vec![UnitKind::Lancer, UnitKind::Lancer],
+            vec![UnitKind::Kestrel, UnitKind::Kestrel],
+            Vec::new(),
+        ];
+        let mut enemy = standing_building(30, BuildingKind::Foundry, TilePos::new(24, 12));
+        enemy.player = PlayerId(1);
+        obs.enemy_buildings.push(enemy);
+        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201)
+            .resolve_profile();
+        let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
+        let map = public_map(&obs);
+
+        obs.scrap = UnitKind::Sentinel.stats().cost;
+        let exact = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+        assert!(exact.contains(&Intent::TrainAt {
+            building: BuildingId(10),
+            kind: UnitKind::Sentinel,
+        }));
+        assert!(exact.iter().all(|intent| !matches!(
+            intent,
+            Intent::Build { .. } | Intent::BuildWith { .. } | Intent::Upgrade { .. }
+        )));
+
+        obs.scrap = 10_000;
+        let wealthy = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+        let reinforcement = wealthy
+            .iter()
+            .position(|intent| {
+                matches!(
+                    intent,
+                    Intent::TrainAt {
+                        building: BuildingId(10),
+                        kind: UnitKind::Sentinel,
+                    }
+                )
+            })
+            .expect("the paid site must consume the shallow bank");
+        let next_capital = wealthy
+            .iter()
+            .position(|intent| {
+                matches!(
+                    intent,
+                    Intent::Build { .. } | Intent::BuildWith { .. } | Intent::Upgrade { .. }
+                )
+            })
+            .expect("the wealthy fixture can afford another capital project");
+        assert!(reinforcement < next_capital, "{wealthy:?}");
+    }
+
+    #[test]
+    fn shallow_reinforcement_must_survive_the_next_production_phase() {
+        let home = TilePos::new(3, 3);
+        let second = TilePos::new(18, 3);
+        let mut obs = obs_with(Vec::new());
+        obs.my_buildings = vec![
+            standing_building(10, BuildingKind::Foundry, home),
+            standing_building(11, BuildingKind::Foundry, second),
+        ];
+        obs.my_queues = vec![vec![UnitKind::Sentinel], vec![UnitKind::Sentinel]];
+
+        assert!(
+            !UtilityPolicy::shallow_sentinel_reinforcement(&obs, &[]),
+            "each Foundry may finish its lone front item in the same production phase"
+        );
+
+        obs.my_queues[0] = vec![UnitKind::Harvester, UnitKind::Sentinel];
+        assert!(UtilityPolicy::shallow_sentinel_reinforcement(&obs, &[]));
+
+        obs.my_queues[0] = vec![UnitKind::Sentinel, UnitKind::Harvester];
+        obs.my_queues[1].clear();
+        let planned = [Intent::TrainAt {
+            building: BuildingId(11),
+            kind: UnitKind::Sentinel,
+        }];
+        assert!(
+            UtilityPolicy::shallow_sentinel_reinforcement(&obs, &planned),
+            "a same-think enqueue starts at zero progress and survives this tick"
+        );
+
+        let full = [Intent::TrainAt {
+            building: BuildingId(10),
+            kind: UnitKind::Sentinel,
+        }];
+        assert!(
+            !UtilityPolicy::shallow_sentinel_reinforcement(&obs, &full),
+            "a planned Sentinel outside a full two-slot queue is not accepted evidence"
+        );
+    }
+
+    #[test]
+    fn a_front_slot_sentinel_cannot_cover_same_tick_deferred_capital() {
+        let home = TilePos::new(2, 8);
+        let enemy = TilePos::new(35, 8);
+        let claim = TilePos::new(10, 8);
+        let founder_tile = claim.offset(-1, 1);
+        let mut map = vec![".".repeat(40); 20];
+        map[home.y as usize].replace_range(home.x as usize..home.x as usize + 1, "1");
+        map[enemy.y as usize].replace_range(enemy.x as usize..enemy.x as usize + 1, "2");
+        let mut units = vec![UnitSpec {
+            player: 0,
+            kind: UnitKind::Harvester,
+            x: founder_tile.x,
+            y: founder_tile.y,
+        }];
+        units.extend((0..3).map(|offset| UnitSpec {
+            player: 0,
+            kind: UnitKind::Harvester,
+            x: 7 + offset,
+            y: 13,
+        }));
+        units.extend((0..8).map(|offset| UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 7 + offset,
+            y: 16,
+        }));
+        let scenario = Scenario {
+            name: "shallow reinforcement production race".into(),
+            seed: 0,
+            map,
+            players: vec![
+                PlayerSpec {
+                    name: "home".into(),
+                    faction: crate::Faction::Ferrous,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+                PlayerSpec {
+                    name: "enemy".into(),
+                    faction: crate::Faction::Cupric,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+            ],
+            units,
+            buildings: Vec::new(),
+            meta: None,
+        };
+        let public_map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+        let mut state = scenario.build().unwrap();
+        let me = PlayerId(0);
+        let founder = state
+            .units()
+            .iter()
+            .find(|unit| unit.player == me && unit.tile() == founder_tile)
+            .expect("the deferred founder exists")
+            .id;
+        state.unit_mut(founder).unwrap().order = crate::state::Order::Found {
+            kind: BuildingKind::Fabricator,
+            anchor: claim,
+        };
+        let foundry = state
+            .buildings()
+            .iter()
+            .find(|building| building.player == me && building.kind == BuildingKind::Foundry)
+            .expect("the home Foundry exists")
+            .id;
+        let foundry_state = state.building_mut(foundry).unwrap();
+        foundry_state.queue.push_back(UnitKind::Sentinel);
+        foundry_state.progress = UnitKind::Sentinel.stats().train_ticks - 1;
+        let capital_cost = BuildingKind::Fabricator
+            .base_stats()
+            .construction
+            .expect("Fabricators have a construction price")
+            .cost;
+        state.player_mut(me).scrap = capital_cost;
+        let mut brain = crate::bot::Brain::scripted(
+            me,
+            BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201),
+            std::sync::Arc::new(public_map),
+        );
+
+        let commands = brain.act(&state);
+
+        assert!(commands.iter().any(|command| matches!(
+            &command.command,
+            Command::Stop { units } if units == &[founder]
+        )));
+        state.tick(&commands);
+        assert!(
+            state
+                .buildings()
+                .iter()
+                .all(|building| building.kind != BuildingKind::Fabricator
+                    || building.anchor != claim),
+            "the deferred capital must not pay after the only observed shallow Sentinel leaves its queue"
+        );
+        assert!(
+            state.player(me).scrap >= UnitKind::Sentinel.stats().cost,
+            "the post-production state must retain an affordable shallow reinforcement"
+        );
+        assert!(!matches!(
+            state.unit(founder).map(|unit| unit.order),
+            Some(crate::state::Order::Found { .. })
+        ));
+    }
+
+    #[test]
+    fn ready_core_bootstrap_precedes_scouting_and_other_discretionary_spending() {
+        let home = TilePos::new(2, 8);
+        let frame = home.offset(6, 0);
+        let mut units: Vec<_> = (1..=3).map(|id| harvester(id, None)).collect();
+        units.extend((20..28).map(|id| {
+            fighter(
+                id,
+                PlayerId(0),
+                home.offset(i32::try_from(id - 20).expect("small fixture id"), 5),
+            )
+        }));
+        let mut obs = obs_with(units);
+        obs.scrap = UnitKind::Harvester.stats().cost
+            + BuildingKind::Extractor
+                .base_stats()
+                .construction
+                .expect("Extractors have a construction price")
+                .cost;
+        obs.known_frames = vec![frame];
+        obs.my_buildings = vec![
+            standing_building(10, BuildingKind::Foundry, home),
+            standing_building(11, BuildingKind::Airworks, home.offset(0, -5)),
+        ];
+        obs.my_queues = vec![Vec::new(), Vec::new()];
+        let mut enemy = standing_building(90, BuildingKind::Foundry, TilePos::new(25, 8));
+        enemy.player = PlayerId(1);
+        obs.enemy_buildings.push(enemy);
+        let map = public_map_with_home_and_frames(&obs, home, &[frame]);
+        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201)
+            .resolve_profile();
+        let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
+        let scout = crate::stats::Role::Scout.unit_for(obs.faction);
+        let mut policy = UtilityPolicy::new();
+        policy.persistent_air_scout_needed = true;
+
+        let intents = policy.think_player_facing(&dials, &obs, &[], &[], &[], &map);
+
+        assert!(intents.iter().any(|intent| matches!(
+            intent,
+            Intent::TrainAt {
+                kind: UnitKind::Harvester,
+                ..
+            }
+        )));
+        assert!(intents.iter().any(|intent| matches!(
+            intent,
+            Intent::BuildWith {
+                kind: BuildingKind::Extractor,
+                anchor,
+                ..
+            } if *anchor == frame
+        )));
+        assert!(intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::TrainAt { kind, .. } if *kind == scout
+        )));
+        let spent = intents.iter().fold(0_u32, |total, intent| {
+            total.saturating_add(match intent {
+                Intent::TrainAt { kind, .. } => kind.stats().cost,
+                Intent::Build { kind, .. } | Intent::BuildWith { kind, .. } => kind
+                    .base_stats()
+                    .construction
+                    .map_or(0, |construction| construction.cost),
+                _ => 0,
+            })
+        });
+        assert_eq!(
+            spent, obs.scrap,
+            "only the two bootstrap obligations spend: {intents:?}"
+        );
+    }
+
+    #[test]
+    fn shallow_capital_guard_stops_paid_worker_repair() {
+        let home = TilePos::new(2, 8);
+        let mut units: Vec<_> = (1..=4).map(|id| harvester(id, None)).collect();
+        units[0].repairing = true;
+        units.extend((20..28).map(|id| {
+            fighter(
+                id,
+                PlayerId(0),
+                home.offset(i32::try_from(id - 20).expect("small fixture id"), 5),
+            )
+        }));
+        let mut obs = obs_with(units);
+        obs.scrap = UnitKind::Sentinel.stats().cost;
+        let mut foundry = standing_building(10, BuildingKind::Foundry, home);
+        foundry.hp /= 2;
+        obs.my_buildings = vec![foundry];
+        obs.my_queues = vec![vec![UnitKind::Harvester, UnitKind::Harvester]];
+        let mut enemy = standing_building(90, BuildingKind::Foundry, TilePos::new(25, 8));
+        enemy.player = PlayerId(1);
+        obs.enemy_buildings.push(enemy);
+        let map = corridor_briefing(home, TilePos::new(29, 10), '.');
+        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201)
+            .resolve_profile();
+        let mut dials =
+            Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
+        dials.extractors = false;
+
+        let intents = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+
+        assert!(intents.iter().any(|intent| matches!(
+            intent,
+            Intent::StopUnits { units } if units == &[UnitId(1)]
+        )));
+        assert!(
+            intents.iter().all(|intent| !matches!(
+                intent,
+                Intent::Repair { .. } | Intent::RepairUnits { .. }
+            ))
+        );
+    }
+
+    #[test]
+    fn shallow_capital_guard_stops_active_tenders_and_refuses_new_welds() {
+        let home = TilePos::new(2, 8);
+        let mut units: Vec<_> = (1..=4).map(|id| harvester(id, None)).collect();
+        units.extend((20..28).map(|id| {
+            fighter(
+                id,
+                PlayerId(0),
+                home.offset(i32::try_from(id - 20).expect("small fixture id"), 5),
+            )
+        }));
+        let tender = |id, tile, idle, repairing| UnitObs {
+            id: UnitId(id),
+            player: PlayerId(0),
+            kind: UnitKind::Tender,
+            tile,
+            hp: UnitKind::Tender.stats().max_hp,
+            idle,
+            carrying: 0,
+            harvesting: None,
+            cargo: 0,
+            site: None,
+            salvaging: None,
+            founding: None,
+            repairing,
+            grounded: false,
+        };
+        units.push(tender(30, home.offset(5, 1), false, true));
+        units.push(tender(31, home.offset(6, 1), true, false));
+        units.push(UnitObs {
+            id: UnitId(32),
+            player: PlayerId(0),
+            kind: UnitKind::Bombard,
+            tile: home.offset(7, 1),
+            hp: UnitKind::Bombard.stats().max_hp / 4,
+            idle: true,
+            carrying: 0,
+            harvesting: None,
+            cargo: 0,
+            site: None,
+            salvaging: None,
+            founding: None,
+            repairing: false,
+            grounded: false,
+        });
+        units.sort_unstable_by_key(|unit| unit.id);
+        let mut obs = obs_with(units);
+        obs.scrap = UnitKind::Sentinel.stats().cost;
+        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![vec![UnitKind::Harvester, UnitKind::Harvester]];
+        let mut enemy = standing_building(90, BuildingKind::Foundry, TilePos::new(25, 8));
+        enemy.player = PlayerId(1);
+        obs.enemy_buildings.push(enemy);
+        let map = corridor_briefing(home, TilePos::new(29, 10), '.');
+        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 20_042)
+            .resolve_profile();
+        let mut dials =
+            Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
+        dials.extractors = false;
+
+        let intents = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+
+        let stops: Vec<_> = intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::StopUnits { units } => Some(units.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stops, [vec![UnitId(30)]]);
+        assert!(
+            intents
+                .iter()
+                .all(|intent| !matches!(intent, Intent::RepairUnits { .. }))
+        );
+    }
+
+    #[test]
+    fn legacy_air_harass_waits_for_the_projected_opening_core() {
+        let home = TilePos::new(2, 8);
+        let target = TilePos::new(20, 8);
+        let wing_kind = crate::stats::Role::AirGround.unit_for(crate::Faction::Ferrous);
+        let mut units: Vec<_> = (1..=4).map(|id| harvester(id, None)).collect();
+        units.extend((10..12).map(|id| UnitObs {
+            id: UnitId(id),
+            player: PlayerId(0),
+            kind: wing_kind,
+            tile: home.offset(i32::try_from(id - 9).expect("small fixture id"), 4),
+            hp: wing_kind.stats().max_hp,
+            idle: true,
+            carrying: 0,
+            harvesting: None,
+            cargo: 0,
+            site: None,
+            salvaging: None,
+            founding: None,
+            repairing: false,
+            grounded: false,
+        }));
+        let mut obs = obs_with(units);
+        obs.my_buildings = vec![standing_building(1, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![Vec::new()];
+        obs.enemy_units = vec![UnitObs {
+            tile: target,
+            ..harvester(90, None)
+        }];
+        obs.enemy_units[0].player = PlayerId(1);
+        let map = public_map(&obs);
+        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201)
+            .resolve_profile();
+        let mut dials =
+            Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
+        dials.air_harass = true;
+        dials.air_wing = 2;
+        dials.extractors = false;
+
+        let blocked = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+        assert!(
+            blocked
+                .iter()
+                .all(|intent| !matches!(intent, Intent::RaidAir { .. }))
+        );
+
+        obs.my_units.extend((20..28).map(|id| {
+            fighter(
+                id,
+                PlayerId(0),
+                home.offset(i32::try_from(id - 20).expect("small fixture id"), 5),
+            )
+        }));
+        obs.my_units.sort_unstable_by_key(|unit| unit.id);
+        let admitted = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+        assert!(admitted.contains(&Intent::RaidAir { target }));
     }
 
     fn fighter(id: u32, player: PlayerId, tile: TilePos) -> UnitObs {
@@ -3817,7 +5441,7 @@ mod tests {
     }
 
     #[test]
-    fn difficulty_extends_only_the_residual_production_after_a_mandatory_support_build() {
+    fn each_difficulty_recovers_its_opening_core_before_residual_support_spending() {
         let home = TilePos::new(2, 8);
         let mut obs = obs_with((1..=7).map(|id| harvester(id, None)).collect());
         obs.tick = 6_000;
@@ -3861,7 +5485,7 @@ mod tests {
             .saturating_add(TECH_RESERVE)
             .saturating_add(residual);
 
-        let mut train_prefixes = Vec::new();
+        let mut core_targets = Vec::new();
         for difficulty in BotDifficulty::ALL {
             let profile =
                 BotConfig::scripted(difficulty, BotStance::Balanced, 20_042).resolve_profile();
@@ -3874,29 +5498,32 @@ mod tests {
                 &[],
                 &public_map(&obs),
             );
-            assert!(
-                intents.iter().any(|intent| matches!(
+            let ready_at_start =
+                combat_core_status(&obs, &[], &[], u64::from(dials.minimum_core_equivalents)).ready;
+            let support_committed = intents.iter().any(|intent| {
+                matches!(
                     intent,
                     Intent::Build {
                         kind: BuildingKind::RepairBay,
                         ..
                     }
-                )),
-                "{difficulty:?} lost the actionable support commitment: {intents:?}"
+                )
+            });
+            assert_eq!(
+                support_committed, ready_at_start,
+                "a core-recovery decision cannot also buy optional support: {intents:?}"
             );
-            assert!(
-                intents
-                    .iter()
-                    .filter(|intent| matches!(intent, Intent::Build { .. }))
-                    .count()
-                    == 1,
-                "one construction channel may spend per think: {intents:?}"
-            );
-            assert!(
-                intents
-                    .iter()
-                    .all(|intent| !matches!(intent, Intent::Upgrade { .. }))
-            );
+            assert!(intents.iter().all(|intent| {
+                !matches!(intent, Intent::Upgrade { .. })
+                    && (ready_at_start
+                        || !matches!(
+                            intent,
+                            Intent::TrainAt {
+                                kind,
+                                ..
+                            } if *kind != UnitKind::Sentinel
+                        ))
+            }));
             let trains: Vec<_> = intents
                 .iter()
                 .filter_map(|intent| match intent {
@@ -3912,19 +5539,126 @@ mod tests {
                 spent <= obs.scrap,
                 "{difficulty:?} overspent {spent}: {intents:?}"
             );
-            train_prefixes.push(trains);
+            let core = combat_core_status(
+                &obs,
+                &[],
+                &intents,
+                u64::from(dials.minimum_core_equivalents),
+            );
+            assert!(
+                core.ready,
+                "{difficulty:?} reached optional support spending below its core floor: {intents:?}"
+            );
+            core_targets.push(core.target_strength);
+
+            if !ready_at_start {
+                let mut next = obs.clone();
+                for intent in &intents {
+                    let Intent::TrainAt { building, kind } = intent else {
+                        continue;
+                    };
+                    let index = next
+                        .my_buildings
+                        .iter()
+                        .position(|candidate| candidate.id == *building)
+                        .expect("the recovery order names a standing producer");
+                    next.my_queues[index].push(*kind);
+                }
+                let continued = UtilityPolicy::new().think_player_facing(
+                    &dials,
+                    &next,
+                    &[],
+                    &[],
+                    &[],
+                    &public_map(&next),
+                );
+                assert!(
+                    continued.iter().any(|intent| matches!(
+                        intent,
+                        Intent::Build {
+                            kind: BuildingKind::RepairBay,
+                            ..
+                        }
+                    )),
+                    "{difficulty:?} did not reopen optional support after observing the recovered core: {continued:?}"
+                );
+            }
         }
 
-        for pair in train_prefixes.windows(2) {
-            assert_eq!(
-                pair[0].as_slice(),
-                &pair[1][..pair[0].len()],
-                "higher attention changed the lower rung's production prefix"
-            );
-        }
         assert!(
-            train_prefixes.first().unwrap().len() < train_prefixes.last().unwrap().len(),
-            "the fixture must exercise the expanded discretionary attention budget"
+            core_targets.windows(2).all(|pair| pair[0] <= pair[1]),
+            "higher difficulty must not protect a smaller opening core: {core_targets:?}"
+        );
+    }
+
+    #[test]
+    fn team_watch_home_defenders_still_count_toward_the_opening_core() {
+        let home = TilePos::new(2, 8);
+        let mut obs = obs_with((100..104).map(|id| harvester(id, None)).collect());
+        obs.my_units.extend((1..=8).map(|id| {
+            fighter(
+                id,
+                PlayerId(0),
+                home.offset(i32::try_from(id - 1).expect("small fixture id"), 4),
+            )
+        }));
+        obs.my_units.extend((20..=22).map(|id| UnitObs {
+            kind: UnitKind::Scuttler,
+            hp: UnitKind::Scuttler.stats().max_hp,
+            ..fighter(
+                id,
+                PlayerId(0),
+                home.offset(i32::try_from(id - 20).expect("small fixture id"), 6),
+            )
+        }));
+        obs.my_units.sort_unstable_by_key(|unit| unit.id);
+        obs.my_buildings = vec![standing_building(30, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![Vec::new()];
+        obs.scrap = UnitKind::Sentinel.stats().cost;
+
+        let all_team_reservations = [UnitId(1), UnitId(2), UnitId(20), UnitId(21), UnitId(22)];
+        let outbound_relief = [UnitId(20), UnitId(21), UnitId(22)];
+        assert!(combat_core_status(&obs, &outbound_relief, &[], 8).ready);
+        assert!(
+            !combat_core_status(&obs, &all_team_reservations, &[], 8).ready,
+            "the fixture must detect accidentally subtracting the home watch"
+        );
+
+        let mut dials = Dials::full();
+        dials.minimum_core_equivalents = 8;
+        let map = public_map(&obs);
+        let decide = |separate_core_exclusions| {
+            let context =
+                StrategicUtilityContext::new(&all_team_reservations, &[], &[], &map, Vec::new());
+            let context = if separate_core_exclusions {
+                context.with_combat_core_exclusions(&outbound_relief)
+            } else {
+                context
+            };
+            UtilityPolicy::new().think_with_intelligence(&dials, &obs, &[], &[], context)
+        };
+
+        let conflated = decide(false);
+        assert!(
+            conflated.iter().any(|intent| matches!(
+                intent,
+                Intent::TrainAt {
+                    kind: UnitKind::Sentinel,
+                    ..
+                }
+            )),
+            "the control must expose the needless refill: {conflated:?}"
+        );
+        let separated = decide(true);
+        assert!(
+            separated.iter().all(|intent| !matches!(
+                intent,
+                Intent::TrainAt {
+                    kind: UnitKind::Sentinel,
+                    ..
+                }
+            )),
+            "home defenders stay owned by Team but still satisfy the protected core: {separated:?}"
         );
     }
 
@@ -4020,7 +5754,35 @@ mod tests {
         };
 
         obs.scrap = foundry_cost + UnitKind::Sentinel.stats().cost + 1_000;
-        let intents = run(&obs);
+        let deficient = run(&obs);
+        assert!(
+            deficient.iter().any(|intent| matches!(
+                intent,
+                Intent::StopUnits { units }
+                    if units.contains(&UnitId(2)) && units.contains(&UnitId(3))
+            )),
+            "every voluntary welder must release scrap while the opening core remains deficient: {deficient:?}"
+        );
+        assert!(
+            deficient
+                .iter()
+                .all(|intent| !matches!(intent, Intent::RepairUnits { .. }))
+        );
+
+        let mut ready = obs.clone();
+        ready.my_units.extend((6..=7).map(|id| harvester(id, None)));
+        ready.my_units.extend((20..28).map(|id| {
+            ground_unit(
+                id,
+                UnitKind::Sentinel,
+                home.offset(i32::try_from(id - 20).unwrap(), 5),
+                UnitKind::Sentinel.stats().max_hp,
+                true,
+                false,
+            )
+        }));
+        ready.my_units.sort_unstable_by_key(|unit| unit.id);
+        let intents = run(&ready);
         assert!(intents.contains(&Intent::StopUnits {
             units: vec![UnitId(2)],
         }));
@@ -4029,7 +5791,7 @@ mod tests {
                 intent,
                 Intent::StopUnits { units } if units.contains(&UnitId(3))
             )),
-            "an active Tender is not a construction crew and must keep welding"
+            "an active Tender may keep welding once the opening core is funded"
         );
         assert!(intents.contains(&Intent::RepairUnits {
             welders: vec![UnitId(4)],
@@ -4043,7 +5805,7 @@ mod tests {
                 .all(|intent| !matches!(intent, Intent::RepairUnits { .. })),
             "the construction promise and fighting reserve still bound new Tender work"
         );
-        assert!(lean.iter().all(|intent| !matches!(
+        assert!(lean.iter().any(|intent| matches!(
             intent,
             Intent::StopUnits { units } if units.contains(&UnitId(3))
         )));
@@ -4494,6 +6256,7 @@ mod tests {
         scrapheap.opponent_force_memory = prime.opponent_force_memory;
         scrapheap.coordinated_focus = prime.coordinated_focus;
         scrapheap.coordinated_defense_focus = prime.coordinated_defense_focus;
+        scrapheap.minimum_core_equivalents = prime.minimum_core_equivalents;
         assert_eq!(&scrapheap, prime);
     }
 

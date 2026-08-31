@@ -18,6 +18,12 @@ fn standard_dials() -> Dials {
     )
 }
 
+fn standard_dials_without_opening_core_floor() -> Dials {
+    let mut dials = standard_dials();
+    dials.minimum_core_equivalents = 0;
+    dials
+}
+
 fn observed_unit(id: u32, kind: UnitKind, tile: TilePos) -> UnitObs {
     UnitObs {
         id: UnitId(id),
@@ -243,7 +249,7 @@ fn scouts_do_not_create_sticky_anti_air_demand_but_armed_flyers_do() {
     );
     obs.known_scrap.push((TilePos::new(7, 8), 500));
     let mut policy = UtilityPolicy::new();
-    let mut dials = standard_dials();
+    let mut dials = standard_dials_without_opening_core_floor();
     dials.deep_tech = false;
     dials.radar = false;
     dials.mines = false;
@@ -396,7 +402,9 @@ fn a_starved_commander_liquidates_its_walls_for_one_more_wave() {
 
 #[test]
 fn standard_opening_can_train_and_restore_its_supported_frame_from_150_scrap() {
-    let mut state = Scenario::skirmish().build().unwrap();
+    let scenario = Scenario::skirmish();
+    let briefing = PublicMapBriefing::from_scenario(&scenario).unwrap();
+    let mut state = scenario.build().unwrap();
     let me = PlayerId(0);
     let dials = standard_dials();
     let mut policy = UtilityPolicy::new();
@@ -404,8 +412,7 @@ fn standard_opening_can_train_and_restore_its_supported_frame_from_150_scrap() {
 
     let first_obs = Observation::fog_honest(&state, me);
     assert_eq!(first_obs.scrap, 150);
-    let first_intents =
-        policy.think_player_facing(&dials, &first_obs, &[], &[], &[], &public_map(&first_obs));
+    let first_intents = policy.think_player_facing(&dials, &first_obs, &[], &[], &[], &briefing);
     assert!(
         first_intents.iter().any(|intent| matches!(
             intent,
@@ -452,14 +459,8 @@ fn standard_opening_can_train_and_restore_its_supported_frame_from_150_scrap() {
             state.tick(&[]);
         }
         let second_obs = Observation::fog_honest(&state, me);
-        let second_intents = policy.think_player_facing(
-            &dials,
-            &second_obs,
-            &[],
-            &[],
-            &[],
-            &public_map(&second_obs),
-        );
+        let second_intents =
+            policy.think_player_facing(&dials, &second_obs, &[], &[], &[], &briefing);
         let second_commands =
             executive.apply_with_reservations(me, &second_obs, &second_intents, &[]);
         assert!(second_commands.iter().any(|command| matches!(
@@ -500,6 +501,609 @@ fn standard_opening_can_train_and_restore_its_supported_frame_from_150_scrap() {
     );
 }
 
+fn assert_current_emergency_defense_preserves_opening_escrow(
+    seat: u8,
+    threat_kind: UnitKind,
+    defense_kind: BuildingKind,
+    intruder_tile: TilePos,
+) {
+    let mut scenario = Scenario::skirmish();
+    let defense_cost = defense_kind
+        .base_stats()
+        .construction
+        .expect("emergency defenses have a construction price")
+        .cost;
+    let extractor_cost = BuildingKind::Extractor
+        .base_stats()
+        .construction
+        .expect("Extractors have a construction price")
+        .cost;
+    scenario.players[usize::from(seat)].scrap = 150 + defense_cost;
+    let intruder = scenario
+        .units
+        .iter_mut()
+        .find(|unit| unit.player != seat && unit.kind == UnitKind::Sentinel)
+        .expect("Skirmish has one opposing Sentinel");
+    intruder.kind = threat_kind;
+    (intruder.x, intruder.y) = (intruder_tile.x, intruder_tile.y);
+
+    let briefing = PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds");
+    let mut state = scenario.build().expect("the threatened opening builds");
+    let me = PlayerId(seat);
+    let dials = standard_dials();
+    let mut policy = UtilityPolicy::new();
+    let mut executive = Executive::new();
+
+    let observation = Observation::fog_honest(&state, me);
+    assert!(
+        observation
+            .enemy_units
+            .iter()
+            .any(|unit| unit.kind == threat_kind && observation.visible(unit.tile)),
+        "the {threat_kind:?} must be current visible evidence for the emergency exception"
+    );
+    let intents = policy.think_player_facing(&dials, &observation, &[], &[], &[], &briefing);
+    assert_eq!(
+        intents
+            .iter()
+            .filter(|intent| matches!(
+                intent,
+                Intent::Build { kind, .. } | Intent::BuildWith { kind, .. }
+                    if *kind == defense_kind
+            ))
+            .count(),
+        1,
+        "the visible opening {threat_kind:?} should admit exactly one emergency {defense_kind:?}: {intents:?}"
+    );
+    assert!(
+        intents.iter().all(|intent| match intent {
+            Intent::Build { kind, .. } | Intent::BuildWith { kind, .. } => {
+                *kind == defense_kind
+            }
+            Intent::Upgrade { .. } => false,
+            _ => true,
+        }),
+        "the current emergency exception must not admit other below-floor capital: {intents:?}"
+    );
+    assert!(intents.iter().any(|intent| matches!(
+        intent,
+        Intent::TrainAt {
+            kind: UnitKind::Harvester,
+            ..
+        }
+    )));
+    assert_eq!(
+        intents.iter().map(planned_cost).sum::<u32>(),
+        observation.scrap - extractor_cost,
+        "the emergency and fourth worker may spend only the bank above the home Extractor fund: {intents:?}"
+    );
+
+    let commands = executive.apply_with_reservations(me, &observation, &intents, &[]);
+    let report = state.tick(&commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player,
+            ..
+        } if *player == me
+    )));
+    assert_eq!(
+        state.player(me).scrap,
+        defense_cost + extractor_cost,
+        "the worker is paid immediately while both construction promises remain in the bank"
+    );
+
+    let mut defense_anchor = commands.iter().find_map(|command| match command.command {
+        Command::Build { kind, anchor, .. } if kind == defense_kind => Some(anchor),
+        _ => None,
+    });
+    let mut extractor_anchor = None;
+    let mut defense_site = None;
+    let mut extractor_site = None;
+    let mut defense_advanced = false;
+    let mut extractor_advanced = false;
+
+    for _ in 0..4_000 {
+        let commands = if oxide_sim::bot::difficulty::strategic_admission_tick(state.current_tick())
+        {
+            let observation = Observation::fog_honest(&state, me);
+            if extractor_site.is_none() {
+                assert!(
+                    observation.scrap >= extractor_cost,
+                    "emergency defense must preserve the home Extractor fund until its site is paid"
+                );
+            }
+            let intents =
+                policy.think_player_facing(&dials, &observation, &[], &[], &[], &briefing);
+            executive.apply_with_reservations(me, &observation, &intents, &[])
+        } else {
+            Vec::new()
+        };
+        for command in &commands {
+            let (kind, anchor) = match command.command {
+                Command::Build { kind, anchor, .. } => (kind, anchor),
+                _ => continue,
+            };
+            let promised = if kind == defense_kind {
+                &mut defense_anchor
+            } else if kind == BuildingKind::Extractor {
+                &mut extractor_anchor
+            } else {
+                continue;
+            };
+            if let Some(previous) = *promised {
+                assert_eq!(
+                    anchor, previous,
+                    "lowering must not oscillate an unpaid {kind:?} promise between sites"
+                );
+            } else {
+                *promised = Some(anchor);
+            }
+        }
+        let report = state.tick(&commands);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            Event::CommandRejected {
+                player,
+                ..
+            } if *player == me
+        )));
+        for (kind, promised_anchor, site, advanced) in [
+            (
+                defense_kind,
+                defense_anchor,
+                &mut defense_site,
+                &mut defense_advanced,
+            ),
+            (
+                BuildingKind::Extractor,
+                extractor_anchor,
+                &mut extractor_site,
+                &mut extractor_advanced,
+            ),
+        ] {
+            let owned: Vec<_> = state
+                .buildings()
+                .iter()
+                .filter(|building| building.player == me && building.kind == kind)
+                .collect();
+            assert!(
+                owned.len() <= 1,
+                "the opening must not pay for duplicate {kind:?} promises: {owned:?}"
+            );
+            let Some(building) = owned.first().copied() else {
+                continue;
+            };
+            assert_eq!(
+                Some(building.anchor),
+                promised_anchor,
+                "the paid site must be the stable promised site"
+            );
+            if let Some(previous) = *site {
+                assert_eq!(building.id, previous, "a paid site must remain stable");
+            } else {
+                *site = Some(building.id);
+            }
+            *advanced |= building.built || building.hp > kind.base_stats().max_hp / 5;
+        }
+        if defense_site.is_some()
+            && extractor_site.is_some()
+            && defense_advanced
+            && extractor_advanced
+        {
+            break;
+        }
+    }
+    assert!(
+        defense_site.is_some() && defense_advanced,
+        "the emergency defense promise must become one accepted, progressing paid site"
+    );
+    assert!(
+        extractor_site.is_some() && extractor_advanced,
+        "the reserved home Extractor must become one accepted, progressing paid site"
+    );
+}
+
+#[test]
+fn current_ground_and_air_defenses_preserve_the_fourth_worker_and_home_extractor_fund() {
+    for (seat, threat_kind, defense_kind, intruder_tile) in [
+        (
+            0,
+            UnitKind::Sentinel,
+            BuildingKind::Turret,
+            TilePos::new(14, 4),
+        ),
+        (
+            1,
+            UnitKind::Condor,
+            BuildingKind::FlakTurret,
+            TilePos::new(27, 10),
+        ),
+    ] {
+        assert_current_emergency_defense_preserves_opening_escrow(
+            seat,
+            threat_kind,
+            defense_kind,
+            intruder_tile,
+        );
+    }
+}
+
+#[test]
+fn noncurrent_air_evidence_cannot_spend_below_floor_opening_escrow() {
+    let mut scenario = Scenario::skirmish();
+    let flak_cost = BuildingKind::FlakTurret
+        .base_stats()
+        .construction
+        .expect("Flak has a construction price")
+        .cost;
+    scenario.players[0].scrap = 150 + flak_cost;
+    let hidden_intruder = scenario
+        .units
+        .iter_mut()
+        .find(|unit| unit.player == 1 && unit.kind == UnitKind::Sentinel)
+        .expect("Skirmish has one enemy Sentinel");
+    hidden_intruder.kind = UnitKind::Moth;
+
+    let briefing = PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds");
+    let mut state = scenario.build().expect("the hidden-threat opening builds");
+    let me = PlayerId(0);
+    let observation = Observation::fog_honest(&state, me);
+    assert!(
+        observation.enemy_units.is_empty(),
+        "the distant Moth must remain noncurrent evidence in the opening observation"
+    );
+
+    let dials = standard_dials();
+    let mut policy = UtilityPolicy::new();
+    let intents = policy.think_player_facing(&dials, &observation, &[], &[], &[], &briefing);
+    assert!(
+        intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Turret | BuildingKind::FlakTurret,
+                ..
+            } | Intent::BuildWith {
+                kind: BuildingKind::Turret | BuildingKind::FlakTurret,
+                ..
+            }
+        )),
+        "hidden air evidence must not admit either emergency defense: {intents:?}"
+    );
+    assert!(
+        intents.iter().all(|intent| match intent {
+            Intent::Build { kind, .. } | Intent::BuildWith { kind, .. } => {
+                *kind == BuildingKind::Extractor
+            }
+            Intent::Upgrade { .. } => false,
+            _ => true,
+        }),
+        "surplus Flak money must not unlock capital beyond the safe home Extractor: {intents:?}"
+    );
+    assert!(intents.iter().any(|intent| matches!(
+        intent,
+        Intent::Build {
+            kind: BuildingKind::Extractor,
+            ..
+        } | Intent::BuildWith {
+            kind: BuildingKind::Extractor,
+            ..
+        }
+    )));
+    assert!(intents.iter().any(|intent| matches!(
+        intent,
+        Intent::TrainAt {
+            kind: UnitKind::Harvester,
+            ..
+        }
+    )));
+
+    let commands = Executive::new().apply_with_reservations(me, &observation, &intents, &[]);
+    assert!(commands.iter().all(|command| !matches!(
+        command.command,
+        Command::Build {
+            kind: BuildingKind::Turret | BuildingKind::FlakTurret,
+            ..
+        }
+    )));
+    let report = state.tick(&commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player: PlayerId(0),
+            ..
+        }
+    )));
+    assert!(state.buildings().iter().all(|building| {
+        building.player != me
+            || !matches!(
+                building.kind,
+                BuildingKind::Turret | BuildingKind::FlakTurret
+            )
+    }));
+}
+
+#[test]
+fn prime_opening_core_blocks_optional_capital_until_the_floor_is_projected() {
+    let home = TilePos::new(2, 10);
+    let mut obs = construction_observation(10_000);
+    add_building(
+        &mut obs,
+        observed_building(0, BuildingKind::Foundry, home, true),
+    );
+    let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 0x5eed_0a16)
+        .resolve_profile();
+    let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
+
+    let mut policy = UtilityPolicy::new();
+    let deficient = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    assert_eq!(
+        deficient
+            .iter()
+            .filter(|intent| matches!(
+                intent,
+                Intent::TrainAt {
+                    kind: UnitKind::Sentinel,
+                    ..
+                }
+            ))
+            .count(),
+        2,
+        "the shallow Foundry queue should absorb two of the five missing equivalents: {deficient:?}"
+    );
+    assert!(deficient.iter().all(|intent| !matches!(
+        intent,
+        Intent::Build { .. } | Intent::BuildWith { .. } | Intent::Upgrade { .. }
+    )));
+
+    obs.my_units.extend((23..28).map(|id| {
+        observed_unit(
+            id,
+            UnitKind::Sentinel,
+            TilePos::new(10 + i32::try_from(id - 23).unwrap(), 14),
+        )
+    }));
+    obs.my_units.sort_unstable_by_key(|unit| unit.id);
+    let ready =
+        UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    assert!(
+        ready.iter().any(|intent| matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Fabricator,
+                ..
+            }
+        )),
+        "the same bank may fund the first voluntary tech project once Prime has eight equivalents: {ready:?}"
+    );
+}
+
+#[test]
+fn reaching_the_core_floor_after_cancelling_an_unsafe_site_does_not_cancel_twice() {
+    let home = TilePos::new(2, 10);
+    let site = BuildingId(1);
+    let site_anchor = TilePos::new(12, 10);
+    let mut obs = construction_observation(10_000);
+    add_building(
+        &mut obs,
+        observed_building(0, BuildingKind::Foundry, home, true),
+    );
+    add_building(
+        &mut obs,
+        observed_building(site.0, BuildingKind::Turret, site_anchor, false),
+    );
+    obs.my_units.extend((23..27).map(|id| {
+        observed_unit(
+            id,
+            UnitKind::Sentinel,
+            TilePos::new(10 + i32::try_from(id - 23).unwrap(), 14),
+        )
+    }));
+    let mut threat = observed_unit(50, UnitKind::Sentinel, site_anchor.offset(1, 0));
+    threat.player = PlayerId(1);
+    obs.enemy_units.push(threat);
+    obs.my_units.sort_unstable_by_key(|unit| unit.id);
+
+    let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 0x5eed_0a16)
+        .resolve_profile();
+    let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
+    let intents = player_facing_intents(&dials, &obs);
+
+    assert_eq!(
+        intents
+            .iter()
+            .filter(|intent| matches!(intent, Intent::CancelSite { building } if *building == site))
+            .count(),
+        1,
+        "one construction pass owns the unsafe-site cancellation: {intents:?}"
+    );
+    assert!(intents.iter().any(|intent| matches!(
+        intent,
+        Intent::TrainAt {
+            kind: UnitKind::Sentinel,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn capital_guard_accepts_a_shallow_sentinel_an_exact_remainder_or_no_ground_objective() {
+    let home = TilePos::new(2, 10);
+    let mut obs = construction_observation(0);
+    obs.my_units.extend([
+        observed_unit(23, UnitKind::Sentinel, TilePos::new(10, 14)),
+        observed_unit(24, UnitKind::Sentinel, TilePos::new(11, 14)),
+    ]);
+    obs.my_units.sort_unstable_by_key(|unit| unit.id);
+    for (id, kind, anchor) in [
+        (0, BuildingKind::Foundry, home),
+        (1, BuildingKind::Fabricator, TilePos::new(7, 3)),
+        (2, BuildingKind::Airworks, TilePos::new(12, 3)),
+    ] {
+        add_building(&mut obs, observed_building(id, kind, anchor, true));
+    }
+    obs.my_queues[0] = vec![UnitKind::Harvester, UnitKind::Harvester];
+    obs.my_queues[1] = vec![UnitKind::Lancer, UnitKind::Lancer];
+    obs.my_queues[2] = vec![UnitKind::Kestrel, UnitKind::Kestrel];
+    let mut hostile = observed_building(50, BuildingKind::Foundry, TilePos::new(40, 10), true);
+    hostile.player = PlayerId(1);
+    obs.enemy_buildings.push(hostile);
+
+    let mut dials = standard_dials();
+    dials.turret_response = false;
+    dials.aa_response = false;
+    dials.radar = false;
+    dials.reclaimers = false;
+    dials.extractors = false;
+    dials.upgrades = false;
+    dials.expansion = false;
+    dials.mines = false;
+    dials.barricade_cap = 0;
+    let crucible_cost = BuildingKind::Crucible
+        .base_stats()
+        .construction
+        .expect("Crucibles have a construction price")
+        .cost;
+    let sentinel_cost = UnitKind::Sentinel.stats().cost;
+    let plans_crucible = |world: &Observation| {
+        player_facing_intents(&dials, world).iter().any(|intent| {
+            matches!(
+                intent,
+                Intent::Build {
+                    kind: BuildingKind::Crucible,
+                    ..
+                }
+            )
+        })
+    };
+
+    obs.scrap = crucible_cost + sentinel_cost - 1;
+    assert!(!plans_crucible(&obs));
+    obs.scrap += 1;
+    assert!(plans_crucible(&obs));
+
+    obs.scrap = crucible_cost;
+    obs.my_queues[0][1] = UnitKind::Sentinel;
+    assert!(plans_crucible(&obs));
+
+    obs.my_queues[0][1] = UnitKind::Harvester;
+    obs.enemy_buildings.clear();
+    assert!(plans_crucible(&obs));
+}
+
+#[test]
+fn post_floor_capital_keeps_the_foundry_actively_reinforcing() {
+    let home = TilePos::new(2, 10);
+    let mut obs = construction_observation(0);
+    obs.my_units.extend([
+        observed_unit(23, UnitKind::Sentinel, TilePos::new(10, 14)),
+        observed_unit(24, UnitKind::Sentinel, TilePos::new(11, 14)),
+    ]);
+    obs.my_units.sort_unstable_by_key(|unit| unit.id);
+    for (id, kind, anchor) in [
+        (0, BuildingKind::Foundry, home),
+        (1, BuildingKind::Fabricator, TilePos::new(7, 3)),
+        (2, BuildingKind::Airworks, TilePos::new(12, 3)),
+    ] {
+        add_building(&mut obs, observed_building(id, kind, anchor, true));
+    }
+    let mut hostile = observed_building(50, BuildingKind::Foundry, TilePos::new(40, 10), true);
+    hostile.player = PlayerId(1);
+    obs.enemy_buildings.push(hostile);
+
+    let mut dials = standard_dials();
+    dials.turret_response = false;
+    dials.aa_response = false;
+    dials.radar = false;
+    dials.reclaimers = false;
+    dials.extractors = false;
+    dials.upgrades = false;
+    dials.expansion = false;
+    dials.mines = false;
+    dials.barricade_cap = 0;
+    let crucible_cost = BuildingKind::Crucible
+        .base_stats()
+        .construction
+        .expect("Crucibles have a construction price")
+        .cost;
+    let sentinel_cost = UnitKind::Sentinel.stats().cost;
+
+    obs.scrap = crucible_cost + sentinel_cost;
+    let funded = player_facing_intents(&dials, &obs);
+    let reinforcement = funded
+        .iter()
+        .position(|intent| {
+            matches!(
+                intent,
+                Intent::TrainAt {
+                    building: BuildingId(0),
+                    kind: UnitKind::Sentinel,
+                }
+            )
+        })
+        .expect("an empty Foundry receives the ring-fenced reinforcement");
+    let capital = funded
+        .iter()
+        .position(|intent| {
+            matches!(
+                intent,
+                Intent::Build {
+                    kind: BuildingKind::Crucible,
+                    ..
+                }
+            )
+        })
+        .expect("the remaining exact capital fund stays spendable");
+    assert!(
+        reinforcement < capital,
+        "production must precede capital: {funded:?}"
+    );
+
+    obs.scrap = crucible_cost;
+    let short = player_facing_intents(&dials, &obs);
+    assert!(
+        short.iter().all(|intent| !matches!(
+            intent,
+            Intent::TrainAt {
+                kind: UnitKind::Sentinel,
+                ..
+            } | Intent::Build {
+                kind: BuildingKind::Crucible,
+                ..
+            } | Intent::BuildWith {
+                kind: BuildingKind::Crucible,
+                ..
+            }
+        )),
+        "the partial combined fund must accumulate instead of starving either purchase: {short:?}"
+    );
+
+    obs.scrap = crucible_cost;
+    obs.my_queues[0] = vec![UnitKind::Harvester, UnitKind::Sentinel];
+    let already_shallow = player_facing_intents(&dials, &obs);
+    assert_eq!(
+        already_shallow
+            .iter()
+            .filter(|intent| matches!(
+                intent,
+                Intent::TrainAt {
+                    kind: UnitKind::Sentinel,
+                    ..
+                }
+            ))
+            .count(),
+        0,
+        "an existing shallow order must not be duplicated: {already_shallow:?}"
+    );
+    assert!(already_shallow.iter().any(|intent| matches!(
+        intent,
+        Intent::Build {
+            kind: BuildingKind::Crucible,
+            ..
+        }
+    )));
+}
+
 #[test]
 fn player_facing_restoration_waits_for_the_full_frame_footprint() {
     let home = TilePos::new(2, 10);
@@ -513,7 +1117,7 @@ fn player_facing_restoration_waits_for_the_full_frame_footprint() {
     let hidden = frame.offset(1, 1);
     let hidden_index = usize::try_from(hidden.y * obs.map_width + hidden.x).unwrap();
     obs.explored[hidden_index] = false;
-    let dials = standard_dials();
+    let dials = standard_dials_without_opening_core_floor();
 
     let partial = player_facing_intents(&dials, &obs);
     assert!(
@@ -544,7 +1148,7 @@ fn player_facing_restoration_waits_for_a_visible_occupant_to_clear() {
     let mut occupant = observed_unit(90, UnitKind::Sentinel, frame.offset(1, 0));
     occupant.player = PlayerId(1);
     obs.enemy_units.push(occupant);
-    let dials = standard_dials();
+    let dials = standard_dials_without_opening_core_floor();
 
     let occupied = player_facing_intents(&dials, &obs);
     assert!(
@@ -593,7 +1197,7 @@ fn player_facing_restoration_requires_a_clean_bounded_sweep_after_worker_damage(
         observed_building(0, BuildingKind::Foundry, home, true),
     );
     obs.known_frames.push(frame);
-    let dials = standard_dials();
+    let dials = standard_dials_without_opening_core_floor();
     let mut policy = UtilityPolicy::new();
     let restores_frame = |intents: &[Intent]| plans_build(intents, BuildingKind::Extractor, frame);
 
@@ -660,7 +1264,7 @@ fn remote_own_extractor_focuses_a_supporting_foundry_before_airworks() {
         observed_building(2, BuildingKind::Extractor, extractor, true),
     );
     obs.known_frames.push(extractor);
-    let mut dials = standard_dials();
+    let mut dials = standard_dials_without_opening_core_floor();
     dials.foundry_cap = 4;
 
     let pretech = player_facing_intents(&dials, &obs);
@@ -744,7 +1348,7 @@ fn extractor_support_search_reaches_the_full_legal_edge() {
     }
     obs.known_frames.push(extractor);
     block_support_anchors(&mut obs, extractor, 8);
-    let mut dials = standard_dials();
+    let mut dials = standard_dials_without_opening_core_floor();
     dials.foundry_cap = 4;
 
     let intents = player_facing_intents(&dials, &obs);
@@ -782,6 +1386,10 @@ fn impossible_extractor_support_does_not_pin_the_crucible_fund() {
     let home = TilePos::new(2, 10);
     let extractor = TilePos::new(28, 10);
     let mut obs = construction_observation(470);
+    obs.my_units.extend([
+        observed_unit(23, UnitKind::Sentinel, TilePos::new(10, 14)),
+        observed_unit(24, UnitKind::Sentinel, TilePos::new(11, 14)),
+    ]);
     for (id, kind, anchor) in [
         (0, BuildingKind::Foundry, home),
         (1, BuildingKind::Fabricator, TilePos::new(5, 3)),
@@ -823,6 +1431,10 @@ fn extractor_support_requires_a_builder_on_the_reachable_side() {
     let home = TilePos::new(22, 10);
     let extractor = TilePos::new(36, 10);
     let mut obs = construction_observation(470);
+    obs.my_units.extend([
+        observed_unit(23, UnitKind::Sentinel, TilePos::new(10, 14)),
+        observed_unit(24, UnitKind::Sentinel, TilePos::new(11, 14)),
+    ]);
     for unit in &mut obs.my_units {
         unit.tile = TilePos::new(5, 5 + i32::try_from(unit.id.0 % 8).unwrap());
     }

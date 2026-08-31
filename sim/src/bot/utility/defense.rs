@@ -22,6 +22,43 @@ enum DefenseDomain {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefenseEvidenceScope {
+    Strategic,
+    CurrentEmergency,
+}
+
+#[derive(Clone, Copy)]
+struct DefenseEvidence<'a> {
+    unit_contacts: &'a [UnitContact],
+    building_contacts: &'a [BuildingContact],
+    scope: DefenseEvidenceScope,
+}
+
+impl<'a> DefenseEvidence<'a> {
+    const fn strategic(
+        unit_contacts: &'a [UnitContact],
+        building_contacts: &'a [BuildingContact],
+    ) -> Self {
+        Self {
+            unit_contacts,
+            building_contacts,
+            scope: DefenseEvidenceScope::Strategic,
+        }
+    }
+
+    const fn current_emergency(
+        unit_contacts: &'a [UnitContact],
+        building_contacts: &'a [BuildingContact],
+    ) -> Self {
+        Self {
+            unit_contacts,
+            building_contacts,
+            scope: DefenseEvidenceScope::CurrentEmergency,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DefenseProfile {
     kind: BuildingKind,
     domain: DefenseDomain,
@@ -397,6 +434,108 @@ fn tile_index(width: i32, height: i32, tile: TilePos) -> Option<usize> {
 }
 
 impl UtilityPolicy {
+    pub(super) fn current_emergency_defense_required(
+        &self,
+        kind: BuildingKind,
+        obs: &Observation,
+        briefing: &PublicMapBriefing,
+    ) -> bool {
+        let Some(profile) = DefenseProfile::for_kind(kind) else {
+            return false;
+        };
+        if obs
+            .my_buildings
+            .iter()
+            .any(|building| building.kind == kind && building.hp > 0)
+        {
+            return false;
+        }
+        let mut unclaimed = obs.clone();
+        for unit in &mut unclaimed.my_units {
+            unit.founding = None;
+        }
+        let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
+        let ground = GroundKnowledge::new(&unclaimed, briefing, &public_starts);
+        let assets = defended_assets(self, &unclaimed, &ground);
+        if assets.is_empty() {
+            return false;
+        }
+        let origins = emergency_threat_origins(&unclaimed, profile.domain);
+        !origins.is_empty()
+            && approaches(&ground, &origins, &assets, None, profile.domain)
+                .into_iter()
+                .any(|approach| approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
+    }
+
+    pub(super) fn current_emergency_defense_claim_is_useful(
+        &self,
+        kind: BuildingKind,
+        anchor: TilePos,
+        obs: &Observation,
+        briefing: &PublicMapBriefing,
+    ) -> bool {
+        let Some(profile) = DefenseProfile::for_kind(kind) else {
+            return false;
+        };
+        if obs
+            .my_buildings
+            .iter()
+            .any(|building| building.kind == kind && building.hp > 0)
+        {
+            return false;
+        }
+        let mut unclaimed = obs.clone();
+        for unit in &mut unclaimed.my_units {
+            unit.founding = None;
+        }
+        if self.first_valid_placement(&unclaimed, kind, [anchor]) != Some(anchor) {
+            return false;
+        }
+        let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
+        let ground = GroundKnowledge::new(&unclaimed, briefing, &public_starts);
+        let assets = defended_assets(self, &unclaimed, &ground);
+        if assets.is_empty() {
+            return false;
+        }
+        let origins = emergency_threat_origins(&unclaimed, profile.domain);
+        let approaches = approaches(&ground, &origins, &assets, None, profile.domain)
+            .into_iter()
+            .filter(|approach| approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
+            .collect::<Vec<_>>();
+        if origins.is_empty() || approaches.is_empty() {
+            return false;
+        }
+        let placement = profile.footprint(anchor);
+        if !scrap_access_survives(&ground, &assets, placement, None) {
+            return false;
+        }
+        let Some(candidate_approaches) = operationally_supported_approaches(
+            &ground,
+            &assets,
+            &approaches,
+            placement,
+            profile.domain,
+            None,
+        ) else {
+            return false;
+        };
+        let existing = existing_defenses(&unclaimed, profile.domain);
+        let planned = planned_defenses(&unclaimed, profile.domain);
+        let coverage = score_coverage(
+            &CoverageContext {
+                obs: &unclaimed,
+                briefing,
+                assets: &assets,
+                approaches: &candidate_approaches,
+                existing: &existing,
+                planned: &planned,
+            },
+            profile,
+            anchor,
+        );
+        coverage.new > 0 || coverage.reinforced > 0
+    }
+
     pub(super) fn strategic_defense_site(
         &self,
         kind: BuildingKind,
@@ -406,6 +545,46 @@ impl UtilityPolicy {
         building_contacts: &[BuildingContact],
         builders: &[&UnitObs],
     ) -> Option<TilePos> {
+        self.strategic_defense_site_with_evidence(
+            kind,
+            obs,
+            briefing,
+            builders,
+            DefenseEvidence::strategic(unit_contacts, building_contacts),
+        )
+    }
+
+    pub(super) fn emergency_defense_site(
+        &self,
+        kind: BuildingKind,
+        obs: &Observation,
+        briefing: &PublicMapBriefing,
+        unit_contacts: &[UnitContact],
+        building_contacts: &[BuildingContact],
+        builders: &[&UnitObs],
+    ) -> Option<TilePos> {
+        self.strategic_defense_site_with_evidence(
+            kind,
+            obs,
+            briefing,
+            builders,
+            DefenseEvidence::current_emergency(unit_contacts, building_contacts),
+        )
+    }
+
+    fn strategic_defense_site_with_evidence(
+        &self,
+        kind: BuildingKind,
+        obs: &Observation,
+        briefing: &PublicMapBriefing,
+        builders: &[&UnitObs],
+        evidence: DefenseEvidence<'_>,
+    ) -> Option<TilePos> {
+        let DefenseEvidence {
+            unit_contacts,
+            building_contacts,
+            scope,
+        } = evidence;
         let profile = DefenseProfile::for_kind(kind)?;
         let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
         if builders.is_empty() {
@@ -416,19 +595,28 @@ impl UtilityPolicy {
         if assets.is_empty() {
             return None;
         }
-        let (origins, approaches) = threat_origin_tiers(
-            obs,
-            unit_contacts,
-            building_contacts,
-            &public_starts,
-            profile.domain,
-        )
-        .into_iter()
-        .filter(|origins| !origins.is_empty())
-        .find_map(|origins| {
-            let approaches = approaches(&ground, &origins, &assets, None, profile.domain);
-            (!approaches.is_empty()).then_some((origins, approaches))
-        })?;
+        let (origins, approaches) = if scope == DefenseEvidenceScope::CurrentEmergency {
+            let origins = emergency_threat_origins(obs, profile.domain);
+            let approaches = approaches(&ground, &origins, &assets, None, profile.domain)
+                .into_iter()
+                .filter(|approach| approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
+                .collect::<Vec<_>>();
+            (!origins.is_empty() && !approaches.is_empty()).then_some((origins, approaches))?
+        } else {
+            threat_origin_tiers(
+                obs,
+                unit_contacts,
+                building_contacts,
+                &public_starts,
+                profile.domain,
+            )
+            .into_iter()
+            .filter(|origins| !origins.is_empty())
+            .find_map(|origins| {
+                let approaches = approaches(&ground, &origins, &assets, None, profile.domain);
+                (!approaches.is_empty()).then_some((origins, approaches))
+            })?
+        };
         let existing = existing_defenses(obs, profile.domain);
         let planned = planned_defenses(obs, profile.domain);
         let danger =
@@ -723,6 +911,62 @@ fn resource_region_is_active(obs: &Observation, resource_tiles: &[TilePos]) -> b
                     .is_ok()
             })
     })
+}
+
+fn emergency_threat_origins(obs: &Observation, domain: DefenseDomain) -> Vec<ThreatOrigin> {
+    let threatens_ground = |kind: UnitKind| {
+        kind == UnitKind::Sapper
+            || kind
+                .stats()
+                .weapons
+                .iter()
+                .any(|weapon| weapon.targets.ground)
+    };
+    let mut origins: Vec<_> = obs
+        .enemy_units
+        .iter()
+        .filter(|unit| obs.visible(unit.tile))
+        .filter(|unit| match domain {
+            DefenseDomain::Ground => {
+                unit.kind.stats().domain == Domain::Ground && threatens_ground(unit.kind)
+            }
+            DefenseDomain::Air => {
+                unit.kind.stats().domain == Domain::Air && threatens_ground(unit.kind)
+            }
+        })
+        .map(|unit| ThreatOrigin {
+            anchor: unit.tile,
+            size: None,
+            capability: ThreatCapability::Mobile(unit.kind),
+            tie: unit.id.0,
+        })
+        .collect();
+    if domain == DefenseDomain::Ground {
+        origins.extend(
+            obs.enemy_buildings
+                .iter()
+                .filter(|building| building.seen && building.built && building.hp > 0)
+                .filter(|building| {
+                    building
+                        .kind
+                        .tier_stats(building.tier)
+                        .weapons
+                        .iter()
+                        .any(|weapon| weapon.targets.ground)
+                })
+                .map(|building| ThreatOrigin {
+                    anchor: building.anchor,
+                    size: Some(building.kind.tier_stats(building.tier).size),
+                    capability: ThreatCapability::StaticDefense {
+                        kind: building.kind,
+                        tier: building.tier,
+                    },
+                    tie: building.id.0,
+                }),
+        );
+    }
+    canonical_origins(&mut origins);
+    origins
 }
 
 fn threat_origin_tiers(
@@ -2025,6 +2269,28 @@ mod tests {
         policy.strategic_defense_site(kind, obs, briefing, units, buildings, &builders)
     }
 
+    fn emergency_site_for(
+        kind: BuildingKind,
+        policy: &UtilityPolicy,
+        obs: &Observation,
+        briefing: &PublicMapBriefing,
+        units: &[UnitContact],
+        buildings: &[BuildingContact],
+    ) -> Option<TilePos> {
+        let builders: Vec<_> = obs
+            .my_units
+            .iter()
+            .filter(|unit| unit.kind.stats().harvest.is_some())
+            .collect();
+        policy.emergency_defense_site(kind, obs, briefing, units, buildings, &builders)
+    }
+
+    fn reveal(obs: &mut Observation, tile: TilePos) {
+        let index = usize::try_from(tile.y * obs.map_width + tile.x)
+            .expect("fixture tile has a valid visibility index");
+        obs.visible[index] = true;
+    }
+
     #[test]
     fn public_start_places_the_opening_turret_on_the_hostile_front() {
         let obs = observation(PlayerId(0), LEFT_HOME);
@@ -2118,6 +2384,227 @@ mod tests {
         assert!(
             ground_ignored.x > LEFT_HOME.x + 1,
             "a ground-only contact must not pull anti-air off the expected air lane",
+        );
+    }
+
+    #[test]
+    fn current_visible_threats_admit_matching_emergency_defenses() {
+        let map = briefing();
+        let policy = UtilityPolicy::new();
+
+        let ground_threat = TilePos::new(4, 2);
+        let mut ground = observation(PlayerId(0), LEFT_HOME);
+        ground
+            .enemy_units
+            .push(unit(20, PlayerId(1), UnitKind::Sentinel, ground_threat));
+        reveal(&mut ground, ground_threat);
+        let ground_site =
+            emergency_site_for(BuildingKind::Turret, &policy, &ground, &map, &[], &[])
+                .expect("a currently visible ground attacker near home admits an emergency Turret");
+        assert!(policy.current_emergency_defense_claim_is_useful(
+            BuildingKind::Turret,
+            ground_site,
+            &ground,
+            &map
+        ));
+        let mut already_defended = ground.clone();
+        already_defended.my_buildings.push(building(
+            30,
+            PlayerId(0),
+            BuildingKind::Turret,
+            ground_site.offset(-3, 0),
+        ));
+        already_defended.my_queues.push(Vec::new());
+        assert!(
+            !policy.current_emergency_defense_claim_is_useful(
+                BuildingKind::Turret,
+                ground_site,
+                &already_defended,
+                &map,
+            ),
+            "a projected Turret already consumes the one opening emergency exception"
+        );
+        assert!(
+            !policy.current_emergency_defense_claim_is_useful(
+                BuildingKind::Turret,
+                TilePos::new(4, 19),
+                &ground,
+                &map,
+            ),
+            "a safe rear Turret claim cannot consume a northern emergency exception"
+        );
+
+        let air_threat = LEFT_HOME.offset(6, -4);
+        for (id, kind) in [(21, UnitKind::Condor), (22, UnitKind::Moth)] {
+            let mut air = observation(PlayerId(0), LEFT_HOME);
+            let mut landed_bomber = unit(id, PlayerId(1), kind, air_threat);
+            landed_bomber.grounded = true;
+            air.enemy_units.push(landed_bomber);
+            reveal(&mut air, air_threat);
+            assert!(
+                emergency_site_for(BuildingKind::FlakTurret, &policy, &air, &map, &[], &[],)
+                    .is_some(),
+                "a currently visible parked {kind:?} near home should admit emergency Flak"
+            );
+            assert!(policy.current_emergency_defense_required(
+                BuildingKind::FlakTurret,
+                &air,
+                &map
+            ));
+            assert!(
+                emergency_site_for(BuildingKind::Turret, &policy, &air, &map, &[], &[]).is_none(),
+                "a parked {kind:?} remains an air threat rather than masquerading as a ground body"
+            );
+        }
+        assert!(
+            emergency_site_for(BuildingKind::FlakTurret, &policy, &ground, &map, &[], &[])
+                .is_none(),
+            "a ground attacker cannot unlock the anti-air opening exception"
+        );
+
+        for (id, kind) in [(23, UnitKind::Talon), (24, UnitKind::Wisp)] {
+            let mut air_superiority = observation(PlayerId(0), LEFT_HOME);
+            air_superiority
+                .enemy_units
+                .push(unit(id, PlayerId(1), kind, air_threat));
+            reveal(&mut air_superiority, air_threat);
+            assert!(
+                emergency_site_for(
+                    BuildingKind::FlakTurret,
+                    &policy,
+                    &air_superiority,
+                    &map,
+                    &[],
+                    &[],
+                )
+                .is_none(),
+                "a currently visible pure air-to-air {kind:?} cannot unlock emergency Flak"
+            );
+            assert!(!policy.current_emergency_defense_required(
+                BuildingKind::FlakTurret,
+                &air_superiority,
+                &map,
+            ));
+        }
+    }
+
+    #[test]
+    fn an_unpaid_defense_claim_cannot_mask_the_current_emergency_that_justifies_it() {
+        let map = PublicMapBriefing::from_scenario(&scenario_with(|tile| {
+            if tile.y == LEFT_HOME.y { '.' } else { '^' }
+        }))
+        .expect("the one-lane briefing builds");
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        let claim = TilePos::new(8, LEFT_HOME.y);
+        obs.my_units[0].tile = TilePos::new(6, LEFT_HOME.y);
+        obs.my_units[0].founding = Some((BuildingKind::Turret, claim));
+        let threat = TilePos::new(11, LEFT_HOME.y);
+        obs.enemy_units
+            .push(unit(20, PlayerId(1), UnitKind::Sentinel, threat));
+        reveal(&mut obs, threat);
+
+        assert!(UtilityPolicy::new().current_emergency_defense_required(
+            BuildingKind::Turret,
+            &obs,
+            &map
+        ));
+    }
+
+    #[test]
+    fn noncurrent_evidence_cannot_admit_an_emergency_defense() {
+        let map = briefing();
+        let policy = UtilityPolicy::new();
+        let dark = observation(PlayerId(0), LEFT_HOME);
+        for kind in [BuildingKind::Turret, BuildingKind::FlakTurret] {
+            assert_eq!(
+                emergency_site_for(kind, &policy, &dark, &map, &[], &[]),
+                None,
+                "the public hostile start alone must not justify an emergency {kind:?}"
+            );
+            assert!(!policy.current_emergency_defense_required(kind, &dark, &map));
+        }
+
+        let mut blip_only = dark.clone();
+        blip_only.blips.push(LEFT_HOME.offset(6, 0));
+        for kind in [BuildingKind::Turret, BuildingKind::FlakTurret] {
+            assert_eq!(
+                emergency_site_for(kind, &policy, &blip_only, &map, &[], &[]),
+                None,
+                "an anonymous radar blip alone must not justify an emergency {kind:?}"
+            );
+            assert!(!policy.current_emergency_defense_required(kind, &blip_only, &map));
+        }
+
+        let remembered_ground = UnitContact {
+            id: UnitId(20),
+            player: PlayerId(1),
+            kind: UnitKind::Sentinel,
+            tile: LEFT_HOME.offset(7, 0),
+            hp: UnitKind::Sentinel.stats().max_hp,
+            last_seen: dark.tick,
+            evidence: ContactEvidence::Remembered,
+        };
+        let remembered_turret = remembered_building(
+            &building(
+                21,
+                PlayerId(1),
+                BuildingKind::Turret,
+                LEFT_HOME.offset(7, 0),
+            ),
+            dark.tick,
+        );
+        assert_eq!(
+            emergency_site_for(
+                BuildingKind::Turret,
+                &policy,
+                &dark,
+                &map,
+                std::slice::from_ref(&remembered_ground),
+                std::slice::from_ref(&remembered_turret),
+            ),
+            None,
+            "remembered ground threats must not justify an emergency Turret"
+        );
+        let mut ghost_only = dark.clone();
+        let mut ghost = building(
+            21,
+            PlayerId(1),
+            BuildingKind::Turret,
+            LEFT_HOME.offset(7, 0),
+        );
+        ghost.seen = false;
+        ghost_only.enemy_buildings.push(ghost);
+        assert_eq!(
+            emergency_site_for(BuildingKind::Turret, &policy, &ghost_only, &map, &[], &[],),
+            None,
+            "a remembered building ghost in the observation must not justify an emergency Turret"
+        );
+        assert!(!policy.current_emergency_defense_required(
+            BuildingKind::Turret,
+            &ghost_only,
+            &map,
+        ));
+
+        let remembered_air = UnitContact {
+            id: UnitId(22),
+            player: PlayerId(1),
+            kind: UnitKind::Condor,
+            tile: LEFT_HOME.offset(6, -4),
+            hp: UnitKind::Condor.stats().max_hp,
+            last_seen: dark.tick,
+            evidence: ContactEvidence::Remembered,
+        };
+        assert_eq!(
+            emergency_site_for(
+                BuildingKind::FlakTurret,
+                &policy,
+                &dark,
+                &map,
+                std::slice::from_ref(&remembered_air),
+                &[],
+            ),
+            None,
+            "remembered aircraft must not justify emergency Flak"
         );
     }
 
