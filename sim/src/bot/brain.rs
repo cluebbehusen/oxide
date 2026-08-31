@@ -289,27 +289,15 @@ impl Brain {
         let prior_team_core_claims = team
             .as_ref()
             .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
-        let team_external_claims = prior_planner_claims(
-            &enlisted,
-            strategy.as_ref().and_then(StrategicPlanner::air_operation),
-            &[],
-            raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            lifts.as_ref().and_then(LiftPlanner::operation),
-        );
-        let team_other_core_exclusions = prior_planner_claims(
-            &[],
-            strategy.as_ref().and_then(StrategicPlanner::air_operation),
-            &[],
-            raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            lifts.as_ref().and_then(LiftPlanner::operation),
-        );
-        let prior_team_core_exclusions = prior_planner_claims(
-            &[],
-            strategy.as_ref().and_then(StrategicPlanner::air_operation),
-            &prior_team_core_claims,
-            raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            lifts.as_ref().and_then(LiftPlanner::operation),
-        );
+        let claims = ClaimLedger {
+            enlisted: &enlisted,
+            strategy,
+            raids,
+            lifts,
+        };
+        let team_external_claims = claims.external_to_team();
+        let team_other_core_exclusions = claims.core_exclusions(&[]);
+        let prior_team_core_exclusions = claims.core_exclusions(&prior_team_core_claims);
         let allow_team_admission = combat_core_status(
             &oriented,
             &prior_team_core_exclusions,
@@ -339,13 +327,7 @@ impl Brain {
             .as_ref()
             .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
         if prior_team_core_claims.is_empty() && !team_core_claims.is_empty() {
-            let candidate_core_exclusions = prior_planner_claims(
-                &[],
-                strategy.as_ref().and_then(StrategicPlanner::air_operation),
-                &team_core_claims,
-                raids.as_ref().map_or(&[], RaidPlanner::reservations),
-                lifts.as_ref().and_then(LiftPlanner::operation),
-            );
+            let candidate_core_exclusions = claims.core_exclusions(&team_core_claims);
             if !combat_core_status(
                 &oriented,
                 &candidate_core_exclusions,
@@ -360,27 +342,9 @@ impl Brain {
             }
         }
         let team_claims = team_decision.reservations.clone();
-        let prior_non_lift_claims = prior_planner_claims(
-            &enlisted,
-            strategy.as_ref().and_then(StrategicPlanner::air_operation),
-            &team_claims,
-            raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            None,
-        );
-        let planner_claims = prior_planner_claims(
-            &enlisted,
-            strategy.as_ref().and_then(StrategicPlanner::air_operation),
-            &team_claims,
-            raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            lifts.as_ref().and_then(LiftPlanner::operation),
-        );
-        let strategic_core_exclusions = prior_planner_claims(
-            &[],
-            strategy.as_ref().and_then(StrategicPlanner::air_operation),
-            &team_core_claims,
-            raids.as_ref().map_or(&[], RaidPlanner::reservations),
-            lifts.as_ref().and_then(LiftPlanner::operation),
-        );
+        let prior_non_lift_claims = claims.without_lift(&team_claims);
+        let planner_claims = claims.all(&team_claims);
+        let strategic_core_exclusions = claims.core_exclusions(&team_core_claims);
         let opening_core = combat_core_status(
             &oriented,
             &strategic_core_exclusions,
@@ -563,13 +527,15 @@ impl Brain {
                 .as_ref()
                 .is_some_and(|lifts| lifts.operation().is_some())
         {
-            let candidate_core_exclusions = prior_planner_claims(
-                &[],
-                strategy.as_ref().and_then(StrategicPlanner::air_operation),
-                &team_core_claims,
-                raids.as_ref().map_or(&[], RaidPlanner::reservations),
-                lifts.as_ref().and_then(LiftPlanner::operation),
-            );
+            // Rebuilt rather than reused: the strategic and lift thinks
+            // have both mutated their planners since the pre-think ledger.
+            let claims = ClaimLedger {
+                enlisted: &enlisted,
+                strategy,
+                raids,
+                lifts,
+            };
+            let candidate_core_exclusions = claims.core_exclusions(&team_core_claims);
             if !combat_core_status(
                 &oriented,
                 &candidate_core_exclusions,
@@ -820,6 +786,81 @@ impl ScrapLedger {
     }
 }
 
+/// One view over every unit the planners currently claim, so each
+/// admission question composes its exclusion set through a named
+/// selector instead of a hand-picked five-argument tuple. Rebuild it
+/// after a planner mutates; a new claiming planner is a new field here,
+/// and the compiler then walks every selector.
+struct ClaimLedger<'a> {
+    enlisted: &'a [UnitId],
+    strategy: &'a Option<StrategicPlanner>,
+    raids: &'a Option<RaidPlanner>,
+    lifts: &'a Option<LiftPlanner>,
+}
+
+impl ClaimLedger<'_> {
+    fn air(&self) -> Option<&super::strategy::AirOperation> {
+        self.strategy
+            .as_ref()
+            .and_then(StrategicPlanner::air_operation)
+    }
+
+    fn raid_reservations(&self) -> &[UnitId] {
+        self.raids.as_ref().map_or(&[], RaidPlanner::reservations)
+    }
+
+    fn lift(&self) -> Option<&LiftOperation> {
+        self.lifts.as_ref().and_then(LiftPlanner::operation)
+    }
+
+    /// Everything spoken for from the team planner's point of view:
+    /// executive enlistment plus every other planner's claims.
+    fn external_to_team(&self) -> Vec<UnitId> {
+        prior_planner_claims(
+            self.enlisted,
+            self.air(),
+            &[],
+            self.raid_reservations(),
+            self.lift(),
+        )
+    }
+
+    /// The units excluded from the opening-core measurement: planner
+    /// claims only — enlisted fighters still stand in the core.
+    fn core_exclusions(&self, relief: &[UnitId]) -> Vec<UnitId> {
+        prior_planner_claims(
+            &[],
+            self.air(),
+            relief,
+            self.raid_reservations(),
+            self.lift(),
+        )
+    }
+
+    /// Every claim except the lift planner's own, for sizing what a
+    /// prospective lift could still recruit.
+    fn without_lift(&self, relief: &[UnitId]) -> Vec<UnitId> {
+        prior_planner_claims(
+            self.enlisted,
+            self.air(),
+            relief,
+            self.raid_reservations(),
+            None,
+        )
+    }
+
+    /// Every claim from every source.
+    fn all(&self, relief: &[UnitId]) -> Vec<UnitId> {
+        prior_planner_claims(
+            self.enlisted,
+            self.air(),
+            relief,
+            self.raid_reservations(),
+            self.lift(),
+        )
+    }
+}
+
 fn prior_planner_claims(
     enlisted: &[UnitId],
     air: Option<&super::strategy::AirOperation>,
@@ -839,6 +880,11 @@ fn prior_planner_claims(
         if operation.manifests.is_empty() {
             claims.extend(operation.payload.iter().copied());
         } else {
+            // This rider predicate deliberately differs from
+            // `LiftPlanner::reservations`, which releases riders once an
+            // attack is issued; the brain keeps un-aborted assault riders
+            // claimed so no other planner recruits mid-drop. Reconciling
+            // the two readings is a behavior change, not a cleanup.
             for manifest in &operation.manifests {
                 if !manifest.closed {
                     claims.push(manifest.carrier);
