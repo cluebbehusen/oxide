@@ -1,6 +1,6 @@
 ---
 created: 2026-08-31T06:45:14
-updated: 2026-08-31T07:29:13
+updated: 2026-08-31T12:45:29
 ---
 
 # Oxide 0.16.0 Bot Coordination Refactor
@@ -60,6 +60,10 @@ frozen Overseer behavior.
   probe showed neither Overseer horizon moves): within-block evaluation
   comparability holds because both seats rerun on the same build, and the
   deferred 0.16.0 bump marks the cross-era boundary.
+- The salvo change deliberately reaches the frozen profile-free path (Connor,
+  second decision): a doctrine expectation was re-pinned to the salvo-era
+  withdrawal answer to a lone Moth, and the freeze decision is amended to
+  bit-identical at both fixture horizons with salvo pricing excepted.
 
 ## Findings
 
@@ -79,10 +83,6 @@ frozen Overseer behavior.
   copy multiplies by `weapon.salvo` and guards `cooldown_ticks.max(1)` while the
   executive and production copies do neither, undervaluing the Moth ground
   contribution about sixfold in hold and withdraw decisions.
-- A `Some(0)` voluntary scrap guard silently disables the 70-scrap tech reserve
-  at eleven construction gates, and one economy function defaults the same
-  `Option` two different ways. The zero-disable is treated as an accidental
-  bypass; the fix restores the ordinary floor.
 - The lift Landing-to-Recover transition is the one phase transition missing its
   `phase_started_at` stamp; it is currently unobservable because Recover is
   terminal, so routing every transition through an `enter` helper is
@@ -97,6 +97,15 @@ frozen Overseer behavior.
 - About fifteen brain test sites null individual planners on a scripted brain,
   so `PlayerFacingMind` keeps the four planner fields optional; the profile,
   intelligence, and public map briefing become non-optional.
+- The zero production guard is not a defect: bot_policy regressions and the
+  original opening-core decisions pin it as the designed exact-remainder policy
+  — after the floor stands, optional capital may spend down to zero when a
+  shallow Sentinel is already queued or no honest ground objective exists. The
+  attempted ordinary-floor fix broke those tests and was reverted; the Reserve
+  enum keeps the decision spelled as Exact(0) at the gates.
+- Per-slice verification greps for FAILED were fooled by test names containing
+  the word failed, so two integration regressions rode along for sixteen commits
+  until the full battery ran. Trust suite exit codes, never grep counts.
 
 ## Actions
 
@@ -122,8 +131,16 @@ frozen Overseer behavior.
     Overseer untouched), 5e6345f (withdrawal leak; no fixture movement, pinned
     by an extended regression), 20f6875 (salvo; no fixture movement, pinned by a
     focused regression).
-- [ ] Introduce the four coordination types as one hash-neutral commit each:
+  - The reserve-bypass arm was reverted after landing: the adversarial review
+    and the bot_policy suite independently proved the zero guard was designed
+    behavior. The withdrawal-leak and salvo fixes stand.
+- [x] Introduce the four coordination types as one hash-neutral commit each:
       Controller, ScrapLedger, ClaimLedger, Speculation.
+  - Landed as 9f7abd5 (Controller enum with PlayerFacingMind), b7722e6
+    (ScrapLedger holds), 6609923 (ClaimLedger selectors with the divergent lift
+    predicate documented at its one home), 8dd4a0f (shared admission rollback
+    with structural derived-claims settlement; no generic bound needed). Every
+    slice byte-identical on both fixtures.
 - [x] Collapse the strategy air operation and plan into one paired field.
   - Landed inside 8dbd349 alongside the exhaustive-match restoration.
 - [ ] Pass the full repository gate battery on the finished branch and reconcile
