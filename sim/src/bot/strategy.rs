@@ -2195,7 +2195,7 @@ fn recover(op: &mut AirOperation, reason: AirRecoveryReason, now: Tick) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::observation::{BuildingObs, OBSERVATION_VERSION};
+    use super::super::observation::BuildingObs;
     use super::super::profile::{PersonalityTraits, Specialty};
     use super::*;
     use crate::scenario::{BotConfig, BotDifficulty};
@@ -2224,10 +2224,7 @@ mod tests {
 
     fn obs(tick: Tick) -> Observation {
         Observation {
-            version: OBSERVATION_VERSION,
             tick,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 32,
             map_height: 20,
             my_units: vec![
@@ -2236,24 +2233,10 @@ mod tests {
                 own(3, UnitKind::Condor, TilePos::new(4, 9)),
                 own(4, UnitKind::Condor, TilePos::new(4, 11)),
             ],
-            my_buildings: Vec::new(),
-            my_queues: Vec::new(),
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
             enemy_buildings: vec![building(80, 1, BuildingKind::Crucible, TARGET, true)],
             visible: vec![false; 32 * 20],
             explored: vec![false; 32 * 20],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

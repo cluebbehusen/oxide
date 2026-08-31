@@ -1128,9 +1128,8 @@ fn tiles_within(a: TilePos, b: TilePos, radius: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION};
+    use crate::bot::observation::BuildingObs;
     use crate::ids::BuildingId;
-    use crate::state::Faction;
 
     fn unit(
         id: u32,
@@ -1166,31 +1165,14 @@ mod tests {
     ) -> Observation {
         let cells = usize::try_from(map_size.0 * map_size.1).unwrap();
         Observation {
-            version: OBSERVATION_VERSION,
             tick,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: map_size.0,
             map_height: map_size.1,
             my_units,
-            my_buildings: Vec::new(),
-            my_queues: Vec::new(),
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
             enemy_units,
-            enemy_buildings: Vec::new(),
             visible: vec![true; cells],
             explored: vec![true; cells],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

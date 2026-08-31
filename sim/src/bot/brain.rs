@@ -1037,7 +1037,7 @@ fn project_strategic_queues(obs: &Observation, decision: &StrategicDecision) -> 
 #[cfg(test)]
 mod tests {
     use super::super::lift::LiftPhase;
-    use super::super::observation::{BuildingObs, OBSERVATION_VERSION, UnitObs};
+    use super::super::observation::{BuildingObs, UnitObs};
     use super::*;
     use crate::bot::Specialty;
     use crate::ids::{BuildingId, PlayerId, Target};
@@ -4780,31 +4780,14 @@ mod tests {
 
     fn test_island_observation() -> Observation {
         let mut obs = Observation {
-            version: OBSERVATION_VERSION,
             tick: 0,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 64,
             map_height: 32,
-            my_units: Vec::new(),
-            my_buildings: Vec::new(),
-            my_queues: Vec::new(),
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
             enemy_buildings: vec![test_building(500, 1, BuildingKind::Foundry, TEST_TARGET)],
             visible: vec![true; 64 * 32],
             explored: vec![true; 64 * 32],
-            known_scrap: Vec::new(),
             known_rock: (0..32).map(|y| TilePos::new(32, y)).collect(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         };
         obs.my_buildings.push(test_building(
             1,

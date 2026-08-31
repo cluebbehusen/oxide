@@ -1128,7 +1128,7 @@ impl UtilityPolicy {
 mod tests {
     use super::*;
     use crate::bot::intelligence::{ContactEvidence, StrategicIntelligence};
-    use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION};
+    use crate::bot::observation::BuildingObs;
     use crate::ids::{BuildingId, PlayerId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance};
     use crate::state::Faction;
@@ -1151,10 +1151,7 @@ mod tests {
             grounded: false,
         };
         Observation {
-            version: OBSERVATION_VERSION,
             tick: 0,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 16,
             map_height: 10,
             my_units: vec![harvester],
@@ -1169,22 +1166,10 @@ mod tests {
                 tier: 0,
             }],
             my_queues: vec![Vec::new()],
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
-            enemy_buildings: Vec::new(),
             visible: vec![true; 16 * 10],
             explored: vec![true; 16 * 10],
-            known_scrap: Vec::new(),
             known_rock: (0..10).map(|y| TilePos::new(7, y)).collect(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

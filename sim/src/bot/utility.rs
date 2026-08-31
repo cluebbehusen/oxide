@@ -2843,7 +2843,7 @@ impl UtilityPolicy {
 mod tests {
     use super::*;
     use crate::bot::Executive;
-    use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION, Observation, UnitObs};
+    use crate::bot::observation::{BuildingObs, Observation, UnitObs};
     use crate::bot::{PersonalityTraits, Specialty};
     use crate::ids::{BuildingId, PlayerId, UnitId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec, UnitSpec};
@@ -2851,31 +2851,13 @@ mod tests {
 
     fn obs_with(units: Vec<UnitObs>) -> Observation {
         Observation {
-            version: OBSERVATION_VERSION,
             tick: 0,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 32,
             map_height: 20,
             my_units: units,
-            my_buildings: Vec::new(),
-            my_queues: Vec::new(),
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
-            enemy_buildings: Vec::new(),
             visible: vec![true; 32 * 20],
             explored: vec![true; 32 * 20],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: crate::state::Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

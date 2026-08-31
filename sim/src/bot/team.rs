@@ -687,7 +687,7 @@ fn cooldown(profile: &ResolvedProfile, tuning: DifficultyTuning) -> Tick {
 
 #[cfg(test)]
 mod tests {
-    use super::super::observation::OBSERVATION_VERSION;
+
     use super::super::profile::{PersonalityTraits, Specialty};
     use super::*;
     use crate::ids::BuildingId;
@@ -743,16 +743,9 @@ mod tests {
             }
         }
         Observation {
-            version: OBSERVATION_VERSION,
             tick,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 40,
             map_height: 24,
-            my_units: Vec::new(),
-            my_buildings: Vec::new(),
-            my_queues: Vec::new(),
-            ally_units: Vec::new(),
             ally_buildings: vec![building(20, PlayerId(1), ALLY_BASE)],
             enemy_units: vec![unit(
                 90,
@@ -761,19 +754,9 @@ mod tests {
                 TilePos::new(27, 10),
                 false,
             )],
-            enemy_buildings: Vec::new(),
             visible,
             explored: vec![true; 40 * 24],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

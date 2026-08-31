@@ -1505,7 +1505,7 @@ impl UtilityPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION, UnitObs};
+    use crate::bot::observation::{BuildingObs, UnitObs};
     use crate::bot::{Executive, Orientation};
     use crate::event::Event;
     use crate::ids::{BuildingId, PlayerId, UnitId};
@@ -1519,31 +1519,18 @@ mod tests {
 
     fn observation() -> Observation {
         Observation {
-            version: OBSERVATION_VERSION,
             tick: 0,
-            me: PlayerId(0),
             scrap: 10_000,
             map_width: 40,
             map_height: 24,
             my_units: vec![harvester(1, TilePos::new(8, 11), None)],
             my_buildings: vec![building(0, PlayerId(0), BuildingKind::Foundry, HOME)],
             my_queues: vec![Vec::new()],
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
-            enemy_buildings: Vec::new(),
             visible: vec![true; 40 * 24],
             explored: vec![true; 40 * 24],
             known_scrap: vec![(TilePos::new(10, 10), 200)],
             known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

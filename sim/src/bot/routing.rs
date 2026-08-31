@@ -620,38 +620,20 @@ fn in_bounds(obs: &Observation, tile: TilePos) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::observation::OBSERVATION_VERSION;
+
     use crate::ids::PlayerId;
-    use crate::state::Faction;
+
     use crate::stats::{BuildingKind, UnitKind};
 
     fn observation() -> Observation {
         Observation {
-            version: OBSERVATION_VERSION,
             tick: 0,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 12,
             map_height: 8,
             my_units: vec![unit(1, Domain::Ground), unit(2, Domain::Ground)],
-            my_buildings: Vec::new(),
-            my_queues: Vec::new(),
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
-            enemy_buildings: Vec::new(),
             visible: vec![false; 12 * 8],
             explored: vec![false; 12 * 8],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

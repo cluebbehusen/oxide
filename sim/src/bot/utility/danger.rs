@@ -494,38 +494,19 @@ mod tests {
     use super::super::CONTESTED_RECON_RADIUS;
     use super::*;
     use crate::bot::intelligence::ContactEvidence;
-    use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION, UnitObs};
+    use crate::bot::observation::{BuildingObs, UnitObs};
     use crate::ids::{BuildingId, PlayerId, UnitId};
-    use crate::state::Faction;
+
     use crate::stats::{BuildingKind, UnitKind};
 
     fn observation(width: i32, height: i32) -> Observation {
         Observation {
-            version: OBSERVATION_VERSION,
             tick: 1_000,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: width,
             map_height: height,
-            my_units: Vec::new(),
-            my_buildings: Vec::new(),
-            my_queues: Vec::new(),
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
-            enemy_units: Vec::new(),
-            enemy_buildings: Vec::new(),
             visible: vec![true; map_cell_count((width, height))],
             explored: vec![true; map_cell_count((width, height))],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 

@@ -595,11 +595,10 @@ fn cooldown(profile: &ResolvedProfile, tuning: DifficultyTuning) -> Tick {
 
 #[cfg(test)]
 mod tests {
-    use super::super::observation::{BuildingObs, OBSERVATION_VERSION};
+    use super::super::observation::BuildingObs;
     use super::super::profile::{PersonalityTraits, Specialty};
     use super::*;
     use crate::scenario::{BotConfig, BotDifficulty};
-    use crate::state::Faction;
 
     const HOME: TilePos = TilePos::new(2, 8);
     const TARGET: TilePos = TilePos::new(18, 8);
@@ -672,34 +671,17 @@ mod tests {
         let mut visible = vec![false; 24 * 16];
         visible[(TARGET.y as usize) * 24 + TARGET.x as usize] = true;
         Observation {
-            version: OBSERVATION_VERSION,
             tick,
-            me: PlayerId(0),
-            scrap: 0,
             map_width: 24,
             map_height: 16,
             my_units: (1..=2)
                 .map(|id| unit(id, 0, UnitKind::Scuttler, HOME))
                 .chain((10..=13).map(|id| unit(id, 0, UnitKind::Sentinel, HOME)))
                 .collect(),
-            my_buildings: Vec::new(),
-            my_queues: Vec::new(),
-            ally_units: Vec::new(),
-            ally_buildings: Vec::new(),
             enemy_units: vec![unit(80, 1, UnitKind::Harvester, TARGET)],
-            enemy_buildings: Vec::new(),
             visible,
             explored: vec![true; 24 * 16],
-            known_scrap: Vec::new(),
-            known_rock: Vec::new(),
-            known_frames: Vec::new(),
-            known_peaks: Vec::new(),
-            known_wrecks: Vec::new(),
-            salvage_incidents: Vec::new(),
-            blips: Vec::new(),
-            faction: Faction::Ferrous,
-            my_shells: 0,
-            incoming_shells: Vec::new(),
+            ..Observation::default()
         }
     }
 
