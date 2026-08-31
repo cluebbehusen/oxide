@@ -1,6 +1,6 @@
 ---
 created: 2026-08-31T06:45:14
-updated: 2026-08-31T06:45:38
+updated: 2026-08-31T07:29:13
 ---
 
 # Oxide 0.16.0 Bot Coordination Refactor
@@ -56,6 +56,10 @@ frozen Overseer behavior.
   get names, values stay); difficulty reaching lift execution; the
   utility-policy memory split; converting the 77 `player_facing` branch sites;
   container sweeps and constants modules.
+- The salvo fix lands unconditionally in the shared formula (Connor, after a
+  probe showed neither Overseer horizon moves): within-block evaluation
+  comparability holds because both seats rerun on the same build, and the
+  deferred 0.16.0 bump marks the cross-era boundary.
 
 ## Findings
 
@@ -96,19 +100,32 @@ frozen Overseer behavior.
 
 ## Actions
 
-- [ ] Land the verification floor: the Overseer dials literal, the 6,000-tick
+- [x] Land the verification floor: the Overseer dials literal, the 6,000-tick
       Overseer horizon, and the player-facing hash fixture.
-- [ ] Land the extractor-claim component-flood perf fix with both fixtures
+  - Landed as dbab286 (dials literal), a045ee4 (6,000-tick horizon, rows added,
+    existing rows byte-identical), 1f65b83 (player-facing fixture: six maps,
+    state hash plus command fold per map, lift-path coverage asserted).
+- [x] Land the extractor-claim component-flood perf fix with both fixtures
       unmoved.
-- [ ] Restore the lost tripwires: lift enter helper, exhaustive matches,
+  - Landed as 182d328; player-facing fixture wall time halved (56.5s to 29.0s),
+    both goldens byte-identical.
+- [x] Restore the lost tripwires: lift enter helper, exhaustive matches,
       danger-layout equality derive, Reserve enum, pure strength dedup, and the
       hash-neutral ride-alongs.
-- [ ] Fix the reserve bypass, the wedged-withdrawal target leak, and the salvo
+  - Landed as 79861c4, 8dbd349, fb17727, 5e5dfc1, ec86f35, all hash-neutral on
+    both fixtures. The team planner unit lookup deliberately stays linear: its
+    tests probe permuted rosters to prove role-ranked selection.
+- [x] Fix the reserve bypass, the wedged-withdrawal target leak, and the salvo
       divergence, reblessing only the player-facing golden with each movement
       explained.
+  - Landed as d926934 (reserve bypass; four of six player-facing maps moved,
+    Overseer untouched), 5e6345f (withdrawal leak; no fixture movement, pinned
+    by an extended regression), 20f6875 (salvo; no fixture movement, pinned by a
+    focused regression).
 - [ ] Introduce the four coordination types as one hash-neutral commit each:
       Controller, ScrapLedger, ClaimLedger, Speculation.
-- [ ] Collapse the strategy air operation and plan into one paired field.
+- [x] Collapse the strategy air operation and plan into one paired field.
+  - Landed inside 8dbd349 alongside the exhaustive-match restoration.
 - [ ] Pass the full repository gate battery on the finished branch and reconcile
       this note.
 
