@@ -519,8 +519,7 @@ fn air_firepower_covering(weapons: &[WeaponStats], distance_sq: Fx) -> u32 {
                 && distance_sq >= weapon.minimum_range * weapon.minimum_range
         })
         .fold(0u32, |total, weapon| {
-            let firepower = u64::from(weapon.damage) * u64::from(weapon.salvo) * 100
-                / u64::from(weapon.cooldown_ticks.max(1));
+            let firepower = super::executive::weapon_burst_dps100(weapon);
             total.saturating_add(firepower.max(1).min(u64::from(u32::MAX)) as u32)
         })
 }

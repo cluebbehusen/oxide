@@ -263,17 +263,21 @@ impl Executive {
     }
 }
 
+/// Damage per 100 ticks of one weapon's full salvo — the single copy of
+/// the fight-strength coin's per-weapon term, shared with the
+/// air-defense estimate in `intelligence`. The cooldown guard is purely
+/// defensive; no shipped weapon has a zero cooldown.
+pub(super) fn weapon_burst_dps100(w: &crate::stats::WeaponStats) -> u64 {
+    u64::from(w.damage) * u64::from(w.salvo) * 100 / u64::from(w.cooldown_ticks.max(1))
+}
+
 /// Damage per 100 ticks a weapon set brings against the given movement
-/// domain — the single copy of the fight-strength coin's per-weapon
-/// term. Salvo weapons count as single shots here; the air-defense
-/// estimate in `intelligence` deliberately multiplies by salvo, and
-/// that divergence is a known open balance question, not an accident to
-/// reconcile in passing.
+/// domain.
 fn weapon_dps100(weapons: &[crate::stats::WeaponStats], domain: crate::stats::Domain) -> u64 {
     weapons
         .iter()
         .filter(|w| w.targets.covers(domain))
-        .map(|w| u64::from(w.damage) * 100 / u64::from(w.cooldown_ticks))
+        .map(weapon_burst_dps100)
         .sum()
 }
 
@@ -333,6 +337,20 @@ pub(super) fn building_strength(b: &super::observation::BuildingObs) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fight_strength_counts_the_full_salvo() {
+        let stats = UnitKind::Moth.stats();
+        let weapon = &stats.weapons[0];
+        assert!(weapon.salvo > 1, "the probe needs a salvo weapon");
+        assert_eq!(
+            full_ground_strength(UnitKind::Moth),
+            u64::from(stats.max_hp)
+                * (u64::from(weapon.damage) * u64::from(weapon.salvo) * 100
+                    / u64::from(weapon.cooldown_ticks)),
+            "a bombing stick prices all its bombs, not just the first"
+        );
+    }
 
     #[test]
     fn wedge_clock_arms_tracks_and_expires() {
