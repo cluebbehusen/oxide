@@ -616,8 +616,13 @@ impl Executive {
                         // The way home is as unroutable as the way out.
                         // Rally here; Recall and Push become meaningful
                         // again instead of both being illegal forever.
+                        // The withdrawal threat tile must not survive into
+                        // Staging, where it reads as an objective and
+                        // disbands the body once the enemy that routed it
+                        // wanders off.
                         army.state = ArmyState::Staging;
                         army.staging = centroid;
+                        army.target = None;
                         army.progress = None;
                     }
                 }
@@ -1832,6 +1837,7 @@ mod tests {
             ArmyState::Withdrawing,
             TilePos::new(2, 2),
         );
+        stuck_withdrawal.target = Some(TilePos::new(11, 10));
         stuck_withdrawal.progress = Some((8, 0));
         let mut withdrawing = Executive {
             armies: vec![stuck_withdrawal],
@@ -1849,6 +1855,20 @@ mod tests {
         assert_eq!(withdrawing.armies[0].state, ArmyState::Staging);
         assert_eq!(withdrawing.armies[0].staging, TilePos::new(10, 10));
         assert_eq!(withdrawing.armies[0].progress, None);
+        assert_eq!(
+            withdrawing.armies[0].target, None,
+            "the withdrawal threat tile must not survive into Staging as an objective"
+        );
+        assert!(
+            withdrawing
+                .maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
+                .is_empty()
+        );
+        assert_eq!(
+            withdrawing.armies.len(),
+            1,
+            "a rallied body must not disband because its routed threat wandered off"
+        );
     }
 
     #[test]
