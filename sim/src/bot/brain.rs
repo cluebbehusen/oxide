@@ -388,29 +388,28 @@ impl Brain {
             u64::from(self.dials.minimum_core_equivalents),
         );
         let allow_new_voluntary_operations = opening_core.ready;
-        let shallow_sentinel_reserve = if allow_new_voluntary_operations {
-            self.policy.shallow_sentinel_capital_reserve(
+        let mut ledger = ScrapLedger {
+            bank: oriented.scrap,
+            frozen: !allow_new_voluntary_operations,
+            ..ScrapLedger::default()
+        };
+        if allow_new_voluntary_operations {
+            ledger.shallow_sentinel = self.policy.shallow_sentinel_capital_reserve(
                 &self.dials,
                 &oriented,
                 oriented_home,
                 oriented_public_map,
-            )
-        } else {
-            0
-        };
-        let opening_bootstrap_reserve = if allow_new_voluntary_operations {
-            self.policy.strategic_opening_bootstrap_reserve(
+            );
+            ledger.opening_bootstrap = self.policy.strategic_opening_bootstrap_reserve(
                 &self.dials,
                 &oriented,
                 oriented_home,
                 oriented_public_map,
-            )
-        } else {
-            0
-        };
+            );
+        }
         let prior_lift_unavailable =
             lift_unavailable(&oriented, &armies, &enlisted, &prior_non_lift_claims);
-        let construction_commitment = UtilityPolicy::deferred_construction_commitment(&oriented);
+        ledger.deferred_construction = UtilityPolicy::deferred_construction_commitment(&oriented);
         let active_air_production_ticks = strategy
             .as_ref()
             .map_or(0, |strategy| strategy.remaining_airwork_ticks(&oriented))
@@ -423,27 +422,17 @@ impl Brain {
             || lifts
                 .as_ref()
                 .is_some_and(|lifts| lifts.operation().is_some());
-        let airworks_capacity_commitment = if allow_new_voluntary_operations {
-            self.policy.airworks_capacity_commitment(
+        if allow_new_voluntary_operations {
+            ledger.airworks_capacity = self.policy.airworks_capacity_commitment(
                 &self.dials,
                 &oriented,
                 oriented_home,
                 air_capacity_active.then_some(active_air_production_ticks),
                 &planner_claims,
-            )
-        } else {
-            0
-        };
-        let mut strategic_observation = oriented.clone();
-        strategic_observation.scrap = strategic_observation
-            .scrap
-            .saturating_sub(construction_commitment)
-            .saturating_sub(airworks_capacity_commitment)
-            .saturating_sub(shallow_sentinel_reserve)
-            .saturating_sub(opening_bootstrap_reserve);
-        if !allow_new_voluntary_operations {
-            strategic_observation.scrap = 0;
+            );
         }
+        let mut strategic_observation = oriented.clone();
+        strategic_observation.scrap = ledger.strategic_spendable();
         let lift_support_request = lifts
             .as_ref()
             .and_then(LiftPlanner::operation)
@@ -789,6 +778,46 @@ fn merge_strategic(into: &mut StrategicDecision, mut additional: StrategicDecisi
     into.committed_scrap = into
         .committed_scrap
         .saturating_add(additional.committed_scrap);
+}
+
+/// The per-think scrap holds the brain places against the oriented bank
+/// before the strategic planners see a doctored observation. Each hold
+/// keeps the exact inputs and position of the computation it replaces.
+/// The policy layer deliberately re-derives the shallow-sentinel and
+/// opening-bootstrap reserves later in the same think with live intent
+/// context, so the two sides can legitimately disagree within one
+/// think; reconciling them is a behavior change owned by the roadmap,
+/// not by this ledger.
+#[derive(Debug, Default)]
+struct ScrapLedger {
+    /// The oriented bank before any hold.
+    bank: u32,
+    /// Scrap already promised to accepted deferred construction.
+    deferred_construction: u32,
+    /// The held fund for an extra Airworks while air production runs hot.
+    airworks_capacity: u32,
+    /// One shallow Sentinel kept affordable after the opening core stands.
+    shallow_sentinel: u32,
+    /// The protected home-Extractor restoration fund.
+    opening_bootstrap: u32,
+    /// An unmet opening core closes every voluntary channel outright.
+    frozen: bool,
+}
+
+impl ScrapLedger {
+    /// What the strategic planners may spend: the bank behind every
+    /// hold, or nothing while the opening core is unmet. The saturating
+    /// chain reproduces the historical subtraction order exactly.
+    fn strategic_spendable(&self) -> u32 {
+        if self.frozen {
+            return 0;
+        }
+        self.bank
+            .saturating_sub(self.deferred_construction)
+            .saturating_sub(self.airworks_capacity)
+            .saturating_sub(self.shallow_sentinel)
+            .saturating_sub(self.opening_bootstrap)
+    }
 }
 
 fn prior_planner_claims(
