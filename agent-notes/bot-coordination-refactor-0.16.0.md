@@ -1,6 +1,6 @@
 ---
 created: 2026-08-31T06:45:14
-updated: 2026-08-31T13:09:12
+updated: 2026-08-31T17:00:37
 ---
 
 # Oxide 0.16.0 Bot Coordination Refactor
@@ -148,6 +148,10 @@ frozen Overseer behavior.
   - Green end to end: fmt, clippy, 67 workspace test targets including the
     shipped-map soak, rustdoc, prettier, cov-unit 85.65 percent, cov-combined
     87.95 percent.
+- [x] Fix the two external-review findings: remembered forces price salvos
+      through the shared coin (three more formula copies unified; regression
+      pins the remembered Moth), and the command fold now includes each tick so
+      timing drift moves the fixture.
 
 ## Open Questions
 
