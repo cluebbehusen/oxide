@@ -64,21 +64,31 @@ pub(super) struct HarvestDangerWork {
     pub(super) mask_cell_visits: usize,
 }
 
-#[derive(Debug, Clone)]
+/// The derived equality is the cache-invalidation predicate: the cache
+/// rebuilds its projection exactly when a fresh layout compares unequal
+/// to the cached one, so every field added here participates in that
+/// decision automatically.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct HarvestDangerLayout {
     map_size: (i32, i32),
     rectangles: Vec<DangerRect>,
-    #[cfg(test)]
-    source_visits: usize,
 }
 
-impl PartialEq for HarvestDangerLayout {
-    fn eq(&self, other: &Self) -> bool {
-        self.map_size == other.map_size && self.rectangles == other.rectangles
-    }
+/// How many threat sources fed a layout, recomputed from the same public
+/// inputs the layout was built from so the counter never has to live on
+/// the production struct.
+#[cfg(test)]
+fn source_visit_count(
+    obs: &Observation,
+    unit_contacts: Option<&[UnitContact]>,
+    building_contacts: Option<&[BuildingContact]>,
+) -> usize {
+    obs.blips.len()
+        + obs.enemy_units.len()
+        + unit_contacts.map_or(0, <[UnitContact]>::len)
+        + building_contacts.map_or(0, <[BuildingContact]>::len)
+        + obs.enemy_buildings.len()
 }
-
-impl Eq for HarvestDangerLayout {}
 
 impl HarvestDangerLayout {
     fn from_observation(
@@ -86,13 +96,6 @@ impl HarvestDangerLayout {
         unit_contacts: Option<&[UnitContact]>,
         building_contacts: Option<&[BuildingContact]>,
     ) -> Self {
-        #[cfg(test)]
-        let source_visits = obs.blips.len()
-            + obs.enemy_units.len()
-            + unit_contacts.map_or(0, <[UnitContact]>::len)
-            + building_contacts.map_or(0, <[BuildingContact]>::len)
-            + obs.enemy_buildings.len();
-
         let mut rectangles = Vec::new();
         rectangles.extend(
             obs.blips
@@ -167,8 +170,6 @@ impl HarvestDangerLayout {
         Self {
             map_size: (obs.map_width, obs.map_height),
             rectangles,
-            #[cfg(test)]
-            source_visits,
         }
     }
 }
@@ -196,7 +197,7 @@ impl HarvestDangerProjection {
         };
         #[cfg(test)]
         let work = HarvestDangerWork {
-            source_visits: layout.source_visits,
+            source_visits: 0,
             effective_rectangles: layout.rectangles.len(),
             rectangle_stamp_attempts: layout.rectangles.len(),
             mask_cell_visits: if layout.rectangles.is_empty() {
@@ -233,6 +234,12 @@ impl HarvestDangerProjection {
     #[cfg(test)]
     pub(super) fn work(&self) -> HarvestDangerWork {
         self.work
+    }
+
+    #[cfg(test)]
+    fn with_source_visits(mut self, source_visits: usize) -> Self {
+        self.work.source_visits = source_visits;
+        self
     }
 }
 
@@ -689,7 +696,8 @@ mod tests {
             &small,
             Some(&contacts),
             Some(&[]),
-        ));
+        ))
+        .with_source_visits(source_visit_count(&small, Some(&contacts), Some(&[])));
         assert_eq!(
             small_projection.work(),
             HarvestDangerWork {
@@ -709,7 +717,8 @@ mod tests {
             &large,
             Some(&contacts),
             Some(&[]),
-        ));
+        ))
+        .with_source_visits(source_visit_count(&large, Some(&contacts), Some(&[])));
         let large_work = large_projection.work();
         assert_eq!(large_work.source_visits, 4);
         assert_eq!(large_work.effective_rectangles, 1);
