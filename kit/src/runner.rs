@@ -46,7 +46,7 @@ pub fn run_scenario(
 ) -> Result<RunOutcome> {
     let mut state = scenario.build().context("building scenario")?;
     let mut bots = if with_bots {
-        seat_bots(scenario)
+        seat_bots(scenario).context("building public bot map briefing")?
     } else {
         Vec::new()
     };

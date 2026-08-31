@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oxide Sandbox Matches"
+  short_description: "Stage exact Oxide practice and QA scenarios"
+  default_prompt: "Use $sandbox-matches to stage a throwaway Oxide scenario with exact units, structures, and a passive or absent enemy."

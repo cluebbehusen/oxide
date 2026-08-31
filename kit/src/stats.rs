@@ -321,7 +321,7 @@ mod tests {
         for p in scenario.players.iter_mut() {
             p.bot = true;
             p.bot_config
-                .get_or_insert(oxide_sim::scenario::BotConfig::Scripted);
+                .get_or_insert(oxide_sim::scenario::BotConfig::default());
         }
         let replay = record_overseer_match(&scenario, 600, Vec::new());
         let a = compute(&replay, 100).unwrap();

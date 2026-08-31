@@ -45,7 +45,7 @@ impl Session {
     /// Opens a session on a scenario.
     pub fn new(scenario: Scenario) -> Result<Self> {
         let state = scenario.build().context("building scenario")?;
-        let bots = seat_bots(&scenario);
+        let bots = seat_bots(&scenario).context("building public bot map briefing")?;
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
         Ok(Self {
             scenario,
@@ -85,7 +85,7 @@ impl Session {
         // and its outputs are discarded — the recorded commands are the
         // truth. The resumed session then continues exactly as the
         // unsaved one would have.
-        let mut bots = seat_bots(&scenario);
+        let mut bots = seat_bots(&scenario).context("building replay public bot map briefing")?;
         let mut cursor = replay.cursor();
         for _ in 0..total {
             for bot in &mut bots {

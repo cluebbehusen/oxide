@@ -11,6 +11,7 @@
 //! are only ever blocked by terrain and buildings, so pathfinding stays
 //! deadlock-free while crowds physically jostle.
 
+use super::flight;
 use crate::map::Map;
 use crate::state::{Order, PathFollow, State};
 use chassis::fx::{Fx, Vec2Fx, sqrt};
@@ -103,7 +104,7 @@ pub(super) fn escape_route(
 pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Option<PathFollow> {
     let unit = state.unit(id)?;
     if unit.hp == 0
-        || unit.kind.stats().domain != crate::stats::Domain::Ground
+        || unit.domain() != crate::stats::Domain::Ground
         || unit.path.is_some()
         || state
             .building_at(unit.tile())
@@ -130,6 +131,9 @@ pub(super) fn evict_claimed_ground(state: &mut State) {
     for i in 0..state.units.len() {
         let id = state.units[i].id;
         if let Some(path) = claimed_ground_escape(state, id) {
+            // A landed airframe leaves a claimed footprint the only way it
+            // can: it lifts off along that route.
+            state.units[i].landed = false;
             state.units[i].path = Some(path);
         }
     }
@@ -158,8 +162,11 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
         let before = unit.pos;
         let stats = unit.kind.stats();
         if stats.turn_rate > 0 {
-            steer_turn_limited(unit, map, stats);
-            travel[slot] = unit.pos - before;
+            // A landed airframe rests on its tile until an order lifts it.
+            if !unit.landed {
+                steer_turn_limited(unit, map, stats);
+                travel[slot] = unit.pos - before;
+            }
             continue;
         }
         let airborne = stats.domain == crate::stats::Domain::Air;
@@ -226,10 +233,13 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
 /// the heading steers, at most `turn_rate` compass steps per tick.
 /// Waypoints are accepted inside the kind's turn-acceptance ring — a
 /// bounded arc cannot promise an exact center, and a ring tighter than
-/// the turn radius is an orbit trap. A step whose tile is closed to air
-/// invalidates the route so the owning brain can plan again from the
-/// aircraft's actual position instead of steering into the same mountain
-/// forever. Pathless means hovering.
+/// the turn radius is an orbit trap. A committed airframe never stops:
+/// without a path it orbits at its full turn rate where it lost the
+/// route, and at the world's edge it slides along the boundary while it
+/// turns back in. A step into a Peak invalidates the route so the owning
+/// brain can plan again from the aircraft's actual position instead of
+/// steering into the same mountain forever, while the airframe slides
+/// along the face rather than stopping.
 fn steer_turn_limited(
     unit: &mut crate::state::Unit,
     map: &Map,
@@ -237,18 +247,23 @@ fn steer_turn_limited(
 ) {
     let accept = stats.turn_acceptance();
     let arrive_sq = accept * accept;
+    // A landing's final leg is never accepted by the ring: the brain owns
+    // touchdown at the tile center.
+    let landing = matches!(unit.order, Order::Land { .. });
     // Accept every waypoint the arc has already effectively reached. A
     // terrain-routing waypoint is not disposable merely because the wide
     // acceptance ring overlaps it: only skip it when the direct air segment
     // to the following waypoint is also clear. Otherwise a bomber can erase
     // the one waypoint that would have turned it around a peak, then keep
     // replanning the same impossible shortcut.
-    loop {
-        let Some(path) = &unit.path else { return };
+    while let Some(path) = &unit.path {
         let Some(&waypoint) = path.waypoints.get(path.next as usize) else {
             unit.path = None;
-            return;
+            break;
         };
+        if landing && path.next as usize + 1 == path.waypoints.len() {
+            break;
+        }
         if unit.pos.dist_sq(waypoint.center()) > arrive_sq {
             break;
         }
@@ -264,18 +279,113 @@ fn steer_turn_limited(
         path.next += 1;
         if path.next as usize >= path.waypoints.len() {
             unit.path = None;
+            break;
+        }
+    }
+    let radius = stats.turn_radius();
+    let target = unit
+        .path
+        .as_ref()
+        .map(|path| path.waypoints[path.next as usize].center());
+    let heading_before = unit.heading;
+    let straight =
+        map.clamp_to_envelope(unit.pos + chassis::compass::dir(unit.heading) * stats.speed);
+    let bank_away = |unit: &mut crate::state::Unit| {
+        let step = flight::safest_step(map, unit.pos, heading_before, radius);
+        unit.heading = heading_before.wrapping_add(step.wrapping_mul(stats.turn_rate));
+    };
+    if !flight::escapable(map, straight, unit.heading, radius) {
+        // Wall reflex: one more straight tick would leave no arc that stays
+        // inside the world, so bank away now, whatever the route wants.
+        bank_away(unit);
+    } else {
+        match target {
+            Some(target) => steer_toward(unit, map, stats, target),
+            // No route: hold the bank and orbit. The circle is tangent to
+            // the point where the path ran out, so an idle aircraft stays
+            // within one turn diameter of it instead of hanging motionless.
+            None => bank_away(unit),
+        }
+        // A route's turn is planned one leg at a time, and a leg accepted
+        // early by the ring can hand the next one a heading its own arc
+        // never checked. Whatever the leg wants, a tick that would carry an
+        // escapable airframe into a state it cannot fly out of banks the
+        // safe way instead.
+        let ahead =
+            map.clamp_to_envelope(unit.pos + chassis::compass::dir(unit.heading) * stats.speed);
+        if flight::escapable(map, unit.pos, heading_before, radius)
+            && !flight::escapable(map, ahead, unit.heading, radius)
+        {
+            bank_away(unit);
+        }
+    }
+    let ahead = map.clamp_to_envelope(unit.pos + chassis::compass::dir(unit.heading) * stats.speed);
+    let sky_open = |p: Vec2Fx| {
+        map.tile(TilePos::containing(p))
+            .is_some_and(|t| !t.terrain.blocks_air())
+    };
+    if sky_open(ahead) {
+        unit.pos = ahead;
+        return;
+    }
+    // A Peak face: drop the route so the brain replans from here, but keep
+    // the airframe moving by sliding along the face on whichever axis is
+    // still open, the same way the envelope slides it along the world's edge.
+    unit.path = None;
+    for slid in [
+        Vec2Fx::new(ahead.x, unit.pos.y),
+        Vec2Fx::new(unit.pos.x, ahead.y),
+    ] {
+        if slid != unit.pos && sky_open(slid) {
+            unit.pos = slid;
             return;
         }
     }
-    let target = {
-        let path = unit.path.as_ref().expect("checked above");
-        path.waypoints[path.next as usize].center()
-    };
-    // Steer: rotate one compass step at a time toward the goal ray,
-    // stopping early the moment the nose crosses it. The cross product's
-    // sign picks the turn direction; dead astern breaks the tie toward
-    // +1, and every input is Q32.32, so each platform turns identically.
+}
+
+/// Rotates the heading toward `target` by at most `turn_rate` compass
+/// steps, stopping early the moment the nose crosses the goal ray. Every
+/// input is Q32.32, so each platform turns identically. The turn is a
+/// committed arc, not a nudge: the shorter rotation is taken only when the
+/// arc it sweeps stays inside the world and ends somewhere the airframe can
+/// still be flown out of; otherwise the long way round is taken when that
+/// one qualifies, and the shorter arc only as a last resort.
+fn steer_toward(
+    unit: &mut crate::state::Unit,
+    map: &Map,
+    stats: &'static crate::stats::UnitStats,
+    target: Vec2Fx,
+) {
     let d = target - unit.pos;
+    let Some((short, sweep)) = flight::turn_to(unit.heading, d) else {
+        return;
+    };
+    let radius = stats.turn_radius();
+    let long = flight::reverse(short);
+    let qualifies = |step: u8, sweep: u16| {
+        flight::arc_fits(map, unit.pos, unit.heading, step, sweep, radius) && {
+            let (end, end_heading) = flight::arc_end(unit.pos, unit.heading, step, sweep, radius);
+            flight::escapable(map, end, end_heading, radius)
+        }
+    };
+    let step = if qualifies(short, sweep) {
+        short
+    } else if qualifies(long, flight::FULL_TURN - sweep) {
+        long
+    } else if flight::arc_fits(map, unit.pos, unit.heading, short, sweep, radius) {
+        short
+    } else if flight::arc_fits(
+        map,
+        unit.pos,
+        unit.heading,
+        long,
+        flight::FULL_TURN - sweep,
+        radius,
+    ) {
+        long
+    } else {
+        short
+    };
     for _ in 0..stats.turn_rate {
         let hv = chassis::compass::dir(unit.heading);
         let cross = hv.x * d.y - hv.y * d.x;
@@ -283,37 +393,44 @@ fn steer_turn_limited(
         if cross == Fx::ZERO && dot >= Fx::ZERO {
             break;
         }
-        let step: u8 = if cross > Fx::ZERO { 1 } else { 255 };
         let next = unit.heading.wrapping_add(step);
         let nhv = chassis::compass::dir(next);
         let ncross = nhv.x * d.y - nhv.y * d.x;
+        let ndot = nhv.x * d.x + nhv.y * d.y;
         unit.heading = next;
-        if (cross > Fx::ZERO) != (ncross > Fx::ZERO) {
+        // The sign of the cross product also flips when the nose sweeps
+        // through dead astern on the long way round; only a crossing
+        // with the target ahead is the goal ray.
+        if ndot >= Fx::ZERO && (cross > Fx::ZERO) != (ncross > Fx::ZERO) {
             break;
         }
     }
-    let ahead = unit.pos + chassis::compass::dir(unit.heading) * stats.speed;
-    let tile = TilePos::containing(ahead);
-    let open = map.tile(tile).is_some_and(|t| !t.terrain.blocks_air());
-    if open {
-        unit.pos = ahead;
-    } else {
-        unit.path = None;
+}
+
+/// Ground bodies stop at terrain, but nothing but the world's edge bounds
+/// the sky: an air push is clamped to the flight envelope so no correction
+/// can carry an aircraft past the boundary its own steering respects.
+fn envelope_bound(state: &State, domain: crate::stats::Domain, to: Vec2Fx) -> Vec2Fx {
+    match domain {
+        crate::stats::Domain::Air => state.map.clamp_to_envelope(to),
+        crate::stats::Domain::Ground => to,
     }
 }
 
 /// A unit that is standing still to work — extracting, welding, or
 /// holding fire on a target — resists shoving; movers yield around it.
 fn is_anchored(unit: &crate::state::Unit) -> bool {
-    unit.path.is_none()
-        && matches!(
-            unit.order,
-            Order::Harvest { .. } | Order::Attack { .. } | Order::Repair { .. }
-        )
+    unit.landed
+        || unit.kind.stats().turn_rate == 0
+            && unit.path.is_none()
+            && matches!(
+                unit.order,
+                Order::Harvest { .. } | Order::Attack { .. } | Order::Repair { .. }
+            )
 }
 
-/// Unit directions for perfectly stacked pairs, indexed by id xor — any
-/// fixed assignment works, it just has to break the tie deterministically.
+/// Unit directions for perfectly stacked pairs, indexed by owner-local rank
+/// xor and then oriented in the stack's map-relative half-turn frame.
 const STACKED_DIRS: [Vec2Fx; 8] = [
     Vec2Fx::new(Fx::lit("1"), Fx::lit("0")),
     Vec2Fx::new(Fx::lit("0.7071"), Fx::lit("0.7071")),
@@ -324,6 +441,34 @@ const STACKED_DIRS: [Vec2Fx; 8] = [
     Vec2Fx::new(Fx::lit("0"), Fx::lit("-1")),
     Vec2Fx::new(Fx::lit("0.7071"), Fx::lit("-0.7071")),
 ];
+
+fn uses_rotated_map_frame(state: &State, pos: Vec2Fx) -> bool {
+    let twice_x = pos.x + pos.x;
+    let twice_y = pos.y + pos.y;
+    let map_width = Fx::from_num(state.map.width());
+    let map_height = Fx::from_num(state.map.height());
+    twice_y > map_height || (twice_y == map_height && twice_x > map_width)
+}
+
+fn stacked_direction(state: &State, pos: Vec2Fx, rank_i: usize, rank_j: usize) -> Vec2Fx {
+    let rotated_half = uses_rotated_map_frame(state, pos);
+    let frame_offset = if rotated_half { 4 } else { 0 };
+    STACKED_DIRS[((rank_i ^ rank_j) + frame_offset) % STACKED_DIRS.len()]
+}
+
+fn owner_local_ranks(state: &State) -> Vec<usize> {
+    let mut next = vec![0; state.players.len()];
+    state
+        .units
+        .iter()
+        .map(|unit| {
+            let owner = unit.player.0 as usize;
+            let rank = next[owner];
+            next[owner] += 1;
+            rank
+        })
+        .collect()
+}
 
 /// Resolves unit-unit collisions: several deterministic relaxation passes
 /// push overlapping pairs apart, half the overlap each, so units cannot
@@ -345,9 +490,10 @@ pub(super) fn resolve_collisions(
     // Direction alternates by tick parity — Gauss-Seidel's sequential
     // application must not always favor the same ids (see brain::run).
     let reversed = state.tick % 2 == 1;
+    let owner_ranks = owner_local_ranks(state);
     let mut spent = vec![Fx::ZERO; state.units.len()];
     for _ in 0..COLLISION_ITERATIONS {
-        if !relaxation_pass(state, reversed, travel, index, &mut spent) {
+        if !relaxation_pass(state, reversed, travel, index, &owner_ranks, &mut spent) {
             break;
         }
     }
@@ -389,6 +535,144 @@ fn correction_dirs(away: Vec2Fx, travel: Vec2Fx, partner_head_on: bool) -> [Opti
     }
 }
 
+/// One spatial row in a body's half-turn-oriented frame: x groups reverse on
+/// the rotated half of the map, while canonical slot order within one tile is
+/// preserved. Reversing the entire row would also reverse coincident bodies
+/// and give mirrored dense crowds a different Gauss-Seidel contact order.
+struct OrientedRow<'a> {
+    row: &'a [(TilePos, usize)],
+    rotated: bool,
+    next: usize,
+    group_start: usize,
+    group_end: usize,
+}
+
+impl<'a> OrientedRow<'a> {
+    fn new(row: &'a [(TilePos, usize)], rotated: bool) -> Self {
+        let mut oriented = Self {
+            row,
+            rotated,
+            next: 0,
+            group_start: row.len(),
+            group_end: row.len(),
+        };
+        if rotated {
+            oriented.open_previous_group();
+        }
+        oriented
+    }
+
+    fn open_previous_group(&mut self) {
+        self.group_end = self.group_start;
+        if self.group_end == 0 {
+            return;
+        }
+        let x = self.row[self.group_end - 1].0.x;
+        self.group_start = self.group_end - 1;
+        while self.group_start > 0 && self.row[self.group_start - 1].0.x == x {
+            self.group_start -= 1;
+        }
+        self.next = self.group_start;
+    }
+}
+
+impl Iterator for OrientedRow<'_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !self.rotated {
+            let (_, slot) = *self.row.get(self.next)?;
+            self.next += 1;
+            return Some(slot);
+        }
+        if self.next == self.group_end {
+            if self.group_start == 0 {
+                return None;
+            }
+            self.open_previous_group();
+        }
+        let (_, slot) = *self.row.get(self.next)?;
+        self.next += 1;
+        Some(slot)
+    }
+}
+
+fn collision_pair_key(
+    state: &State,
+    owner_ranks: &[usize],
+    i: usize,
+    j: usize,
+) -> (usize, usize, bool, (Vec2Fx, Vec2Fx)) {
+    let ranks = if owner_ranks[i] <= owner_ranks[j] {
+        (owner_ranks[i], owner_ranks[j])
+    } else {
+        (owner_ranks[j], owner_ranks[i])
+    };
+    let ordered = |a: Vec2Fx, b: Vec2Fx| if a <= b { (a, b) } else { (b, a) };
+    let world = ordered(state.units[i].pos, state.units[j].pos);
+    let center_twice = Vec2Fx::new(
+        Fx::from_num(state.map.width()),
+        Fx::from_num(state.map.height()),
+    );
+    let rotated = ordered(
+        center_twice - state.units[i].pos,
+        center_twice - state.units[j].pos,
+    );
+    (
+        ranks.0,
+        ranks.1,
+        state.units[i].player == state.units[j].player,
+        world.min(rotated),
+    )
+}
+
+/// Candidate contacts in a seat-local order. A half-turn maps each pair to a
+/// pair with the same owner-local ranks and canonical geometry. Counterpart
+/// pairs therefore remain adjacent; they touch disjoint units and commute,
+/// while the orbit order around a crowded crossing is identical for both
+/// seats. Raw unit ids cannot provide that property because corresponding
+/// seats receive adjacent, not mirrored, global ids.
+fn collision_pairs(
+    state: &State,
+    reversed: bool,
+    index: &super::spatial::UnitIndex,
+    owner_ranks: &[usize],
+) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    // A heading-first airframe flies a committed arc that its steering has
+    // already checked against the world; a shove would carry it faster than
+    // its speed and off that arc, so such aircraft neither push nor yield.
+    let shoveable = |i: usize| {
+        let unit = &state.units[i];
+        unit.kind.stats().turn_rate == 0 || unit.landed
+    };
+    for i in 0..state.units.len() {
+        if state.units[i].hp == 0 || !shoveable(i) {
+            continue;
+        }
+        let home = state.units[i].tile();
+        let rotated_frame = uses_rotated_map_frame(state, state.units[i].pos);
+        for row_offset in 0..3 {
+            let dy = if rotated_frame {
+                1 - row_offset
+            } else {
+                row_offset - 1
+            };
+            let row = index.row_span(home.y + dy, home.x - 1, home.x + 1);
+            for j in OrientedRow::new(row, rotated_frame) {
+                if j > i && shoveable(j) {
+                    pairs.push((i, j));
+                }
+            }
+        }
+    }
+    pairs.sort_by_key(|&(i, j)| collision_pair_key(state, owner_ranks, i, j));
+    if reversed {
+        pairs.reverse();
+    }
+    pairs
+}
+
 /// One pass; returns whether any overlap was found.
 ///
 /// Corrections apply *immediately*, pair by pair, in deterministic order
@@ -404,6 +688,7 @@ fn relaxation_pass(
     reversed: bool,
     travel: &[Vec2Fx],
     index: &mut super::spatial::UnitIndex,
+    owner_ranks: &[usize],
     spent: &mut Vec<Fx>,
 ) -> bool {
     let n = state.units.len();
@@ -427,94 +712,87 @@ fn relaxation_pass(
         spent.clear();
         spent.resize(n, Fx::ZERO);
     }
-    for k in 0..n {
-        let i = if reversed { n - 1 - k } else { k };
-        if state.units[i].hp == 0 {
+    for (i, j) in collision_pairs(state, reversed, index, owner_ranks) {
+        let (pos_i, radius_i, dom_i) = {
+            let u = &state.units[i];
+            (u.pos, u.kind.stats().radius, u.domain())
+        };
+        let (pos_j, radius_j, dom_j) = {
+            let u = &state.units[j];
+            (u.pos, u.kind.stats().radius, u.domain())
+        };
+        // Bodies only collide within their own layer: a flyer
+        // and a crawler occupy the same tile without touching.
+        if dom_i != dom_j {
             continue;
         }
-        let home = state.units[i].tile();
-        for dy in -1..=1 {
-            // The row span walks the 3-tile window in ascending
-            // (x, slot) order — the same candidate sequence the old
-            // tile-by-tile bucket walk produced, which Gauss-Seidel's
-            // immediate application makes load-bearing.
-            for &(_, j) in index.row_span(home.y + dy, home.x - 1, home.x + 1) {
-                if j <= i {
-                    continue; // each pair once, in (i, j) id order
+        let min_dist = radius_i + radius_j;
+        let delta = pos_j - pos_i;
+        let dist_sq = delta.length_sq();
+        if dist_sq >= min_dist * min_dist {
+            continue;
+        }
+        any_overlap = true;
+        let dist = sqrt(dist_sq);
+        // Perfectly stacked pairs keep the fixed-direction
+        // radial split — there is no geometry to slide on.
+        let (dir, overlap, stacked) = if dist == Fx::ZERO {
+            (
+                stacked_direction(state, pos_i, owner_ranks[i], owner_ranks[j]),
+                min_dist,
+                true,
+            )
+        } else {
+            (delta / dist, min_dist - dist, false)
+        };
+        // Anchored units (working in place) yield a sliver;
+        // movers absorb the correction and flow around them.
+        // A landed airframe is a fixture on its tile center: it takes no
+        // correction at all, so the whole overlap falls on the mover.
+        let (share_i, share_j) = match (state.units[i].landed, state.units[j].landed) {
+            (true, true) => (Fx::ZERO, Fx::ZERO),
+            (true, false) => (Fx::ZERO, Fx::ONE),
+            (false, true) => (Fx::ONE, Fx::ZERO),
+            (false, false) => match (is_anchored(&state.units[i]), is_anchored(&state.units[j])) {
+                (true, false) => (ANCHORED_PUSH_SHARE, Fx::ONE - ANCHORED_PUSH_SHARE),
+                (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
+                _ => (chassis::fx::HALF, chassis::fx::HALF),
+            },
+        };
+        let (away_i, away_j) = (-dir, dir);
+        let closing_i = travel[i].x * away_i.x + travel[i].y * away_i.y < Fx::ZERO;
+        let closing_j = travel[j].x * away_j.x + travel[j].y * away_j.y < Fx::ZERO;
+        let dirs_j = if stacked {
+            [Some(away_j), None, None]
+        } else {
+            correction_dirs(away_j, travel[j], closing_i)
+        };
+        let dirs_i = if stacked {
+            [Some(away_i), None, None]
+        } else if closing_i && closing_j {
+            dirs_j.map(|direction| direction.map(|direction| -direction))
+        } else {
+            correction_dirs(away_i, travel[i], closing_j)
+        };
+        let step_j = (overlap * share_j).min(COLLISION_MAX_STEP - spent[j]);
+        if step_j > Fx::ZERO {
+            for cand in dirs_j.into_iter().flatten() {
+                let to = envelope_bound(state, dom_j, pos_j + cand * step_j);
+                if state.passable_for(dom_j, TilePos::containing(to)) {
+                    state.units[j].pos = to;
+                    spent[j] += step_j;
+                    break;
                 }
-                let (pos_i, radius_i, id_i, dom_i) = {
-                    let u = &state.units[i];
-                    (u.pos, u.kind.stats().radius, u.id, u.kind.stats().domain)
-                };
-                let (pos_j, radius_j, id_j, dom_j) = {
-                    let u = &state.units[j];
-                    (u.pos, u.kind.stats().radius, u.id, u.kind.stats().domain)
-                };
-                // Bodies only collide within their own layer: a flyer
-                // and a crawler occupy the same tile without touching.
-                if dom_i != dom_j {
-                    continue;
-                }
-                let min_dist = radius_i + radius_j;
-                let delta = pos_j - pos_i;
-                let dist_sq = delta.length_sq();
-                if dist_sq >= min_dist * min_dist {
-                    continue;
-                }
-                any_overlap = true;
-                let dist = sqrt(dist_sq);
-                // Perfectly stacked pairs keep the fixed-direction
-                // radial split — there is no geometry to slide on.
-                let (dir, overlap, stacked) = if dist == Fx::ZERO {
-                    let pick = ((id_i.0 ^ id_j.0) % 8) as usize;
-                    (STACKED_DIRS[pick], min_dist, true)
-                } else {
-                    (delta / dist, min_dist - dist, false)
-                };
-                // Anchored units (working in place) yield a sliver;
-                // movers absorb the correction and flow around them.
-                let (share_i, share_j) =
-                    match (is_anchored(&state.units[i]), is_anchored(&state.units[j])) {
-                        (true, false) => (ANCHORED_PUSH_SHARE, Fx::ONE - ANCHORED_PUSH_SHARE),
-                        (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
-                        _ => (chassis::fx::HALF, chassis::fx::HALF),
-                    };
-                let (away_i, away_j) = (-dir, dir);
-                let closing_i = travel[i].x * away_i.x + travel[i].y * away_i.y < Fx::ZERO;
-                let closing_j = travel[j].x * away_j.x + travel[j].y * away_j.y < Fx::ZERO;
-                let dirs_j = if stacked {
-                    [Some(away_j), None, None]
-                } else {
-                    correction_dirs(away_j, travel[j], closing_i)
-                };
-                let dirs_i = if stacked {
-                    [Some(away_i), None, None]
-                } else if closing_i && closing_j {
-                    dirs_j.map(|direction| direction.map(|direction| -direction))
-                } else {
-                    correction_dirs(away_i, travel[i], closing_j)
-                };
-                let step_j = (overlap * share_j).min(COLLISION_MAX_STEP - spent[j]);
-                if step_j > Fx::ZERO {
-                    for cand in dirs_j.into_iter().flatten() {
-                        let to = pos_j + cand * step_j;
-                        if state.passable_for(dom_j, TilePos::containing(to)) {
-                            state.units[j].pos = to;
-                            spent[j] += step_j;
-                            break;
-                        }
-                    }
-                }
-                let step_i = (overlap * share_i).min(COLLISION_MAX_STEP - spent[i]);
-                if step_i > Fx::ZERO {
-                    for cand in dirs_i.into_iter().flatten() {
-                        let to = pos_i + cand * step_i;
-                        if state.passable_for(dom_i, TilePos::containing(to)) {
-                            state.units[i].pos = to;
-                            spent[i] += step_i;
-                            break;
-                        }
-                    }
+            }
+        }
+        let step_i = (overlap * share_i).min(COLLISION_MAX_STEP - spent[i]);
+        if step_i > Fx::ZERO {
+            for cand in dirs_i.into_iter().flatten() {
+                let to = envelope_bound(state, dom_i, pos_i + cand * step_i);
+                if state.passable_for(dom_i, TilePos::containing(to)) {
+                    state.units[i].pos = to;
+                    spent[i] += step_i;
+                    break;
                 }
             }
         }
@@ -580,6 +858,272 @@ mod tests {
         .expect("boundary pair builds")
     }
 
+    fn collision_trio() -> State {
+        Scenario {
+            name: "collision-trio".into(),
+            seed: 3,
+            map: vec![
+                "............".into(),
+                "............".into(),
+                "............".into(),
+                "1.........2.".into(),
+                "............".into(),
+                "............".into(),
+                "............".into(),
+                "............".into(),
+            ],
+            players: vec![
+                seat("North", Faction::Ferrous),
+                seat("South", Faction::Cupric),
+            ],
+            units: vec![
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Sentinel,
+                    x: 5,
+                    y: 3,
+                },
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Sentinel,
+                    x: 4,
+                    y: 3,
+                },
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Sentinel,
+                    x: 6,
+                    y: 3,
+                },
+            ],
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .expect("collision trio builds")
+    }
+
+    fn replay_center_crossing() -> State {
+        let mut map = vec![".".repeat(48); 30];
+        map[5].replace_range(5..6, "1");
+        map[24].replace_range(42..43, "2");
+        let mut state = Scenario {
+            name: "replay-center-crossing".into(),
+            seed: 1_616_101,
+            map,
+            players: vec![
+                seat("West", Faction::Ferrous),
+                seat("East", Faction::Ferrous),
+            ],
+            units: [0, 1, 0, 1]
+                .into_iter()
+                .enumerate()
+                .map(|(slot, player)| UnitSpec {
+                    player,
+                    kind: UnitKind::Flakhound,
+                    x: 10 + slot as i32,
+                    y: 10,
+                })
+                .collect(),
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .expect("replay-shaped crossing builds");
+        state.tick = 12_269;
+        let positions = [
+            Vec2Fx::new(
+                Fx::from_bits(104_588_663_713),
+                Fx::from_bits(66_428_111_470),
+            ),
+            Vec2Fx::new(
+                Fx::from_bits(101_569_766_495),
+                Fx::from_bits(62_420_907_410),
+            ),
+            Vec2Fx::new(
+                Fx::from_bits(101_367_326_202),
+                Fx::from_bits(65_708_255_908),
+            ),
+            Vec2Fx::new(
+                Fx::from_bits(104_791_104_006),
+                Fx::from_bits(63_140_762_972),
+            ),
+        ];
+        let paths = [
+            PathFollow {
+                goal: TilePos::new(22, 13),
+                waypoints: vec![
+                    TilePos::new(24, 15),
+                    TilePos::new(23, 14),
+                    TilePos::new(22, 13),
+                ],
+                next: 1,
+            },
+            PathFollow {
+                goal: TilePos::new(25, 16),
+                waypoints: vec![
+                    TilePos::new(23, 14),
+                    TilePos::new(24, 15),
+                    TilePos::new(25, 16),
+                ],
+                next: 1,
+            },
+            PathFollow {
+                goal: TilePos::new(23, 14),
+                waypoints: vec![TilePos::new(23, 15), TilePos::new(23, 14)],
+                next: 1,
+            },
+            PathFollow {
+                goal: TilePos::new(24, 15),
+                waypoints: vec![TilePos::new(24, 14), TilePos::new(24, 15)],
+                next: 1,
+            },
+        ];
+        for ((unit, pos), path) in state.units.iter_mut().zip(positions).zip(paths) {
+            unit.pos = pos;
+            unit.order = Order::AttackMove { goal: path.goal };
+            unit.path = Some(path);
+        }
+        state
+    }
+
+    fn assert_replay_pairs_are_half_turns(state: &State) {
+        let center_twice = Vec2Fx::new(
+            Fx::from_num(state.map.width()),
+            Fx::from_num(state.map.height()),
+        );
+        for (west, east) in [(0, 1), (2, 3)] {
+            assert_eq!(
+                state.units[east].pos,
+                center_twice - state.units[west].pos,
+                "owner-local rank {west:?}/{east:?} lost half-turn symmetry"
+            );
+        }
+    }
+
+    fn assert_collision_half_turn(mut original: State, travel: Vec<Vec2Fx>) {
+        let width = Fx::from_num(original.map.width());
+        let height = Fx::from_num(original.map.height());
+        let mut rotated = original.clone();
+        for unit in &mut rotated.units {
+            unit.pos = Vec2Fx::new(width - unit.pos.x, height - unit.pos.y);
+        }
+        let rotated_travel = travel.iter().map(|step| -*step).collect::<Vec<_>>();
+
+        let mut original_index = UnitIndex::new();
+        let mut rotated_index = UnitIndex::new();
+        resolve_collisions(&mut original, &travel, &mut original_index);
+        resolve_collisions(&mut rotated, &rotated_travel, &mut rotated_index);
+
+        for (unit, rotated_unit) in original.units.iter().zip(&rotated.units) {
+            assert_eq!(unit.id, rotated_unit.id);
+            assert_eq!(
+                rotated_unit.pos,
+                Vec2Fx::new(width - unit.pos.x, height - unit.pos.y),
+                "collision resolution favored an absolute direction for {:?}",
+                unit.id
+            );
+        }
+    }
+
+    #[test]
+    fn ordered_multi_body_collision_is_equivariant_under_half_turns() {
+        let mut state = collision_trio();
+        state.units[0].pos = Vec2Fx::new(Fx::lit("5.5"), Fx::lit("3.5"));
+        state.units[1].pos = Vec2Fx::new(Fx::lit("5.05"), Fx::lit("3.35"));
+        state.units[2].pos = Vec2Fx::new(Fx::lit("5.95"), Fx::lit("3.65"));
+        let travel = vec![
+            Vec2Fx::new(Fx::lit("0.04"), Fx::lit("0.01")),
+            Vec2Fx::new(Fx::lit("0.08"), Fx::lit("0.02")),
+            Vec2Fx::new(Fx::lit("-0.05"), Fx::lit("-0.01")),
+        ];
+
+        assert_collision_half_turn(state, travel);
+    }
+
+    #[test]
+    fn mirrored_crossing_armies_remain_exact_half_turns_through_collision() {
+        let mut state = replay_center_crossing();
+        assert_replay_pairs_are_half_turns(&state);
+        let travel = run(&mut state);
+        assert_replay_pairs_are_half_turns(&state);
+        let mut index = UnitIndex::new();
+
+        resolve_collisions(&mut state, &travel, &mut index);
+
+        assert_replay_pairs_are_half_turns(&state);
+    }
+
+    #[test]
+    fn perfectly_stacked_collision_is_equivariant_under_half_turns() {
+        let mut state = collision_trio();
+        let stack = Vec2Fx::new(Fx::lit("5.5"), Fx::lit("3.5"));
+        for unit in &mut state.units {
+            unit.pos = stack;
+        }
+
+        assert_collision_half_turn(state, vec![Vec2Fx::ZERO; 3]);
+    }
+
+    #[test]
+    fn mirrored_seat_stacks_ignore_global_id_blocks() {
+        let mut state = Scenario {
+            name: "mirrored-seat-stacks".into(),
+            seed: 4,
+            map: vec![
+                "............".into(),
+                "............".into(),
+                "............".into(),
+                "1.........2.".into(),
+                "............".into(),
+                "............".into(),
+                "............".into(),
+                "............".into(),
+            ],
+            players: vec![
+                seat("West", Faction::Ferrous),
+                seat("East", Faction::Ferrous),
+            ],
+            units: (0..6)
+                .map(|slot| UnitSpec {
+                    player: u8::from(slot >= 3),
+                    kind: UnitKind::Sentinel,
+                    x: 2 + slot,
+                    y: 2,
+                })
+                .collect(),
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .expect("mirrored stack scenario builds");
+        let width = Fx::from_num(state.map.width());
+        let height = Fx::from_num(state.map.height());
+        let west_stack = Vec2Fx::new(Fx::lit("4.5"), Fx::lit("3.5"));
+        let east_stack = Vec2Fx::new(width - west_stack.x, height - west_stack.y);
+        state.units[0].pos = west_stack;
+        state.units[1].pos = west_stack;
+        state.units[2].pos = Vec2Fx::new(Fx::lit("2.5"), Fx::lit("1.5"));
+        state.units[3].pos = east_stack;
+        state.units[4].pos = east_stack;
+        state.units[5].pos =
+            Vec2Fx::new(width - state.units[2].pos.x, height - state.units[2].pos.y);
+        let mut index = UnitIndex::new();
+
+        resolve_collisions(&mut state, &[Vec2Fx::ZERO; 6], &mut index);
+
+        for (west, east) in [(0, 3), (1, 4)] {
+            assert_eq!(
+                state.units[east].pos,
+                Vec2Fx::new(
+                    width - state.units[west].pos.x,
+                    height - state.units[west].pos.y,
+                ),
+                "matching owner-local ranks must separate in mirrored directions"
+            );
+        }
+    }
+
     #[test]
     fn collision_finds_border_crossing_pairs_in_either_id_order() {
         let height = boundary_pair().map.height();
@@ -604,10 +1148,18 @@ mod tests {
                 let before = state.units[inside_slot].pos;
                 let travel = vec![Vec2Fx::ZERO; state.units.len()];
                 let mut index = UnitIndex::new();
+                let owner_ranks = owner_local_ranks(&state);
                 let mut spent = Vec::new();
 
                 assert!(
-                    relaxation_pass(&mut state, false, &travel, &mut index, &mut spent),
+                    relaxation_pass(
+                        &mut state,
+                        false,
+                        &travel,
+                        &mut index,
+                        &owner_ranks,
+                        &mut spent,
+                    ),
                     "{edge} pair with outside slot {outside_slot} was not visited"
                 );
                 assert_ne!(
@@ -658,6 +1210,27 @@ mod tests {
             assert!(error.x.abs() <= tolerance);
             assert!(error.y.abs() <= tolerance);
         }
+    }
+
+    #[test]
+    fn oriented_collision_rows_reverse_x_groups_without_reversing_slot_order() {
+        let row = [
+            (TilePos::new(3, 4), 1),
+            (TilePos::new(3, 4), 5),
+            (TilePos::new(4, 4), 2),
+            (TilePos::new(6, 4), 0),
+            (TilePos::new(6, 4), 7),
+        ];
+
+        assert_eq!(
+            OrientedRow::new(&row, false).collect::<Vec<_>>(),
+            [1, 5, 2, 0, 7]
+        );
+        assert_eq!(
+            OrientedRow::new(&row, true).collect::<Vec<_>>(),
+            [0, 7, 2, 1, 5]
+        );
+        assert!(OrientedRow::new(&[], true).next().is_none());
     }
 
     #[test]

@@ -81,7 +81,7 @@ impl ReplayPlayerSpecWire {
                         "legacy bot config for player {seat} is invalid: {reason}"
                     ))
                 })?;
-                Some(BotConfig::Scripted)
+                Some(BotConfig::default())
             }
         };
 
@@ -257,7 +257,7 @@ mod tests {
             let replay = load_replay(&fixture.0).expect("known legacy setup loads");
             assert_eq!(
                 replay.setup.players[1].bot_config,
-                Some(BotConfig::Scripted)
+                Some(BotConfig::default())
             );
         }
     }
@@ -296,7 +296,7 @@ mod tests {
 
         assert_eq!(
             replay.setup.players[1].bot_config,
-            Some(BotConfig::Scripted)
+            Some(BotConfig::default())
         );
     }
 

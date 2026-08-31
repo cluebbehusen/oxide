@@ -9,8 +9,11 @@ from PIL import Image, ImageChops
 from tools import gen_sprites as gen
 from tools.production_sprite_sources import (
     construction_final,
+    crucible_final,
     environment_final,
     finalized,
+    moth_warden_final,
+    tender_condor_final,
 )
 
 
@@ -166,6 +169,225 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                     frame = self.registry[f"{stem}_{faction}{suffix}"]
                     self.assertEqual(frame.size, base.size)
                     self.assertGreater(_changed_pixels(base, frame), 2)
+
+    def test_promoted_tender_and_condor_match_the_production_rgba_source(self) -> None:
+        digest = hashlib.sha256()
+        for faction in ("ferrous", "cupric"):
+            for state in tender_condor_final.TENDER_STATES:
+                key = f"tender/{faction}/{state}"
+                digest.update(key.encode())
+                digest.update(
+                    tender_condor_final.render_tender(faction, state).tobytes()
+                )
+            for phase in (1, 2):
+                key = f"tender/{faction}/move{phase}"
+                digest.update(key.encode())
+                digest.update(
+                    tender_condor_final.render_tender(
+                        faction, move_phase=phase
+                    ).tobytes()
+                )
+        for state in tender_condor_final.CONDOR_STATES:
+            key = f"condor/ferrous/{state}"
+            digest.update(key.encode())
+            digest.update(tender_condor_final.render_condor("ferrous", state).tobytes())
+        self.assertEqual(
+            digest.hexdigest(), tender_condor_final.PRODUCTION_SOURCE_RGBA_SHA256
+        )
+
+        tender_states = ("idle", "deploy", "contact", "weld", "recover")
+        tender_suffixes = ("", "_action1", "_action2", "_action3", "_action4")
+        condor_states = ("idle", "crack", "open", "release", "recover")
+        condor_suffixes = ("", "_action1", "_action2", "_action3", "_action4")
+        for faction in ("ferrous", "cupric"):
+            for state, suffix in zip(tender_states, tender_suffixes, strict=True):
+                self.assertEqual(
+                    self.registry[f"tender_{faction}{suffix}"].tobytes(),
+                    tender_condor_final.render_tender(faction, state).tobytes(),
+                )
+            for state, suffix in zip(condor_states, condor_suffixes, strict=True):
+                self.assertEqual(
+                    self.registry[f"condor_{faction}{suffix}"].tobytes(),
+                    tender_condor_final.render_condor(faction, state).tobytes(),
+                )
+
+    def test_promoted_crucible_units_match_the_approved_rgba_source(self) -> None:
+        digest = hashlib.sha256()
+        renderers = (
+            ("breaker", crucible_final.render_breaker),
+            ("avalanche", crucible_final.render_avalanche),
+        )
+        states = (
+            ("idle", 0, 0, ""),
+            ("move1", 1, 0, "_move1"),
+            ("move2", 2, 0, "_move2"),
+            ("action1", 0, 1, "_action1"),
+            ("action2", 0, 2, "_action2"),
+            ("action3", 0, 3, "_action3"),
+            ("action4", 0, 4, "_action4"),
+        )
+        for faction in ("ferrous", "cupric"):
+            for stem, renderer in renderers:
+                for label, move_phase, action, suffix in states:
+                    key = f"{stem}/{faction}/{label}"
+                    image = renderer(faction, move_phase, action)
+                    digest.update(key.encode())
+                    digest.update(image.tobytes())
+                    self.assertEqual(image.size, (128, 128))
+                    self.assertEqual(
+                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
+                        image.tobytes(),
+                    )
+        self.assertEqual(digest.hexdigest(), crucible_final.APPROVED_SOURCE_RGBA_SHA256)
+
+    def test_crucible_units_animate_treads_without_wobbling_the_hull(self) -> None:
+        for stem in ("breaker", "avalanche"):
+            for faction in ("ferrous", "cupric"):
+                idle = self.registry[f"{stem}_{faction}"]
+                move1 = self.registry[f"{stem}_{faction}_move1"]
+                move2 = self.registry[f"{stem}_{faction}_move2"]
+                self.assertEqual(
+                    idle.getchannel("A").tobytes(), move1.getchannel("A").tobytes()
+                )
+                self.assertEqual(
+                    idle.getchannel("A").tobytes(), move2.getchannel("A").tobytes()
+                )
+                self.assertNotEqual(idle.tobytes(), move1.tobytes())
+                self.assertNotEqual(move1.tobytes(), move2.tobytes())
+
+    def test_crucible_unit_actions_preserve_one_decisive_report(self) -> None:
+        for stem in ("breaker", "avalanche"):
+            for faction in ("ferrous", "cupric"):
+                frames = [
+                    self.registry[f"{stem}_{faction}_action{action}"]
+                    for action in range(1, 5)
+                ]
+                self.assertGreaterEqual(len({frame.tobytes() for frame in frames}), 3)
+                self.assertIn(
+                    (*crucible_final.FLASH, 255),
+                    set(frames[1].get_flattened_data()),
+                )
+
+    def test_tender_treads_move_without_shifting_the_chassis(self) -> None:
+        for faction in ("ferrous", "cupric"):
+            idle = self.registry[f"tender_{faction}"]
+            phases = [
+                self.registry[f"tender_{faction}_move{phase}"] for phase in (1, 2)
+            ]
+            self.assertEqual(idle.size, (64, 64))
+            for frame in phases:
+                self.assertEqual(
+                    idle.getchannel("A").tobytes(), frame.getchannel("A").tobytes()
+                )
+                changed = ImageChops.difference(idle, frame)
+                changed_points = [
+                    (index % idle.width, index // idle.width)
+                    for index, pixel in enumerate(changed.get_flattened_data())
+                    if pixel != (0, 0, 0, 0)
+                ]
+                self.assertGreater(len(changed_points), 8)
+                self.assertTrue(
+                    all(
+                        (7 <= x <= 19 or 45 <= x <= 57) and 17 <= y <= 58
+                        for x, y in changed_points
+                    ),
+                    "Tender locomotion must move its tread cleats, not wobble the hull",
+                )
+            self.assertNotEqual(phases[0].tobytes(), phases[1].tobytes())
+
+    def test_promoted_moth_and_warden_match_the_approved_rgba_source(self) -> None:
+        self.assertEqual(
+            moth_warden_final.source_rgba_digest(),
+            moth_warden_final.APPROVED_SOURCE_RGBA_SHA256,
+        )
+        for faction in ("ferrous", "cupric"):
+            for stem, renderer, action_count in (
+                ("moth", moth_warden_final.render_moth, 6),
+                ("warden", moth_warden_final.render_warden, 4),
+            ):
+                states = (
+                    ("", 0, 0),
+                    ("_move1", 1, 0),
+                    ("_move2", 2, 0),
+                    *(
+                        (f"_action{action}", 0, action)
+                        for action in range(1, action_count + 1)
+                    ),
+                )
+                for suffix, move_phase, action in states:
+                    image = renderer(faction, move_phase, action)
+                    self.assertEqual(image.size, (128, 128))
+                    self.assertEqual(
+                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
+                        image.tobytes(),
+                    )
+
+    def test_moth_and_warden_move_without_wobbling_the_hull(self) -> None:
+        for stem in ("moth", "warden"):
+            for faction in ("ferrous", "cupric"):
+                idle = self.registry[f"{stem}_{faction}"]
+                phases = [
+                    self.registry[f"{stem}_{faction}_move{phase}"] for phase in (1, 2)
+                ]
+                for frame in phases:
+                    self.assertEqual(
+                        idle.getchannel("A").tobytes(),
+                        frame.getchannel("A").tobytes(),
+                    )
+                self.assertTrue(
+                    any(idle.tobytes() != frame.tobytes() for frame in phases)
+                )
+                self.assertNotEqual(phases[0].tobytes(), phases[1].tobytes())
+
+    def test_moth_empties_all_six_bays_and_warden_reports_once(self) -> None:
+        bomb_centers = ((49, 45), (79, 45), (49, 59), (79, 59), (49, 73), (79, 73))
+        for faction in ("ferrous", "cupric"):
+            for action in range(1, 7):
+                frame = self.registry[f"moth_{faction}_action{action}"]
+                remaining = sum(
+                    frame.getpixel(center) == (*moth_warden_final.BONE, 255)
+                    for center in bomb_centers
+                )
+                self.assertEqual(remaining, 6 - action)
+            for action in range(1, 5):
+                pixels = set(
+                    self.registry[
+                        f"warden_{faction}_action{action}"
+                    ].get_flattened_data()
+                )
+                self.assertEqual(
+                    (*moth_warden_final.FLASH, 255) in pixels,
+                    action == 2,
+                )
+
+    def test_tender_reserves_its_bright_tool_color_for_welding(self) -> None:
+        bright_tool = (*tender_condor_final.WELD, 255)
+        bright_scrap = (*tender_condor_final.SCRAP, 255)
+        for faction in ("ferrous", "cupric"):
+            idle_pixels = set(self.registry[f"tender_{faction}"].get_flattened_data())
+            self.assertNotIn(bright_tool, idle_pixels)
+            self.assertNotIn(bright_scrap, idle_pixels)
+            self.assertIn(
+                bright_tool,
+                set(self.registry[f"tender_{faction}_action3"].get_flattened_data()),
+            )
+
+    def test_condor_uses_a_fixed_large_silhouette_without_move_wobble(self) -> None:
+        for faction in ("ferrous", "cupric"):
+            idle = self.registry[f"condor_{faction}"]
+            self.assertEqual(idle.size, (128, 128))
+            self.assertEqual(idle.getbbox(), (8, 18, 121, 96))
+            for phase in (1, 2):
+                self.assertEqual(
+                    idle.tobytes(),
+                    self.registry[f"condor_{faction}_move{phase}"].tobytes(),
+                )
+            for action in range(1, 5):
+                frame = self.registry[f"condor_{faction}_action{action}"]
+                self.assertEqual(frame.size, idle.size)
+                self.assertEqual(
+                    frame.getchannel("A").tobytes(), idle.getchannel("A").tobytes()
+                )
 
     def test_unit_metadata_matches_source_sequences(self) -> None:
         for stem, builder in finalized._unit_sequences().items():

@@ -6,9 +6,10 @@
 //! 14 diagonal) and the octile heuristic is exact for this movement model,
 //! so returned paths are optimal.
 //!
-//! Determinism: the open set orders by `(f, h, tile index)` — the index makes
-//! every key unique, so ties cannot fall through to any unspecified heap
-//! behavior. Same query, same path, every time.
+//! Determinism: the open set orders by `(f, h, query-oriented tile rank)`.
+//! The rank is unique and reverses with the query under a map half-turn, so
+//! equal-cost routes stay canonical without favoring one absolute corner.
+//! Same query, same path, every time.
 
 use crate::fx::{Fx, Vec2Fx};
 use crate::grid::{CARDINALS, DIAGONALS, TilePos};
@@ -146,7 +147,8 @@ pub struct AstarScratch {
 }
 
 /// A Dial (bucket) priority queue specialized to this A*'s keys, popping
-/// the exact `(f, h, index)` order the tuple heap it replaced popped.
+/// the exact `(f, h, query-oriented rank)` order of the tuple heap it
+/// replaced.
 ///
 /// Two facts make sixteen buckets sufficient, both properties of the
 /// octile 10/14 cost model rather than tuning:
@@ -159,12 +161,13 @@ pub struct AstarScratch {
 ///   and `(f / 2) % 16` addresses each unambiguously — no lap can
 ///   alias inside the window.
 ///
-/// Each bucket is a small binary heap over `(h, index)`, preserving the
-/// within-f tie-break exactly; `came_from` depends on expansion order
-/// among equal-f nodes, so approximate orders are not an option.
+/// Each bucket is a small binary heap over `(h, rank, index)`, preserving the
+/// within-f tie-break exactly while carrying the real index as payload;
+/// `came_from` depends on expansion order among equal-f nodes, so approximate
+/// orders are not an option.
 #[derive(Default)]
 struct DialQueue {
-    buckets: [BinaryHeap<Reverse<(u32, u32)>>; 16],
+    buckets: [BinaryHeap<Reverse<(u32, u32, u32)>>; 16],
     cursor: u32,
     len: usize,
 }
@@ -183,13 +186,14 @@ impl DialQueue {
         self.cursor = f;
     }
 
-    fn push(&mut self, f: u32, h: u32, index: usize) {
+    fn push(&mut self, f: u32, h: u32, rank: usize, index: usize) {
         debug_assert!(f.is_multiple_of(2), "octile keys are even by construction");
         debug_assert!(
             self.len == 0 || (f >= self.cursor && f - self.cursor <= 28),
             "a live key left the dial window: f={f} cursor={}",
             self.cursor
         );
+        debug_assert!(u32::try_from(rank).is_ok(), "cell rank exceeds u32");
         debug_assert!(u32::try_from(index).is_ok(), "cell index exceeds u32");
         if self.len == 0 {
             // An empty dial may be handed a key below the stale cursor
@@ -197,7 +201,7 @@ impl DialQueue {
             // the cursor simply re-anchors on it.
             self.cursor = self.cursor.min(f);
         }
-        self.buckets[((f >> 1) & 15) as usize].push(Reverse((h, index as u32)));
+        self.buckets[((f >> 1) & 15) as usize].push(Reverse((h, rank as u32, index as u32)));
         self.len += 1;
     }
 
@@ -207,7 +211,7 @@ impl DialQueue {
         }
         for _ in 0..16 {
             let slot = ((self.cursor >> 1) & 15) as usize;
-            if let Some(Reverse((h, index))) = self.buckets[slot].pop() {
+            if let Some(Reverse((h, _rank, index))) = self.buckets[slot].pop() {
                 self.len -= 1;
                 return Some((self.cursor, h, index as usize));
             }
@@ -335,6 +339,18 @@ pub fn astar_with_scratch(
         return None;
     }
     let cell_count = (width as usize).checked_mul(height as usize)?;
+    // A half-turn maps row-major index `i` to `cell_count - 1 - i` and
+    // reverses the start/goal lexicographic order. Orienting the tie rank by
+    // that order therefore gives corresponding cells identical ranks in the
+    // rotated query, without changing costs or reachability.
+    let reverse_ties = (goal.y, goal.x) < (start.y, start.x);
+    let tie_rank = |cell_index: usize| {
+        if reverse_ties {
+            cell_count - 1 - cell_index
+        } else {
+            cell_index
+        }
+    };
     // Cells are generation-stamped rather than cleared: only tiles this query
     // actually touches cost anything, so a short path on a huge map stays
     // cheap. Resize never initializes meaningfully — stale cells are dead by
@@ -358,7 +374,12 @@ pub fn astar_with_scratch(
     stamp[index(start)] = generation;
 
     open.reset(heuristic(start, goal));
-    open.push(heuristic(start, goal), heuristic(start, goal), index(start));
+    open.push(
+        heuristic(start, goal),
+        heuristic(start, goal),
+        tie_rank(index(start)),
+        index(start),
+    );
 
     let mut expansions = 0;
     while let Some((f, _h, current_idx)) = open.pop() {
@@ -402,7 +423,7 @@ pub fn astar_with_scratch(
                 stamp[next_idx] = generation;
                 came_from[next_idx] = current_idx;
                 let h = heuristic(next, goal);
-                open.push(tentative + h, h, next_idx);
+                open.push(tentative + h, h, tie_rank(next_idx), next_idx);
             }
         };
 
@@ -447,10 +468,10 @@ mod tests {
     use super::*;
 
     /// The tuple-heap A* the dial replaced, kept verbatim as the
-    /// oracle: identical expansion body, global `(f, h, index)` heap
-    /// for the open set. The dial's whole claim is popping this exact
-    /// order, so any divergence in paths or exhaustion isolates to
-    /// the queue.
+    /// oracle: identical expansion body, global
+    /// `(f, h, query-oriented rank, index)` heap for the open set. The
+    /// dial's whole claim is popping this exact order, so any divergence in
+    /// paths or exhaustion isolates to the queue.
     fn reference_astar(
         width: i32,
         height: i32,
@@ -471,6 +492,14 @@ mod tests {
             return None;
         }
         let cells = (width as usize) * (height as usize);
+        let reverse_ties = (goal.y, goal.x) < (start.y, start.x);
+        let tie_rank = |cell_index: usize| {
+            if reverse_ties {
+                cells - 1 - cell_index
+            } else {
+                cell_index
+            }
+        };
         let mut best_g = vec![u32::MAX; cells];
         let mut came_from = vec![usize::MAX; cells];
         let mut open = BinaryHeap::new();
@@ -478,10 +507,11 @@ mod tests {
         open.push(Reverse((
             heuristic(start, goal),
             heuristic(start, goal),
+            tie_rank(index(start)),
             index(start),
         )));
         let mut expansions = 0;
-        while let Some(Reverse((f, _h, current_idx))) = open.pop() {
+        while let Some(Reverse((f, _h, _rank, current_idx))) = open.pop() {
             let current = TilePos::new(
                 (current_idx % (width as usize)) as i32,
                 (current_idx / (width as usize)) as i32,
@@ -514,7 +544,7 @@ mod tests {
                     best_g[next_idx] = tentative;
                     came_from[next_idx] = current_idx;
                     let h = heuristic(next, goal);
-                    open.push(Reverse((tentative + h, h, next_idx)));
+                    open.push(Reverse((tentative + h, h, tie_rank(next_idx), next_idx)));
                 }
             };
             let mut cardinal_open = [false; 4];
@@ -666,6 +696,83 @@ mod tests {
         let first = find(rows, (0, 0), (7, 3)).unwrap();
         for _ in 0..10 {
             assert_eq!(find(rows, (0, 0), (7, 3)).unwrap(), first);
+        }
+    }
+
+    #[test]
+    fn paths_are_equivariant_under_half_turns() {
+        fn assert_mirror_path(
+            width: i32,
+            height: i32,
+            blocked: &[bool],
+            start: TilePos,
+            goal: TilePos,
+        ) {
+            let rotate = |tile: TilePos| TilePos::new(width - 1 - tile.x, height - 1 - tile.y);
+            let open = |tile: TilePos| !blocked[(tile.y * width + tile.x) as usize];
+            let rotated_open = |tile: TilePos| open(rotate(tile));
+            let path = astar(width, height, start, goal, open, 10_000);
+            let rotated = astar(
+                width,
+                height,
+                rotate(start),
+                rotate(goal),
+                rotated_open,
+                10_000,
+            );
+            let expected = path.map(|path| path.into_iter().map(rotate).collect::<Vec<_>>());
+            assert_eq!(
+                rotated, expected,
+                "half-turn changed the canonical route from {start:?} to {goal:?}"
+            );
+        }
+
+        let width = 7;
+        let height = 7;
+        let mut counterexample = vec![false; (width * height) as usize];
+        for (x, y) in [
+            (0, 5),
+            (1, 0),
+            (2, 0),
+            (2, 2),
+            (2, 4),
+            (3, 0),
+            (3, 6),
+            (4, 2),
+            (4, 4),
+            (4, 6),
+            (5, 6),
+            (6, 1),
+        ] {
+            counterexample[(y * width + x) as usize] = true;
+        }
+        assert_mirror_path(
+            width,
+            height,
+            &counterexample,
+            TilePos::new(2, 1),
+            TilePos::new(2, 5),
+        );
+
+        let mut rng = crate::rng::Pcg32::new(0x0018_0DE6, 11);
+        for _ in 0..256 {
+            let mut blocked = (0..width * height)
+                .map(|_| rng.next_below(100) < 24)
+                .collect::<Vec<_>>();
+            let start = TilePos::new(
+                rng.next_below(width as u32) as i32,
+                rng.next_below(height as u32) as i32,
+            );
+            let mut goal = TilePos::new(
+                rng.next_below(width as u32) as i32,
+                rng.next_below(height as u32) as i32,
+            );
+            if goal == start {
+                goal.x = (goal.x + 1) % width;
+            }
+            blocked[(start.y * width + start.x) as usize] = false;
+            blocked[(goal.y * width + goal.x) as usize] = false;
+            assert_mirror_path(width, height, &blocked, start, goal);
         }
     }
 

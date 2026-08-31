@@ -19,9 +19,11 @@ cargo run -p oxide-shell --release
 ```
 
 The main menu includes the tutorial, skirmish setup, saved games and replays,
-the complete unit roster, settings, and controls. Normal skirmishes use one
-deterministic, rules-based **Balanced AI**. It receives no extra resources,
-information, build access, or combat advantages.
+the complete unit roster, settings, and controls. Normal skirmishes use
+deterministic rules-based opponents with four difficulty levels and Turtle,
+Balanced, or Aggressive stances. A hidden seeded identity varies each opponent's
+strategic preferences. They receive no extra resources, information, build
+access, or combat advantages.
 
 ## The game
 
@@ -34,8 +36,8 @@ The important strategic layers are already present:
 - real fog of war, remembered buildings, radar contacts, and shared team sight;
 - ground, air, direct-fire, artillery, stealth, transport, and repair roles;
 - terrain that distinguishes ordinary rock, impassable peaks, and open pits;
-- buildable expansions, derelict Extractor frames, upgrades, and late-game
-  recovery income;
+- buildable expansions, renewable Extractor claims strengthened by nearby
+  Foundries, upgrades, and late-game recovery income;
 - persistent wreck salvage, so holding a battlefield has economic value;
 - free-for-all and team maps as well as conventional duels.
 
@@ -70,10 +72,11 @@ shortcuts cover the core loop:
 | `Esc`                            | Cancel the active action, clear selection, or open the pause menu.                               |
 
 The build ghost explains why a site is invalid. A discovered Extractor frame is
-one 2x2 site. Amber placement on remembered ground creates a deferred order; the
-builders walk there and validate the site only when they can see it. Upgrades
-rebuild themselves on a fixed timer: the building stays offline and vulnerable,
-but Harvesters keep their existing work.
+one 2x2 site. A restored Extractor earns fixed remote income; a nearby completed
+own Foundry raises that income without stacking. Amber placement on remembered
+ground creates a deferred order; the builders walk there and validate the site
+only when they can see it. Upgrades rebuild themselves on a fixed timer: the
+building stays offline and vulnerable, but Harvesters keep their existing work.
 
 Rock blocks direct ground fire. Peaks block ground movement, aircraft, and all
 fire across them. Pits block ground movement, but aircraft and fire cross the
@@ -141,6 +144,7 @@ The driver is the main inspection surface:
 ```sh
 cargo run -p oxide-driver -- --help
 cargo run -p oxide-driver -- run scenarios/skirmish.json --ticks 12000 --all-bots --map
+cargo run -p oxide-driver -- bot-eval skirmish --difficulty prime --stance balanced --paired
 cargo run -p oxide-driver -- replay-summary replays/match.json --minimaps sparse
 cargo run -p oxide-driver -- smoke --spawn
 ```
@@ -151,8 +155,9 @@ find suspicious games; they cannot establish that a match was fun. Read the
 replay summary, watch representative replays, and play changes yourself before
 promoting them.
 
-Repository invariants, workflow rules, versioning, and the skill router live in
-[`AGENTS.md`](AGENTS.md).
+Repository invariants, workflow rules, and versioning live in
+[`AGENTS.md`](AGENTS.md). Repeatable procedures live in self-describing skills
+under [`.agents/skills/`](.agents/skills/).
 
 ## Saves and replays
 
@@ -160,6 +165,10 @@ There is no separate mutable save-state format. A save contains the starting
 scenario and every tick-stamped command. Loading reconstructs the match by
 replaying that record, then continues recording from the same history. Finished
 matches use the same format in a read-only viewer.
+
+The embedded scenario preserves each opponent's exact difficulty, stance, and
+personality seed. New Match creates new hidden identities; Restart, Rematch,
+save loading, and replay playback preserve the recorded setup.
 
 Replays are pinned to the simulation version that wrote them. This makes
 incompatibility explicit when a rules change would otherwise reproduce a

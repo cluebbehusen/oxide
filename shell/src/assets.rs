@@ -20,8 +20,6 @@ pub struct Sprites {
     rock: [Rect; 23],
     /// Full-tile exclusion barriers, indexed `neighbor_mask * 2 + variant`.
     peak_barriers: [Rect; 32],
-    /// Bottomless-pit edge tiles, indexed like the peak barriers.
-    pit_edges: [Rect; 32],
     /// The derelict 2x2 Extractor frame bed, drawn on unclaimed frames.
     extractor_frame: Rect,
     /// Tier hulls, keyed by (kind, tier-1) through [`Sprites::building_tiered`].
@@ -123,6 +121,7 @@ pub struct Sprites {
     sylph_action: [[Rect; 3]; 4],
     tender: [Rect; 3],
     tender_move: [[Rect; 3]; 2],
+    tender_action: [[Rect; 3]; 4],
     excavator: [Rect; 3],
     excavator_move: [[Rect; 3]; 2],
     kestrel: [Rect; 3],
@@ -134,7 +133,7 @@ pub struct Sprites {
     condor_action: [[Rect; 3]; 4],
     moth: [Rect; 3],
     moth_move: [[Rect; 3]; 2],
-    moth_action: [[Rect; 3]; 4],
+    moth_action: [[Rect; 3]; 6],
     breaker: [Rect; 3],
     breaker_move: [[Rect; 3]; 2],
     breaker_action: [[Rect; 3]; 4],
@@ -247,44 +246,6 @@ const GROUND_BLOCKER_KEYS: [&str; 9] = [
 ];
 
 /// Full-tile barriers, ordered `neighbor_mask * 2 + variant`. The mask is
-/// north/east/south/west in bits 0 through 3.
-const PIT_EDGE_KEYS: [&str; 32] = [
-    "pit_edge_00_0",
-    "pit_edge_00_1",
-    "pit_edge_01_0",
-    "pit_edge_01_1",
-    "pit_edge_02_0",
-    "pit_edge_02_1",
-    "pit_edge_03_0",
-    "pit_edge_03_1",
-    "pit_edge_04_0",
-    "pit_edge_04_1",
-    "pit_edge_05_0",
-    "pit_edge_05_1",
-    "pit_edge_06_0",
-    "pit_edge_06_1",
-    "pit_edge_07_0",
-    "pit_edge_07_1",
-    "pit_edge_08_0",
-    "pit_edge_08_1",
-    "pit_edge_09_0",
-    "pit_edge_09_1",
-    "pit_edge_0a_0",
-    "pit_edge_0a_1",
-    "pit_edge_0b_0",
-    "pit_edge_0b_1",
-    "pit_edge_0c_0",
-    "pit_edge_0c_1",
-    "pit_edge_0d_0",
-    "pit_edge_0d_1",
-    "pit_edge_0e_0",
-    "pit_edge_0e_1",
-    "pit_edge_0f_0",
-    "pit_edge_0f_1",
-];
-
-/// Atlas keys for the terraced pit rims, indexed exactly like
-/// [`PEAK_BARRIER_KEYS`]:
 /// north/east/south/west in bits 0 through 3.
 const PEAK_BARRIER_KEYS: [&str; 32] = [
     "peak_barrier_00_0",
@@ -552,12 +513,12 @@ fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
         UnitKind::Warden
         | UnitKind::Shrike
         | UnitKind::Sylph
+        | UnitKind::Tender
         | UnitKind::Condor
-        | UnitKind::Moth
         | UnitKind::Breaker
         | UnitKind::Avalanche => &ACTION_SUFFIXES_4,
-        UnitKind::Tender
-        | UnitKind::Excavator
+        UnitKind::Moth => &ACTION_SUFFIXES_6,
+        UnitKind::Excavator
         | UnitKind::Kestrel
         | UnitKind::Gnat
         | UnitKind::Skyhook
@@ -669,7 +630,6 @@ fn atlas_keys() -> Vec<String> {
         .chain(GROUND_KEYS.iter())
         .chain(ROCK_KEYS.iter())
         .chain(PEAK_BARRIER_KEYS.iter())
-        .chain(PIT_EDGE_KEYS.iter())
         .chain(DECAL_KEYS.iter())
         .chain(THEME_PROP_KEYS.iter())
         .chain(FIELD_DEBRIS_KEYS.iter())
@@ -830,7 +790,6 @@ impl Sprites {
             ground: pick(&rects, GROUND_KEYS)?,
             rock: pick(&rects, ROCK_KEYS)?,
             peak_barriers: pick(&rects, PEAK_BARRIER_KEYS)?,
-            pit_edges: pick(&rects, PIT_EDGE_KEYS)?,
             extractor_frame,
             turret_t1: variant_row(&rects, "turret_t1", "")?,
             turret_t2: variant_row(&rects, "turret_t2", "")?,
@@ -939,6 +898,7 @@ impl Sprites {
             sylph_action: variant_rows(&rects, unit_stem(UnitKind::Sylph), ACTION_SUFFIXES_4)?,
             tender: unit(UnitKind::Tender)?,
             tender_move: variant_rows(&rects, unit_stem(UnitKind::Tender), MOVE_SUFFIXES)?,
+            tender_action: variant_rows(&rects, unit_stem(UnitKind::Tender), ACTION_SUFFIXES_4)?,
             excavator: unit(UnitKind::Excavator)?,
             excavator_move: variant_rows(&rects, unit_stem(UnitKind::Excavator), MOVE_SUFFIXES)?,
             kestrel: unit(UnitKind::Kestrel)?,
@@ -950,7 +910,7 @@ impl Sprites {
             condor_action: variant_rows(&rects, unit_stem(UnitKind::Condor), ACTION_SUFFIXES_4)?,
             moth: unit(UnitKind::Moth)?,
             moth_move: variant_rows(&rects, unit_stem(UnitKind::Moth), MOVE_SUFFIXES)?,
-            moth_action: variant_rows(&rects, unit_stem(UnitKind::Moth), ACTION_SUFFIXES_4)?,
+            moth_action: variant_rows(&rects, unit_stem(UnitKind::Moth), ACTION_SUFFIXES_6)?,
             breaker: unit(UnitKind::Breaker)?,
             breaker_move: variant_rows(&rects, unit_stem(UnitKind::Breaker), MOVE_SUFFIXES)?,
             breaker_action: variant_rows(&rects, unit_stem(UnitKind::Breaker), ACTION_SUFFIXES_4)?,
@@ -1052,11 +1012,6 @@ impl Sprites {
     /// A full-tile exclusion barrier connected to its peak neighbors.
     pub fn peak_barrier(&self, neighbor_mask: u8, variant: usize) -> Rect {
         self.peak_barriers[usize::from(neighbor_mask & 0x0f) * 2 + variant % 2]
-    }
-
-    /// A pit tile's rim art for its same-terrain neighbor mask.
-    pub fn pit_edge(&self, neighbor_mask: u8, variant: usize) -> Rect {
-        self.pit_edges[usize::from(neighbor_mask & 0x0f) * 2 + variant % 2]
     }
 
     /// The derelict Extractor frame bed (2x2 tiles).
@@ -1394,12 +1349,12 @@ impl Sprites {
             UnitKind::Warden => &self.warden_action,
             UnitKind::Shrike => &self.shrike_action,
             UnitKind::Sylph => &self.sylph_action,
+            UnitKind::Tender => &self.tender_action,
             UnitKind::Condor => &self.condor_action,
             UnitKind::Moth => &self.moth_action,
             UnitKind::Breaker => &self.breaker_action,
             UnitKind::Avalanche => &self.avalanche_action,
-            UnitKind::Tender
-            | UnitKind::Excavator
+            UnitKind::Excavator
             | UnitKind::Kestrel
             | UnitKind::Gnat
             | UnitKind::Skyhook
@@ -1410,8 +1365,8 @@ impl Sprites {
         rows.get(frame)
     }
 
-    /// A unit's zero-based authored weapon-action frame. Harvester and
-    /// invalid frame requests fall back to the ordinary ready sprite.
+    /// A unit's zero-based authored action frame. Harvester and invalid frame
+    /// requests fall back to the ordinary ready sprite.
     pub fn unit_action(&self, kind: UnitKind, faction: Faction, frame: usize) -> Rect {
         self.unit_action_row(kind, frame)
             .unwrap_or_else(|| self.unit_row(kind))[faction_index(faction)]
@@ -1489,7 +1444,7 @@ pub struct Sounds {
     pub attack_warden: Sound,
     /// The Breaker's siege mortar.
     pub attack_breaker: Sound,
-    /// The Avalanche bank leaving its tubes.
+    /// The Avalanche's heavy launch rail.
     pub avalanche_launch: Sound,
     /// A bomber's bay opening and its load dropping away.
     pub bomb_release: Sound,

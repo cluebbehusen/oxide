@@ -56,7 +56,9 @@ fn visible_hostile_target_at(
                 position.distance(world),
                 unit.id,
                 position,
-                unit.kind.stats().domain,
+                // Its layer right now: a parked airframe is a ground
+                // target for the weapons that can reach ground.
+                unit.domain(),
             )
         })
         .filter(|(distance, ..)| *distance <= PICK_RADIUS)
@@ -312,7 +314,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                 u.player == game.human
                     && u.hp > 0
                     && u.hp < u.kind.stats().max_hp
-                    && u.kind.stats().domain == oxide_sim::stats::Domain::Ground
+                    && u.domain() == oxide_sim::stats::Domain::Ground
                     && !game.selection.units.contains(&u.id)
             })
             .map(|u| {

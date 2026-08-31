@@ -3,6 +3,7 @@
 //! so a finished match has a real destination rather than a keyboard-only
 //! banner laid over gameplay.
 
+use crate::bot_label::{BotLabelStyle, bot_label};
 use crate::game::{Game, SoundKind};
 use crate::{render, theme};
 use macroquad::prelude::*;
@@ -160,7 +161,7 @@ fn action_at(point: Vec2, viewport: Vec2, scale: f32) -> Option<usize> {
 fn table_columns(left: f32, right: f32, wide: bool) -> [f32; 7] {
     let width = right - left;
     if wide {
-        let stats_left = left + width * 0.34;
+        let stats_left = player_column_right(left, right, true);
         let stat_width = (right - stats_left) / 6.0;
         return std::array::from_fn(|index| {
             if index == 0 {
@@ -179,6 +180,10 @@ fn table_columns(left: f32, right: f32, wide: bool) -> [f32; 7] {
         left + width * 0.77,
         left + width * 0.87,
     ]
+}
+
+fn player_column_right(left: f32, right: f32, wide: bool) -> f32 {
+    left + (right - left) * if wide { 0.34 } else { 0.39 }
 }
 
 fn draw_centered_text(text: &str, x: f32, y: f32, size: f32, color: Color) {
@@ -201,14 +206,70 @@ fn player_name_with_controller(
         return name;
     }
     match (spec.bot_config, compact) {
-        (Some(oxide_sim::scenario::BotConfig::Scripted), true) => {
-            format!("{name}  BALANCED")
-        }
-        (Some(oxide_sim::scenario::BotConfig::Scripted), false) => {
-            format!("{name}  BALANCED AI")
-        }
+        (Some(config), true) => format!(
+            "{name}  {}",
+            bot_label(config.difficulty, config.stance, BotLabelStyle::Compact,)
+        ),
+        (Some(config), false) => format!(
+            "{name}  {}",
+            bot_label(config.difficulty, config.stance, BotLabelStyle::Result,)
+        ),
         (None, _) => format!("{name}  AI"),
     }
+}
+
+fn text_fits(text: &str, max_width: f32, measure: &impl Fn(&str) -> f32) -> bool {
+    measure(text) <= max_width
+}
+
+fn elide_text_to_width(text: &str, max_width: f32, measure: &impl Fn(&str) -> f32) -> String {
+    if text_fits(text, max_width, measure) {
+        return text.to_string();
+    }
+    for cap in (4..text.chars().count()).rev() {
+        let candidate = clipped_name(text, cap);
+        if text_fits(&candidate, max_width, measure) {
+            return candidate;
+        }
+    }
+    String::new()
+}
+
+fn fitted_player_name_with_controller(
+    game: &Game,
+    seat: usize,
+    max_name_chars: usize,
+    prefer_compact: bool,
+    max_width: f32,
+    measure: &impl Fn(&str) -> f32,
+) -> String {
+    if !prefer_compact {
+        let full = player_name_with_controller(game, seat, max_name_chars, false);
+        if text_fits(&full, max_width, measure) {
+            return full;
+        }
+    }
+
+    let compact = player_name_with_controller(game, seat, max_name_chars, true);
+    if text_fits(&compact, max_width, measure) {
+        return compact;
+    }
+    for cap in (4..max_name_chars).rev() {
+        let candidate = player_name_with_controller(game, seat, cap, true);
+        if text_fits(&candidate, max_width, measure) {
+            return candidate;
+        }
+    }
+
+    let spec = game.scenario.players.get(seat);
+    let fallback = match spec {
+        Some(spec) if spec.bot => spec.bot_config.map_or_else(
+            || "AI".to_string(),
+            |config| bot_label(config.difficulty, config.stance, BotLabelStyle::Compact),
+        ),
+        _ => game.state.players()[seat].name.clone(),
+    };
+    elide_text_to_width(&fallback, max_width, measure)
 }
 
 /// Stateful pointer/keyboard ownership for the report.
@@ -488,11 +549,31 @@ impl ResultsScreen {
                 } else {
                     24
                 };
-                let name =
-                    player_name_with_controller(game, seat, max_name_chars, layout.compact_roster);
+                let prefix = format!("T{}  ", player.team + 1);
+                let player_text_x = columns[0] + 11.0 * s;
+                let player_text_right = player_column_right(left, right, layout.wide_table);
+                let fixed_width = measure_text(
+                    format!("{prefix}{crown}"),
+                    None,
+                    layout.row_size as u16,
+                    1.0,
+                )
+                .width;
+                let name_width =
+                    (player_text_right - player_text_x - 8.0 * s - fixed_width).max(0.0);
+                let measure_name =
+                    |text: &str| measure_text(text, None, layout.row_size as u16, 1.0).width;
+                let name = fitted_player_name_with_controller(
+                    game,
+                    seat,
+                    max_name_chars,
+                    layout.compact_roster,
+                    name_width,
+                    &measure_name,
+                );
                 draw_text(
-                    format!("T{}  {}{}", player.team + 1, name, crown),
-                    columns[0] + 11.0 * s,
+                    format!("{prefix}{name}{crown}"),
+                    player_text_x,
                     y,
                     layout.row_size,
                     color,
@@ -1058,16 +1139,90 @@ mod tests {
 
     #[test]
     fn results_name_shows_the_scripted_controller() {
-        let game = Game::new(oxide_sim::Scenario::skirmish()).expect("skirmish builds");
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::scripted(
+            oxide_sim::scenario::BotDifficulty::Prime,
+            oxide_sim::scenario::BotStance::Aggressive,
+            19,
+        ));
+        let game = Game::new(scenario).expect("skirmish builds");
         assert_eq!(
             player_name_with_controller(&game, 1, 24, false),
-            "Cupric  BALANCED AI"
+            "Cupric  PRIME / AGGRESSIVE AI"
         );
         assert_eq!(
             player_name_with_controller(&game, 1, 24, true),
-            "Cupric  BALANCED"
+            "Cupric  PRIME/AGGRO"
         );
         assert_eq!(player_name_with_controller(&game, 0, 24, false), "Ferrous");
+    }
+
+    #[test]
+    fn long_names_and_the_longest_bot_profile_stay_inside_the_player_column() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.players[1].name = "Extremely Long Cupric Commander".to_string();
+        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::scripted(
+            oxide_sim::scenario::BotDifficulty::Scrapheap,
+            oxide_sim::scenario::BotStance::Aggressive,
+            23,
+        ));
+        let game = Game::new(scenario).expect("skirmish builds");
+
+        for viewport in [vec2(640.0, 400.0), vec2(1280.0, 800.0)] {
+            let scale = 1.0;
+            let layout = results_layout(viewport, scale, game.state.players().len());
+            let panel = Rect::new(12.0, 10.0, viewport.x - 24.0, viewport.y - 20.0);
+            let left = panel.x + 20.0;
+            let right = panel.x + panel.w - 20.0;
+            let columns = table_columns(left, right, layout.wide_table);
+            let player = &game.state.players()[1];
+            let prefix = format!("T{}  ", player.team + 1);
+            let player_text_x = columns[0] + 11.0;
+            let column_right = player_column_right(left, right, layout.wide_table);
+            let measure = |text: &str| text.chars().count() as f32 * layout.row_size * 0.58;
+            let fixed_width = measure(&prefix);
+            let available = column_right - player_text_x - 8.0;
+            let max_name_width = (available - fixed_width).max(0.0);
+            let max_name_chars = if viewport.x < 800.0 { 12 } else { 24 };
+            let name = fitted_player_name_with_controller(
+                &game,
+                1,
+                max_name_chars,
+                layout.compact_roster,
+                max_name_width,
+                &measure,
+            );
+            let row = format!("{prefix}{name}");
+
+            assert!(
+                name.contains("SCRAP"),
+                "the fitted label keeps the difficulty at {viewport:?}: {name}"
+            );
+            assert!(
+                name.contains("AGG"),
+                "the fitted label keeps the stance at {viewport:?}: {name}"
+            );
+            assert!(
+                measure(&row) <= available + 0.01,
+                "`{row}` crosses the player column at {viewport:?}"
+            );
+        }
+
+        let narrow_layout = results_layout(vec2(640.0, 400.0), 1.0, 2);
+        let narrow_measure =
+            |text: &str| text.chars().count() as f32 * narrow_layout.row_size * 0.58;
+        let compact = fitted_player_name_with_controller(
+            &game,
+            1,
+            12,
+            narrow_layout.compact_roster,
+            175.0,
+            &narrow_measure,
+        );
+        assert!(
+            compact.contains("SCRAP/AGGRO"),
+            "a narrow duel uses the semantic compact label: {compact}"
+        );
     }
 
     #[test]

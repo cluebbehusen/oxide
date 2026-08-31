@@ -5,6 +5,7 @@ mod app;
 mod assets;
 mod audio_mix;
 mod autosave;
+mod bot_label;
 mod camera;
 mod config;
 mod debug_server;

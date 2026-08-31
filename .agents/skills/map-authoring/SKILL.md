@@ -12,6 +12,10 @@ description:
 Author a map as a gameplay space first. Use mechanical checks for terrain,
 symmetry, and seat fairness, then play it to judge routes, pressure, and pacing.
 
+This skill governs competitive maps meant for the shipped pool. For a
+non-competitive staging rig — a practice drill or an exact staged scene with a
+passive opponent — use the sandbox-matches skill instead.
+
 ## Use the scenario language exactly
 
 Confirm the live parser in `sim/src/map.rs` and schema in `sim/src/scenario.rs`.
@@ -72,6 +76,23 @@ decides the economy.
 Check these questions while authoring:
 
 - Can every seat fund a viable opening from nearby salvage?
+- Can every starting seat on every shipped map be assigned its own distinct,
+  fully visible, builder-reachable Extractor frame inside
+  `EXTRACTOR_SUPPORT_RADIUS`? Overlapping support regions may expose more than
+  one frame to a seat, but two seats cannot rely on the same opening claim.
+- On most maps, does each seat also have a nearby natural frame outside its
+  starting Foundry's support? Quick maps may instead make that second claim a
+  shared contested objective.
+- Do maps with large physical footprints carry additional Extractor value beyond
+  the starting pockets, even when their pace label is only `standard`? This
+  always applies to `large`, `vast`, and `grand` maps. Use otherwise empty
+  regions deliberately: two or three frames that one well-placed forward Foundry
+  can support make a strong expansion objective and are preferable to decorative
+  dead acreage.
+- Does every forward frame leave fair construction room for a new Foundry inside
+  the support radius rather than prescribing one fragile anchor? Ground naturals
+  need a builder route; transport-expansion islands need safe landing,
+  frame-perimeter, and Foundry room even when no starting ground route exists.
 - Is there a reason to leave the starting pocket?
 - Are alternate routes meaningfully different rather than cosmetic twins?
 - Is there room to build where armies and harvest lines actually travel?

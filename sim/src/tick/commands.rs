@@ -313,12 +313,26 @@ fn assign_circuit(unit: &mut crate::state::Unit, mut legs: impl Iterator<Item = 
     unit.progress = 0;
 }
 
-/// The first `count` tiles open to `domain`, ring-scanned outward from
-/// `center` — per-unit goals for a group order, so crowds fan out over an
-/// area instead of magnetizing onto a single tile. Falls back to
-/// repeating the last tile if open ground runs out (they'll jostle;
-/// that's honest).
-fn spread_goals(state: &State, center: TilePos, count: usize, domain: Domain) -> Vec<TilePos> {
+/// The first tiles open to `domain`, ring-scanned outward from `center` in
+/// the commanded group's approach frame. Mirrored groups therefore receive
+/// mirrored slots instead of inheriting an absolute northwest-first bias.
+fn spread_goals(
+    state: &State,
+    center: TilePos,
+    count: usize,
+    domain: Domain,
+    reverse: bool,
+) -> Vec<TilePos> {
+    spread_goals_by(center, count, reverse, |t| state.passable_for(domain, t))
+}
+
+/// [`spread_goals`] over any notion of an open tile.
+fn spread_goals_by(
+    center: TilePos,
+    count: usize,
+    reverse: bool,
+    legal: impl Fn(TilePos) -> bool,
+) -> Vec<TilePos> {
     let mut out = Vec::with_capacity(count);
     'scan: for r in 0..=GOAL_SNAP_RADIUS + 3 {
         for dy in -r..=r {
@@ -326,8 +340,9 @@ fn spread_goals(state: &State, center: TilePos, count: usize, domain: Domain) ->
                 if dx.abs().max(dy.abs()) != r {
                     continue;
                 }
+                let (dx, dy) = if reverse { (-dx, -dy) } else { (dx, dy) };
                 let t = center.offset(dx, dy);
-                if state.passable_for(domain, t) {
+                if legal(t) {
                     out.push(t);
                     if out.len() == count {
                         break 'scan;
@@ -340,6 +355,90 @@ fn spread_goals(state: &State, center: TilePos, count: usize, domain: Domain) ->
         out.push(out.last().copied().unwrap_or(center));
     }
     out
+}
+
+/// Whether the canonical spread scan needs a half-turn for this group's
+/// approach. The first selected unit not already at the goal defines the
+/// frame; an owned Foundry is the deterministic fallback for a stacked group.
+fn spread_scan_reversed(state: &State, center: TilePos, ids: &[UnitId]) -> bool {
+    let reversed = |dx: i64, dy: i64| dy < 0 || (dy == 0 && dx < 0);
+    for id in ids {
+        let tile = state.unit(*id).expect("accepted spread unit exists").tile();
+        let dx = i64::from(center.x) - i64::from(tile.x);
+        let dy = i64::from(center.y) - i64::from(tile.y);
+        if dx != 0 || dy != 0 {
+            return reversed(dx, dy);
+        }
+    }
+
+    let player = state
+        .unit(ids[0])
+        .expect("a spread has at least one accepted unit")
+        .player;
+    if let Some(foundry) = state.buildings.iter().find(|building| {
+        building.player == player && building.kind == crate::stats::BuildingKind::Foundry
+    }) {
+        let (width, height) = foundry.kind.base_stats().size;
+        let dx = i64::from(center.x) * 2 + 1 - (i64::from(foundry.anchor.x) * 2 + i64::from(width));
+        let dy =
+            i64::from(center.y) * 2 + 1 - (i64::from(foundry.anchor.y) * 2 + i64::from(height));
+        if dx != 0 || dy != 0 {
+            return reversed(dx, dy);
+        }
+    }
+
+    let dx = i64::from(center.x) * 2 + 1 - i64::from(state.map.width());
+    let dy = i64::from(center.y) * 2 + 1 - i64::from(state.map.height());
+    if dx != 0 || dy != 0 {
+        return reversed(dx, dy);
+    }
+
+    player.0 % 2 == 1
+}
+
+/// Resolve a blocked group-command center in the same approach frame used
+/// to spread its individual slots.
+fn group_domain_goal(
+    state: &State,
+    goal: TilePos,
+    domain: Domain,
+    reverse: bool,
+) -> Option<TilePos> {
+    let (center, radius) = match domain {
+        Domain::Ground => (goal, GOAL_SNAP_RADIUS),
+        Domain::Air => (
+            TilePos::new(
+                goal.x.clamp(0, state.map.width() - 1),
+                goal.y.clamp(0, state.map.height() - 1),
+            ),
+            GOAL_SNAP_RADIUS + 3,
+        ),
+    };
+    group_goal_by(center, radius, reverse, |t| state.passable_for(domain, t))
+}
+
+/// [`group_domain_goal`] over any notion of an open tile.
+fn group_goal_by(
+    center: TilePos,
+    radius: i32,
+    reverse: bool,
+    legal: impl Fn(TilePos) -> bool,
+) -> Option<TilePos> {
+    for r in 0..=radius {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue;
+                }
+                let (dx, dy) = if reverse { (-dx, -dy) } else { (dx, dy) };
+                let candidate = center.offset(dx, dy);
+                if legal(candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Splits accepted unit ids by movement domain, preserving id order —
@@ -371,11 +470,12 @@ fn apply_move(
         if ids.is_empty() {
             continue;
         }
-        let Some(snapped) = domain_goal(state, goal, domain) else {
+        let reverse = spread_scan_reversed(state, goal, &ids);
+        let Some(snapped) = group_domain_goal(state, goal, domain, reverse) else {
             continue; // nowhere for this half to stand; the other may fly
         };
         routed = true;
-        let goals = spread_goals(state, snapped, ids.len(), domain);
+        let goals = spread_goals(state, snapped, ids.len(), domain, reverse);
         for (id, goal) in ids.into_iter().zip(goals) {
             let unit = state.unit_mut(id).expect("filtered above");
             if assign(unit, Order::Move { goal }, queue) {
@@ -421,9 +521,7 @@ fn apply_attack(
     // Units that can't fight — or whose weapons can't cover the target's
     // domain — walk to the target area instead.
     let victim_domain = match target {
-        Target::Unit(id) => state
-            .unit(id)
-            .map_or(Domain::Ground, |u| u.kind.stats().domain),
+        Target::Unit(id) => state.unit(id).map_or(Domain::Ground, |u| u.domain()),
         Target::Building(_) => Domain::Ground,
     };
     let walk_goals = [
@@ -482,11 +580,12 @@ fn apply_attack_move(
         if ids.is_empty() {
             continue;
         }
-        let Some(snapped) = domain_goal(state, goal, domain) else {
+        let reverse = spread_scan_reversed(state, goal, &ids);
+        let Some(snapped) = group_domain_goal(state, goal, domain, reverse) else {
             continue;
         };
         routed = true;
-        let goals = spread_goals(state, snapped, ids.len(), domain);
+        let goals = spread_goals(state, snapped, ids.len(), domain, reverse);
         for (id, goal) in ids.into_iter().zip(goals) {
             let unit = state.unit_mut(id).expect("filtered above");
             let order = if unit.kind.stats().can_fight() {
@@ -525,11 +624,12 @@ fn apply_advance(
         if ids.is_empty() {
             continue;
         }
-        let Some(snapped) = domain_goal(state, goal, domain) else {
+        let reverse = spread_scan_reversed(state, goal, &ids);
+        let Some(snapped) = group_domain_goal(state, goal, domain, reverse) else {
             continue;
         };
         routed = true;
-        let goals = spread_goals(state, snapped, ids.len(), domain);
+        let goals = spread_goals(state, snapped, ids.len(), domain, reverse);
         for (id, goal) in ids.into_iter().zip(goals) {
             let unit = state.unit_mut(id).expect("filtered above");
             let order = if unit.kind.stats().can_fight() {
@@ -826,7 +926,7 @@ pub(super) fn found_site(
     let mut dealt = 0usize;
     for i in 0..state.units.len() {
         let u = &state.units[i];
-        if u.hp == 0 || u.kind.stats().domain != crate::stats::Domain::Ground || !inside(u.tile()) {
+        if u.hp == 0 || u.domain() != crate::stats::Domain::Ground || !inside(u.tile()) {
             continue;
         }
         let (unit_kind, tile) = (u.kind, u.tile());
@@ -983,7 +1083,9 @@ fn apply_repair_unit(
 ) -> Result<(), RejectReason> {
     let t = state.unit(target).ok_or(RejectReason::InvalidTarget)?;
     let stats = t.kind.stats();
-    if t.player != player || t.hp == 0 || t.hp >= stats.max_hp || stats.domain != Domain::Ground {
+    // A parked airframe is a ground body a welder can reach; an airborne
+    // one is not.
+    if t.player != player || t.hp == 0 || t.hp >= stats.max_hp || t.domain() != Domain::Ground {
         return Err(RejectReason::InvalidTarget);
     }
     let crew: Vec<UnitId> = units.iter().copied().filter(|&id| id != target).collect();

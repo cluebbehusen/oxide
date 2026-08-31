@@ -43,6 +43,112 @@ enum Cmd {
         #[arg(long)]
         map: bool,
     },
+    /// Evaluate the player-facing rules bot and emit one compact JSONL row
+    /// per exact seed/profile leg. Unlike the frozen Overseer sweeps, this
+    /// follows the controller that ships to players and stops at the result.
+    BotEval {
+        /// Scenario paths, or "skirmish" for the built-in map.
+        #[arg(required = true)]
+        scenarios: Vec<String>,
+        /// Maximum ticks per match.
+        #[arg(long, default_value_t = 60_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// Stalls of one reason on one unit that stop a leg as a `stall_loop`
+        /// anomaly instead of running it to the ceiling; 0 disables the stop.
+        #[arg(long, default_value_t = oxide_driver::bot_eval::DEFAULT_STALL_LOOP_LIMIT)]
+        stall_loop_limit: u64,
+        /// Consecutive seed cells per scenario for player-facing profile
+        /// comparisons.
+        #[arg(
+            long,
+            default_value_t = 1,
+            value_parser = clap::value_parser!(u64).range(1..),
+            conflicts_with = "against_overseer"
+        )]
+        runs: u64,
+        /// First simulation seed. Defaults to each scenario's authored seed;
+        /// subsequent runs increment it.
+        #[arg(long, conflicts_with = "scenario_seeds")]
+        scenario_seed_base: Option<u64>,
+        /// Exact simulation seeds to cross with every personality seed when
+        /// comparing against Overseer.
+        #[arg(
+            long,
+            value_delimiter = ',',
+            requires = "against_overseer",
+            conflicts_with = "scenario_seed_base"
+        )]
+        scenario_seeds: Vec<u64>,
+        /// First personality seed. Seats and subsequent runs receive
+        /// deterministic seeds; use `--same-personality-seed` to consume one
+        /// shared seed per two-seat run.
+        #[arg(long, conflicts_with = "personality_seeds")]
+        personality_seed_base: Option<u64>,
+        /// Exact player-facing personality seeds to cross with every
+        /// simulation seed when comparing against Overseer.
+        #[arg(
+            long,
+            value_delimiter = ',',
+            requires = "against_overseer",
+            conflicts_with = "personality_seed_base"
+        )]
+        personality_seeds: Vec<u64>,
+        /// Player-facing skill rung.
+        #[arg(long, default_value_t = oxide_sim::scenario::BotDifficulty::Standard)]
+        difficulty: oxide_sim::scenario::BotDifficulty,
+        /// Player-facing strategic posture.
+        #[arg(long, default_value_t = oxide_sim::scenario::BotStance::Balanced)]
+        stance: oxide_sim::scenario::BotStance,
+        /// Difficulty for seat one. Supplying this requires a two-seat
+        /// scenario; omit it to use `--difficulty` for both seats.
+        #[arg(long)]
+        opponent_difficulty: Option<oxide_sim::scenario::BotDifficulty>,
+        /// Strategic posture for seat one. Supplying this requires a two-seat
+        /// scenario; omit it to use `--stance` for both seats.
+        #[arg(long)]
+        opponent_stance: Option<oxide_sim::scenario::BotStance>,
+        /// Give both seats the same personality seed. This isolates difficulty
+        /// when both stances match and requires a two-seat scenario.
+        #[arg(long)]
+        same_personality_seed: bool,
+        /// Compare the player-facing controller with the frozen pre-0.16
+        /// Overseer yardstick instead of another player-facing profile.
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "opponent_difficulty",
+                "opponent_stance",
+                "same_personality_seed"
+            ]
+        )]
+        against_overseer: bool,
+        /// Seat-independent identity for Overseer's frozen army-size jitter.
+        /// Defaults to zero and stays fixed across the full matrix.
+        #[arg(long, requires = "against_overseer")]
+        overseer_policy_seed: Option<u64>,
+        /// Physical-seat faction cells for an Overseer comparison.
+        #[arg(long, value_delimiter = ',', requires = "against_overseer")]
+        faction_cells: Vec<oxide_driver::bot_eval::EvaluationFactionCell>,
+        /// Map-end geometry cells for an Overseer comparison.
+        #[arg(long, value_delimiter = ',', requires = "against_overseer")]
+        geometries: Vec<oxide_driver::bot_eval::EvaluationGeometry>,
+        /// On a two-seat scenario, run a second leg with the two complete
+        /// controller configurations exchanged between seats.
+        #[arg(long)]
+        paired: bool,
+        /// Stable candidate or build identifier. Required when evidence is
+        /// persisted with `--out` or `--replay-dir`.
+        #[arg(long)]
+        candidate: Option<String>,
+        /// Atomically publish JSONL here instead of standard output. An
+        /// existing file is never replaced.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Preserve one replay per leg in this directory without replacing
+        /// any existing evidence.
+        #[arg(long, requires = "out")]
+        replay_dir: Option<PathBuf>,
+    },
     /// Re-execute a replay and report (or check) the final hash.
     Replay {
         /// Replay JSON path.
@@ -348,6 +454,15 @@ fn latency_summary(samples_ns: &[u64]) -> String {
     )
 }
 
+fn ensure_distinct<T: PartialEq>(values: &[T], label: &str) -> Result<()> {
+    for (index, value) in values.iter().enumerate() {
+        if values[..index].contains(value) {
+            bail!("{label} contains a duplicate value");
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Run {
@@ -378,6 +493,214 @@ fn main() -> Result<()> {
             };
             let view = oxide_protocol::StateView::capture(&outcome.state, filter);
             println!("{}", serde_json::to_string_pretty(&view)?);
+        }
+        Cmd::BotEval {
+            scenarios,
+            ticks,
+            stall_loop_limit,
+            runs,
+            scenario_seed_base,
+            scenario_seeds,
+            personality_seed_base,
+            personality_seeds,
+            difficulty,
+            stance,
+            opponent_difficulty,
+            opponent_stance,
+            same_personality_seed,
+            against_overseer,
+            overseer_policy_seed,
+            faction_cells,
+            geometries,
+            paired,
+            candidate,
+            out,
+            replay_dir,
+        } => {
+            let stall_loop_limit = (stall_loop_limit > 0).then_some(stall_loop_limit);
+            let candidate = match candidate {
+                Some(candidate) => candidate,
+                None if out.is_some() || replay_dir.is_some() => {
+                    bail!("--candidate is required with --out or --replay-dir")
+                }
+                None => "ad-hoc".to_string(),
+            };
+            let matchup = oxide_driver::bot_eval::ProfileMatchup {
+                difficulty,
+                stance,
+                opponent_difficulty,
+                opponent_stance,
+                same_personality_seed,
+            };
+            ensure_distinct(&scenario_seeds, "--scenario-seeds")?;
+            ensure_distinct(&personality_seeds, "--personality-seeds")?;
+            ensure_distinct(&faction_cells, "--faction-cells")?;
+            ensure_distinct(&geometries, "--geometries")?;
+            let mut plans = Vec::new();
+            for (scenario_index, scenario_name) in scenarios.iter().enumerate() {
+                let source = runner::load_scenario(scenario_name)?;
+                if against_overseer {
+                    oxide_driver::bot_eval::ensure_overseer_yardstick_ground(&source)?;
+                    let overseer_policy_seed = overseer_policy_seed.unwrap_or(0);
+                    let scenario_seed_values = if scenario_seeds.is_empty() {
+                        vec![scenario_seed_base.unwrap_or(source.seed)]
+                    } else {
+                        scenario_seeds.clone()
+                    };
+                    let personality_seed_values = if personality_seeds.is_empty() {
+                        vec![personality_seed_base.unwrap_or(0)]
+                    } else {
+                        personality_seeds.clone()
+                    };
+                    let faction_cells = if faction_cells.is_empty() {
+                        vec![oxide_driver::bot_eval::EvaluationFactionCell::Authored]
+                    } else {
+                        faction_cells.clone()
+                    };
+                    let geometries = if geometries.is_empty() {
+                        vec![oxide_driver::bot_eval::EvaluationGeometry::Authored]
+                    } else {
+                        geometries.clone()
+                    };
+
+                    let mut seed_cell = 0_u64;
+                    for &scenario_seed in &scenario_seed_values {
+                        for &personality_seed in &personality_seed_values {
+                            let config = oxide_sim::scenario::BotConfig::scripted(
+                                difficulty,
+                                stance,
+                                personality_seed,
+                            );
+                            for &faction_cell in &faction_cells {
+                                for &geometry in &geometries {
+                                    for plan in oxide_driver::bot_eval::configured_overseer_plans(
+                                        &source,
+                                        scenario_seed,
+                                        config,
+                                        overseer_policy_seed,
+                                        paired,
+                                        faction_cell,
+                                        geometry,
+                                    )? {
+                                        let replay_path = replay_dir
+                                            .as_ref()
+                                            .map(|dir| {
+                                                oxide_driver::bot_eval::evaluation_replay_filename(
+                                                    scenario_index,
+                                                    seed_cell,
+                                                    scenario_seed,
+                                                    ticks,
+                                                    &candidate,
+                                                    &plan,
+                                                )
+                                                .map(|filename| dir.join(filename))
+                                            })
+                                            .transpose()?;
+                                        plan.scenario.build().with_context(|| {
+                                            format!(
+                                                "prevalidating bot evaluation scenario {scenario_name} seed cell {seed_cell} {}",
+                                                plan.leg.name()
+                                            )
+                                        })?;
+                                        plans.push((plan, replay_path));
+                                    }
+                                }
+                            }
+                            seed_cell = seed_cell
+                                .checked_add(1)
+                                .context("evaluation seed-cell index overflows u64")?;
+                        }
+                    }
+                } else {
+                    let seed_base = scenario_seed_base.unwrap_or(source.seed);
+                    let personality_seed_base = personality_seed_base.unwrap_or(0);
+                    for run in 0..runs {
+                        let scenario_seed = seed_base
+                            .checked_add(run)
+                            .context("scenario seed range overflows u64")?;
+                        let profile_base = matchup.personality_seed_base_for_run(
+                            personality_seed_base,
+                            run,
+                            source.players.len(),
+                        )?;
+                        for (leg, scenario) in oxide_driver::bot_eval::configured_matchup_legs(
+                            &source,
+                            scenario_seed,
+                            matchup,
+                            profile_base,
+                            paired,
+                        )? {
+                            let plan = oxide_driver::bot_eval::EvaluationPlan::from_scenario(
+                                scenario, leg,
+                            );
+                            let replay_path = replay_dir
+                                .as_ref()
+                                .map(|dir| {
+                                    oxide_driver::bot_eval::evaluation_replay_filename(
+                                        scenario_index,
+                                        run,
+                                        scenario_seed,
+                                        ticks,
+                                        &candidate,
+                                        &plan,
+                                    )
+                                    .map(|filename| dir.join(filename))
+                                })
+                                .transpose()?;
+                            plan.scenario.build().with_context(|| {
+                                format!(
+                                    "prevalidating bot evaluation scenario {scenario_name} run {run} {}",
+                                    plan.leg.name()
+                                )
+                            })?;
+                            plans.push((plan, replay_path));
+                        }
+                    }
+                }
+            }
+
+            oxide_driver::bot_eval::ensure_unique_execution_plans(
+                plans.iter().map(|(plan, _)| plan),
+            )?;
+
+            let mut destinations: Vec<PathBuf> = plans
+                .iter()
+                .filter_map(|(_, replay_path)| replay_path.clone())
+                .collect();
+            destinations.extend(out.iter().cloned());
+            oxide_driver::bot_eval::preflight_destinations(&destinations)?;
+
+            let mut rows = Vec::with_capacity(plans.len());
+            let mut evidence = oxide_driver::bot_eval::EvidenceBatch::default();
+            for (plan, replay_path) in plans {
+                let (mut row, replay) = oxide_driver::bot_eval::evaluate_plan_artifact_with(
+                    &plan,
+                    ticks,
+                    stall_loop_limit,
+                    &candidate,
+                )?;
+                if let Some(path) = replay_path {
+                    evidence.stage_replay(&replay, &path)?;
+                    row.replay = Some(path.display().to_string());
+                }
+                rows.push(row);
+            }
+            if let Some(path) = out.as_deref() {
+                evidence.stage_jsonl(&rows, path)?;
+            }
+            evidence.publish()?;
+
+            if let Some(path) = out {
+                eprintln!(
+                    "wrote {} bot evaluation rows to {}",
+                    rows.len(),
+                    path.display()
+                );
+            } else {
+                for row in &rows {
+                    println!("{}", serde_json::to_string(row)?);
+                }
+            }
         }
         Cmd::Replay {
             path,
@@ -764,6 +1087,101 @@ mod tests {
                 .is_err(),
             "scenario-configured and all-seat modes are mutually exclusive"
         );
+    }
+
+    #[test]
+    fn bot_eval_parses_exact_profile_and_paired_seed_cell() {
+        let cli = Cli::try_parse_from([
+            "oxide-driver",
+            "bot-eval",
+            "skirmish",
+            "scenarios/powder-keg.json",
+            "--ticks",
+            "50000",
+            "--scenario-seed-base",
+            "71",
+            "--personality-seed-base",
+            "900",
+            "--difficulty",
+            "prime",
+            "--stance",
+            "aggressive",
+            "--paired",
+            "--candidate",
+            "build-a",
+        ])
+        .expect("bot evaluation parses");
+        let Cmd::BotEval {
+            scenarios,
+            ticks,
+            runs,
+            scenario_seed_base,
+            personality_seed_base,
+            difficulty,
+            stance,
+            opponent_difficulty,
+            opponent_stance,
+            same_personality_seed,
+            paired,
+            candidate,
+            ..
+        } = cli.cmd
+        else {
+            panic!("bot-eval parsed as another command")
+        };
+        assert_eq!(scenarios, ["skirmish", "scenarios/powder-keg.json"]);
+        assert_eq!((ticks, runs), (50_000, 1));
+        assert_eq!(scenario_seed_base, Some(71));
+        assert_eq!(personality_seed_base, Some(900));
+        assert_eq!(difficulty, oxide_sim::scenario::BotDifficulty::Prime);
+        assert_eq!(stance, oxide_sim::scenario::BotStance::Aggressive);
+        assert_eq!(opponent_difficulty, None);
+        assert_eq!(opponent_stance, None);
+        assert!(!same_personality_seed);
+        assert!(paired);
+        assert_eq!(candidate.as_deref(), Some("build-a"));
+    }
+
+    #[test]
+    fn bot_eval_parses_cross_difficulty_shared_personality_comparison() {
+        let cli = Cli::try_parse_from([
+            "oxide-driver",
+            "bot-eval",
+            "skirmish",
+            "--difficulty",
+            "prime",
+            "--opponent-difficulty",
+            "standard",
+            "--opponent-stance",
+            "turtle",
+            "--same-personality-seed",
+            "--paired",
+        ])
+        .expect("cross-difficulty bot evaluation parses");
+        let Cmd::BotEval {
+            difficulty,
+            stance,
+            opponent_difficulty,
+            opponent_stance,
+            same_personality_seed,
+            paired,
+            ..
+        } = cli.cmd
+        else {
+            panic!("bot-eval parsed as another command")
+        };
+        assert_eq!(difficulty, oxide_sim::scenario::BotDifficulty::Prime);
+        assert_eq!(stance, oxide_sim::scenario::BotStance::Balanced);
+        assert_eq!(
+            opponent_difficulty,
+            Some(oxide_sim::scenario::BotDifficulty::Standard)
+        );
+        assert_eq!(
+            opponent_stance,
+            Some(oxide_sim::scenario::BotStance::Turtle)
+        );
+        assert!(same_personality_seed);
+        assert!(paired);
     }
 
     #[test]

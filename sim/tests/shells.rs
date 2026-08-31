@@ -5,10 +5,10 @@
 
 use chassis::grid::TilePos;
 use chassis::replay::Replay;
-use oxide_sim::scenario::{PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::{
-    Command, Event, Faction, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State, Target,
-    UnitKind,
+    BuildingKind, Command, Event, Faction, Order, PlayerCommand, PlayerId, SIM_VERSION, Scenario,
+    State, Target, UnitKind,
 };
 
 fn players() -> Vec<PlayerSpec> {
@@ -642,11 +642,8 @@ fn predictive_aim_is_independent_of_unit_id_order_and_brain_parity() {
     }
 }
 
-fn team_range(with_spotter: bool) -> Scenario {
-    let mut units = vec![
-        unit(0, UnitKind::Bombard, 3, 6),
-        unit(1, UnitKind::Harvester, 12, 6),
-    ];
+fn team_range(kind: UnitKind, with_spotter: bool) -> Scenario {
+    let mut units = vec![unit(0, kind, 3, 6), unit(1, UnitKind::Harvester, 12, 6)];
     if with_spotter {
         units.push(unit(2, UnitKind::Harvester, 9, 6));
     }
@@ -702,6 +699,90 @@ fn team_range(with_spotter: bool) -> Scenario {
     }
 }
 
+fn team_building_range(with_spotter: bool) -> Scenario {
+    let mut scenario = team_range(UnitKind::Avalanche, with_spotter);
+    scenario.name = "team-shell-building-range".into();
+    scenario.units.retain(|unit| unit.player != 1);
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Turret,
+        x: 12,
+        y: 6,
+    });
+    scenario
+}
+
+fn unit_of_kind(state: &State, kind: UnitKind) -> oxide_sim::UnitId {
+    state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == kind)
+        .unwrap()
+        .id
+}
+
+fn assert_artillery_ignores_hidden_target(
+    state: &mut State,
+    artillery: oxide_sim::UnitId,
+    kind: UnitKind,
+) {
+    let initial_pos = state.unit(artillery).unwrap().pos;
+    for tick in 0..4 {
+        let report = state.tick(&[]);
+        let unit = state.unit(artillery).unwrap();
+        assert_eq!(
+            unit.order,
+            Order::Idle,
+            "{kind:?} acquired on hidden tick {tick}"
+        );
+        assert!(
+            unit.path.is_none(),
+            "{kind:?} routed toward hidden information"
+        );
+        assert_eq!(
+            unit.pos, initial_pos,
+            "{kind:?} moved toward a hidden target"
+        );
+        assert!(
+            unit_launch(&report.events, artillery).is_none(),
+            "{kind:?} launched at a hidden target"
+        );
+    }
+}
+
+fn assert_artillery_fires_through_shared_sight(
+    state: &mut State,
+    artillery: oxide_sim::UnitId,
+    kind: UnitKind,
+    target: Target,
+) {
+    let initial_pos = state.unit(artillery).unwrap().pos;
+    state.tick(&[]); // acquisition changes intent; firing follows next tick
+    let unit = state.unit(artillery).unwrap();
+    assert_eq!(
+        unit.order,
+        Order::Attack {
+            target,
+            resume: None,
+        }
+    );
+    assert_eq!(unit.pos, initial_pos);
+    assert!(unit.path.is_none());
+
+    let report = state.tick(&[]);
+    let unit = state.unit(artillery).unwrap();
+    assert_eq!(
+        unit.pos, initial_pos,
+        "{kind:?} approached despite having range"
+    );
+    assert!(unit.path.is_none());
+    assert_eq!(
+        unit_launch(&report.events, artillery).map(|launch| launch.0),
+        Some(target),
+        "allied sight did not unlock {kind:?} at its autonomous range"
+    );
+}
+
 fn peak_prediction_range() -> Scenario {
     Scenario {
         name: "peak-prediction-range".into(),
@@ -741,51 +822,97 @@ fn peak_prediction_range() -> Scenario {
 }
 
 #[test]
-fn autonomous_bombard_uses_full_range_only_through_shared_true_sight() {
-    let mut hidden = team_range(false).build().unwrap();
-    let hidden_bombard = hidden
-        .units()
-        .iter()
-        .find(|unit| unit.kind == UnitKind::Bombard)
-        .unwrap()
-        .id;
-    let hidden_target = hidden
-        .units()
-        .iter()
-        .find(|unit| unit.player == PlayerId(1))
-        .unwrap();
-    let distance = hidden
-        .unit(hidden_bombard)
-        .unwrap()
-        .pos
-        .dist(hidden_target.pos);
-    assert!(distance > chassis::fx::Fx::from_num(UnitKind::Bombard.stats().vision));
-    assert!(distance <= UnitKind::Bombard.stats().aggro_range);
-    assert!(!hidden.can_see(PlayerId(0), hidden_target.tile()));
-    for _ in 0..4 {
-        let report = hidden.tick(&[]);
-        assert!(unit_launch(&report.events, hidden_bombard).is_none());
-    }
+fn autonomous_spotter_weapons_require_shared_true_sight_for_units() {
+    for kind in [UnitKind::Bombard, UnitKind::Avalanche] {
+        let mut hidden = team_range(kind, false).build().unwrap();
+        let artillery = unit_of_kind(&hidden, kind);
+        let target = hidden
+            .units()
+            .iter()
+            .find(|unit| unit.player == PlayerId(1))
+            .unwrap();
+        let target_tile = target.tile();
+        let distance = hidden.unit(artillery).unwrap().pos.dist(target.pos);
+        assert!(distance > chassis::fx::Fx::from_num(kind.stats().vision));
+        assert!(distance <= kind.stats().aggro_range);
+        assert!(!hidden.can_see(PlayerId(0), target_tile));
+        assert_artillery_ignores_hidden_target(&mut hidden, artillery, kind);
 
-    let mut spotted = team_range(true).build().unwrap();
-    let bombard = spotted
-        .units()
+        let mut spotted = team_range(kind, true).build().unwrap();
+        let artillery = unit_of_kind(&spotted, kind);
+        let target = spotted
+            .units()
+            .iter()
+            .find(|unit| unit.player == PlayerId(1))
+            .unwrap();
+        let target_id = target.id;
+        let target_tile = target.tile();
+        assert!(spotted.can_see(PlayerId(0), target_tile));
+        assert!(spotted.can_see(PlayerId(2), target_tile));
+        assert_artillery_fires_through_shared_sight(
+            &mut spotted,
+            artillery,
+            kind,
+            Target::Unit(target_id),
+        );
+    }
+}
+
+#[test]
+fn autonomous_avalanche_requires_shared_true_sight_for_buildings() {
+    let mut hidden = team_building_range(false).build().unwrap();
+    let avalanche = unit_of_kind(&hidden, UnitKind::Avalanche);
+    let target = hidden
+        .buildings()
         .iter()
-        .find(|unit| unit.kind == UnitKind::Bombard)
+        .find(|building| building.player == PlayerId(1) && building.kind == BuildingKind::Turret)
         .unwrap()
         .id;
-    let target = spotted
-        .units()
-        .iter()
-        .find(|unit| unit.player == PlayerId(1))
-        .unwrap();
-    assert!(spotted.can_see(PlayerId(0), target.tile()));
-    assert!(spotted.can_see(PlayerId(2), target.tile()));
-    spotted.tick(&[]); // acquisition changes intent; firing follows next tick
-    let report = spotted.tick(&[]);
+    let avalanche_pos = hidden.unit(avalanche).unwrap().pos;
+    let distance = avalanche_pos.dist(
+        hidden
+            .building(target)
+            .unwrap()
+            .closest_point_to(avalanche_pos),
+    );
+    assert!(distance > chassis::fx::Fx::from_num(UnitKind::Avalanche.stats().vision));
+    assert!(distance <= UnitKind::Avalanche.stats().aggro_range);
     assert!(
-        unit_launch(&report.events, bombard).is_some(),
-        "an allied spotter unlocks the Bombard's actual weapon range"
+        !hidden
+            .building(target)
+            .unwrap()
+            .tiles()
+            .any(|tile| hidden.can_see(PlayerId(0), tile))
+    );
+    assert_artillery_ignores_hidden_target(&mut hidden, avalanche, UnitKind::Avalanche);
+
+    let mut spotted = team_building_range(true).build().unwrap();
+    let avalanche = unit_of_kind(&spotted, UnitKind::Avalanche);
+    let target = spotted
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(1) && building.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    assert!(
+        spotted
+            .building(target)
+            .unwrap()
+            .tiles()
+            .any(|tile| spotted.can_see(PlayerId(0), tile))
+    );
+    assert!(
+        spotted
+            .building(target)
+            .unwrap()
+            .tiles()
+            .any(|tile| spotted.can_see(PlayerId(2), tile))
+    );
+    assert_artillery_fires_through_shared_sight(
+        &mut spotted,
+        avalanche,
+        UnitKind::Avalanche,
+        Target::Building(target),
     );
 }
 

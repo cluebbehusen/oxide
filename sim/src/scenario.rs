@@ -18,11 +18,11 @@ use std::path::Path;
 pub struct Scenario {
     /// Display name.
     pub name: String,
-    /// Master seed: the sim RNG and every bot derive from it.
+    /// Master seed for simulation randomness.
     pub seed: u64,
     /// The playfield as ASCII rows (see [`crate::map`] for the legend).
     pub map: Vec<String>,
-    /// One entry per player; map anchors `1`..`8` must match.
+    /// One entry per player; map anchors `1`..`8` and `a`..`h` must match.
     pub players: Vec<PlayerSpec>,
     /// Starting units.
     #[serde(default)]
@@ -101,26 +101,177 @@ pub struct PlayerSpec {
 }
 
 /// A built-in bot controller selected for one seat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "controller", rename_all = "snake_case")]
-pub enum BotConfig {
-    /// The fair, fog-honest rules-based opponent.
-    Scripted,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BotConfig {
+    /// How accurately and promptly the controller reasons.
+    pub difficulty: BotDifficulty,
+    /// The broad tempo and risk posture selected by the player.
+    pub stance: BotStance,
+    /// Seed for the controller's hidden, deterministic personality.
+    pub personality_seed: u64,
 }
+
+impl BotConfig {
+    /// Constructs an exact rules-based opponent configuration.
+    pub const fn scripted(
+        difficulty: BotDifficulty,
+        stance: BotStance,
+        personality_seed: u64,
+    ) -> Self {
+        Self {
+            difficulty,
+            stance,
+            personality_seed,
+        }
+    }
+
+    /// Resolves the seed into the stable internal personality used by a brain.
+    pub fn resolve_profile(self) -> crate::bot::ResolvedProfile {
+        crate::bot::ResolvedProfile::resolve(self)
+    }
+}
+
+impl Default for BotConfig {
+    fn default() -> Self {
+        Self::scripted(BotDifficulty::Standard, BotStance::Balanced, 0)
+    }
+}
+
+/// Player-facing bot skill rung. Every rung obeys the same game rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BotDifficulty {
+    /// Slow and distractible, while retaining a competent economy.
+    Scrapheap,
+    /// The default opponent.
+    #[default]
+    Standard,
+    /// A more attentive and accurate opponent.
+    Veteran,
+    /// The controller's strongest planning and execution.
+    Prime,
+}
+
+impl BotDifficulty {
+    /// Every difficulty in player-facing order.
+    pub const ALL: [Self; 4] = [Self::Scrapheap, Self::Standard, Self::Veteran, Self::Prime];
+
+    /// Stable lowercase name used by CLIs and diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Scrapheap => "scrapheap",
+            Self::Standard => "standard",
+            Self::Veteran => "veteran",
+            Self::Prime => "prime",
+        }
+    }
+}
+
+impl std::fmt::Display for BotDifficulty {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for BotDifficulty {
+    type Err = ParseBotDifficultyError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|difficulty| value.eq_ignore_ascii_case(difficulty.as_str()))
+            .ok_or_else(|| ParseBotDifficultyError(value.to_owned()))
+    }
+}
+
+/// An invalid player-facing difficulty name.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown bot difficulty `{0}`; expected scrapheap, standard, veteran, or prime")]
+pub struct ParseBotDifficultyError(String);
+
+/// Player-selected strategic posture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BotStance {
+    /// Favor defense, sustain, and counterattack.
+    Turtle,
+    /// Mix pressure, development, and defense.
+    #[default]
+    Balanced,
+    /// Favor pressure, harassment, and earlier commitments.
+    Aggressive,
+}
+
+impl BotStance {
+    /// Every stance in player-facing order.
+    pub const ALL: [Self; 3] = [Self::Turtle, Self::Balanced, Self::Aggressive];
+
+    /// Stable lowercase name used by CLIs and diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Turtle => "turtle",
+            Self::Balanced => "balanced",
+            Self::Aggressive => "aggressive",
+        }
+    }
+}
+
+impl std::fmt::Display for BotStance {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for BotStance {
+    type Err = ParseBotStanceError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|stance| value.eq_ignore_ascii_case(stance.as_str()))
+            .ok_or_else(|| ParseBotStanceError(value.to_owned()))
+    }
+}
+
+/// An invalid player-facing stance name.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown bot stance `{0}`; expected turtle, balanced, or aggressive")]
+pub struct ParseBotStanceError(String);
 
 // Internally tagged unit variants accept sibling fields even when the enum
 // asks Serde to deny them. A struct-shaped wire type keeps authored scenarios
 // strict; replay-only compatibility is handled at the versioned replay loader.
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CurrentBotConfigWire {
     controller: BotController,
+    #[serde(default, skip_serializing_if = "is_standard_difficulty")]
+    difficulty: BotDifficulty,
+    #[serde(default, skip_serializing_if = "is_balanced_stance")]
+    stance: BotStance,
+    #[serde(default, skip_serializing_if = "is_zero_seed")]
+    personality_seed: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum BotController {
     Scripted,
+}
+
+impl Serialize for BotConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        CurrentBotConfigWire {
+            controller: BotController::Scripted,
+            difficulty: self.difficulty,
+            stance: self.stance,
+            personality_seed: self.personality_seed,
+        }
+        .serialize(serializer)
+    }
 }
 
 impl<'de> Deserialize<'de> for BotConfig {
@@ -130,9 +281,24 @@ impl<'de> Deserialize<'de> for BotConfig {
     {
         let CurrentBotConfigWire {
             controller: BotController::Scripted,
+            difficulty,
+            stance,
+            personality_seed,
         } = CurrentBotConfigWire::deserialize(deserializer)?;
-        Ok(Self::Scripted)
+        Ok(Self::scripted(difficulty, stance, personality_seed))
     }
+}
+
+fn is_standard_difficulty(value: &BotDifficulty) -> bool {
+    *value == BotDifficulty::Standard
+}
+
+fn is_balanced_stance(value: &BotStance) -> bool {
+    *value == BotStance::Balanced
+}
+
+fn is_zero_seed(value: &u64) -> bool {
+    *value == 0
 }
 
 fn default_scrap() -> u32 {
@@ -179,7 +345,7 @@ pub enum ScenarioError {
     /// Bad map text.
     #[error(transparent)]
     Map(#[from] MapError),
-    /// Player count must be 1..=8.
+    /// Player count must be 1..=16.
     #[error("scenario needs 1 to 16 players, got {0}")]
     PlayerCount(usize),
     /// A player has no Foundry anchor on the map.
@@ -209,6 +375,31 @@ pub enum ScenarioError {
 }
 
 impl Scenario {
+    /// Parses the map and proves that its authored Foundry anchors match the
+    /// declared player table. Shared by state construction and the immutable
+    /// pre-match bot briefing so those two views cannot disagree.
+    pub(crate) fn parse_map_and_anchors(
+        &self,
+    ) -> Result<(Map, Vec<(PlayerId, TilePos)>), ScenarioError> {
+        if self.players.is_empty() || self.players.len() > 16 {
+            return Err(ScenarioError::PlayerCount(self.players.len()));
+        }
+        let (map, anchors) = Map::parse(&self.map)?;
+        if let Some((player, _)) = anchors
+            .iter()
+            .find(|(player, _)| usize::from(player.0) >= self.players.len())
+        {
+            return Err(ScenarioError::ExtraAnchor(*player, self.players.len()));
+        }
+        for index in 0..self.players.len() {
+            let player = PlayerId(index as u8);
+            if !anchors.iter().any(|(anchored, _)| *anchored == player) {
+                return Err(ScenarioError::MissingAnchor(player));
+            }
+        }
+        Ok((map, anchors))
+    }
+
     /// Parses a scenario from JSON text.
     pub fn from_json(text: &str) -> Result<Self, ScenarioError> {
         Ok(serde_json::from_str(text)?)
@@ -250,17 +441,7 @@ impl Scenario {
     /// Building the same scenario twice yields bit-identical states (a test
     /// enforces this).
     pub fn build(&self) -> Result<State, ScenarioError> {
-        if self.players.is_empty() || self.players.len() > 16 {
-            return Err(ScenarioError::PlayerCount(self.players.len()));
-        }
-        let (map, anchors) = Map::parse(&self.map)?;
-
-        if let Some((player, _)) = anchors
-            .iter()
-            .find(|(p, _)| (p.0 as usize) >= self.players.len())
-        {
-            return Err(ScenarioError::ExtraAnchor(*player, self.players.len()));
-        }
+        let (map, anchors) = self.parse_map_and_anchors()?;
         // Teams normalize to dense ids by first appearance: seats naming
         // the same explicit id share one, and every omitted seat gets a
         // fresh singleton — an authored id can never alias a "team of

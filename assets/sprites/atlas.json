@@ -1,7 +1,7 @@
 {
  "air_shadow": [
-  3962,
-  1058,
+  2246,
+  1586,
   64,
   64
  ],
@@ -186,6920 +186,6836 @@
   128
  ],
  "array_accent": [
-  4030,
-  1058,
+  2314,
+  1586,
   64,
   64
  ],
  "array_accent_site0_0": [
-  2,
-  1190,
+  2382,
+  1586,
   64,
   64
  ],
  "array_accent_site0_1": [
-  70,
-  1190,
+  2450,
+  1586,
   64,
   64
  ],
  "array_accent_site1_0": [
-  138,
-  1190,
+  2518,
+  1586,
   64,
   64
  ],
  "array_accent_site1_1": [
-  206,
-  1190,
+  2586,
+  1586,
   64,
   64
  ],
  "array_accent_site2_0": [
-  274,
-  1190,
+  2654,
+  1586,
   64,
   64
  ],
  "array_accent_site2_1": [
-  342,
-  1190,
+  2722,
+  1586,
   64,
   64
  ],
  "array_accent_work1": [
-  410,
-  1190,
+  2790,
+  1586,
   64,
   64
  ],
  "array_accent_work2": [
-  478,
-  1190,
+  2858,
+  1586,
   64,
   64
  ],
  "array_accent_work3": [
-  546,
-  1190,
+  2926,
+  1586,
   64,
   64
  ],
  "array_accent_work4": [
-  614,
-  1190,
+  2994,
+  1586,
   64,
   64
  ],
  "array_accent_work5": [
-  682,
-  1190,
+  3062,
+  1586,
   64,
   64
  ],
  "array_accent_work6": [
-  750,
-  1190,
+  3130,
+  1586,
   64,
   64
  ],
  "array_cupric": [
-  818,
-  1190,
+  3198,
+  1586,
   64,
   64
  ],
  "array_cupric_site0_0": [
-  886,
-  1190,
+  3266,
+  1586,
   64,
   64
  ],
  "array_cupric_site0_1": [
-  954,
-  1190,
+  3334,
+  1586,
   64,
   64
  ],
  "array_cupric_site1_0": [
-  1022,
-  1190,
+  3402,
+  1586,
   64,
   64
  ],
  "array_cupric_site1_1": [
-  1090,
-  1190,
+  3470,
+  1586,
   64,
   64
  ],
  "array_cupric_site2_0": [
-  1158,
-  1190,
+  3538,
+  1586,
   64,
   64
  ],
  "array_cupric_site2_1": [
-  1226,
-  1190,
+  3606,
+  1586,
   64,
   64
  ],
  "array_cupric_work1": [
-  1294,
-  1190,
+  3674,
+  1586,
   64,
   64
  ],
  "array_cupric_work2": [
-  1362,
-  1190,
+  3742,
+  1586,
   64,
   64
  ],
  "array_cupric_work3": [
-  1430,
-  1190,
+  3810,
+  1586,
   64,
   64
  ],
  "array_cupric_work4": [
-  1498,
-  1190,
+  3878,
+  1586,
   64,
   64
  ],
  "array_cupric_work5": [
-  1566,
-  1190,
+  3946,
+  1586,
   64,
   64
  ],
  "array_cupric_work6": [
-  1634,
-  1190,
+  4014,
+  1586,
   64,
   64
  ],
  "array_ferrous": [
-  1702,
-  1190,
+  2,
+  1718,
   64,
   64
  ],
  "array_ferrous_site0_0": [
-  1770,
-  1190,
+  70,
+  1718,
   64,
   64
  ],
  "array_ferrous_site0_1": [
-  1838,
-  1190,
+  138,
+  1718,
   64,
   64
  ],
  "array_ferrous_site1_0": [
-  1906,
-  1190,
+  206,
+  1718,
   64,
   64
  ],
  "array_ferrous_site1_1": [
-  1974,
-  1190,
+  274,
+  1718,
   64,
   64
  ],
  "array_ferrous_site2_0": [
-  2042,
-  1190,
+  342,
+  1718,
   64,
   64
  ],
  "array_ferrous_site2_1": [
-  2110,
-  1190,
+  410,
+  1718,
   64,
   64
  ],
  "array_ferrous_work1": [
-  2178,
-  1190,
+  478,
+  1718,
   64,
   64
  ],
  "array_ferrous_work2": [
-  2246,
-  1190,
+  546,
+  1718,
   64,
   64
  ],
  "array_ferrous_work3": [
-  2314,
-  1190,
+  614,
+  1718,
   64,
   64
  ],
  "array_ferrous_work4": [
-  2382,
-  1190,
+  682,
+  1718,
   64,
   64
  ],
  "array_ferrous_work5": [
-  2450,
-  1190,
+  750,
+  1718,
   64,
   64
  ],
  "array_ferrous_work6": [
-  2518,
-  1190,
+  818,
+  1718,
   64,
   64
  ],
  "array_t1_accent": [
-  2586,
-  1190,
+  886,
+  1718,
   64,
   64
  ],
  "array_t1_cupric": [
-  2654,
-  1190,
+  954,
+  1718,
   64,
   64
  ],
  "array_t1_ferrous": [
-  2722,
-  1190,
+  1022,
+  1718,
   64,
   64
  ],
  "avalanche_accent": [
-  2790,
-  1190,
-  64,
-  64
- ],
- "avalanche_accent_action1": [
-  2858,
-  1190,
-  64,
-  64
- ],
- "avalanche_accent_action2": [
-  2926,
-  1190,
-  64,
-  64
- ],
- "avalanche_accent_action3": [
-  2994,
-  1190,
-  64,
-  64
- ],
- "avalanche_accent_action4": [
-  3062,
-  1190,
-  64,
-  64
- ],
- "avalanche_accent_move1": [
-  3130,
-  1190,
-  64,
-  64
- ],
- "avalanche_accent_move2": [
-  3198,
-  1190,
-  64,
-  64
- ],
- "avalanche_cupric": [
-  3266,
-  1190,
-  64,
-  64
- ],
- "avalanche_cupric_action1": [
-  3334,
-  1190,
-  64,
-  64
- ],
- "avalanche_cupric_action2": [
-  3402,
-  1190,
-  64,
-  64
- ],
- "avalanche_cupric_action3": [
-  3470,
-  1190,
-  64,
-  64
- ],
- "avalanche_cupric_action4": [
-  3538,
-  1190,
-  64,
-  64
- ],
- "avalanche_cupric_move1": [
-  3606,
-  1190,
-  64,
-  64
- ],
- "avalanche_cupric_move2": [
-  3674,
-  1190,
-  64,
-  64
- ],
- "avalanche_ferrous": [
-  3742,
-  1190,
-  64,
-  64
- ],
- "avalanche_ferrous_action1": [
-  3810,
-  1190,
-  64,
-  64
- ],
- "avalanche_ferrous_action2": [
-  3878,
-  1190,
-  64,
-  64
- ],
- "avalanche_ferrous_action3": [
-  3946,
-  1190,
-  64,
-  64
- ],
- "avalanche_ferrous_action4": [
-  4014,
-  1190,
-  64,
-  64
- ],
- "avalanche_ferrous_move1": [
-  2,
-  1258,
-  64,
-  64
- ],
- "avalanche_ferrous_move2": [
-  70,
-  1258,
-  64,
-  64
- ],
- "barricade_accent": [
-  138,
-  1258,
-  64,
-  64
- ],
- "barricade_accent_site0_0": [
-  206,
-  1258,
-  64,
-  64
- ],
- "barricade_accent_site0_1": [
-  274,
-  1258,
-  64,
-  64
- ],
- "barricade_accent_site1_0": [
-  342,
-  1258,
-  64,
-  64
- ],
- "barricade_accent_site1_1": [
-  410,
-  1258,
-  64,
-  64
- ],
- "barricade_accent_site2_0": [
-  478,
-  1258,
-  64,
-  64
- ],
- "barricade_accent_site2_1": [
-  546,
-  1258,
-  64,
-  64
- ],
- "barricade_cupric": [
-  614,
-  1258,
-  64,
-  64
- ],
- "barricade_cupric_site0_0": [
-  682,
-  1258,
-  64,
-  64
- ],
- "barricade_cupric_site0_1": [
-  750,
-  1258,
-  64,
-  64
- ],
- "barricade_cupric_site1_0": [
-  818,
-  1258,
-  64,
-  64
- ],
- "barricade_cupric_site1_1": [
-  886,
-  1258,
-  64,
-  64
- ],
- "barricade_cupric_site2_0": [
-  954,
-  1258,
-  64,
-  64
- ],
- "barricade_cupric_site2_1": [
-  1022,
-  1258,
-  64,
-  64
- ],
- "barricade_ferrous": [
-  1090,
-  1258,
-  64,
-  64
- ],
- "barricade_ferrous_site0_0": [
-  1158,
-  1258,
-  64,
-  64
- ],
- "barricade_ferrous_site0_1": [
-  1226,
-  1258,
-  64,
-  64
- ],
- "barricade_ferrous_site1_0": [
-  1294,
-  1258,
-  64,
-  64
- ],
- "barricade_ferrous_site1_1": [
-  1362,
-  1258,
-  64,
-  64
- ],
- "barricade_ferrous_site2_0": [
-  1430,
-  1258,
-  64,
-  64
- ],
- "barricade_ferrous_site2_1": [
-  1498,
-  1258,
-  64,
-  64
- ],
- "bastion_accent": [
   3962,
   2,
   128,
   128
  ],
- "bastion_accent_action1": [
+ "avalanche_accent_action1": [
   2,
+  134,
+  128,
+  128
+ ],
+ "avalanche_accent_action2": [
+  134,
+  134,
+  128,
+  128
+ ],
+ "avalanche_accent_action3": [
+  266,
+  134,
+  128,
+  128
+ ],
+ "avalanche_accent_action4": [
+  398,
+  134,
+  128,
+  128
+ ],
+ "avalanche_accent_move1": [
+  530,
+  134,
+  128,
+  128
+ ],
+ "avalanche_accent_move2": [
+  662,
+  134,
+  128,
+  128
+ ],
+ "avalanche_cupric": [
+  794,
+  134,
+  128,
+  128
+ ],
+ "avalanche_cupric_action1": [
+  926,
+  134,
+  128,
+  128
+ ],
+ "avalanche_cupric_action2": [
+  1058,
+  134,
+  128,
+  128
+ ],
+ "avalanche_cupric_action3": [
+  1190,
+  134,
+  128,
+  128
+ ],
+ "avalanche_cupric_action4": [
+  1322,
+  134,
+  128,
+  128
+ ],
+ "avalanche_cupric_move1": [
+  1454,
+  134,
+  128,
+  128
+ ],
+ "avalanche_cupric_move2": [
+  1586,
+  134,
+  128,
+  128
+ ],
+ "avalanche_ferrous": [
+  1718,
+  134,
+  128,
+  128
+ ],
+ "avalanche_ferrous_action1": [
+  1850,
+  134,
+  128,
+  128
+ ],
+ "avalanche_ferrous_action2": [
+  1982,
+  134,
+  128,
+  128
+ ],
+ "avalanche_ferrous_action3": [
+  2114,
+  134,
+  128,
+  128
+ ],
+ "avalanche_ferrous_action4": [
+  2246,
+  134,
+  128,
+  128
+ ],
+ "avalanche_ferrous_move1": [
+  2378,
+  134,
+  128,
+  128
+ ],
+ "avalanche_ferrous_move2": [
+  2510,
+  134,
+  128,
+  128
+ ],
+ "barricade_accent": [
+  1090,
+  1718,
+  64,
+  64
+ ],
+ "barricade_accent_site0_0": [
+  1158,
+  1718,
+  64,
+  64
+ ],
+ "barricade_accent_site0_1": [
+  1226,
+  1718,
+  64,
+  64
+ ],
+ "barricade_accent_site1_0": [
+  1294,
+  1718,
+  64,
+  64
+ ],
+ "barricade_accent_site1_1": [
+  1362,
+  1718,
+  64,
+  64
+ ],
+ "barricade_accent_site2_0": [
+  1430,
+  1718,
+  64,
+  64
+ ],
+ "barricade_accent_site2_1": [
+  1498,
+  1718,
+  64,
+  64
+ ],
+ "barricade_cupric": [
+  1566,
+  1718,
+  64,
+  64
+ ],
+ "barricade_cupric_site0_0": [
+  1634,
+  1718,
+  64,
+  64
+ ],
+ "barricade_cupric_site0_1": [
+  1702,
+  1718,
+  64,
+  64
+ ],
+ "barricade_cupric_site1_0": [
+  1770,
+  1718,
+  64,
+  64
+ ],
+ "barricade_cupric_site1_1": [
+  1838,
+  1718,
+  64,
+  64
+ ],
+ "barricade_cupric_site2_0": [
+  1906,
+  1718,
+  64,
+  64
+ ],
+ "barricade_cupric_site2_1": [
+  1974,
+  1718,
+  64,
+  64
+ ],
+ "barricade_ferrous": [
+  2042,
+  1718,
+  64,
+  64
+ ],
+ "barricade_ferrous_site0_0": [
+  2110,
+  1718,
+  64,
+  64
+ ],
+ "barricade_ferrous_site0_1": [
+  2178,
+  1718,
+  64,
+  64
+ ],
+ "barricade_ferrous_site1_0": [
+  2246,
+  1718,
+  64,
+  64
+ ],
+ "barricade_ferrous_site1_1": [
+  2314,
+  1718,
+  64,
+  64
+ ],
+ "barricade_ferrous_site2_0": [
+  2382,
+  1718,
+  64,
+  64
+ ],
+ "barricade_ferrous_site2_1": [
+  2450,
+  1718,
+  64,
+  64
+ ],
+ "bastion_accent": [
+  2642,
+  134,
+  128,
+  128
+ ],
+ "bastion_accent_action1": [
+  2774,
   134,
   128,
   128
  ],
  "bastion_accent_action2": [
-  134,
+  2906,
   134,
   128,
   128
  ],
  "bastion_accent_action3": [
-  266,
+  3038,
   134,
   128,
   128
  ],
  "bastion_accent_action4": [
-  398,
+  3170,
   134,
   128,
   128
  ],
  "bastion_accent_action5": [
-  530,
+  3302,
   134,
   128,
   128
  ],
  "bastion_accent_action6": [
-  662,
+  3434,
   134,
   128,
   128
  ],
  "bastion_accent_action7": [
-  794,
+  3566,
   134,
   128,
   128
  ],
  "bastion_accent_action8": [
-  926,
+  3698,
   134,
   128,
   128
  ],
  "bastion_accent_action9": [
-  1058,
+  3830,
   134,
   128,
   128
  ],
  "bastion_accent_site0_0": [
-  1190,
+  3962,
   134,
   128,
   128
  ],
  "bastion_accent_site0_1": [
-  1322,
-  134,
+  2,
+  266,
   128,
   128
  ],
  "bastion_accent_site1_0": [
-  1454,
   134,
+  266,
   128,
   128
  ],
  "bastion_accent_site1_1": [
-  1586,
-  134,
+  266,
+  266,
   128,
   128
  ],
  "bastion_accent_site2_0": [
-  1718,
-  134,
+  398,
+  266,
   128,
   128
  ],
  "bastion_accent_site2_1": [
-  1850,
-  134,
+  530,
+  266,
   128,
   128
  ],
  "bastion_cupric": [
-  1982,
-  134,
+  662,
+  266,
   128,
   128
  ],
  "bastion_cupric_action1": [
-  2114,
-  134,
+  794,
+  266,
   128,
   128
  ],
  "bastion_cupric_action2": [
-  2246,
-  134,
+  926,
+  266,
   128,
   128
  ],
  "bastion_cupric_action3": [
-  2378,
-  134,
+  1058,
+  266,
   128,
   128
  ],
  "bastion_cupric_action4": [
-  2510,
-  134,
+  1190,
+  266,
   128,
   128
  ],
  "bastion_cupric_action5": [
-  2642,
-  134,
+  1322,
+  266,
   128,
   128
  ],
  "bastion_cupric_action6": [
-  2774,
-  134,
+  1454,
+  266,
   128,
   128
  ],
  "bastion_cupric_action7": [
-  2906,
-  134,
+  1586,
+  266,
   128,
   128
  ],
  "bastion_cupric_action8": [
-  3038,
-  134,
+  1718,
+  266,
   128,
   128
  ],
  "bastion_cupric_action9": [
-  3170,
-  134,
+  1850,
+  266,
   128,
   128
  ],
  "bastion_cupric_site0_0": [
-  3302,
-  134,
+  1982,
+  266,
   128,
   128
  ],
  "bastion_cupric_site0_1": [
-  3434,
-  134,
+  2114,
+  266,
   128,
   128
  ],
  "bastion_cupric_site1_0": [
-  3566,
-  134,
+  2246,
+  266,
   128,
   128
  ],
  "bastion_cupric_site1_1": [
-  3698,
-  134,
+  2378,
+  266,
   128,
   128
  ],
  "bastion_cupric_site2_0": [
-  3830,
-  134,
+  2510,
+  266,
   128,
   128
  ],
  "bastion_cupric_site2_1": [
-  3962,
-  134,
+  2642,
+  266,
   128,
   128
  ],
  "bastion_ferrous": [
-  2,
+  2774,
   266,
   128,
   128
  ],
  "bastion_ferrous_action1": [
-  134,
+  2906,
   266,
   128,
   128
  ],
  "bastion_ferrous_action2": [
-  266,
+  3038,
   266,
   128,
   128
  ],
  "bastion_ferrous_action3": [
-  398,
+  3170,
   266,
   128,
   128
  ],
  "bastion_ferrous_action4": [
-  530,
+  3302,
   266,
   128,
   128
  ],
  "bastion_ferrous_action5": [
-  662,
+  3434,
   266,
   128,
   128
  ],
  "bastion_ferrous_action6": [
-  794,
+  3566,
   266,
   128,
   128
  ],
  "bastion_ferrous_action7": [
-  926,
+  3698,
   266,
   128,
   128
  ],
  "bastion_ferrous_action8": [
-  1058,
+  3830,
   266,
   128,
   128
  ],
  "bastion_ferrous_action9": [
-  1190,
+  3962,
   266,
   128,
   128
  ],
  "bastion_ferrous_site0_0": [
-  1322,
-  266,
+  2,
+  398,
   128,
   128
  ],
  "bastion_ferrous_site0_1": [
-  1454,
-  266,
+  134,
+  398,
   128,
   128
  ],
  "bastion_ferrous_site1_0": [
-  1586,
   266,
+  398,
   128,
   128
  ],
  "bastion_ferrous_site1_1": [
-  1718,
-  266,
+  398,
+  398,
   128,
   128
  ],
  "bastion_ferrous_site2_0": [
-  1850,
-  266,
+  530,
+  398,
   128,
   128
  ],
  "bastion_ferrous_site2_1": [
-  1982,
-  266,
+  662,
+  398,
   128,
   128
  ],
  "bastion_mount_accent": [
-  2114,
-  266,
+  794,
+  398,
   128,
   128
  ],
  "bastion_mount_accent_action1": [
-  2246,
-  266,
+  926,
+  398,
   128,
   128
  ],
  "bastion_mount_accent_action2": [
-  2378,
-  266,
+  1058,
+  398,
   128,
   128
  ],
  "bastion_mount_accent_action3": [
-  2510,
-  266,
+  1190,
+  398,
   128,
   128
  ],
  "bastion_mount_accent_action4": [
-  2642,
-  266,
+  1322,
+  398,
   128,
   128
  ],
  "bastion_mount_accent_action5": [
-  2774,
-  266,
+  1454,
+  398,
   128,
   128
  ],
  "bastion_mount_accent_action6": [
-  2906,
-  266,
+  1586,
+  398,
   128,
   128
  ],
  "bastion_mount_accent_action7": [
-  3038,
-  266,
+  1718,
+  398,
   128,
   128
  ],
  "bastion_mount_accent_action8": [
-  3170,
-  266,
+  1850,
+  398,
   128,
   128
  ],
  "bastion_mount_accent_action9": [
-  3302,
-  266,
+  1982,
+  398,
   128,
   128
  ],
  "bastion_mount_cupric": [
-  3434,
-  266,
+  2114,
+  398,
   128,
   128
  ],
  "bastion_mount_cupric_action1": [
-  3566,
-  266,
+  2246,
+  398,
   128,
   128
  ],
  "bastion_mount_cupric_action2": [
-  3698,
-  266,
+  2378,
+  398,
   128,
   128
  ],
  "bastion_mount_cupric_action3": [
-  3830,
-  266,
+  2510,
+  398,
   128,
   128
  ],
  "bastion_mount_cupric_action4": [
-  3962,
-  266,
+  2642,
+  398,
   128,
   128
  ],
  "bastion_mount_cupric_action5": [
-  2,
+  2774,
   398,
   128,
   128
  ],
  "bastion_mount_cupric_action6": [
-  134,
+  2906,
   398,
   128,
   128
  ],
  "bastion_mount_cupric_action7": [
-  266,
+  3038,
   398,
   128,
   128
  ],
  "bastion_mount_cupric_action8": [
-  398,
+  3170,
   398,
   128,
   128
  ],
  "bastion_mount_cupric_action9": [
-  530,
+  3302,
   398,
   128,
   128
  ],
  "bastion_mount_ferrous": [
-  662,
+  3434,
   398,
   128,
   128
  ],
  "bastion_mount_ferrous_action1": [
-  794,
+  3566,
   398,
   128,
   128
  ],
  "bastion_mount_ferrous_action2": [
-  926,
+  3698,
   398,
   128,
   128
  ],
  "bastion_mount_ferrous_action3": [
-  1058,
+  3830,
   398,
   128,
   128
  ],
  "bastion_mount_ferrous_action4": [
-  1190,
+  3962,
   398,
   128,
   128
  ],
  "bastion_mount_ferrous_action5": [
-  1322,
-  398,
+  2,
+  530,
   128,
   128
  ],
  "bastion_mount_ferrous_action6": [
-  1454,
-  398,
+  134,
+  530,
   128,
   128
  ],
  "bastion_mount_ferrous_action7": [
-  1586,
-  398,
+  266,
+  530,
   128,
   128
  ],
  "bastion_mount_ferrous_action8": [
-  1718,
   398,
+  530,
   128,
   128
  ],
  "bastion_mount_ferrous_action9": [
-  1850,
-  398,
+  530,
+  530,
   128,
   128
  ],
  "bombard_accent": [
-  1566,
-  1258,
+  2518,
+  1718,
   64,
   64
  ],
  "bombard_accent_action1": [
-  1634,
-  1258,
+  2586,
+  1718,
   64,
   64
  ],
  "bombard_accent_action2": [
-  1702,
-  1258,
+  2654,
+  1718,
   64,
   64
  ],
  "bombard_accent_action3": [
-  1770,
-  1258,
+  2722,
+  1718,
   64,
   64
  ],
  "bombard_accent_action4": [
-  1838,
-  1258,
+  2790,
+  1718,
   64,
   64
  ],
  "bombard_accent_action5": [
-  1906,
-  1258,
+  2858,
+  1718,
   64,
   64
  ],
  "bombard_accent_action6": [
-  1974,
-  1258,
+  2926,
+  1718,
   64,
   64
  ],
  "bombard_accent_move1": [
-  2042,
-  1258,
+  2994,
+  1718,
   64,
   64
  ],
  "bombard_accent_move2": [
-  2110,
-  1258,
+  3062,
+  1718,
   64,
   64
  ],
  "bombard_cupric": [
-  2178,
-  1258,
+  3130,
+  1718,
   64,
   64
  ],
  "bombard_cupric_action1": [
-  2246,
-  1258,
+  3198,
+  1718,
   64,
   64
  ],
  "bombard_cupric_action2": [
-  2314,
-  1258,
+  3266,
+  1718,
   64,
   64
  ],
  "bombard_cupric_action3": [
-  2382,
-  1258,
+  3334,
+  1718,
   64,
   64
  ],
  "bombard_cupric_action4": [
-  2450,
-  1258,
+  3402,
+  1718,
   64,
   64
  ],
  "bombard_cupric_action5": [
-  2518,
-  1258,
+  3470,
+  1718,
   64,
   64
  ],
  "bombard_cupric_action6": [
-  2586,
-  1258,
+  3538,
+  1718,
   64,
   64
  ],
  "bombard_cupric_move1": [
-  2654,
-  1258,
+  3606,
+  1718,
   64,
   64
  ],
  "bombard_cupric_move2": [
-  2722,
-  1258,
+  3674,
+  1718,
   64,
   64
  ],
  "bombard_ferrous": [
-  2790,
-  1258,
+  3742,
+  1718,
   64,
   64
  ],
  "bombard_ferrous_action1": [
-  2858,
-  1258,
+  3810,
+  1718,
   64,
   64
  ],
  "bombard_ferrous_action2": [
-  2926,
-  1258,
+  3878,
+  1718,
   64,
   64
  ],
  "bombard_ferrous_action3": [
-  2994,
-  1258,
+  3946,
+  1718,
   64,
   64
  ],
  "bombard_ferrous_action4": [
-  3062,
-  1258,
+  4014,
+  1718,
   64,
   64
  ],
  "bombard_ferrous_action5": [
-  3130,
-  1258,
+  2,
+  1786,
   64,
   64
  ],
  "bombard_ferrous_action6": [
-  3198,
-  1258,
+  70,
+  1786,
   64,
   64
  ],
  "bombard_ferrous_move1": [
-  3266,
-  1258,
+  138,
+  1786,
   64,
   64
  ],
  "bombard_ferrous_move2": [
-  3334,
-  1258,
+  206,
+  1786,
   64,
   64
  ],
  "breaker_accent": [
-  3402,
-  1258,
-  64,
-  64
+  662,
+  530,
+  128,
+  128
  ],
  "breaker_accent_action1": [
-  3470,
-  1258,
-  64,
-  64
+  794,
+  530,
+  128,
+  128
  ],
  "breaker_accent_action2": [
-  3538,
-  1258,
-  64,
-  64
+  926,
+  530,
+  128,
+  128
  ],
  "breaker_accent_action3": [
-  3606,
-  1258,
-  64,
-  64
+  1058,
+  530,
+  128,
+  128
  ],
  "breaker_accent_action4": [
-  3674,
-  1258,
-  64,
-  64
+  1190,
+  530,
+  128,
+  128
  ],
  "breaker_accent_move1": [
-  3742,
-  1258,
-  64,
-  64
+  1322,
+  530,
+  128,
+  128
  ],
  "breaker_accent_move2": [
-  3810,
-  1258,
-  64,
-  64
+  1454,
+  530,
+  128,
+  128
  ],
  "breaker_cupric": [
-  3878,
-  1258,
-  64,
-  64
+  1586,
+  530,
+  128,
+  128
  ],
  "breaker_cupric_action1": [
-  3946,
-  1258,
-  64,
-  64
+  1718,
+  530,
+  128,
+  128
  ],
  "breaker_cupric_action2": [
-  4014,
-  1258,
-  64,
-  64
+  1850,
+  530,
+  128,
+  128
  ],
  "breaker_cupric_action3": [
-  2,
-  1326,
-  64,
-  64
+  1982,
+  530,
+  128,
+  128
  ],
  "breaker_cupric_action4": [
-  70,
-  1326,
-  64,
-  64
+  2114,
+  530,
+  128,
+  128
  ],
  "breaker_cupric_move1": [
-  138,
-  1326,
-  64,
-  64
+  2246,
+  530,
+  128,
+  128
  ],
  "breaker_cupric_move2": [
-  206,
-  1326,
-  64,
-  64
+  2378,
+  530,
+  128,
+  128
  ],
  "breaker_ferrous": [
-  274,
-  1326,
-  64,
-  64
+  2510,
+  530,
+  128,
+  128
  ],
  "breaker_ferrous_action1": [
-  342,
-  1326,
-  64,
-  64
+  2642,
+  530,
+  128,
+  128
  ],
  "breaker_ferrous_action2": [
-  410,
-  1326,
-  64,
-  64
+  2774,
+  530,
+  128,
+  128
  ],
  "breaker_ferrous_action3": [
-  478,
-  1326,
-  64,
-  64
+  2906,
+  530,
+  128,
+  128
  ],
  "breaker_ferrous_action4": [
-  546,
-  1326,
-  64,
-  64
+  3038,
+  530,
+  128,
+  128
  ],
  "breaker_ferrous_move1": [
-  614,
-  1326,
-  64,
-  64
+  3170,
+  530,
+  128,
+  128
  ],
  "breaker_ferrous_move2": [
-  682,
-  1326,
-  64,
-  64
+  3302,
+  530,
+  128,
+  128
  ],
  "burst": [
-  750,
-  1326,
+  274,
+  1786,
   64,
   64
  ],
  "buzzard_accent": [
-  818,
-  1326,
+  342,
+  1786,
   64,
   64
  ],
  "buzzard_accent_action1": [
-  886,
-  1326,
+  410,
+  1786,
   64,
   64
  ],
  "buzzard_accent_action2": [
-  954,
-  1326,
+  478,
+  1786,
   64,
   64
  ],
  "buzzard_accent_action3": [
-  1022,
-  1326,
+  546,
+  1786,
   64,
   64
  ],
  "buzzard_accent_action4": [
-  1090,
-  1326,
+  614,
+  1786,
   64,
   64
  ],
  "buzzard_accent_move1": [
-  1158,
-  1326,
+  682,
+  1786,
   64,
   64
  ],
  "buzzard_accent_move2": [
-  1226,
-  1326,
+  750,
+  1786,
   64,
   64
  ],
  "buzzard_cupric": [
-  1294,
-  1326,
+  818,
+  1786,
   64,
   64
  ],
  "buzzard_cupric_action1": [
-  1362,
-  1326,
+  886,
+  1786,
   64,
   64
  ],
  "buzzard_cupric_action2": [
-  1430,
-  1326,
+  954,
+  1786,
   64,
   64
  ],
  "buzzard_cupric_action3": [
-  1498,
-  1326,
+  1022,
+  1786,
   64,
   64
  ],
  "buzzard_cupric_action4": [
-  1566,
-  1326,
+  1090,
+  1786,
   64,
   64
  ],
  "buzzard_cupric_move1": [
-  1634,
-  1326,
+  1158,
+  1786,
   64,
   64
  ],
  "buzzard_cupric_move2": [
-  1702,
-  1326,
+  1226,
+  1786,
   64,
   64
  ],
  "buzzard_ferrous": [
-  1770,
-  1326,
+  1294,
+  1786,
   64,
   64
  ],
  "buzzard_ferrous_action1": [
-  1838,
-  1326,
+  1362,
+  1786,
   64,
   64
  ],
  "buzzard_ferrous_action2": [
-  1906,
-  1326,
+  1430,
+  1786,
   64,
   64
  ],
  "buzzard_ferrous_action3": [
-  1974,
-  1326,
+  1498,
+  1786,
   64,
   64
  ],
  "buzzard_ferrous_action4": [
-  2042,
-  1326,
+  1566,
+  1786,
   64,
   64
  ],
  "buzzard_ferrous_move1": [
-  2110,
-  1326,
+  1634,
+  1786,
   64,
   64
  ],
  "buzzard_ferrous_move2": [
-  2178,
-  1326,
+  1702,
+  1786,
   64,
   64
  ],
  "condor_accent": [
-  2246,
-  1326,
-  64,
-  64
+  3434,
+  530,
+  128,
+  128
  ],
  "condor_accent_action1": [
-  2314,
-  1326,
-  64,
-  64
+  3566,
+  530,
+  128,
+  128
  ],
  "condor_accent_action2": [
-  2382,
-  1326,
-  64,
-  64
+  3698,
+  530,
+  128,
+  128
  ],
  "condor_accent_action3": [
-  2450,
-  1326,
-  64,
-  64
+  3830,
+  530,
+  128,
+  128
  ],
  "condor_accent_action4": [
-  2518,
-  1326,
-  64,
-  64
+  3962,
+  530,
+  128,
+  128
  ],
  "condor_accent_move1": [
-  2586,
-  1326,
-  64,
-  64
+  2,
+  662,
+  128,
+  128
  ],
  "condor_accent_move2": [
-  2654,
-  1326,
-  64,
-  64
+  134,
+  662,
+  128,
+  128
  ],
  "condor_cupric": [
-  2722,
-  1326,
-  64,
-  64
+  266,
+  662,
+  128,
+  128
  ],
  "condor_cupric_action1": [
-  2790,
-  1326,
-  64,
-  64
+  398,
+  662,
+  128,
+  128
  ],
  "condor_cupric_action2": [
-  2858,
-  1326,
-  64,
-  64
+  530,
+  662,
+  128,
+  128
  ],
  "condor_cupric_action3": [
-  2926,
-  1326,
-  64,
-  64
+  662,
+  662,
+  128,
+  128
  ],
  "condor_cupric_action4": [
-  2994,
-  1326,
-  64,
-  64
+  794,
+  662,
+  128,
+  128
  ],
  "condor_cupric_move1": [
-  3062,
-  1326,
-  64,
-  64
+  926,
+  662,
+  128,
+  128
  ],
  "condor_cupric_move2": [
-  3130,
-  1326,
-  64,
-  64
+  1058,
+  662,
+  128,
+  128
  ],
  "condor_ferrous": [
-  3198,
-  1326,
-  64,
-  64
+  1190,
+  662,
+  128,
+  128
  ],
  "condor_ferrous_action1": [
-  3266,
-  1326,
-  64,
-  64
+  1322,
+  662,
+  128,
+  128
  ],
  "condor_ferrous_action2": [
-  3334,
-  1326,
-  64,
-  64
+  1454,
+  662,
+  128,
+  128
  ],
  "condor_ferrous_action3": [
-  3402,
-  1326,
-  64,
-  64
+  1586,
+  662,
+  128,
+  128
  ],
  "condor_ferrous_action4": [
-  3470,
-  1326,
-  64,
-  64
+  1718,
+  662,
+  128,
+  128
  ],
  "condor_ferrous_move1": [
-  3538,
-  1326,
-  64,
-  64
+  1850,
+  662,
+  128,
+  128
  ],
  "condor_ferrous_move2": [
-  3606,
-  1326,
-  64,
-  64
+  1982,
+  662,
+  128,
+  128
  ],
  "crucible_accent": [
-  1982,
-  398,
+  2114,
+  662,
   128,
   128
  ],
  "crucible_accent_site0_0": [
-  2114,
-  398,
+  2246,
+  662,
   128,
   128
  ],
  "crucible_accent_site0_1": [
-  2246,
-  398,
+  2378,
+  662,
   128,
   128
  ],
  "crucible_accent_site1_0": [
-  2378,
-  398,
+  2510,
+  662,
   128,
   128
  ],
  "crucible_accent_site1_1": [
-  2510,
-  398,
+  2642,
+  662,
   128,
   128
  ],
  "crucible_accent_site2_0": [
-  2642,
-  398,
+  2774,
+  662,
   128,
   128
  ],
  "crucible_accent_site2_1": [
-  2774,
-  398,
+  2906,
+  662,
   128,
   128
  ],
  "crucible_accent_work1": [
-  2906,
-  398,
+  3038,
+  662,
   128,
   128
  ],
  "crucible_accent_work2": [
-  3038,
-  398,
+  3170,
+  662,
   128,
   128
  ],
  "crucible_accent_work3": [
-  3170,
-  398,
+  3302,
+  662,
   128,
   128
  ],
  "crucible_cupric": [
-  3302,
-  398,
+  3434,
+  662,
   128,
   128
  ],
  "crucible_cupric_site0_0": [
-  3434,
-  398,
+  3566,
+  662,
   128,
   128
  ],
  "crucible_cupric_site0_1": [
-  3566,
-  398,
+  3698,
+  662,
   128,
   128
  ],
  "crucible_cupric_site1_0": [
-  3698,
-  398,
+  3830,
+  662,
   128,
   128
  ],
  "crucible_cupric_site1_1": [
-  3830,
-  398,
+  3962,
+  662,
   128,
   128
  ],
  "crucible_cupric_site2_0": [
-  3962,
-  398,
+  2,
+  794,
   128,
   128
  ],
  "crucible_cupric_site2_1": [
-  2,
-  530,
+  134,
+  794,
   128,
   128
  ],
  "crucible_cupric_work1": [
-  134,
-  530,
+  266,
+  794,
   128,
   128
  ],
  "crucible_cupric_work2": [
-  266,
-  530,
+  398,
+  794,
   128,
   128
  ],
  "crucible_cupric_work3": [
-  398,
   530,
+  794,
   128,
   128
  ],
  "crucible_ferrous": [
-  530,
-  530,
+  662,
+  794,
   128,
   128
  ],
  "crucible_ferrous_site0_0": [
-  662,
-  530,
+  794,
+  794,
   128,
   128
  ],
  "crucible_ferrous_site0_1": [
+  926,
   794,
-  530,
   128,
   128
  ],
  "crucible_ferrous_site1_0": [
-  926,
-  530,
+  1058,
+  794,
   128,
   128
  ],
  "crucible_ferrous_site1_1": [
-  1058,
-  530,
+  1190,
+  794,
   128,
   128
  ],
  "crucible_ferrous_site2_0": [
-  1190,
-  530,
+  1322,
+  794,
   128,
   128
  ],
  "crucible_ferrous_site2_1": [
-  1322,
-  530,
+  1454,
+  794,
   128,
   128
  ],
  "crucible_ferrous_work1": [
-  1454,
-  530,
+  1586,
+  794,
   128,
   128
  ],
  "crucible_ferrous_work2": [
-  1586,
-  530,
+  1718,
+  794,
   128,
   128
  ],
  "crucible_ferrous_work3": [
-  1718,
-  530,
+  1850,
+  794,
   128,
   128
  ],
  "darter_accent": [
-  3674,
-  1326,
+  1770,
+  1786,
   64,
   64
  ],
  "darter_accent_action1": [
-  3742,
-  1326,
+  1838,
+  1786,
   64,
   64
  ],
  "darter_accent_action2": [
-  3810,
-  1326,
+  1906,
+  1786,
   64,
   64
  ],
  "darter_accent_action3": [
-  3878,
-  1326,
+  1974,
+  1786,
   64,
   64
  ],
  "darter_accent_action4": [
-  3946,
-  1326,
+  2042,
+  1786,
   64,
   64
  ],
  "darter_accent_move1": [
-  4014,
-  1326,
+  2110,
+  1786,
   64,
   64
  ],
  "darter_accent_move2": [
-  2,
-  1394,
+  2178,
+  1786,
   64,
   64
  ],
  "darter_cupric": [
-  70,
-  1394,
+  2246,
+  1786,
   64,
   64
  ],
  "darter_cupric_action1": [
-  138,
-  1394,
+  2314,
+  1786,
   64,
   64
  ],
  "darter_cupric_action2": [
-  206,
-  1394,
+  2382,
+  1786,
   64,
   64
  ],
  "darter_cupric_action3": [
-  274,
-  1394,
+  2450,
+  1786,
   64,
   64
  ],
  "darter_cupric_action4": [
-  342,
-  1394,
+  2518,
+  1786,
   64,
   64
  ],
  "darter_cupric_move1": [
-  410,
-  1394,
+  2586,
+  1786,
   64,
   64
  ],
  "darter_cupric_move2": [
-  478,
-  1394,
+  2654,
+  1786,
   64,
   64
  ],
  "darter_ferrous": [
-  546,
-  1394,
+  2722,
+  1786,
   64,
   64
  ],
  "darter_ferrous_action1": [
-  614,
-  1394,
+  2790,
+  1786,
   64,
   64
  ],
  "darter_ferrous_action2": [
-  682,
-  1394,
+  2858,
+  1786,
   64,
   64
  ],
  "darter_ferrous_action3": [
-  750,
-  1394,
+  2926,
+  1786,
   64,
   64
  ],
  "darter_ferrous_action4": [
-  818,
-  1394,
+  2994,
+  1786,
   64,
   64
  ],
  "darter_ferrous_move1": [
-  886,
-  1394,
+  3062,
+  1786,
   64,
   64
  ],
  "darter_ferrous_move2": [
-  954,
-  1394,
+  3130,
+  1786,
   64,
   64
  ],
  "debris_0": [
-  898,
-  2210,
+  2870,
+  2534,
   32,
   32
  ],
  "debris_1": [
-  934,
-  2210,
+  2906,
+  2534,
   32,
   32
  ],
  "debris_2": [
-  970,
-  2210,
+  2942,
+  2534,
   32,
   32
  ],
  "decal_crack": [
-  1022,
-  1394,
+  3198,
+  1786,
   64,
   64
  ],
  "decal_plate": [
-  1090,
-  1394,
+  3266,
+  1786,
   64,
   64
  ],
  "decal_stain": [
-  1158,
-  1394,
+  3334,
+  1786,
   64,
   64
  ],
  "decal_wreck": [
-  1226,
-  1394,
+  3402,
+  1786,
   64,
   64
  ],
  "excavator_accent": [
-  1294,
-  1394,
+  3470,
+  1786,
   64,
   64
  ],
  "excavator_accent_move1": [
-  1362,
-  1394,
+  3538,
+  1786,
   64,
   64
  ],
  "excavator_accent_move2": [
-  1430,
-  1394,
+  3606,
+  1786,
   64,
   64
  ],
  "excavator_cupric": [
-  1498,
-  1394,
+  3674,
+  1786,
   64,
   64
  ],
  "excavator_cupric_move1": [
-  1566,
-  1394,
+  3742,
+  1786,
   64,
   64
  ],
  "excavator_cupric_move2": [
-  1634,
-  1394,
+  3810,
+  1786,
   64,
   64
  ],
  "excavator_ferrous": [
-  1702,
-  1394,
+  3878,
+  1786,
   64,
   64
  ],
  "excavator_ferrous_move1": [
-  1770,
-  1394,
+  3946,
+  1786,
   64,
   64
  ],
  "excavator_ferrous_move2": [
-  1838,
-  1394,
+  4014,
+  1786,
   64,
   64
  ],
  "extractor_accent": [
-  1850,
-  530,
+  1982,
+  794,
   128,
   128
  ],
  "extractor_accent_site0_0": [
-  1982,
-  530,
+  2114,
+  794,
   128,
   128
  ],
  "extractor_accent_site0_1": [
-  2114,
-  530,
+  2246,
+  794,
   128,
   128
  ],
  "extractor_accent_site1_0": [
-  2246,
-  530,
+  2378,
+  794,
   128,
   128
  ],
  "extractor_accent_site1_1": [
-  2378,
-  530,
+  2510,
+  794,
   128,
   128
  ],
  "extractor_accent_site2_0": [
-  2510,
-  530,
+  2642,
+  794,
   128,
   128
  ],
  "extractor_accent_site2_1": [
-  2642,
-  530,
+  2774,
+  794,
   128,
   128
  ],
  "extractor_accent_work1": [
-  2774,
-  530,
+  2906,
+  794,
   128,
   128
  ],
  "extractor_accent_work2": [
-  2906,
-  530,
+  3038,
+  794,
   128,
   128
  ],
  "extractor_accent_work3": [
-  3038,
-  530,
+  3170,
+  794,
   128,
   128
  ],
  "extractor_cupric": [
-  3170,
-  530,
+  3302,
+  794,
   128,
   128
  ],
  "extractor_cupric_site0_0": [
-  3302,
-  530,
+  3434,
+  794,
   128,
   128
  ],
  "extractor_cupric_site0_1": [
-  3434,
-  530,
+  3566,
+  794,
   128,
   128
  ],
  "extractor_cupric_site1_0": [
-  3566,
-  530,
+  3698,
+  794,
   128,
   128
  ],
  "extractor_cupric_site1_1": [
-  3698,
-  530,
+  3830,
+  794,
   128,
   128
  ],
  "extractor_cupric_site2_0": [
-  3830,
-  530,
+  3962,
+  794,
   128,
   128
  ],
  "extractor_cupric_site2_1": [
-  3962,
-  530,
+  2,
+  926,
   128,
   128
  ],
  "extractor_cupric_work1": [
-  2,
-  662,
+  134,
+  926,
   128,
   128
  ],
  "extractor_cupric_work2": [
-  134,
-  662,
+  266,
+  926,
   128,
   128
  ],
  "extractor_cupric_work3": [
-  266,
-  662,
+  398,
+  926,
   128,
   128
  ],
  "extractor_ferrous": [
-  398,
-  662,
+  530,
+  926,
   128,
   128
  ],
  "extractor_ferrous_site0_0": [
-  530,
   662,
+  926,
   128,
   128
  ],
  "extractor_ferrous_site0_1": [
-  662,
-  662,
+  794,
+  926,
   128,
   128
  ],
  "extractor_ferrous_site1_0": [
-  794,
-  662,
+  926,
+  926,
   128,
   128
  ],
  "extractor_ferrous_site1_1": [
+  1058,
   926,
-  662,
   128,
   128
  ],
  "extractor_ferrous_site2_0": [
-  1058,
-  662,
+  1190,
+  926,
   128,
   128
  ],
  "extractor_ferrous_site2_1": [
-  1190,
-  662,
+  1322,
+  926,
   128,
   128
  ],
  "extractor_ferrous_work1": [
-  1322,
-  662,
+  1454,
+  926,
   128,
   128
  ],
  "extractor_ferrous_work2": [
-  1454,
-  662,
+  1586,
+  926,
   128,
   128
  ],
  "extractor_ferrous_work3": [
-  1586,
-  662,
+  1718,
+  926,
   128,
   128
  ],
  "extractor_frame": [
-  1718,
-  662,
+  1850,
+  926,
   128,
   128
  ],
  "fabricator_accent": [
-  1850,
-  662,
+  1982,
+  926,
   128,
   128
  ],
  "fabricator_accent_site0_0": [
-  1982,
-  662,
+  2114,
+  926,
   128,
   128
  ],
  "fabricator_accent_site0_1": [
-  2114,
-  662,
+  2246,
+  926,
   128,
   128
  ],
  "fabricator_accent_site1_0": [
-  2246,
-  662,
+  2378,
+  926,
   128,
   128
  ],
  "fabricator_accent_site1_1": [
-  2378,
-  662,
+  2510,
+  926,
   128,
   128
  ],
  "fabricator_accent_site2_0": [
-  2510,
-  662,
+  2642,
+  926,
   128,
   128
  ],
  "fabricator_accent_site2_1": [
-  2642,
-  662,
+  2774,
+  926,
   128,
   128
  ],
  "fabricator_accent_work1": [
-  2774,
-  662,
+  2906,
+  926,
   128,
   128
  ],
  "fabricator_accent_work2": [
-  2906,
-  662,
+  3038,
+  926,
   128,
   128
  ],
  "fabricator_accent_work3": [
-  3038,
-  662,
+  3170,
+  926,
   128,
   128
  ],
  "fabricator_accent_work4": [
-  3170,
-  662,
+  3302,
+  926,
   128,
   128
  ],
  "fabricator_cupric": [
-  3302,
-  662,
+  3434,
+  926,
   128,
   128
  ],
  "fabricator_cupric_site0_0": [
-  3434,
-  662,
+  3566,
+  926,
   128,
   128
  ],
  "fabricator_cupric_site0_1": [
-  3566,
-  662,
+  3698,
+  926,
   128,
   128
  ],
  "fabricator_cupric_site1_0": [
-  3698,
-  662,
+  3830,
+  926,
   128,
   128
  ],
  "fabricator_cupric_site1_1": [
-  3830,
-  662,
+  3962,
+  926,
   128,
   128
  ],
  "fabricator_cupric_site2_0": [
-  3962,
-  662,
+  2,
+  1058,
   128,
   128
  ],
  "fabricator_cupric_site2_1": [
-  2,
-  794,
+  134,
+  1058,
   128,
   128
  ],
  "fabricator_cupric_work1": [
-  134,
-  794,
+  266,
+  1058,
   128,
   128
  ],
  "fabricator_cupric_work2": [
-  266,
-  794,
+  398,
+  1058,
   128,
   128
  ],
  "fabricator_cupric_work3": [
-  398,
-  794,
+  530,
+  1058,
   128,
   128
  ],
  "fabricator_cupric_work4": [
-  530,
-  794,
+  662,
+  1058,
   128,
   128
  ],
  "fabricator_ferrous": [
-  662,
   794,
+  1058,
   128,
   128
  ],
  "fabricator_ferrous_site0_0": [
-  794,
-  794,
+  926,
+  1058,
   128,
   128
  ],
  "fabricator_ferrous_site0_1": [
-  926,
-  794,
+  1058,
+  1058,
   128,
   128
  ],
  "fabricator_ferrous_site1_0": [
+  1190,
   1058,
-  794,
   128,
   128
  ],
  "fabricator_ferrous_site1_1": [
-  1190,
-  794,
+  1322,
+  1058,
   128,
   128
  ],
  "fabricator_ferrous_site2_0": [
-  1322,
-  794,
+  1454,
+  1058,
   128,
   128
  ],
  "fabricator_ferrous_site2_1": [
-  1454,
-  794,
+  1586,
+  1058,
   128,
   128
  ],
  "fabricator_ferrous_work1": [
-  1586,
-  794,
+  1718,
+  1058,
   128,
   128
  ],
  "fabricator_ferrous_work2": [
-  1718,
-  794,
+  1850,
+  1058,
   128,
   128
  ],
  "fabricator_ferrous_work3": [
-  1850,
-  794,
+  1982,
+  1058,
   128,
   128
  ],
  "fabricator_ferrous_work4": [
-  1982,
-  794,
+  2114,
+  1058,
   128,
   128
  ],
  "field_debris_abandoned_canisters": [
-  1006,
-  2210,
+  2978,
+  2534,
   32,
   32
  ],
  "field_debris_bent_service_rail": [
-  1042,
-  2210,
+  3014,
+  2534,
   32,
   32
  ],
  "field_debris_braided_cable": [
-  1906,
-  1394,
+  2,
+  1854,
   64,
   64
  ],
  "field_debris_cable_tray": [
-  1974,
-  1394,
+  70,
+  1854,
   64,
   64
  ],
  "field_debris_canister_cluster": [
-  2042,
-  1394,
+  138,
+  1854,
   64,
   64
  ],
  "field_debris_fastener_spill": [
-  2110,
-  1394,
+  206,
+  1854,
   64,
   64
  ],
  "field_debris_inspection_hatch": [
-  2178,
-  1394,
+  274,
+  1854,
   64,
   64
  ],
  "field_debris_motor_casing": [
-  2246,
-  1394,
+  342,
+  1854,
   64,
   64
  ],
  "field_debris_severed_cable": [
-  1078,
-  2210,
+  3050,
+  2534,
   32,
   32
  ],
  "field_debris_sunken_cooling_fan": [
-  2314,
-  1394,
+  410,
+  1854,
   64,
   64
  ],
  "flak_mount_accent": [
-  2382,
-  1394,
+  478,
+  1854,
   64,
   64
  ],
  "flak_mount_accent_action1": [
-  2450,
-  1394,
+  546,
+  1854,
   64,
   64
  ],
  "flak_mount_accent_action2": [
-  2518,
-  1394,
+  614,
+  1854,
   64,
   64
  ],
  "flak_mount_accent_action3": [
-  2586,
-  1394,
+  682,
+  1854,
   64,
   64
  ],
  "flak_mount_accent_action4": [
-  2654,
-  1394,
+  750,
+  1854,
   64,
   64
  ],
  "flak_mount_accent_action5": [
-  2722,
-  1394,
+  818,
+  1854,
   64,
   64
  ],
  "flak_mount_accent_action6": [
-  2790,
-  1394,
+  886,
+  1854,
   64,
   64
  ],
  "flak_mount_accent_action7": [
-  2858,
-  1394,
+  954,
+  1854,
   64,
   64
  ],
  "flak_mount_accent_action8": [
-  2926,
-  1394,
+  1022,
+  1854,
   64,
   64
  ],
  "flak_mount_cupric": [
-  2994,
-  1394,
+  1090,
+  1854,
   64,
   64
  ],
  "flak_mount_cupric_action1": [
-  3062,
-  1394,
+  1158,
+  1854,
   64,
   64
  ],
  "flak_mount_cupric_action2": [
-  3130,
-  1394,
+  1226,
+  1854,
   64,
   64
  ],
  "flak_mount_cupric_action3": [
-  3198,
-  1394,
+  1294,
+  1854,
   64,
   64
  ],
  "flak_mount_cupric_action4": [
-  3266,
-  1394,
+  1362,
+  1854,
   64,
   64
  ],
  "flak_mount_cupric_action5": [
-  3334,
-  1394,
+  1430,
+  1854,
   64,
   64
  ],
  "flak_mount_cupric_action6": [
-  3402,
-  1394,
+  1498,
+  1854,
   64,
   64
  ],
  "flak_mount_cupric_action7": [
-  3470,
-  1394,
+  1566,
+  1854,
   64,
   64
  ],
  "flak_mount_cupric_action8": [
-  3538,
-  1394,
+  1634,
+  1854,
   64,
   64
  ],
  "flak_mount_ferrous": [
-  3606,
-  1394,
+  1702,
+  1854,
   64,
   64
  ],
  "flak_mount_ferrous_action1": [
-  3674,
-  1394,
+  1770,
+  1854,
   64,
   64
  ],
  "flak_mount_ferrous_action2": [
-  3742,
-  1394,
+  1838,
+  1854,
   64,
   64
  ],
  "flak_mount_ferrous_action3": [
-  3810,
-  1394,
+  1906,
+  1854,
   64,
   64
  ],
  "flak_mount_ferrous_action4": [
-  3878,
-  1394,
+  1974,
+  1854,
   64,
   64
  ],
  "flak_mount_ferrous_action5": [
-  3946,
-  1394,
+  2042,
+  1854,
   64,
   64
  ],
  "flak_mount_ferrous_action6": [
-  4014,
-  1394,
+  2110,
+  1854,
   64,
   64
  ],
  "flak_mount_ferrous_action7": [
-  2,
-  1462,
+  2178,
+  1854,
   64,
   64
  ],
  "flak_mount_ferrous_action8": [
-  70,
-  1462,
+  2246,
+  1854,
   64,
   64
  ],
  "flak_turret_accent": [
-  138,
-  1462,
+  2314,
+  1854,
   64,
   64
  ],
  "flak_turret_accent_site0_0": [
-  206,
-  1462,
+  2382,
+  1854,
   64,
   64
  ],
  "flak_turret_accent_site0_1": [
-  274,
-  1462,
+  2450,
+  1854,
   64,
   64
  ],
  "flak_turret_accent_site1_0": [
-  342,
-  1462,
+  2518,
+  1854,
   64,
   64
  ],
  "flak_turret_accent_site1_1": [
-  410,
-  1462,
+  2586,
+  1854,
   64,
   64
  ],
  "flak_turret_accent_site2_0": [
-  478,
-  1462,
+  2654,
+  1854,
   64,
   64
  ],
  "flak_turret_accent_site2_1": [
-  546,
-  1462,
+  2722,
+  1854,
   64,
   64
  ],
  "flak_turret_cupric": [
-  614,
-  1462,
+  2790,
+  1854,
   64,
   64
  ],
  "flak_turret_cupric_site0_0": [
-  682,
-  1462,
+  2858,
+  1854,
   64,
   64
  ],
  "flak_turret_cupric_site0_1": [
-  750,
-  1462,
+  2926,
+  1854,
   64,
   64
  ],
  "flak_turret_cupric_site1_0": [
-  818,
-  1462,
+  2994,
+  1854,
   64,
   64
  ],
  "flak_turret_cupric_site1_1": [
-  886,
-  1462,
+  3062,
+  1854,
   64,
   64
  ],
  "flak_turret_cupric_site2_0": [
-  954,
-  1462,
+  3130,
+  1854,
   64,
   64
  ],
  "flak_turret_cupric_site2_1": [
-  1022,
-  1462,
+  3198,
+  1854,
   64,
   64
  ],
  "flak_turret_ferrous": [
-  1090,
-  1462,
+  3266,
+  1854,
   64,
   64
  ],
  "flak_turret_ferrous_site0_0": [
-  1158,
-  1462,
+  3334,
+  1854,
   64,
   64
  ],
  "flak_turret_ferrous_site0_1": [
-  1226,
-  1462,
+  3402,
+  1854,
   64,
   64
  ],
  "flak_turret_ferrous_site1_0": [
-  1294,
-  1462,
+  3470,
+  1854,
   64,
   64
  ],
  "flak_turret_ferrous_site1_1": [
-  1362,
-  1462,
+  3538,
+  1854,
   64,
   64
  ],
  "flak_turret_ferrous_site2_0": [
-  1430,
-  1462,
+  3606,
+  1854,
   64,
   64
  ],
  "flak_turret_ferrous_site2_1": [
-  1498,
-  1462,
+  3674,
+  1854,
   64,
   64
  ],
  "flak_turret_t1_accent": [
-  1566,
-  1462,
+  3742,
+  1854,
   64,
   64
  ],
  "flak_turret_t1_cupric": [
-  1634,
-  1462,
+  3810,
+  1854,
   64,
   64
  ],
  "flak_turret_t1_ferrous": [
-  1702,
-  1462,
+  3878,
+  1854,
   64,
   64
  ],
  "flakhound_accent": [
-  1770,
-  1462,
+  3946,
+  1854,
   64,
   64
  ],
  "flakhound_accent_action1": [
-  1838,
-  1462,
+  4014,
+  1854,
   64,
   64
  ],
  "flakhound_accent_action2": [
-  1906,
-  1462,
+  2,
+  1922,
   64,
   64
  ],
  "flakhound_accent_action3": [
-  1974,
-  1462,
+  70,
+  1922,
   64,
   64
  ],
  "flakhound_accent_action4": [
-  2042,
-  1462,
+  138,
+  1922,
   64,
   64
  ],
  "flakhound_accent_action5": [
-  2110,
-  1462,
+  206,
+  1922,
   64,
   64
  ],
  "flakhound_accent_action6": [
-  2178,
-  1462,
+  274,
+  1922,
   64,
   64
  ],
  "flakhound_accent_action7": [
-  2246,
-  1462,
+  342,
+  1922,
   64,
   64
  ],
  "flakhound_accent_action8": [
-  2314,
-  1462,
+  410,
+  1922,
   64,
   64
  ],
  "flakhound_accent_action9": [
-  2382,
-  1462,
+  478,
+  1922,
   64,
   64
  ],
  "flakhound_accent_tread1": [
-  2450,
-  1462,
+  546,
+  1922,
   64,
   64
  ],
  "flakhound_accent_tread2": [
-  2518,
-  1462,
+  614,
+  1922,
   64,
   64
  ],
  "flakhound_cupric": [
-  2586,
-  1462,
+  682,
+  1922,
   64,
   64
  ],
  "flakhound_cupric_action1": [
-  2654,
-  1462,
+  750,
+  1922,
   64,
   64
  ],
  "flakhound_cupric_action2": [
-  2722,
-  1462,
+  818,
+  1922,
   64,
   64
  ],
  "flakhound_cupric_action3": [
-  2790,
-  1462,
+  886,
+  1922,
   64,
   64
  ],
  "flakhound_cupric_action4": [
-  2858,
-  1462,
+  954,
+  1922,
   64,
   64
  ],
  "flakhound_cupric_action5": [
-  2926,
-  1462,
+  1022,
+  1922,
   64,
   64
  ],
  "flakhound_cupric_action6": [
-  2994,
-  1462,
+  1090,
+  1922,
   64,
   64
  ],
  "flakhound_cupric_action7": [
-  3062,
-  1462,
+  1158,
+  1922,
   64,
   64
  ],
  "flakhound_cupric_action8": [
-  3130,
-  1462,
+  1226,
+  1922,
   64,
   64
  ],
  "flakhound_cupric_action9": [
-  3198,
-  1462,
+  1294,
+  1922,
   64,
   64
  ],
  "flakhound_cupric_tread1": [
-  3266,
-  1462,
+  1362,
+  1922,
   64,
   64
  ],
  "flakhound_cupric_tread2": [
-  3334,
-  1462,
+  1430,
+  1922,
   64,
   64
  ],
  "flakhound_ferrous": [
-  3402,
-  1462,
+  1498,
+  1922,
   64,
   64
  ],
  "flakhound_ferrous_action1": [
-  3470,
-  1462,
+  1566,
+  1922,
   64,
   64
  ],
  "flakhound_ferrous_action2": [
-  3538,
-  1462,
+  1634,
+  1922,
   64,
   64
  ],
  "flakhound_ferrous_action3": [
-  3606,
-  1462,
+  1702,
+  1922,
   64,
   64
  ],
  "flakhound_ferrous_action4": [
-  3674,
-  1462,
+  1770,
+  1922,
   64,
   64
  ],
  "flakhound_ferrous_action5": [
-  3742,
-  1462,
+  1838,
+  1922,
   64,
   64
  ],
  "flakhound_ferrous_action6": [
-  3810,
-  1462,
+  1906,
+  1922,
   64,
   64
  ],
  "flakhound_ferrous_action7": [
-  3878,
-  1462,
+  1974,
+  1922,
   64,
   64
  ],
  "flakhound_ferrous_action8": [
-  3946,
-  1462,
+  2042,
+  1922,
   64,
   64
  ],
  "flakhound_ferrous_action9": [
-  4014,
-  1462,
+  2110,
+  1922,
   64,
   64
  ],
  "flakhound_ferrous_tread1": [
-  2,
-  1530,
+  2178,
+  1922,
   64,
   64
  ],
  "flakhound_ferrous_tread2": [
-  70,
-  1530,
+  2246,
+  1922,
   64,
   64
  ],
  "foundry_accent": [
-  2114,
-  794,
+  2246,
+  1058,
   128,
   128
  ],
  "foundry_accent_site0_0": [
-  2246,
-  794,
+  2378,
+  1058,
   128,
   128
  ],
  "foundry_accent_site0_1": [
-  2378,
-  794,
+  2510,
+  1058,
   128,
   128
  ],
  "foundry_accent_site1_0": [
-  2510,
-  794,
+  2642,
+  1058,
   128,
   128
  ],
  "foundry_accent_site1_1": [
-  2642,
-  794,
+  2774,
+  1058,
   128,
   128
  ],
  "foundry_accent_site2_0": [
-  2774,
-  794,
+  2906,
+  1058,
   128,
   128
  ],
  "foundry_accent_site2_1": [
-  2906,
-  794,
+  3038,
+  1058,
   128,
   128
  ],
  "foundry_accent_work1": [
-  3038,
-  794,
+  3170,
+  1058,
   128,
   128
  ],
  "foundry_accent_work2": [
-  3170,
-  794,
+  3302,
+  1058,
   128,
   128
  ],
  "foundry_accent_work3": [
-  3302,
-  794,
+  3434,
+  1058,
   128,
   128
  ],
  "foundry_accent_work4": [
-  3434,
-  794,
+  3566,
+  1058,
   128,
   128
  ],
  "foundry_cupric": [
-  3566,
-  794,
+  3698,
+  1058,
   128,
   128
  ],
  "foundry_cupric_site0_0": [
-  3698,
-  794,
+  3830,
+  1058,
   128,
   128
  ],
  "foundry_cupric_site0_1": [
-  3830,
-  794,
+  3962,
+  1058,
   128,
   128
  ],
  "foundry_cupric_site1_0": [
-  3962,
-  794,
+  2,
+  1190,
   128,
   128
  ],
  "foundry_cupric_site1_1": [
-  2,
-  926,
+  134,
+  1190,
   128,
   128
  ],
  "foundry_cupric_site2_0": [
-  134,
-  926,
+  266,
+  1190,
   128,
   128
  ],
  "foundry_cupric_site2_1": [
-  266,
-  926,
+  398,
+  1190,
   128,
   128
  ],
  "foundry_cupric_work1": [
-  398,
-  926,
+  530,
+  1190,
   128,
   128
  ],
  "foundry_cupric_work2": [
-  530,
-  926,
+  662,
+  1190,
   128,
   128
  ],
  "foundry_cupric_work3": [
-  662,
-  926,
+  794,
+  1190,
   128,
   128
  ],
  "foundry_cupric_work4": [
-  794,
   926,
+  1190,
   128,
   128
  ],
  "foundry_ferrous": [
-  926,
-  926,
+  1058,
+  1190,
   128,
   128
  ],
  "foundry_ferrous_site0_0": [
-  1058,
-  926,
+  1190,
+  1190,
   128,
   128
  ],
  "foundry_ferrous_site0_1": [
+  1322,
   1190,
-  926,
   128,
   128
  ],
  "foundry_ferrous_site1_0": [
-  1322,
-  926,
+  1454,
+  1190,
   128,
   128
  ],
  "foundry_ferrous_site1_1": [
-  1454,
-  926,
+  1586,
+  1190,
   128,
   128
  ],
  "foundry_ferrous_site2_0": [
-  1586,
-  926,
+  1718,
+  1190,
   128,
   128
  ],
  "foundry_ferrous_site2_1": [
-  1718,
-  926,
+  1850,
+  1190,
   128,
   128
  ],
  "foundry_ferrous_work1": [
-  1850,
-  926,
+  1982,
+  1190,
   128,
   128
  ],
  "foundry_ferrous_work2": [
-  1982,
-  926,
+  2114,
+  1190,
   128,
   128
  ],
  "foundry_ferrous_work3": [
-  2114,
-  926,
+  2246,
+  1190,
   128,
   128
  ],
  "foundry_ferrous_work4": [
-  2246,
-  926,
+  2378,
+  1190,
   128,
   128
  ],
  "gnat_accent": [
-  138,
-  1530,
+  2314,
+  1922,
   64,
   64
  ],
  "gnat_accent_move1": [
-  206,
-  1530,
+  2382,
+  1922,
   64,
   64
  ],
  "gnat_accent_move2": [
-  274,
-  1530,
+  2450,
+  1922,
   64,
   64
  ],
  "gnat_cupric": [
-  342,
-  1530,
+  2518,
+  1922,
   64,
   64
  ],
  "gnat_cupric_move1": [
-  410,
-  1530,
+  2586,
+  1922,
   64,
   64
  ],
  "gnat_cupric_move2": [
-  478,
-  1530,
+  2654,
+  1922,
   64,
   64
  ],
  "gnat_ferrous": [
-  546,
-  1530,
+  2722,
+  1922,
   64,
   64
  ],
  "gnat_ferrous_move1": [
-  614,
-  1530,
+  2790,
+  1922,
   64,
   64
  ],
  "gnat_ferrous_move2": [
-  682,
-  1530,
+  2858,
+  1922,
   64,
   64
  ],
  "ground_0": [
-  750,
-  1530,
+  2926,
+  1922,
   64,
   64
  ],
  "ground_1": [
-  818,
-  1530,
+  2994,
+  1922,
   64,
   64
  ],
  "ground_2": [
-  886,
-  1530,
+  3062,
+  1922,
   64,
   64
  ],
  "ground_3": [
-  954,
-  1530,
+  3130,
+  1922,
   64,
   64
  ],
  "ground_4": [
-  1022,
-  1530,
+  3198,
+  1922,
   64,
   64
  ],
  "ground_5": [
-  1090,
-  1530,
+  3266,
+  1922,
   64,
   64
  ],
  "ground_blocker_compressor_skid": [
-  1158,
-  1530,
+  3334,
+  1922,
   128,
   64
  ],
  "ground_blocker_conveyor_drive": [
-  2378,
-  926,
+  2510,
+  1190,
   192,
   128
  ],
  "ground_blocker_cooling_fan": [
-  2574,
-  926,
+  2706,
+  1190,
   128,
   128
  ],
  "ground_blocker_crusher_motor": [
-  2706,
-  926,
+  2838,
+  1190,
   192,
   128
  ],
  "ground_blocker_exposed_gearbox": [
-  2902,
-  926,
+  3034,
+  1190,
   128,
   128
  ],
  "ground_blocker_generator_pallet": [
-  3034,
-  926,
+  3166,
+  1190,
   128,
   128
  ],
  "ground_blocker_track_assembly": [
-  1290,
-  1530,
+  3466,
+  1922,
   192,
   64
  ],
  "ground_blocker_transformer_bank": [
-  3166,
-  926,
+  3298,
+  1190,
   192,
   128
  ],
  "ground_blocker_vent_blower": [
-  3362,
-  926,
+  3494,
+  1190,
   128,
   128
  ],
  "harvester_accent": [
-  1486,
-  1530,
+  3662,
+  1922,
   64,
   64
  ],
  "harvester_accent_cargo0": [
-  1554,
-  1530,
+  3730,
+  1922,
   64,
   64
  ],
  "harvester_accent_cargo0_scoop1": [
-  1622,
-  1530,
+  3798,
+  1922,
   64,
   64
  ],
  "harvester_accent_cargo0_scoop2": [
-  1690,
-  1530,
+  3866,
+  1922,
   64,
   64
  ],
  "harvester_accent_cargo0_tread1": [
-  1758,
-  1530,
+  3934,
+  1922,
   64,
   64
  ],
  "harvester_accent_cargo0_tread2": [
-  1826,
-  1530,
+  4002,
+  1922,
   64,
   64
  ],
  "harvester_accent_cargo1": [
-  1894,
-  1530,
+  2,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo1_scoop1": [
-  1962,
-  1530,
+  70,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo1_scoop2": [
-  2030,
-  1530,
+  138,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo1_tread1": [
-  2098,
-  1530,
+  206,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo1_tread2": [
-  2166,
-  1530,
+  274,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo2": [
-  2234,
-  1530,
+  342,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo2_scoop1": [
-  2302,
-  1530,
+  410,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo2_scoop2": [
-  2370,
-  1530,
+  478,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo2_tread1": [
-  2438,
-  1530,
+  546,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo2_tread2": [
-  2506,
-  1530,
+  614,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo3": [
-  2574,
-  1530,
+  682,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo3_scoop1": [
-  2642,
-  1530,
+  750,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo3_scoop2": [
-  2710,
-  1530,
+  818,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo3_tread1": [
-  2778,
-  1530,
+  886,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo3_tread2": [
-  2846,
-  1530,
+  954,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo4": [
-  2914,
-  1530,
+  1022,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo4_scoop1": [
-  2982,
-  1530,
+  1090,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo4_scoop2": [
-  3050,
-  1530,
+  1158,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo4_tread1": [
-  3118,
-  1530,
+  1226,
+  1990,
   64,
   64
  ],
  "harvester_accent_cargo4_tread2": [
-  3186,
-  1530,
+  1294,
+  1990,
   64,
   64
  ],
  "harvester_accent_scoop1": [
-  3254,
-  1530,
+  1362,
+  1990,
   64,
   64
  ],
  "harvester_accent_scoop2": [
-  3322,
-  1530,
+  1430,
+  1990,
   64,
   64
  ],
  "harvester_accent_tread1": [
-  3390,
-  1530,
+  1498,
+  1990,
   64,
   64
  ],
  "harvester_accent_tread2": [
-  3458,
-  1530,
+  1566,
+  1990,
   64,
   64
  ],
  "harvester_cupric": [
-  3526,
-  1530,
+  1634,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo0": [
-  3594,
-  1530,
+  1702,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo0_scoop1": [
-  3662,
-  1530,
+  1770,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo0_scoop2": [
-  3730,
-  1530,
+  1838,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo0_tread1": [
-  3798,
-  1530,
+  1906,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo0_tread2": [
-  3866,
-  1530,
+  1974,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo1": [
-  3934,
-  1530,
+  2042,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo1_scoop1": [
-  4002,
-  1530,
+  2110,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo1_scoop2": [
-  2,
-  1598,
+  2178,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo1_tread1": [
-  70,
-  1598,
+  2246,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo1_tread2": [
-  138,
-  1598,
+  2314,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo2": [
-  206,
-  1598,
+  2382,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo2_scoop1": [
-  274,
-  1598,
+  2450,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo2_scoop2": [
-  342,
-  1598,
+  2518,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo2_tread1": [
-  410,
-  1598,
+  2586,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo2_tread2": [
-  478,
-  1598,
+  2654,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo3": [
-  546,
-  1598,
+  2722,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo3_scoop1": [
-  614,
-  1598,
+  2790,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo3_scoop2": [
-  682,
-  1598,
+  2858,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo3_tread1": [
-  750,
-  1598,
+  2926,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo3_tread2": [
-  818,
-  1598,
+  2994,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo4": [
-  886,
-  1598,
+  3062,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo4_scoop1": [
-  954,
-  1598,
+  3130,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo4_scoop2": [
-  1022,
-  1598,
+  3198,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo4_tread1": [
-  1090,
-  1598,
+  3266,
+  1990,
   64,
   64
  ],
  "harvester_cupric_cargo4_tread2": [
-  1158,
-  1598,
+  3334,
+  1990,
   64,
   64
  ],
  "harvester_cupric_scoop1": [
-  1226,
-  1598,
+  3402,
+  1990,
   64,
   64
  ],
  "harvester_cupric_scoop2": [
-  1294,
-  1598,
+  3470,
+  1990,
   64,
   64
  ],
  "harvester_cupric_tread1": [
-  1362,
-  1598,
+  3538,
+  1990,
   64,
   64
  ],
  "harvester_cupric_tread2": [
-  1430,
-  1598,
+  3606,
+  1990,
   64,
   64
  ],
  "harvester_ferrous": [
-  1498,
-  1598,
+  3674,
+  1990,
   64,
   64
  ],
  "harvester_ferrous_cargo0": [
-  1566,
-  1598,
+  3742,
+  1990,
   64,
   64
  ],
  "harvester_ferrous_cargo0_scoop1": [
-  1634,
-  1598,
+  3810,
+  1990,
   64,
   64
  ],
  "harvester_ferrous_cargo0_scoop2": [
-  1702,
-  1598,
+  3878,
+  1990,
   64,
   64
  ],
  "harvester_ferrous_cargo0_tread1": [
-  1770,
-  1598,
+  3946,
+  1990,
   64,
   64
  ],
  "harvester_ferrous_cargo0_tread2": [
-  1838,
-  1598,
+  4014,
+  1990,
   64,
   64
  ],
  "harvester_ferrous_cargo1": [
-  1906,
-  1598,
+  2,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo1_scoop1": [
-  1974,
-  1598,
+  70,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo1_scoop2": [
-  2042,
-  1598,
+  138,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo1_tread1": [
-  2110,
-  1598,
+  206,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo1_tread2": [
-  2178,
-  1598,
+  274,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo2": [
-  2246,
-  1598,
+  342,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo2_scoop1": [
-  2314,
-  1598,
+  410,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo2_scoop2": [
-  2382,
-  1598,
+  478,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo2_tread1": [
-  2450,
-  1598,
+  546,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo2_tread2": [
-  2518,
-  1598,
+  614,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo3": [
-  2586,
-  1598,
+  682,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo3_scoop1": [
-  2654,
-  1598,
+  750,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo3_scoop2": [
-  2722,
-  1598,
+  818,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo3_tread1": [
-  2790,
-  1598,
+  886,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo3_tread2": [
-  2858,
-  1598,
+  954,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo4": [
-  2926,
-  1598,
+  1022,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo4_scoop1": [
-  2994,
-  1598,
+  1090,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo4_scoop2": [
-  3062,
-  1598,
+  1158,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo4_tread1": [
-  3130,
-  1598,
+  1226,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_cargo4_tread2": [
-  3198,
-  1598,
+  1294,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_scoop1": [
-  3266,
-  1598,
+  1362,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_scoop2": [
-  3334,
-  1598,
+  1430,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_tread1": [
-  3402,
-  1598,
+  1498,
+  2058,
   64,
   64
  ],
  "harvester_ferrous_tread2": [
-  3470,
-  1598,
+  1566,
+  2058,
   64,
   64
  ],
  "icon_attack": [
-  274,
-  2210,
+  2246,
+  2534,
   48,
   48
  ],
  "icon_attack_move": [
-  326,
-  2210,
+  2298,
+  2534,
   48,
   48
  ],
  "icon_build": [
-  378,
-  2210,
+  2350,
+  2534,
   48,
   48
  ],
  "icon_cancel": [
-  430,
-  2210,
+  2402,
+  2534,
   48,
   48
  ],
  "icon_harvest": [
-  482,
-  2210,
+  2454,
+  2534,
   48,
   48
  ],
  "icon_idle": [
-  534,
-  2210,
+  2506,
+  2534,
   48,
   48
  ],
  "icon_move": [
-  586,
-  2210,
+  2558,
+  2534,
   48,
   48
  ],
  "icon_patrol": [
-  638,
-  2210,
+  2610,
+  2534,
   48,
   48
  ],
  "icon_rally": [
-  690,
-  2210,
+  2662,
+  2534,
   48,
   48
  ],
  "icon_repair": [
-  742,
-  2210,
+  2714,
+  2534,
   48,
   48
  ],
  "icon_salvage": [
-  794,
-  2210,
+  2766,
+  2534,
   48,
   48
  ],
  "icon_stop": [
-  846,
-  2210,
+  2818,
+  2534,
   48,
   48
  ],
  "kestrel_accent": [
-  3538,
-  1598,
+  1634,
+  2058,
   64,
   64
  ],
  "kestrel_accent_move1": [
-  3606,
-  1598,
+  1702,
+  2058,
   64,
   64
  ],
  "kestrel_accent_move2": [
-  3674,
-  1598,
+  1770,
+  2058,
   64,
   64
  ],
  "kestrel_cupric": [
-  3742,
-  1598,
+  1838,
+  2058,
   64,
   64
  ],
  "kestrel_cupric_move1": [
-  3810,
-  1598,
+  1906,
+  2058,
   64,
   64
  ],
  "kestrel_cupric_move2": [
-  3878,
-  1598,
+  1974,
+  2058,
   64,
   64
  ],
  "kestrel_ferrous": [
-  3946,
-  1598,
+  2042,
+  2058,
   64,
   64
  ],
  "kestrel_ferrous_move1": [
-  4014,
-  1598,
+  2110,
+  2058,
   64,
   64
  ],
  "kestrel_ferrous_move2": [
-  2,
-  1666,
+  2178,
+  2058,
   64,
   64
  ],
  "lancer_accent": [
-  70,
-  1666,
+  2246,
+  2058,
   64,
   64
  ],
  "lancer_accent_action1": [
-  138,
-  1666,
+  2314,
+  2058,
   64,
   64
  ],
  "lancer_accent_action2": [
-  206,
-  1666,
+  2382,
+  2058,
   64,
   64
  ],
  "lancer_accent_action3": [
-  274,
-  1666,
+  2450,
+  2058,
   64,
   64
  ],
  "lancer_accent_action4": [
-  342,
-  1666,
+  2518,
+  2058,
   64,
   64
  ],
  "lancer_accent_action5": [
-  410,
-  1666,
+  2586,
+  2058,
   64,
   64
  ],
  "lancer_accent_action6": [
-  478,
-  1666,
+  2654,
+  2058,
   64,
   64
  ],
  "lancer_accent_move1": [
-  546,
-  1666,
+  2722,
+  2058,
   64,
   64
  ],
  "lancer_accent_move2": [
-  614,
-  1666,
+  2790,
+  2058,
   64,
   64
  ],
  "lancer_cupric": [
-  682,
-  1666,
+  2858,
+  2058,
   64,
   64
  ],
  "lancer_cupric_action1": [
-  750,
-  1666,
+  2926,
+  2058,
   64,
   64
  ],
  "lancer_cupric_action2": [
-  818,
-  1666,
+  2994,
+  2058,
   64,
   64
  ],
  "lancer_cupric_action3": [
-  886,
-  1666,
+  3062,
+  2058,
   64,
   64
  ],
  "lancer_cupric_action4": [
-  954,
-  1666,
+  3130,
+  2058,
   64,
   64
  ],
  "lancer_cupric_action5": [
-  1022,
-  1666,
+  3198,
+  2058,
   64,
   64
  ],
  "lancer_cupric_action6": [
-  1090,
-  1666,
+  3266,
+  2058,
   64,
   64
  ],
  "lancer_cupric_move1": [
-  1158,
-  1666,
+  3334,
+  2058,
   64,
   64
  ],
  "lancer_cupric_move2": [
-  1226,
-  1666,
+  3402,
+  2058,
   64,
   64
  ],
  "lancer_ferrous": [
-  1294,
-  1666,
+  3470,
+  2058,
   64,
   64
  ],
  "lancer_ferrous_action1": [
-  1362,
-  1666,
+  3538,
+  2058,
   64,
   64
  ],
  "lancer_ferrous_action2": [
-  1430,
-  1666,
+  3606,
+  2058,
   64,
   64
  ],
  "lancer_ferrous_action3": [
-  1498,
-  1666,
+  3674,
+  2058,
   64,
   64
  ],
  "lancer_ferrous_action4": [
-  1566,
-  1666,
+  3742,
+  2058,
   64,
   64
  ],
  "lancer_ferrous_action5": [
-  1634,
-  1666,
+  3810,
+  2058,
   64,
   64
  ],
  "lancer_ferrous_action6": [
-  1702,
-  1666,
+  3878,
+  2058,
   64,
   64
  ],
  "lancer_ferrous_move1": [
-  1770,
-  1666,
+  3946,
+  2058,
   64,
   64
  ],
  "lancer_ferrous_move2": [
-  1838,
-  1666,
+  4014,
+  2058,
   64,
   64
  ],
  "moth_accent": [
-  1906,
-  1666,
-  64,
-  64
+  3626,
+  1190,
+  128,
+  128
  ],
  "moth_accent_action1": [
-  1974,
-  1666,
-  64,
-  64
+  3758,
+  1190,
+  128,
+  128
  ],
  "moth_accent_action2": [
-  2042,
-  1666,
-  64,
-  64
+  3890,
+  1190,
+  128,
+  128
  ],
  "moth_accent_action3": [
-  2110,
-  1666,
-  64,
-  64
+  2,
+  1322,
+  128,
+  128
  ],
  "moth_accent_action4": [
-  2178,
-  1666,
-  64,
-  64
+  134,
+  1322,
+  128,
+  128
+ ],
+ "moth_accent_action5": [
+  266,
+  1322,
+  128,
+  128
+ ],
+ "moth_accent_action6": [
+  398,
+  1322,
+  128,
+  128
  ],
  "moth_accent_move1": [
-  2246,
-  1666,
-  64,
-  64
+  530,
+  1322,
+  128,
+  128
  ],
  "moth_accent_move2": [
-  2314,
-  1666,
-  64,
-  64
+  662,
+  1322,
+  128,
+  128
  ],
  "moth_cupric": [
-  2382,
-  1666,
-  64,
-  64
+  794,
+  1322,
+  128,
+  128
  ],
  "moth_cupric_action1": [
-  2450,
-  1666,
-  64,
-  64
+  926,
+  1322,
+  128,
+  128
  ],
  "moth_cupric_action2": [
-  2518,
-  1666,
-  64,
-  64
+  1058,
+  1322,
+  128,
+  128
  ],
  "moth_cupric_action3": [
-  2586,
-  1666,
-  64,
-  64
+  1190,
+  1322,
+  128,
+  128
  ],
  "moth_cupric_action4": [
-  2654,
-  1666,
-  64,
-  64
+  1322,
+  1322,
+  128,
+  128
+ ],
+ "moth_cupric_action5": [
+  1454,
+  1322,
+  128,
+  128
+ ],
+ "moth_cupric_action6": [
+  1586,
+  1322,
+  128,
+  128
  ],
  "moth_cupric_move1": [
-  2722,
-  1666,
-  64,
-  64
+  1718,
+  1322,
+  128,
+  128
  ],
  "moth_cupric_move2": [
-  2790,
-  1666,
-  64,
-  64
+  1850,
+  1322,
+  128,
+  128
  ],
  "moth_ferrous": [
-  2858,
-  1666,
-  64,
-  64
+  1982,
+  1322,
+  128,
+  128
  ],
  "moth_ferrous_action1": [
-  2926,
-  1666,
-  64,
-  64
+  2114,
+  1322,
+  128,
+  128
  ],
  "moth_ferrous_action2": [
-  2994,
-  1666,
-  64,
-  64
+  2246,
+  1322,
+  128,
+  128
  ],
  "moth_ferrous_action3": [
-  3062,
-  1666,
-  64,
-  64
+  2378,
+  1322,
+  128,
+  128
  ],
  "moth_ferrous_action4": [
-  3130,
-  1666,
-  64,
-  64
+  2510,
+  1322,
+  128,
+  128
+ ],
+ "moth_ferrous_action5": [
+  2642,
+  1322,
+  128,
+  128
+ ],
+ "moth_ferrous_action6": [
+  2774,
+  1322,
+  128,
+  128
  ],
  "moth_ferrous_move1": [
-  3198,
-  1666,
-  64,
-  64
+  2906,
+  1322,
+  128,
+  128
  ],
  "moth_ferrous_move2": [
-  3266,
-  1666,
-  64,
-  64
+  3038,
+  1322,
+  128,
+  128
  ],
  "peak_barrier_00_0": [
-  3334,
-  1666,
+  2,
+  2126,
   64,
   64
  ],
  "peak_barrier_00_1": [
-  3402,
-  1666,
+  70,
+  2126,
   64,
   64
  ],
  "peak_barrier_01_0": [
-  3470,
-  1666,
+  138,
+  2126,
   64,
   64
  ],
  "peak_barrier_01_1": [
-  3538,
-  1666,
+  206,
+  2126,
   64,
   64
  ],
  "peak_barrier_02_0": [
-  3606,
-  1666,
+  274,
+  2126,
   64,
   64
  ],
  "peak_barrier_02_1": [
-  3674,
-  1666,
+  342,
+  2126,
   64,
   64
  ],
  "peak_barrier_03_0": [
-  3742,
-  1666,
+  410,
+  2126,
   64,
   64
  ],
  "peak_barrier_03_1": [
-  3810,
-  1666,
+  478,
+  2126,
   64,
   64
  ],
  "peak_barrier_04_0": [
-  3878,
-  1666,
+  546,
+  2126,
   64,
   64
  ],
  "peak_barrier_04_1": [
-  3946,
-  1666,
+  614,
+  2126,
   64,
   64
  ],
  "peak_barrier_05_0": [
-  4014,
-  1666,
+  682,
+  2126,
   64,
   64
  ],
  "peak_barrier_05_1": [
-  2,
-  1734,
+  750,
+  2126,
   64,
   64
  ],
  "peak_barrier_06_0": [
-  70,
-  1734,
+  818,
+  2126,
   64,
   64
  ],
  "peak_barrier_06_1": [
-  138,
-  1734,
+  886,
+  2126,
   64,
   64
  ],
  "peak_barrier_07_0": [
-  206,
-  1734,
+  954,
+  2126,
   64,
   64
  ],
  "peak_barrier_07_1": [
-  274,
-  1734,
+  1022,
+  2126,
   64,
   64
  ],
  "peak_barrier_08_0": [
-  342,
-  1734,
+  1090,
+  2126,
   64,
   64
  ],
  "peak_barrier_08_1": [
-  410,
-  1734,
+  1158,
+  2126,
   64,
   64
  ],
  "peak_barrier_09_0": [
-  478,
-  1734,
+  1226,
+  2126,
   64,
   64
  ],
  "peak_barrier_09_1": [
-  546,
-  1734,
+  1294,
+  2126,
   64,
   64
  ],
  "peak_barrier_0a_0": [
-  614,
-  1734,
+  1362,
+  2126,
   64,
   64
  ],
  "peak_barrier_0a_1": [
-  682,
-  1734,
+  1430,
+  2126,
   64,
   64
  ],
  "peak_barrier_0b_0": [
-  750,
-  1734,
+  1498,
+  2126,
   64,
   64
  ],
  "peak_barrier_0b_1": [
-  818,
-  1734,
+  1566,
+  2126,
   64,
   64
  ],
  "peak_barrier_0c_0": [
-  886,
-  1734,
+  1634,
+  2126,
   64,
   64
  ],
  "peak_barrier_0c_1": [
-  954,
-  1734,
+  1702,
+  2126,
   64,
   64
  ],
  "peak_barrier_0d_0": [
-  1022,
-  1734,
+  1770,
+  2126,
   64,
   64
  ],
  "peak_barrier_0d_1": [
-  1090,
-  1734,
+  1838,
+  2126,
   64,
   64
  ],
  "peak_barrier_0e_0": [
-  1158,
-  1734,
+  1906,
+  2126,
   64,
   64
  ],
  "peak_barrier_0e_1": [
-  1226,
-  1734,
+  1974,
+  2126,
   64,
   64
  ],
  "peak_barrier_0f_0": [
-  1294,
-  1734,
+  2042,
+  2126,
   64,
   64
  ],
  "peak_barrier_0f_1": [
-  1362,
-  1734,
-  64,
-  64
- ],
- "pit_edge_00_0": [
-  1430,
-  1734,
-  64,
-  64
- ],
- "pit_edge_00_1": [
-  1498,
-  1734,
-  64,
-  64
- ],
- "pit_edge_01_0": [
-  1566,
-  1734,
-  64,
-  64
- ],
- "pit_edge_01_1": [
-  1634,
-  1734,
-  64,
-  64
- ],
- "pit_edge_02_0": [
-  1702,
-  1734,
-  64,
-  64
- ],
- "pit_edge_02_1": [
-  1770,
-  1734,
-  64,
-  64
- ],
- "pit_edge_03_0": [
-  1838,
-  1734,
-  64,
-  64
- ],
- "pit_edge_03_1": [
-  1906,
-  1734,
-  64,
-  64
- ],
- "pit_edge_04_0": [
-  1974,
-  1734,
-  64,
-  64
- ],
- "pit_edge_04_1": [
-  2042,
-  1734,
-  64,
-  64
- ],
- "pit_edge_05_0": [
   2110,
-  1734,
-  64,
-  64
- ],
- "pit_edge_05_1": [
-  2178,
-  1734,
-  64,
-  64
- ],
- "pit_edge_06_0": [
-  2246,
-  1734,
-  64,
-  64
- ],
- "pit_edge_06_1": [
-  2314,
-  1734,
-  64,
-  64
- ],
- "pit_edge_07_0": [
-  2382,
-  1734,
-  64,
-  64
- ],
- "pit_edge_07_1": [
-  2450,
-  1734,
-  64,
-  64
- ],
- "pit_edge_08_0": [
-  2518,
-  1734,
-  64,
-  64
- ],
- "pit_edge_08_1": [
-  2586,
-  1734,
-  64,
-  64
- ],
- "pit_edge_09_0": [
-  2654,
-  1734,
-  64,
-  64
- ],
- "pit_edge_09_1": [
-  2722,
-  1734,
-  64,
-  64
- ],
- "pit_edge_0a_0": [
-  2790,
-  1734,
-  64,
-  64
- ],
- "pit_edge_0a_1": [
-  2858,
-  1734,
-  64,
-  64
- ],
- "pit_edge_0b_0": [
-  2926,
-  1734,
-  64,
-  64
- ],
- "pit_edge_0b_1": [
-  2994,
-  1734,
-  64,
-  64
- ],
- "pit_edge_0c_0": [
-  3062,
-  1734,
-  64,
-  64
- ],
- "pit_edge_0c_1": [
-  3130,
-  1734,
-  64,
-  64
- ],
- "pit_edge_0d_0": [
-  3198,
-  1734,
-  64,
-  64
- ],
- "pit_edge_0d_1": [
-  3266,
-  1734,
-  64,
-  64
- ],
- "pit_edge_0e_0": [
-  3334,
-  1734,
-  64,
-  64
- ],
- "pit_edge_0e_1": [
-  3402,
-  1734,
-  64,
-  64
- ],
- "pit_edge_0f_0": [
-  3470,
-  1734,
-  64,
-  64
- ],
- "pit_edge_0f_1": [
-  3538,
-  1734,
+  2126,
   64,
   64
  ],
  "reclaimer_accent": [
-  3606,
-  1734,
+  2178,
+  2126,
   64,
   64
  ],
  "reclaimer_accent_site0_0": [
-  3674,
-  1734,
+  2246,
+  2126,
   64,
   64
  ],
  "reclaimer_accent_site0_1": [
-  3742,
-  1734,
+  2314,
+  2126,
   64,
   64
  ],
  "reclaimer_accent_site1_0": [
-  3810,
-  1734,
+  2382,
+  2126,
   64,
   64
  ],
  "reclaimer_accent_site1_1": [
-  3878,
-  1734,
+  2450,
+  2126,
   64,
   64
  ],
  "reclaimer_accent_site2_0": [
-  3946,
-  1734,
+  2518,
+  2126,
   64,
   64
  ],
  "reclaimer_accent_site2_1": [
-  4014,
-  1734,
+  2586,
+  2126,
   64,
   64
  ],
  "reclaimer_accent_work1": [
-  2,
-  1802,
+  2654,
+  2126,
   64,
   64
  ],
  "reclaimer_accent_work2": [
-  70,
-  1802,
+  2722,
+  2126,
   64,
   64
  ],
  "reclaimer_accent_work3": [
-  138,
-  1802,
+  2790,
+  2126,
   64,
   64
  ],
  "reclaimer_cupric": [
-  206,
-  1802,
+  2858,
+  2126,
   64,
   64
  ],
  "reclaimer_cupric_site0_0": [
-  274,
-  1802,
+  2926,
+  2126,
   64,
   64
  ],
  "reclaimer_cupric_site0_1": [
-  342,
-  1802,
+  2994,
+  2126,
   64,
   64
  ],
  "reclaimer_cupric_site1_0": [
-  410,
-  1802,
+  3062,
+  2126,
   64,
   64
  ],
  "reclaimer_cupric_site1_1": [
-  478,
-  1802,
+  3130,
+  2126,
   64,
   64
  ],
  "reclaimer_cupric_site2_0": [
-  546,
-  1802,
+  3198,
+  2126,
   64,
   64
  ],
  "reclaimer_cupric_site2_1": [
-  614,
-  1802,
+  3266,
+  2126,
   64,
   64
  ],
  "reclaimer_cupric_work1": [
-  682,
-  1802,
+  3334,
+  2126,
   64,
   64
  ],
  "reclaimer_cupric_work2": [
-  750,
-  1802,
+  3402,
+  2126,
   64,
   64
  ],
  "reclaimer_cupric_work3": [
-  818,
-  1802,
+  3470,
+  2126,
   64,
   64
  ],
  "reclaimer_ferrous": [
-  886,
-  1802,
+  3538,
+  2126,
   64,
   64
  ],
  "reclaimer_ferrous_site0_0": [
-  954,
-  1802,
+  3606,
+  2126,
   64,
   64
  ],
  "reclaimer_ferrous_site0_1": [
-  1022,
-  1802,
+  3674,
+  2126,
   64,
   64
  ],
  "reclaimer_ferrous_site1_0": [
-  1090,
-  1802,
+  3742,
+  2126,
   64,
   64
  ],
  "reclaimer_ferrous_site1_1": [
-  1158,
-  1802,
+  3810,
+  2126,
   64,
   64
  ],
  "reclaimer_ferrous_site2_0": [
-  1226,
-  1802,
+  3878,
+  2126,
   64,
   64
  ],
  "reclaimer_ferrous_site2_1": [
-  1294,
-  1802,
+  3946,
+  2126,
   64,
   64
  ],
  "reclaimer_ferrous_work1": [
-  1362,
-  1802,
+  4014,
+  2126,
   64,
   64
  ],
  "reclaimer_ferrous_work2": [
-  1430,
-  1802,
+  2,
+  2194,
   64,
   64
  ],
  "reclaimer_ferrous_work3": [
-  1498,
-  1802,
+  70,
+  2194,
   64,
   64
  ],
  "reclaimer_t1_accent": [
-  1566,
-  1802,
+  138,
+  2194,
   64,
   64
  ],
  "reclaimer_t1_cupric": [
-  1634,
-  1802,
+  206,
+  2194,
   64,
   64
  ],
  "reclaimer_t1_ferrous": [
-  1702,
-  1802,
+  274,
+  2194,
   64,
   64
  ],
  "repair_bay_accent": [
-  3494,
-  926,
+  3170,
+  1322,
   128,
   128
  ],
  "repair_bay_accent_site0_0": [
-  3626,
-  926,
+  3302,
+  1322,
   128,
   128
  ],
  "repair_bay_accent_site0_1": [
-  3758,
-  926,
+  3434,
+  1322,
   128,
   128
  ],
  "repair_bay_accent_site1_0": [
-  3890,
-  926,
+  3566,
+  1322,
   128,
   128
  ],
  "repair_bay_accent_site1_1": [
-  2,
-  1058,
+  3698,
+  1322,
   128,
   128
  ],
  "repair_bay_accent_site2_0": [
-  134,
-  1058,
+  3830,
+  1322,
   128,
   128
  ],
  "repair_bay_accent_site2_1": [
-  266,
-  1058,
+  3962,
+  1322,
   128,
   128
  ],
  "repair_bay_accent_work1": [
-  398,
-  1058,
+  2,
+  1454,
   128,
   128
  ],
  "repair_bay_accent_work2": [
-  530,
-  1058,
+  134,
+  1454,
   128,
   128
  ],
  "repair_bay_accent_work3": [
-  662,
-  1058,
+  266,
+  1454,
   128,
   128
  ],
  "repair_bay_accent_work4": [
-  794,
-  1058,
+  398,
+  1454,
   128,
   128
  ],
  "repair_bay_cupric": [
-  926,
-  1058,
+  530,
+  1454,
   128,
   128
  ],
  "repair_bay_cupric_site0_0": [
-  1058,
-  1058,
+  662,
+  1454,
   128,
   128
  ],
  "repair_bay_cupric_site0_1": [
-  1190,
-  1058,
+  794,
+  1454,
   128,
   128
  ],
  "repair_bay_cupric_site1_0": [
-  1322,
-  1058,
+  926,
+  1454,
   128,
   128
  ],
  "repair_bay_cupric_site1_1": [
-  1454,
   1058,
+  1454,
   128,
   128
  ],
  "repair_bay_cupric_site2_0": [
-  1586,
-  1058,
+  1190,
+  1454,
   128,
   128
  ],
  "repair_bay_cupric_site2_1": [
-  1718,
-  1058,
+  1322,
+  1454,
   128,
   128
  ],
  "repair_bay_cupric_work1": [
-  1850,
-  1058,
+  1454,
+  1454,
   128,
   128
  ],
  "repair_bay_cupric_work2": [
-  1982,
-  1058,
+  1586,
+  1454,
   128,
   128
  ],
  "repair_bay_cupric_work3": [
-  2114,
-  1058,
+  1718,
+  1454,
   128,
   128
  ],
  "repair_bay_cupric_work4": [
-  2246,
-  1058,
+  1850,
+  1454,
   128,
   128
  ],
  "repair_bay_ferrous": [
-  2378,
-  1058,
+  1982,
+  1454,
   128,
   128
  ],
  "repair_bay_ferrous_site0_0": [
-  2510,
-  1058,
+  2114,
+  1454,
   128,
   128
  ],
  "repair_bay_ferrous_site0_1": [
-  2642,
-  1058,
+  2246,
+  1454,
   128,
   128
  ],
  "repair_bay_ferrous_site1_0": [
-  2774,
-  1058,
+  2378,
+  1454,
   128,
   128
  ],
  "repair_bay_ferrous_site1_1": [
-  2906,
-  1058,
+  2510,
+  1454,
   128,
   128
  ],
  "repair_bay_ferrous_site2_0": [
-  3038,
-  1058,
+  2642,
+  1454,
   128,
   128
  ],
  "repair_bay_ferrous_site2_1": [
-  3170,
-  1058,
+  2774,
+  1454,
   128,
   128
  ],
  "repair_bay_ferrous_work1": [
-  3302,
-  1058,
+  2906,
+  1454,
   128,
   128
  ],
  "repair_bay_ferrous_work2": [
-  3434,
-  1058,
+  3038,
+  1454,
   128,
   128
  ],
  "repair_bay_ferrous_work3": [
-  3566,
-  1058,
+  3170,
+  1454,
   128,
   128
  ],
  "repair_bay_ferrous_work4": [
-  3698,
-  1058,
+  3302,
+  1454,
   128,
   128
  ],
  "rock_0": [
-  1770,
-  1802,
+  342,
+  2194,
   64,
   64
  ],
  "rock_1": [
-  1838,
-  1802,
+  410,
+  2194,
   64,
   64
  ],
  "rock_2": [
-  1906,
-  1802,
+  478,
+  2194,
   64,
   64
  ],
  "rock_3": [
-  1974,
-  1802,
+  546,
+  2194,
   64,
   64
  ],
  "rock_broken_bench": [
-  2042,
-  1802,
+  614,
+  2194,
   192,
   64
  ],
  "rock_broken_rampart": [
-  2238,
-  1802,
+  810,
+  2194,
   128,
   64
  ],
  "rock_broken_tooth": [
-  2370,
-  1802,
+  942,
+  2194,
   64,
   64
  ],
  "rock_collapsed_cut": [
-  2438,
-  1802,
+  1010,
+  2194,
   192,
   64
  ],
  "rock_fallen_fang": [
-  2634,
-  1802,
+  1206,
+  2194,
   64,
   64
  ],
  "rock_hollow_crook": [
-  2702,
-  1802,
+  1274,
+  2194,
   64,
   64
  ],
  "rock_hooked_shelf": [
-  2770,
-  1802,
+  1342,
+  2194,
   64,
   64
  ],
  "rock_jagged_crown": [
-  2838,
-  1802,
+  1410,
+  2194,
   64,
   64
  ],
  "rock_jagged_field": [
-  2906,
-  1802,
+  1478,
+  2194,
   192,
   64
  ],
  "rock_low_scree": [
-  3102,
-  1802,
+  1674,
+  2194,
   64,
   64
  ],
  "rock_quarry_bite": [
-  3170,
-  1802,
+  1742,
+  2194,
   64,
   64
  ],
  "rock_quarry_fall": [
-  3238,
-  1802,
+  1810,
+  2194,
   128,
   64
  ],
  "rock_quarry_scatter": [
-  3370,
-  1802,
+  1942,
+  2194,
   192,
   64
  ],
  "rock_shattered_crown": [
-  3566,
-  1802,
+  2138,
+  2194,
   128,
   64
  ],
  "rock_skirt": [
-  3698,
-  1802,
+  2270,
+  2194,
   64,
   64
  ],
  "rock_split_anvil": [
-  3766,
-  1802,
+  2338,
+  2194,
   64,
   64
  ],
  "rock_split_face": [
-  3834,
-  1802,
+  2406,
+  2194,
   64,
   64
  ],
  "rock_split_gully": [
-  3902,
-  1802,
+  2474,
+  2194,
   128,
   64
  ],
  "rock_three_spall": [
-  2,
-  1870,
+  2606,
+  2194,
   64,
   64
  ],
  "rock_twin_outcrop": [
-  70,
-  1870,
+  2674,
+  2194,
   128,
   64
  ],
  "sapper_accent": [
-  202,
-  1870,
+  2806,
+  2194,
   64,
   64
  ],
  "sapper_accent_move1": [
-  270,
-  1870,
+  2874,
+  2194,
   64,
   64
  ],
  "sapper_accent_move2": [
-  338,
-  1870,
+  2942,
+  2194,
   64,
   64
  ],
  "sapper_cupric": [
-  406,
-  1870,
+  3010,
+  2194,
   64,
   64
  ],
  "sapper_cupric_move1": [
-  474,
-  1870,
+  3078,
+  2194,
   64,
   64
  ],
  "sapper_cupric_move2": [
-  542,
-  1870,
+  3146,
+  2194,
   64,
   64
  ],
  "sapper_ferrous": [
-  610,
-  1870,
+  3214,
+  2194,
   64,
   64
  ],
  "sapper_ferrous_move1": [
-  678,
-  1870,
+  3282,
+  2194,
   64,
   64
  ],
  "sapper_ferrous_move2": [
-  746,
-  1870,
+  3350,
+  2194,
   64,
   64
  ],
  "scaffold_dense": [
-  814,
-  1870,
+  3418,
+  2194,
   64,
   64
  ],
  "scaffold_sparse": [
-  882,
-  1870,
+  3486,
+  2194,
   64,
   64
  ],
  "scorch": [
-  3830,
-  1058,
+  3434,
+  1454,
   128,
   128
  ],
  "scrap_full": [
-  950,
-  1870,
+  3554,
+  2194,
   64,
   64
  ],
  "scrap_low": [
-  1018,
-  1870,
+  3622,
+  2194,
   64,
   64
  ],
  "scrap_mid": [
-  1086,
-  1870,
+  3690,
+  2194,
   64,
   64
  ],
  "scrap_rich": [
-  1154,
-  1870,
+  3758,
+  2194,
   64,
   64
  ],
  "scuttle_charge_accent": [
-  1222,
-  1870,
+  3826,
+  2194,
   64,
   64
  ],
  "scuttle_charge_accent_site0_0": [
-  1290,
-  1870,
+  3894,
+  2194,
   64,
   64
  ],
  "scuttle_charge_accent_site0_1": [
-  1358,
-  1870,
+  3962,
+  2194,
   64,
   64
  ],
  "scuttle_charge_accent_site1_0": [
-  1426,
-  1870,
+  4030,
+  2194,
   64,
   64
  ],
  "scuttle_charge_accent_site1_1": [
-  1494,
-  1870,
+  2,
+  2262,
   64,
   64
  ],
  "scuttle_charge_accent_site2_0": [
-  1562,
-  1870,
+  70,
+  2262,
   64,
   64
  ],
  "scuttle_charge_accent_site2_1": [
-  1630,
-  1870,
+  138,
+  2262,
   64,
   64
  ],
  "scuttle_charge_cupric": [
-  1698,
-  1870,
+  206,
+  2262,
   64,
   64
  ],
  "scuttle_charge_cupric_site0_0": [
-  1766,
-  1870,
+  274,
+  2262,
   64,
   64
  ],
  "scuttle_charge_cupric_site0_1": [
-  1834,
-  1870,
+  342,
+  2262,
   64,
   64
  ],
  "scuttle_charge_cupric_site1_0": [
-  1902,
-  1870,
+  410,
+  2262,
   64,
   64
  ],
  "scuttle_charge_cupric_site1_1": [
-  1970,
-  1870,
+  478,
+  2262,
   64,
   64
  ],
  "scuttle_charge_cupric_site2_0": [
-  2038,
-  1870,
+  546,
+  2262,
   64,
   64
  ],
  "scuttle_charge_cupric_site2_1": [
-  2106,
-  1870,
+  614,
+  2262,
   64,
   64
  ],
  "scuttle_charge_ferrous": [
-  2174,
-  1870,
+  682,
+  2262,
   64,
   64
  ],
  "scuttle_charge_ferrous_site0_0": [
-  2242,
-  1870,
+  750,
+  2262,
   64,
   64
  ],
  "scuttle_charge_ferrous_site0_1": [
-  2310,
-  1870,
+  818,
+  2262,
   64,
   64
  ],
  "scuttle_charge_ferrous_site1_0": [
-  2378,
-  1870,
+  886,
+  2262,
   64,
   64
  ],
  "scuttle_charge_ferrous_site1_1": [
-  2446,
-  1870,
+  954,
+  2262,
   64,
   64
  ],
  "scuttle_charge_ferrous_site2_0": [
-  2514,
-  1870,
+  1022,
+  2262,
   64,
   64
  ],
  "scuttle_charge_ferrous_site2_1": [
-  2582,
-  1870,
+  1090,
+  2262,
   64,
   64
  ],
  "scuttler_accent": [
-  2650,
-  1870,
+  1158,
+  2262,
   64,
   64
  ],
  "scuttler_accent_action1": [
-  2718,
-  1870,
+  1226,
+  2262,
   64,
   64
  ],
  "scuttler_accent_action2": [
-  2786,
-  1870,
+  1294,
+  2262,
   64,
   64
  ],
  "scuttler_accent_action3": [
-  2854,
-  1870,
+  1362,
+  2262,
   64,
   64
  ],
  "scuttler_accent_action4": [
-  2922,
-  1870,
+  1430,
+  2262,
   64,
   64
  ],
  "scuttler_accent_move1": [
-  2990,
-  1870,
+  1498,
+  2262,
   64,
   64
  ],
  "scuttler_accent_move2": [
-  3058,
-  1870,
+  1566,
+  2262,
   64,
   64
  ],
  "scuttler_cupric": [
-  3126,
-  1870,
+  1634,
+  2262,
   64,
   64
  ],
  "scuttler_cupric_action1": [
-  3194,
-  1870,
+  1702,
+  2262,
   64,
   64
  ],
  "scuttler_cupric_action2": [
-  3262,
-  1870,
+  1770,
+  2262,
   64,
   64
  ],
  "scuttler_cupric_action3": [
-  3330,
-  1870,
+  1838,
+  2262,
   64,
   64
  ],
  "scuttler_cupric_action4": [
-  3398,
-  1870,
+  1906,
+  2262,
   64,
   64
  ],
  "scuttler_cupric_move1": [
-  3466,
-  1870,
+  1974,
+  2262,
   64,
   64
  ],
  "scuttler_cupric_move2": [
-  3534,
-  1870,
+  2042,
+  2262,
   64,
   64
  ],
  "scuttler_ferrous": [
-  3602,
-  1870,
+  2110,
+  2262,
   64,
   64
  ],
  "scuttler_ferrous_action1": [
-  3670,
-  1870,
+  2178,
+  2262,
   64,
   64
  ],
  "scuttler_ferrous_action2": [
-  3738,
-  1870,
+  2246,
+  2262,
   64,
   64
  ],
  "scuttler_ferrous_action3": [
-  3806,
-  1870,
+  2314,
+  2262,
   64,
   64
  ],
  "scuttler_ferrous_action4": [
-  3874,
-  1870,
+  2382,
+  2262,
   64,
   64
  ],
  "scuttler_ferrous_move1": [
-  3942,
-  1870,
+  2450,
+  2262,
   64,
   64
  ],
  "scuttler_ferrous_move2": [
-  4010,
-  1870,
+  2518,
+  2262,
   64,
   64
  ],
  "sentinel_accent": [
-  2,
-  1938,
+  2586,
+  2262,
   64,
   64
  ],
  "sentinel_accent_action1": [
-  70,
-  1938,
+  2654,
+  2262,
   64,
   64
  ],
  "sentinel_accent_action2": [
-  138,
-  1938,
+  2722,
+  2262,
   64,
   64
  ],
  "sentinel_accent_action3": [
-  206,
-  1938,
+  2790,
+  2262,
   64,
   64
  ],
  "sentinel_accent_action4": [
-  274,
-  1938,
+  2858,
+  2262,
   64,
   64
  ],
  "sentinel_accent_move1": [
-  342,
-  1938,
+  2926,
+  2262,
   64,
   64
  ],
  "sentinel_accent_move2": [
-  410,
-  1938,
+  2994,
+  2262,
   64,
   64
  ],
  "sentinel_cupric": [
-  478,
-  1938,
+  3062,
+  2262,
   64,
   64
  ],
  "sentinel_cupric_action1": [
-  546,
-  1938,
+  3130,
+  2262,
   64,
   64
  ],
  "sentinel_cupric_action2": [
-  614,
-  1938,
+  3198,
+  2262,
   64,
   64
  ],
  "sentinel_cupric_action3": [
-  682,
-  1938,
+  3266,
+  2262,
   64,
   64
  ],
  "sentinel_cupric_action4": [
-  750,
-  1938,
+  3334,
+  2262,
   64,
   64
  ],
  "sentinel_cupric_move1": [
-  818,
-  1938,
+  3402,
+  2262,
   64,
   64
  ],
  "sentinel_cupric_move2": [
-  886,
-  1938,
+  3470,
+  2262,
   64,
   64
  ],
  "sentinel_ferrous": [
-  954,
-  1938,
+  3538,
+  2262,
   64,
   64
  ],
  "sentinel_ferrous_action1": [
-  1022,
-  1938,
+  3606,
+  2262,
   64,
   64
  ],
  "sentinel_ferrous_action2": [
-  1090,
-  1938,
+  3674,
+  2262,
   64,
   64
  ],
  "sentinel_ferrous_action3": [
-  1158,
-  1938,
+  3742,
+  2262,
   64,
   64
  ],
  "sentinel_ferrous_action4": [
-  1226,
-  1938,
+  3810,
+  2262,
   64,
   64
  ],
  "sentinel_ferrous_move1": [
-  1294,
-  1938,
+  3878,
+  2262,
   64,
   64
  ],
  "sentinel_ferrous_move2": [
-  1362,
-  1938,
+  3946,
+  2262,
   64,
   64
  ],
  "shrike_accent": [
-  1430,
-  1938,
+  4014,
+  2262,
   64,
   64
  ],
  "shrike_accent_action1": [
-  1498,
-  1938,
+  2,
+  2330,
   64,
   64
  ],
  "shrike_accent_action2": [
-  1566,
-  1938,
+  70,
+  2330,
   64,
   64
  ],
  "shrike_accent_action3": [
-  1634,
-  1938,
+  138,
+  2330,
   64,
   64
  ],
  "shrike_accent_action4": [
-  1702,
-  1938,
+  206,
+  2330,
   64,
   64
  ],
  "shrike_accent_move1": [
-  1770,
-  1938,
+  274,
+  2330,
   64,
   64
  ],
  "shrike_accent_move2": [
-  1838,
-  1938,
+  342,
+  2330,
   64,
   64
  ],
  "shrike_cupric": [
-  1906,
-  1938,
+  410,
+  2330,
   64,
   64
  ],
  "shrike_cupric_action1": [
-  1974,
-  1938,
+  478,
+  2330,
   64,
   64
  ],
  "shrike_cupric_action2": [
-  2042,
-  1938,
+  546,
+  2330,
   64,
   64
  ],
  "shrike_cupric_action3": [
-  2110,
-  1938,
+  614,
+  2330,
   64,
   64
  ],
  "shrike_cupric_action4": [
-  2178,
-  1938,
+  682,
+  2330,
   64,
   64
  ],
  "shrike_cupric_move1": [
-  2246,
-  1938,
+  750,
+  2330,
   64,
   64
  ],
  "shrike_cupric_move2": [
-  2314,
-  1938,
+  818,
+  2330,
   64,
   64
  ],
  "shrike_ferrous": [
-  2382,
-  1938,
+  886,
+  2330,
   64,
   64
  ],
  "shrike_ferrous_action1": [
-  2450,
-  1938,
+  954,
+  2330,
   64,
   64
  ],
  "shrike_ferrous_action2": [
-  2518,
-  1938,
+  1022,
+  2330,
   64,
   64
  ],
  "shrike_ferrous_action3": [
-  2586,
-  1938,
+  1090,
+  2330,
   64,
   64
  ],
  "shrike_ferrous_action4": [
-  2654,
-  1938,
+  1158,
+  2330,
   64,
   64
  ],
  "shrike_ferrous_move1": [
-  2722,
-  1938,
+  1226,
+  2330,
   64,
   64
  ],
  "shrike_ferrous_move2": [
-  2790,
-  1938,
+  1294,
+  2330,
   64,
   64
  ],
  "skyhook_accent": [
-  2858,
-  1938,
+  1362,
+  2330,
   64,
   64
  ],
  "skyhook_accent_move1": [
-  2926,
-  1938,
+  1430,
+  2330,
   64,
   64
  ],
  "skyhook_accent_move2": [
-  2994,
-  1938,
+  1498,
+  2330,
   64,
   64
  ],
  "skyhook_cupric": [
-  3062,
-  1938,
+  1566,
+  2330,
   64,
   64
  ],
  "skyhook_cupric_move1": [
-  3130,
-  1938,
+  1634,
+  2330,
   64,
   64
  ],
  "skyhook_cupric_move2": [
-  3198,
-  1938,
+  1702,
+  2330,
   64,
   64
  ],
  "skyhook_ferrous": [
-  3266,
-  1938,
+  1770,
+  2330,
   64,
   64
  ],
  "skyhook_ferrous_move1": [
-  3334,
-  1938,
+  1838,
+  2330,
   64,
   64
  ],
  "skyhook_ferrous_move2": [
-  3402,
-  1938,
+  1906,
+  2330,
   64,
   64
  ],
  "stinger_accent": [
-  3470,
-  1938,
+  1974,
+  2330,
   64,
   64
  ],
  "stinger_accent_action1": [
-  3538,
-  1938,
+  2042,
+  2330,
   64,
   64
  ],
  "stinger_accent_action2": [
-  3606,
-  1938,
+  2110,
+  2330,
   64,
   64
  ],
  "stinger_accent_action3": [
-  3674,
-  1938,
+  2178,
+  2330,
   64,
   64
  ],
  "stinger_accent_action4": [
-  3742,
-  1938,
+  2246,
+  2330,
   64,
   64
  ],
  "stinger_accent_move1": [
-  3810,
-  1938,
+  2314,
+  2330,
   64,
   64
  ],
  "stinger_accent_move2": [
-  3878,
-  1938,
+  2382,
+  2330,
   64,
   64
  ],
  "stinger_cupric": [
-  3946,
-  1938,
+  2450,
+  2330,
   64,
   64
  ],
  "stinger_cupric_action1": [
-  4014,
-  1938,
+  2518,
+  2330,
   64,
   64
  ],
  "stinger_cupric_action2": [
-  2,
-  2006,
+  2586,
+  2330,
   64,
   64
  ],
  "stinger_cupric_action3": [
-  70,
-  2006,
+  2654,
+  2330,
   64,
   64
  ],
  "stinger_cupric_action4": [
-  138,
-  2006,
+  2722,
+  2330,
   64,
   64
  ],
  "stinger_cupric_move1": [
-  206,
-  2006,
+  2790,
+  2330,
   64,
   64
  ],
  "stinger_cupric_move2": [
-  274,
-  2006,
+  2858,
+  2330,
   64,
   64
  ],
  "stinger_ferrous": [
-  342,
-  2006,
+  2926,
+  2330,
   64,
   64
  ],
  "stinger_ferrous_action1": [
-  410,
-  2006,
+  2994,
+  2330,
   64,
   64
  ],
  "stinger_ferrous_action2": [
-  478,
-  2006,
+  3062,
+  2330,
   64,
   64
  ],
  "stinger_ferrous_action3": [
-  546,
-  2006,
+  3130,
+  2330,
   64,
   64
  ],
  "stinger_ferrous_action4": [
-  614,
-  2006,
+  3198,
+  2330,
   64,
   64
  ],
  "stinger_ferrous_move1": [
-  682,
-  2006,
+  3266,
+  2330,
   64,
   64
  ],
  "stinger_ferrous_move2": [
-  750,
-  2006,
+  3334,
+  2330,
   64,
   64
  ],
  "sylph_accent": [
-  818,
-  2006,
+  3402,
+  2330,
   64,
   64
  ],
  "sylph_accent_action1": [
-  886,
-  2006,
+  3470,
+  2330,
   64,
   64
  ],
  "sylph_accent_action2": [
-  954,
-  2006,
+  3538,
+  2330,
   64,
   64
  ],
  "sylph_accent_action3": [
-  1022,
-  2006,
+  3606,
+  2330,
   64,
   64
  ],
  "sylph_accent_action4": [
-  1090,
-  2006,
+  3674,
+  2330,
   64,
   64
  ],
  "sylph_accent_move1": [
-  1158,
-  2006,
+  3742,
+  2330,
   64,
   64
  ],
  "sylph_accent_move2": [
-  1226,
-  2006,
+  3810,
+  2330,
   64,
   64
  ],
  "sylph_cupric": [
-  1294,
-  2006,
+  3878,
+  2330,
   64,
   64
  ],
  "sylph_cupric_action1": [
-  1362,
-  2006,
+  3946,
+  2330,
   64,
   64
  ],
  "sylph_cupric_action2": [
-  1430,
-  2006,
+  4014,
+  2330,
   64,
   64
  ],
  "sylph_cupric_action3": [
-  1498,
-  2006,
+  2,
+  2398,
   64,
   64
  ],
  "sylph_cupric_action4": [
-  1566,
-  2006,
+  70,
+  2398,
   64,
   64
  ],
  "sylph_cupric_move1": [
-  1634,
-  2006,
+  138,
+  2398,
   64,
   64
  ],
  "sylph_cupric_move2": [
-  1702,
-  2006,
+  206,
+  2398,
   64,
   64
  ],
  "sylph_ferrous": [
-  1770,
-  2006,
+  274,
+  2398,
   64,
   64
  ],
  "sylph_ferrous_action1": [
-  1838,
-  2006,
+  342,
+  2398,
   64,
   64
  ],
  "sylph_ferrous_action2": [
-  1906,
-  2006,
+  410,
+  2398,
   64,
   64
  ],
  "sylph_ferrous_action3": [
-  1974,
-  2006,
+  478,
+  2398,
   64,
   64
  ],
  "sylph_ferrous_action4": [
-  2042,
-  2006,
+  546,
+  2398,
   64,
   64
  ],
  "sylph_ferrous_move1": [
-  2110,
-  2006,
+  614,
+  2398,
   64,
   64
  ],
  "sylph_ferrous_move2": [
-  2178,
-  2006,
+  682,
+  2398,
   64,
   64
  ],
  "talon_accent": [
-  2246,
-  2006,
+  750,
+  2398,
   64,
   64
  ],
  "talon_accent_action1": [
-  2314,
-  2006,
+  818,
+  2398,
   64,
   64
  ],
  "talon_accent_action2": [
-  2382,
-  2006,
+  886,
+  2398,
   64,
   64
  ],
  "talon_accent_action3": [
-  2450,
-  2006,
+  954,
+  2398,
   64,
   64
  ],
  "talon_accent_action4": [
-  2518,
-  2006,
+  1022,
+  2398,
   64,
   64
  ],
  "talon_accent_move1": [
-  2586,
-  2006,
+  1090,
+  2398,
   64,
   64
  ],
  "talon_accent_move2": [
-  2654,
-  2006,
+  1158,
+  2398,
   64,
   64
  ],
  "talon_cupric": [
-  2722,
-  2006,
+  1226,
+  2398,
   64,
   64
  ],
  "talon_cupric_action1": [
-  2790,
-  2006,
+  1294,
+  2398,
   64,
   64
  ],
  "talon_cupric_action2": [
-  2858,
-  2006,
+  1362,
+  2398,
   64,
   64
  ],
  "talon_cupric_action3": [
-  2926,
-  2006,
+  1430,
+  2398,
   64,
   64
  ],
  "talon_cupric_action4": [
-  2994,
-  2006,
+  1498,
+  2398,
   64,
   64
  ],
  "talon_cupric_move1": [
-  3062,
-  2006,
+  1566,
+  2398,
   64,
   64
  ],
  "talon_cupric_move2": [
-  3130,
-  2006,
+  1634,
+  2398,
   64,
   64
  ],
  "talon_ferrous": [
-  3198,
-  2006,
+  1702,
+  2398,
   64,
   64
  ],
  "talon_ferrous_action1": [
-  3266,
-  2006,
+  1770,
+  2398,
   64,
   64
  ],
  "talon_ferrous_action2": [
-  3334,
-  2006,
+  1838,
+  2398,
   64,
   64
  ],
  "talon_ferrous_action3": [
-  3402,
-  2006,
+  1906,
+  2398,
   64,
   64
  ],
  "talon_ferrous_action4": [
-  3470,
-  2006,
+  1974,
+  2398,
   64,
   64
  ],
  "talon_ferrous_move1": [
-  3538,
-  2006,
+  2042,
+  2398,
   64,
   64
  ],
  "talon_ferrous_move2": [
-  3606,
-  2006,
+  2110,
+  2398,
   64,
   64
  ],
  "tender_accent": [
-  3674,
-  2006,
+  2178,
+  2398,
+  64,
+  64
+ ],
+ "tender_accent_action1": [
+  2246,
+  2398,
+  64,
+  64
+ ],
+ "tender_accent_action2": [
+  2314,
+  2398,
+  64,
+  64
+ ],
+ "tender_accent_action3": [
+  2382,
+  2398,
+  64,
+  64
+ ],
+ "tender_accent_action4": [
+  2450,
+  2398,
   64,
   64
  ],
  "tender_accent_move1": [
-  3742,
-  2006,
+  2518,
+  2398,
   64,
   64
  ],
  "tender_accent_move2": [
-  3810,
-  2006,
+  2586,
+  2398,
   64,
   64
  ],
  "tender_cupric": [
-  3878,
-  2006,
+  2654,
+  2398,
+  64,
+  64
+ ],
+ "tender_cupric_action1": [
+  2722,
+  2398,
+  64,
+  64
+ ],
+ "tender_cupric_action2": [
+  2790,
+  2398,
+  64,
+  64
+ ],
+ "tender_cupric_action3": [
+  2858,
+  2398,
+  64,
+  64
+ ],
+ "tender_cupric_action4": [
+  2926,
+  2398,
   64,
   64
  ],
  "tender_cupric_move1": [
-  3946,
-  2006,
+  2994,
+  2398,
   64,
   64
  ],
  "tender_cupric_move2": [
-  4014,
-  2006,
+  3062,
+  2398,
   64,
   64
  ],
  "tender_ferrous": [
-  2,
-  2074,
+  3130,
+  2398,
+  64,
+  64
+ ],
+ "tender_ferrous_action1": [
+  3198,
+  2398,
+  64,
+  64
+ ],
+ "tender_ferrous_action2": [
+  3266,
+  2398,
+  64,
+  64
+ ],
+ "tender_ferrous_action3": [
+  3334,
+  2398,
+  64,
+  64
+ ],
+ "tender_ferrous_action4": [
+  3402,
+  2398,
   64,
   64
  ],
  "tender_ferrous_move1": [
-  70,
-  2074,
+  3470,
+  2398,
   64,
   64
  ],
  "tender_ferrous_move2": [
-  138,
-  2074,
+  3538,
+  2398,
   64,
   64
  ],
  "theme_basalt_0": [
-  206,
-  2074,
+  3606,
+  2398,
   64,
   64
  ],
  "theme_basalt_1": [
-  274,
-  2074,
+  3674,
+  2398,
   64,
   64
  ],
  "theme_basalt_2": [
-  342,
-  2074,
+  3742,
+  2398,
   64,
   64
  ],
  "theme_basalt_3": [
-  410,
-  2074,
+  3810,
+  2398,
   64,
   64
  ],
  "theme_basalt_4": [
-  478,
-  2074,
+  3878,
+  2398,
   64,
   64
  ],
  "theme_basalt_5": [
-  546,
-  2074,
+  3946,
+  2398,
   64,
   64
  ],
  "theme_cold_circuitry_0": [
-  614,
-  2074,
+  4014,
+  2398,
   64,
   64
  ],
  "theme_cold_circuitry_1": [
-  682,
-  2074,
+  2,
+  2466,
   64,
   64
  ],
  "theme_cold_circuitry_2": [
-  750,
-  2074,
+  70,
+  2466,
   64,
   64
  ],
  "theme_cold_circuitry_3": [
-  818,
-  2074,
+  138,
+  2466,
   64,
   64
  ],
  "theme_cold_circuitry_4": [
-  886,
-  2074,
+  206,
+  2466,
   64,
   64
  ],
  "theme_cold_circuitry_5": [
-  954,
-  2074,
+  274,
+  2466,
   64,
   64
  ],
  "theme_quarry_dust_0": [
-  1022,
-  2074,
+  342,
+  2466,
   64,
   64
  ],
  "theme_quarry_dust_1": [
-  1090,
-  2074,
+  410,
+  2466,
   64,
   64
  ],
  "theme_quarry_dust_2": [
-  1158,
-  2074,
+  478,
+  2466,
   64,
   64
  ],
  "theme_quarry_dust_3": [
-  1226,
-  2074,
+  546,
+  2466,
   64,
   64
  ],
  "theme_quarry_dust_4": [
-  1294,
-  2074,
+  614,
+  2466,
   64,
   64
  ],
  "theme_quarry_dust_5": [
-  1362,
-  2074,
+  682,
+  2466,
   64,
   64
  ],
  "theme_rusted_yard_0": [
-  1430,
-  2074,
+  750,
+  2466,
   64,
   64
  ],
  "theme_rusted_yard_1": [
-  1498,
-  2074,
+  818,
+  2466,
   64,
   64
  ],
  "theme_rusted_yard_2": [
-  1566,
-  2074,
+  886,
+  2466,
   64,
   64
  ],
  "theme_rusted_yard_3": [
-  1634,
-  2074,
+  954,
+  2466,
   64,
   64
  ],
  "theme_rusted_yard_4": [
-  1702,
-  2074,
+  1022,
+  2466,
   64,
   64
  ],
  "theme_rusted_yard_5": [
-  1770,
-  2074,
+  1090,
+  2466,
   64,
   64
  ],
  "theme_slag_0": [
-  1838,
-  2074,
+  1158,
+  2466,
   64,
   64
  ],
  "theme_slag_1": [
-  1906,
-  2074,
+  1226,
+  2466,
   64,
   64
  ],
  "theme_slag_2": [
-  1974,
-  2074,
+  1294,
+  2466,
   64,
   64
  ],
  "theme_slag_3": [
-  2042,
-  2074,
+  1362,
+  2466,
   64,
   64
  ],
  "theme_slag_4": [
-  2110,
-  2074,
+  1430,
+  2466,
   64,
   64
  ],
  "theme_slag_5": [
-  2178,
-  2074,
+  1498,
+  2466,
   64,
   64
  ],
  "theme_verdigris_0": [
-  2246,
-  2074,
+  1566,
+  2466,
   64,
   64
  ],
  "theme_verdigris_1": [
-  2314,
-  2074,
+  1634,
+  2466,
   64,
   64
  ],
  "theme_verdigris_2": [
-  2382,
-  2074,
+  1702,
+  2466,
   64,
   64
  ],
  "theme_verdigris_3": [
-  2450,
-  2074,
+  1770,
+  2466,
   64,
   64
  ],
  "theme_verdigris_4": [
-  2518,
-  2074,
+  1838,
+  2466,
   64,
   64
  ],
  "theme_verdigris_5": [
-  2586,
-  2074,
+  1906,
+  2466,
   64,
   64
  ],
  "turret_accent": [
-  2654,
-  2074,
+  1974,
+  2466,
   64,
   64
  ],
  "turret_accent_site0_0": [
-  2722,
-  2074,
+  2042,
+  2466,
   64,
   64
  ],
  "turret_accent_site0_1": [
-  2790,
-  2074,
+  2110,
+  2466,
   64,
   64
  ],
  "turret_accent_site1_0": [
-  2858,
-  2074,
+  2178,
+  2466,
   64,
   64
  ],
  "turret_accent_site1_1": [
-  2926,
-  2074,
+  2246,
+  2466,
   64,
   64
  ],
  "turret_accent_site2_0": [
-  2994,
-  2074,
+  2314,
+  2466,
   64,
   64
  ],
  "turret_accent_site2_1": [
-  3062,
-  2074,
+  2382,
+  2466,
   64,
   64
  ],
  "turret_barrel_accent": [
-  3130,
-  2074,
+  2450,
+  2466,
   64,
   64
  ],
  "turret_barrel_accent_action1": [
-  3198,
-  2074,
+  2518,
+  2466,
   64,
   64
  ],
  "turret_barrel_accent_action2": [
-  3266,
-  2074,
+  2586,
+  2466,
   64,
   64
  ],
  "turret_barrel_accent_action3": [
-  3334,
-  2074,
+  2654,
+  2466,
   64,
   64
  ],
  "turret_barrel_accent_action4": [
-  3402,
-  2074,
+  2722,
+  2466,
   64,
   64
  ],
  "turret_barrel_cupric": [
-  3470,
-  2074,
+  2790,
+  2466,
   64,
   64
  ],
  "turret_barrel_cupric_action1": [
-  3538,
-  2074,
+  2858,
+  2466,
   64,
   64
  ],
  "turret_barrel_cupric_action2": [
-  3606,
-  2074,
+  2926,
+  2466,
   64,
   64
  ],
  "turret_barrel_cupric_action3": [
-  3674,
-  2074,
+  2994,
+  2466,
   64,
   64
  ],
  "turret_barrel_cupric_action4": [
-  3742,
-  2074,
+  3062,
+  2466,
   64,
   64
  ],
  "turret_barrel_ferrous": [
-  3810,
-  2074,
+  3130,
+  2466,
   64,
   64
  ],
  "turret_barrel_ferrous_action1": [
-  3878,
-  2074,
+  3198,
+  2466,
   64,
   64
  ],
  "turret_barrel_ferrous_action2": [
-  3946,
-  2074,
+  3266,
+  2466,
   64,
   64
  ],
  "turret_barrel_ferrous_action3": [
-  4014,
-  2074,
+  3334,
+  2466,
   64,
   64
  ],
  "turret_barrel_ferrous_action4": [
-  2,
-  2142,
+  3402,
+  2466,
   64,
   64
  ],
  "turret_cupric": [
-  70,
-  2142,
+  3470,
+  2466,
   64,
   64
  ],
  "turret_cupric_site0_0": [
-  138,
-  2142,
+  3538,
+  2466,
   64,
   64
  ],
  "turret_cupric_site0_1": [
-  206,
-  2142,
+  3606,
+  2466,
   64,
   64
  ],
  "turret_cupric_site1_0": [
-  274,
-  2142,
+  3674,
+  2466,
   64,
   64
  ],
  "turret_cupric_site1_1": [
-  342,
-  2142,
+  3742,
+  2466,
   64,
   64
  ],
  "turret_cupric_site2_0": [
-  410,
-  2142,
+  3810,
+  2466,
   64,
   64
  ],
  "turret_cupric_site2_1": [
-  478,
-  2142,
+  3878,
+  2466,
   64,
   64
  ],
  "turret_ferrous": [
-  546,
-  2142,
+  3946,
+  2466,
   64,
   64
  ],
  "turret_ferrous_site0_0": [
-  614,
-  2142,
+  4014,
+  2466,
   64,
   64
  ],
  "turret_ferrous_site0_1": [
-  682,
-  2142,
+  2,
+  2534,
   64,
   64
  ],
  "turret_ferrous_site1_0": [
-  750,
-  2142,
+  70,
+  2534,
   64,
   64
  ],
  "turret_ferrous_site1_1": [
-  818,
-  2142,
+  138,
+  2534,
   64,
   64
  ],
  "turret_ferrous_site2_0": [
-  886,
-  2142,
+  206,
+  2534,
   64,
   64
  ],
  "turret_ferrous_site2_1": [
-  954,
-  2142,
+  274,
+  2534,
   64,
   64
  ],
  "turret_t1_accent": [
-  1022,
-  2142,
+  342,
+  2534,
   64,
   64
  ],
  "turret_t1_cupric": [
-  1090,
-  2142,
+  410,
+  2534,
   64,
   64
  ],
  "turret_t1_ferrous": [
-  1158,
-  2142,
+  478,
+  2534,
   64,
   64
  ],
  "turret_t2_accent": [
-  1226,
-  2142,
+  546,
+  2534,
   64,
   64
  ],
  "turret_t2_cupric": [
-  1294,
-  2142,
+  614,
+  2534,
   64,
   64
  ],
  "turret_t2_ferrous": [
-  1362,
-  2142,
+  682,
+  2534,
   64,
   64
  ],
  "warden_accent": [
-  1430,
-  2142,
-  64,
-  64
+  3566,
+  1454,
+  128,
+  128
  ],
  "warden_accent_action1": [
-  1498,
-  2142,
-  64,
-  64
+  3698,
+  1454,
+  128,
+  128
  ],
  "warden_accent_action2": [
-  1566,
-  2142,
-  64,
-  64
+  3830,
+  1454,
+  128,
+  128
  ],
  "warden_accent_action3": [
-  1634,
-  2142,
-  64,
-  64
+  3962,
+  1454,
+  128,
+  128
  ],
  "warden_accent_action4": [
-  1702,
-  2142,
-  64,
-  64
+  2,
+  1586,
+  128,
+  128
  ],
  "warden_accent_move1": [
-  1770,
-  2142,
-  64,
-  64
+  134,
+  1586,
+  128,
+  128
  ],
  "warden_accent_move2": [
-  1838,
-  2142,
-  64,
-  64
+  266,
+  1586,
+  128,
+  128
  ],
  "warden_cupric": [
-  1906,
-  2142,
-  64,
-  64
+  398,
+  1586,
+  128,
+  128
  ],
  "warden_cupric_action1": [
-  1974,
-  2142,
-  64,
-  64
+  530,
+  1586,
+  128,
+  128
  ],
  "warden_cupric_action2": [
-  2042,
-  2142,
-  64,
-  64
+  662,
+  1586,
+  128,
+  128
  ],
  "warden_cupric_action3": [
-  2110,
-  2142,
-  64,
-  64
+  794,
+  1586,
+  128,
+  128
  ],
  "warden_cupric_action4": [
-  2178,
-  2142,
-  64,
-  64
+  926,
+  1586,
+  128,
+  128
  ],
  "warden_cupric_move1": [
-  2246,
-  2142,
-  64,
-  64
+  1058,
+  1586,
+  128,
+  128
  ],
  "warden_cupric_move2": [
-  2314,
-  2142,
-  64,
-  64
+  1190,
+  1586,
+  128,
+  128
  ],
  "warden_ferrous": [
-  2382,
-  2142,
-  64,
-  64
+  1322,
+  1586,
+  128,
+  128
  ],
  "warden_ferrous_action1": [
-  2450,
-  2142,
-  64,
-  64
+  1454,
+  1586,
+  128,
+  128
  ],
  "warden_ferrous_action2": [
-  2518,
-  2142,
-  64,
-  64
+  1586,
+  1586,
+  128,
+  128
  ],
  "warden_ferrous_action3": [
-  2586,
-  2142,
-  64,
-  64
+  1718,
+  1586,
+  128,
+  128
  ],
  "warden_ferrous_action4": [
-  2654,
-  2142,
-  64,
-  64
+  1850,
+  1586,
+  128,
+  128
  ],
  "warden_ferrous_move1": [
-  2722,
-  2142,
-  64,
-  64
+  1982,
+  1586,
+  128,
+  128
  ],
  "warden_ferrous_move2": [
-  2790,
-  2142,
-  64,
-  64
+  2114,
+  1586,
+  128,
+  128
  ],
  "wisp_accent": [
-  2858,
-  2142,
+  750,
+  2534,
   64,
   64
  ],
  "wisp_accent_action1": [
-  2926,
-  2142,
+  818,
+  2534,
   64,
   64
  ],
  "wisp_accent_action2": [
-  2994,
-  2142,
+  886,
+  2534,
   64,
   64
  ],
  "wisp_accent_action3": [
-  3062,
-  2142,
+  954,
+  2534,
   64,
   64
  ],
  "wisp_accent_action4": [
-  3130,
-  2142,
+  1022,
+  2534,
   64,
   64
  ],
  "wisp_accent_move1": [
-  3198,
-  2142,
+  1090,
+  2534,
   64,
   64
  ],
  "wisp_accent_move2": [
-  3266,
-  2142,
+  1158,
+  2534,
   64,
   64
  ],
  "wisp_cupric": [
-  3334,
-  2142,
+  1226,
+  2534,
   64,
   64
  ],
  "wisp_cupric_action1": [
-  3402,
-  2142,
+  1294,
+  2534,
   64,
   64
  ],
  "wisp_cupric_action2": [
-  3470,
-  2142,
+  1362,
+  2534,
   64,
   64
  ],
  "wisp_cupric_action3": [
-  3538,
-  2142,
+  1430,
+  2534,
   64,
   64
  ],
  "wisp_cupric_action4": [
-  3606,
-  2142,
+  1498,
+  2534,
   64,
   64
  ],
  "wisp_cupric_move1": [
-  3674,
-  2142,
+  1566,
+  2534,
   64,
   64
  ],
  "wisp_cupric_move2": [
-  3742,
-  2142,
+  1634,
+  2534,
   64,
   64
  ],
  "wisp_ferrous": [
-  3810,
-  2142,
+  1702,
+  2534,
   64,
   64
  ],
  "wisp_ferrous_action1": [
-  3878,
-  2142,
+  1770,
+  2534,
   64,
   64
  ],
  "wisp_ferrous_action2": [
-  3946,
-  2142,
+  1838,
+  2534,
   64,
   64
  ],
  "wisp_ferrous_action3": [
-  4014,
-  2142,
+  1906,
+  2534,
   64,
   64
  ],
  "wisp_ferrous_action4": [
-  2,
-  2210,
+  1974,
+  2534,
   64,
   64
  ],
  "wisp_ferrous_move1": [
-  70,
-  2210,
+  2042,
+  2534,
   64,
   64
  ],
  "wisp_ferrous_move2": [
-  138,
-  2210,
+  2110,
+  2534,
   64,
   64
  ],
  "wreck_pile": [
-  206,
-  2210,
+  2178,
+  2534,
   64,
   64
  ]

@@ -191,6 +191,7 @@ mod environment;
 mod minimap;
 mod motion;
 mod panel_draw;
+mod pits;
 mod world;
 use chrome::*;
 use entities::*;
@@ -214,32 +215,35 @@ pub(crate) const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
 // legibility, and raising them must never thicken the world's weight.
 const BONE: Color = color_u8!(232, 228, 216, 255);
 const BONE_FAINT: Color = color_u8!(232, 228, 216, 90);
-const UNIT_DRAW_SCALE: f32 = 1.05;
+const DEFAULT_UNIT_DRAW_SCALE: f32 = 1.05;
+const HEAVY_UNIT_DRAW_SCALE: f32 = 1.5;
+const LARGE_UNIT_DRAW_SCALE: f32 = 2.0;
 const SCRAP_COLOR: Color = crate::theme::TEXT_ACCENT;
 const HP_BACK: Color = color_u8!(20, 20, 24, 220);
 const DANGER: Color = crate::theme::TEXT_DANGER;
 const PANEL: Color = crate::theme::SURFACE_PANEL;
 
-fn combat_icon_color(icon: crate::panel::CombatIcon) -> Color {
-    use crate::panel::CombatIcon;
+fn capability_icon_color(icon: crate::panel::CapabilityIcon) -> Color {
+    use crate::panel::CapabilityIcon;
     match icon {
-        CombatIcon::Weapon => Color::new(0.85, 0.32, 0.29, 0.86),
-        CombatIcon::AirWeapon => Color::new(0.38, 0.70, 0.95, 0.90),
-        CombatIcon::DeadZone => Color::new(1.0, 0.68, 0.18, 0.92),
-        CombatIcon::Vision => Color::new(0.63, 0.77, 0.94, 0.86),
-        CombatIcon::Radar => Color::new(0.22, 0.76, 0.72, 0.90),
-        CombatIcon::Repair => Color::new(0.38, 0.82, 0.45, 0.90),
+        CapabilityIcon::Weapon => Color::new(0.85, 0.32, 0.29, 0.86),
+        CapabilityIcon::AirWeapon => Color::new(0.38, 0.70, 0.95, 0.90),
+        CapabilityIcon::DeadZone => Color::new(1.0, 0.68, 0.18, 0.92),
+        CapabilityIcon::Vision => Color::new(0.63, 0.77, 0.94, 0.86),
+        CapabilityIcon::Radar => Color::new(0.22, 0.76, 0.72, 0.90),
+        CapabilityIcon::Repair => Color::new(0.38, 0.82, 0.45, 0.90),
+        CapabilityIcon::EconomySupport => Color::new(0.95, 0.72, 0.24, 0.92),
     }
 }
 
-fn draw_combat_icon(
+fn draw_capability_icon(
     center: Vec2,
     radius: f32,
-    icon: crate::panel::CombatIcon,
+    icon: crate::panel::CapabilityIcon,
     color: Color,
     plate: bool,
 ) {
-    use crate::panel::CombatIcon;
+    use crate::panel::CapabilityIcon;
     let radius = radius.max(2.0);
     let stroke = (radius * 0.18).clamp(1.0, 2.0);
     if plate {
@@ -251,7 +255,7 @@ fn draw_combat_icon(
         );
     }
     match icon {
-        CombatIcon::Weapon | CombatIcon::DeadZone => {
+        CapabilityIcon::Weapon | CapabilityIcon::DeadZone => {
             draw_circle_lines(center.x, center.y, radius * 0.58, stroke, color);
             draw_line(
                 center.x - radius,
@@ -285,7 +289,7 @@ fn draw_combat_icon(
                 stroke,
                 color,
             );
-            if icon == CombatIcon::DeadZone {
+            if icon == CapabilityIcon::DeadZone {
                 draw_line(
                     center.x - radius * 0.78,
                     center.y + radius * 0.78,
@@ -296,7 +300,7 @@ fn draw_combat_icon(
                 );
             }
         }
-        CombatIcon::AirWeapon => {
+        CapabilityIcon::AirWeapon => {
             // A top-down aircraft inside four targeting brackets. The
             // aircraft names the domain; the brackets make this an attack
             // reach mark rather than a place the selected unit can fly.
@@ -349,7 +353,7 @@ fn draw_combat_icon(
                 color,
             );
         }
-        CombatIcon::Vision => {
+        CapabilityIcon::Vision => {
             let left = vec2(center.x - radius, center.y);
             let right = vec2(center.x + radius, center.y);
             let upper = vec2(center.x, center.y - radius * 0.62);
@@ -359,7 +363,7 @@ fn draw_combat_icon(
             }
             draw_circle(center.x, center.y, radius * 0.28, color);
         }
-        CombatIcon::Radar => {
+        CapabilityIcon::Radar => {
             let origin = center + vec2(-radius * 0.58, radius * 0.58);
             draw_circle(origin.x, origin.y, radius * 0.18, color);
             for ring in [0.62, 1.0] {
@@ -380,7 +384,7 @@ fn draw_combat_icon(
                 }
             }
         }
-        CombatIcon::Repair => {
+        CapabilityIcon::Repair => {
             draw_line(
                 center.x - radius,
                 center.y,
@@ -395,6 +399,28 @@ fn draw_combat_icon(
                 center.x,
                 center.y + radius,
                 stroke * 1.25,
+                color,
+            );
+        }
+        CapabilityIcon::EconomySupport => {
+            let left = center - vec2(radius * 0.48, 0.0);
+            let right = center + vec2(radius * 0.48, 0.0);
+            draw_circle_lines(left.x, left.y, radius * 0.42, stroke, color);
+            draw_circle_lines(right.x, right.y, radius * 0.42, stroke, color);
+            draw_line(
+                left.x + radius * 0.22,
+                left.y - radius * 0.22,
+                right.x - radius * 0.22,
+                right.y - radius * 0.22,
+                stroke,
+                color,
+            );
+            draw_line(
+                left.x + radius * 0.22,
+                left.y + radius * 0.22,
+                right.x - radius * 0.22,
+                right.y + radius * 0.22,
+                stroke,
                 color,
             );
         }
@@ -548,6 +574,7 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     environment::draw_backdrop(game);
     let alpha = game.render_alpha();
     draw_tiles(game, sprites);
+    pits::draw_pits(game);
     crate::render::world::draw_extractor_frames(game, sprites);
     environment::draw_boundary(game);
     draw_scorches(game, sprites);
@@ -633,8 +660,39 @@ fn unit_work_facing(
 
 fn unit_selection_radius(kind: oxide_sim::UnitKind, zoom: f32, padding: f32) -> f32 {
     let collision_radius = kind.stats().radius.to_num::<f32>();
-    let visual_radius = UNIT_DRAW_SCALE * 0.5;
+    let visual_radius = unit_draw_scale(kind) * 0.5;
     collision_radius.max(visual_radius) * zoom + padding
+}
+
+pub(crate) fn unit_draw_scale(kind: oxide_sim::UnitKind) -> f32 {
+    match kind {
+        oxide_sim::UnitKind::Condor
+        | oxide_sim::UnitKind::Moth
+        | oxide_sim::UnitKind::Breaker
+        | oxide_sim::UnitKind::Avalanche => LARGE_UNIT_DRAW_SCALE,
+        oxide_sim::UnitKind::Warden => HEAVY_UNIT_DRAW_SCALE,
+        _ => DEFAULT_UNIT_DRAW_SCALE,
+    }
+}
+
+fn air_presentation(kind: oxide_sim::UnitKind, zoom: f32) -> (Vec2, Vec2, f32) {
+    match kind {
+        oxide_sim::UnitKind::Condor => (
+            vec2(zoom * 1.75, zoom * 1.1875),
+            vec2(zoom * 0.125, zoom * 0.1875),
+            zoom * 0.0625,
+        ),
+        oxide_sim::UnitKind::Moth => (
+            vec2(zoom * 1.55, zoom),
+            vec2(zoom * 0.11, zoom * 0.17),
+            zoom * 0.08,
+        ),
+        _ => (
+            vec2(zoom * 0.9, zoom * 0.9),
+            vec2(zoom * 0.16, zoom * 0.26),
+            zoom * 0.18,
+        ),
+    }
 }
 
 fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim::stats::Domain) {
@@ -645,7 +703,9 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
     let (view_lo, view_hi) = game.camera.world_rect();
     const CULL_MARGIN: f32 = 2.5;
     for unit in game.state.units() {
-        if unit.kind.stats().domain != domain {
+        // The body's current layer, not its kind's: a parked airframe
+        // draws among ground bodies with no shadow or lift.
+        if unit.domain() != domain {
             continue;
         }
         if unit.player != game.human && !game.all_seeing() && !game.my_vision().visible(unit.tile())
@@ -662,7 +722,8 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             continue;
         }
         let mut screen = game.camera.to_screen(pos);
-        let dest = zoom * UNIT_DRAW_SCALE;
+        let draw_scale = unit_draw_scale(unit.kind);
+        let dest = zoom * draw_scale;
         let current = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
         let moving = game
             .prev_pos
@@ -700,20 +761,20 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             _ => work_facing.unwrap_or_else(|| game.facing.get(&unit.id.0).copied().unwrap_or(0.0)),
         };
         if airborne {
-            let shadow = zoom * 0.9;
+            let (shadow_size, shadow_offset, body_lift) = air_presentation(unit.kind, zoom);
             draw_texture_ex(
                 sprites.texture(),
-                screen.x - shadow * 0.5 + zoom * 0.16,
-                screen.y - shadow * 0.5 + zoom * 0.26,
+                screen.x - shadow_size.x * 0.5 + shadow_offset.x,
+                screen.y - shadow_size.y * 0.5 + shadow_offset.y,
                 WHITE,
                 DrawTextureParams {
-                    dest_size: Some(vec2(shadow, shadow)),
+                    dest_size: Some(shadow_size),
                     source: Some(sprites.air_shadow()),
                     ..Default::default()
                 },
             );
             // The body rides visibly above its shadow.
-            screen.y -= zoom * 0.18;
+            screen.y -= body_lift;
         }
         let body = screen;
         if game.selection.units.contains(&unit.id) {
@@ -797,10 +858,10 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         }
         let max_hp = unit.kind.stats().max_hp;
         if unit.hp < max_hp {
-            let w = zoom * 0.8;
+            let w = zoom * (draw_scale - 0.25).clamp(0.8, 1.4);
             hp_bar(
                 screen.x - w * 0.5,
-                screen.y - zoom * 0.62,
+                screen.y - zoom * (draw_scale * 0.5 + 0.095),
                 w,
                 unit.hp,
                 max_hp,
@@ -971,7 +1032,7 @@ mod tests {
         let zoom = 32.0;
         let padding = 4.0;
         let radius = super::unit_selection_radius(oxide_sim::UnitKind::Harvester, zoom, padding);
-        let visual_radius = super::UNIT_DRAW_SCALE * zoom * 0.5;
+        let visual_radius = super::unit_draw_scale(oxide_sim::UnitKind::Harvester) * zoom * 0.5;
         let collision_radius = oxide_sim::UnitKind::Harvester
             .stats()
             .radius
@@ -980,6 +1041,60 @@ mod tests {
 
         assert!((radius - (visual_radius + padding)).abs() < 1e-6);
         assert!(radius > collision_radius + padding);
+    }
+
+    #[test]
+    fn condor_uses_its_reviewed_two_tile_canvas_and_large_shadow() {
+        let zoom = 64.0;
+        assert_eq!(super::unit_draw_scale(oxide_sim::UnitKind::Condor), 2.0);
+        let (shadow, offset, lift) = super::air_presentation(oxide_sim::UnitKind::Condor, zoom);
+        assert_eq!(shadow, vec2(112.0, 76.0));
+        assert_eq!(offset, vec2(8.0, 12.0));
+        assert_eq!(lift, 4.0);
+        assert!(
+            super::unit_selection_radius(oxide_sim::UnitKind::Condor, zoom, 4.0)
+                > super::unit_selection_radius(oxide_sim::UnitKind::Harvester, zoom, 4.0)
+        );
+    }
+
+    #[test]
+    fn moth_uses_its_two_tile_canvas_and_bomber_shadow() {
+        let zoom = 64.0;
+        assert_eq!(super::unit_draw_scale(oxide_sim::UnitKind::Moth), 2.0);
+        let (shadow, offset, lift) = super::air_presentation(oxide_sim::UnitKind::Moth, zoom);
+        assert_eq!(shadow, vec2(99.2, 64.0));
+        assert_eq!(offset, vec2(7.04, 10.88));
+        assert_eq!(lift, 5.12);
+        assert!(
+            super::unit_selection_radius(oxide_sim::UnitKind::Moth, zoom, 4.0)
+                > super::unit_selection_radius(oxide_sim::UnitKind::Harvester, zoom, 4.0)
+        );
+    }
+
+    #[test]
+    fn advanced_ground_units_use_two_tile_canvases() {
+        let zoom = 64.0;
+        for kind in [oxide_sim::UnitKind::Breaker, oxide_sim::UnitKind::Avalanche] {
+            assert_eq!(super::unit_draw_scale(kind), 2.0);
+            assert!(
+                super::unit_selection_radius(kind, zoom, 4.0)
+                    > super::unit_selection_radius(oxide_sim::UnitKind::Sentinel, zoom, 4.0,)
+            );
+        }
+    }
+
+    #[test]
+    fn warden_is_larger_than_standard_armor_but_smaller_than_crucible_heavies() {
+        let zoom = 64.0;
+        assert_eq!(super::unit_draw_scale(oxide_sim::UnitKind::Warden), 1.5);
+        assert!(
+            super::unit_selection_radius(oxide_sim::UnitKind::Warden, zoom, 4.0)
+                > super::unit_selection_radius(oxide_sim::UnitKind::Sentinel, zoom, 4.0)
+        );
+        assert!(
+            super::unit_selection_radius(oxide_sim::UnitKind::Warden, zoom, 4.0)
+                < super::unit_selection_radius(oxide_sim::UnitKind::Breaker, zoom, 4.0)
+        );
     }
 
     #[test]
@@ -992,8 +1107,8 @@ mod tests {
 
     #[test]
     fn ground_and_air_weapon_marks_do_not_depend_on_one_hue() {
-        let ground = super::combat_icon_color(crate::panel::CombatIcon::Weapon);
-        let air = super::combat_icon_color(crate::panel::CombatIcon::AirWeapon);
+        let ground = super::capability_icon_color(crate::panel::CapabilityIcon::Weapon);
+        let air = super::capability_icon_color(crate::panel::CapabilityIcon::AirWeapon);
 
         assert!(ground.r > ground.b, "ground range stays warm");
         assert!(air.b > air.r, "air range stays cool");

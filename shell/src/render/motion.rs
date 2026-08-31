@@ -86,6 +86,12 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
         return UnitFrame::Harvester { cargo, pose };
     }
 
+    if kind == UnitKind::Tender
+        && let UnitWorkState::Repairing { cycle, .. } = state.work
+    {
+        return tender_work_frame(cycle);
+    }
+
     if let LocomotionState::Moving { cycle } = state.locomotion {
         return match state.propulsion {
             PropulsionState::LiftRotors { cycle } => lift_rotor_frame(kind, cycle),
@@ -186,6 +192,13 @@ fn harvester_work_frame(cycle: f32) -> HarvesterPose {
     }
 }
 
+fn tender_work_frame(cycle: f32) -> UnitFrame {
+    match cycle_index(cycle, 5) {
+        0 => UnitFrame::Idle,
+        phase => UnitFrame::Action(phase - 1),
+    }
+}
+
 fn preparation_progress(weapons: &[WeaponCycle]) -> Option<f32> {
     weapons
         .iter()
@@ -240,9 +253,9 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Shrike
             | UnitKind::Sylph
             | UnitKind::Condor
-            | UnitKind::Moth
             | UnitKind::Breaker
             | UnitKind::Avalanche => 1,
+            UnitKind::Moth => cycle_index(progress, 3),
             UnitKind::Harvester
             | UnitKind::Tender
             | UnitKind::Excavator
@@ -265,9 +278,9 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Shrike
             | UnitKind::Sylph
             | UnitKind::Condor
-            | UnitKind::Moth
             | UnitKind::Breaker
             | UnitKind::Avalanche => 2 + cycle_index(progress, 2),
+            UnitKind::Moth => 3 + cycle_index(progress, 3),
             UnitKind::Harvester
             | UnitKind::Tender
             | UnitKind::Excavator
@@ -464,6 +477,22 @@ mod tests {
     }
 
     #[test]
+    fn tender_welds_only_while_real_repair_work_is_active() {
+        let mut state = unit_state();
+        state.work = UnitWorkState::Repairing {
+            target: chassis::grid::TilePos::new(6, 5).center(),
+            cycle: 0.7,
+        };
+        assert_eq!(unit_frame(UnitKind::Tender, state), UnitFrame::Action(2));
+
+        state.work = UnitWorkState::Idle;
+        assert_eq!(unit_frame(UnitKind::Tender, state), UnitFrame::Idle);
+
+        state.locomotion = LocomotionState::Moving { cycle: 0.75 };
+        assert_eq!(unit_frame(UnitKind::Tender, state), UnitFrame::Moving(1));
+    }
+
+    #[test]
     fn lift_rotors_run_at_rest_and_attacks_override_them() {
         let mut state = unit_state();
         state.propulsion = PropulsionState::LiftRotors { cycle: 0.75 };
@@ -541,6 +570,34 @@ mod tests {
                 }
                 assert!(unit_preparation_frame(kind, progress) < count);
             }
+        }
+    }
+
+    #[test]
+    fn moth_uses_all_six_payload_frames_across_report_and_recovery() {
+        for (progress, expected) in [(0.0, 0), (0.34, 1), (0.67, 2)] {
+            assert_eq!(
+                unit_attack_frame(
+                    UnitKind::Moth,
+                    AttackPhase::Report {
+                        weapon: 0,
+                        progress,
+                    },
+                ),
+                expected,
+            );
+        }
+        for (progress, expected) in [(0.0, 3), (0.34, 4), (0.67, 5)] {
+            assert_eq!(
+                unit_attack_frame(
+                    UnitKind::Moth,
+                    AttackPhase::Recover {
+                        weapon: 0,
+                        progress,
+                    },
+                ),
+                expected,
+            );
         }
     }
 

@@ -17,9 +17,54 @@ an ordinary command source rather than a separate ruleset.
 - `tick` implements the fixed phase order for commands, production, movement,
   combat, cleanup, and victory.
 - `stats` is the single home for units, buildings, and balance constants.
-- `bot` contains observation, policy, and command-lowering code for automated
-  players.
+- `bot` resolves difficulty, stance, and seeded personality; maintains
+  fog-honest intelligence alongside an immutable briefing of public authored map
+  facts; maintains persistent air, lift, raid, and team playbooks; admits new
+  strategic work on shared 24-tick boundaries; and lowers exact reservations
+  plus utility intents into ordinary commands. The briefing's starts and
+  resource amounts are pre-match priors, never current contacts or live economy
+  state. Air and lift operations remain useful alone but can coordinate when
+  they share an objective, stop replacement loops after losing a dispatched
+  scout, and preserve first-carrier capital only when fog-honest evidence proves
+  it useful. Adaptive production fills an unreserved ordinary fighting line
+  before specialties. Player-facing difficulties protect opening floors of four,
+  five, six, and eight Sentinel-equivalents before voluntary capital, while
+  preserving the fourth Harvester and exact safe home Extractor opening. Only a
+  current visible ground threat can justify an emergency Turret, and emergency
+  Flak requires a current visible ground-attack aircraft. A think that starts
+  short stays recovery-gated until the next observation even though same-think
+  line orders count toward its projection. Once ready, capital leaves a Sentinel
+  queued beyond the upcoming production phase or keeps its exact cost available
+  while a ground objective remains. Unpaid remote foundations keep that cost in
+  the bank until they land. An admitted team-relief credibility watch may
+  persist while the gate is closed without becoming a new operation; its
+  designated home screen still counts toward the core. The bot keeps one
+  baseline Tender and adds more only for distinct reachable wounded ground
+  combatants, while persistent operations exclusively own bomber and
+  ground-attack-air cohorts. Scrapheap uses a reduced decision cadence;
+  Standard, Veteran, and Prime share the competent cadence and separate through
+  the remaining fair cognitive limits, including a fixed rung-specific strength
+  uncertainty that personality cannot change. Prime additionally uses the
+  ordinary focus-fire command to coordinate overlapping static defenses on one
+  currently visible threat. Player-facing construction places every defensive
+  building against credible approaches with role-specific weapon, spotting,
+  trigger, or path-disruption geometry and predicts builders against public
+  terrain plus observed dynamic blockers. Its Harvest recovery promotes only
+  matching worker damage to durable quarantine, preserves the union of
+  overlapping incidents, then clears each exact region through a bounded
+  current-sight sweep. A recalled recovery scout stays reserved until it is
+  observed safely home, where its retry cooldown begins. Arrays use a separate
+  sensor-site scorer that preserves useful in-map and nonredundant radar
+  coverage, faces equally useful sites toward fog-honest hostile evidence,
+  preserves active resource access, and binds a builder whose route is proven
+  against public terrain.
 - `vision` provides visibility and explored-world state.
+
+Outcome-relevant geometry is also fair under a map half-turn. Fixed-point vector
+scaling, equal-cost paths, group-goal snapping and spreading, footprint
+doorsteps, production spawns, and perfectly stacked collision separation use
+owner-local ranks and query-, footprint-, or map-relative frames instead of
+global entity ids or an absolute screen corner.
 
 ## Development
 

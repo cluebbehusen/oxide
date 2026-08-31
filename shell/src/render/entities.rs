@@ -108,7 +108,9 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
         | oxide_sim::Order::Salvage { .. }
         | oxide_sim::Order::RepairUnit { .. }
         | oxide_sim::Order::Found { .. } => Color::new(0.25, 0.58, 0.51, 0.55),
-        oxide_sim::Order::Board { .. } | oxide_sim::Order::Unload { .. } => BONE_FAINT,
+        oxide_sim::Order::Board { .. }
+        | oxide_sim::Order::Unload { .. }
+        | oxide_sim::Order::Land { .. } => BONE_FAINT,
         oxide_sim::Order::Idle => BONE_FAINT,
     };
     let goal_of = |order: &oxide_sim::Order| {
@@ -126,6 +128,7 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
             oxide_sim::Order::RepairUnit { unit } => game.state.unit(*unit)?.tile(),
             oxide_sim::Order::Board { transport } => game.state.unit(*transport)?.tile(),
             oxide_sim::Order::Unload { at } => *at,
+            oxide_sim::Order::Land { goal } => *goal,
             oxide_sim::Order::Attack { target, .. } => {
                 // A chase target draws only while its ground is
                 // seen — the victim may have slipped back into fog.
@@ -1127,12 +1130,14 @@ enum BuildingRangeKind {
     Vision,
     Radar,
     Repair,
+    EconomySupport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum BuildingRangeShape {
     Circle { center: Vec2, radius: f32 },
     FootprintOffset { min: Vec2, max: Vec2, radius: f32 },
+    FootprintSquare { min: Vec2, max: Vec2, radius: f32 },
 }
 
 impl BuildingRangeShape {
@@ -1144,6 +1149,10 @@ impl BuildingRangeShape {
                 (center - reach, center + reach)
             }
             Self::FootprintOffset { min, max, radius } => {
+                let reach = vec2(radius, radius);
+                (min - reach, max + reach)
+            }
+            Self::FootprintSquare { min, max, radius } => {
                 let reach = vec2(radius, radius);
                 (min - reach, max + reach)
             }
@@ -1164,6 +1173,7 @@ enum RangeStroke {
     LongDash,
     Dotted,
     DashDot,
+    TwinDot,
 }
 
 impl RangeStroke {
@@ -1178,6 +1188,10 @@ impl RangeStroke {
                 let phase = (distance / scale).rem_euclid(26.0);
                 phase < 11.0 || (16.0..19.0).contains(&phase)
             }
+            Self::TwinDot => {
+                let phase = (distance / scale).rem_euclid(18.0);
+                phase < 2.5 || (7.0..9.5).contains(&phase)
+            }
         }
     }
 }
@@ -1189,17 +1203,19 @@ fn range_stroke(kind: BuildingRangeKind) -> RangeStroke {
         BuildingRangeKind::Vision => RangeStroke::LongDash,
         BuildingRangeKind::Radar => RangeStroke::Dotted,
         BuildingRangeKind::Repair => RangeStroke::DashDot,
+        BuildingRangeKind::EconomySupport => RangeStroke::TwinDot,
     }
 }
 
-fn range_icon(kind: BuildingRangeKind) -> crate::panel::CombatIcon {
-    use crate::panel::CombatIcon;
+fn range_icon(kind: BuildingRangeKind) -> crate::panel::CapabilityIcon {
+    use crate::panel::CapabilityIcon;
     match kind {
-        BuildingRangeKind::Weapon => CombatIcon::Weapon,
-        BuildingRangeKind::DeadZone => CombatIcon::DeadZone,
-        BuildingRangeKind::Vision => CombatIcon::Vision,
-        BuildingRangeKind::Radar => CombatIcon::Radar,
-        BuildingRangeKind::Repair => CombatIcon::Repair,
+        BuildingRangeKind::Weapon => CapabilityIcon::Weapon,
+        BuildingRangeKind::DeadZone => CapabilityIcon::DeadZone,
+        BuildingRangeKind::Vision => CapabilityIcon::Vision,
+        BuildingRangeKind::Radar => CapabilityIcon::Radar,
+        BuildingRangeKind::Repair => CapabilityIcon::Repair,
+        BuildingRangeKind::EconomySupport => CapabilityIcon::EconomySupport,
     }
 }
 
@@ -1287,6 +1303,26 @@ fn rounded_footprint_path(min: Vec2, max: Vec2, radius: f32) -> Vec<Vec2> {
     points
 }
 
+fn square_footprint_path(min: Vec2, max: Vec2, radius: f32) -> [Vec2; 5] {
+    let outer_min = min - vec2(radius, radius);
+    let outer_max = max + vec2(radius, radius);
+    [
+        outer_min,
+        vec2(outer_max.x, outer_min.y),
+        outer_max,
+        vec2(outer_min.x, outer_max.y),
+        outer_min,
+    ]
+}
+
+fn footprint_distance_aura(distance: i32) -> f32 {
+    // Buildings draw to the outside edge of their occupied tiles, while the
+    // simulation compares the occupied tile coordinates themselves. Two
+    // nearest tiles eight coordinates apart have seven empty tile-widths
+    // between their footprint edges.
+    distance.saturating_sub(1) as f32
+}
+
 /// One range vocabulary serves selected buildings and placement ghosts.
 /// Keeping the visit pure makes omissions testable without a graphics
 /// context and avoids allocating in the frame loop.
@@ -1352,6 +1388,100 @@ fn visit_building_ranges(
             },
         });
     }
+    if matches!(
+        kind,
+        oxide_sim::BuildingKind::Foundry | oxide_sim::BuildingKind::Extractor
+    ) {
+        visit(BuildingRange {
+            kind: BuildingRangeKind::EconomySupport,
+            shape: BuildingRangeShape::FootprintSquare {
+                min: anchor,
+                max: anchor + size,
+                radius: footprint_distance_aura(oxide_sim::stats::EXTRACTOR_SUPPORT_RADIUS),
+            },
+        });
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EconomySupportLink {
+    extractor: oxide_sim::BuildingId,
+    foundry: oxide_sim::BuildingId,
+}
+
+fn selected_economy_support_links(game: &Game) -> Vec<EconomySupportLink> {
+    let Some(oxide_sim::Target::Building(selected)) =
+        range_subject(&game.selection.units, &game.selection.buildings)
+    else {
+        return Vec::new();
+    };
+    let Some(building) = game.state.building(selected) else {
+        return Vec::new();
+    };
+    if building.player != game.human || !building.built || building.hp == 0 {
+        return Vec::new();
+    }
+
+    match building.kind {
+        oxide_sim::BuildingKind::Extractor => game
+            .state
+            .buildings()
+            .iter()
+            .filter(|candidate| candidate.kind == oxide_sim::BuildingKind::Foundry)
+            .filter(|candidate| game.state.extractor_supported_by(building.id, candidate.id))
+            .map(|candidate| EconomySupportLink {
+                extractor: building.id,
+                foundry: candidate.id,
+            })
+            .collect(),
+        oxide_sim::BuildingKind::Foundry => game
+            .state
+            .buildings()
+            .iter()
+            .filter(|candidate| candidate.kind == oxide_sim::BuildingKind::Extractor)
+            .filter(|candidate| game.state.extractor_supported_by(candidate.id, building.id))
+            .map(|candidate| EconomySupportLink {
+                extractor: candidate.id,
+                foundry: building.id,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn building_center(building: &oxide_sim::Building) -> Vec2 {
+    let (width, height) = building.stats().size;
+    vec2(
+        building.anchor.x as f32 + width as f32 * 0.5,
+        building.anchor.y as f32 + height as f32 * 0.5,
+    )
+}
+
+fn draw_economy_support_links(game: &Game, scale: f32, color: Color) {
+    for link in selected_economy_support_links(game) {
+        let Some(extractor) = game.state.building(link.extractor) else {
+            continue;
+        };
+        let Some(foundry) = game.state.building(link.foundry) else {
+            continue;
+        };
+        let extractor = game.camera.to_screen(building_center(extractor));
+        let foundry = game.camera.to_screen(building_center(foundry));
+        let path = [extractor, foundry];
+        draw_line(
+            extractor.x,
+            extractor.y,
+            foundry.x,
+            foundry.y,
+            4.8 * scale,
+            Color::new(0.04, 0.04, 0.05, 0.72),
+        );
+        stroke_patterned_path(&path, RangeStroke::TwinDot, 2.4 * scale, color, scale);
+        for endpoint in path {
+            draw_circle(endpoint.x, endpoint.y, 3.0 * scale, color);
+            draw_circle_lines(endpoint.x, endpoint.y, 5.0 * scale, 1.4 * scale, color);
+        }
+    }
 }
 
 pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
@@ -1359,7 +1489,7 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
     let ring = |world: Vec2,
                 radius: f32,
                 stroke: RangeStroke,
-                icon: crate::panel::CombatIcon,
+                icon: crate::panel::CapabilityIcon,
                 color: Color,
                 thickness: f32| {
         if radius <= 0.0 {
@@ -1379,13 +1509,13 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
             );
         }
         let glyph = center + vec2(screen_radius * 0.707, -screen_radius * 0.707);
-        draw_combat_icon(glyph, 5.6 * s, icon, color, true);
+        draw_capability_icon(glyph, 5.6 * s, icon, color, true);
     };
     let footprint_offset = |min: Vec2,
                             max: Vec2,
                             radius: f32,
                             stroke: RangeStroke,
-                            icon: crate::panel::CombatIcon,
+                            icon: crate::panel::CapabilityIcon,
                             color: Color| {
         if radius <= 0.0 {
             return;
@@ -1400,7 +1530,7 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
             color,
             s,
         );
-        draw_combat_icon(
+        draw_capability_icon(
             vec2(max.x + radius * 0.707, min.y - radius * 0.707),
             5.6 * s,
             icon,
@@ -1414,11 +1544,14 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
     let vision_color = Color::new(0.63, 0.77, 0.94, 0.42);
     let radar_color = Color::new(0.22, 0.76, 0.72, 0.52);
     let repair_color = Color::new(0.38, 0.82, 0.45, 0.55);
+    let economy_support_color = Color::new(0.95, 0.72, 0.24, 0.72);
+
+    draw_economy_support_links(game, s, economy_support_color);
 
     let unit_rings = |world: Vec2, stats: &oxide_sim::stats::UnitStats| {
         for weapon in stats.weapons {
-            let icon = crate::panel::weapon_combat_icon(weapon);
-            let color = if icon == crate::panel::CombatIcon::AirWeapon {
+            let icon = crate::panel::weapon_capability_icon(weapon);
+            let color = if icon == crate::panel::CapabilityIcon::AirWeapon {
                 air_weapon_color
             } else {
                 weapon_color
@@ -1442,7 +1575,7 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
                 world,
                 stats.vision as f32,
                 RangeStroke::LongDash,
-                crate::panel::CombatIcon::Vision,
+                crate::panel::CapabilityIcon::Vision,
                 vision_color,
                 1.7,
             );
@@ -1456,6 +1589,7 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
                 BuildingRangeKind::Vision => vision_color,
                 BuildingRangeKind::Radar => radar_color,
                 BuildingRangeKind::Repair => repair_color,
+                BuildingRangeKind::EconomySupport => economy_support_color,
             };
             let stroke = range_stroke(range.kind);
             let icon = range_icon(range.kind);
@@ -1479,6 +1613,25 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
                 }
                 BuildingRangeShape::FootprintOffset { min, max, radius } => {
                     footprint_offset(min, max, radius, stroke, icon, color);
+                }
+                BuildingRangeShape::FootprintSquare { min, max, radius } => {
+                    let min = game.camera.to_screen(min);
+                    let max = game.camera.to_screen(max);
+                    let radius = radius * game.camera.zoom;
+                    stroke_patterned_path(
+                        &square_footprint_path(min, max, radius),
+                        stroke,
+                        1.9 * s,
+                        color,
+                        s,
+                    );
+                    draw_capability_icon(
+                        vec2(max.x + radius, min.y - radius),
+                        5.6 * s,
+                        icon,
+                        color,
+                        true,
+                    );
                 }
             }
         });
@@ -1623,6 +1776,33 @@ pub(crate) fn draw_drag_rect(game: &Game, input: &InputState) {
 mod tests {
     use super::*;
 
+    fn economy_support_game() -> Game {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        let frames: Vec<_> = scenario
+            .map
+            .iter()
+            .enumerate()
+            .flat_map(|(y, row)| {
+                row.char_indices()
+                    .filter(|(_, tile)| *tile == 'E')
+                    .map(move |(x, _)| (x as i32, y as i32))
+            })
+            .collect();
+        assert!(frames.len() >= 3, "fixture needs home and remote frames");
+        let last = frames.len() - 1;
+        scenario
+            .buildings
+            .extend(frames.into_iter().enumerate().map(|(index, (x, y))| {
+                oxide_sim::scenario::BuildingSpec {
+                    player: u8::from(index == last),
+                    kind: oxide_sim::BuildingKind::Extractor,
+                    x,
+                    y,
+                }
+            }));
+        Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("support fixture builds")
+    }
+
     #[test]
     fn range_rings_have_one_clear_subject() {
         let unit = oxide_sim::UnitId(3);
@@ -1637,6 +1817,73 @@ mod tests {
         );
         assert_eq!(range_subject(&[unit, oxide_sim::UnitId(4)], &[]), None);
         assert_eq!(range_subject(&[unit], &[building]), None);
+    }
+
+    #[test]
+    fn support_links_exist_only_for_connected_own_endpoints() {
+        let mut game = economy_support_game();
+        let supported = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| {
+                building.player == game.human
+                    && building.kind == oxide_sim::BuildingKind::Extractor
+                    && game.state.extractor_income(building.id)
+                        == Some(oxide_sim::ExtractorIncome::Supported)
+            })
+            .expect("supported own Extractor")
+            .id;
+        let remote = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| {
+                building.player == game.human
+                    && building.kind == oxide_sim::BuildingKind::Extractor
+                    && game.state.extractor_income(building.id)
+                        == Some(oxide_sim::ExtractorIncome::Remote)
+            })
+            .expect("remote own Extractor")
+            .id;
+        let foreign = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| {
+                building.player != game.human
+                    && building.kind == oxide_sim::BuildingKind::Extractor
+                    && game.state.extractor_income(building.id)
+                        == Some(oxide_sim::ExtractorIncome::Supported)
+            })
+            .expect("supported foreign Extractor")
+            .id;
+
+        game.selection.buildings = vec![supported];
+        let links = selected_economy_support_links(&game);
+        assert!(!links.is_empty());
+        assert!(links.iter().all(|link| link.extractor == supported));
+
+        let foundry = links[0].foundry;
+        game.selection.buildings = vec![foundry];
+        let from_foundry = selected_economy_support_links(&game);
+        assert!(from_foundry.contains(&EconomySupportLink {
+            extractor: supported,
+            foundry,
+        }));
+        assert!(
+            from_foundry.iter().all(|link| link.extractor != remote),
+            "remote Extractors cannot gain a decorative connection"
+        );
+
+        game.selection.buildings = vec![remote];
+        assert!(selected_economy_support_links(&game).is_empty());
+
+        game.selection.buildings = vec![foreign];
+        assert!(
+            selected_economy_support_links(&game).is_empty(),
+            "foreign support state must not be disclosed by a link"
+        );
     }
 
     #[test]
@@ -1692,6 +1939,44 @@ mod tests {
                 footprint_max + vec2(radius, radius),
             )
         );
+    }
+
+    #[test]
+    fn foundries_and_extractors_use_the_exact_square_support_footprint() {
+        let anchor = vec2(10.0, 20.0);
+        for kind in [
+            oxide_sim::BuildingKind::Foundry,
+            oxide_sim::BuildingKind::Extractor,
+        ] {
+            let mut ranges = Vec::new();
+            visit_building_ranges(anchor, kind, 0, |range| ranges.push(range));
+            let support = ranges
+                .iter()
+                .find(|range| range.kind == BuildingRangeKind::EconomySupport)
+                .expect("economic endpoints expose their support footprint");
+            let radius = footprint_distance_aura(oxide_sim::stats::EXTRACTOR_SUPPORT_RADIUS);
+            let size = kind.base_stats().size;
+            let footprint_max = anchor + vec2(size.0 as f32, size.1 as f32);
+            assert_eq!(
+                support.shape,
+                BuildingRangeShape::FootprintSquare {
+                    min: anchor,
+                    max: footprint_max,
+                    radius,
+                }
+            );
+            assert_eq!(
+                square_footprint_path(anchor, footprint_max, radius),
+                [
+                    anchor - vec2(radius, radius),
+                    vec2(footprint_max.x + radius, anchor.y - radius),
+                    footprint_max + vec2(radius, radius),
+                    vec2(anchor.x - radius, footprint_max.y + radius),
+                    anchor - vec2(radius, radius),
+                ],
+                "Chebyshev support has square corners"
+            );
+        }
     }
 
     #[test]
@@ -1762,6 +2047,7 @@ mod tests {
             BuildingRangeKind::Vision,
             BuildingRangeKind::Radar,
             BuildingRangeKind::Repair,
+            BuildingRangeKind::EconomySupport,
         ];
         let strokes = kinds.map(range_stroke);
         for (index, stroke) in strokes.iter().enumerate() {
@@ -1776,6 +2062,7 @@ mod tests {
             RangeStroke::LongDash,
             RangeStroke::Dotted,
             RangeStroke::DashDot,
+            RangeStroke::TwinDot,
         ] {
             for scale in [0.75, 1.0, 2.0] {
                 let samples: Vec<bool> = (0..240)

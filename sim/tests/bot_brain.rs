@@ -2,11 +2,23 @@
 //! driven through the public API.
 
 use chassis::grid::TilePos;
-use oxide_sim::bot::{ArmyState, Brain, Executive, Intent, Observation};
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::bot::{
+    ArmyState, Brain, Executive, Intent, Observation, PublicMapBriefing, Specialty,
+};
+use oxide_sim::scenario::{
+    BotConfig, BotDifficulty, BotStance, BuildingSpec, PlayerSpec, UnitSpec,
+};
 use oxide_sim::{
     BuildingKind, Command, Faction, Order, PlayerCommand, PlayerId, Scenario, State, UnitKind,
 };
+use std::sync::Arc;
+
+fn public_map(scenario: &Scenario) -> Arc<PublicMapBriefing> {
+    Arc::new(
+        PublicMapBriefing::from_scenario(scenario)
+            .expect("the focused scenario has a public map briefing"),
+    )
+}
 
 fn open_arena(units: Vec<UnitSpec>) -> Scenario {
     Scenario {
@@ -49,6 +61,22 @@ fn open_arena(units: Vec<UnitSpec>) -> Scenario {
         buildings: Vec::new(),
         meta: None,
     }
+}
+
+fn large_open_arena(units: Vec<UnitSpec>) -> Scenario {
+    let width = 40usize;
+    let height = 24usize;
+    let mut map = vec![format!("#{}#", ".".repeat(width - 2)); height];
+    map[0] = "#".repeat(width);
+    map[height - 1] = "#".repeat(width);
+    for (x, y, marker) in [(1usize, 1usize, b'1'), (width - 3, height - 3, b'2')] {
+        let mut row = map[y].as_bytes().to_vec();
+        row[x] = marker;
+        map[y] = String::from_utf8(row).unwrap();
+    }
+    let mut scenario = open_arena(units);
+    scenario.map = map;
+    scenario
 }
 
 fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
@@ -96,8 +124,14 @@ fn unseen_enemy_activity_cannot_touch_a_fog_honest_observation() {
             variant.tick(&[]);
             control.tick(&[]);
         }
-        let a = serde_json::to_string(&Observation::fog_honest(&control, PlayerId(0))).unwrap();
-        let b = serde_json::to_string(&Observation::fog_honest(&variant, PlayerId(0))).unwrap();
+        let control_obs = Observation::fog_honest(&control, PlayerId(0));
+        let variant_obs = Observation::fog_honest(&variant, PlayerId(0));
+        assert_eq!(
+            &control_obs.visible, &variant_obs.visible,
+            "enemy activity cannot become a vision source"
+        );
+        let a = serde_json::to_string(&control_obs).unwrap();
+        let b = serde_json::to_string(&variant_obs).unwrap();
         assert_eq!(a, b, "fog-honest observation leaked unseen enemy state");
     }
     // Sanity: the worlds themselves really did diverge (observations are
@@ -121,6 +155,10 @@ fn observation_distinguishes_explored_peaks_from_flyable_rock() {
     let rock = TilePos::new(7, 2);
 
     let fog = Observation::fog_honest(&state, PlayerId(0));
+    assert!(fog.visible(peak));
+    assert!(!fog.visible(TilePos::new(20, 10)));
+    assert!(!fog.visible(TilePos::new(-1, peak.y)));
+    assert!(!fog.visible(TilePos::new(fog.map_width, peak.y)));
     assert!(fog.explored(peak));
     assert!(!fog.explored(TilePos::new(20, 10)));
     assert!(!fog.explored(TilePos::new(-1, peak.y)));
@@ -130,10 +168,261 @@ fn observation_distinguishes_explored_peaks_from_flyable_rock() {
     assert_eq!(fog.known_peaks, vec![peak]);
 
     let omniscient = Observation::omniscient(&state, PlayerId(0));
+    assert!(omniscient.visible(TilePos::new(20, 10)));
     assert!(omniscient.explored(TilePos::new(20, 10)));
     assert!(omniscient.known_rock.contains(&rock));
     assert!(omniscient.known_peaks.contains(&peak));
     assert!(!omniscient.known_peaks.contains(&rock));
+}
+
+#[test]
+fn fog_honest_visibility_is_the_canonical_row_major_team_mask() {
+    let scenario = open_arena(vec![
+        unit(0, UnitKind::Harvester, 4, 2),
+        unit(1, UnitKind::Harvester, 19, 9),
+    ]);
+    let state = scenario.build().unwrap();
+    let me = PlayerId(0);
+    let observation = Observation::fog_honest(&state, me);
+    let vision = state.vision(me);
+    let expected: Vec<bool> = (0..state.map().height())
+        .flat_map(|y| (0..state.map().width()).map(move |x| vision.visible(TilePos::new(x, y))))
+        .collect();
+
+    assert_eq!(observation.visible, expected);
+    assert!(observation.visible(TilePos::new(4, 2)));
+    assert!(!observation.visible(TilePos::new(19, 9)));
+}
+
+#[test]
+fn fog_honest_observation_exposes_only_live_anonymous_salvage_incidents() {
+    let incident_tile = TilePos::new(7, 5);
+    let mut state = open_arena(vec![
+        unit(0, UnitKind::Harvester, incident_tile.x, incident_tile.y),
+        unit(1, UnitKind::Sentinel, 10, 5),
+    ])
+    .build()
+    .unwrap();
+    let sentinel = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(1))
+        .unwrap()
+        .id;
+
+    let mut observed = None;
+    for _ in 0..200 {
+        state.tick(&[]);
+        let observation = Observation::fog_honest(&state, PlayerId(0));
+        if !observation.salvage_incidents.is_empty() {
+            observed = Some(observation);
+            break;
+        }
+    }
+    let observation = observed.expect("the nearby Sentinel hits the Harvester");
+    assert_eq!(observation.salvage_incidents, vec![incident_tile]);
+    assert!(
+        Observation::fog_honest(&state, PlayerId(1))
+            .salvage_incidents
+            .is_empty(),
+        "the attacker cannot read the victim team's private warning memory"
+    );
+    assert_eq!(
+        serde_json::from_str::<Observation>(&serde_json::to_string(&observation).unwrap()).unwrap(),
+        observation,
+        "the observation wire preserves the anonymous warning tiles"
+    );
+
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![sentinel],
+            goal: TilePos::new(19, 9),
+            queue: false,
+        },
+    )]);
+    for _ in 0..oxide_sim::stats::HARVEST_INCIDENT_MEMORY_TICKS + 200 {
+        state.tick(&[]);
+    }
+    assert!(
+        Observation::fog_honest(&state, PlayerId(0))
+            .salvage_incidents
+            .is_empty(),
+        "expired vision incidents must not leak into a later observation"
+    );
+}
+
+#[test]
+fn a_later_trip_loss_keeps_replacement_workers_out_of_the_same_kill_zone() {
+    let exposed = TilePos::new(20, 5);
+    let safe = TilePos::new(2, 9);
+    let original_at = TilePos::new(19, 5);
+    let replacement_at = TilePos::new(3, 3);
+    let mut scenario = large_open_arena(vec![
+        unit(0, UnitKind::Harvester, original_at.x, original_at.y),
+        unit(0, UnitKind::Harvester, replacement_at.x, replacement_at.y),
+        unit(0, UnitKind::Kestrel, 18, 7),
+        unit(1, UnitKind::Bombard, 29, 5),
+        // A harmless spotter gives the hidden Bombard a legal target without
+        // itself making salvage unsafe.
+        unit(1, UnitKind::Harvester, 24, 3),
+    ]);
+    scenario.players[0].scrap = 0;
+    for source in [exposed, safe] {
+        let mut row = scenario.map[source.y as usize].as_bytes().to_vec();
+        row[source.x as usize] = b's';
+        scenario.map[source.y as usize] = String::from_utf8(row).unwrap();
+    }
+    let mut state = scenario.build().unwrap();
+    let original = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(0) && unit.tile() == original_at)
+        .expect("the first route worker exists")
+        .id;
+    let replacement = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(0) && unit.tile() == replacement_at)
+        .expect("the replacement worker exists")
+        .id;
+    let bombard = state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Bombard)
+        .expect("the hidden gun exists")
+        .id;
+
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![original],
+            node: exposed,
+            queue: false,
+        },
+    )]);
+    let mut delivered = false;
+    for _ in 0..800 {
+        let report = state.tick(&[]);
+        if report.events.iter().any(|event| {
+            matches!(
+                event,
+                oxide_sim::Event::ScrapDeposited {
+                    player: PlayerId(0),
+                    ..
+                }
+            )
+        }) {
+            delivered = true;
+            break;
+        }
+    }
+    assert!(delivered, "the route completed its first load");
+    assert!(matches!(
+        state.unit(original).expect("the first worker still lives").order,
+        Order::Harvest {
+            node,
+            retiring: false,
+            ..
+        } if node == exposed
+    ));
+
+    // A prior wound makes the staged artillery shot lethal. The first trip
+    // remains a real, completed Harvest cycle; only the later attack is
+    // arranged so the regression does not depend on two projectile timings.
+    let original_slot = state
+        .units()
+        .iter()
+        .position(|unit| unit.id == original)
+        .expect("the first worker still exists");
+    let mut document = serde_json::to_value(&state).unwrap();
+    document["units"][original_slot]["hp"] = serde_json::json!(45);
+    state = serde_json::from_value(document).unwrap();
+
+    let mut second_trip_started = false;
+    for _ in 0..500 {
+        state.tick(&[]);
+        if state.unit(original).is_some_and(|unit| unit.carrying > 0) {
+            second_trip_started = true;
+            break;
+        }
+    }
+    assert!(
+        second_trip_started,
+        "the same persistent Harvest program began a later trip"
+    );
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![bombard],
+            target: oxide_sim::Target::Unit(original),
+            queue: false,
+        },
+    )]);
+    for _ in 0..80 {
+        if !state.shells().is_empty() {
+            break;
+        }
+        state.tick(&[]);
+    }
+    assert!(
+        !state.shells().is_empty(),
+        "the fog-honest spotter gave the hidden gun a legal shot"
+    );
+    state.tick(&[cmd(
+        1,
+        Command::Stop {
+            units: vec![bombard],
+        },
+    )]);
+    let mut died = false;
+    for _ in 0..120 {
+        let report = state.tick(&[]);
+        if report.events.iter().any(
+            |event| matches!(event, oxide_sim::Event::UnitDied { unit, .. } if *unit == original),
+        ) {
+            died = true;
+            break;
+        }
+    }
+    assert!(died, "the later-trip worker died in the exposed zone");
+
+    let observation = Observation::fog_honest(&state, PlayerId(0));
+    let incident = *observation
+        .salvage_incidents
+        .first()
+        .expect("the loss leaves an anonymous local warning");
+    assert!(incident.chebyshev(exposed) <= oxide_sim::stats::HARVEST_INCIDENT_DANGER_RADIUS);
+    assert!(
+        observation
+            .known_wrecks
+            .iter()
+            .any(|(tile, amount)| tile.chebyshev(incident)
+                <= oxide_sim::stats::HARVEST_INCIDENT_DANGER_RADIUS
+                && *amount > 0),
+        "the tempting fresh wreck is known near the loss"
+    );
+
+    while !oxide_sim::bot::difficulty::strategic_admission_tick(state.current_tick()) {
+        state.tick(&[]);
+    }
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 7),
+        public_map(&scenario),
+    );
+    let commands = brain.act(&state);
+    let assigned: Vec<_> = commands
+        .iter()
+        .filter_map(|command| match &command.command {
+            Command::Harvest { units, node, .. } if units.contains(&replacement) => Some(*node),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(assigned, vec![safe]);
+    assert!(assigned.iter().all(|node| {
+        node.chebyshev(incident) > oxide_sim::stats::HARVEST_INCIDENT_DANGER_RADIUS
+    }));
 }
 
 #[test]
@@ -226,6 +515,20 @@ fn fog_honest_shows_ghosts_not_live_enemies() {
     assert!(
         obs.enemy_buildings.iter().any(|b| !b.seen),
         "the foundry lingers as a ghost"
+    );
+    let remembered_anchor = obs
+        .enemy_buildings
+        .iter()
+        .find(|b| !b.seen)
+        .expect("the foundry ghost exists")
+        .anchor;
+    assert!(
+        obs.explored(remembered_anchor),
+        "the ghost's ground remains explored"
+    );
+    assert!(
+        !obs.visible(remembered_anchor),
+        "remembered ground is not current sight"
     );
     assert!(
         obs.enemy_units.is_empty(),
@@ -480,13 +783,106 @@ fn own_observations_expose_salvage_and_deferred_found_commitments() {
 }
 
 #[test]
+fn own_observations_expose_current_paid_repairs_without_disclosing_queued_programs() {
+    let mut scenario = open_arena(vec![
+        unit(0, UnitKind::Harvester, 4, 3),
+        unit(0, UnitKind::Harvester, 4, 9),
+    ]);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Turret,
+        x: 17,
+        y: 3,
+    });
+    let state = scenario.build().unwrap();
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    let mut document = serde_json::to_value(&state).unwrap();
+    for building in document["buildings"].as_array_mut().unwrap() {
+        if building["id"] == serde_json::json!(turret.0) {
+            building["hp"] = serde_json::json!(1);
+        }
+    }
+    let mut state: State = serde_json::from_value(document).unwrap();
+    let active = state.units()[0].id;
+    let queued = state.units()[1].id;
+    state.tick(&[
+        cmd(
+            0,
+            Command::Repair {
+                units: vec![active],
+                building: turret,
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Move {
+                units: vec![queued],
+                goal: TilePos::new(19, 9),
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Repair {
+                units: vec![queued],
+                building: turret,
+                queue: true,
+            },
+        ),
+    ]);
+
+    let observation = Observation::fog_honest(&state, PlayerId(0));
+    assert!(
+        observation
+            .my_units
+            .iter()
+            .any(|unit| unit.id == active && unit.repairing),
+        "current voluntary upkeep is visible to the owner"
+    );
+    assert!(
+        observation
+            .my_units
+            .iter()
+            .any(|unit| unit.id == queued && !unit.repairing),
+        "a queued program stays opaque until it becomes current"
+    );
+
+    state.tick(&[cmd(
+        0,
+        Command::Stop {
+            units: vec![active],
+        },
+    )]);
+    let active = state.unit(active).unwrap();
+    assert_eq!(active.order, Order::Idle);
+    assert!(active.queue.is_empty());
+
+    let queued = state.unit(queued).unwrap();
+    assert!(matches!(queued.order, Order::Move { .. }));
+    assert!(
+        queued
+            .queue
+            .iter()
+            .any(|order| matches!(order, Order::Repair { .. })),
+        "stopping active repair must not erase another unit's queued program"
+    );
+}
+
+#[test]
 fn a_stranded_brain_spends_only_on_one_recovery_harvester() {
     let price = UnitKind::Harvester.stats().cost;
 
     let mut short = open_arena(Vec::new());
     short.players[0].scrap = price - 1;
+    let short_public_map = public_map(&short);
     let short = short.build().expect("the stranded arena builds");
-    let mut brain = Brain::balanced(PlayerId(0), 91);
+    let mut brain = Brain::balanced(PlayerId(0), short_public_map);
     assert_eq!(
         brain.act(&short),
         Vec::new(),
@@ -495,6 +891,7 @@ fn a_stranded_brain_spends_only_on_one_recovery_harvester() {
 
     let mut funded = open_arena(Vec::new());
     funded.players[0].scrap = price;
+    let funded_public_map = public_map(&funded);
     let funded = funded.build().expect("the funded arena builds");
     let foundry = funded
         .buildings()
@@ -502,7 +899,7 @@ fn a_stranded_brain_spends_only_on_one_recovery_harvester() {
         .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Foundry)
         .expect("the stranded seat retains its Foundry")
         .id;
-    let mut brain = Brain::balanced(PlayerId(0), 91);
+    let mut brain = Brain::balanced(PlayerId(0), funded_public_map);
     assert_eq!(
         brain.act(&funded),
         vec![PlayerCommand {
@@ -517,10 +914,198 @@ fn a_stranded_brain_spends_only_on_one_recovery_harvester() {
 }
 
 #[test]
-fn a_build_dropped_during_lowering_does_not_poison_its_preferred_anchor() {
+fn a_fallen_opening_core_stops_repairs_and_unpaid_deferred_capital() {
+    let mut scenario = open_arena(vec![
+        unit(0, UnitKind::Harvester, 4, 3),
+        unit(0, UnitKind::Harvester, 4, 10),
+        unit(0, UnitKind::Harvester, 5, 4),
+        unit(0, UnitKind::Harvester, 6, 4),
+        unit(0, UnitKind::Sentinel, 6, 6),
+        unit(0, UnitKind::Sentinel, 7, 6),
+        unit(0, UnitKind::Sentinel, 8, 6),
+    ]);
+    scenario.buildings.extend([
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 5,
+            y: 8,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Airworks,
+            x: 8,
+            y: 8,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Crucible,
+            x: 11,
+            y: 8,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Turret,
+            x: 17,
+            y: 2,
+        },
+    ]);
+    let foundry_cost = BuildingKind::Foundry
+        .base_stats()
+        .construction
+        .expect("expansion Foundries have a price")
+        .cost;
+    scenario.players[0].scrap = foundry_cost;
+    let state = scenario.build().expect("the deferred-capital arena builds");
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Turret)
+        .expect("the repair patient stands")
+        .id;
+    let mut document = serde_json::to_value(&state).unwrap();
+    for building in document["buildings"].as_array_mut().unwrap() {
+        if building["id"] == serde_json::json!(turret.0) {
+            building["hp"] = serde_json::json!(1);
+        }
+    }
+    let mut state: State = serde_json::from_value(document).unwrap();
+    let founder = state
+        .units()
+        .iter()
+        .find(|unit| unit.tile() == TilePos::new(4, 3))
+        .unwrap()
+        .id;
+    let repairer = state
+        .units()
+        .iter()
+        .find(|unit| unit.tile() == TilePos::new(4, 10))
+        .unwrap()
+        .id;
+    let anchor = TilePos::new(17, 8);
+    let report = state.tick(&[
+        cmd(
+            0,
+            Command::Repair {
+                units: vec![repairer],
+                building: turret,
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Build {
+                units: vec![founder],
+                kind: BuildingKind::Foundry,
+                anchor,
+                queue: false,
+                defer: true,
+            },
+        ),
+    ]);
+    assert!(
+        report
+            .events
+            .iter()
+            .all(|event| !matches!(event, oxide_sim::Event::CommandRejected { .. })),
+        "test premise: both voluntary programs are accepted: {:?}",
+        report.events
+    );
+    assert!(matches!(
+        state.unit(founder).unwrap().order,
+        Order::Found {
+            kind: BuildingKind::Foundry,
+            anchor: promised,
+        } if promised == anchor
+    ));
+    assert!(matches!(
+        state.unit(repairer).unwrap().order,
+        Order::Repair { building } if building == turret
+    ));
+    assert!(
+        Observation::fog_honest(&state, PlayerId(0))
+            .my_units
+            .iter()
+            .any(|unit| unit.id == repairer && unit.repairing),
+        "own voluntary upkeep is an honest controller-visible program"
+    );
+
+    let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 0);
+    let mut brain = Brain::scripted(PlayerId(0), config, public_map(&scenario));
+    while !oxide_sim::bot::difficulty::strategic_admission_tick(state.current_tick()) {
+        state.tick(&[]);
+    }
+    let commands = brain.act(&state);
+    assert!(
+        commands.iter().any(|command| matches!(
+            &command.command,
+            Command::Stop { units } if units == &[repairer]
+        )),
+        "the real player-facing brain cancels voluntary upkeep while its core is deficient: \
+         {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            &command.command,
+            Command::Stop { units } if units == &[founder]
+        )),
+        "the unpaid remote founder must release its claim while the core recovers: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )),
+        "released capital must immediately fund the missing combat core: {commands:?}"
+    );
+    assert!(
+        commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Build {
+                kind: BuildingKind::Foundry,
+                anchor: requested,
+                ..
+            } if requested == anchor
+        )),
+        "the same think must not recreate the paused expansion: {commands:?}"
+    );
+
+    let report = state.tick(&commands);
+    assert!(
+        report
+            .events
+            .iter()
+            .all(|event| !matches!(event, oxide_sim::Event::CommandRejected { .. })),
+        "the recovery commands must all be legal: {:?}",
+        report.events
+    );
+    assert!(!matches!(
+        state.unit(founder).unwrap().order,
+        Order::Found {
+            kind: BuildingKind::Foundry,
+            anchor: requested,
+        } if requested == anchor
+    ));
+    assert!(!matches!(
+        state.unit(repairer).unwrap().order,
+        Order::Repair { .. }
+    ));
+    assert!(state.buildings().iter().all(|building| {
+        building.player != PlayerId(0)
+            || building.kind != BuildingKind::Foundry
+            || building.anchor != anchor
+    }));
+}
+
+#[test]
+fn a_dispatched_build_that_never_appears_blacklists_only_its_anchor() {
     let mut scenario = open_arena(
         (0..5)
             .map(|offset| unit(0, UnitKind::Harvester, 3 + offset, 3))
+            .chain((0..5).map(|offset| unit(0, UnitKind::Sentinel, 3 + offset, 5)))
             .collect(),
     );
     scenario.players[0].scrap = 2_000;
@@ -528,30 +1113,8 @@ fn a_build_dropped_during_lowering_does_not_poison_its_preferred_anchor() {
     salvage_row[12] = b's';
     scenario.map[6] = String::from_utf8(salvage_row).unwrap();
     let mut state = scenario.build().expect("the construction arena builds");
-    let mut continuing = Brain::balanced(PlayerId(0), scenario.seed);
-
-    let opening = continuing.act(&state);
-    assert_eq!(
-        opening
-            .iter()
-            .filter(|command| matches!(command.command, Command::Harvest { .. }))
-            .count(),
-        5,
-        "the opening economy claims every idle worker before construction lowers"
-    );
-    assert!(
-        opening
-            .iter()
-            .all(|command| !matches!(command.command, Command::Build { .. })),
-        "with every worker already claimed, the executive cannot dispatch the build"
-    );
-
-    state.tick(&opening);
-    for _ in 1..8 {
-        state.tick(&[]);
-    }
-    assert_eq!(state.current_tick(), 8);
-
+    let mut continuing = Brain::balanced(PlayerId(0), public_map(&scenario));
+    let macro_cadence = oxide_sim::bot::difficulty::STRATEGIC_ADMISSION_CADENCE;
     let fabricator_anchor = |commands: &[PlayerCommand]| {
         commands.iter().find_map(|command| match command.command {
             Command::Build {
@@ -562,27 +1125,47 @@ fn a_build_dropped_during_lowering_does_not_poison_its_preferred_anchor() {
             _ => None,
         })
     };
-    let mut fresh = Brain::balanced(PlayerId(0), scenario.seed);
-    let preferred = fabricator_anchor(&fresh.act(&state))
-        .expect("a fresh commander dispatches its preferred Fabricator site");
-    let retried = fabricator_anchor(&continuing.act(&state))
-        .expect("the continuing commander retries the deferred Fabricator");
 
+    let opening = continuing.act(&state);
     assert_eq!(
-        retried, preferred,
-        "an intent that emitted no Build command is not evidence that the site was refused"
+        opening
+            .iter()
+            .filter(|command| matches!(command.command, Command::Harvest { .. }))
+            .count(),
+        3,
+        "the scout and builder each preempt one opening harvest chore"
     );
+    assert_eq!(
+        opening
+            .iter()
+            .filter(|command| matches!(command.command, Command::Move { .. }))
+            .count(),
+        1,
+        "the scout's exact claim must survive the same lowering pass"
+    );
+    let opening_anchor =
+        fabricator_anchor(&opening).expect("capital construction preempts a routine harvest chore");
 
-    // Conversely, an emitted command that produces no site is refusal
-    // evidence. Leave the valid command unapplied to model that outcome;
-    // the next audit must move away from the now-proven bad anchor.
-    for _ in 0..8 {
+    // Leave the emitted command unapplied. The next audit should treat the
+    // absent site as a refusal, while a fresh commander still prefers the
+    // untouched geometry.
+    for _ in 0..macro_cadence {
         state.tick(&[]);
     }
+    assert_eq!(state.current_tick(), macro_cadence);
+
+    let mut fresh = Brain::balanced(PlayerId(0), public_map(&scenario));
+    let preferred = fabricator_anchor(&fresh.act(&state))
+        .expect("a fresh commander dispatches its preferred Fabricator site");
     let after_refusal = fabricator_anchor(&continuing.act(&state))
-        .expect("the commander searches for another Fabricator site after refusal");
+        .expect("the continuing commander searches for another Fabricator site after refusal");
+
+    assert_eq!(
+        opening_anchor, preferred,
+        "a fresh commander should still prefer the unapplied command's legal geometry"
+    );
     assert_ne!(
-        after_refusal, retried,
+        after_refusal, opening_anchor,
         "a dispatched Build that never appears must still blacklist its anchor"
     );
 }
@@ -615,7 +1198,7 @@ fn a_brain_without_an_authored_aircraft_discovers_an_island_opponent() {
         },
     ]);
     let mut state = scenario.build().expect("the island arena builds");
-    let mut brain = Brain::balanced(PlayerId(0), scenario.seed);
+    let mut brain = Brain::balanced(PlayerId(0), public_map(&scenario));
     assert!(
         Observation::fog_honest(&state, PlayerId(0))
             .enemy_buildings
@@ -650,8 +1233,8 @@ fn a_brain_without_an_authored_aircraft_discovers_an_island_opponent() {
     }
 
     assert!(
-        saw_no_route,
-        "the ground sweep must prove the severed route"
+        !saw_no_route,
+        "the public terrain briefing should avoid a doomed ground probe"
     );
     assert!(
         saw_scout_flyer,
@@ -752,7 +1335,7 @@ fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
 }
 
 #[test]
-fn wounded_members_remain_reserved_after_full_repair() {
+fn qa_rear_line_stays_frozen_while_player_facing_releases_repaired_units() {
     // Executive semantics, pinned against a synthetic observation (the
     // executive is a pure function of what it is shown): a member below
     // the 35% pullback line and out of contact is Move-ordered to the
@@ -777,12 +1360,14 @@ fn wounded_members_remain_reserved_after_full_repair() {
         ally_buildings: Vec::new(),
         enemy_units: Vec::new(),
         enemy_buildings: Vec::new(),
+        visible: vec![true; 24 * 13],
         explored: vec![true; 24 * 13],
         known_scrap: Vec::new(),
         known_rock: Vec::new(),
         known_frames: Vec::new(),
         known_peaks: Vec::new(),
         known_wrecks: Vec::new(),
+        salvage_incidents: Vec::new(),
         blips: Vec::new(),
         faction: oxide_sim::Faction::Ferrous,
         my_shells: 0,
@@ -796,10 +1381,13 @@ fn wounded_members_remain_reserved_after_full_repair() {
         hp,
         idle: true,
         carrying: 0,
+        harvesting: None,
         cargo: 0,
         site: None,
         salvaging: None,
         founding: None,
+        repairing: false,
+        grounded: false,
     };
 
     let mut exec = Executive::new();
@@ -873,8 +1461,488 @@ fn wounded_members_remain_reserved_after_full_repair() {
         exec.armies()
             .iter()
             .all(|army| !army.members.contains(&UnitId(0))),
-        "scripted maintenance retains the rear line"
+        "QA maintenance retains the historical rear line"
     );
+
+    let _ = exec.maintain_player_facing(me, &healed, TilePos::new(1, 1));
+    let _ = exec.apply(
+        me,
+        &healed,
+        &[Intent::FormArmy {
+            staging: TilePos::new(6, 3),
+            size: 5,
+        }],
+    );
+    assert!(
+        exec.armies()
+            .iter()
+            .any(|army| army.members.contains(&UnitId(0))),
+        "the player-facing controller may redraft a genuinely repaired veteran"
+    );
+}
+
+#[test]
+fn scripted_brain_repairs_a_timed_out_rear_unit_before_redrafting_it() {
+    let mut scenario = large_open_arena(vec![
+        unit(0, UnitKind::Harvester, 3, 3),
+        unit(0, UnitKind::Harvester, 4, 3),
+        unit(0, UnitKind::Harvester, 5, 3),
+        unit(0, UnitKind::Harvester, 6, 3),
+        unit(0, UnitKind::Tender, 3, 8),
+        unit(0, UnitKind::Sentinel, 4, 6),
+        unit(0, UnitKind::Sentinel, 5, 6),
+        unit(0, UnitKind::Sentinel, 6, 6),
+        unit(0, UnitKind::Sentinel, 7, 6),
+        unit(0, UnitKind::Sentinel, 8, 6),
+        unit(0, UnitKind::Sentinel, 9, 6),
+    ]);
+    for y in 1..scenario.map.len() - 1 {
+        let mut row = scenario.map[y].as_bytes().to_vec();
+        row[20] = b'#';
+        scenario.map[y] = String::from_utf8(row).unwrap();
+    }
+    scenario.players[0].scrap = 0;
+    let state = scenario.build().expect("the divided repair arena builds");
+    let wounded = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Sentinel)
+        .expect("the wounded veteran exists")
+        .id;
+    let tender = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Tender)
+        .expect("the mobile welder exists")
+        .id;
+    let mut document = serde_json::to_value(state).unwrap();
+    for unit in document["units"].as_array_mut().unwrap() {
+        if unit["id"] == serde_json::json!(wounded.0) {
+            unit["hp"] = serde_json::json!(1);
+        }
+    }
+    let mut state: State = serde_json::from_value(document).unwrap();
+    let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_305);
+    let mut brain = Brain::scripted(PlayerId(0), config, public_map(&scenario));
+    let mut saw_initial_muster = false;
+    let mut saw_retreat = false;
+
+    while state.current_tick() <= 1_320 {
+        let commands = brain.act(&state);
+        saw_initial_muster |= commands.iter().any(|command| {
+            matches!(
+                &command.command,
+                Command::AttackMove { units, .. } if units.contains(&wounded)
+            )
+        });
+        saw_retreat |= commands.iter().any(|command| {
+            matches!(
+                &command.command,
+                Command::Move { units, queue: false, .. } if units == &[wounded]
+            )
+        });
+        assert!(commands.iter().all(|command| !matches!(
+            &command.command,
+            Command::RepairUnit { target, .. } if *target == wounded
+        )));
+        let report = state.tick(&commands);
+        assert!(
+            report
+                .events
+                .iter()
+                .all(|event| !matches!(event, oxide_sim::Event::CommandRejected { .. })),
+            "the repair lifecycle emitted an illegal command: {:?}",
+            report.events
+        );
+        if saw_retreat {
+            assert!(
+                brain
+                    .executive()
+                    .armies()
+                    .iter()
+                    .all(|army| !army.members.contains(&wounded))
+            );
+        }
+    }
+    assert!(saw_initial_muster, "the wounded unit entered the real army");
+    assert!(saw_retreat, "the real Brain rotated it to the rear");
+    assert_eq!(state.unit(wounded).unwrap().hp, 1);
+
+    let mut document = serde_json::to_value(&state).unwrap();
+    document["players"][0]["scrap"] = serde_json::json!(10_000);
+    state = serde_json::from_value(document).unwrap();
+    let threshold = UnitKind::Sentinel.stats().max_hp * 3 / 4;
+    let mut saw_repair_order = false;
+    let mut reached_repair_threshold = false;
+
+    for _ in 0..4_000 {
+        let commands = brain.act(&state);
+        saw_repair_order |= commands.iter().any(|command| {
+            matches!(
+                &command.command,
+                Command::RepairUnit { units, target, queue: false }
+                    if units == &[tender] && *target == wounded
+            )
+        });
+        let hp_before = state.unit(wounded).unwrap().hp;
+        if saw_retreat && hp_before < threshold {
+            assert!(
+                brain
+                    .executive()
+                    .armies()
+                    .iter()
+                    .all(|army| !army.members.contains(&wounded))
+            );
+        }
+        let report = state.tick(&commands);
+        assert!(
+            report
+                .events
+                .iter()
+                .all(|event| !matches!(event, oxide_sim::Event::CommandRejected { .. })),
+            "the funded repair lifecycle emitted an illegal command: {:?}",
+            report.events
+        );
+        reached_repair_threshold |= state.unit(wounded).unwrap().hp >= threshold;
+        if reached_repair_threshold
+            && brain
+                .executive()
+                .armies()
+                .iter()
+                .any(|army| army.members.contains(&wounded))
+        {
+            assert!(saw_repair_order);
+            return;
+        }
+    }
+
+    panic!(
+        "the funded Brain never completed repair and redrafted its veteran: repair={saw_repair_order}, hp={}, armies={:?}",
+        state.unit(wounded).unwrap().hp,
+        brain.executive().armies()
+    );
+}
+
+#[test]
+fn scripted_brain_saves_a_visible_expansion_with_its_local_defenders() {
+    let expansion_anchor = TilePos::new(24, 12);
+    let mut scenario = large_open_arena(vec![
+        unit(0, UnitKind::Harvester, 3, 3),
+        unit(0, UnitKind::Harvester, 4, 3),
+        unit(0, UnitKind::Harvester, 5, 3),
+        unit(0, UnitKind::Harvester, 6, 3),
+        unit(0, UnitKind::Sentinel, 24, 16),
+        unit(0, UnitKind::Sentinel, 25, 16),
+        unit(0, UnitKind::Sentinel, 26, 16),
+        unit(0, UnitKind::Sentinel, 27, 16),
+        unit(1, UnitKind::Scuttler, 28, 13),
+    ]);
+    scenario.players[0].scrap = 0;
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Foundry,
+        x: expansion_anchor.x,
+        y: expansion_anchor.y,
+    });
+    let mut state = scenario
+        .build()
+        .expect("the expansion defense arena builds");
+    let expansion = state
+        .buildings()
+        .iter()
+        .find(|building| {
+            building.player == PlayerId(0)
+                && building.kind == BuildingKind::Foundry
+                && building.anchor == expansion_anchor
+        })
+        .expect("the remote Foundry stands")
+        .id;
+    let intruder = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(1) && unit.kind == UnitKind::Scuttler)
+        .expect("the expansion intruder exists")
+        .id;
+    let local_defenders: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Sentinel)
+        .map(|unit| unit.id)
+        .collect();
+    let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_200);
+    let mut brain = Brain::scripted(PlayerId(0), config, public_map(&scenario));
+    let mut saw_local_muster = false;
+    let intruder_max_hp = state.unit(intruder).unwrap().kind.stats().max_hp;
+    let mut saw_intruder_damage = false;
+    let mut last_intruder_tile = TilePos::containing(state.unit(intruder).unwrap().pos);
+    let mut destroyed_at = None;
+
+    for _ in 0..1_200 {
+        if let Some(unit) = state.unit(intruder) {
+            last_intruder_tile = TilePos::containing(unit.pos);
+        }
+        let commands = brain.act(&state);
+        saw_local_muster |= commands.iter().any(|command| {
+            matches!(
+                &command.command,
+                Command::AttackMove { units, goal, queue: false }
+                    if units.iter().any(|unit| local_defenders.contains(unit))
+                        && goal.chebyshev(expansion_anchor) <= 5
+            )
+        });
+        let report = state.tick(&commands);
+        assert!(
+            report
+                .events
+                .iter()
+                .all(|event| !matches!(event, oxide_sim::Event::CommandRejected { .. })),
+            "the expansion defense emitted an illegal command: {:?}",
+            report.events
+        );
+        saw_intruder_damage |= state
+            .unit(intruder)
+            .is_none_or(|unit| unit.hp < intruder_max_hp);
+
+        if state.unit(intruder).is_none() {
+            destroyed_at.get_or_insert(state.current_tick());
+            let stale_target_released = brain.executive().armies().iter().all(|army| {
+                army.target
+                    .is_none_or(|target| target.chebyshev(last_intruder_tile) > 4)
+            });
+            if stale_target_released {
+                break;
+            }
+        }
+    }
+
+    assert!(
+        saw_local_muster,
+        "the nearby screen must form at the expansion"
+    );
+    assert!(
+        saw_intruder_damage,
+        "the local screen never engaged the intruder after mustering"
+    );
+    assert!(
+        destroyed_at.is_some(),
+        "the local defense never cleared the raid"
+    );
+    assert!(
+        state
+            .building(expansion)
+            .is_some_and(|building| building.hp > 0),
+        "the expansion was lost despite a four-to-one local defense"
+    );
+    assert!(
+        brain.executive().armies().iter().all(|army| {
+            army.target
+                .is_none_or(|target| target.chebyshev(last_intruder_tile) > 4)
+        }),
+        "the defense kept prosecuting a cleared local contact"
+    );
+}
+
+#[test]
+fn scripted_brain_answers_visible_siege_before_it_enters_the_home_radius() {
+    let mut units: Vec<_> = (0..12)
+        .map(|index| unit(0, UnitKind::Sentinel, 4 + index % 4, 4 + index / 4))
+        .collect();
+    let home_anchor = TilePos::new(1, 1);
+    let siege_tile = TilePos::new(16, 2);
+    units.push(unit(0, UnitKind::Harvester, 3, 2));
+    units.push(unit(0, UnitKind::Kestrel, 15, 2));
+    units.push(unit(1, UnitKind::Avalanche, siege_tile.x, siege_tile.y));
+    let mut scenario = large_open_arena(units);
+    scenario.players[0].scrap = 0;
+    scenario.players[1].scrap = 0;
+    let mut state = scenario.build().expect("the siege defense arena builds");
+    let defenders: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Sentinel)
+        .map(|unit| unit.id)
+        .collect();
+    let observation = Observation::fog_honest(&state, PlayerId(0));
+    assert!(observation.visible(siege_tile));
+    assert!(siege_tile.chebyshev(home_anchor) > 8);
+
+    let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_200);
+    let mut brain = Brain::scripted(PlayerId(0), config, public_map(&scenario));
+    let mut saw_response = false;
+    let mut emitted = Vec::new();
+    for _ in 0..240 {
+        let commands = brain.act(&state);
+        saw_response |= commands.iter().any(|command| {
+            matches!(
+                &command.command,
+                Command::AttackMove { units, goal, queue: false }
+                    if *goal == siege_tile
+                        && units.iter().any(|unit| defenders.contains(unit))
+            )
+        });
+        emitted.extend(commands.iter().cloned());
+        let report = state.tick(&commands);
+        assert!(
+            report
+                .events
+                .iter()
+                .all(|event| !matches!(event, oxide_sim::Event::CommandRejected { .. })),
+            "siege defense emitted an illegal command: {:?}",
+            report.events
+        );
+        if saw_response {
+            break;
+        }
+    }
+
+    assert!(
+        saw_response,
+        "Prime saw an Avalanche inside its firing envelope but never sent the standing army: armies={:?}, commands={emitted:?}",
+        brain.executive().armies()
+    );
+}
+
+#[test]
+fn scripted_brain_completes_a_real_raid_and_releases_the_pair_for_reuse() {
+    let target_tile = TilePos::new(14, 8);
+    let mut scenario = large_open_arena(vec![
+        unit(0, UnitKind::Scuttler, 4, 4),
+        unit(0, UnitKind::Scuttler, 5, 4),
+        unit(0, UnitKind::Sentinel, 3, 6),
+        unit(0, UnitKind::Sentinel, 4, 6),
+        unit(0, UnitKind::Sentinel, 5, 6),
+        unit(0, UnitKind::Sentinel, 6, 6),
+        unit(1, UnitKind::Harvester, target_tile.x, target_tile.y),
+    ]);
+    scenario.players[0].scrap = 0;
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Array,
+        x: 10,
+        y: 10,
+    });
+    let mut state = scenario.build().expect("the raid lifecycle arena builds");
+    let target = state
+        .units()
+        .iter()
+        .find(|unit| {
+            unit.player == PlayerId(1)
+                && unit.kind == UnitKind::Harvester
+                && unit.tile() == target_tile
+        })
+        .expect("the exposed worker exists")
+        .id;
+    let mut raiders: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Scuttler)
+        .map(|unit| unit.id)
+        .collect();
+    raiders.sort_unstable();
+
+    let config = BotConfig::scripted(BotDifficulty::Scrapheap, BotStance::Balanced, 1_616_203);
+    let profile = config.resolve_profile();
+    assert_eq!(profile.primary, Specialty::Guile);
+    assert!(profile.traits.guile >= 65);
+    let mut brain = Brain::scripted(PlayerId(0), config, public_map(&scenario));
+    let home = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Foundry)
+        .expect("the raiders have a home Foundry")
+        .anchor;
+    let mut strike_at = None;
+    let mut destroyed_at = None;
+    let mut saw_egress = false;
+    let mut released_at = None;
+    let mut emitted = Vec::new();
+
+    for _ in 0..8_000 {
+        let tick = state.current_tick();
+        let commands = brain.act(&state);
+        emitted.extend(commands.iter().cloned());
+        for command in &commands {
+            match &command.command {
+                Command::Attack {
+                    units,
+                    target: oxide_sim::Target::Unit(candidate),
+                    queue: false,
+                } if units == &raiders && *candidate == target => {
+                    strike_at.get_or_insert(tick);
+                }
+                Command::AttackMove {
+                    units,
+                    goal,
+                    queue: false,
+                } if units == &raiders && *goal == target_tile => {
+                    strike_at.get_or_insert(tick);
+                }
+                Command::Move {
+                    units,
+                    goal,
+                    queue: false,
+                } if units == &raiders && goal.chebyshev(home) <= 2 && destroyed_at.is_some() => {
+                    saw_egress = true;
+                }
+                _ => {}
+            }
+        }
+        if destroyed_at.is_none() {
+            assert!(
+                brain
+                    .executive()
+                    .armies()
+                    .iter()
+                    .all(|army| army.members.iter().all(|unit| !raiders.contains(unit))),
+                "the generic army stole a member of the active raid at {tick}: commands={commands:?}, armies={:?}",
+                brain.executive().armies()
+            );
+        }
+        let report = state.tick(&commands);
+        assert!(
+            report
+                .events
+                .iter()
+                .all(|event| !matches!(event, oxide_sim::Event::CommandRejected { .. })),
+            "the raid lifecycle emitted an illegal command: {:?}",
+            report.events
+        );
+        if destroyed_at.is_none() && state.unit(target).is_none() {
+            destroyed_at = Some(state.current_tick());
+        }
+        if destroyed_at.is_some()
+            && brain
+                .executive()
+                .armies()
+                .iter()
+                .any(|army| raiders.iter().all(|raider| army.members.contains(raider)))
+        {
+            released_at = Some(state.current_tick());
+            break;
+        }
+    }
+
+    let strike = strike_at.unwrap_or_else(|| {
+        panic!("the exact raiding pair never attacked the exposed worker: {emitted:?}")
+    });
+    let destroyed = destroyed_at.expect("the raid completed its objective");
+    assert!(strike < destroyed);
+    assert!(
+        saw_egress,
+        "the raiding pair never received its egress order"
+    );
+    let released = released_at.unwrap_or_else(|| {
+        panic!(
+            "the completed raid never released its pair for ordinary reuse: tick={}, units={:?}, armies={:?}",
+            state.current_tick(),
+            raiders
+                .iter()
+                .map(|id| state.unit(*id).map(|unit| (id, unit.tile(), &unit.order)))
+                .collect::<Vec<_>>(),
+            brain.executive().armies()
+        )
+    });
+    assert!(destroyed < released);
 }
 
 /// A three-seat arena: seats 1 and 2 duel deep in seat 0's fog, so any

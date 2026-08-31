@@ -457,6 +457,59 @@ fn a_boarder_stands_down_when_the_sling_has_no_ground_route() {
 }
 
 #[test]
+fn a_boarder_walks_to_reachable_ground_beside_a_sling_over_a_building() {
+    let mut state = arena(
+        open_map(),
+        vec![
+            unit(0, UnitKind::Skyhook, 2, 2),
+            unit(0, UnitKind::Sentinel, 7, 2),
+        ],
+    )
+    .build()
+    .unwrap();
+    let sky = state.units()[0].id;
+    let rider = state.units()[1].id;
+    assert!(
+        !state.passable(state.unit(sky).unwrap().tile()),
+        "the transport deliberately hovers over its Foundry"
+    );
+
+    let first = state.tick(&[cmd(
+        0,
+        Command::Load {
+            units: vec![rider],
+            transport: sky,
+            queue: false,
+        },
+    )]);
+    assert!(first.events.iter().all(|event| !matches!(
+        event,
+        Event::OrderStalled {
+            unit,
+            reason: oxide_sim::event::StallReason::NoRoute,
+            ..
+        } if *unit == rider
+    )));
+
+    for _ in 0..200 {
+        let report = state.tick(&[]);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            Event::OrderStalled {
+                unit,
+                reason: oxide_sim::event::StallReason::NoRoute,
+                ..
+            } if *unit == rider
+        )));
+        if state.unit(rider).is_none() {
+            assert_eq!(state.unit(sky).unwrap().cargo.len(), 1);
+            return;
+        }
+    }
+    panic!("the rider never reached a valid boarding tile");
+}
+
+#[test]
 fn a_loaded_sling_stands_down_when_peaks_seal_its_air_route() {
     let map = vec![
         "########################".into(),

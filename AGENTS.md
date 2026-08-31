@@ -45,8 +45,11 @@ state on every run and platform.**
   `chassis::fx::Fx`; floats are presentation-only.
 - Never depend on `HashMap` or `HashSet` iteration for an outcome. Iterate in a
   canonical order and finish tie-break keys with an id or `(y, x)`.
-- All randomness comes from `chassis::rng::Pcg32` and a documented seed or
-  stream. Never use time, threads, the OS, or ambient entropy.
+- Once a `Scenario` exists, all outcome-relevant randomness comes from
+  `chassis::rng::Pcg32` and a recorded seed or documented stream. Never consult
+  time, threads, the OS, or ambient entropy during a match. The shell may use
+  ambient entropy only to choose fresh opponent personality seeds before
+  constructing a New Match scenario; those exact values must be recorded in it.
 - `State::tick(&[PlayerCommand])` is the only game-state transition. Mouse,
   touch, bot, replay, and debug input all stage recorded commands.
 - Simulation time is ticks only. Rendering, audio, caches, debug reads, and
@@ -77,10 +80,17 @@ information and shares human costs, prerequisites, queues, caps, build times,
 movement, combat, and economy. Never hide bot-only income, vision, stats, legal
 actions, or construction privileges behind controller code.
 
-Normal matches use one rules-based Balanced opponent. Improve that baseline
-through observable behavior and complete-match review before inventing a
-difficulty ladder. Automated metrics surface candidates and failures; human play
-and replay judgment decide whether behavior is credible or fun.
+Normal matches use one configurable rules-based controller. Scrapheap, Standard,
+Veteran, and Prime alter fair macro competence plus cognitive and execution
+limits such as opening army commitment, attention, reaction time, memory,
+estimate accuracy, and hesitation. Turtle, Balanced, and Aggressive bound its
+strategic posture. A deterministic per-seat seed varies air, siege, support,
+fortification, greed, and guile priorities; it never changes capabilities or
+unit strength.
+
+Every difficulty retains the complete strategic repertoire. Automated metrics
+surface candidates and failures; human play and replay judgment decide whether
+behavior is credible or fun.
 
 ## Validation
 

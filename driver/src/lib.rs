@@ -2,6 +2,7 @@
 
 pub mod audit;
 pub mod auto;
+pub mod bot_eval;
 pub mod client;
 pub mod factorial;
 pub mod pace;

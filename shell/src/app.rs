@@ -31,6 +31,7 @@ use crate::screens::shelf::Shelf;
 use crate::screens::wizard::{NewMatchDraft, Out as WizardOut, Step as WizardStep, Wizard};
 use crate::{Args, assets, autosave, config, input, render, screens, theme, tutorial};
 use anyhow::{Context, Result};
+use chassis::rng::Pcg32;
 use macroquad::audio::{PlaySoundParams, Sound, play_sound};
 use macroquad::prelude::*;
 use oxide_protocol::{
@@ -39,6 +40,11 @@ use oxide_protocol::{
 };
 use oxide_sim::{PlayerCommand, Scenario};
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const BOT_PERSONALITY_STREAM: u64 = 0x0B07_5EED;
+const BOT_PERSONALITY_WINDOW: u64 = 16;
+const AUTOMATION_PERSONALITY_SEED: u64 = 0xA117_0A7E_0B07_5EED;
 
 /// Which screen owns input this frame, holding that screen's state in
 /// the same place. Screens carry no match choices — the
@@ -103,6 +109,10 @@ struct App {
     /// The wizard's remembered choices. Lives here, not in the wizard:
     /// Home -> Wizard -> Back -> Wizard keeps the map pick and dials.
     draft: NewMatchDraft,
+    /// Shell-only entropy for New Match opponent identities. A base is
+    /// consumed only when the wizard launches; the resulting exact seeds live
+    /// in the scenario and are thereafter replay data.
+    personality_seeds: PersonalitySeedSource,
     /// The one input funnel.
     input: input::InputState,
     /// Map preview textures for the browser and setup screens.
@@ -141,12 +151,62 @@ struct App {
     frame_profiler: FrameProfiler,
 }
 
+#[derive(Debug, Clone)]
+struct PersonalitySeedSource {
+    next_base: u64,
+}
+
+impl PersonalitySeedSource {
+    fn for_session(automation: bool) -> Self {
+        Self::for_session_with_entropy(automation, Self::from_entropy)
+    }
+
+    fn for_session_with_entropy(
+        automation: bool,
+        entropy: impl FnOnce() -> PersonalitySeedSource,
+    ) -> Self {
+        if automation {
+            Self::from_seed(AUTOMATION_PERSONALITY_SEED)
+        } else {
+            entropy()
+        }
+    }
+
+    fn from_entropy() -> Self {
+        let nanos = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_nanos(),
+            Err(error) => error.duration().as_nanos(),
+        };
+        let folded_time = nanos as u64 ^ (nanos >> 64) as u64;
+        let process = u64::from(std::process::id()).rotate_left(32);
+        Self::from_seed(folded_time ^ process)
+    }
+
+    fn from_seed(seed: u64) -> Self {
+        let mut rng = Pcg32::new(seed, BOT_PERSONALITY_STREAM);
+        Self {
+            // Scenario validation caps a roster at 16. Alignment makes
+            // `base + seat` a complete, non-wrapping 16-seed window.
+            next_base: rng.next_u64() & !(BOT_PERSONALITY_WINDOW - 1),
+        }
+    }
+
+    fn match_base(&self) -> u64 {
+        self.next_base
+    }
+
+    fn commit_launch(&mut self) {
+        self.next_base = self.next_base.wrapping_add(BOT_PERSONALITY_WINDOW);
+    }
+}
+
 /// Builds the game a filled-in draft describes.
-fn launch(draft: &NewMatchDraft) -> Result<Game> {
+fn launch(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<Game> {
     let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
-    // One consumer, one source: the per-seat vector the setup screen
-    // filled. Every opponent uses the same fog-honest scripted
-    // controller; the setup screen chooses chairs, factions, and teams.
+    // One consumer, one source: the per-seat vector the setup screen filled.
+    // Every opponent uses the same fog-honest controller with its chosen
+    // difficulty and stance. This launch base gives each chair a distinct
+    // hidden identity; after this point it is ordinary scenario/replay data.
     anyhow::ensure!(
         draft.seats.len() == scenario.players.len(),
         "draft seats out of step with the map"
@@ -158,9 +218,14 @@ fn launch(draft: &NewMatchDraft) -> Result<Game> {
     let seat_choice = draft.seat_choice.min(scenario.players.len() - 1);
     for (i, player) in scenario.players.iter_mut().enumerate() {
         player.bot = i != seat_choice;
-        player.bot_config = player
-            .bot
-            .then_some(oxide_sim::scenario::BotConfig::Scripted);
+        player.bot_config = player.bot.then(|| {
+            let plan = draft.seats[i];
+            oxide_sim::scenario::BotConfig::scripted(
+                plan.difficulty,
+                plan.stance,
+                personality_seed_base.wrapping_add(i as u64),
+            )
+        });
     }
     // Per-seat faction chips (the setup screen's): Auto keeps the
     // authored roster; an override retints the seat, starting units
@@ -533,12 +598,14 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         trace.then(|| (0, std::time::Instant::now()));
 
     let profile_frames = args.profile_frames;
+    let personality_seeds = PersonalitySeedSource::for_session(args.automation);
     let mut app = App {
         args,
         config,
         game,
         tutorial: None,
         draft: NewMatchDraft::default(),
+        personality_seeds,
         input: input::InputState::new(),
         previews: PreviewCache::default(),
         menu_notice: None,
@@ -1407,10 +1474,14 @@ mod tests {
     }
 
     #[test]
-    fn launch_uses_the_scripted_controller_for_every_opponent() {
+    fn launch_materializes_each_opponents_exact_visible_config_and_seed() {
         let mut draft = team_draft();
         draft.seat_choice = 2;
-        let game = launch(&draft).expect("launches");
+        draft.seats[0].difficulty = oxide_sim::scenario::BotDifficulty::Prime;
+        draft.seats[0].stance = oxide_sim::scenario::BotStance::Aggressive;
+        draft.seats[5].difficulty = oxide_sim::scenario::BotDifficulty::Scrapheap;
+        draft.seats[5].stance = oxide_sim::scenario::BotStance::Turtle;
+        let game = launch(&draft, 0x1000).expect("launches");
         let players = &game.scenario.players;
         assert!(!players[2].bot, "the chosen chair is the human's");
         assert_eq!(game.human, oxide_sim::PlayerId(2));
@@ -1422,12 +1493,126 @@ mod tests {
             assert!(p.bot, "every other seat is a bot");
             assert_eq!(
                 p.bot_config,
-                Some(oxide_sim::scenario::BotConfig::Scripted),
-                "every opponent uses the fair scripted controller"
+                Some(oxide_sim::scenario::BotConfig::scripted(
+                    draft.seats[i].difficulty,
+                    draft.seats[i].stance,
+                    0x1000 + i as u64,
+                )),
+                "every opponent receives its exact draft and seat seed"
             );
         }
         // Auto chips keep the seat's authored faction.
         assert_eq!(players[2].faction, oxide_sim::Faction::Ferrous);
+    }
+
+    #[test]
+    fn personality_seed_sources_are_repeatable_and_reserve_distinct_windows() {
+        let mut left = PersonalitySeedSource::from_seed(41);
+        let mut right = PersonalitySeedSource::from_seed(41);
+        let first = left.match_base();
+        assert_eq!(first, right.match_base());
+        assert_eq!(
+            first,
+            left.match_base(),
+            "reading a base does not consume it"
+        );
+        assert_eq!(first & 0xF, 0, "a match base begins a 16-seat window");
+
+        left.commit_launch();
+        right.commit_launch();
+        let second = left.match_base();
+        assert_eq!(second, right.match_base());
+        assert_eq!(second, first.wrapping_add(BOT_PERSONALITY_WINDOW));
+        let first_seeds: Vec<u64> = (0..16).map(|seat| first + seat).collect();
+        let second_seeds: Vec<u64> = (0..16).map(|seat| second + seat).collect();
+        assert!(
+            first_seeds.iter().all(|seed| !second_seeds.contains(seed)),
+            "consecutive launches cannot share an opponent identity"
+        );
+
+        let other = PersonalitySeedSource::from_seed(42);
+        assert_ne!(first, other.match_base());
+    }
+
+    #[test]
+    fn automation_uses_one_repeatable_seed_stream_but_ordinary_sessions_use_entropy() {
+        let automated = PersonalitySeedSource::for_session_with_entropy(true, || {
+            panic!("automation must not consult ambient entropy")
+        });
+        assert_eq!(
+            automated.match_base(),
+            PersonalitySeedSource::for_session_with_entropy(true, || {
+                panic!("automation must not consult ambient entropy")
+            })
+            .match_base()
+        );
+
+        let ordinary = PersonalitySeedSource::for_session_with_entropy(false, || {
+            PersonalitySeedSource::from_seed(41)
+        });
+        assert_eq!(
+            ordinary.match_base(),
+            PersonalitySeedSource::from_seed(41).match_base(),
+            "ordinary New Match sessions retain their entropy-selected stream"
+        );
+        assert_ne!(ordinary.match_base(), automated.match_base());
+    }
+
+    #[test]
+    fn launch_seed_scope_is_exact_and_reproducible() {
+        let mut draft = team_draft();
+        draft.seat_choice = 1;
+        draft.seats[0].difficulty = oxide_sim::scenario::BotDifficulty::Veteran;
+        draft.seats[0].stance = oxide_sim::scenario::BotStance::Turtle;
+        draft.seats[4].difficulty = oxide_sim::scenario::BotDifficulty::Prime;
+        draft.seats[4].stance = oxide_sim::scenario::BotStance::Aggressive;
+
+        let first = launch(&draft, 0xABC0).expect("first launch");
+        let repeated = launch(&draft, 0xABC0).expect("repeated launch");
+        assert_eq!(first.scenario, repeated.scenario);
+        assert_eq!(first.hash_hex(), repeated.hash_hex());
+        assert_eq!(first.recorder.setup, repeated.recorder.setup);
+
+        let rerolled = launch(&draft, 0xDEF0).expect("rerolled launch");
+        assert_eq!(first.hash_hex(), rerolled.hash_hex());
+        for seat in 0..first.scenario.players.len() {
+            let left = &first.scenario.players[seat];
+            let right = &rerolled.scenario.players[seat];
+            assert_eq!(left.name, right.name);
+            assert_eq!(left.faction, right.faction);
+            assert_eq!(left.team, right.team);
+            assert_eq!(left.scrap, right.scrap);
+            assert_eq!(left.bot, right.bot);
+            match (left.bot_config, right.bot_config) {
+                (Some(left), Some(right)) => {
+                    assert_eq!(left.difficulty, right.difficulty);
+                    assert_eq!(left.stance, right.stance);
+                    assert_ne!(left.personality_seed, right.personality_seed);
+                }
+                (None, None) => {}
+                mismatch => panic!("controller presence changed: {mismatch:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn restart_rematch_and_replay_keep_exact_opponent_identities() {
+        let mut draft = team_draft();
+        draft.seats[1].difficulty = oxide_sim::scenario::BotDifficulty::Prime;
+        draft.seats[1].stance = oxide_sim::scenario::BotStance::Aggressive;
+        let game = launch(&draft, 0xCAFE_F000).expect("launch");
+        let expected = game.scenario.clone();
+
+        // Restart and Rematch both use this exact construction path.
+        let restarted = Game::new(game.scenario.clone()).expect("restart");
+        assert_eq!(restarted.scenario, expected);
+        assert_eq!(restarted.recorder.setup, expected);
+        assert_eq!(restarted.hash_hex(), game.hash_hex());
+
+        let resumed = Game::from_replay(game.recorder.clone()).expect("resume replay");
+        assert_eq!(resumed.scenario, expected);
+        assert_eq!(resumed.recorder.setup, expected);
+        assert_eq!(resumed.hash_hex(), game.hash_hex());
     }
 
     #[test]
@@ -1456,7 +1641,7 @@ mod tests {
 
         let mut backdrop_draft = NewMatchDraft::default();
         backdrop_draft.set_scenario(scenario.clone(), None);
-        let mut backdrop = launch(&backdrop_draft).expect("backdrop match");
+        let mut backdrop = launch(&backdrop_draft, 0x2000).expect("backdrop match");
         backdrop.camera.pan(vec2(-1000.0, -1000.0));
         backdrop.paused = true;
         backdrop.speed = 4.0;
@@ -1466,7 +1651,10 @@ mod tests {
         let mut draft = NewMatchDraft::default();
         draft.set_scenario(scenario, None);
         draft.seat_choice = 1;
-        let mut game = keep_flags(launch(&draft).expect("swapped-seat match"), &backdrop);
+        let mut game = keep_flags(
+            launch(&draft, 0x3000).expect("swapped-seat match"),
+            &backdrop,
+        );
 
         assert_eq!(game.human, oxide_sim::PlayerId(1));
         let home = game.home_foundry().expect("human Foundry").center();
@@ -1502,7 +1690,7 @@ mod tests {
         let mut draft = NewMatchDraft::default();
         draft.set_scenario(scenario, None);
         assert!(
-            launch(&draft).is_err(),
+            launch(&draft, 0x4000).is_err(),
             "an empty seat list is a launch error, not a crash"
         );
     }
@@ -1515,7 +1703,8 @@ mod tests {
         // "North West Cupric" flips Ferrous — its retinted label
         // collides with seat 0's "North West Ferrous".
         draft.seats[1].faction_choice = 1;
-        let game = launch(&draft).expect("a legitimate faction choice never refuses to launch");
+        let game =
+            launch(&draft, 0x5000).expect("a legitimate faction choice never refuses to launch");
         let players = &game.scenario.players;
         assert_eq!(players[1].faction, oxide_sim::Faction::Ferrous);
         assert_eq!(
@@ -1533,7 +1722,7 @@ mod tests {
         let mut draft = NewMatchDraft::default();
         draft.set_scenario(Scenario::skirmish(), None);
         draft.seats[0].faction_choice = 2; // the human goes Cupric
-        let game = launch(&draft).expect("launches");
+        let game = launch(&draft, 0x6000).expect("launches");
         let players = &game.scenario.players;
         assert_eq!(players[0].faction, oxide_sim::Faction::Cupric);
         assert_eq!(
@@ -1552,7 +1741,7 @@ mod tests {
         // Untouched dials reproduce the authored grouping — the
         // scenario (and so every save and replay) carries the teams.
         let draft = team_draft(); // trident-plateau: teams 0,0,0 / 1,1,1
-        let game = launch(&draft).expect("launches");
+        let game = launch(&draft, 0x7000).expect("launches");
         let teams: Vec<Option<u8>> = game.scenario.players.iter().map(|p| p.team).collect();
         assert_eq!(
             teams,
@@ -1573,7 +1762,7 @@ mod tests {
             .collect();
         draft.seats[0].team_choice = 0; // FFA
         draft.seats[3].team_choice = 1; // crosses to Team 1
-        let game = launch(&draft).expect("launches");
+        let game = launch(&draft, 0x8000).expect("launches");
         let players = &game.scenario.players;
         assert_eq!(players[0].team, None, "the FFA seat drops its team");
         assert_eq!(players[3].team, Some(0), "the moved seat joined Team 1");
@@ -1599,7 +1788,7 @@ mod tests {
         for plan in &mut draft.seats {
             plan.team_choice = 1;
         }
-        assert!(launch(&draft).is_err(), "one team can never launch");
+        assert!(launch(&draft, 0x9000).is_err(), "one team can never launch");
     }
 
     #[test]
@@ -1608,7 +1797,7 @@ mod tests {
         // contract is Err, never panic, on a draft out of step.
         let mut draft = team_draft();
         draft.seats.truncate(2);
-        assert!(launch(&draft).is_err());
+        assert!(launch(&draft, 0xA000).is_err());
     }
 
     #[test]

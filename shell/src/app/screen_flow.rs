@@ -34,6 +34,34 @@ fn playing_escape_opens_pause(
     escape_pressed && (!had_selection || decided || conceded_banner)
 }
 
+/// Resolves the wizard's semantic outcome and owns the one seed-consumption
+/// boundary. A failed launch leaves the current window available for retry;
+/// successful construction consumes exactly one window before the game is
+/// installed by the caller.
+fn resolve_new_match(
+    out: WizardOut,
+    draft: &NewMatchDraft,
+    personality_seeds: &mut PersonalitySeedSource,
+) -> Option<Result<Game>> {
+    match out {
+        WizardOut::Home | WizardOut::Stay => None,
+        WizardOut::Launch => {
+            let result = launch(draft, personality_seeds.match_base());
+            if result.is_ok() {
+                personality_seeds.commit_launch();
+            }
+            Some(result)
+        }
+    }
+}
+
+/// Restart and Rematch both rebuild the exact recorded scenario. Keeping this
+/// path independent of [`PersonalitySeedSource`] prevents either action from
+/// silently becoming a new opponent roll.
+fn rebuild_match(game: &Game) -> Result<Game> {
+    Game::new(game.scenario.clone())
+}
+
 pub(super) fn update_and_draw(
     app: &mut App,
     mut screen: Screen,
@@ -208,6 +236,7 @@ pub(super) fn update_and_draw(
                 }
             };
             let mut next: Option<Screen> = None;
+            let launch_result = resolve_new_match(out, &app.draft, &mut app.personality_seeds);
             match out {
                 WizardOut::Home => {
                     let home = HomeScreen::open();
@@ -217,7 +246,7 @@ pub(super) fn update_and_draw(
                     rerun = true;
                     next = Some(Screen::Home(home));
                 }
-                WizardOut::Launch => match launch(&app.draft) {
+                WizardOut::Launch => match launch_result.expect("launch outcome has a result") {
                     Ok(fresh) => {
                         app.tutorial = None;
                         app.game = keep_flags(fresh, &app.game);
@@ -409,7 +438,7 @@ pub(super) fn update_and_draw(
                 screens::results::Out::Stay => Screen::Results(results),
                 screens::results::Out::Rematch => match autosave::save(&mut app.game) {
                     Ok(_) => {
-                        let fresh = Game::new(app.game.scenario.clone())?;
+                        let fresh = rebuild_match(&app.game)?;
                         app.game = keep_flags(fresh, &app.game);
                         app.game.paused = app.args.paused;
                         app.tutorial = None;
@@ -589,7 +618,7 @@ pub(super) fn update_and_draw(
                     }
                 }
                 screens::pause::Out::Restart => {
-                    let fresh = Game::new(app.game.scenario.clone())?;
+                    let fresh = rebuild_match(&app.game)?;
                     // Restarting a tutorial also restarts its lesson state.
                     if app.tutorial.is_some() {
                         app.tutorial = Some(tutorial::Tutorial::new());
@@ -651,6 +680,14 @@ pub(super) fn update_and_draw(
 mod tests {
     use super::*;
 
+    fn configured_new_match_draft() -> NewMatchDraft {
+        let mut draft = NewMatchDraft::default();
+        draft.set_scenario(Scenario::skirmish(), None);
+        draft.seats[1].difficulty = oxide_sim::scenario::BotDifficulty::Prime;
+        draft.seats[1].stance = oxide_sim::scenario::BotStance::Aggressive;
+        draft
+    }
+
     #[test]
     fn backdrop_animation_freezes_only_when_a_live_match_is_paused() {
         let home = || Screen::Home(HomeScreen::with_resumable(false));
@@ -679,5 +716,72 @@ mod tests {
         assert!(!playing_escape_opens_pause(true, true, false, false));
         assert!(playing_escape_opens_pause(true, true, true, false));
         assert!(playing_escape_opens_pause(true, true, false, true));
+    }
+
+    #[test]
+    fn new_match_seed_window_advances_once_only_after_a_successful_launch() {
+        let mut personality_seeds = PersonalitySeedSource::from_seed(41);
+        let first_base = personality_seeds.match_base();
+        let draft = configured_new_match_draft();
+
+        assert!(resolve_new_match(WizardOut::Stay, &draft, &mut personality_seeds).is_none());
+        assert_eq!(personality_seeds.match_base(), first_base);
+        assert!(resolve_new_match(WizardOut::Home, &draft, &mut personality_seeds).is_none());
+        assert_eq!(
+            personality_seeds.match_base(),
+            first_base,
+            "backing out cannot consume an opponent identity"
+        );
+
+        let mut invalid = configured_new_match_draft();
+        invalid.seats.pop();
+        let failed = resolve_new_match(WizardOut::Launch, &invalid, &mut personality_seeds)
+            .expect("launch outcome has a result");
+        assert!(failed.is_err());
+        assert_eq!(
+            personality_seeds.match_base(),
+            first_base,
+            "a launch refusal must leave the same seed window available for retry"
+        );
+
+        let launched = resolve_new_match(WizardOut::Launch, &draft, &mut personality_seeds)
+            .expect("launch outcome has a result");
+        let game = launched.expect("valid draft launches");
+        assert_eq!(
+            game.scenario.players[1]
+                .bot_config
+                .expect("opponent is configured")
+                .personality_seed,
+            first_base + 1
+        );
+        assert_eq!(
+            personality_seeds.match_base(),
+            first_base.wrapping_add(BOT_PERSONALITY_WINDOW),
+            "one successful match consumes exactly one complete roster window"
+        );
+    }
+
+    #[test]
+    fn restart_and_rematch_rebuild_the_exact_opponents_without_rerolling() {
+        let mut personality_seeds = PersonalitySeedSource::from_seed(41);
+        let draft = configured_new_match_draft();
+        let launched = resolve_new_match(WizardOut::Launch, &draft, &mut personality_seeds)
+            .expect("launch outcome has a result");
+        let game = launched.expect("valid draft launches");
+        let next_base = personality_seeds.match_base();
+        let expected = game.scenario.clone();
+
+        let restarted = rebuild_match(&game).expect("Restart rebuilds the match");
+        let rematched = rebuild_match(&game).expect("Rematch rebuilds the match");
+        for rebuilt in [&restarted, &rematched] {
+            assert_eq!(rebuilt.scenario, expected);
+            assert_eq!(rebuilt.recorder.setup, expected);
+            assert_eq!(rebuilt.hash_hex(), game.hash_hex());
+        }
+        assert_eq!(
+            personality_seeds.match_base(),
+            next_base,
+            "rebuilding an existing scenario never consumes New Match entropy"
+        );
     }
 }

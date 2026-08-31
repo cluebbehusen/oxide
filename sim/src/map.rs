@@ -331,6 +331,17 @@ impl Map {
         self.grid.height()
     }
 
+    /// Clamps a world position into the flight envelope: at least half a
+    /// tile inside every edge, so the containing tile is always in
+    /// bounds. Aircraft slide along it and shells land inside it; it is
+    /// the world's outer wall.
+    pub fn clamp_to_envelope(&self, p: chassis::fx::Vec2Fx) -> chassis::fx::Vec2Fx {
+        let half = chassis::fx::HALF;
+        let max_x = chassis::fx::Fx::from_num(self.width()) - half;
+        let max_y = chassis::fx::Fx::from_num(self.height()) - half;
+        chassis::fx::Vec2Fx::new(p.x.clamp(half, max_x), p.y.clamp(half, max_y))
+    }
+
     /// The tile at `pos`, if in bounds.
     pub fn tile(&self, pos: TilePos) -> Option<&Tile> {
         self.grid.get(pos)

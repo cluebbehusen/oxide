@@ -256,10 +256,10 @@ pub struct FactorialReport {
 /// its player index while playing the geometry its mirror held. That is
 /// the only way to unbundle player index from map position.
 ///
-/// Refuses a map whose terrain is not exactly 180-symmetric with the
-/// anchor digits read as ground — rotating one would hand the seats
-/// different worlds, and every verdict after it would be about the
-/// terrain instead of the seat.
+/// Refuses a map whose terrain is not exactly 180-symmetric with Foundry and
+/// Extractor footprint markers read as ground. Rotating an asymmetric map would
+/// hand the seats different worlds, making every later verdict about terrain
+/// rather than the seat.
 pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
     let height = base.map.len();
     anyhow::ensure!(height > 0, "{} has an empty map", base.name);
@@ -271,7 +271,10 @@ pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
         base.name
     );
     let is_anchor = |c: char| c.is_ascii_digit() && c != '0' && c != '9';
-    let ground = |c: char| if is_anchor(c) { '.' } else { c };
+    let is_frame = |c: char| c == 'E';
+    let ground = |c: char| {
+        if is_anchor(c) || is_frame(c) { '.' } else { c }
+    };
     for (y, row) in rows.iter().enumerate() {
         for (x, &c) in row.iter().enumerate() {
             anyhow::ensure!(
@@ -306,6 +309,27 @@ pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
             ) else {
                 anyhow::bail!(
                     "{}'s anchor at ({x}, {y}) has no room for a Foundry",
+                    base.name
+                );
+            };
+            map[ty][tx] = c;
+        }
+    }
+    // `E` likewise names the top-left of a 2x2 Extractor frame. Rotating
+    // the marker as a point would shift the gameplay footprint by one tile.
+    let (ew, eh) = BuildingKind::Extractor.base_stats().size;
+    let (ew, eh) = (ew as usize, eh as usize);
+    for (y, row) in rows.iter().enumerate() {
+        for (x, &c) in row.iter().enumerate() {
+            if !is_frame(c) {
+                continue;
+            }
+            let (Some(ty), Some(tx)) = (
+                height.checked_sub(eh).and_then(|h| h.checked_sub(y)),
+                width.checked_sub(ew).and_then(|w| w.checked_sub(x)),
+            ) else {
+                anyhow::bail!(
+                    "{}'s Extractor frame at ({x}, {y}) has no room for its footprint",
                     base.name
                 );
             };
@@ -880,6 +904,20 @@ mod tests {
         let once = rotate_180(&base).unwrap();
         assert_ne!(once.map, base.map, "the anchors actually moved");
         assert_eq!(rotate_180(&once).unwrap(), base);
+
+        let (before_map, _) = oxide_sim::map::Map::parse(&base.map).unwrap();
+        let (after_map, _) = oxide_sim::map::Map::parse(&once.map).unwrap();
+        let (ew, eh) = BuildingKind::Extractor.base_stats().size;
+        let mut expected_frames: Vec<_> = before_map
+            .extractor_frames()
+            .iter()
+            .map(|frame| chassis::grid::TilePos {
+                x: before_map.width() - ew - frame.x,
+                y: before_map.height() - eh - frame.y,
+            })
+            .collect();
+        expected_frames.sort_by_key(|frame| (frame.y, frame.x));
+        assert_eq!(after_map.extractor_frames(), expected_frames);
 
         let before = base.build().unwrap();
         let after = once.build().unwrap();

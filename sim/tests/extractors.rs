@@ -1,13 +1,17 @@
 //! Derelict Extractor frames: the contestable economy. The map authors
 //! 2x2 frames ('E'); an Extractor rebuilds only there, nothing else may
-//! pave a frame over, the machine pays the strongest income in the game
-//! on an escalating schedule, and its death re-derelicts the frame for
+//! pave a frame over, the machine earns a fixed remote yield that nearby
+//! Foundry support improves, and its death re-derelicts the frame for
 //! whoever holds the ground next.
 
 use chassis::grid::TilePos;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
-use oxide_sim::stats::{BuildingKind, EXTRACTOR_YIELD_SCHEDULE};
-use oxide_sim::{Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, UnitKind};
+use oxide_sim::stats::{
+    BuildingKind, EXTRACTOR_REMOTE_INCOME_PER_MINUTE, EXTRACTOR_SUPPORTED_INCOME_PER_MINUTE,
+};
+use oxide_sim::{
+    Command, Event, ExtractorIncome, Faction, PlayerCommand, PlayerId, Scenario, State, UnitKind,
+};
 
 fn players(scrap: u32) -> Vec<PlayerSpec> {
     vec![
@@ -91,6 +95,82 @@ fn harvester(player: u8, x: i32, y: i32) -> UnitSpec {
 const FRAME: TilePos = TilePos { x: 9, y: 4 };
 
 const FOG_FRAME: TilePos = TilePos { x: 16, y: 4 };
+
+const SUPPORT_FRAME: TilePos = TilePos { x: 20, y: 5 };
+const SUPPORT_FOUNDRY: TilePos = TilePos { x: 11, y: 5 };
+
+fn support_arena(
+    scrap: u32,
+    mut units: Vec<UnitSpec>,
+    mut buildings: Vec<BuildingSpec>,
+) -> Scenario {
+    let width = 42usize;
+    let height = 22usize;
+    let mut tiles = vec![vec!['.'; width]; height];
+    tiles[0].fill('#');
+    tiles[height - 1].fill('#');
+    for row in &mut tiles {
+        row[0] = '#';
+        row[width - 1] = '#';
+    }
+    tiles[1][1] = '1';
+    tiles[18][38] = '2';
+    tiles[SUPPORT_FRAME.y as usize][SUPPORT_FRAME.x as usize] = 'E';
+
+    units.push(harvester(0, 10, 4));
+    buildings.insert(
+        0,
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Extractor,
+            x: SUPPORT_FRAME.x,
+            y: SUPPORT_FRAME.y,
+        },
+    );
+    Scenario {
+        name: "extractor-support-arena".into(),
+        seed: 17,
+        map: tiles
+            .into_iter()
+            .map(|row| row.into_iter().collect())
+            .collect(),
+        players: players(scrap),
+        units,
+        buildings,
+        meta: None,
+    }
+}
+
+fn building(player: u8, kind: BuildingKind, anchor: TilePos) -> BuildingSpec {
+    BuildingSpec {
+        player,
+        kind,
+        x: anchor.x,
+        y: anchor.y,
+    }
+}
+
+fn extractor_id(state: &State) -> oxide_sim::BuildingId {
+    state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Extractor)
+        .expect("the support arena starts with an Extractor")
+        .id
+}
+
+fn earnings_over(mut state: State, start: u64, ticks: u64) -> u32 {
+    if start != state.current_tick() {
+        let mut value = serde_json::to_value(&state).unwrap();
+        value["tick"] = serde_json::json!(start);
+        state = serde_json::from_value(value).unwrap();
+    }
+    let before = state.player(PlayerId(0)).scrap;
+    for _ in 0..ticks {
+        state.tick(&[]);
+    }
+    state.player(PlayerId(0)).scrap - before
+}
 
 /// A wider field where the frame begins outside seat zero's Foundry sight.
 fn fog_arena(units: Vec<UnitSpec>) -> Scenario {
@@ -291,54 +371,227 @@ fn an_extractor_stands_only_on_its_frame_and_nothing_paves_one() {
 }
 
 #[test]
-fn extractor_income_escalates_on_the_visible_schedule() {
-    // The seat keeps a live harvester so the stranded-economy recovery
-    // flow stays off and the measurement is the extractor's alone
-    // (plus the late Foundry drip, which the margin absorbs).
-    let mut scenario = arena(0, vec![harvester(0, 3, 2)], vec![]);
-    scenario.buildings.push(BuildingSpec {
-        player: 0,
-        kind: BuildingKind::Extractor,
-        x: FRAME.x,
-        y: FRAME.y,
-    });
-    let state = scenario.build().unwrap();
+fn foundry_support_uses_footprint_distance_and_requires_the_same_owner() {
+    let at_boundary = support_arena(
+        0,
+        vec![],
+        vec![building(0, BuildingKind::Foundry, SUPPORT_FOUNDRY)],
+    )
+    .build()
+    .unwrap();
+    let extractor = extractor_id(&at_boundary);
+    let foundry = at_boundary
+        .buildings()
+        .iter()
+        .find(|building| {
+            building.kind == BuildingKind::Foundry && building.anchor == SUPPORT_FOUNDRY
+        })
+        .expect("the support Foundry stands")
+        .id;
+    assert_eq!(
+        state_income(&at_boundary, extractor),
+        ExtractorIncome::Supported,
+        "anchors are nine tiles apart, but the 2x2 footprints are exactly eight apart"
+    );
+    assert!(at_boundary.extractor_supported_by(extractor, foundry));
 
-    for &(from, amount, period) in EXTRACTOR_YIELD_SCHEDULE.iter() {
-        // Jump the clock to the row's start and measure one full period.
-        let mut value = serde_json::to_value(&state).unwrap();
-        value["tick"] = serde_json::json!(from);
-        let mut probe: State = serde_json::from_value(value).unwrap();
-        let bank = probe.player(PlayerId(0)).scrap;
-        for _ in 0..period {
-            probe.tick(&[]);
-        }
-        let earned = probe.player(PlayerId(0)).scrap - bank;
-        assert!(
-            earned >= amount,
-            "row starting at {from}: one period earns at least {amount}, got {earned}"
+    let outside = support_arena(
+        0,
+        vec![],
+        vec![building(
+            0,
+            BuildingKind::Foundry,
+            SUPPORT_FOUNDRY.offset(-1, 0),
+        )],
+    )
+    .build()
+    .unwrap();
+    let extractor = extractor_id(&outside);
+    assert_eq!(state_income(&outside, extractor), ExtractorIncome::Remote);
+
+    let wrong_owner = support_arena(
+        0,
+        vec![],
+        vec![building(1, BuildingKind::Foundry, SUPPORT_FOUNDRY)],
+    )
+    .build()
+    .unwrap();
+    let extractor = extractor_id(&wrong_owner);
+    let enemy_foundry = wrong_owner
+        .buildings()
+        .iter()
+        .find(|building| {
+            building.kind == BuildingKind::Foundry && building.anchor == SUPPORT_FOUNDRY
+        })
+        .expect("the enemy support candidate stands")
+        .id;
+    assert_eq!(
+        state_income(&wrong_owner, extractor),
+        ExtractorIncome::Remote,
+        "an enemy forward base cannot develop this owner's claim"
+    );
+    assert!(!wrong_owner.extractor_supported_by(extractor, enemy_foundry));
+}
+
+fn state_income(state: &State, extractor: oxide_sim::BuildingId) -> ExtractorIncome {
+    state
+        .extractor_income(extractor)
+        .expect("the authored Extractor is completed and living")
+}
+
+#[test]
+fn extractor_yield_is_fixed_and_foundry_support_does_not_stack() {
+    let remote = support_arena(0, vec![], vec![]).build().unwrap();
+    let supported = support_arena(
+        0,
+        vec![],
+        vec![building(0, BuildingKind::Foundry, SUPPORT_FOUNDRY)],
+    )
+    .build()
+    .unwrap();
+    let twice_supported = support_arena(
+        0,
+        vec![],
+        vec![
+            building(0, BuildingKind::Foundry, SUPPORT_FOUNDRY),
+            building(0, BuildingKind::Foundry, TilePos::new(20, 14)),
+        ],
+    )
+    .build()
+    .unwrap();
+
+    assert_eq!(
+        state_income(&remote, extractor_id(&remote)).scrap_per_minute(),
+        EXTRACTOR_REMOTE_INCOME_PER_MINUTE
+    );
+    assert_eq!(
+        state_income(&supported, extractor_id(&supported)).scrap_per_minute(),
+        EXTRACTOR_SUPPORTED_INCOME_PER_MINUTE
+    );
+    for start in [0, 24_000] {
+        assert_eq!(
+            earnings_over(remote.clone(), start, 20),
+            2,
+            "remote yield must remain 120/min at tick {start}"
+        );
+        assert_eq!(
+            earnings_over(supported.clone(), start, 20),
+            3,
+            "supported yield must remain 180/min at tick {start}"
+        );
+        assert_eq!(
+            earnings_over(twice_supported.clone(), start, 20),
+            3,
+            "a second nearby Foundry must not stack at tick {start}"
         );
     }
+}
 
-    // The escalation is real: measured over the same window length, the
-    // late row out-earns the base row.
-    let window = 200u64;
-    let earn_at = |start: u64| {
-        let mut value = serde_json::to_value(&state).unwrap();
-        value["tick"] = serde_json::json!(start);
-        let mut probe: State = serde_json::from_value(value).unwrap();
-        let bank = probe.player(PlayerId(0)).scrap;
-        for _ in 0..window {
-            probe.tick(&[]);
+#[test]
+fn an_unfinished_foundry_does_not_support_until_construction_completes() {
+    let mut state = support_arena(
+        1_000,
+        vec![],
+        vec![building(0, BuildingKind::Fabricator, TilePos::new(5, 5))],
+    )
+    .build()
+    .unwrap();
+    let extractor = extractor_id(&state);
+    let builder = state.units()[0].id;
+
+    state.tick(&[build(0, builder, BuildingKind::Foundry, SUPPORT_FOUNDRY)]);
+    let expansion = state
+        .buildings()
+        .iter()
+        .find(|building| {
+            building.kind == BuildingKind::Foundry && building.anchor == SUPPORT_FOUNDRY
+        })
+        .expect("the legal expansion command places a site");
+    assert!(!expansion.built);
+    let expansion = expansion.id;
+    assert_eq!(state_income(&state, extractor), ExtractorIncome::Remote);
+
+    for _ in 0..1_000 {
+        if state
+            .building(expansion)
+            .is_some_and(|building| building.built)
+        {
+            break;
         }
-        probe.player(PlayerId(0)).scrap - bank
-    };
-    let early = earn_at(0);
-    let late = earn_at(24_000);
+        state.tick(&[]);
+    }
     assert!(
-        late >= early * 2,
-        "held extractors compound: {early} early vs {late} late per {window} ticks"
+        state
+            .building(expansion)
+            .is_some_and(|building| building.built),
+        "the adjacent Harvester completes the expansion"
     );
+    assert_eq!(state_income(&state, extractor), ExtractorIncome::Supported);
+}
+
+#[test]
+fn destroying_the_supporting_foundry_returns_the_extractor_to_remote_yield() {
+    let attackers = (0..3)
+        .map(|offset| UnitSpec {
+            player: 1,
+            kind: UnitKind::Avalanche,
+            x: 25,
+            y: 4 + offset,
+        })
+        .chain(std::iter::once(UnitSpec {
+            player: 1,
+            kind: UnitKind::Wisp,
+            x: 15,
+            y: 5,
+        }))
+        .collect();
+    let mut state = support_arena(
+        0,
+        attackers,
+        vec![building(0, BuildingKind::Foundry, SUPPORT_FOUNDRY)],
+    )
+    .build()
+    .unwrap();
+    let extractor = extractor_id(&state);
+    let expansion = state
+        .buildings()
+        .iter()
+        .find(|building| {
+            building.kind == BuildingKind::Foundry && building.anchor == SUPPORT_FOUNDRY
+        })
+        .unwrap()
+        .id;
+    let artillery = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(1) && unit.kind == UnitKind::Avalanche)
+        .map(|unit| unit.id)
+        .collect();
+    assert_eq!(state_income(&state, extractor), ExtractorIncome::Supported);
+
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: artillery,
+            target: oxide_sim::Target::Building(expansion),
+            queue: false,
+        },
+    )]);
+    for _ in 0..2_000 {
+        if state.building(expansion).is_none() {
+            break;
+        }
+        state.tick(&[]);
+    }
+    assert!(
+        state.building(expansion).is_none(),
+        "sustained artillery destroys the support Foundry"
+    );
+    assert!(
+        state.building(extractor).is_some(),
+        "the Extractor survives"
+    );
+    assert_eq!(state_income(&state, extractor), ExtractorIncome::Remote);
 }
 
 #[test]

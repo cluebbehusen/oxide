@@ -144,7 +144,7 @@ pub fn engage(state: &mut oxide_sim::State) {
 pub fn all_bots(scenario: &mut Scenario) {
     for player in &mut scenario.players {
         player.bot = true;
-        player.bot_config = Some(oxide_sim::scenario::BotConfig::Scripted);
+        player.bot_config = Some(oxide_sim::scenario::BotConfig::default());
     }
 }
 
@@ -182,7 +182,9 @@ mod tests {
             "a scenario bench must field a mind in every chair"
         );
         assert_eq!(
-            oxide_sim::bot::seat_bots(&scenario).len(),
+            oxide_sim::bot::seat_bots(&scenario)
+                .expect("the valid bench scenario has a public map briefing")
+                .len(),
             scenario.players.iter().filter(|p| p.bot).count(),
             "every configured bot seat gets a command source"
         );

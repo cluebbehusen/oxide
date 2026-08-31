@@ -28,8 +28,8 @@ struct PanelPacking {
     roster_shown: usize,
     roster_per_row: usize,
     roster_h: f32,
-    combat_shown: usize,
-    combat_h: f32,
+    capabilities_shown: usize,
+    capabilities_h: f32,
     band_h: f32,
     top: f32,
     hides_minimap: bool,
@@ -42,7 +42,7 @@ fn panel_packing_at_right(
     right: f32,
     roster_shown: usize,
     cards_shown: usize,
-    combat_len: usize,
+    capabilities_len: usize,
     compact: bool,
     hides_minimap: bool,
 ) -> PanelPacking {
@@ -64,13 +64,13 @@ fn panel_packing_at_right(
     } else {
         grouped_card_rows(cards_shown, per_row) as f32 * (card_h + 4.0 * scale)
     };
-    let combat_h = if combat_len == 0 {
+    let capabilities_h = if capabilities_len == 0 {
         0.0
     } else {
-        (22.0 + 18.0 * combat_len as f32) * scale
+        (22.0 + 18.0 * capabilities_len as f32) * scale
     };
     let minimum_h = if compact { 72.0 } else { 120.0 } * scale;
-    let band_h = (20.0 * scale + combat_h + roster_h + cards_h).max(minimum_h);
+    let band_h = (20.0 * scale + capabilities_h + roster_h + cards_h).max(minimum_h);
     PanelPacking {
         right,
         available,
@@ -78,8 +78,8 @@ fn panel_packing_at_right(
         roster_shown,
         roster_per_row,
         roster_h,
-        combat_shown: combat_len,
-        combat_h,
+        capabilities_shown: capabilities_len,
+        capabilities_h,
         band_h,
         top: viewport.y - band_h,
         hides_minimap,
@@ -92,7 +92,7 @@ fn panel_packing(
     scale: f32,
     roster_len: usize,
     cards_len: usize,
-    combat_len: usize,
+    capabilities_len: usize,
     compact: bool,
 ) -> PanelPacking {
     let roster_shown = roster_len.min(8);
@@ -109,7 +109,7 @@ fn panel_packing(
         reserved_right,
         roster_shown,
         cards_shown,
-        combat_len,
+        capabilities_len,
         compact,
         false,
     );
@@ -120,7 +120,7 @@ fn panel_packing(
             viewport.x,
             roster_shown,
             cards_shown,
-            combat_len,
+            capabilities_len,
             compact,
             true,
         );
@@ -132,12 +132,12 @@ fn panel_packing(
             viewport.x,
             0,
             cards_shown,
-            combat_len,
+            capabilities_len,
             compact,
             true,
         );
     }
-    if packing.band_h > max_band_h && packing.combat_shown > 0 {
+    if packing.band_h > max_band_h && packing.capabilities_shown > 0 {
         packing = panel_packing_at_right(
             viewport,
             scale,
@@ -246,7 +246,7 @@ pub(crate) fn draw_panel(
         s,
         panel.roster.len(),
         panel.cards.len(),
-        panel.combat.len(),
+        panel.capabilities.len(),
         compact,
     );
     let right = packing.right;
@@ -268,8 +268,8 @@ pub(crate) fn draw_panel(
         .take_while(|card| matches!(card.action, CardAction::ArmRally | CardAction::ClearRally))
         .count();
     let section_gap = grouped_card_gap(shown, rally_shown, per_row, available, cw, gap);
-    let combat_shown = packing.combat_shown;
-    let combat_h = packing.combat_h;
+    let capabilities_shown = packing.capabilities_shown;
+    let capabilities_h = packing.capabilities_h;
     let band_h = packing.band_h;
     let top = packing.top;
     let cards_w = if shown == 0 {
@@ -278,13 +278,13 @@ pub(crate) fn draw_panel(
         let used_cols = shown.min(per_row).max(1) as f32;
         (cards_x + used_cols * (cw + gap)).max(220.0 * s) + 6.0 * s
     };
-    let combat_w = panel
-        .combat
+    let capabilities_w = panel
+        .capabilities
         .iter()
-        .take(combat_shown)
+        .take(capabilities_shown)
         .map(|fact| measure_text(&fact.text, None, (13.0 * s) as u16, 1.0).width + 24.0 * s)
         .fold(0.0, f32::max);
-    let band_w = cards_w.max((cards_x + combat_w + 12.0 * s).min(right));
+    let band_w = cards_w.max((cards_x + capabilities_w + 12.0 * s).min(right));
     // Opaque, unlike the translucent HUD panels: machines drifting
     // beneath the band would ghost through the cards. Top and right
     // edges get the same line — a content-width band needs a corner,
@@ -458,10 +458,10 @@ pub(crate) fn draw_panel(
         }
     }
 
-    // A single entity publishes its static combat capability without a
+    // A single entity publishes its static capability without a
     // hover. The model contains kind-level capability facts only,
     // never a live target, current cooldown, or private order state.
-    if combat_shown > 0 {
+    if capabilities_shown > 0 {
         draw_text(
             "CAPABILITIES",
             cards_x,
@@ -470,10 +470,15 @@ pub(crate) fn draw_panel(
             TEXT_SECONDARY,
         );
         let max_width = (band_w - cards_x - 12.0 * s).max(40.0 * s);
-        for (i, fact) in panel.combat.iter().take(combat_shown).enumerate() {
+        for (i, fact) in panel
+            .capabilities
+            .iter()
+            .take(capabilities_shown)
+            .enumerate()
+        {
             let y = top + (34.0 + 18.0 * i as f32) * s;
-            let icon_color = combat_icon_color(fact.icon);
-            draw_combat_icon(
+            let icon_color = capability_icon_color(fact.icon);
+            draw_capability_icon(
                 vec2(cards_x + 7.0 * s, y - 4.5 * s),
                 5.2 * s,
                 fact.icon,
@@ -497,13 +502,13 @@ pub(crate) fn draw_panel(
     let mut roster_slots = [(zero, CardAction::None); 8];
     let mut roster_count = 0;
     if roster_shown > 0 {
-        let label_y = top + combat_h + 15.0 * s;
+        let label_y = top + capabilities_h + 15.0 * s;
         draw_text("SELECTED UNITS", cards_x, label_y, 12.0 * s, TEXT_SECONDARY);
         for (index, card) in panel.roster.iter().take(roster_shown).enumerate() {
             let (row, column) = (index / roster_per_row, index % roster_per_row);
             let rect = Rect::new(
                 cards_x + column as f32 * (rw + roster_gap),
-                top + combat_h + 22.0 * s + row as f32 * (rh + 5.0 * s),
+                top + capabilities_h + 22.0 * s + row as f32 * (rh + 5.0 * s),
                 rw,
                 rh,
             );
@@ -567,7 +572,7 @@ pub(crate) fn draw_panel(
         let (row, col, after_rally) = grouped_card_slot(i, rally_shown, per_row);
         let rect = Rect::new(
             cards_x + col as f32 * (cw + gap) + if after_rally { section_gap } else { 0.0 },
-            top + 10.0 * s + combat_h + roster_h + row as f32 * (ch + 4.0 * s),
+            top + 10.0 * s + capabilities_h + roster_h + row as f32 * (ch + 4.0 * s),
             cw,
             ch,
         );
@@ -980,7 +985,10 @@ mod tests {
         assert!(packing.hides_minimap);
         assert_eq!(packing.right, viewport.x);
         assert_eq!(packing.roster_shown, 0, "the open palette gets the room");
-        assert_eq!(packing.combat_shown, 0, "cards stay reachable before facts");
+        assert_eq!(
+            packing.capabilities_shown, 0,
+            "cards stay reachable before facts"
+        );
         assert!(packing.top >= crate::layout::TOP_BAR_H);
         assert!(packing.top + packing.band_h <= viewport.y);
     }
@@ -1034,8 +1042,11 @@ mod tests {
             ["60/60 hp", "speed 2.5 tiles/sec"]
         );
         assert_eq!(
-            panel_sub_lines("hostile | Balanced AI | 60/60 hp | speed 3.1 tiles/sec"),
-            ["hostile | Balanced AI | 60/60 hp", "speed 3.1 tiles/sec"]
+            panel_sub_lines("hostile | Standard / Balanced AI | 60/60 hp | speed 3.1 tiles/sec"),
+            [
+                "hostile | Standard / Balanced AI | 60/60 hp",
+                "speed 3.1 tiles/sec"
+            ]
         );
         assert_eq!(panel_sub_lines("3 types"), ["3 types"]);
     }

@@ -16,8 +16,8 @@ substitutes for listening.
 
 ## Start from the production contract
 
-1. Read `docs/audio-approvals.md`, `tools/gen_sounds.py`, and the relevant
-   mixer/event mappings before generating anything.
+1. Read `tools/gen_sounds.py` and the relevant mixer/event mappings before
+   generating anything.
 2. Treat every approved clip as frozen. Carry it into comparison banks as a
    control and do not change its recipe or output bytes unless Connor explicitly
    reopens it.
@@ -73,9 +73,9 @@ another layer.
    normal mixer level, rapid retrigger, and the paired animation. Present the
    numbered options with plain descriptions, then stop for Connor's by-ear
    approval. Do not infer a winner from spectra or diagnostics.
-5. Record only an explicit approval in `docs/audio-approvals.md`. Then port that
-   exact recipe into the production generator and assert that its generated WAV
-   is byte-identical to the approved audition file.
+5. After an explicit approval, port that exact recipe into the production
+   generator and assert that its generated WAV is byte-identical to the approved
+   audition file.
 
 ## Productionize an approved clip
 

@@ -2,6 +2,7 @@
 
 use chassis::replay::Replay;
 use oxide_kit::GameReplay;
+use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
 use oxide_sim::{Command as SimCommand, PlayerCommand, PlayerId, SIM_VERSION, Scenario, UnitId};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -26,7 +27,12 @@ fn stop(player: u8, unit: UnitId) -> PlayerCommand {
 }
 
 fn save_fixture() -> TempReplay {
-    let scenario = Scenario::skirmish();
+    let mut scenario = Scenario::skirmish();
+    scenario.players[1].bot_config = Some(BotConfig::scripted(
+        BotDifficulty::Prime,
+        BotStance::Aggressive,
+        8_675_309,
+    ));
     let state = scenario.build().expect("skirmish builds");
     let unit = |seat| {
         state
@@ -72,11 +78,21 @@ fn replay_summary_emits_the_json_contract() {
     let output = run_summary(&fixture, &["--every", "40", "--json"]);
 
     let report: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
-    assert_eq!(report["schema_version"], 2);
+    assert_eq!(report["schema_version"], 3);
     assert_eq!(report["scenario"]["name"], "Skirmish Basin");
     assert_eq!(report["scenario"]["effective_ticks"], 120);
     assert_eq!(report["scenario"]["every"], 40);
     assert_eq!(report["seats"].as_array().expect("seat array").len(), 2);
+    assert_eq!(report["seats"][0]["bot_config"], Value::Null);
+    assert_eq!(
+        report["seats"][1]["bot_config"],
+        serde_json::json!({
+            "controller": "scripted",
+            "difficulty": "prime",
+            "stance": "aggressive",
+            "personality_seed": 8_675_309,
+        })
+    );
 
     let digest_ticks: Vec<u64> = report["digests"]
         .as_array()
@@ -96,6 +112,12 @@ fn replay_summary_text_carries_header_digests_and_legend() {
     let output = run_summary(&fixture, &["--every", "60", "--minimaps", "all"]);
     let text = String::from_utf8(output.stdout).expect("utf8 text");
     assert!(text.contains("Skirmish Basin"), "missing header:\n{text}");
+    assert!(
+        text.contains(
+            "seat 1: Cupric  Cupric  team 1  bot (scripted, prime / aggressive, personality seed 8675309)"
+        ),
+        "missing exact bot configuration:\n{text}"
+    );
     assert!(text.contains("digest t=120"), "missing digest:\n{text}");
     assert!(text.contains("map: a-b units"), "missing legend:\n{text}");
     assert!(

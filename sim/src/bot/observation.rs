@@ -5,8 +5,9 @@
 //! the whole state for focused tests, while [`Observation::fog_honest`]
 //! filters through the player's own vision:
 //! visible enemies live, remembered buildings as ghosts, remembered scrap
-//! amounts, nothing else. The two produce the *same shape* — a policy
-//! cannot tell which world it lives in, only how much of it it sees.
+//! amounts, and anonymous team-shared salvage warnings, nothing else. The two
+//! produce the *same shape* — a policy cannot tell which world it lives in,
+//! only how much of it it sees.
 //!
 //! Fog-honesty is enforced by explicit filtering, not trust:
 //! `Vision` alone is not a safe boundary (the `State` behind it exposes
@@ -17,16 +18,19 @@
 
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::state::{Faction, Order, State};
-use crate::stats::{BuildingKind, UnitKind};
+use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::Tick;
 use chassis::grid::TilePos;
 use serde::{Deserialize, Serialize};
 
 /// Schema version for serialized observation snapshots. Increment it when
 /// fields or their meaning change so tools can reject incompatible data.
-/// Version 8 includes deferred founding, terrain knowledge, cargo, building
-/// tiers, Extractor frames, and shell activity.
-pub const OBSERVATION_VERSION: u32 = 8;
+/// Version 9 added current visibility. Version 10 exposes whether an own unit's
+/// current program is voluntary paid repair work. Version 11 exposes the
+/// team's anonymous, bounded salvage-danger incidents. Version 12 exposes
+/// whether an airframe is parked on the ground. Version 13 exposes an own
+/// Harvester's current work node without revealing allied or enemy orders.
+pub const OBSERVATION_VERSION: u32 = 13;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +52,10 @@ pub struct UnitObs {
     pub idle: bool,
     /// Scrap carried (own harvesters; zero otherwise).
     pub carrying: u32,
+    /// The salvage node this unit is currently harvesting, if any (own units
+    /// only; always `None` for allies and enemies).
+    #[serde(default)]
+    pub harvesting: Option<TilePos>,
     /// Sling room its riders occupy (own transports; zero otherwise).
     #[serde(default)]
     pub cargo: u8,
@@ -64,6 +72,30 @@ pub struct UnitObs {
     /// audit waits on it and the labor choosers keep off it — and no
     /// site exists to carry an id until the claim lands.
     pub founding: Option<(BuildingKind, TilePos)>,
+    /// Whether the current program is voluntary building or unit repair (own
+    /// units only; always false for allies and enemies).
+    #[serde(default)]
+    pub repairing: bool,
+    /// Whether the airframe is parked on the ground. Unlike `idle` or
+    /// `cargo` this is a physical fact anyone in sight can see, so it is
+    /// reported for allies and enemies too. Always false for kinds that
+    /// cannot land.
+    #[serde(default)]
+    pub grounded: bool,
+}
+
+impl UnitObs {
+    /// The movement layer this body occupies right now: a grounded
+    /// airframe is a ground body for targeting and matchups, whatever its
+    /// kind flies as. Routing and procurement keep reading the kind's
+    /// domain because the next flight is planned in the air.
+    pub fn body_domain(&self) -> Domain {
+        if self.grounded {
+            Domain::Ground
+        } else {
+            self.kind.stats().domain
+        }
+    }
 }
 
 /// One building as a bot sees it. Enemy entries may be memories: `seen`
@@ -122,6 +154,10 @@ pub struct Observation {
     pub enemy_units: Vec<UnitObs>,
     /// Enemy buildings — live where seen, ghosts where remembered.
     pub enemy_buildings: Vec<BuildingObs>,
+    /// Row-major current team-visibility mask. Unlike `explored`, this may
+    /// become false again after a scout leaves. Policies use it to distinguish
+    /// fresh negative evidence from remembered terrain.
+    pub visible: Vec<bool>,
     /// Row-major fog exploration mask. This is the exact knowledge boundary
     /// for deferred placement: a bot may assume unknown routes continue, but
     /// it may not promise a foundation on a tile its team has never seen.
@@ -147,6 +183,11 @@ pub struct Observation {
     /// omniscient builder, remembered under the fog-honest one. Sorted
     /// by (y, x).
     pub known_wrecks: Vec<(TilePos, u32)>,
+    /// Recent allied damage or loss locations that remain unsafe for
+    /// autonomous salvage. These are anonymous team-shared warning tiles,
+    /// already bounded and expired by the authoritative vision system.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub salvage_incidents: Vec<TilePos>,
     /// Radar blips: tiles holding an unidentified hostile contact inside
     /// an Array's outer ring but out of sight. Always empty under the
     /// omniscient builder (it has no unidentified anything). Sorted by
@@ -162,6 +203,45 @@ pub struct Observation {
     /// seeing (fog-honest: the impact tile must be visible — the same
     /// rule the arc renderer draws by). Sorted by (y, x).
     pub incoming_shells: Vec<TilePos>,
+}
+
+/// An empty zero-sized observation: the shared base every test fixture
+/// spreads over, so a new field is declared here once instead of fanning
+/// out across every hand-built literal. The struct-literal orientation
+/// test in `orient` deliberately does not use it — a new field must
+/// still declare its seat flip exhaustively there before this default
+/// can carry it anywhere else.
+#[cfg(test)]
+impl Default for Observation {
+    fn default() -> Self {
+        Self {
+            version: OBSERVATION_VERSION,
+            tick: 0,
+            me: PlayerId(0),
+            scrap: 0,
+            map_width: 0,
+            map_height: 0,
+            my_units: Vec::new(),
+            my_buildings: Vec::new(),
+            my_queues: Vec::new(),
+            ally_units: Vec::new(),
+            ally_buildings: Vec::new(),
+            enemy_units: Vec::new(),
+            enemy_buildings: Vec::new(),
+            visible: Vec::new(),
+            explored: Vec::new(),
+            known_scrap: Vec::new(),
+            known_rock: Vec::new(),
+            known_frames: Vec::new(),
+            known_peaks: Vec::new(),
+            known_wrecks: Vec::new(),
+            salvage_incidents: Vec::new(),
+            blips: Vec::new(),
+            faction: crate::state::Faction::Ferrous,
+            my_shells: 0,
+            incoming_shells: Vec::new(),
+        }
+    }
 }
 
 impl Observation {
@@ -184,6 +264,15 @@ impl Observation {
 
     /// Whether `tile` has ever been seen by this seat's team.
     pub fn explored(&self, tile: TilePos) -> bool {
+        self.mask_value(&self.explored, tile)
+    }
+
+    /// Whether `tile` is in this seat's current team vision.
+    pub fn visible(&self, tile: TilePos) -> bool {
+        self.mask_value(&self.visible, tile)
+    }
+
+    fn mask_value(&self, mask: &[bool], tile: TilePos) -> bool {
         if tile.x < 0 || tile.y < 0 || tile.x >= self.map_width || tile.y >= self.map_height {
             return false;
         }
@@ -198,7 +287,7 @@ impl Observation {
         };
         y.checked_mul(width)
             .and_then(|row| row.checked_add(x))
-            .and_then(|index| self.explored.get(index))
+            .and_then(|index| mask.get(index))
             .copied()
             .unwrap_or(false)
     }
@@ -263,7 +352,9 @@ impl Observation {
                 obs.known_peaks.push(pos);
             }
         }
-        obs.explored = vec![true; state.map().iter().count()];
+        let tile_count = state.map().iter().count();
+        obs.visible = vec![true; tile_count];
+        obs.explored = vec![true; tile_count];
         obs.my_shells = state.shells().iter().filter(|s| s.player == me).count();
         obs.incoming_shells = state
             .shells()
@@ -362,6 +453,7 @@ impl Observation {
                 let pos = TilePos::new(x as i32, y);
                 let seen = visible[x];
                 let known = explored[x];
+                obs.visible.push(seen);
                 obs.explored.push(known);
                 let amount = if seen { tile.scrap } else { scrap_mem[x] };
                 if amount > 0 {
@@ -417,12 +509,20 @@ impl Observation {
             ally_buildings: Vec::new(),
             enemy_units: Vec::new(),
             enemy_buildings: Vec::new(),
+            visible: Vec::new(),
             explored: Vec::new(),
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
             known_frames: Vec::new(),
             known_peaks: Vec::new(),
             known_wrecks: Vec::new(),
+            salvage_incidents: state
+                .vision(me)
+                .salvage_incidents()
+                .iter()
+                .filter(|incident| incident.expires_at > state.current_tick())
+                .map(|incident| incident.tile)
+                .collect(),
             blips: Vec::new(),
             faction: state.player(me).faction,
             my_shells: 0,
@@ -440,6 +540,10 @@ fn own_unit(u: &crate::state::Unit) -> UnitObs {
         hp: u.hp,
         idle: u.order == Order::Idle,
         carrying: u.carrying,
+        harvesting: match u.order {
+            Order::Harvest { node, .. } => Some(node),
+            _ => None,
+        },
         cargo: u.cargo.iter().map(|r| r.kind.stats().transport_size).sum(),
         site: match u.order {
             Order::Build { site } => Some(site),
@@ -453,6 +557,8 @@ fn own_unit(u: &crate::state::Unit) -> UnitObs {
             Order::Found { kind, anchor } => Some((kind, anchor)),
             _ => None,
         },
+        repairing: matches!(u.order, Order::Repair { .. } | Order::RepairUnit { .. }),
+        grounded: u.landed,
     }
 }
 
@@ -463,12 +569,15 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
         kind: u.kind,
         tile: u.tile(),
         hp: u.hp,
-        idle: false,     // enemy intent is not observable
-        carrying: 0,     // nor their cargo manifests
-        cargo: 0,        // a sealed sling shows nothing
-        site: None,      // nor their work orders
-        salvaging: None, // ditto
-        founding: None,  // ditto
+        idle: false,      // enemy intent is not observable
+        carrying: 0,      // nor their cargo manifests
+        harvesting: None, // nor their work orders
+        cargo: 0,         // a sealed sling shows nothing
+        site: None,       // nor their work orders
+        salvaging: None,  // ditto
+        founding: None,   // ditto
+        repairing: false,
+        grounded: u.landed,
     }
 }
 
@@ -482,5 +591,287 @@ fn own_building(b: &crate::state::Building) -> BuildingObs {
         built: b.built,
         seen: true,
         tier: b.tier,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::{Command, PlayerCommand};
+    use crate::scenario::{Scenario, UnitSpec};
+    use crate::stats::UnitKind;
+    use chassis::grid::TilePos;
+
+    fn transport_scenario() -> Scenario {
+        let mut scenario = Scenario::skirmish();
+        scenario.name = "observation-transport".into();
+        scenario.units = vec![
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Skyhook,
+                x: 8,
+                y: 5,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Harvester,
+                x: 7,
+                y: 5,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 9,
+                y: 5,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Lancer,
+                x: 8,
+                y: 6,
+            },
+        ];
+        scenario
+    }
+
+    #[test]
+    fn owner_observation_reports_exact_sling_occupancy_without_leaking_the_manifest() {
+        let mut state = transport_scenario()
+            .build()
+            .expect("the transport scenario builds");
+        let skyhook = state
+            .units()
+            .iter()
+            .find(|unit| unit.kind == UnitKind::Skyhook)
+            .expect("the Skyhook exists")
+            .id;
+        let riders: Vec<_> = state
+            .units()
+            .iter()
+            .filter(|unit| unit.id != skyhook)
+            .map(|unit| unit.id)
+            .collect();
+        let expected_occupancy: u8 = state
+            .units()
+            .iter()
+            .filter(|unit| unit.id != skyhook)
+            .map(|unit| unit.kind.stats().transport_size)
+            .sum();
+        assert_eq!(expected_occupancy, 4, "the authored squad fills the sling");
+
+        state.tick(&[PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Load {
+                units: riders,
+                transport: skyhook,
+                queue: false,
+            },
+        }]);
+        for _ in 0..200 {
+            if state
+                .unit(skyhook)
+                .is_some_and(|transport| transport.cargo.len() == 3)
+            {
+                break;
+            }
+            state.tick(&[]);
+        }
+        assert_eq!(
+            state
+                .unit(skyhook)
+                .expect("the loaded Skyhook remains alive")
+                .cargo
+                .len(),
+            3,
+            "the whole mixed-size squad boards"
+        );
+
+        for observation in [
+            Observation::fog_honest(&state, PlayerId(0)),
+            Observation::omniscient(&state, PlayerId(0)),
+        ] {
+            let transport = observation
+                .my_units
+                .iter()
+                .find(|unit| unit.id == skyhook)
+                .expect("the owner observes its Skyhook");
+            assert_eq!(transport.cargo, expected_occupancy);
+        }
+
+        let opponent = Observation::omniscient(&state, PlayerId(1));
+        let transport = opponent
+            .enemy_units
+            .iter()
+            .find(|unit| unit.id == skyhook)
+            .expect("the complete test view includes the hostile Skyhook");
+        assert_eq!(
+            transport.cargo, 0,
+            "an opponent may see the airframe, but not its sealed manifest"
+        );
+    }
+
+    #[test]
+    fn a_parked_airframe_is_grounded_for_its_owner_and_for_anyone_who_sees_it() {
+        let mut scenario = Scenario::skirmish();
+        scenario.name = "observation-landing".into();
+        scenario.units = vec![
+            // Mid-basin, clear of both Foundries: nothing in the Condor's
+            // acquisition range, so its move ends in a landing. The
+            // Sentinel watches from inside its sight and outside its aggro.
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Condor,
+                x: 20,
+                y: 12,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Sentinel,
+                x: 14,
+                y: 12,
+            },
+        ];
+        let mut state = scenario.build().expect("the landing scenario builds");
+        let condor = state
+            .units()
+            .iter()
+            .find(|unit| unit.kind == UnitKind::Condor)
+            .expect("the Condor exists")
+            .id;
+        let goal = TilePos::new(20, 12);
+
+        let airborne = Observation::omniscient(&state, PlayerId(1));
+        let flying = airborne
+            .enemy_units
+            .iter()
+            .find(|unit| unit.id == condor)
+            .expect("the complete test view includes the hostile Condor");
+        assert!(!flying.grounded);
+        assert_eq!(flying.body_domain(), crate::stats::Domain::Air);
+
+        state.tick(&[PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Move {
+                units: vec![condor],
+                goal,
+                queue: false,
+            },
+        }]);
+        for _ in 0..1_500 {
+            if state.unit(condor).is_some_and(|unit| unit.landed) {
+                break;
+            }
+            state.tick(&[]);
+        }
+        let parked = state.unit(condor).expect("the Condor survives its landing");
+        assert!(
+            parked.landed,
+            "the Condor sets down within the flight budget"
+        );
+        let tile = parked.tile();
+        assert!(
+            state.vision(PlayerId(1)).visible(tile),
+            "the opponent's Sentinel watches the landing tile"
+        );
+
+        for observation in [
+            Observation::fog_honest(&state, PlayerId(0)),
+            Observation::omniscient(&state, PlayerId(0)),
+        ] {
+            let own = observation
+                .my_units
+                .iter()
+                .find(|unit| unit.id == condor)
+                .expect("the owner observes its Condor");
+            assert!(own.grounded);
+            assert_eq!(own.body_domain(), crate::stats::Domain::Ground);
+        }
+        for observation in [
+            Observation::fog_honest(&state, PlayerId(1)),
+            Observation::omniscient(&state, PlayerId(1)),
+        ] {
+            let seen = observation
+                .enemy_units
+                .iter()
+                .find(|unit| unit.id == condor)
+                .expect("the opponent sees the parked Condor");
+            assert!(
+                seen.grounded,
+                "a parked airframe is a physical fact, not private intent"
+            );
+            assert_eq!(seen.body_domain(), crate::stats::Domain::Ground);
+        }
+    }
+
+    #[test]
+    fn owner_observation_exposes_the_active_harvest_node_without_leaking_enemy_orders() {
+        let mut state = Scenario::skirmish()
+            .build()
+            .expect("the skirmish scenario builds");
+        let worker = |player| {
+            state
+                .units()
+                .iter()
+                .find(|unit| unit.player == player && unit.kind == UnitKind::Harvester)
+                .expect("each skirmish seat starts with a Harvester")
+                .id
+        };
+        let known_node = |player| {
+            state
+                .map()
+                .iter()
+                .find(|(tile, cell)| cell.scrap > 0 && state.vision(player).visible(*tile))
+                .map(|(tile, _)| tile)
+                .expect("each skirmish seat starts with visible salvage")
+        };
+        let p0_worker = worker(PlayerId(0));
+        let p1_worker = worker(PlayerId(1));
+        let p0_node = known_node(PlayerId(0));
+        let p1_node = known_node(PlayerId(1));
+
+        state.tick(&[
+            PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Harvest {
+                    units: vec![p0_worker],
+                    node: p0_node,
+                    queue: false,
+                },
+            },
+            PlayerCommand {
+                player: PlayerId(1),
+                command: Command::Harvest {
+                    units: vec![p1_worker],
+                    node: p1_node,
+                    queue: false,
+                },
+            },
+        ]);
+
+        for (observer, own_worker, own_node, hostile_worker) in [
+            (PlayerId(0), p0_worker, p0_node, p1_worker),
+            (PlayerId(1), p1_worker, p1_node, p0_worker),
+        ] {
+            let observation = Observation::omniscient(&state, observer);
+            assert_eq!(
+                observation
+                    .my_units
+                    .iter()
+                    .find(|unit| unit.id == own_worker)
+                    .expect("the owner observes its Harvester")
+                    .harvesting,
+                Some(own_node)
+            );
+            assert_eq!(
+                observation
+                    .enemy_units
+                    .iter()
+                    .find(|unit| unit.id == hostile_worker)
+                    .expect("the complete test view includes the hostile Harvester")
+                    .harvesting,
+                None,
+                "an enemy's Harvest order remains private even in a complete test view"
+            );
+        }
     }
 }

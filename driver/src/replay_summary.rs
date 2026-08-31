@@ -8,7 +8,7 @@
 //! own deterministic event stream, so the same replay and options yield the
 //! same report, byte for byte.
 //!
-//! Known v1 caveats: boarded cargo leaves [`oxide_sim::State::units`], so
+//! Known caveats: boarded cargo leaves [`oxide_sim::State::units`], so
 //! army value dips while transports fly; building loss values use tier-0
 //! construction cost (the destruction event names no tier); validation is
 //! strict to the current [`oxide_sim::SIM_VERSION`] — a cross-version replay
@@ -17,6 +17,7 @@
 use crate::runner::{GameReplay, MAX_REPLAY_TICKS};
 use anyhow::{Context, Result};
 use chassis::grid::TilePos;
+use oxide_sim::scenario::BotConfig;
 use oxide_sim::{
     BuildingId, BuildingKind, Event, Faction, GameResult, Order, PlayerId, SIM_VERSION, State,
     TICKS_PER_SECOND, Target, UnitId, UnitKind,
@@ -26,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 /// Version of the serialized [`SummaryReport`] contract.
-pub const REPLAY_SUMMARY_SCHEMA_VERSION: u32 = 2;
+pub const REPLAY_SUMMARY_SCHEMA_VERSION: u32 = 3;
 
 /// Space gate: a loss joins an active battle when within this many tiles of
 /// its running centroid. Above the longest direct-fire range in the game
@@ -133,6 +134,8 @@ pub struct SeatLine {
     pub team: u8,
     /// Whether the scenario assigns this seat to a built-in bot.
     pub bot: bool,
+    /// Exact built-in controller configuration recorded in the scenario.
+    pub bot_config: Option<BotConfig>,
 }
 
 /// One timeline moment; `tick` lives on the wrapper so rendering and sorting
@@ -655,6 +658,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
             faction: spec.faction,
             team: state.players()[seat].team,
             bot: spec.bot,
+            bot_config: spec.bot_config,
         })
         .collect();
     let seat_count = seats.len();
@@ -1406,6 +1410,21 @@ fn clock(ticks: u64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
+fn controller_label(seat: &SeatLine) -> String {
+    let configured = |config: BotConfig| {
+        format!(
+            "scripted, {} / {}, personality seed {}",
+            config.difficulty, config.stance, config.personality_seed
+        )
+    };
+    match (seat.bot, seat.bot_config) {
+        (true, Some(config)) => format!("bot ({})", configured(config)),
+        (true, None) => "bot (unconfigured)".to_owned(),
+        (false, Some(config)) => format!("human (unused {})", configured(config)),
+        (false, None) => "human".to_owned(),
+    }
+}
+
 impl SummaryReport {
     /// The human rendering; JSON carries the same data.
     pub fn render(&self) -> String {
@@ -1438,7 +1457,7 @@ impl SummaryReport {
                 seat.name,
                 seat.faction,
                 seat.team,
-                if seat.bot { "bot" } else { "human" },
+                controller_label(seat),
             );
         }
         let _ = writeln!(out, "timeline:");

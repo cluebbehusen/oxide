@@ -575,10 +575,15 @@ impl Game {
                     pos,
                     player,
                     kind,
+                    grounded,
                 } => {
-                    if kind.stats().domain == oxide_sim::stats::Domain::Air
-                        && !crate::render::reduced_motion()
-                    {
+                    // A parked airframe has no altitude to fall from; the
+                    // event carries the body's layer at death because the
+                    // corpse is already gone and landing, takeoff, and
+                    // death can all share a tick.
+                    let airborne =
+                        kind.stats().domain == oxide_sim::stats::Domain::Air && !grounded;
+                    if airborne && !crate::render::reduced_motion() {
                         self.fx.push(Effect {
                             kind: EffectKind::Falling {
                                 at: world_vec(*pos),
@@ -758,9 +763,7 @@ impl Game {
                             .state
                             .units()
                             .iter()
-                            .filter(|u| {
-                                u.player == self.human && targets.covers(u.kind.stats().domain)
-                            })
+                            .filter(|u| u.player == self.human && targets.covers(u.domain()))
                             .any(|u| world_vec(u.pos).distance(world) <= reach)
                             || (targets.covers(oxide_sim::stats::Domain::Ground)
                                 && self
@@ -1305,6 +1308,7 @@ mod tests {
             kind: UnitKind::Sentinel,
             player: oxide_sim::PlayerId(1),
             pos: at,
+            grounded: true,
         }]);
         assert!(
             game.fx
@@ -1318,6 +1322,7 @@ mod tests {
             kind: UnitKind::Buzzard,
             player: oxide_sim::PlayerId(1),
             pos: at,
+            grounded: false,
         }]);
         assert!(
             game.fx
@@ -1331,6 +1336,27 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e.kind, EffectKind::Debris { .. })),
             "no double story for one death"
+        );
+        game.fx.clear();
+        game.spawn_fx(&[oxide_sim::Event::UnitDied {
+            unit: oxide_sim::UnitId(9),
+            kind: UnitKind::Condor,
+            player: oxide_sim::PlayerId(1),
+            pos: at,
+            grounded: true,
+        }]);
+        assert!(
+            game.fx
+                .iter()
+                .any(|e| matches!(e.kind, EffectKind::Debris { seed: 9, .. })),
+            "a parked airframe has no altitude to fall from"
+        );
+        assert!(
+            !game
+                .fx
+                .iter()
+                .any(|e| matches!(e.kind, EffectKind::Falling { .. })),
+            "no fall for a body already on the ground"
         );
     }
 }
