@@ -1,6 +1,6 @@
 ---
 created: 2026-08-29T08:00:10
-updated: 2026-08-31T05:19:21
+updated: 2026-08-31T19:11:05
 ---
 
 # Oxide 0.16.0 Scripted Bot Improvement
@@ -13,8 +13,6 @@ surface, and promoting only behavior proven against Overseer and human play.
 
 ## Decisions
 
-- Treat the current 0.16.0 candidate as rejected rather than frozen or
-  promotion-ready.
 - Preserve the fair-opponent contract. Better worker saturation, spending,
   production uptime, expansion timing, reinforcement, and critical-mass judgment
   are ordinary competence, not cheating.
@@ -67,9 +65,6 @@ surface, and promoting only behavior proven against Overseer and human play.
   floor independent of stance and personality.
 - Treat the first Fabricator and every other non-home capital project as
   voluntary investment protected by the opening core escrow.
-- Permit at most one Turret against a current ground threat and one Flak Turret
-  against a current air threat before the core floor. Remembered threats, public
-  starts, radar blips, and raid history do not bypass the escrow.
 - Preserve the exact fourth-Harvester plus safe starting-home Extractor opening.
   After the floor is met, optional capital must leave one shallow Sentinel
   reinforcement queued or its exact cost affordable unless no honest ground
@@ -78,6 +73,13 @@ surface, and promoting only behavior proven against Overseer and human play.
   0.16.0, then open the PR. The remaining bot behavior, calibration, and
   correctness work belongs in contained follow-up patches and does not block
   this PR.
+- Permit at most one Turret against a current visible armed ground threat and
+  one Flak Turret against a current visible ground-attack aircraft before the
+  core floor. Remembered threats, public starts, radar blips, raid history, and
+  air-to-air aircraft do not bypass the escrow.
+- Treat this branch as ready for code review, not as final release promotion.
+  Human difficulty and stance play, broader macro calibration, and remaining
+  correctness work stay explicit follow-up tasks on smaller branches.
 
 ## Findings
 
@@ -86,9 +88,6 @@ surface, and promoting only behavior proven against Overseer and human play.
   cells; no scripted difficulty won.
 - The latest human replay reached 7:00 with Prime on four Harvesters and three
   Sentinels while it prioritized infrastructure and banked usable scrap.
-- Difficulty currently changes mostly reaction, memory, estimates, coordination,
-  and hesitation. It does not govern worker saturation, army targets, expansion
-  timing, or production uptime strongly enough to create a reliable ladder.
 - The bot implementation contains roughly 16,500 production lines, several very
   large policy functions, dual-controller branching, loosely represented
   operation state, untyped budget plumbing, and tests coupled heavily to private
@@ -129,11 +128,6 @@ surface, and promoting only behavior proven against Overseer and human play.
   ticks. Overseer accumulated 61,924 and 71,609 stalls, almost entirely
   no_route, while Prime recorded two stalls per leg; this is a routing liveness
   failure, not parity.
-- Prime underproduction is a deterministic budget-ordering inversion, not a cap
-  or seed effect. At exactly three fighters, voluntary construction runs before
-  production and the next capital reserve is protected; each purchase leaves too
-  little unreserved scrap for the missing core unit, so a serial capital chain
-  starves the Foundry.
 - The tier-zero Turret currently costs 100 scrap, has 350 HP, and deals 12
   ground damage every 25 ticks; a Sentinel costs 90, has 60 HP, and deals 10
   ground damage every 20 ticks. The Turret has 5.25 times the HP per scrap but
@@ -141,13 +135,17 @@ surface, and promoting only behavior proven against Overseer and human play.
 - Prime carried a badly wounded combat core for minutes without repair; the
   dedicated repair gap remains open after separating it from the resolved
   long-range siege response.
-- The Severance stall pile-up is the frozen Overseer's legacy ferry: it ranks
-  riders by chebyshev distance with no route check and never brings an empty
-  carrier home, so after one unload on the enemy island every 8-tick think
-  re-issues an unreachable Load; every shared route gate is written
-  `!player_facing || route_check`, and `routing::routable_command_subset` has no
-  caller. A second Overseer-only loop re-issues a refused Extractor frame build
-  hundreds of times and debits the construction budget each think.
+- Difficulty now sets a distinct opening army floor in addition to reaction,
+  memory, estimates, coordination, and hesitation. Worker saturation, expansion
+  timing, and production uptime still need broader macro calibration before the
+  ladder can be considered reliable.
+- Prime underproduction was a deterministic budget-ordering inversion rather
+  than a cap or seed effect. The opening-core escrow corrected that specific
+  failure; broader worker and production calibration remains open.
+- The remaining Severance stall pile-up belongs to frozen Overseer: its legacy
+  ferry ranks riders without a route check and never recalls an empty carrier.
+  The player-facing path now uses routable command filtering; the yardstick
+  remains deliberately unchanged.
 
 ## Actions
 
@@ -286,10 +284,15 @@ surface, and promoting only behavior proven against Overseer and human play.
       Prime reached its eight-Sentinel core, traded evenly in the first clash,
       recovered, and lost only after repeated battles. Human play remains the
       promotion test.
+    - Re-ran the final 16-leg paired Skirmish and Cinder Steppe acceptance block
+      after the refactor and final fixes: Prime again won 14, Overseer won two,
+      every match resolved, and Prime issued no rejected commands.
 - [ ] Redefine and calibrate difficulty primarily through fair macro competence,
       with cognitive and execution differences layered on top.
-- [ ] Fix confirmed correctness defects, beginning with orientation-dependent
+- [x] Fix confirmed correctness defects, beginning with orientation-dependent
       withdrawal targeting.
+  - Fixed owner-relative threat tie-breaking and pinned mirrored withdrawal
+    behavior.
 - [ ] Re-evaluate personality and stance only after the shared Prime foundation
       is competent, making style legible without turning it into a strength
       axis.
@@ -373,6 +376,11 @@ surface, and promoting only behavior proven against Overseer and human play.
     budget plumbing, private-phase test coupling, hot-loop lookups, and
     orientation assumptions; verify claimed duplication before introducing
     abstractions.
+  - The 0.16.0 coordination refactor added whole-behavior tripwires, Controller,
+    ScrapLedger, ClaimLedger, and Speculation types; staged the production and
+    construction pipelines; memoized route projection; and removed repeated
+    test-fixture boilerplate. Further module splitting and dual-controller
+    cleanup remain follow-up work.
 - [x] Reproduce and fix the Avalanche advancing toward an unseen enemy inside
       weapon range, which defeats its low-vision artillery role and forces
       repeated retreat orders.
@@ -449,11 +457,14 @@ surface, and promoting only behavior proven against Overseer and human play.
     resource routes, and binds the exact public-terrain-safe builder.
   - Kept frozen Overseer first-valid placement unchanged; a fresh Skirmish built
     exactly mirrored Arrays at `(19, 13)` and `(20, 10)` near the map interior.
+  - Corrected the final terrain edge case: Peaks now contribute no radar value
+    because neither ground nor air units can occupy them; Skyhook Anchorage
+    moved as expected and the player-facing golden was reblessed.
   - Covered edge waste, full corner-map coverage, compact maps, allied overlap,
     hostile-facing ties, symmetry, unreachable sites, active-resource
     chokepoints, hidden Peaks and Pits, exact builder dispatch, and Overseer
-    parity. The sensor module reached 100% combined coverage and every
-    repository gate passed.
+    parity.
+- [ ] Give badly wounded combat formations a deliberate repair policy.
 
 ## Open Questions
 
@@ -467,37 +478,3 @@ surface, and promoting only behavior proven against Overseer and human play.
 - Does human play support the 491-frame economy, especially Skyhook Anchorage's
   singleton transport claims, the dense perimeter economies on Pentangle Claim
   and Scramble Basin, and Open Quarry's compact central pair?
-
-## References
-
-Fable comments about quality and maintainability:
-
-3. Is it maintainable?
-
-No, not as-is. 16.5K production lines, files of 5–6.7K lines, apply_inner 484
-lines, maintain_with_roster 417, production_with_air_demand 405 (10-level
-nesting), Brain::act 363, LiftPlanner::think 271. raid.rs and team.rs are near
-line-for-line clones with no shared abstraction. ~108 unnamed thresholds in the
-planners alone. Five unreconciled "scrap budget" numbers flow through Brain::act
-via three Observation clones. 610 tests at 99 % coverage, but a large fraction
-pin private phases, exact reservation vectors, and cache build counts; reviewers
-estimated 30–60 % breakage for a reasonable policy change. Ten checkpoint
-commits with empty bodies, one of them 48K lines. This is maintainable by an
-agent with unlimited patience, not by a person.
-
-4. Is it high-quality, idiomatic Rust?
-
-Middling: 6–7/10 idiom, 4–6/10 maintainability across five independent reviews.
-Honoured without exception: no floats, no hash iteration, tie-breaks end in id
-or (y, x), exhaustive matches as compile-time tripwires, zero lint suppressions,
-unusually good why comments. Recurring faults: Vec + sort/dedup/contains as a
-set at ~60 sites where BTreeSet is the type; Option<Planner> ×6 as a mode flag;
-LiftManifest with five loose bools; phase machines as 16 scattered assignments,
-one missing its phase_started_at stamp (lift.rs:438); unreachable!() inside
-let-else on two-variant enums; a fabricated UnitId(u32::MAX) sentinel to measure
-strength; #[cfg(test)] counters welded into production structs; 13 throwaway
-RouteProjections per think; a linear unit() lookup over a documented-sorted vec
-in hot loops. Two real correctness findings: withdrawal_threat uses an absolute
-(y, x) tie-break on the unoriented observation (armies.rs:969), and Orientation
-has four states while 12 shipped maps have 6–8 seats. The non-bot sim/engine
-changes are the best code on the branch (8/10).

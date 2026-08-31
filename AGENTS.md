@@ -81,11 +81,12 @@ movement, combat, and economy. Never hide bot-only income, vision, stats, legal
 actions, or construction privileges behind controller code.
 
 Normal matches use one configurable rules-based controller. Scrapheap, Standard,
-Veteran, and Prime alter fair cognitive and execution limits such as attention,
-reaction time, memory, estimate accuracy, and commitment timing. Turtle,
-Balanced, and Aggressive bound its strategic posture. A deterministic per-seat
-seed varies air, siege, support, fortification, greed, and guile priorities; it
-never changes capabilities or unit strength.
+Veteran, and Prime alter fair macro competence plus cognitive and execution
+limits such as opening army commitment, attention, reaction time, memory,
+estimate accuracy, and hesitation. Turtle, Balanced, and Aggressive bound its
+strategic posture. A deterministic per-seat seed varies air, siege, support,
+fortification, greed, and guile priorities; it never changes capabilities or
+unit strength.
 
 Every difficulty retains the complete strategic repertoire. Automated metrics
 surface candidates and failures; human play and replay judgment decide whether

@@ -1,6 +1,6 @@
 ---
 created: 2026-08-31T06:45:14
-updated: 2026-08-31T17:43:40
+updated: 2026-08-31T18:56:52
 ---
 
 # Oxide 0.16.0 Bot Coordination Refactor
@@ -164,9 +164,18 @@ frozen Overseer behavior.
   - 4060797 gives Observation a test-base Default and spreads the in-module
     fixtures over it (383 restated default lines deleted); the orientation flip
     literal deliberately stays exhaustive.
-
-## Open Questions
-
-- Which maps and bot-config cells give the player-facing fixture the best
-  coverage of the lift, team, and raid paths? The implementer should verify at
-  least one lift phase transition occurs within the fixture horizon.
+- [ ] Extend the player-facing whole-behavior fixture with cells that execute
+      team and raid paths before refactoring those planners.
+- [ ] Add a maintainable bot-specific coverage gate so near-complete production
+      coverage cannot regress behind the workspace aggregate.
+- [ ] Extend the frozen Overseer tripwire with command timing and a later
+      behavioral horizon before refactoring its policy path.
+- [x] Close final coordination and test-boundary review gaps before the 0.16.0
+      PR.
+  - Kept landed riders owned throughout a staggered multi-carrier landing
+    without retaining failed riders or a completed assault.
+  - Exercised the negative Team and Lift speculation rollback paths with real
+    planner-generated candidates, including planner restoration, discarded
+    decisions, and cleared derived claims.
+  - Kept the invalid empty Observation default test-only and reconciled the
+    maintained contracts and workstream handoff.
