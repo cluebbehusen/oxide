@@ -19,6 +19,14 @@ pub(super) struct RouteProjection<'a> {
     has_blocked_ground_tiles: bool,
     labels: Vec<u32>,
     next_label: u32,
+    /// Per-tile memo of the domain passability predicate: 0 unqueried,
+    /// 1 open, 2 closed. Component floods and path checks ask the same
+    /// tile several times, and the raw ground predicate costs two binary
+    /// searches plus a building scan per ask. The memo is sound because
+    /// the projection immutably borrows its observation for its whole
+    /// life; projection-local overlays and the explored requirement stay
+    /// outside it.
+    open_memo: std::cell::RefCell<Vec<u8>>,
 }
 
 impl<'a> RouteProjection<'a> {
@@ -40,6 +48,7 @@ impl<'a> RouteProjection<'a> {
             has_blocked_ground_tiles: false,
             labels: vec![0; cells],
             next_label: 1,
+            open_memo: std::cell::RefCell::new(vec![0; cells]),
         }
     }
 
@@ -106,8 +115,7 @@ impl<'a> RouteProjection<'a> {
             from,
             to,
             |tile| {
-                domain_open(self.obs, self.domain, tile)
-                    && (!self.require_explored || self.obs.explored(tile))
+                self.domain_open_memo(tile) && (!self.require_explored || self.obs.explored(tile))
             },
             crate::stats::PATH_EXPANSION_CAP,
         )
@@ -202,10 +210,27 @@ impl<'a> RouteProjection<'a> {
         let blocked_by_tile = self.domain == Domain::Ground
             && in_bounds(self.obs, tile)
             && self.blocked_ground_tiles[self.index(tile)];
-        domain_open(self.obs, self.domain, tile)
+        self.domain_open_memo(tile)
             && !blocked_by_candidate
             && !blocked_by_tile
             && (!self.require_explored || self.obs.explored(tile))
+    }
+
+    fn domain_open_memo(&self, tile: TilePos) -> bool {
+        if !in_bounds(self.obs, tile) {
+            return false;
+        }
+        let index = self.index(tile);
+        let mut memo = self.open_memo.borrow_mut();
+        match memo[index] {
+            1 => true,
+            2 => false,
+            _ => {
+                let open = domain_open(self.obs, self.domain, tile);
+                memo[index] = if open { 1 } else { 2 };
+                open
+            }
+        }
     }
 
     fn index(&self, tile: TilePos) -> usize {
