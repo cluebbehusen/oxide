@@ -10,10 +10,11 @@
 //! combat-phase horizon.
 //!
 //! Two rows per map: the final state hash, and a running fold of the full
-//! command stream keyed `<map>#commands`. The command fold moves whenever
-//! any decision changes, even where the worlds later reconverge, so it is
-//! the sharper refactoring tripwire; the state hash anchors the world the
-//! commands actually built.
+//! command stream — each tick's commands folded with the tick they were
+//! staged for — keyed `<map>#commands`. The command fold moves whenever
+//! any decision or its timing changes, even where the worlds later
+//! reconverge, so it is the sharper refactoring tripwire; the state hash
+//! anchors the world the commands actually built.
 //!
 //! `tests/goldens/player-facing-hashes.json` obeys the same bless
 //! discipline as the Overseer golden: `BLESS=1 cargo test -p oxide-driver`,
@@ -86,7 +87,12 @@ fn run_map(name: &str) -> MapRun {
             commands.extend(bot.act(&state));
         }
         if !commands.is_empty() {
-            command_fold = chassis::hash::state_hash(&(command_fold, &commands));
+            // The tick is part of the fold: replay identity is "these
+            // commands at this tick", so identical commands sliding to a
+            // different tick must move this row even where the world
+            // later reconverges.
+            command_fold =
+                chassis::hash::state_hash(&(command_fold, state.current_tick(), &commands));
             saw_lift_load |= commands
                 .iter()
                 .any(|c| matches!(c.command, oxide_sim::Command::Load { .. }));
