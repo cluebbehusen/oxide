@@ -537,17 +537,50 @@ impl Dials {
     }
 
     /// The stable QA controller's full strategic surface: deep tech,
-    /// Extractors, upgrades, expansions, transports, and mines.
+    /// Extractors, upgrades, expansions, transports, and mines. Every field
+    /// is spelled out because these values anchor the blessed state-hash
+    /// fixtures; inheriting from another constructor would let a test-fixture
+    /// edit silently redefine the frozen yardstick.
     pub fn overseer() -> Self {
         Self {
+            cadence: 8,
+            harvester_target: 5,
+            army_size: 5,
+            minimum_core_equivalents: 0,
+            air_wing: AIR_WING,
+            bomber_target: 2,
+            siege_target: 2,
+            support_target: 1,
+            raider_target: 4,
+            turret_cap: TURRET_CAP,
+            flak_cap: FLAK_CAP,
+            reclaimer_cap: RECLAIMER_CAP,
+            mine_cap: MINE_CAP,
+            barricade_cap: 0,
+            foundry_cap: 3,
+            adaptive_composition: false,
+            discretionary_slots: 1,
+            own_strength_scale: 10_000,
+            enemy_strength_scale: 10_000,
+            opponent_force_memory: 0,
+            coordinated_focus: true,
+            coordinated_defense_focus: false,
+            tech: true,
+            turret_response: true,
+            scouting: true,
+            fog_honest: true,
+            aa_response: true,
+            radar: true,
+            reclaimers: true,
+            repair: true,
+            air_harass: true,
+            salvage: true,
             deep_tech: true,
             extractors: true,
             upgrades: true,
             expansion: true,
             ferry: true,
             mines: true,
-            harvester_target: 5,
-            ..Self::full()
         }
     }
 
