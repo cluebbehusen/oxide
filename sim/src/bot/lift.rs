@@ -93,6 +93,13 @@ pub struct LiftManifest {
     pub closed: bool,
 }
 
+impl LiftManifest {
+    /// Whether the active operation still owns this manifest's exact riders.
+    pub(super) fn retains_rider_ownership(&self) -> bool {
+        (!self.closed && !self.attack_issued) || (self.attack_issued && !self.aborted)
+    }
+}
+
 /// Inspectable persistent state of one transport wave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiftOperation {
@@ -1702,6 +1709,11 @@ fn reservations(
     unavailable: &[UnitId],
 ) -> Vec<UnitId> {
     let mut ids = Vec::new();
+    let landed_assault = if operation.phase == LiftPhase::Landing {
+        landed_survivors(operation, obs)
+    } else {
+        Vec::new()
+    };
     if operation.manifests.is_empty() {
         if operation.phase == LiftPhase::Provision {
             ids.extend(
@@ -1728,14 +1740,11 @@ fn reservations(
             if !manifest.closed && unit(obs, manifest.carrier).is_some() {
                 ids.push(manifest.carrier);
             }
-            if !manifest.closed && !manifest.attack_issued {
-                ids.extend(
-                    manifest
-                        .riders
-                        .iter()
-                        .copied()
-                        .filter(|id| unit(obs, *id).is_some()),
-                );
+            if manifest.retains_rider_ownership() {
+                ids.extend(manifest.riders.iter().copied().filter(|id| {
+                    unit(obs, *id).is_some()
+                        && (!manifest.attack_issued || landed_assault.binary_search(id).is_ok())
+                }));
             }
         }
     }

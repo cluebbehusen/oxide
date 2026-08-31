@@ -211,6 +211,7 @@ pub struct Observation {
 /// test in `orient` deliberately does not use it — a new field must
 /// still declare its seat flip exhaustively there before this default
 /// can carry it anywhere else.
+#[cfg(test)]
 impl Default for Observation {
     fn default() -> Self {
         Self {

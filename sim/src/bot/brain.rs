@@ -909,18 +909,11 @@ fn prior_planner_claims(
         if operation.manifests.is_empty() {
             claims.extend(operation.payload.iter().copied());
         } else {
-            // This rider predicate deliberately differs from
-            // `LiftPlanner::reservations`, which releases riders once an
-            // attack is issued; the brain keeps un-aborted assault riders
-            // claimed so no other planner recruits mid-drop. Reconciling
-            // the two readings is a behavior change, not a cleanup.
             for manifest in &operation.manifests {
                 if !manifest.closed {
                     claims.push(manifest.carrier);
                 }
-                if (!manifest.closed && !manifest.attack_issued)
-                    || (manifest.attack_issued && !manifest.aborted)
-                {
+                if manifest.retains_rider_ownership() {
                     claims.extend(manifest.riders.iter().copied());
                 }
             }
@@ -2403,12 +2396,81 @@ mod tests {
             Some(LiftPhase::Landing)
         );
 
-        for manifest in &manifests {
+        let first_manifest = manifests
+            .first()
+            .expect("the multi-carrier fixture assigns a first manifest");
+        {
+            let carrier = planning
+                .my_units
+                .iter_mut()
+                .find(|unit| unit.id == first_manifest.carrier)
+                .expect("the first carrier reaches its exact drop");
+            carrier.tile = first_manifest.drop;
+            carrier.cargo = 0;
+            planning
+                .my_units
+                .extend(first_manifest.riders.iter().map(|id| {
+                    let mut rider = original_riders
+                        .iter()
+                        .find(|unit| unit.id == *id)
+                        .expect("the manifest names an exact original rider")
+                        .clone();
+                    rider.tile = first_manifest.drop;
+                    rider
+                }));
+        }
+        planning.my_units.sort_unstable_by_key(|unit| unit.id);
+        planning.tick += 1;
+        let _ = lifts.think_with_admission(
+            &planning,
+            home,
+            &[],
+            LiftAirSupport::Independent,
+            LiftAdmission {
+                allow_new_commitments: false,
+                core_reservations: &[],
+                minimum_core_equivalents: 8,
+            },
+        );
+        let mixed_operation = lifts
+            .operation()
+            .expect("the remaining loaded carrier keeps the lift landing");
+        assert_eq!(mixed_operation.phase, LiftPhase::Landing);
+        assert!(mixed_operation.manifests[0].attack_issued);
+        assert!(
+            mixed_operation
+                .manifests
+                .iter()
+                .skip(1)
+                .any(|manifest| !manifest.attack_issued)
+        );
+
+        planning.tick += 1;
+        let mixed_decision = lifts.think_with_admission(
+            &planning,
+            home,
+            &[],
+            LiftAirSupport::Independent,
+            LiftAdmission {
+                allow_new_commitments: false,
+                core_reservations: &[],
+                minimum_core_equivalents: 8,
+            },
+        );
+        assert!(
+            first_manifest
+                .riders
+                .iter()
+                .all(|id| mixed_decision.reservations.contains(id)),
+            "landed riders remain reserved while another manifest is still landing: {mixed_decision:?}"
+        );
+
+        for manifest in manifests.iter().skip(1) {
             let carrier = planning
                 .my_units
                 .iter_mut()
                 .find(|unit| unit.id == manifest.carrier)
-                .expect("every carrier reaches its exact drop");
+                .expect("every remaining carrier reaches its exact drop");
             carrier.tile = manifest.drop;
             carrier.cargo = 0;
             planning.my_units.extend(manifest.riders.iter().map(|id| {
@@ -4085,6 +4147,81 @@ mod tests {
     }
 
     #[test]
+    fn team_candidate_rolls_back_when_derived_claims_break_the_core() {
+        let scenario = opening_core_team_relief_scenario();
+        let state = scenario
+            .build()
+            .expect("opening-core team-relief scenario builds");
+        let obs = Observation::fog_honest(&state, PlayerId(0));
+        let home = obs
+            .my_buildings
+            .iter()
+            .find(|building| building.kind == BuildingKind::Foundry)
+            .expect("the home Foundry stands")
+            .anchor;
+        let mut identity = operation_identity_brain(PlayerId(0), &scenario);
+        identity.mind_mut().profile.traits.support = 70;
+        let profile = *identity
+            .profile()
+            .expect("the scripted brain owns a resolved profile");
+        let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
+        let mut planner = Some(TeamReliefPlanner::new());
+        let snapshot = planner.clone();
+        let mut decision = planner
+            .as_mut()
+            .expect("the candidate owns a team planner")
+            .think_with_admission(
+                &profile,
+                tuning,
+                &obs,
+                home,
+                &[],
+                TeamReliefAdmission {
+                    additionally_reserved: &[],
+                    allow_new_operation: true,
+                    core_reservations: &[],
+                    minimum_core_equivalents: 0,
+                },
+            );
+        let candidate_reservations = planner
+            .as_ref()
+            .expect("the candidate owns a team planner")
+            .reservations();
+        let mut derived_claims = planner
+            .as_ref()
+            .expect("the candidate owns a team planner")
+            .core_reservations();
+
+        assert!(
+            snapshot
+                .as_ref()
+                .expect("the snapshot owns a team planner")
+                .reservations()
+                .is_empty()
+        );
+        assert!(!candidate_reservations.is_empty());
+        assert!(!decision.reservations.is_empty());
+        assert!(!derived_claims.is_empty());
+        assert!(combat_core_status(&obs, &[], &[], 8).ready);
+        assert!(!combat_core_status(&obs, &derived_claims, &[], 8).ready);
+
+        let candidate_exclusions = derived_claims.clone();
+        roll_back_unless_core_ready(
+            &obs,
+            &candidate_exclusions,
+            8,
+            &mut planner,
+            snapshot.clone(),
+            &mut decision,
+            Some(&mut derived_claims),
+        );
+
+        assert_eq!(planner, snapshot);
+        assert_eq!(decision, StrategicDecision::default());
+        assert!(derived_claims.is_empty());
+    }
+
+    #[test]
     fn exact_prime_core_cannot_be_frozen_into_a_new_lift_payload() {
         let scenario = opening_core_lift_scenario();
         let state = scenario.build().expect("opening-core lift scenario builds");
@@ -4127,6 +4264,82 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn lift_candidate_rolls_back_when_its_payload_breaks_the_core() {
+        let scenario = opening_core_lift_scenario();
+        let state = scenario.build().expect("opening-core lift scenario builds");
+        let obs = Observation::fog_honest(&state, PlayerId(0));
+        let home = obs
+            .my_buildings
+            .iter()
+            .find(|building| building.kind == BuildingKind::Foundry)
+            .expect("the home Foundry stands")
+            .anchor;
+        let mut planner = Some(LiftPlanner::new());
+        let snapshot = planner.clone();
+        let mut decision = planner
+            .as_mut()
+            .expect("the candidate owns a lift planner")
+            .think_with_admission(
+                &obs,
+                home,
+                &[],
+                LiftAirSupport::Independent,
+                LiftAdmission {
+                    allow_new_commitments: true,
+                    core_reservations: &[],
+                    minimum_core_equivalents: 0,
+                },
+            );
+        let candidate_exclusions = prior_planner_claims(
+            &[],
+            None,
+            &[],
+            &[],
+            planner
+                .as_ref()
+                .expect("the candidate owns a lift planner")
+                .operation(),
+        );
+        let operation = planner
+            .as_ref()
+            .expect("the candidate owns a lift planner")
+            .operation()
+            .expect("the ungated candidate starts a lift");
+
+        assert!(
+            snapshot
+                .as_ref()
+                .expect("the snapshot owns a lift planner")
+                .operation()
+                .is_none()
+        );
+        assert!(!operation.payload.is_empty());
+        assert_ne!(decision, StrategicDecision::default());
+        assert!(combat_core_status(&obs, &[], &[], 8).ready);
+        assert!(!combat_core_status(&obs, &candidate_exclusions, &[], 8).ready);
+
+        roll_back_unless_core_ready(
+            &obs,
+            &candidate_exclusions,
+            8,
+            &mut planner,
+            snapshot.clone(),
+            &mut decision,
+            None,
+        );
+
+        assert_eq!(planner, snapshot);
+        assert!(
+            planner
+                .as_ref()
+                .expect("the restored planner exists")
+                .operation()
+                .is_none()
+        );
+        assert_eq!(decision, StrategicDecision::default());
     }
 
     #[test]
