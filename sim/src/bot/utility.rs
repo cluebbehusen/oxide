@@ -186,24 +186,6 @@ impl Reserve {
     }
 }
 
-/// The reserve the post-floor voluntary channels run under: a live
-/// shallow-reinforcement or bootstrap guard replaces the ordinary tech
-/// reserve, and with neither active every gate keeps its own baseline.
-/// Passing the idle case through as an exact zero silently spent the
-/// tech fund at eleven construction gates.
-const fn production_reserve(shallow_capital_guard: u32, opening_bootstrap_reserve: u32) -> Reserve {
-    let guard = if shallow_capital_guard > opening_bootstrap_reserve {
-        shallow_capital_guard
-    } else {
-        opening_bootstrap_reserve
-    };
-    if guard == 0 {
-        Reserve::Ordinary
-    } else {
-        Reserve::Exact(guard)
-    }
-}
-
 #[derive(Clone, Copy)]
 struct ConstructionContext<'a> {
     home: TilePos,
@@ -2081,8 +2063,7 @@ impl UtilityPolicy {
             };
 
         if manages_opening && !opening_core_deficient && !opening_bootstrap_active {
-            let production_guard =
-                production_reserve(shallow_capital_guard, opening_bootstrap_reserve);
+            let production_guard = shallow_capital_guard.max(opening_bootstrap_reserve);
             self.production_with_air_demand(
                 dials,
                 obs,
@@ -2094,7 +2075,7 @@ impl UtilityPolicy {
                 .with_combat_core_exclusions(combat_core_exclusions)
                 .with_intelligence(mode.unit_contacts, mode.building_contacts)
                 .with_public_map(mode.public_map)
-                .with_voluntary_scrap_guard(production_guard),
+                .with_voluntary_scrap_guard(Reserve::Exact(production_guard)),
                 &mut budget,
                 &mut intents,
             );
@@ -2103,7 +2084,8 @@ impl UtilityPolicy {
                 self.construction(
                     dials,
                     obs,
-                    construction_context.with_voluntary_scrap_guard(production_guard),
+                    construction_context
+                        .with_voluntary_scrap_guard(Reserve::Exact(production_guard)),
                     &mut budget,
                     &mut intents,
                 );
@@ -2866,27 +2848,6 @@ mod tests {
     use crate::ids::{BuildingId, PlayerId, UnitId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec, UnitSpec};
     use crate::{Command, PlayerCommand, Scenario};
-
-    #[test]
-    fn an_idle_production_guard_keeps_the_ordinary_tech_reserve() {
-        assert_eq!(production_reserve(0, 0), Reserve::Ordinary);
-        assert_eq!(
-            production_reserve(90, 0),
-            Reserve::Exact(90),
-            "a live shallow-reinforcement guard replaces the baseline"
-        );
-        assert_eq!(
-            production_reserve(0, 150),
-            Reserve::Exact(150),
-            "a live bootstrap reserve replaces the baseline"
-        );
-        assert_eq!(production_reserve(90, 150), Reserve::Exact(150));
-        assert_eq!(
-            Reserve::Ordinary.amount(TECH_RESERVE),
-            TECH_RESERVE,
-            "the idle guard must withhold the gate's own reserve, not zero"
-        );
-    }
 
     fn obs_with(units: Vec<UnitObs>) -> Observation {
         Observation {
