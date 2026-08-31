@@ -328,18 +328,15 @@ impl Brain {
             .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
         if prior_team_core_claims.is_empty() && !team_core_claims.is_empty() {
             let candidate_core_exclusions = claims.core_exclusions(&team_core_claims);
-            if !combat_core_status(
+            roll_back_unless_core_ready(
                 &oriented,
                 &candidate_core_exclusions,
-                &[],
                 u64::from(self.dials.minimum_core_equivalents),
-            )
-            .ready
-            {
-                *team = team_before_decision;
-                team_decision = StrategicDecision::default();
-                team_core_claims.clear();
-            }
+                team,
+                team_before_decision,
+                &mut team_decision,
+                Some(&mut team_core_claims),
+            );
         }
         let team_claims = team_decision.reservations.clone();
         let prior_non_lift_claims = claims.without_lift(&team_claims);
@@ -536,17 +533,15 @@ impl Brain {
                 lifts,
             };
             let candidate_core_exclusions = claims.core_exclusions(&team_core_claims);
-            if !combat_core_status(
+            roll_back_unless_core_ready(
                 &oriented,
                 &candidate_core_exclusions,
-                &[],
                 u64::from(self.dials.minimum_core_equivalents),
-            )
-            .ready
-            {
-                *lifts = lifts_before_decision;
-                lift_decision = StrategicDecision::default();
-            }
+                lifts,
+                lifts_before_decision,
+                &mut lift_decision,
+                None,
+            );
         }
         merge_strategic(&mut strategic, lift_decision);
         let lift_active = lifts
@@ -783,6 +778,40 @@ impl ScrapLedger {
             .saturating_sub(self.airworks_capacity)
             .saturating_sub(self.shallow_sentinel)
             .saturating_sub(self.opening_bootstrap)
+    }
+}
+
+/// The speculative-admission rollback shared by the team and lift
+/// thinks: when the opening core is no longer met against the candidate
+/// exclusions, the planner is restored to its pre-think snapshot, its
+/// decision is discarded, and any claims derived from the discarded
+/// think are cleared in the same settlement — a derived local a caller
+/// must remember to reset by hand is a silent claim leak waiting to
+/// happen. The admission trigger stays at each call site; only the
+/// measure-and-restore leg is shared.
+fn roll_back_unless_core_ready<P>(
+    oriented: &Observation,
+    candidate_core_exclusions: &[UnitId],
+    minimum_core_equivalents: u64,
+    planner: &mut Option<P>,
+    snapshot: Option<P>,
+    decision: &mut StrategicDecision,
+    derived_claims: Option<&mut Vec<UnitId>>,
+) {
+    if combat_core_status(
+        oriented,
+        candidate_core_exclusions,
+        &[],
+        minimum_core_equivalents,
+    )
+    .ready
+    {
+        return;
+    }
+    *planner = snapshot;
+    *decision = StrategicDecision::default();
+    if let Some(claims) = derived_claims {
+        claims.clear();
     }
 }
 
