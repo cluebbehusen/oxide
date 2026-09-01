@@ -10,7 +10,7 @@
 //! in an id or a position, so there is exactly one possible choice.
 
 use crate::event::Event;
-use crate::ids::{Target, UnitId};
+use crate::ids::{BuildingId, Target, UnitId};
 use crate::state::{Order, State};
 
 /// A shot decided this tick, applied after every brain has acted.
@@ -634,7 +634,20 @@ fn repair_bay_aura(
     // has offered its unit pulses do structures compete for the remaining
     // bank. Building gains share PendingHpGain with crew repair and upgrades,
     // so damage, clamping, and refunds retain one authoritative resolver.
-    let mut in_flight: std::collections::BTreeMap<crate::ids::BuildingId, u32> =
+    // Automatic repair must not compete with an explicit teardown. Repair and
+    // salvage commands purge one another, but the aura has no order to purge,
+    // so exclude every target still owned by an active or queued salvage job.
+    let salvage_targets: std::collections::BTreeSet<BuildingId> = state
+        .units
+        .iter()
+        .filter(|unit| unit.hp > 0)
+        .flat_map(|unit| std::iter::once(&unit.order).chain(unit.queue.iter()))
+        .filter_map(|order| match order {
+            Order::Salvage { building } => Some(*building),
+            _ => None,
+        })
+        .collect();
+    let mut in_flight: std::collections::BTreeMap<BuildingId, u32> =
         std::collections::BTreeMap::new();
     for bay in bays {
         let Some(source) = state.building(bay) else {
@@ -656,6 +669,7 @@ fn repair_bay_aura(
             .iter()
             .filter(|target| {
                 target.id != bay
+                    && !salvage_targets.contains(&target.id)
                     && target.player == owner
                     && target.built
                     && target.hp > 0

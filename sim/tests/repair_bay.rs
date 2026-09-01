@@ -213,6 +213,37 @@ fn structure_arena(scrap: u32, mut buildings: Vec<BuildingSpec>) -> State {
     scenario.build().unwrap()
 }
 
+fn wounded_salvage_patient(harvester: TilePos) -> (State, UnitId, BuildingId, u32) {
+    let mut scenario = arena(
+        vec![unit(0, UnitKind::Harvester, harvester.x, harvester.y)],
+        [Faction::Ferrous, Faction::Cupric],
+        50,
+        true,
+    );
+    scenario
+        .buildings
+        .push(structure(0, BuildingKind::Turret, 9, 4));
+    let state = scenario.build().unwrap();
+    let worker = state.units()[0].id;
+    let patient = building_at(
+        &state,
+        BuildingKind::Turret,
+        TilePos::new(9, 4),
+        PlayerId(0),
+    );
+    let max = BuildingKind::Turret.base_stats().max_hp;
+    let hurt = (1..max)
+        .rev()
+        .find(|hp| building_aura_bill(BuildingKind::Turret, 0, *hp, *hp + 1) == 1)
+        .expect("some Turret hp step costs one scrap");
+    (
+        forge_buildings(state, &[(patient, hurt, true, 0)], None),
+        worker,
+        patient,
+        hurt,
+    )
+}
+
 fn wounded_ring_patient(kind: UnitKind, hp: u32, scrap: u32, overlap: bool) -> State {
     let pos = if overlap {
         TilePos::new(BAY_ANCHOR.0 + 2, BAY_ANCHOR.1 + 3)
@@ -840,6 +871,76 @@ fn the_aura_ignores_its_source_foreign_structures_and_unfinished_sites() {
             Event::BuildingRepaired { building, .. }
                 if [bay, foreign, unfinished].contains(building)
         )
+    }));
+}
+
+#[test]
+fn the_aura_does_not_fight_an_active_salvage_job() {
+    let (mut state, worker, patient, hurt) = wounded_salvage_patient(TilePos::new(8, 4));
+    let bank = state.player(PlayerId(0)).scrap;
+    let mut events = state
+        .tick(&[cmd(
+            0,
+            Command::Salvage {
+                units: vec![worker],
+                building: patient,
+                queue: false,
+            },
+        )])
+        .events;
+
+    assert!(matches!(
+        state.unit(worker).unwrap().order,
+        oxide_sim::Order::Salvage { building } if building == patient
+    ));
+    assert!(state.building(patient).unwrap().hp <= hurt);
+    assert!(
+        state.player(PlayerId(0)).scrap >= bank,
+        "the automatic aura must not charge while teardown owns the target"
+    );
+
+    for _ in 0..64 {
+        if state.building(patient).unwrap().hp < hurt {
+            break;
+        }
+        events.extend(state.tick(&[]).events);
+    }
+    assert!(
+        state.building(patient).unwrap().hp < hurt,
+        "salvage must make visible progress instead of being offset by the aura"
+    );
+    assert!(!events.iter().any(|event| {
+        matches!(event, Event::BuildingRepaired { building, .. } if *building == patient)
+    }));
+}
+
+#[test]
+fn the_aura_respects_a_queued_salvage_commitment() {
+    let (mut state, worker, patient, hurt) = wounded_salvage_patient(TilePos::new(2, 7));
+    let bank = state.player(PlayerId(0)).scrap;
+    let report = state.tick(&[
+        walk(0, vec![worker], TilePos::new(2, 9)),
+        cmd(
+            0,
+            Command::Salvage {
+                units: vec![worker],
+                building: patient,
+                queue: true,
+            },
+        ),
+    ]);
+
+    assert!(matches!(
+        state.unit(worker).unwrap().order,
+        oxide_sim::Order::Move { .. }
+    ));
+    assert!(state.unit(worker).unwrap().queue.iter().any(
+        |order| matches!(order, oxide_sim::Order::Salvage { building } if *building == patient)
+    ));
+    assert_eq!(state.building(patient).unwrap().hp, hurt);
+    assert_eq!(state.player(PlayerId(0)).scrap, bank);
+    assert!(!report.events.iter().any(|event| {
+        matches!(event, Event::BuildingRepaired { building, .. } if *building == patient)
     }));
 }
 

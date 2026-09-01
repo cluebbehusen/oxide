@@ -277,10 +277,12 @@ Building repair and Harvester field welding are billed per accepted hp. Repair
 Bays feed the same unit-heal resolver as field welders and the same
 building-work resolver as repair crews. Their aura heals own wounded units and
 completed structures in range, but a Bay does not heal itself; overlapping Bays
-may repair one another. Units retain first claim on limited aura scrap.
-Concurrent sources are resolved against shared room, excess fully unusable paid
-work is refunded, and no repair source can resurrect a unit or building
-destroyed by that tick's volley.
+may repair one another. Units retain first claim on limited aura scrap. A
+structure with an active or queued salvage commitment receives no automatic
+repair, preserving the command layer's mutual exclusion between repair and
+teardown. Concurrent sources are resolved against shared room, excess fully
+unusable paid work is refunded, and no repair source can resurrect a unit or
+building destroyed by that tick's volley.
 
 ## Combat, weapons, and terrain
 

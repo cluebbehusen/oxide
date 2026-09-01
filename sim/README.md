@@ -60,6 +60,11 @@ an ordinary command source rather than a separate ruleset.
   against public terrain.
 - `vision` provides visibility and explored-world state.
 
+Repair and salvage share one damage-first building-work resolver and remain
+mutually exclusive. Completed Repair Bays automatically heal nearby owned units
+before completed buildings, use the ordinary player bank, and skip structures
+with active or queued salvage commitments.
+
 Outcome-relevant geometry is also fair under a map half-turn. Fixed-point vector
 scaling, equal-cost paths, group-goal snapping and spreading, footprint
 doorsteps, production spawns, and perfectly stacked collision separation use

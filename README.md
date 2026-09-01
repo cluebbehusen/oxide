@@ -31,6 +31,10 @@ Harvesters bring scrap back to a Foundry, construct buildings, salvage wrecks,
 and repair damaged machines. Foundries and specialized works turn that scrap
 into an army. Destroy every enemy Foundry to win.
 
+Completed Repair Bays automatically spend scrap to heal nearby owned units and
+completed buildings. Units are served first when scrap is limited, and a
+building with active or queued salvage work is left to its wrecking crew.
+
 The important strategic layers are already present:
 
 - real fog of war, remembered buildings, radar contacts, and shared team sight;
