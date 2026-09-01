@@ -1861,7 +1861,7 @@ mod tests {
         dials.adaptive_composition = true;
         let decide = |public_start_demand: bool, persistent_demand: bool, scrap: u32| {
             let mut policy = UtilityPolicy::new();
-            policy.public_start_air_scout_needed = public_start_demand;
+            policy.public_prior_air_scout_needed = public_start_demand;
             policy.persistent_air_scout_needed = persistent_demand;
             let mut current = obs.clone();
             current.scrap = scrap;
@@ -2061,7 +2061,11 @@ mod tests {
             .expect("the fixture owns a ground scout")
             .tile;
         policy.scout = Some(ground_scout);
-        policy.scout_dispatch = Some((ground_scout, ground_start, enemy_base));
+        policy.scout_dispatch = Some(ScoutDispatch::ordinary(
+            ground_scout,
+            ground_start,
+            enemy_base,
+        ));
         policy.scouting(&obs, home, None, &[], &mut Vec::new());
         assert!(policy.persistent_air_scout_needed);
         assert!(!policy.solo_air_scout_suspended);
@@ -3652,7 +3656,7 @@ mod tests {
         let mut policy = UtilityPolicy::new();
         policy.pending_sites.push(pending);
         policy.scout = Some(UnitId(3));
-        policy.scout_dispatch = Some((UnitId(3), incident, pending));
+        policy.scout_dispatch = Some(ScoutDispatch::ordinary(UnitId(3), incident, pending));
         policy.refresh_contested_harvest_regions(&obs, None, None);
         obs.tick += 1;
         obs.my_units[0].hp -= 1;
