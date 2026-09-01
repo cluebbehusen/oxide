@@ -104,10 +104,11 @@ fn train_costs_scrap_and_spawns_after_build_time() {
     assert!(events.iter().any(|e| matches!(
         e,
         Event::UnitTrained {
+            building,
             kind: UnitKind::Harvester,
             player: PlayerId(0),
             ..
-        }
+        } if *building == foundry
     )));
 }
 

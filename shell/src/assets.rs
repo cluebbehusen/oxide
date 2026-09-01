@@ -69,7 +69,7 @@ pub struct Sprites {
     array_work: [[Rect; 3]; 6],
     reclaimer_work: [[Rect; 3]; 3],
     extractor_work: [[Rect; 3]; 3],
-    airworks_work: [[Rect; 3]; 3],
+    airworks_work: [[Rect; 3]; 4],
     crucible_work: [[Rect; 3]; 3],
     repair_bay_work: [[Rect; 3]; 4],
     construction: [[Rect; 3]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT],
@@ -565,10 +565,10 @@ fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
             &WORK_SUFFIXES_4
         }
         BuildingKind::Array => &WORK_SUFFIXES_6,
-        BuildingKind::Reclaimer
-        | BuildingKind::Extractor
-        | BuildingKind::Airworks
-        | BuildingKind::Crucible => &WORK_SUFFIXES_3,
+        BuildingKind::Reclaimer | BuildingKind::Extractor | BuildingKind::Crucible => {
+            &WORK_SUFFIXES_3
+        }
+        BuildingKind::Airworks => &WORK_SUFFIXES_4,
         BuildingKind::Turret
         | BuildingKind::FlakTurret
         | BuildingKind::Bastion
@@ -869,7 +869,7 @@ impl Sprites {
             array_work: variant_rows(&rects, "array", WORK_SUFFIXES_6)?,
             reclaimer_work: variant_rows(&rects, "reclaimer", WORK_SUFFIXES_3)?,
             extractor_work: variant_rows(&rects, "extractor", WORK_SUFFIXES_3)?,
-            airworks_work: variant_rows(&rects, "airworks", WORK_SUFFIXES_3)?,
+            airworks_work: variant_rows(&rects, "airworks", WORK_SUFFIXES_4)?,
             crucible_work: variant_rows(&rects, "crucible", WORK_SUFFIXES_3)?,
             repair_bay_work: variant_rows(&rects, "repair_bay", WORK_SUFFIXES_4)?,
             construction: construction_rows(&rects)?,

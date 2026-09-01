@@ -737,7 +737,9 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
 
         for event in &report.events {
             match event {
-                Event::UnitTrained { unit, kind, player } => {
+                Event::UnitTrained {
+                    unit, kind, player, ..
+                } => {
                     ledgers.unit_owner.insert(*unit, player.0);
                     windows[player.0 as usize].trained += 1;
                     note_tech_first(

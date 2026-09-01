@@ -21,6 +21,7 @@ const CONSTRUCTION_PERIOD: u64 = 8;
 const FOUNDRY_PRODUCTION_PERIOD: u64 = 40;
 const FABRICATOR_PRODUCTION_PERIOD: u64 = 12;
 const CRUCIBLE_PRODUCTION_PERIOD: u64 = 16;
+const AIRWORKS_PRODUCTION_PERIOD: u64 = 12;
 const ARRAY_SWEEP_PERIOD: u64 = 32;
 const RECLAIMER_PERIOD: u64 = 12;
 const BUZZARD_ROTOR_PERIOD: u64 = 6;
@@ -28,6 +29,7 @@ const WISP_ROTOR_PERIOD: u64 = 4;
 const SKYHOOK_ROTOR_PERIOD: u64 = 8;
 const SKYHOOK_ACTION_TICKS: f32 = 8.0;
 const REPAIR_PULSE_TICKS: f32 = 6.0;
+const AIRWORKS_LAUNCH_TICKS: f32 = 16.0;
 pub(crate) const FLAKHOUND_REPORT_TICKS: f32 = 2.0;
 pub(crate) const FLAK_TURRET_REPORT_TICKS: f32 = 3.0;
 
@@ -260,6 +262,8 @@ pub(crate) enum BuildingActivity {
         /// Transfer, gantry, or fabrication machinery phase.
         cycle: f32,
     },
+    /// An Airworks has opened its bay to release a completed aircraft.
+    AirworksLaunch { progress: f32 },
     /// A completed Array's continuous full-bearing scan.
     ArraySweep { cycle: f32 },
     /// A completed Reclaimer's continuous grind.
@@ -341,6 +345,19 @@ struct TransportActionStamp {
     kind: TransportActionKind,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AirworksLaunchStamp {
+    building: BuildingId,
+    completed_tick: u64,
+}
+
+/// A newborn aircraft's presentation path out of its producing Airworks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AirworksLaunchState {
+    pub(crate) building: BuildingId,
+    pub(crate) progress: f32,
+}
+
 /// Presentation-only memory for output events that have no standing state.
 #[derive(Debug, Default)]
 pub(crate) struct AnimationController {
@@ -348,6 +365,7 @@ pub(crate) struct AnimationController {
     building_attacks: HashMap<BuildingId, AttackStamp>,
     repair_pulses: HashMap<BuildingId, u64>,
     transport_actions: HashMap<UnitId, TransportActionStamp>,
+    airworks_launches: HashMap<UnitId, AirworksLaunchStamp>,
 }
 
 impl AnimationController {
@@ -414,6 +432,15 @@ impl AnimationController {
                         },
                     );
                 }
+                Event::UnitTrained { building, unit, .. } => {
+                    self.airworks_launches.insert(
+                        *unit,
+                        AirworksLaunchStamp {
+                            building: *building,
+                            completed_tick,
+                        },
+                    );
+                }
                 _ => {}
             }
         }
@@ -425,6 +452,7 @@ impl AnimationController {
         self.building_attacks.clear();
         self.repair_pulses.clear();
         self.transport_actions.clear();
+        self.airworks_launches.clear();
     }
 
     /// Forgets ids no longer present in the current world.
@@ -436,6 +464,9 @@ impl AnimationController {
             .retain(|id, _| state.building(*id).is_some());
         self.transport_actions
             .retain(|id, _| state.unit(*id).is_some());
+        self.airworks_launches.retain(|unit, launch| {
+            state.unit(*unit).is_some() && state.building(launch.building).is_some()
+        });
     }
 
     /// Resolves authored animation channels for one unit.
@@ -565,6 +596,7 @@ impl AnimationController {
                             }
                         })
                 }
+                BuildingKind::Airworks => self.airworks_activity(facts, clock, options),
                 BuildingKind::Array => BuildingActivity::ArraySweep {
                     cycle: clock.cycle(facts.id.0, ARRAY_SWEEP_PERIOD, options.reduced_motion),
                 },
@@ -613,6 +645,23 @@ impl AnimationController {
         })
     }
 
+    /// Resolves a newborn aircraft's completion sortie while it is active.
+    pub(crate) fn airworks_launch(
+        &self,
+        unit: UnitId,
+        clock: AnimationClock,
+    ) -> Option<AirworksLaunchState> {
+        let stamp = self.airworks_launches.get(&unit)?;
+        let elapsed = clock.elapsed_since(stamp.completed_tick)?;
+        if elapsed >= AIRWORKS_LAUNCH_TICKS {
+            return None;
+        }
+        Some(AirworksLaunchState {
+            building: stamp.building,
+            progress: (elapsed / AIRWORKS_LAUNCH_TICKS).clamp(0.0, 1.0),
+        })
+    }
+
     fn unit_attack(
         &self,
         unit: UnitId,
@@ -651,6 +700,41 @@ impl AnimationController {
             .map_or(BuildingActivity::Idle, |elapsed| {
                 BuildingActivity::RepairPulse {
                     progress: (elapsed / REPAIR_PULSE_TICKS).clamp(0.0, 1.0),
+                }
+            })
+    }
+
+    fn airworks_activity(
+        &self,
+        facts: BuildingAnimationFacts,
+        clock: AnimationClock,
+        options: AnimationOptions,
+    ) -> BuildingActivity {
+        if let Some(progress) = self
+            .airworks_launches
+            .values()
+            .filter(|launch| launch.building == facts.id)
+            .filter_map(|launch| {
+                let elapsed = clock.elapsed_since(launch.completed_tick)?;
+                (elapsed < AIRWORKS_LAUNCH_TICKS)
+                    .then_some((launch.completed_tick, elapsed / AIRWORKS_LAUNCH_TICKS))
+            })
+            .max_by_key(|(completed_tick, _)| *completed_tick)
+            .map(|(_, progress)| progress.clamp(0.0, 1.0))
+        {
+            return BuildingActivity::AirworksLaunch { progress };
+        }
+        facts
+            .production
+            .map_or(BuildingActivity::Idle, |(unit, progress, total)| {
+                BuildingActivity::Production {
+                    unit,
+                    progress: ratio(progress, total),
+                    cycle: clock.cycle(
+                        facts.id.0,
+                        AIRWORKS_PRODUCTION_PERIOD,
+                        options.reduced_motion,
+                    ),
                 }
             })
     }
@@ -1394,27 +1478,71 @@ mod tests {
 
     #[test]
     fn producers_animate_only_while_queue_progress_can_advance() {
-        let kind = UnitKind::Sentinel;
-        let mut facts = building_facts(BuildingKind::Foundry);
-        facts.production = Some((kind, 25, kind.stats().train_ticks));
         let controller = AnimationController::default();
-        let working = controller.building_state(
-            facts,
-            AnimationClock::new(10, 0.0),
-            AnimationOptions::default(),
-        );
-        assert!(matches!(
-            working.activity,
-            BuildingActivity::Production { unit, .. } if unit == kind
-        ));
+        for (building, unit) in [
+            (BuildingKind::Foundry, UnitKind::Sentinel),
+            (BuildingKind::Airworks, UnitKind::Gnat),
+        ] {
+            let mut facts = building_facts(building);
+            facts.production = Some((unit, 25, unit.stats().train_ticks));
+            let working = controller.building_state(
+                facts,
+                AnimationClock::new(10, 0.0),
+                AnimationOptions::default(),
+            );
+            assert!(matches!(
+                working.activity,
+                BuildingActivity::Production { unit: active, .. } if active == unit
+            ));
 
-        facts.production = None;
-        let idle = controller.building_state(
-            facts,
-            AnimationClock::new(10, 0.0),
-            AnimationOptions::default(),
+            facts.production = None;
+            let idle = controller.building_state(
+                facts,
+                AnimationClock::new(10, 0.0),
+                AnimationOptions::default(),
+            );
+            assert_eq!(idle.activity, BuildingActivity::Idle);
+        }
+    }
+
+    #[test]
+    fn airworks_completion_coordinates_the_bay_and_newborn_aircraft() {
+        let facts = building_facts(BuildingKind::Airworks);
+        let unit = UnitId(44);
+        let mut controller = AnimationController::default();
+        controller.observe_events(
+            21,
+            &[Event::UnitTrained {
+                building: facts.id,
+                unit,
+                kind: UnitKind::Gnat,
+                player: PlayerId(0),
+            }],
         );
-        assert_eq!(idle.activity, BuildingActivity::Idle);
+
+        let clock = AnimationClock::new(21, 0.0);
+        assert_eq!(
+            controller
+                .building_state(facts, clock, AnimationOptions::default())
+                .activity,
+            BuildingActivity::AirworksLaunch { progress: 0.0 }
+        );
+        assert_eq!(
+            controller.airworks_launch(unit, clock),
+            Some(AirworksLaunchState {
+                building: facts.id,
+                progress: 0.0,
+            })
+        );
+
+        let finished = AnimationClock::new(37, 0.0);
+        assert_eq!(
+            controller
+                .building_state(facts, finished, AnimationOptions::default())
+                .activity,
+            BuildingActivity::Idle
+        );
+        assert_eq!(controller.airworks_launch(unit, finished), None);
     }
 
     #[test]
@@ -1520,6 +1648,7 @@ mod tests {
         for kind in [
             BuildingKind::Foundry,
             BuildingKind::Fabricator,
+            BuildingKind::Airworks,
             BuildingKind::RepairBay,
             BuildingKind::Turret,
             BuildingKind::FlakTurret,

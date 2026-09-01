@@ -207,7 +207,12 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             continue; // fully walled in; retry next tick
         };
         let unit = state.spawn_unit(player, kind, tile.center());
-        events.push(Event::UnitTrained { unit, kind, player });
+        events.push(Event::UnitTrained {
+            building: id,
+            unit,
+            kind,
+            player,
+        });
         if let Some(rally) = rally
             && let Some(order) = rally_order(state, player, kind, rally)
             && let Some(newborn) = state.unit_mut(unit)
