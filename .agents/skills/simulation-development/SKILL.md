@@ -24,6 +24,11 @@ for the subsystem before editing. Reduce a bug to one observable contract:
 - whether the change intentionally alters serialized state or simulation
   outcomes.
 
+For repair behavior, cover limited-bank source priority, ordinary billing and
+recovery reserves, active and queued salvage exclusion, and lethal same-tick
+damage. Automatic and commanded work must preserve the same repair-versus-
+salvage contract.
+
 Add the smallest behavioral regression test that fails for the reported case.
 For fog-sensitive behavior, pair the positive case with an unseen or
 remembered-world case so the fix cannot become an information oracle.
@@ -84,10 +89,15 @@ cargo test -p oxide-sim --test determinism --locked
 
 Then run the workspace gates in `AGENTS.md`.
 
-An intended rules change normally moves bot behavior or state hashes. Bump the
-workspace simulation version before blessing changed existing rows, regenerate
-with `BLESS=1 cargo test -p oxide-driver --locked`, and inspect every changed
-fixture. Never use `BLESS_SAME_VERSION=1` merely to get a green run.
+An intended rules change may alter replay reconstruction even when the current
+hash fixtures do not exercise it. Never change the workspace package version or
+`SIM_VERSION` without explicit approval from the human user; a request to
+implement the rules change is not approval for a compatibility-version bump. If
+existing hash rows move, inspect the drift and ask the user whether to approve a
+version bump or a same-version bless. Only after that decision, regenerate with
+`BLESS=1 cargo test -p oxide-driver --locked` and inspect every changed fixture.
+Using `BLESS_SAME_VERSION=1` also requires explicit approval from the human
+user.
 
 ## Verify the real report
 

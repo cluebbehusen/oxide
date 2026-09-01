@@ -1812,7 +1812,7 @@ impl BuildingKind {
                 "Grinds ambient debris into a scrap trickle. Slow to repay itself; the reason a match can outlive its scrap patches."
             }
             BuildingKind::RepairBay => {
-                "Field workshop: an unarmed aura that welds own wounded machines, ground and air alike, inside its ring. Billed per hp from the owner's bank at repair pricing."
+                "Field workshop: an unarmed aura that welds own wounded units and completed structures inside its ring. It cannot heal itself. Billed per hp from the owner's bank at repair pricing."
             }
             BuildingKind::Extractor => {
                 "A restored strip-mining machine from the old rush. Rebuilt only on a map-authored derelict frame, it provides durable income; a nearby own Foundry develops the claim into a stronger economy. The frame outlives every destruction, so the ground remains contestable."

@@ -362,6 +362,9 @@ impl AnimationController {
                 } => {
                     self.repair_pulses.insert(*building, completed_tick);
                 }
+                Event::BuildingRepaired { repair_bay, .. } => {
+                    self.repair_pulses.insert(*repair_bay, completed_tick);
+                }
                 _ => {}
             }
         }
@@ -1292,40 +1295,50 @@ mod tests {
     }
 
     #[test]
-    fn repair_bay_moves_only_after_an_accepted_repair_event() {
-        let mut controller = AnimationController::default();
+    fn repair_bay_moves_only_after_an_accepted_unit_or_building_repair_event() {
         let facts = building_facts(BuildingKind::RepairBay);
-        let before = controller.building_state(
-            facts,
-            AnimationClock::new(20, 0.0),
-            AnimationOptions::default(),
-        );
-        assert_eq!(before.activity, BuildingActivity::Idle);
-
-        controller.observe(&TickReport {
-            tick: 20,
-            events: vec![Event::UnitRepaired {
+        for event in [
+            Event::UnitRepaired {
                 unit: UnitId(4),
                 player: PlayerId(0),
                 source: UnitRepairSource::RepairBay { building: facts.id },
                 amount: 2,
-            }],
-        });
-        let pulse = controller.building_state(
-            facts,
-            AnimationClock::new(21, 0.0),
-            AnimationOptions::default(),
-        );
-        assert!(matches!(
-            pulse.activity,
-            BuildingActivity::RepairPulse { progress: 0.0 }
-        ));
-        let done = controller.building_state(
-            facts,
-            AnimationClock::new(27, 0.0),
-            AnimationOptions::default(),
-        );
-        assert_eq!(done.activity, BuildingActivity::Idle);
+            },
+            Event::BuildingRepaired {
+                building: BuildingId(9),
+                player: PlayerId(0),
+                repair_bay: facts.id,
+                amount: 2,
+            },
+        ] {
+            let mut controller = AnimationController::default();
+            let before = controller.building_state(
+                facts,
+                AnimationClock::new(20, 0.0),
+                AnimationOptions::default(),
+            );
+            assert_eq!(before.activity, BuildingActivity::Idle);
+
+            controller.observe(&TickReport {
+                tick: 20,
+                events: vec![event],
+            });
+            let pulse = controller.building_state(
+                facts,
+                AnimationClock::new(21, 0.0),
+                AnimationOptions::default(),
+            );
+            assert!(matches!(
+                pulse.activity,
+                BuildingActivity::RepairPulse { progress: 0.0 }
+            ));
+            let done = controller.building_state(
+                facts,
+                AnimationClock::new(27, 0.0),
+                AnimationOptions::default(),
+            );
+            assert_eq!(done.activity, BuildingActivity::Idle);
+        }
     }
 
     #[test]

@@ -150,10 +150,15 @@ CPU screenshots prove schematic state, not presentation quality.
 
 ## Hashes, goldens, and versions
 
-- Intended simulation changes move the workspace version and `SIM_VERSION`
-  before existing state-hash rows are blessed.
-- Regenerate driver fixtures with `BLESS=1 cargo test -p oxide-driver --locked`.
-  `BLESS_SAME_VERSION=1` is an exceptional, explicitly justified override.
+- Never change the workspace package version or `SIM_VERSION` without explicit
+  approval from the human user. A request to implement simulation behavior does
+  not imply approval for a compatibility-version bump.
+- If existing state-hash rows move, inspect the drift and ask the user whether
+  to approve a version bump or a same-version bless. Do not choose either path
+  autonomously.
+- Regenerate driver fixtures with `BLESS=1 cargo test -p oxide-driver --locked`
+  only after that compatibility decision. `BLESS_SAME_VERSION=1` also requires
+  explicit approval from the human user.
 - Inspect changed PNGs. A green golden test cannot prove that art or layout is
   good.
 - Keep `driver/tests/goldens/state-hashes.json` as the cheap sim-drift tripwire.

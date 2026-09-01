@@ -10,7 +10,7 @@
 //! in an id or a position, so there is exactly one possible choice.
 
 use crate::event::Event;
-use crate::ids::{Target, UnitId};
+use crate::ids::{BuildingId, Target, UnitId};
 use crate::state::{Order, State};
 
 /// A shot decided this tick, applied after every brain has acted.
@@ -71,6 +71,9 @@ struct PendingHpGain {
     /// welder whose whole step lands past the hp ceiling gets exactly
     /// this coin back at resolution.
     paid: u32,
+    /// The Repair Bay that offered this gain, when it came from an aura.
+    /// Construction, upgrades, and crew repairs leave this empty.
+    repair_bay: Option<crate::ids::BuildingId>,
 }
 
 /// A buffered hp gain on a UNIT — welding by a crewmate today; any
@@ -238,7 +241,7 @@ pub(super) fn run(
     advance_upgrades(state, &mut builds);
     commit_unit_welds(state, field_welds, events, &mut heals);
     turret_fire(state, &motion, events, &mut hits, &mut launches);
-    repair_bay_aura(state, &mut heals);
+    repair_bay_aura(state, &mut heals, &mut builds);
     crucible_smelter(state);
     // Arrivals join this tick's volley; launches land on later ticks
     // (flight is at least one tick), so ordering here cannot matter.
@@ -339,6 +342,7 @@ fn resolve_hits(
                     rooms.len() - 1
                 }
             };
+            let accepted = rooms[i].1.clamp(0, i64::from(gain.step)) as u32;
             if rooms[i].1 <= 0 {
                 // Only the refund cares what was paid; EVERY gain
                 // consumes room. A mid-meter welder frequently steps a
@@ -351,6 +355,16 @@ fn resolve_hits(
                 }
             } else {
                 rooms[i].1 -= i64::from(gain.step);
+            }
+            if let Some(repair_bay) = gain.repair_bay
+                && accepted > 0
+            {
+                events.push(Event::BuildingRepaired {
+                    building: gain.site,
+                    player: gain.player,
+                    repair_bay,
+                    amount: accepted,
+                });
             }
         }
     }
@@ -515,21 +529,22 @@ fn resolve_unit_heals(state: &mut State, heals: Vec<PendingUnitHeal>, events: &m
 
 /// The Repair Bay's act — the one building whose output is a heal. On
 /// its pulse cadence every built bay, in building-id order, offers each
-/// own wounded machine inside [`crate::stats::REPAIR_BAY_RADIUS`] of
-/// its footprint (ground and air alike; reach measures from the
-/// nearest footprint point, so a 2x2 gets no phantom ring) one
+/// own wounded unit and completed structure inside
+/// [`crate::stats::REPAIR_BAY_RADIUS`] of its footprint one
 /// [`crate::stats::REPAIR_BAY_STEP`] of hp, billed from the owner's
-/// bank at [`crate::stats::REPAIR_COST_PERMILLE`] of the patient's
-/// proportional cost. Hp itself is the billing meter: each pulse pays
-/// the ceiling-diff of the patient's milli-scrap value across its
-/// step, so a full heal telescopes to within one scrap of exact — no
-/// stored counter, nothing new in the hash. A bank that cannot cover a
-/// patient's coin skips that patient and keeps scanning: partial scrap
-/// heals the earliest ids and starves the rest, deterministically.
-/// Everything buffers into the one unit-heal resolver, so fire wins
-/// ties and an overlapping second bay's past-ceiling coin refunds like
-/// any stacked welder's.
-fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
+/// bank at [`crate::stats::REPAIR_COST_PERMILLE`] of the patient's active
+/// tier cost. Reach measures from body to footprint for units and between
+/// the nearest footprint edges for structures. A Bay cannot heal itself;
+/// another Bay may heal it. Units retain first claim on limited scrap,
+/// preserving the established sustain behavior, followed by structures in
+/// building-id order. Everything buffers into the shared damage-first hp
+/// resolvers, so lethal fire wins the tick and overlapping sources settle
+/// against the same ceiling.
+fn repair_bay_aura(
+    state: &mut State,
+    heals: &mut Vec<PendingUnitHeal>,
+    builds: &mut Vec<PendingHpGain>,
+) {
     use crate::stats::BuildingKind;
     if !state
         .current_tick()
@@ -544,12 +559,12 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
         .map(|b| b.id)
         .collect();
     let radius = crate::stats::REPAIR_BAY_RADIUS;
-    // Steps already in flight per patient this pulse: overlapping
+    // Unit steps already in flight per patient this pulse: overlapping
     // auras stack in resolution, so a later bay must price from the
     // hp earlier bays already queued — reading start-of-tick hp made
     // every bay bill (or skip) the same first interval.
     let mut in_flight: std::collections::BTreeMap<UnitId, u32> = std::collections::BTreeMap::new();
-    for bay in bays {
+    for bay in bays.iter().copied() {
         let Some(b) = state.building(bay) else {
             continue;
         };
@@ -614,6 +629,108 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
             });
         }
     }
+
+    // Preserve the existing unit-heal priority exactly: only after every Bay
+    // has offered its unit pulses do structures compete for the remaining
+    // bank. Building gains share PendingHpGain with crew repair and upgrades,
+    // so damage, clamping, and refunds retain one authoritative resolver.
+    // Automatic repair must not compete with an explicit teardown. Repair and
+    // salvage commands purge one another, but the aura has no order to purge,
+    // so exclude every target still owned by an active or queued salvage job.
+    let salvage_targets: std::collections::BTreeSet<BuildingId> = state
+        .units
+        .iter()
+        .filter(|unit| unit.hp > 0)
+        .flat_map(|unit| std::iter::once(&unit.order).chain(unit.queue.iter()))
+        .filter_map(|order| match order {
+            Order::Salvage { building } => Some(*building),
+            _ => None,
+        })
+        .collect();
+    let mut in_flight: std::collections::BTreeMap<BuildingId, u32> =
+        std::collections::BTreeMap::new();
+    for bay in bays {
+        let Some(source) = state.building(bay) else {
+            continue;
+        };
+        let owner = source.player;
+        let recovery_reserve = if super::harvester_recovery_needed(state, owner) {
+            let seat = state.player(owner);
+            if seat.recovery_ready {
+                state.recovery_package_target(owner)
+            } else {
+                u32::from(seat.recovery_target)
+            }
+        } else {
+            0
+        };
+        let patients: Vec<crate::ids::BuildingId> = state
+            .buildings
+            .iter()
+            .filter(|target| {
+                target.id != bay
+                    && !salvage_targets.contains(&target.id)
+                    && target.player == owner
+                    && target.built
+                    && target.hp > 0
+                    && target.hp < target.stats().max_hp
+                    && building_distance_sq(source, target) <= radius * radius
+            })
+            .map(|target| target.id)
+            .collect();
+        for id in patients {
+            let target = state.building(id).expect("just filtered");
+            let stats = target.stats();
+            let target_kind = target.kind;
+            let queued = in_flight.get(&id).copied().unwrap_or(0);
+            let healed = (target.hp + queued).min(stats.max_hp);
+            let step = crate::stats::REPAIR_BAY_STEP.min(stats.max_hp - healed);
+            if step == 0 {
+                continue;
+            }
+            let basis = if target.kind == BuildingKind::Foundry {
+                crate::stats::FOUNDRY_REPAIR_PRICE
+            } else {
+                stats
+                    .construction
+                    .map_or(crate::stats::FOUNDRY_REPAIR_PRICE, |construction| {
+                        construction.cost
+                    })
+            };
+            let millis = |hp: u32| -> u64 {
+                u64::from(hp) * u64::from(basis) * crate::stats::REPAIR_COST_PERMILLE
+                    / u64::from(stats.max_hp)
+            };
+            let due = millis(healed + step).div_ceil(1000) - millis(healed).div_ceil(1000);
+            let bank = state.player(owner).scrap;
+            if u64::from(bank) < due {
+                continue;
+            }
+            if due > 0
+                && recovery_reserve > 0
+                && u64::from(bank) - due < u64::from(recovery_reserve)
+            {
+                continue;
+            }
+            state.player_mut(owner).scrap = bank - due as u32;
+            in_flight.insert(id, queued + step);
+            builds.push(PendingHpGain {
+                site: id,
+                step,
+                completes: false,
+                player: owner,
+                kind: target_kind,
+                paid: due as u32,
+                repair_bay: Some(bay),
+            });
+        }
+    }
+}
+
+fn building_distance_sq(a: &crate::state::Building, b: &crate::state::Building) -> chassis::fx::Fx {
+    let on_a = a.closest_point_to(b.center());
+    let on_b = b.closest_point_to(on_a);
+    on_a.dist_sq(on_b)
 }
 
 /// The Crucible's smelter: each pulse, every built Crucible melts one

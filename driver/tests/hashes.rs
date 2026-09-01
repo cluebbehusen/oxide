@@ -14,13 +14,11 @@
 //! keys; the late rows are keyed `<map>@6000`.
 //!
 //! The fixture carries the `SIM_VERSION` it was blessed under, and the
-//! bless path enforces the compatibility discipline mechanically: hash
-//! movement while the version stands still is a behavior change wearing
-//! last release's number — an old binary would silently reconstruct a
-//! different world from the same replay. Bump the workspace version
-//! first, then `BLESS=1 cargo test -p oxide-driver`, review the diff,
-//! commit, explain. `BLESS_SAME_VERSION=1` overrides the refusal for a
-//! deliberate exception; the commit message owns the justification.
+//! bless path refuses same-version movement mechanically. When existing
+//! rows move, inspect the drift and ask the user to choose the compatibility
+//! policy. Changing the workspace version or using `BLESS_SAME_VERSION=1`
+//! requires explicit approval from the human user; implementing a simulation
+//! change does not imply either approval.
 
 mod support;
 
@@ -119,13 +117,17 @@ fn same_version_hash_movement_refuses_the_bless() {
         "row additions and removals must never block: {err}"
     );
     assert!(
+        err.contains("explicit approval from the human user"),
+        "the refusal must direct agents to the human compatibility decision: {err}"
+    );
+    assert!(
         bless_gate(Some(&stored), &actual, true).is_ok(),
-        "the explicit override must license the bless"
+        "the explicit same-version override must license the bless"
     );
 }
 
 #[test]
-fn a_version_bump_or_fresh_fixture_licenses_the_bless() {
+fn a_different_version_or_fresh_fixture_licenses_the_bless() {
     let stored = Fixture {
         sim_version: "0.0.1-not-this-version".to_string(),
         hashes: BTreeMap::from([("skirmish".to_string(), "aaaa".to_string())]),

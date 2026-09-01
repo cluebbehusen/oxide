@@ -135,6 +135,20 @@ pub enum Event {
         /// Hp actually accepted from this source.
         amount: u32,
     },
+    /// A completed structure received hp from a Repair Bay aura.
+    ///
+    /// This reports only hp accepted by the shared damage-first work
+    /// resolver. It is output telemetry, not replay input.
+    BuildingRepaired {
+        /// The repaired structure.
+        building: BuildingId,
+        /// The structure's owner.
+        player: PlayerId,
+        /// The Repair Bay supplying the pulse.
+        repair_bay: BuildingId,
+        /// Hp actually accepted from this pulse.
+        amount: u32,
+    },
     /// A scrap node ran out.
     NodeDepleted {
         /// The now-empty tile.

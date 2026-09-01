@@ -1,15 +1,16 @@
 //! The Repair Bay's welding aura: billed sustain in a ring, through the
-//! same buffered resolver as every unit heal. Headless scenarios through
-//! the public API only, like `repair_unit.rs` — billing exactness against
-//! the hp-anchored meter, broke-owner starvation, the ring's edge, air
-//! patients, own-units-only scope, and fire winning the tick.
+//! same buffered resolvers as every unit and building heal. Headless
+//! scenarios through the public API only, like `repair_unit.rs` — billing
+//! exactness against the hp-anchored meter, broke-owner starvation, the
+//! ring's edge, air and structure patients, own-entity-only scope, and fire
+//! winning the tick.
 
 use chassis::grid::TilePos;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::stats::FOUNDRY_RECOVERY_RESERVE;
 use oxide_sim::{
-    BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, UnitId,
-    UnitKind,
+    BuildingId, BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State,
+    Target, UnitId, UnitKind,
 };
 
 /// Bay footprint anchored at (4,4): its rect spans world [4,6]x[4,6], so
@@ -80,6 +81,10 @@ fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
     UnitSpec { player, kind, x, y }
 }
 
+fn structure(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
+    BuildingSpec { player, kind, x, y }
+}
+
 fn cmd(player: u8, command: Command) -> PlayerCommand {
     PlayerCommand {
         player: PlayerId(player),
@@ -144,6 +149,99 @@ fn aura_bill(kind: UnitKind, from: u32, to: u32) -> u32 {
             / u64::from(stats.max_hp)
     };
     (millis(to).div_ceil(1000) - millis(from).div_ceil(1000)) as u32
+}
+
+fn building_aura_bill(kind: BuildingKind, tier: u8, from: u32, to: u32) -> u32 {
+    let stats = kind.tier_stats(tier);
+    let basis = if kind == BuildingKind::Foundry {
+        oxide_sim::stats::FOUNDRY_REPAIR_PRICE
+    } else {
+        stats
+            .construction
+            .map_or(oxide_sim::stats::FOUNDRY_REPAIR_PRICE, |row| row.cost)
+    };
+    let millis = |hp: u32| -> u64 {
+        u64::from(hp) * u64::from(basis) * oxide_sim::stats::REPAIR_COST_PERMILLE
+            / u64::from(stats.max_hp)
+    };
+    (millis(to).div_ceil(1000) - millis(from).div_ceil(1000)) as u32
+}
+
+fn building_at(state: &State, kind: BuildingKind, anchor: TilePos, player: PlayerId) -> BuildingId {
+    state
+        .buildings()
+        .iter()
+        .find(|building| {
+            building.kind == kind && building.anchor == anchor && building.player == player
+        })
+        .expect("expected authored building")
+        .id
+}
+
+fn forge_buildings(
+    state: State,
+    edits: &[(BuildingId, u32, bool, u8)],
+    tick: Option<u64>,
+) -> State {
+    let mut json = serde_json::to_value(state).unwrap();
+    if let Some(tick) = tick {
+        json["tick"] = serde_json::json!(tick);
+    }
+    for (id, hp, built, tier) in edits {
+        let building = json["buildings"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|building| building["id"] == serde_json::json!(id))
+            .expect("building id survives serialization");
+        building["hp"] = serde_json::json!(hp);
+        building["built"] = serde_json::json!(built);
+        building["tier"] = serde_json::json!(tier);
+        building["progress"] = serde_json::json!(0);
+    }
+    serde_json::from_value(json).unwrap()
+}
+
+fn structure_arena(scrap: u32, mut buildings: Vec<BuildingSpec>) -> State {
+    let mut scenario = arena(
+        vec![unit(0, UnitKind::Harvester, 2, 7)],
+        [Faction::Ferrous, Faction::Cupric],
+        scrap,
+        true,
+    );
+    scenario.buildings.append(&mut buildings);
+    scenario.build().unwrap()
+}
+
+fn wounded_salvage_patient(harvester: TilePos) -> (State, UnitId, BuildingId, u32) {
+    let mut scenario = arena(
+        vec![unit(0, UnitKind::Harvester, harvester.x, harvester.y)],
+        [Faction::Ferrous, Faction::Cupric],
+        50,
+        true,
+    );
+    scenario
+        .buildings
+        .push(structure(0, BuildingKind::Turret, 9, 4));
+    let state = scenario.build().unwrap();
+    let worker = state.units()[0].id;
+    let patient = building_at(
+        &state,
+        BuildingKind::Turret,
+        TilePos::new(9, 4),
+        PlayerId(0),
+    );
+    let max = BuildingKind::Turret.base_stats().max_hp;
+    let hurt = (1..max)
+        .rev()
+        .find(|hp| building_aura_bill(BuildingKind::Turret, 0, *hp, *hp + 1) == 1)
+        .expect("some Turret hp step costs one scrap");
+    (
+        forge_buildings(state, &[(patient, hurt, true, 0)], None),
+        worker,
+        patient,
+        hurt,
+    )
 }
 
 fn wounded_ring_patient(kind: UnitKind, hp: u32, scrap: u32, overlap: bool) -> State {
@@ -595,6 +693,405 @@ fn an_unbuilt_bay_is_inert() {
         "scaffolding heals nothing"
     );
     assert_eq!(state.player(PlayerId(0)).scrap, bank);
+}
+
+#[test]
+fn the_aura_repairs_a_completed_structure_and_reports_the_accepted_pulse() {
+    let mut state = structure_arena(50, vec![structure(0, BuildingKind::Turret, 9, 4)]);
+    let bay = building_at(
+        &state,
+        BuildingKind::RepairBay,
+        TilePos::new(BAY_ANCHOR.0, BAY_ANCHOR.1),
+        PlayerId(0),
+    );
+    let patient = building_at(
+        &state,
+        BuildingKind::Turret,
+        TilePos::new(9, 4),
+        PlayerId(0),
+    );
+    let max = BuildingKind::Turret.base_stats().max_hp;
+    let hurt = (1..max)
+        .find(|hp| building_aura_bill(BuildingKind::Turret, 0, *hp, *hp + 1) == 1)
+        .expect("some Turret hp step costs one scrap");
+    state = forge_buildings(state, &[(patient, hurt, true, 0)], None);
+
+    let bank = state.player(PlayerId(0)).scrap;
+    let report = state.tick(&[]);
+    assert_eq!(state.building(patient).unwrap().hp, hurt + 1);
+    assert_eq!(state.player(PlayerId(0)).scrap, bank - 1);
+    assert!(report.events.iter().any(|event| {
+        matches!(
+            event,
+            Event::BuildingRepaired {
+                building,
+                player: PlayerId(0),
+                repair_bay,
+                amount: 1,
+            } if *building == patient && *repair_bay == bay
+        )
+    }));
+}
+
+#[test]
+fn a_single_paid_pulse_repairs_a_unit_before_a_structure() {
+    let mut state = structure_arena(1, vec![structure(0, BuildingKind::Turret, 9, 4)]);
+    let unit_patient = state.units()[0].id;
+    let building_patient = building_at(
+        &state,
+        BuildingKind::Turret,
+        TilePos::new(9, 4),
+        PlayerId(0),
+    );
+    let unit_max = UnitKind::Harvester.stats().max_hp;
+    let unit_hurt = (1..unit_max)
+        .find(|hp| aura_bill(UnitKind::Harvester, *hp, *hp + 1) == 1)
+        .expect("some Harvester hp step costs one scrap");
+    let building_max = BuildingKind::Turret.base_stats().max_hp;
+    let building_hurt = (1..building_max)
+        .find(|hp| building_aura_bill(BuildingKind::Turret, 0, *hp, *hp + 1) == 1)
+        .expect("some Turret hp step costs one scrap");
+
+    state = forge_buildings(state, &[(building_patient, building_hurt, true, 0)], None);
+    let mut json = serde_json::to_value(state).unwrap();
+    json["units"][0]["hp"] = serde_json::json!(unit_hurt);
+    let mut state: State = serde_json::from_value(json).unwrap();
+
+    let report = state.tick(&[]);
+    assert_eq!(state.unit(unit_patient).unwrap().hp, unit_hurt + 1);
+    assert_eq!(state.building(building_patient).unwrap().hp, building_hurt);
+    assert_eq!(state.player(PlayerId(0)).scrap, 0);
+    assert!(report.events.iter().any(|event| {
+        matches!(
+            event,
+            Event::UnitRepaired {
+                unit,
+                source: oxide_sim::UnitRepairSource::RepairBay { .. },
+                amount: 1,
+                ..
+            } if *unit == unit_patient
+        )
+    }));
+    assert!(!report.events.iter().any(|event| {
+        matches!(event, Event::BuildingRepaired { building, .. } if *building == building_patient)
+    }));
+}
+
+#[test]
+fn structure_range_uses_footprint_edges_and_pulses_only_on_cadence() {
+    let mut state = structure_arena(
+        500,
+        vec![
+            structure(0, BuildingKind::Turret, 10, 4),
+            structure(0, BuildingKind::Turret, 11, 4),
+        ],
+    );
+    let inside = building_at(
+        &state,
+        BuildingKind::Turret,
+        TilePos::new(10, 4),
+        PlayerId(0),
+    );
+    let outside = building_at(
+        &state,
+        BuildingKind::Turret,
+        TilePos::new(11, 4),
+        PlayerId(0),
+    );
+    let max = BuildingKind::Turret.base_stats().max_hp;
+    let hurt = max - 20;
+    state = forge_buildings(
+        state,
+        &[(inside, hurt, true, 0), (outside, hurt, true, 0)],
+        Some(1),
+    );
+
+    // Starting ticks 1 through 7 are not pulse ticks.
+    for _ in 0..7 {
+        state.tick(&[]);
+    }
+    assert_eq!(state.current_tick(), 8);
+    assert_eq!(state.building(inside).unwrap().hp, hurt);
+    assert_eq!(state.building(outside).unwrap().hp, hurt);
+
+    // The source Bay spans x=[4,6]. A Turret beginning at x=10 is exactly
+    // four tiles from that footprint; x=11 is five tiles away.
+    state.tick(&[]);
+    assert_eq!(state.building(inside).unwrap().hp, hurt + 1);
+    assert_eq!(state.building(outside).unwrap().hp, hurt);
+}
+
+#[test]
+fn the_aura_ignores_its_source_foreign_structures_and_unfinished_sites() {
+    let mut state = structure_arena(
+        500,
+        vec![
+            structure(1, BuildingKind::Turret, 9, 4),
+            structure(0, BuildingKind::Turret, 9, 5),
+        ],
+    );
+    let bay = building_at(
+        &state,
+        BuildingKind::RepairBay,
+        TilePos::new(BAY_ANCHOR.0, BAY_ANCHOR.1),
+        PlayerId(0),
+    );
+    let foreign = building_at(
+        &state,
+        BuildingKind::Turret,
+        TilePos::new(9, 4),
+        PlayerId(1),
+    );
+    let unfinished = building_at(
+        &state,
+        BuildingKind::Turret,
+        TilePos::new(9, 5),
+        PlayerId(0),
+    );
+    let bay_hurt = BuildingKind::RepairBay.base_stats().max_hp - 20;
+    let turret_hurt = BuildingKind::Turret.base_stats().max_hp - 20;
+    let foundation_hp = BuildingKind::Turret.base_stats().max_hp / 5;
+    state = forge_buildings(
+        state,
+        &[
+            (bay, bay_hurt, true, 0),
+            (foreign, turret_hurt, true, 0),
+            (unfinished, foundation_hp, false, 0),
+        ],
+        None,
+    );
+
+    let report = state.tick(&[]);
+    assert_eq!(state.building(bay).unwrap().hp, bay_hurt);
+    assert_eq!(state.building(foreign).unwrap().hp, turret_hurt);
+    assert!(state.building(unfinished).unwrap().hp <= foundation_hp);
+    assert!(!report.events.iter().any(|event| {
+        matches!(
+            event,
+            Event::BuildingRepaired { building, .. }
+                if [bay, foreign, unfinished].contains(building)
+        )
+    }));
+}
+
+#[test]
+fn the_aura_does_not_fight_an_active_salvage_job() {
+    let (mut state, worker, patient, hurt) = wounded_salvage_patient(TilePos::new(8, 4));
+    let bank = state.player(PlayerId(0)).scrap;
+    let mut events = state
+        .tick(&[cmd(
+            0,
+            Command::Salvage {
+                units: vec![worker],
+                building: patient,
+                queue: false,
+            },
+        )])
+        .events;
+
+    assert!(matches!(
+        state.unit(worker).unwrap().order,
+        oxide_sim::Order::Salvage { building } if building == patient
+    ));
+    assert!(state.building(patient).unwrap().hp <= hurt);
+    assert!(
+        state.player(PlayerId(0)).scrap >= bank,
+        "the automatic aura must not charge while teardown owns the target"
+    );
+
+    for _ in 0..64 {
+        if state.building(patient).unwrap().hp < hurt {
+            break;
+        }
+        events.extend(state.tick(&[]).events);
+    }
+    assert!(
+        state.building(patient).unwrap().hp < hurt,
+        "salvage must make visible progress instead of being offset by the aura"
+    );
+    assert!(!events.iter().any(|event| {
+        matches!(event, Event::BuildingRepaired { building, .. } if *building == patient)
+    }));
+}
+
+#[test]
+fn the_aura_respects_a_queued_salvage_commitment() {
+    let (mut state, worker, patient, hurt) = wounded_salvage_patient(TilePos::new(2, 7));
+    let bank = state.player(PlayerId(0)).scrap;
+    let report = state.tick(&[
+        walk(0, vec![worker], TilePos::new(2, 9)),
+        cmd(
+            0,
+            Command::Salvage {
+                units: vec![worker],
+                building: patient,
+                queue: true,
+            },
+        ),
+    ]);
+
+    assert!(matches!(
+        state.unit(worker).unwrap().order,
+        oxide_sim::Order::Move { .. }
+    ));
+    assert!(state.unit(worker).unwrap().queue.iter().any(
+        |order| matches!(order, oxide_sim::Order::Salvage { building } if *building == patient)
+    ));
+    assert_eq!(state.building(patient).unwrap().hp, hurt);
+    assert_eq!(state.player(PlayerId(0)).scrap, bank);
+    assert!(!report.events.iter().any(|event| {
+        matches!(event, Event::BuildingRepaired { building, .. } if *building == patient)
+    }));
+}
+
+#[test]
+fn overlapping_bays_can_repair_each_other_but_never_themselves() {
+    let mut state = structure_arena(500, vec![structure(0, BuildingKind::RepairBay, 7, 4)]);
+    let patient = building_at(
+        &state,
+        BuildingKind::RepairBay,
+        TilePos::new(BAY_ANCHOR.0, BAY_ANCHOR.1),
+        PlayerId(0),
+    );
+    let helper = building_at(
+        &state,
+        BuildingKind::RepairBay,
+        TilePos::new(7, 4),
+        PlayerId(0),
+    );
+    let hurt = BuildingKind::RepairBay.base_stats().max_hp - 10;
+    state = forge_buildings(state, &[(patient, hurt, true, 0)], None);
+
+    let report = state.tick(&[]);
+    assert_eq!(state.building(patient).unwrap().hp, hurt + 1);
+    assert!(report.events.iter().any(|event| {
+        matches!(
+            event,
+            Event::BuildingRepaired {
+                building,
+                repair_bay,
+                amount: 1,
+                ..
+            } if *building == patient && *repair_bay == helper
+        )
+    }));
+}
+
+#[test]
+fn active_tier_sets_structure_billing_and_a_broke_bank_skips_the_pulse() {
+    let tier = 2;
+    let stats = BuildingKind::Turret.tier_stats(tier);
+    let hurt = (1..stats.max_hp)
+        .find(|hp| building_aura_bill(BuildingKind::Turret, tier, *hp, *hp + 1) == 1)
+        .expect("some Bulwark hp step costs one scrap");
+
+    for (scrap, expected_hp) in [(0, hurt), (1, hurt + 1)] {
+        let mut state = structure_arena(scrap, vec![structure(0, BuildingKind::Turret, 9, 4)]);
+        let patient = building_at(
+            &state,
+            BuildingKind::Turret,
+            TilePos::new(9, 4),
+            PlayerId(0),
+        );
+        state = forge_buildings(state, &[(patient, hurt, true, tier)], None);
+        state.tick(&[]);
+        assert_eq!(state.building(patient).unwrap().hp, expected_hp);
+        assert_eq!(state.player(PlayerId(0)).scrap, 0);
+    }
+}
+
+#[test]
+fn limited_scrap_repairs_structures_in_building_id_order() {
+    let mut state = structure_arena(
+        1,
+        vec![
+            structure(0, BuildingKind::Turret, 9, 4),
+            structure(0, BuildingKind::Turret, 9, 5),
+        ],
+    );
+    let first = building_at(
+        &state,
+        BuildingKind::Turret,
+        TilePos::new(9, 4),
+        PlayerId(0),
+    );
+    let second = building_at(
+        &state,
+        BuildingKind::Turret,
+        TilePos::new(9, 5),
+        PlayerId(0),
+    );
+    assert!(first < second, "authored order supplies the id order");
+    let max = BuildingKind::Turret.base_stats().max_hp;
+    let hurt = (1..max)
+        .find(|hp| building_aura_bill(BuildingKind::Turret, 0, *hp, *hp + 1) == 1)
+        .unwrap();
+    state = forge_buildings(
+        state,
+        &[(first, hurt, true, 0), (second, hurt, true, 0)],
+        None,
+    );
+
+    state.tick(&[]);
+    assert_eq!(state.building(first).unwrap().hp, hurt + 1);
+    assert_eq!(state.building(second).unwrap().hp, hurt);
+    assert_eq!(state.player(PlayerId(0)).scrap, 0);
+}
+
+#[test]
+fn lethal_fire_wins_a_structure_repair_pulse_and_forfeits_its_coin() {
+    let mut scenario = arena(
+        vec![
+            unit(0, UnitKind::Harvester, 2, 7),
+            unit(1, UnitKind::Sentinel, 11, 4),
+        ],
+        [Faction::Ferrous, Faction::Cupric],
+        50,
+        true,
+    );
+    scenario
+        .buildings
+        .push(structure(0, BuildingKind::Turret, 9, 4));
+    let mut state = scenario.build().unwrap();
+    let patient = building_at(
+        &state,
+        BuildingKind::Turret,
+        TilePos::new(9, 4),
+        PlayerId(0),
+    );
+    let attacker = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(1))
+        .unwrap()
+        .id;
+    let damage = UnitKind::Sentinel.stats().weapons[0].damage;
+    let hurt = (1..=damage)
+        .find(|hp| building_aura_bill(BuildingKind::Turret, 0, *hp, *hp + 1) == 1)
+        .expect("a lethal-range Turret hp step costs one scrap");
+    state = forge_buildings(state, &[(patient, hurt, true, 0)], None);
+    let bank = state.player(PlayerId(0)).scrap;
+
+    let report = state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![attacker],
+            target: Target::Building(patient),
+            queue: false,
+        },
+    )]);
+    assert!(
+        state.building(patient).is_none(),
+        "fire destroys the target"
+    );
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        bank - 1,
+        "a lethal same-tick volley forfeits the prepaid repair coin"
+    );
+    assert!(!report.events.iter().any(|event| {
+        matches!(event, Event::BuildingRepaired { building, .. } if *building == patient)
+    }));
 }
 
 #[test]

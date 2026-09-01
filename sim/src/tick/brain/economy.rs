@@ -62,6 +62,7 @@ pub(super) fn advance_upgrades(state: &mut State, builds: &mut Vec<PendingHpGain
                 player,
                 kind,
                 paid: 0,
+                repair_bay: None,
             });
         }
     }
@@ -124,6 +125,7 @@ pub(super) fn build(
                 player: me,
                 kind,
                 paid: 0, // construction paid at placement
+                repair_bay: None,
             });
         }
         state.unit_mut(id).expect("caller checked").path = None;
@@ -308,6 +310,7 @@ pub(super) fn repair(
                 player: me,
                 kind,
                 paid: due as u32,
+                repair_bay: None,
             });
         }
     } else if !approach_rect(state, id, anchor, size) {
