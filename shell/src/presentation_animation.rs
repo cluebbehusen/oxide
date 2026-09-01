@@ -162,7 +162,7 @@ pub(crate) struct UnitAnimationState {
     pub(crate) locomotion: LocomotionState,
     /// Economy mechanism state.
     pub(crate) work: UnitWorkState,
-    /// Harvester cargo, absent for every other kind.
+    /// Harvest cargo, present for Harvesters and Excavators.
     pub(crate) cargo: Option<CargoState>,
     /// Event-driven attack report and recovery.
     pub(crate) attack: Option<AttackPhase>,
@@ -1077,6 +1077,25 @@ mod tests {
         assert_eq!(
             UnitAnimationFacts::capture(&state, &unit, false).work,
             UnitWorkFact::Idle
+        );
+    }
+
+    #[test]
+    fn excavator_cargo_uses_its_authoritative_thirty_scrap_capacity() {
+        let mut facts = unit_facts(UnitKind::Excavator);
+        facts.carrying = 15;
+        let animation = AnimationController::default().unit_state(
+            facts,
+            AnimationClock::new(5, 0.0),
+            AnimationOptions::default(),
+        );
+        assert_eq!(
+            animation.cargo,
+            Some(CargoState {
+                amount: 15,
+                capacity: 30,
+                fill: 0.5,
+            })
         );
     }
 

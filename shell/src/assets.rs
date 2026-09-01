@@ -124,6 +124,8 @@ pub struct Sprites {
     tender_action: [[Rect; 3]; 4],
     excavator: [Rect; 3],
     excavator_move: [[Rect; 3]; 2],
+    excavator_action: [[Rect; 3]; 4],
+    excavator_cargo: [Rect; EXCAVATOR_CARGO_LEVELS],
     kestrel: [Rect; 3],
     kestrel_move: [[Rect; 3]; 2],
     gnat: [Rect; 3],
@@ -365,6 +367,7 @@ const WORK_SUFFIXES_3: [&str; 3] = ["_work1", "_work2", "_work3"];
 const WORK_SUFFIXES_4: [&str; 4] = ["_work1", "_work2", "_work3", "_work4"];
 const WORK_SUFFIXES_6: [&str; 6] = ["_work1", "_work2", "_work3", "_work4", "_work5", "_work6"];
 const HARVESTER_CARGO_LEVELS: usize = 5;
+const EXCAVATOR_CARGO_LEVELS: usize = 5;
 const SITE_STAGES: usize = 3;
 const SITE_PHASES: usize = 2;
 const SITE_FRAME_COUNT: usize = SITE_STAGES * SITE_PHASES;
@@ -383,6 +386,25 @@ pub enum HarvesterPose {
     Scoop1,
     /// Claws closed on salvage.
     Scoop2,
+}
+
+/// One complete Excavator chassis pose beneath its independent cargo meter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcavatorPose {
+    /// Resting chassis and raised milling drum.
+    Idle,
+    /// First authored tread phase.
+    Tread1,
+    /// Second authored tread phase.
+    Tread2,
+    /// First milling-drum work phase.
+    Work1,
+    /// Second milling-drum work phase.
+    Work2,
+    /// Third milling-drum work phase.
+    Work3,
+    /// Fourth milling-drum work phase.
+    Work4,
 }
 
 /// The atlas stem a unit kind's rows live under.
@@ -497,6 +519,14 @@ fn harvester_cargo_motion_rows(
     Ok(out)
 }
 
+fn excavator_cargo_rows(rects: &Manifest) -> Result<[Rect; EXCAVATOR_CARGO_LEVELS]> {
+    let mut out = [Rect::new(0.0, 0.0, 0.0, 0.0); EXCAVATOR_CARGO_LEVELS];
+    for (level, rect) in out.iter_mut().enumerate() {
+        *rect = lookup(rects, &format!("excavator_cargo{level}"))?;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
     match kind {
@@ -514,15 +544,12 @@ fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
         | UnitKind::Shrike
         | UnitKind::Sylph
         | UnitKind::Tender
+        | UnitKind::Excavator
         | UnitKind::Condor
         | UnitKind::Breaker
         | UnitKind::Avalanche => &ACTION_SUFFIXES_4,
         UnitKind::Moth => &ACTION_SUFFIXES_6,
-        UnitKind::Excavator
-        | UnitKind::Kestrel
-        | UnitKind::Gnat
-        | UnitKind::Skyhook
-        | UnitKind::Sapper => &[],
+        UnitKind::Kestrel | UnitKind::Gnat | UnitKind::Skyhook | UnitKind::Sapper => &[],
     }
 }
 
@@ -707,6 +734,9 @@ fn atlas_keys() -> Vec<String> {
         for suffix in TREAD_SUFFIXES.into_iter().chain(SCOOP_SUFFIXES) {
             keys.extend(variant_keys("harvester", &format!("_cargo{level}{suffix}")));
         }
+    }
+    for level in 0..EXCAVATOR_CARGO_LEVELS {
+        keys.push(format!("excavator_cargo{level}"));
     }
     for kind in ALL_UNIT_KINDS {
         for suffix in unit_action_suffixes(kind) {
@@ -901,6 +931,12 @@ impl Sprites {
             tender_action: variant_rows(&rects, unit_stem(UnitKind::Tender), ACTION_SUFFIXES_4)?,
             excavator: unit(UnitKind::Excavator)?,
             excavator_move: variant_rows(&rects, unit_stem(UnitKind::Excavator), MOVE_SUFFIXES)?,
+            excavator_action: variant_rows(
+                &rects,
+                unit_stem(UnitKind::Excavator),
+                ACTION_SUFFIXES_4,
+            )?,
+            excavator_cargo: excavator_cargo_rows(&rects)?,
             kestrel: unit(UnitKind::Kestrel)?,
             kestrel_move: variant_rows(&rects, unit_stem(UnitKind::Kestrel), MOVE_SUFFIXES)?,
             gnat: unit(UnitKind::Gnat)?,
@@ -1250,6 +1286,33 @@ impl Sprites {
         self.harvester_frame_row(cargo, pose)[ACCENT]
     }
 
+    fn excavator_frame_row(&self, pose: ExcavatorPose) -> &[Rect; 3] {
+        match pose {
+            ExcavatorPose::Idle => &self.excavator,
+            ExcavatorPose::Tread1 => &self.excavator_move[0],
+            ExcavatorPose::Tread2 => &self.excavator_move[1],
+            ExcavatorPose::Work1 => &self.excavator_action[0],
+            ExcavatorPose::Work2 => &self.excavator_action[1],
+            ExcavatorPose::Work3 => &self.excavator_action[2],
+            ExcavatorPose::Work4 => &self.excavator_action[3],
+        }
+    }
+
+    /// A complete Excavator chassis pose beneath its independent cargo meter.
+    pub fn excavator_frame(&self, faction: Faction, pose: ExcavatorPose) -> Rect {
+        self.excavator_frame_row(pose)[faction_index(faction)]
+    }
+
+    /// The allegiance mask matched to [`Self::excavator_frame`].
+    pub fn excavator_frame_accent(&self, pose: ExcavatorPose) -> Rect {
+        self.excavator_frame_row(pose)[ACCENT]
+    }
+
+    /// The recessed Excavator meter at one of five load-fraction levels.
+    pub fn excavator_cargo(&self, cargo: usize) -> Rect {
+        self.excavator_cargo[cargo.min(EXCAVATOR_CARGO_LEVELS - 1)]
+    }
+
     fn moving_unit_row(&self, kind: UnitKind, frame: usize) -> &[Rect; 3] {
         let rows = match kind {
             UnitKind::Harvester => &self.harvester_tread,
@@ -1350,15 +1413,12 @@ impl Sprites {
             UnitKind::Shrike => &self.shrike_action,
             UnitKind::Sylph => &self.sylph_action,
             UnitKind::Tender => &self.tender_action,
+            UnitKind::Excavator => &self.excavator_action,
             UnitKind::Condor => &self.condor_action,
             UnitKind::Moth => &self.moth_action,
             UnitKind::Breaker => &self.breaker_action,
             UnitKind::Avalanche => &self.avalanche_action,
-            UnitKind::Excavator
-            | UnitKind::Kestrel
-            | UnitKind::Gnat
-            | UnitKind::Skyhook
-            | UnitKind::Sapper => {
+            UnitKind::Kestrel | UnitKind::Gnat | UnitKind::Skyhook | UnitKind::Sapper => {
                 return None;
             }
         };
@@ -1936,6 +1996,13 @@ mod tests {
             ) {
                 assert_animation_variant("harvester", &suffix);
             }
+        }
+        let atlas = manifest();
+        for level in 0..EXCAVATOR_CARGO_LEVELS {
+            assert!(
+                atlas.contains_key(&format!("excavator_cargo{level}")),
+                "missing Excavator cargo level {level}"
+            );
         }
 
         for (stem, suffixes) in [

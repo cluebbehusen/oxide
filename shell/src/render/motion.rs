@@ -24,6 +24,17 @@ pub(crate) enum HarvesterPose {
     Scoop(usize),
 }
 
+/// An Excavator chassis pose beneath its independent cargo meter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExcavatorPose {
+    /// Resting chassis and raised milling drum.
+    Idle,
+    /// One of the two tread phases.
+    Moving(usize),
+    /// One of the four milling-drum work phases.
+    Working(usize),
+}
+
 /// The atlas row selected for a unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnitFrame {
@@ -39,6 +50,13 @@ pub(crate) enum UnitFrame {
         cargo: usize,
         /// Scoop or tread mechanism state.
         pose: HarvesterPose,
+    },
+    /// Cargo-aware Excavator art.
+    Excavator {
+        /// One of five authoritative load-fraction levels.
+        cargo: usize,
+        /// Milling-drum or tread mechanism state.
+        pose: ExcavatorPose,
     },
 }
 
@@ -84,6 +102,21 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
             },
         };
         return UnitFrame::Harvester { cargo, pose };
+    }
+
+    if kind == UnitKind::Excavator {
+        let cargo = state.cargo.map_or(0, cargo_bucket);
+        let pose = match state.work {
+            UnitWorkState::Harvesting { cycle, .. }
+            | UnitWorkState::Constructing { cycle, .. }
+            | UnitWorkState::Repairing { cycle, .. }
+            | UnitWorkState::Salvaging { cycle, .. } => excavator_work_frame(cycle),
+            UnitWorkState::Idle => match state.locomotion {
+                LocomotionState::Moving { cycle } => ExcavatorPose::Moving(cycle_index(cycle, 2)),
+                LocomotionState::Rest => ExcavatorPose::Idle,
+            },
+        };
+        return UnitFrame::Excavator { cargo, pose };
     }
 
     if kind == UnitKind::Tender
@@ -189,6 +222,13 @@ fn harvester_work_frame(cycle: f32) -> HarvesterPose {
         0 | 4 => HarvesterPose::Idle,
         1 | 3 => HarvesterPose::Scoop(0),
         _ => HarvesterPose::Scoop(1),
+    }
+}
+
+fn excavator_work_frame(cycle: f32) -> ExcavatorPose {
+    match cycle_index(cycle, 5) {
+        0 => ExcavatorPose::Idle,
+        phase => ExcavatorPose::Working(phase - 1),
     }
 }
 
@@ -472,6 +512,37 @@ mod tests {
             UnitFrame::Harvester {
                 cargo: 2,
                 pose: HarvesterPose::Moving(1),
+            }
+        );
+    }
+
+    #[test]
+    fn excavator_work_and_motion_retain_the_authoritative_cargo_bucket() {
+        let mut state = unit_state();
+        state.cargo = Some(CargoState {
+            amount: 15,
+            capacity: 30,
+            fill: 0.5,
+        });
+        state.work = UnitWorkState::Harvesting {
+            target: chassis::grid::TilePos::new(5, 5).center(),
+            cycle: 0.7,
+        };
+        assert_eq!(
+            unit_frame(UnitKind::Excavator, state),
+            UnitFrame::Excavator {
+                cargo: 2,
+                pose: ExcavatorPose::Working(2),
+            }
+        );
+
+        state.work = UnitWorkState::Idle;
+        state.locomotion = LocomotionState::Moving { cycle: 0.75 };
+        assert_eq!(
+            unit_frame(UnitKind::Excavator, state),
+            UnitFrame::Excavator {
+                cargo: 2,
+                pose: ExcavatorPose::Moving(1),
             }
         );
     }

@@ -7,7 +7,9 @@
 //! previous and current tick so 20 sim ticks per second still looks like
 //! 60fps motion.
 
-use crate::assets::{HarvesterPose as SpriteHarvesterPose, Sprites};
+use crate::assets::{
+    ExcavatorPose as SpriteExcavatorPose, HarvesterPose as SpriteHarvesterPose, Sprites,
+};
 static COLORBLIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Colorblind accents: swap allegiance-critical indicator colors for a
@@ -800,18 +802,21 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             }
         }
         let body_size = vec2(dest, dest);
-        let (source, accent) = match frame {
+        let (source, accent, cargo_meter) = match frame {
             motion::UnitFrame::Idle => (
                 sprites.unit(unit.kind, faction),
                 sprites.unit_accent(unit.kind),
+                None,
             ),
             motion::UnitFrame::Moving(phase) => (
                 sprites.unit_moving(unit.kind, faction, phase + 1),
                 sprites.unit_moving_accent(unit.kind, phase + 1),
+                None,
             ),
             motion::UnitFrame::Action(action) => (
                 sprites.unit_action(unit.kind, faction, action),
                 sprites.unit_action_accent(unit.kind, action),
+                None,
             ),
             motion::UnitFrame::Harvester { cargo, pose } => {
                 let pose = match pose {
@@ -824,6 +829,23 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 (
                     sprites.harvester_frame(faction, cargo, pose),
                     sprites.harvester_frame_accent(cargo, pose),
+                    None,
+                )
+            }
+            motion::UnitFrame::Excavator { cargo, pose } => {
+                let pose = match pose {
+                    motion::ExcavatorPose::Idle => SpriteExcavatorPose::Idle,
+                    motion::ExcavatorPose::Moving(0) => SpriteExcavatorPose::Tread1,
+                    motion::ExcavatorPose::Moving(_) => SpriteExcavatorPose::Tread2,
+                    motion::ExcavatorPose::Working(0) => SpriteExcavatorPose::Work1,
+                    motion::ExcavatorPose::Working(1) => SpriteExcavatorPose::Work2,
+                    motion::ExcavatorPose::Working(2) => SpriteExcavatorPose::Work3,
+                    motion::ExcavatorPose::Working(_) => SpriteExcavatorPose::Work4,
+                };
+                (
+                    sprites.excavator_frame(faction, pose),
+                    sprites.excavator_frame_accent(pose),
+                    Some(sprites.excavator_cargo(cargo)),
                 )
             }
         };
@@ -851,6 +873,20 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 DrawTextureParams {
                     dest_size: Some(body_size),
                     source: Some(accent),
+                    rotation,
+                    ..Default::default()
+                },
+            );
+        }
+        if let Some(cargo_meter) = cargo_meter {
+            draw_texture_ex(
+                sprites.texture(),
+                body.x - body_size.x * 0.5,
+                body.y - body_size.y * 0.5,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(body_size),
+                    source: Some(cargo_meter),
                     rotation,
                     ..Default::default()
                 },
