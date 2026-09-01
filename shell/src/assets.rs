@@ -144,8 +144,10 @@ pub struct Sprites {
     avalanche_action: [[Rect; 3]; 4],
     skyhook: [Rect; 3],
     skyhook_move: [[Rect; 3]; 2],
+    skyhook_action: [[Rect; 3]; 4],
     sapper: [Rect; 3],
     sapper_move: [[Rect; 3]; 2],
+    sapper_action: [[Rect; 3]; 3],
 }
 
 fn faction_index(faction: Faction) -> usize {
@@ -352,6 +354,7 @@ const BASTION_MOUNT_STEM: &str = "bastion_mount";
 const SCOOP_SUFFIXES: [&str; 2] = ["_scoop1", "_scoop2"];
 const TREAD_SUFFIXES: [&str; 2] = ["_tread1", "_tread2"];
 const MOVE_SUFFIXES: [&str; 2] = ["_move1", "_move2"];
+const ACTION_SUFFIXES_3: [&str; 3] = ["_action1", "_action2", "_action3"];
 const ACTION_SUFFIXES_4: [&str; 4] = ["_action1", "_action2", "_action3", "_action4"];
 const ACTION_SUFFIXES_6: [&str; 6] = [
     "_action1", "_action2", "_action3", "_action4", "_action5", "_action6",
@@ -547,9 +550,11 @@ fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
         | UnitKind::Excavator
         | UnitKind::Condor
         | UnitKind::Breaker
-        | UnitKind::Avalanche => &ACTION_SUFFIXES_4,
+        | UnitKind::Avalanche
+        | UnitKind::Skyhook => &ACTION_SUFFIXES_4,
+        UnitKind::Sapper => &ACTION_SUFFIXES_3,
         UnitKind::Moth => &ACTION_SUFFIXES_6,
-        UnitKind::Kestrel | UnitKind::Gnat | UnitKind::Skyhook | UnitKind::Sapper => &[],
+        UnitKind::Kestrel | UnitKind::Gnat => &[],
     }
 }
 
@@ -959,8 +964,10 @@ impl Sprites {
             )?,
             skyhook: unit(UnitKind::Skyhook)?,
             skyhook_move: variant_rows(&rects, unit_stem(UnitKind::Skyhook), MOVE_SUFFIXES)?,
+            skyhook_action: variant_rows(&rects, unit_stem(UnitKind::Skyhook), ACTION_SUFFIXES_4)?,
             sapper: unit(UnitKind::Sapper)?,
             sapper_move: variant_rows(&rects, unit_stem(UnitKind::Sapper), MOVE_SUFFIXES)?,
+            sapper_action: variant_rows(&rects, unit_stem(UnitKind::Sapper), ACTION_SUFFIXES_3)?,
         })
     }
 
@@ -1418,7 +1425,9 @@ impl Sprites {
             UnitKind::Moth => &self.moth_action,
             UnitKind::Breaker => &self.breaker_action,
             UnitKind::Avalanche => &self.avalanche_action,
-            UnitKind::Kestrel | UnitKind::Gnat | UnitKind::Skyhook | UnitKind::Sapper => {
+            UnitKind::Skyhook => &self.skyhook_action,
+            UnitKind::Sapper => &self.sapper_action,
+            UnitKind::Kestrel | UnitKind::Gnat => {
                 return None;
             }
         };

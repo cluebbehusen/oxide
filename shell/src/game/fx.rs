@@ -22,7 +22,8 @@ impl Effect {
     /// drain a terminal battlefield after simulation time has stopped.
     pub(crate) fn age_at(&self, completed_ticks: u64, tick_fraction: f32) -> f32 {
         match self.kind {
-            EffectKind::DirectShot { completed_tick, .. } => {
+            EffectKind::DirectShot { completed_tick, .. }
+            | EffectKind::SapperDetonation { completed_tick, .. } => {
                 let whole = completed_ticks.saturating_sub(completed_tick) as f32;
                 (whole + tick_fraction.clamp(0.0, 1.0)) * super::TICK_DT + self.age
             }
@@ -313,6 +314,25 @@ pub enum EffectKind {
         /// Simulation tick immediately after the hit was reported.
         completed_tick: u64,
     },
+    /// A Sapper's decisive action pose, retained after its carrier dies.
+    SapperDetonation {
+        /// Exact firing position.
+        at: Vec2,
+        /// Exact center used by the simulation's splash ring.
+        blast_at: Vec2,
+        /// Direction toward the contacted target.
+        rotation: f32,
+        /// Owning seat, for the same identity tint the live unit used.
+        player: oxide_sim::PlayerId,
+        /// Faction-specific base art.
+        faction: oxide_sim::Faction,
+        /// The source position was legitimately known when the report arrived.
+        source_witnessed: bool,
+        /// The impact position was legitimately known when the report arrived.
+        impact_witnessed: bool,
+        /// Simulation tick immediately after the hit was reported.
+        completed_tick: u64,
+    },
     /// A downed flyer: the sprite drops, spins, and shrinks out.
     Falling {
         /// Where it was hit, world coords.
@@ -371,6 +391,32 @@ fn push_direct_report(
     });
 }
 
+fn event_target_owner(
+    state: &oxide_sim::State,
+    events: &[Event],
+    target: oxide_sim::Target,
+) -> Option<oxide_sim::PlayerId> {
+    match target {
+        oxide_sim::Target::Unit(id) => state.unit(id).map(|unit| unit.player).or_else(|| {
+            events.iter().find_map(|event| match event {
+                Event::UnitDied { unit, player, .. } if *unit == id => Some(*player),
+                _ => None,
+            })
+        }),
+        oxide_sim::Target::Building(id) => state
+            .building(id)
+            .map(|building| building.player)
+            .or_else(|| {
+                events.iter().find_map(|event| match event {
+                    Event::BuildingDestroyed {
+                        building, player, ..
+                    } if *building == id => Some(*player),
+                    _ => None,
+                })
+            }),
+    }
+}
+
 impl Game {
     pub fn update_fx(&mut self, dt: f32) {
         self.fx_clock += dt;
@@ -381,8 +427,10 @@ impl Game {
         let terminal = self.state.result().is_some();
         for fx in &mut self.fx {
             match fx.kind {
-                EffectKind::DirectShot { .. } if terminal => fx.age += dt,
-                EffectKind::DirectShot { .. } => {}
+                EffectKind::DirectShot { .. } | EffectKind::SapperDetonation { .. } if terminal => {
+                    fx.age += dt;
+                }
+                EffectKind::DirectShot { .. } | EffectKind::SapperDetonation { .. } => {}
                 _ => fx.age += dt,
             }
         }
@@ -392,6 +440,7 @@ impl Game {
             fx.age_at(completed_ticks, tick_fraction)
                 < match fx.kind {
                     EffectKind::DirectShot { style, .. } => style.life(),
+                    EffectKind::SapperDetonation { .. } => super::TICK_DT * 2.0,
                     EffectKind::Puff { .. } => 0.4,
                     EffectKind::Falling { .. } => 0.7,
                     EffectKind::Ping { .. } => 0.5,
@@ -438,16 +487,8 @@ impl Game {
                             (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
                         );
                     }
-                    let own_target = match target {
-                        oxide_sim::Target::Unit(uid) => self
-                            .state
-                            .unit(*uid)
-                            .is_some_and(|u| u.player == self.human),
-                        oxide_sim::Target::Building(bid) => self
-                            .state
-                            .building(*bid)
-                            .is_some_and(|b| b.player == self.human),
-                    };
+                    let target_owner = event_target_owner(&self.state, events, *target);
+                    let own_target = target_owner == Some(self.human);
                     if own_target {
                         self.raise_alert(world_vec(*target_pos));
                     }
@@ -455,7 +496,22 @@ impl Game {
                     // died later this same tick, and a rail shot deserves
                     // its report either way. The weapon's character decides
                     // the report and whether the impact blooms.
-                    let heard = sees(self, *attacker_pos) || sees(self, *target_pos);
+                    let sapper_owner = (*attacker_kind == oxide_sim::UnitKind::Sapper)
+                        .then(|| {
+                            events.iter().find_map(|event| match event {
+                                Event::UnitDied { unit, player, .. } if unit == attacker => {
+                                    Some(*player)
+                                }
+                                _ => None,
+                            })
+                        })
+                        .flatten();
+                    let source_witnessed =
+                        sees(self, *attacker_pos) || sapper_owner == Some(self.human);
+                    let impact_witnessed = sees(self, *target_pos)
+                        || target_owner
+                            .is_some_and(|player| !self.state.hostile(self.human, player));
+                    let heard = source_witnessed || impact_witnessed;
                     let sound = unit_fire_sound(*attacker_kind);
                     // The burst radius comes from the exact weapon that
                     // fired — the event says which slot — so the
@@ -475,18 +531,42 @@ impl Game {
                         };
                         self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
-                    push_direct_report(
-                        &mut self.fx,
-                        unit_shot_style(*attacker_kind, *weapon),
-                        visual_shot_origin(
-                            world_vec(*attacker_pos),
+                    if *attacker_kind == oxide_sim::UnitKind::Sapper {
+                        if let Some(player) = sapper_owner {
+                            let direction = world_vec(*target_pos) - world_vec(*attacker_pos);
+                            let rotation = if direction.length_squared() > 1e-6 {
+                                direction.y.atan2(direction.x) + std::f32::consts::FRAC_PI_2
+                            } else {
+                                0.0
+                            };
+                            self.fx.push(Effect {
+                                kind: EffectKind::SapperDetonation {
+                                    at: world_vec(*attacker_pos),
+                                    blast_at: world_vec(*target_pos),
+                                    rotation,
+                                    player,
+                                    faction: self.state.player(player).faction,
+                                    source_witnessed,
+                                    impact_witnessed,
+                                    completed_tick: self.state.current_tick(),
+                                },
+                                age: 0.0,
+                            });
+                        }
+                    } else {
+                        push_direct_report(
+                            &mut self.fx,
+                            unit_shot_style(*attacker_kind, *weapon),
+                            visual_shot_origin(
+                                world_vec(*attacker_pos),
+                                world_vec(*target_pos),
+                                unit_muzzle_reach(*attacker_kind),
+                            ),
                             world_vec(*target_pos),
-                            unit_muzzle_reach(*attacker_kind),
-                        ),
-                        world_vec(*target_pos),
-                        splash,
-                        self.state.current_tick(),
-                    );
+                            splash,
+                            self.state.current_tick(),
+                        );
+                    }
                 }
                 Event::TurretFired {
                     kind,
@@ -1023,6 +1103,97 @@ mod tests {
         };
         assert_eq!(shot.age_at(100, 0.0), 0.0);
         assert!((shot.age_at(102, 0.5) - 2.5 * crate::game::TICK_DT).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn own_sapper_report_survives_its_same_tick_death_and_vision_loss() {
+        let scenario = oxide_sim::Scenario::skirmish();
+        let mut game =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .expect("Sapper presentation scenario builds");
+        let attacker = UnitId(999);
+        let at = chassis::grid::TilePos::new(30, 20).center();
+        let events = [
+            oxide_sim::Event::AttackHit {
+                attacker,
+                attacker_kind: UnitKind::Sapper,
+                weapon: 0,
+                target: Target::Building(BuildingId(999)),
+                attacker_pos: at,
+                target_pos: at,
+            },
+            oxide_sim::Event::UnitDied {
+                unit: attacker,
+                kind: UnitKind::Sapper,
+                player: game.human,
+                pos: at,
+                grounded: true,
+            },
+        ];
+
+        game.spawn_fx(&events);
+
+        assert!(game.fx.iter().any(|effect| matches!(
+            effect.kind,
+            EffectKind::SapperDetonation { player, .. } if player == game.human
+        )));
+        assert!(
+            game.sounds_pending
+                .iter()
+                .any(|(sound, _)| *sound == SoundKind::DemolitionBoom)
+        );
+    }
+
+    #[test]
+    fn enemy_sapper_report_survives_killing_the_last_local_observer() {
+        let scenario = oxide_sim::Scenario::skirmish();
+        let mut game =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .expect("Sapper presentation scenario builds");
+        let attacker = UnitId(998);
+        let victim = UnitId(999);
+        let at = chassis::grid::TilePos::new(30, 20).center();
+        let events = [
+            oxide_sim::Event::AttackHit {
+                attacker,
+                attacker_kind: UnitKind::Sapper,
+                weapon: 0,
+                target: Target::Unit(victim),
+                attacker_pos: at,
+                target_pos: at,
+            },
+            oxide_sim::Event::UnitDied {
+                unit: attacker,
+                kind: UnitKind::Sapper,
+                player: oxide_sim::PlayerId(1),
+                pos: at,
+                grounded: true,
+            },
+            oxide_sim::Event::UnitDied {
+                unit: victim,
+                kind: UnitKind::Sentinel,
+                player: game.human,
+                pos: at,
+                grounded: true,
+            },
+        ];
+
+        game.spawn_fx(&events);
+
+        assert!(
+            game.sounds_pending
+                .iter()
+                .any(|(sound, _)| *sound == SoundKind::DemolitionBoom),
+            "the witnessed demolition must not become silent after its last observer dies"
+        );
+        assert!(game.fx.iter().any(|effect| matches!(
+            effect.kind,
+            EffectKind::SapperDetonation {
+                source_witnessed: false,
+                impact_witnessed: true,
+                ..
+            }
+        )));
     }
 
     #[test]

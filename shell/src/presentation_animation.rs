@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use chassis::fx::Vec2Fx;
 use oxide_sim::stats::MAX_WEAPONS;
 use oxide_sim::{
-    Building, BuildingId, BuildingKind, Event, Order, State, TickReport, Unit, UnitId, UnitKind,
-    UnitRepairSource,
+    Building, BuildingId, BuildingKind, Event, Order, State, Target, TickReport, Unit, UnitId,
+    UnitKind, UnitRepairSource,
 };
 
 const GROUND_MOVE_PERIOD: u64 = 6;
@@ -20,10 +20,13 @@ const HARVEST_PERIOD: u64 = 20;
 const CONSTRUCTION_PERIOD: u64 = 8;
 const FOUNDRY_PRODUCTION_PERIOD: u64 = 40;
 const FABRICATOR_PRODUCTION_PERIOD: u64 = 12;
+const CRUCIBLE_PRODUCTION_PERIOD: u64 = 16;
 const ARRAY_SWEEP_PERIOD: u64 = 32;
 const RECLAIMER_PERIOD: u64 = 12;
 const BUZZARD_ROTOR_PERIOD: u64 = 6;
 const WISP_ROTOR_PERIOD: u64 = 4;
+const SKYHOOK_ROTOR_PERIOD: u64 = 8;
+const SKYHOOK_ACTION_TICKS: f32 = 8.0;
 const REPAIR_PULSE_TICKS: f32 = 6.0;
 pub(crate) const FLAKHOUND_REPORT_TICKS: f32 = 2.0;
 pub(crate) const FLAK_TURRET_REPORT_TICKS: f32 = 3.0;
@@ -132,6 +135,15 @@ pub(crate) enum PropulsionState {
     LiftRotors { cycle: f32 },
 }
 
+/// A transport mechanism settling after an authoritative boarding event.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum TransportActionState {
+    /// A rider entered this transport.
+    Boarding { progress: f32 },
+    /// A rider left this transport.
+    Unloading { progress: f32 },
+}
+
 /// A weapon's readiness after the simulation has resolved a tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum WeaponCycle {
@@ -170,6 +182,10 @@ pub(crate) struct UnitAnimationState {
     pub(crate) weapons: [WeaponCycle; MAX_WEAPONS],
     /// Mechanisms that must run independently of locomotion.
     pub(crate) propulsion: PropulsionState,
+    /// Event-driven cargo-door and clamp movement.
+    pub(crate) transport: Option<TransportActionState>,
+    /// A Sapper has physically reached contact and will detonate next tick.
+    pub(crate) demolition_preparation: Option<f32>,
 }
 
 /// Facts about a unit that can be captured without mutating the simulation.
@@ -180,6 +196,7 @@ pub(crate) struct UnitAnimationFacts {
     moved: bool,
     work: UnitWorkFact,
     carrying: u32,
+    demolition_contact: bool,
     cooldowns: [u32; MAX_WEAPONS],
 }
 
@@ -212,6 +229,7 @@ impl UnitAnimationFacts {
             moved,
             work,
             carrying: unit.carrying,
+            demolition_contact: sapper_at_contact(state, unit),
             cooldowns: unit.cooldowns,
         }
     }
@@ -311,12 +329,25 @@ struct AttackStamp {
     weapon: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum TransportActionKind {
+    Boarding,
+    Unloading,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TransportActionStamp {
+    completed_tick: u64,
+    kind: TransportActionKind,
+}
+
 /// Presentation-only memory for output events that have no standing state.
 #[derive(Debug, Default)]
 pub(crate) struct AnimationController {
     unit_attacks: HashMap<UnitId, [Option<u64>; MAX_WEAPONS]>,
     building_attacks: HashMap<BuildingId, AttackStamp>,
     repair_pulses: HashMap<BuildingId, u64>,
+    transport_actions: HashMap<UnitId, TransportActionStamp>,
 }
 
 impl AnimationController {
@@ -365,6 +396,24 @@ impl AnimationController {
                 Event::BuildingRepaired { repair_bay, .. } => {
                     self.repair_pulses.insert(*repair_bay, completed_tick);
                 }
+                Event::UnitBoarded { transport, .. } => {
+                    self.transport_actions.insert(
+                        *transport,
+                        TransportActionStamp {
+                            completed_tick,
+                            kind: TransportActionKind::Boarding,
+                        },
+                    );
+                }
+                Event::UnitUnloaded { transport, .. } => {
+                    self.transport_actions.insert(
+                        *transport,
+                        TransportActionStamp {
+                            completed_tick,
+                            kind: TransportActionKind::Unloading,
+                        },
+                    );
+                }
                 _ => {}
             }
         }
@@ -375,6 +424,7 @@ impl AnimationController {
         self.unit_attacks.clear();
         self.building_attacks.clear();
         self.repair_pulses.clear();
+        self.transport_actions.clear();
     }
 
     /// Forgets ids no longer present in the current world.
@@ -384,6 +434,8 @@ impl AnimationController {
             .retain(|id, _| state.building(*id).is_some());
         self.repair_pulses
             .retain(|id, _| state.building(*id).is_some());
+        self.transport_actions
+            .retain(|id, _| state.unit(*id).is_some());
     }
 
     /// Resolves authored animation channels for one unit.
@@ -450,6 +502,9 @@ impl AnimationController {
             UnitKind::Wisp => PropulsionState::LiftRotors {
                 cycle: clock.cycle(facts.id.0, WISP_ROTOR_PERIOD, options.reduced_motion),
             },
+            UnitKind::Skyhook => PropulsionState::LiftRotors {
+                cycle: clock.cycle(facts.id.0, SKYHOOK_ROTOR_PERIOD, options.reduced_motion),
+            },
             _ => PropulsionState::None,
         };
         UnitAnimationState {
@@ -459,6 +514,14 @@ impl AnimationController {
             attack: self.unit_attack(facts.id, facts.kind, clock),
             weapons,
             propulsion,
+            transport: self.transport_action(facts.id, clock),
+            demolition_preparation: facts
+                .demolition_contact
+                .then_some(if options.reduced_motion {
+                    0.75
+                } else {
+                    clock.tick_fraction
+                }),
         }
     }
 
@@ -485,11 +548,12 @@ impl AnimationController {
             BuildingActivity::Idle
         } else {
             match facts.kind {
-                BuildingKind::Foundry | BuildingKind::Fabricator => {
-                    let period = if facts.kind == BuildingKind::Foundry {
-                        FOUNDRY_PRODUCTION_PERIOD
-                    } else {
-                        FABRICATOR_PRODUCTION_PERIOD
+                BuildingKind::Foundry | BuildingKind::Fabricator | BuildingKind::Crucible => {
+                    let period = match facts.kind {
+                        BuildingKind::Foundry => FOUNDRY_PRODUCTION_PERIOD,
+                        BuildingKind::Fabricator => FABRICATOR_PRODUCTION_PERIOD,
+                        BuildingKind::Crucible => CRUCIBLE_PRODUCTION_PERIOD,
+                        _ => unreachable!("production match narrowed the building kind"),
                     };
                     facts
                         .production
@@ -530,6 +594,23 @@ impl AnimationController {
             return;
         }
         self.unit_attacks.entry(unit).or_insert([None; MAX_WEAPONS])[weapon] = Some(completed_tick);
+    }
+
+    fn transport_action(
+        &self,
+        transport: UnitId,
+        clock: AnimationClock,
+    ) -> Option<TransportActionState> {
+        let stamp = self.transport_actions.get(&transport)?;
+        let elapsed = clock.elapsed_since(stamp.completed_tick)?;
+        if elapsed >= SKYHOOK_ACTION_TICKS {
+            return None;
+        }
+        let progress = (elapsed / SKYHOOK_ACTION_TICKS).clamp(0.0, 1.0);
+        Some(match stamp.kind {
+            TransportActionKind::Boarding => TransportActionState::Boarding { progress },
+            TransportActionKind::Unloading => TransportActionState::Unloading { progress },
+        })
     }
 
     fn unit_attack(
@@ -688,6 +769,7 @@ fn unit_move_period(kind: UnitKind) -> u64 {
     match kind {
         UnitKind::Buzzard => BUZZARD_ROTOR_PERIOD,
         UnitKind::Wisp => WISP_ROTOR_PERIOD,
+        UnitKind::Skyhook => SKYHOOK_ROTOR_PERIOD,
         _ => GROUND_MOVE_PERIOD,
     }
 }
@@ -698,6 +780,29 @@ fn ratio(value: u32, total: u32) -> f32 {
     } else {
         (value as f32 / total as f32).clamp(0.0, 1.0)
     }
+}
+
+fn sapper_at_contact(state: &State, unit: &Unit) -> bool {
+    if unit.kind != UnitKind::Sapper {
+        return false;
+    }
+    let Order::Attack { target, .. } = unit.order else {
+        return false;
+    };
+    let target_pos = match target {
+        Target::Unit(id) => state
+            .unit(id)
+            .filter(|target| target.hp > 0)
+            .map(|target| target.pos),
+        Target::Building(id) => state
+            .building(id)
+            .filter(|target| target.hp > 0)
+            .map(|target| target.closest_point_to(unit.pos)),
+    };
+    target_pos.is_some_and(|target| {
+        let reach = oxide_sim::stats::SAPPER_CONTACT_RANGE;
+        unit.pos.dist_sq(target) <= reach * reach
+    })
 }
 
 fn active_harvesting(state: &State, unit: &Unit) -> Option<Vec2Fx> {
@@ -829,6 +934,7 @@ mod tests {
             moved: false,
             work: UnitWorkFact::Idle,
             carrying: 0,
+            demolition_contact: false,
             cooldowns: [0; MAX_WEAPONS],
         }
     }
@@ -959,6 +1065,54 @@ mod tests {
     }
 
     #[test]
+    fn boarding_and_unloading_events_drive_only_the_named_transport() {
+        let mut controller = AnimationController::default();
+        controller.observe_events(
+            21,
+            &[Event::UnitBoarded {
+                transport: UnitId(7),
+                unit: UnitId(8),
+                player: PlayerId(0),
+            }],
+        );
+        let skyhook = unit_facts(UnitKind::Skyhook);
+        let boarding = controller.unit_state(
+            skyhook,
+            AnimationClock::new(24, 0.0),
+            AnimationOptions::default(),
+        );
+        assert!(matches!(
+            boarding.transport,
+            Some(TransportActionState::Boarding { progress }) if (progress - 0.375).abs() < 0.001
+        ));
+
+        controller.observe_events(
+            30,
+            &[Event::UnitUnloaded {
+                transport: UnitId(7),
+                unit: UnitId(8),
+                player: PlayerId(0),
+                at: TilePos::new(4, 5),
+            }],
+        );
+        let unloading = controller.unit_state(
+            skyhook,
+            AnimationClock::new(31, 0.0),
+            AnimationOptions::default(),
+        );
+        assert!(matches!(
+            unloading.transport,
+            Some(TransportActionState::Unloading { progress }) if (progress - 0.125).abs() < 0.001
+        ));
+        let settled = controller.unit_state(
+            skyhook,
+            AnimationClock::new(38, 0.0),
+            AnimationOptions::default(),
+        );
+        assert!(settled.transport.is_none());
+    }
+
+    #[test]
     fn projectile_launch_drives_bombard_and_bastion_reports() {
         let mut controller = AnimationController::default();
         controller.observe(&TickReport {
@@ -1026,7 +1180,7 @@ mod tests {
         let controller = AnimationController::default();
         let clock = AnimationClock::new(77, 0.35);
         let options = AnimationOptions::default();
-        for kind in [UnitKind::Buzzard, UnitKind::Wisp] {
+        for kind in [UnitKind::Buzzard, UnitKind::Wisp, UnitKind::Skyhook] {
             let a = controller.unit_state(unit_facts(kind), clock, options);
             let b = controller.unit_state(unit_facts(kind), clock, options);
             assert_eq!(a, b);
@@ -1048,6 +1202,7 @@ mod tests {
     fn lift_rotor_cadence_does_not_change_when_an_aircraft_starts_moving() {
         assert_eq!(unit_move_period(UnitKind::Buzzard), BUZZARD_ROTOR_PERIOD);
         assert_eq!(unit_move_period(UnitKind::Wisp), WISP_ROTOR_PERIOD);
+        assert_eq!(unit_move_period(UnitKind::Skyhook), SKYHOOK_ROTOR_PERIOD);
     }
 
     #[test]
@@ -1238,7 +1393,7 @@ mod tests {
     }
 
     #[test]
-    fn factories_animate_only_while_queue_progress_can_advance() {
+    fn producers_animate_only_while_queue_progress_can_advance() {
         let kind = UnitKind::Sentinel;
         let mut facts = building_facts(BuildingKind::Foundry);
         facts.production = Some((kind, 25, kind.stats().train_ticks));
@@ -1287,6 +1442,10 @@ mod tests {
         assert_eq!(
             production_cycle(BuildingKind::Fabricator, 0),
             production_cycle(BuildingKind::Fabricator, FABRICATOR_PRODUCTION_PERIOD)
+        );
+        assert_eq!(
+            production_cycle(BuildingKind::Crucible, 0),
+            production_cycle(BuildingKind::Crucible, CRUCIBLE_PRODUCTION_PERIOD)
         );
         assert_ne!(
             production_cycle(BuildingKind::Foundry, FABRICATOR_PRODUCTION_PERIOD),

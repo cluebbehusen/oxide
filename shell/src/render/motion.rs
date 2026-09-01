@@ -8,7 +8,7 @@ use oxide_sim::{BuildingKind, UnitKind};
 
 use crate::presentation_animation::{
     AttackPhase, BuildingActivity, BuildingAnimationState, CargoState, LocomotionState,
-    PropulsionState, UnitAnimationState, UnitWorkState, WeaponCycle,
+    PropulsionState, TransportActionState, UnitAnimationState, UnitWorkState, WeaponCycle,
 };
 
 const BUZZARD_CHARGE_THRESHOLD: f32 = 0.94;
@@ -85,8 +85,20 @@ pub(crate) enum BuildingBodyFrame {
 /// Selects a unit frame with action transients taking precedence over every
 /// concurrent state.
 pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame {
+    if kind == UnitKind::Skyhook
+        && let Some(action) = state.transport
+    {
+        return skyhook_transport_frame(action);
+    }
+
     if let Some(attack) = state.attack {
         return UnitFrame::Action(unit_attack_frame(kind, attack));
+    }
+
+    if kind == UnitKind::Sapper
+        && let Some(progress) = state.demolition_preparation
+    {
+        return UnitFrame::Action(cycle_index(progress, 2));
     }
 
     if kind == UnitKind::Harvester {
@@ -239,6 +251,14 @@ fn tender_work_frame(cycle: f32) -> UnitFrame {
     }
 }
 
+fn skyhook_transport_frame(action: TransportActionState) -> UnitFrame {
+    let action = match action {
+        TransportActionState::Boarding { progress } => cycle_index(progress, 4),
+        TransportActionState::Unloading { progress } => 3 - cycle_index(progress, 4),
+    };
+    UnitFrame::Action(action)
+}
+
 fn preparation_progress(weapons: &[WeaponCycle]) -> Option<f32> {
     weapons
         .iter()
@@ -378,6 +398,8 @@ mod tests {
             attack: None,
             weapons: [WeaponCycle::Unavailable; MAX_WEAPONS],
             propulsion: PropulsionState::None,
+            transport: None,
+            demolition_preparation: None,
         }
     }
 
@@ -584,6 +606,41 @@ mod tests {
     }
 
     #[test]
+    fn skyhook_boarding_and_unloading_run_opposite_clamp_sequences() {
+        let mut state = unit_state();
+        for (progress, expected) in [
+            (0.0, UnitFrame::Action(0)),
+            (0.26, UnitFrame::Action(1)),
+            (0.51, UnitFrame::Action(2)),
+            (0.76, UnitFrame::Action(3)),
+        ] {
+            state.transport = Some(TransportActionState::Boarding { progress });
+            assert_eq!(unit_frame(UnitKind::Skyhook, state), expected);
+        }
+        for (progress, expected) in [
+            (0.0, UnitFrame::Action(3)),
+            (0.26, UnitFrame::Action(2)),
+            (0.51, UnitFrame::Action(1)),
+            (0.76, UnitFrame::Action(0)),
+        ] {
+            state.transport = Some(TransportActionState::Unloading { progress });
+            assert_eq!(unit_frame(UnitKind::Skyhook, state), expected);
+        }
+    }
+
+    #[test]
+    fn sapper_braces_and_arms_only_after_reaching_contact() {
+        let mut state = unit_state();
+        state.demolition_preparation = Some(0.25);
+        assert_eq!(unit_frame(UnitKind::Sapper, state), UnitFrame::Action(0));
+        state.demolition_preparation = Some(0.75);
+        assert_eq!(unit_frame(UnitKind::Sapper, state), UnitFrame::Action(1));
+        state.demolition_preparation = None;
+        state.locomotion = LocomotionState::Moving { cycle: 0.75 };
+        assert_eq!(unit_frame(UnitKind::Sapper, state), UnitFrame::Moving(1));
+    }
+
+    #[test]
     fn buzzard_rotors_use_the_approved_three_phase_loop_at_rest_and_in_motion() {
         let mut state = unit_state();
         for (cycle, expected) in [
@@ -714,6 +771,10 @@ mod tests {
             building_frame(BuildingKind::Foundry, state).body,
             BuildingBodyFrame::Work(3)
         );
+        assert_eq!(
+            building_frame(BuildingKind::Crucible, state).body,
+            BuildingBodyFrame::Work(3)
+        );
         state.activity = BuildingActivity::ArraySweep { cycle: 0.99 };
         assert_eq!(
             building_frame(BuildingKind::Array, state).body,
@@ -731,6 +792,7 @@ mod tests {
         for kind in [
             BuildingKind::Foundry,
             BuildingKind::Fabricator,
+            BuildingKind::Crucible,
             BuildingKind::RepairBay,
         ] {
             assert_eq!(

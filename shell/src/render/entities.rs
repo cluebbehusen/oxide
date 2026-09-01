@@ -719,6 +719,23 @@ enum ShotVisibility {
     Full,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SapperEffectVisibility {
+    body: bool,
+    bloom: bool,
+}
+
+fn sapper_effect_visibility(
+    unredacted: bool,
+    source_visible: bool,
+    impact_visible: bool,
+) -> SapperEffectVisibility {
+    SapperEffectVisibility {
+        body: unredacted || source_visible,
+        bloom: unredacted || impact_visible,
+    }
+}
+
 fn shot_visibility(
     style: crate::game::ShotStyle,
     source_visible: bool,
@@ -878,6 +895,21 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
             EffectKind::DirectShot {
                 style, from, to, ..
             } => shot_visibility(style, sees(from), sees(to)) != ShotVisibility::Hidden,
+            EffectKind::SapperDetonation {
+                at,
+                blast_at,
+                player,
+                source_witnessed,
+                impact_witnessed,
+                ..
+            } => {
+                let visibility = sapper_effect_visibility(
+                    player == game.human,
+                    source_witnessed || sees(at),
+                    impact_witnessed || sees(blast_at),
+                );
+                visibility.body || visibility.bloom
+            }
             EffectKind::Puff { at } => sees(at),
             EffectKind::Falling { at, .. } => sees(at),
             EffectKind::Burst { at, .. } => sees(at),
@@ -1018,6 +1050,72 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                             );
                         }
                     }
+                }
+            }
+            EffectKind::SapperDetonation {
+                at,
+                blast_at,
+                rotation,
+                player,
+                faction,
+                source_witnessed,
+                impact_witnessed,
+                ..
+            } => {
+                let age = fx.age_at(game.state.current_tick(), game.tick_fraction());
+                let progress = (age / (crate::game::TICK_DT * 2.0)).clamp(0.0, 1.0);
+                let fade = 1.0 - progress;
+                let body = game.camera.to_screen(at);
+                let size = game.camera.zoom * super::unit_draw_scale(oxide_sim::UnitKind::Sapper);
+                let body_size = vec2(size, size);
+                let visibility = sapper_effect_visibility(
+                    game.all_seeing() || player == game.human,
+                    source_witnessed || sees(at),
+                    impact_witnessed || sees(blast_at),
+                );
+                if visibility.body {
+                    draw_texture_ex(
+                        sprites.texture(),
+                        body.x - size * 0.5,
+                        body.y - size * 0.5,
+                        Color::new(1.0, 1.0, 1.0, fade),
+                        DrawTextureParams {
+                            dest_size: Some(body_size),
+                            source: Some(sprites.unit_action(
+                                oxide_sim::UnitKind::Sapper,
+                                faction,
+                                2,
+                            )),
+                            rotation,
+                            ..Default::default()
+                        },
+                    );
+                    if let Some(mut tint) = seat_identity_tint(game, player) {
+                        tint.a *= fade;
+                        draw_texture_ex(
+                            sprites.texture(),
+                            body.x - size * 0.5,
+                            body.y - size * 0.5,
+                            tint,
+                            DrawTextureParams {
+                                dest_size: Some(body_size),
+                                source: Some(
+                                    sprites.unit_action_accent(oxide_sim::UnitKind::Sapper, 2),
+                                ),
+                                rotation,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+                if visibility.bloom {
+                    draw_splash_bloom(
+                        sprites,
+                        game.camera.to_screen(blast_at),
+                        game.camera.zoom,
+                        oxide_sim::stats::SAPPER_BLAST_RADIUS.to_num::<f32>(),
+                        progress,
+                    );
                 }
             }
             EffectKind::Falling { at, unit, faction } => {
@@ -2176,6 +2274,38 @@ mod tests {
         assert_eq!(
             shot_visibility(ShotStyle::ForgeSpot, true, false),
             ShotVisibility::Hidden
+        );
+    }
+
+    #[test]
+    fn sapper_visibility_separates_the_source_body_from_the_impact_bloom() {
+        assert_eq!(
+            sapper_effect_visibility(false, false, true),
+            SapperEffectVisibility {
+                body: false,
+                bloom: true,
+            }
+        );
+        assert_eq!(
+            sapper_effect_visibility(false, true, false),
+            SapperEffectVisibility {
+                body: true,
+                bloom: false,
+            }
+        );
+        assert_eq!(
+            sapper_effect_visibility(false, false, false),
+            SapperEffectVisibility {
+                body: false,
+                bloom: false,
+            }
+        );
+        assert_eq!(
+            sapper_effect_visibility(true, false, false),
+            SapperEffectVisibility {
+                body: true,
+                bloom: true,
+            }
         );
     }
 
