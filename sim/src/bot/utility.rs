@@ -145,6 +145,83 @@ impl ContestedRecon {
 struct RetreatingContestedScout {
     unit: UnitId,
     order_dispatched: bool,
+    suspend_solo_air_on_loss: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicScoutPrior {
+    HostileStart(StartingFoundry),
+    Extractor(TilePos),
+}
+
+impl PublicScoutPrior {
+    const fn anchor(self) -> TilePos {
+        match self {
+            Self::HostileStart(start) => start.anchor,
+            Self::Extractor(anchor) => anchor,
+        }
+    }
+
+    fn footprint(self) -> (i32, i32) {
+        match self {
+            Self::HostileStart(_) => BuildingKind::Foundry.base_stats().size,
+            Self::Extractor(_) => BuildingKind::Extractor.base_stats().size,
+        }
+    }
+
+    fn footprint_explored(self, obs: &Observation) -> bool {
+        let (width, height) = self.footprint();
+        (0..height).all(|dy| (0..width).all(|dx| obs.explored(self.anchor().offset(dx, dy))))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScoutDispatchRole {
+    Ordinary,
+    PublicGround(PublicScoutPrior),
+    SoloAir,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScoutDispatch {
+    unit: UnitId,
+    from: TilePos,
+    to: TilePos,
+    role: ScoutDispatchRole,
+}
+
+impl ScoutDispatch {
+    const fn ordinary(unit: UnitId, from: TilePos, to: TilePos) -> Self {
+        Self {
+            unit,
+            from,
+            to,
+            role: ScoutDispatchRole::Ordinary,
+        }
+    }
+
+    const fn public_ground(
+        unit: UnitId,
+        from: TilePos,
+        to: TilePos,
+        prior: PublicScoutPrior,
+    ) -> Self {
+        Self {
+            unit,
+            from,
+            to,
+            role: ScoutDispatchRole::PublicGround(prior),
+        }
+    }
+
+    const fn solo_air(unit: UnitId, from: TilePos, to: TilePos) -> Self {
+        Self {
+            unit,
+            from,
+            to,
+            role: ScoutDispatchRole::SoloAir,
+        }
+    }
 }
 
 /// Inputs retained by the profile-free Overseer's frozen shuttle channel.
@@ -738,14 +815,10 @@ pub struct UtilityPolicy {
     scout: Option<UnitId>,
     /// Which leg of the search sweep the scout is on.
     scout_leg: u32,
-    /// The last scout order: unit, starting tile, and destination. An
-    /// idle ground unit still at the start is direct no-route testimony.
-    scout_dispatch: Option<(UnitId, TilePos, TilePos)>,
-    /// A ground unit currently probing an authored hostile start or Extractor
-    /// frame. If dynamic danger recalls this unit, the same public prior must
-    /// not draft another Harvester; reconnaissance escalates to a dedicated
-    /// flyer instead.
-    public_prior_ground_scout: Option<UnitId>,
+    /// The last scout order and the job it was assigned. Dispatch-time role
+    /// survives later objective selection so loss handling cannot reinterpret
+    /// an old ground probe or dedicated overflight as ordinary movement.
+    scout_dispatch: Option<ScoutDispatch>,
     /// Current authored-prior reconnaissance cannot use a ground route. This
     /// is recomputed from public terrain and current resource knowledge rather
     /// than retained as evidence that the route is permanently severed.
@@ -886,6 +959,31 @@ impl UtilityPolicy {
         self.public_prior_air_scout_needed
             || self.contested_recon_air_scout_needed
             || self.persistent_air_scout_needed
+    }
+
+    fn public_ground_probe_pending(&self, obs: &Observation, prior: PublicScoutPrior) -> bool {
+        match prior {
+            PublicScoutPrior::Extractor(_) => !prior.footprint_explored(obs),
+            PublicScoutPrior::HostileStart(start) => {
+                obs.enemy_buildings.is_empty()
+                    && self
+                        .cleared_hostile_starts
+                        .binary_search(&start.player)
+                        .is_err()
+            }
+        }
+    }
+
+    fn active_public_ground_probe(&self, obs: &Observation, unit: UnitId) -> bool {
+        self.scout_dispatch.is_some_and(|dispatch| {
+            dispatch.unit == unit
+                && match dispatch.role {
+                    ScoutDispatchRole::PublicGround(prior) => {
+                        self.public_ground_probe_pending(obs, prior)
+                    }
+                    ScoutDispatchRole::Ordinary | ScoutDispatchRole::SoloAir => false,
+                }
+        })
     }
 
     /// Public hostile starts that have not received current negative evidence.
@@ -1850,6 +1948,8 @@ impl UtilityPolicy {
             if let Some(public_map) = mode.public_map {
                 self.clear_visible_public_starts(obs, public_map);
             }
+            self.audit_missing_scout(obs);
+            self.refresh_solo_air_scout_suspension(obs);
             self.refresh_contested_harvest_regions(obs, mode.unit_contacts, mode.building_contacts);
             self.retreat_contested_scout(obs, home_tile, &mut intents);
             self.evacuate_contested_workers(
@@ -2429,7 +2529,6 @@ impl UtilityPolicy {
             if self.scout == Some(scout) {
                 self.scout = None;
                 self.scout_dispatch = None;
-                self.public_prior_ground_scout = None;
             }
         }
     }
@@ -2518,6 +2617,9 @@ impl UtilityPolicy {
             self.contested_recon_retry_at = self
                 .contested_recon_retry_at
                 .max(obs.tick.saturating_add(CONTESTED_RECON_RETRY_TICKS));
+            if retreat.suspend_solo_air_on_loss {
+                self.suspend_solo_air_scout(obs.tick);
+            }
             return;
         };
         let goal = self.passable_near(obs, home);
@@ -2534,6 +2636,7 @@ impl UtilityPolicy {
             self.retreating_contested_scout = Some(RetreatingContestedScout {
                 unit: scout,
                 order_dispatched: true,
+                suspend_solo_air_on_loss: retreat.suspend_solo_air_on_loss,
             });
         }
     }
@@ -2546,14 +2649,17 @@ impl UtilityPolicy {
             return;
         }
         self.contested_scout = None;
+        let suspend_solo_air_on_loss = self.scout_dispatch.is_some_and(|dispatch| {
+            dispatch.unit == scout && matches!(dispatch.role, ScoutDispatchRole::SoloAir)
+        });
         if self.scout == Some(scout) {
             self.scout = None;
             self.scout_dispatch = None;
-            self.public_prior_ground_scout = None;
         }
         self.retreating_contested_scout = Some(RetreatingContestedScout {
             unit: scout,
             order_dispatched: false,
+            suspend_solo_air_on_loss,
         });
     }
 
@@ -2608,10 +2714,9 @@ impl UtilityPolicy {
                 self.pending_sites.retain(|pending| *pending != anchor);
             }
             if self.scout == Some(unit.id) {
-                let public_prior_probe = self.public_prior_ground_scout == Some(unit.id);
+                let public_prior_probe = self.active_public_ground_probe(obs, unit.id);
                 self.scout = None;
                 self.scout_dispatch = None;
-                self.public_prior_ground_scout = None;
                 if public_prior_probe {
                     self.persistent_air_scout_needed = true;
                 }
@@ -3026,6 +3131,46 @@ mod tests {
             repairing: false,
             grounded: false,
         }
+    }
+
+    #[test]
+    fn evacuating_a_completed_public_probe_does_not_manufacture_air_demand() {
+        let home = TilePos::new(3, 10);
+        let incident = TilePos::new(16, 10);
+        let frame = TilePos::new(24, 10);
+        let worker = UnitObs {
+            tile: incident,
+            ..harvester(1, None)
+        };
+        let obs = obs_with(vec![worker]);
+        let prior = PublicScoutPrior::Extractor(frame);
+        let mut policy = UtilityPolicy::new();
+        policy.scout = Some(UnitId(1));
+        policy.scout_dispatch = Some(ScoutDispatch::public_ground(
+            UnitId(1),
+            home,
+            frame.offset(-4, 0),
+            prior,
+        ));
+        policy.contested_harvest_regions = vec![ContestedHarvestRegion {
+            center: incident,
+            last_evidence: obs.tick,
+            sweep_started_at: None,
+        }];
+        let mut intents = Vec::new();
+
+        policy.evacuate_contested_workers(&obs, home, None, None, &mut intents);
+
+        assert_eq!(policy.scout, None);
+        assert_eq!(policy.scout_dispatch, None);
+        assert!(
+            !policy.persistent_air_scout_needed,
+            "evacuation runs before scouting retirement and must inspect the exact completed assignment"
+        );
+        assert!(intents.iter().any(|intent| matches!(
+            intent,
+            Intent::MoveUnits { units, .. } if units == &[UnitId(1)]
+        )));
     }
 
     #[test]
@@ -4542,7 +4687,7 @@ mod tests {
             .contested_recon_target(&obs, home)
             .expect("the quiet region needs a recovery look");
         policy.scout = Some(UnitId(2));
-        policy.scout_dispatch = Some((UnitId(2), home, recon.target));
+        policy.scout_dispatch = Some(ScoutDispatch::ordinary(UnitId(2), home, recon.target));
         policy.contested_scout = Some((UnitId(2), center));
 
         obs.enemy_units
@@ -4556,6 +4701,7 @@ mod tests {
             Some(RetreatingContestedScout {
                 unit: UnitId(2),
                 order_dispatched: false,
+                suspend_solo_air_on_loss: false,
             })
         );
         assert_eq!(policy.contested_recon_target(&obs, home), None);
@@ -4591,6 +4737,7 @@ mod tests {
             Some(RetreatingContestedScout {
                 unit: UnitId(2),
                 order_dispatched: true,
+                suspend_solo_air_on_loss: false,
             }),
             "timer expiry and an idle body cannot release a remote recovery scout"
         );
@@ -4613,6 +4760,44 @@ mod tests {
         assert!(
             policy.contested_recon_target(&obs, home).is_some(),
             "the danger abort must delay rather than permanently suppressing reconnaissance"
+        );
+    }
+
+    #[test]
+    fn a_recalled_solo_air_scout_keeps_loss_provenance_on_the_return_leg() {
+        let home = TilePos::new(3, 10);
+        let region = TilePos::new(20, 10);
+        let mut scout = fighter(2, PlayerId(0), region);
+        scout.kind = UnitKind::Kestrel;
+        scout.hp = UnitKind::Kestrel.stats().max_hp;
+        let mut obs = obs_with(vec![scout]);
+        obs.tick = 100;
+        let mut policy = UtilityPolicy::new();
+        policy.scout = Some(UnitId(2));
+        policy.scout_dispatch = Some(ScoutDispatch::solo_air(UnitId(2), home, region));
+        policy.contested_scout = Some((UnitId(2), region));
+
+        policy.recall_contested_scout(UnitId(2));
+
+        assert_eq!(
+            policy.retreating_contested_scout,
+            Some(RetreatingContestedScout {
+                unit: UnitId(2),
+                order_dispatched: false,
+                suspend_solo_air_on_loss: true,
+            })
+        );
+        obs.tick += 1;
+        obs.my_units.clear();
+        let mut intents = Vec::new();
+        policy.retreat_contested_scout(&obs, home, &mut intents);
+
+        assert!(intents.is_empty());
+        assert_eq!(policy.retreating_contested_scout, None);
+        assert!(policy.solo_air_scout_suspended);
+        assert_eq!(
+            policy.solo_air_scout_retry_at,
+            obs.tick + SOLO_SCOUT_RETRY_TICKS
         );
     }
 
@@ -4672,6 +4857,7 @@ mod tests {
             Some(RetreatingContestedScout {
                 unit: UnitId(2),
                 order_dispatched: false,
+                suspend_solo_air_on_loss: true,
             })
         );
         assert_eq!(policy.contested_recon_target(&obs, home), None);
@@ -4954,7 +5140,11 @@ mod tests {
         obs.explored = vec![true; 1_024 * 64];
         obs.tick = 100;
         policy.scout = Some(UnitId(50));
-        policy.scout_dispatch = Some((UnitId(50), TilePos::new(3, 3), strictly_oldest));
+        policy.scout_dispatch = Some(ScoutDispatch::ordinary(
+            UnitId(50),
+            TilePos::new(3, 3),
+            strictly_oldest,
+        ));
         policy.contested_scout = Some((UnitId(50), strictly_oldest));
         policy.refresh_contested_harvest_regions(&obs, None, None);
 
@@ -4975,6 +5165,7 @@ mod tests {
             Some(RetreatingContestedScout {
                 unit: UnitId(50),
                 order_dispatched: false,
+                suspend_solo_air_on_loss: false,
             }),
             "evicting a capped recovery region must retain its attached scout for retreat"
         );
