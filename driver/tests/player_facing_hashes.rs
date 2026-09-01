@@ -16,12 +16,12 @@
 //! reconverge, so it is the sharper refactoring tripwire; the state hash
 //! anchors the world the commands actually built.
 //!
-//! `tests/goldens/player-facing-hashes.json` obeys the same bless
-//! discipline as the Overseer golden: `BLESS=1 cargo test -p oxide-driver`,
-//! gated on `SIM_VERSION`, with `BLESS_SAME_VERSION=1` as the deliberate
-//! exception. An intentional player-facing behavior change is expected to
-//! move rows here while leaving `state-hashes.json` untouched; the commit
-//! that re-blesses explains the movement.
+//! `tests/goldens/player-facing-hashes.json` obeys the same bless discipline
+//! as the Overseer golden. An intentional player-facing behavior change is
+//! expected to move rows here while leaving `state-hashes.json` untouched.
+//! Inspect that drift and obtain explicit approval from the human user for
+//! either a version bump or a same-version bless before changing the workspace
+//! version or invoking `BLESS_SAME_VERSION=1`.
 
 mod support;
 

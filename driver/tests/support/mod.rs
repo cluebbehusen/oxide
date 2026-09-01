@@ -12,9 +12,11 @@ pub struct Fixture {
 }
 
 /// The bless discipline as a pure decision: same-version hash movement
-/// on an existing row refuses unless explicitly overridden. A missing,
-/// pre-stamp, or other-version fixture licenses the bless; new and
-/// removed rows never block (maps come and go without a version story).
+/// on an existing row refuses unless explicitly overridden. This gate
+/// cannot choose compatibility policy; changing versions or overriding it
+/// requires explicit approval from the human user. A missing, pre-stamp, or
+/// other-version fixture licenses the bless; new and removed rows never block
+/// (maps come and go without a version story).
 pub fn bless_gate(
     stored: Option<&Fixture>,
     actual: &BTreeMap<String, String>,
@@ -37,10 +39,9 @@ pub fn bless_gate(
     }
     Err(format!(
         "refusing to bless: {} fixture hash(es) moved ({}) but SIM_VERSION is still {} \
-         — a behavior change must carry its cycle's workspace version, or an old binary \
-         reconstructs a different world from the same replay. Bump the version in \
-         Cargo.toml first, or set BLESS_SAME_VERSION=1 for a deliberate exception and \
-         justify it in the commit message.",
+         — an old binary may reconstruct a different world from the same replay. \
+         Obtain explicit approval from the human user before either changing the \
+         workspace version in Cargo.toml or setting BLESS_SAME_VERSION=1.",
         drifted.len(),
         drifted.join(", "),
         oxide_sim::SIM_VERSION,
@@ -56,9 +57,9 @@ pub fn check_or_bless(fixture: &Path, actual: BTreeMap<String, String>) {
         // name-to-hash map) blesses freely — those are the one-time
         // migration paths. Anything else that fails to parse is a
         // CORRUPT fixture, and blessing over it would bypass the drift
-        // gate; refuse instead. A parseable one gates: same-version
-        // hash movement on an existing row is behavior drift wearing a
-        // stale version number.
+        // gate; refuse instead. A parseable one gates: same-version hash
+        // movement on an existing row needs an explicit compatibility
+        // decision from the user.
         let stored: Option<Fixture> = match std::fs::read_to_string(fixture) {
             Err(_) => None,
             Ok(raw) => match serde_json::from_str::<Fixture>(&raw) {

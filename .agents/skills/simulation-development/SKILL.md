@@ -89,10 +89,15 @@ cargo test -p oxide-sim --test determinism --locked
 
 Then run the workspace gates in `AGENTS.md`.
 
-An intended rules change normally moves bot behavior or state hashes. Bump the
-workspace simulation version before blessing changed existing rows, regenerate
-with `BLESS=1 cargo test -p oxide-driver --locked`, and inspect every changed
-fixture. Never use `BLESS_SAME_VERSION=1` merely to get a green run.
+An intended rules change may alter replay reconstruction even when the current
+hash fixtures do not exercise it. Never change the workspace package version or
+`SIM_VERSION` without explicit approval from the human user; a request to
+implement the rules change is not approval for a compatibility-version bump. If
+existing hash rows move, inspect the drift and ask the user whether to approve a
+version bump or a same-version bless. Only after that decision, regenerate with
+`BLESS=1 cargo test -p oxide-driver --locked` and inspect every changed fixture.
+Using `BLESS_SAME_VERSION=1` also requires explicit approval from the human
+user.
 
 ## Verify the real report
 
