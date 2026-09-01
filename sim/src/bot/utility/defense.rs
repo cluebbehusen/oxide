@@ -591,31 +591,37 @@ impl UtilityPolicy {
             unit_contacts,
             building_contacts,
             builders,
-            &DefenseGrounding::new(self, obs, briefing),
+            &mut None,
         )
     }
 
-    /// [`Self::strategic_defense_site`] against a caller-held grounding,
-    /// for the rung ladder that asks about several building kinds in one
-    /// think.
+    /// [`Self::strategic_defense_site`] against a caller-held grounding
+    /// slot, for the rung ladder that asks about several building kinds in
+    /// one think. The grounding is built on the first rung that can use
+    /// it: a rung with no builder cannot select a site, so it must not pay
+    /// for the asset ledger's routing either.
     #[expect(clippy::too_many_arguments, reason = "mirrors strategic_defense_site")]
-    pub(super) fn strategic_defense_site_grounded(
+    pub(super) fn strategic_defense_site_grounded<'a>(
         &self,
         kind: BuildingKind,
-        obs: &Observation,
-        briefing: &PublicMapBriefing,
+        obs: &'a Observation,
+        briefing: &'a PublicMapBriefing,
         unit_contacts: &[UnitContact],
         building_contacts: &[BuildingContact],
         builders: &[&UnitObs],
-        grounding: &DefenseGrounding<'_>,
+        grounding: &mut Option<DefenseGrounding<'a>>,
     ) -> Option<TilePos> {
+        DefenseProfile::for_kind(kind)?;
+        if builders.is_empty() {
+            return None;
+        }
         self.strategic_defense_site_with_evidence(
             kind,
             obs,
             briefing,
             builders,
             DefenseEvidence::strategic(unit_contacts, building_contacts),
-            grounding,
+            grounding.get_or_insert_with(|| DefenseGrounding::new(self, obs, briefing)),
         )
     }
 

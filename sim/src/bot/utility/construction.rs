@@ -1089,9 +1089,6 @@ impl UtilityPolicy {
                 )
                 && let Some(anchor) = if player_facing {
                     public_map.and_then(|briefing| {
-                        let grounding = grounding.get_or_insert_with(|| {
-                            super::defense::DefenseGrounding::new(self, obs, briefing)
-                        });
                         self.strategic_defense_site_grounded(
                             BuildingKind::Turret,
                             obs,
@@ -1139,9 +1136,6 @@ impl UtilityPolicy {
                     voluntary_scrap_guard,
                 )
                 && let Some(anchor) = public_map.and_then(|briefing| {
-                    let grounding = grounding.get_or_insert_with(|| {
-                        super::defense::DefenseGrounding::new(self, obs, briefing)
-                    });
                     self.strategic_defense_site_grounded(
                         BuildingKind::Barricade,
                         obs,
@@ -1188,9 +1182,6 @@ impl UtilityPolicy {
                 if self.raided || route_known {
                     let anchor = if player_facing {
                         public_map.and_then(|briefing| {
-                            let grounding = grounding.get_or_insert_with(|| {
-                                super::defense::DefenseGrounding::new(self, obs, briefing)
-                            });
                             self.strategic_defense_site_grounded(
                                 BuildingKind::ScuttleCharge,
                                 obs,
@@ -1244,9 +1235,6 @@ impl UtilityPolicy {
                 )
                 && let Some(anchor) = if player_facing {
                     public_map.and_then(|briefing| {
-                        let grounding = grounding.get_or_insert_with(|| {
-                            super::defense::DefenseGrounding::new(self, obs, briefing)
-                        });
                         self.strategic_defense_site_grounded(
                             BuildingKind::FlakTurret,
                             obs,
@@ -1404,9 +1392,6 @@ impl UtilityPolicy {
                 && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
                 && let Some(anchor) = if player_facing {
                     public_map.and_then(|briefing| {
-                        let grounding = grounding.get_or_insert_with(|| {
-                            super::defense::DefenseGrounding::new(self, obs, briefing)
-                        });
                         self.strategic_defense_site_grounded(
                             BuildingKind::Bastion,
                             obs,
