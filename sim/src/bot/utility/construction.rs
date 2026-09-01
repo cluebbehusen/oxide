@@ -2,6 +2,17 @@
 
 use super::*;
 
+/// One economically worthwhile, command-feasible player-facing expansion.
+///
+/// Both the production reserve and construction channels consume this exact
+/// plan so they cannot disagree about which site and builder the bank serves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FoundryExpansionPlan {
+    pub(super) anchor: TilePos,
+    pub(super) builder: UnitId,
+    pub(super) opportunity: expansion::FoundryOpportunity,
+}
+
 fn can_fund(budget: u32, cost: u32, ordinary_reserve: u32, voluntary_guard: Reserve) -> bool {
     budget >= cost.saturating_add(voluntary_guard.amount(ordinary_reserve))
 }
@@ -233,8 +244,8 @@ impl UtilityPolicy {
         obs: &Observation,
         home: TilePos,
         projected_foundries: &[TilePos],
+        road_reach: &mut Option<super::terrain::KnownRoadReach>,
     ) -> Vec<TilePos> {
-        let mut road_reach = None;
         let mut extractors: Vec<_> = obs
             .my_buildings
             .iter()
@@ -285,54 +296,10 @@ impl UtilityPolicy {
             .collect()
     }
 
-    fn supporting_foundry_site(
-        &self,
-        obs: &Observation,
-        extractor: TilePos,
-        builders: &[&UnitObs],
-        danger: &danger::HarvestDangerProjection,
-    ) -> Option<(TilePos, UnitId)> {
-        let kind = BuildingKind::Foundry;
-        let size = kind.base_stats().size;
-        let extractor_size = BuildingKind::Extractor.base_stats().size;
-        // Two 2x2 footprints can have an eight-tile edge gap while their
-        // anchors differ by nine. Scan the complete support geometry rather
-        // than the smaller generic construction ring.
-        let farthest_anchor = crate::stats::EXTRACTOR_SUPPORT_RADIUS
-            + size
-                .0
-                .max(size.1)
-                .max(extractor_size.0)
-                .max(extractor_size.1)
-            - 1;
-        let mut candidates = Vec::new();
-        for radius in 2..=farthest_anchor {
-            for dy in -radius..=radius {
-                for dx in -radius..=radius {
-                    if dx.abs().max(dy.abs()) != radius {
-                        continue;
-                    }
-                    let anchor = extractor.offset(dx, dy);
-                    if Self::foundry_supports_extractor(anchor, extractor) {
-                        candidates.push(anchor);
-                    }
-                }
-            }
-        }
-        let mut selected_builder = None;
-        let anchor = self.first_valid_placement_where(obs, kind, candidates, |anchor| {
-            selected_builder = self.safe_foundry_builder(obs, anchor, builders, danger);
-            selected_builder.is_some()
-        })?;
-        Some((
-            anchor,
-            selected_builder.expect("an accepted Foundry site selected one builder"),
-        ))
-    }
-
     fn safe_foundry_builder(
         &self,
         obs: &Observation,
+        public_map: &PublicMapBriefing,
         anchor: TilePos,
         builders: &[&UnitObs],
         danger: &danger::HarvestDangerProjection,
@@ -354,8 +321,9 @@ impl UtilityPolicy {
         candidates
             .into_iter()
             .find(|builder| {
-                crate::bot::routing::build_command_path_avoids(
+                crate::bot::routing::build_command_path_avoids_with_public_terrain(
                     obs,
+                    public_map,
                     builder,
                     anchor,
                     size,
@@ -368,32 +336,6 @@ impl UtilityPolicy {
                 )
             })
             .map(|builder| builder.id)
-    }
-
-    fn generic_foundry_site(
-        &self,
-        obs: &Observation,
-        focus: TilePos,
-        builders: &[&UnitObs],
-        danger: &danger::HarvestDangerProjection,
-    ) -> Option<(TilePos, UnitId)> {
-        let candidates = (3i32..=7).flat_map(|radius| {
-            (-radius..=radius).flat_map(move |dy| {
-                (-radius..=radius)
-                    .filter(move |dx| dx.abs().max(dy.abs()) == radius)
-                    .map(move |dx| focus.offset(dx, dy))
-            })
-        });
-        let mut selected_builder = None;
-        let anchor =
-            self.first_valid_placement_where(obs, BuildingKind::Foundry, candidates, |anchor| {
-                selected_builder = self.safe_foundry_builder(obs, anchor, builders, danger);
-                selected_builder.is_some()
-            })?;
-        Some((
-            anchor,
-            selected_builder.expect("an accepted Foundry site selected one builder"),
-        ))
     }
 
     fn enemy_controls_frontier(
@@ -414,91 +356,237 @@ impl UtilityPolicy {
             .is_some_and(|(enemy, own)| enemy < own)
     }
 
-    pub(super) fn supporting_foundry_claim(
+    fn legal_foundry_builder_prepared(
         &self,
         obs: &Observation,
-        home: TilePos,
-        projected_foundries: &[TilePos],
+        public_map: &PublicMapBriefing,
+        anchor: TilePos,
         builders: &[&UnitObs],
-        unit_contacts: Option<&[UnitContact]>,
-        building_contacts: Option<&[BuildingContact]>,
-    ) -> Option<(TilePos, TilePos, UnitId)> {
-        let danger = self.harvest_danger_projection(obs, unit_contacts, building_contacts);
-        Self::unsupported_extractors(obs, home, projected_foundries)
-            .into_iter()
-            .filter(|extractor| !self.harvest_location_contested(*extractor))
-            .find_map(|extractor| {
-                self.supporting_foundry_site(obs, extractor, builders, &danger)
-                    .map(|(anchor, builder)| (extractor, anchor, builder))
-            })
+        danger: &danger::HarvestDangerProjection,
+    ) -> Option<UnitId> {
+        if !self.placement_valid_prepared(obs, BuildingKind::Foundry, anchor) {
+            return None;
+        }
+        self.safe_foundry_builder(obs, public_map, anchor, builders, danger)
     }
 
-    pub(super) fn player_facing_foundry_claim(
+    /// Values every in-bounds anchor that would support a completed Extractor
+    /// or shorten a currently visible haul. Command legality and builder routes
+    /// are deliberately deferred until after economic and security ranking.
+    fn foundry_logistics_blocked_layout(
+        &self,
+        public_map: &PublicMapBriefing,
+        danger: &danger::HarvestDangerProjection,
+    ) -> expansion::BlockedGroundLayout {
+        expansion::BlockedGroundLayout::from_predicate(public_map, |position| {
+            self.harvest_location_contested(position) || danger.contains(position)
+        })
+    }
+
+    fn player_facing_foundry_opportunities(
         &self,
         obs: &Observation,
         context: FoundryClaimContext<'_>,
-    ) -> Option<(TilePos, TilePos, UnitId)> {
+        public_map: &PublicMapBriefing,
+        economy: expansion::ExpansionEconomy,
+        danger: &danger::HarvestDangerProjection,
+    ) -> Vec<expansion::FoundryOpportunity> {
         let FoundryClaimContext {
             home,
             projected_foundries,
-            builders,
             support_extractors,
             ordinary_frontiers,
-            unit_contacts,
-            building_contacts,
+            ..
         } = context;
-        if support_extractors
-            && let Some(claim) = self.supporting_foundry_claim(
-                obs,
-                home,
-                projected_foundries,
-                builders,
-                unit_contacts,
-                building_contacts,
-            )
-        {
-            return Some(claim);
-        }
-        if !ordinary_frontiers {
-            return None;
+        if !support_extractors && !ordinary_frontiers {
+            return Vec::new();
         }
 
-        let danger = self.harvest_danger_projection(obs, unit_contacts, building_contacts);
         let mut road_reach = None;
-        let mut frontiers: Vec<_> = obs
+        let unsupported_extractors = if support_extractors {
+            Self::unsupported_extractors(obs, home, projected_foundries, &mut road_reach)
+                .into_iter()
+                .filter(|extractor| !self.harvest_location_contested(*extractor))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let foundry_size = BuildingKind::Foundry.base_stats().size;
+        let eligible_visible_scrap = obs
             .known_scrap
             .iter()
-            .filter(|(_, amount)| *amount > 0)
-            .map(|(tile, _)| *tile)
-            .chain(obs.known_frames.iter().copied().filter(|frame| {
-                !obs.my_buildings
-                    .iter()
-                    .chain(obs.enemy_buildings.iter())
-                    .any(|building| building.anchor == *frame)
-            }))
-            .filter(|frontier| {
-                projected_foundries
-                    .iter()
-                    .all(|foundry| foundry.chebyshev(*frontier) > EXPANSION_RADIUS)
+            .copied()
+            .filter(|(tile, amount)| {
+                *amount > 0
+                    && obs.visible(*tile)
+                    && !self.dead_nodes.contains(tile)
+                    && !self.harvest_location_contested(*tile)
                     && road_reach
                         .get_or_insert_with(|| Self::known_road_reach(obs, home))
-                        .frame_reached(*frontier)
-                    && !self.harvest_location_contested(*frontier)
-                    && !Self::enemy_controls_frontier(obs, projected_foundries, *frontier)
+                        .frame_reached(*tile)
+                    && !Self::enemy_controls_frontier(obs, projected_foundries, *tile)
             })
-            .map(|frontier| {
-                let distance = projected_foundries
+            .collect::<Vec<_>>();
+        let blocked = self.foundry_logistics_blocked_layout(public_map, danger);
+        let distance_fields = self
+            .expansion_routing_cache
+            .borrow_mut()
+            .danger_aware_fields(
+                public_map,
+                blocked,
+                eligible_visible_scrap.iter().map(|(tile, _)| *tile),
+            )
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let visible_scrap = eligible_visible_scrap
+            .into_iter()
+            .filter_map(|(tile, amount)| {
+                let distances = distance_fields.get(&tile)?;
+                let old_distance = projected_foundries
                     .iter()
-                    .map(|foundry| foundry.chebyshev(frontier))
-                    .min()
-                    .unwrap_or(0);
-                (distance, frontier.y, frontier.x, frontier)
+                    .filter_map(|foundry| distances.footprint_distance(*foundry, foundry_size))
+                    .min()?;
+                Some((tile, amount, old_distance, std::sync::Arc::clone(distances)))
             })
-            .collect();
-        frontiers.sort_unstable();
-        frontiers.into_iter().find_map(|(_, _, _, frontier)| {
-            self.generic_foundry_site(obs, frontier, builders, &danger)
-                .map(|(anchor, builder)| (frontier, anchor, builder))
+            .collect::<Vec<_>>();
+
+        let max_x = public_map.map_width().saturating_sub(foundry_size.0);
+        let max_y = public_map.map_height().saturating_sub(foundry_size.1);
+        let opportunities = (0..=max_y)
+            .flat_map(|y| (0..=max_x).map(move |x| TilePos::new(x, y)))
+            .filter_map(|anchor| {
+                let newly_supported_completed_extractors = unsupported_extractors
+                    .iter()
+                    .filter(|extractor| Self::foundry_supports_extractor(anchor, **extractor))
+                    .count()
+                    .try_into()
+                    .unwrap_or(u32::MAX);
+                let current_visible_scrap =
+                    visible_scrap
+                        .iter()
+                        .filter_map(|(_tile, amount, old_distance, distances)| {
+                            let new_distance =
+                                distances.footprint_distance(anchor, foundry_size)?;
+                            (new_distance < *old_distance).then_some(expansion::ScrapLogistics {
+                                amount: *amount,
+                                old_distance: *old_distance,
+                                new_distance,
+                            })
+                        });
+                expansion::FoundryOpportunity::admitted_objectives(
+                    anchor,
+                    newly_supported_completed_extractors,
+                    ordinary_frontiers,
+                    current_visible_scrap,
+                    economy,
+                )
+            })
+            .collect::<Vec<_>>();
+        expansion::rank_foundry_opportunities(opportunities)
+    }
+
+    /// Binds every economically eligible site for focused construction tests.
+    /// Normal policy assessment binds lazily after candidate-local security
+    /// reprices the ranking.
+    #[cfg(test)]
+    pub(super) fn player_facing_foundry_plans(
+        &self,
+        obs: &Observation,
+        context: FoundryClaimContext<'_>,
+        public_map: &PublicMapBriefing,
+        economy: expansion::ExpansionEconomy,
+    ) -> Vec<FoundryExpansionPlan> {
+        if context.builders.is_empty() {
+            return Vec::new();
+        }
+        let danger =
+            self.harvest_danger_projection(obs, context.unit_contacts, context.building_contacts);
+        let opportunities =
+            self.player_facing_foundry_opportunities(obs, context, public_map, economy, &danger);
+        if opportunities.is_empty() {
+            return Vec::new();
+        }
+        self.prepare_ground_producer_egress(obs);
+        opportunities
+            .into_iter()
+            .filter_map(|opportunity| {
+                self.legal_foundry_builder_prepared(
+                    obs,
+                    public_map,
+                    opportunity.anchor,
+                    context.builders,
+                    &danger,
+                )
+                .map(|builder| FoundryExpansionPlan {
+                    anchor: opportunity.anchor,
+                    builder,
+                    opportunity,
+                })
+            })
+            .collect()
+    }
+
+    pub(super) fn player_facing_foundry_assessment(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        context: FoundryAssessmentContext<'_>,
+        same_think_intents: &[Intent],
+    ) -> Option<expansion::FoundryExpansionAssessment> {
+        let economy = expansion_economy(
+            dials,
+            obs,
+            context.spendable_scrap,
+            context.voluntary_scrap_guard,
+        );
+        if context.claim.builders.is_empty() {
+            return None;
+        }
+        let danger = self.harvest_danger_projection(
+            obs,
+            context.claim.unit_contacts,
+            context.claim.building_contacts,
+        );
+        let mut opportunities = self.player_facing_foundry_opportunities(
+            obs,
+            context.claim,
+            context.public_map,
+            economy,
+            &danger,
+        );
+        if let Some(required_anchor) = context.required_anchor {
+            opportunities.retain(|opportunity| opportunity.anchor == required_anchor);
+        }
+        let hostile_starts = self.uncleared_hostile_starts(context.public_map, obs.me);
+        let assessment_context = expansion::ExpansionAssessmentContext {
+            obs,
+            public_map: context.public_map,
+            unit_contacts: context.claim.unit_contacts.unwrap_or(&[]),
+            uncleared_hostile_starts: &hostile_starts,
+            combat_core_exclusions: context.combat_core_exclusions,
+            same_think_intents,
+            minimum_core_equivalents: dials.minimum_core_equivalents,
+            own_strength_scale: dials.own_strength_scale,
+            economy,
+        };
+        let quotes = expansion::quote_foundry_expansions_cached(
+            opportunities,
+            &assessment_context,
+            &mut self.expansion_routing_cache.borrow_mut(),
+        );
+        if quotes.is_empty() {
+            return None;
+        }
+        self.prepare_ground_producer_egress(obs);
+        quotes.into_iter().find_map(|quote| {
+            self.legal_foundry_builder_prepared(
+                obs,
+                context.public_map,
+                quote.anchor(),
+                context.claim.builders,
+                &danger,
+            )
+            .map(|builder| quote.bind(builder))
         })
     }
 
@@ -570,6 +658,7 @@ impl UtilityPolicy {
             combat_core_exclusions,
             unit_contacts,
             building_contacts,
+            public_map,
             voluntary_scrap_guard,
         } = context;
         let have = |kind: BuildingKind| Self::projected_count(obs, kind, player_facing) > 0;
@@ -654,56 +743,48 @@ impl UtilityPolicy {
                 return true;
             }
         }
-        // Expansion: once the tree stands, a second Foundry toward the
-        // nearest salvage frontier no Foundry serves — forward
-        // production, a drop-off that shortens the haul, and one more
-        // victory token the enemy must come dig out.
+        // Expansion is an economic project with a local protection burden,
+        // not a reward for reaching a particular base count.
         if dials.expansion && have_built(BuildingKind::Foundry) {
             let cost = BuildingKind::Foundry
                 .base_stats()
                 .construction
                 .map(|c| c.cost)
                 .unwrap_or(0);
-            let (foundries, pending_foundries) = if player_facing {
-                Self::projected_foundries(obs)
-            } else {
-                (
-                    obs.my_buildings
-                        .iter()
-                        .filter(|building| building.kind == BuildingKind::Foundry)
-                        .map(|building| building.anchor)
-                        .collect(),
-                    0,
-                )
-            };
-            if pending_foundries == 0
-                && foundries.len() < dials.foundry_cap
-                && (!player_facing
-                    || super::production::extra_foundry_core_ready(
-                        obs,
-                        combat_core_exclusions,
-                        foundries.len(),
-                    ))
-                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
-            {
-                let player_claim = player_facing
+            if player_facing {
+                let (foundries, pending_foundries) = Self::projected_foundries(obs);
+                let assessment = (pending_foundries == 0)
                     .then(|| {
-                        self.player_facing_foundry_claim(
-                            obs,
-                            FoundryClaimContext {
-                                home,
-                                projected_foundries: &foundries,
-                                builders,
-                                support_extractors: have_built(BuildingKind::Fabricator),
-                                ordinary_frontiers: !dials.deep_tech
-                                    || have(BuildingKind::Airworks),
-                                unit_contacts,
-                                building_contacts,
-                            },
-                        )
+                        public_map.and_then(|public_map| {
+                            self.player_facing_foundry_assessment(
+                                dials,
+                                obs,
+                                FoundryAssessmentContext {
+                                    claim: FoundryClaimContext {
+                                        home,
+                                        projected_foundries: &foundries,
+                                        builders,
+                                        support_extractors: have_built(BuildingKind::Fabricator),
+                                        ordinary_frontiers: !dials.deep_tech
+                                            || have(BuildingKind::Airworks),
+                                        unit_contacts,
+                                        building_contacts,
+                                    },
+                                    public_map,
+                                    combat_core_exclusions,
+                                    spendable_scrap: *budget,
+                                    voluntary_scrap_guard,
+                                    required_anchor: None,
+                                },
+                                intents,
+                            )
+                        })
                     })
                     .flatten();
-                if let Some((_objective, anchor, builder)) = player_claim {
+                if let Some(assessment) = assessment
+                    && assessment.disposition == expansion::ExpansionDisposition::Build
+                    && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
+                {
                     *budget -= cost;
                     let before_harvest = intents
                         .iter()
@@ -712,15 +793,24 @@ impl UtilityPolicy {
                     intents.insert(
                         before_harvest,
                         Intent::BuildWith {
-                            builder,
+                            builder: assessment.plan.builder,
                             kind: BuildingKind::Foundry,
-                            anchor,
+                            anchor: assessment.plan.anchor,
                         },
                     );
                     return true;
                 }
-
-                if !player_facing && (!dials.deep_tech || have(BuildingKind::Airworks)) {
+            } else {
+                let foundries: Vec<_> = obs
+                    .my_buildings
+                    .iter()
+                    .filter(|building| building.kind == BuildingKind::Foundry)
+                    .map(|building| building.anchor)
+                    .collect();
+                if foundries.len() < LEGACY_FOUNDRY_CAP
+                    && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
+                    && (!dials.deep_tech || have(BuildingKind::Airworks))
+                {
                     let mut road_reach = None;
                     let frontier = obs
                         .known_scrap
@@ -740,7 +830,6 @@ impl UtilityPolicy {
                                 && road_reach
                                     .get_or_insert_with(|| Self::known_road_reach(obs, home))
                                     .frame_reached(*tile)
-                                && (!player_facing || !self.harvest_location_contested(*tile))
                         })
                         .min_by_key(|tile| {
                             let frontier = foundries
@@ -947,6 +1036,7 @@ impl UtilityPolicy {
                     combat_core_exclusions,
                     unit_contacts,
                     building_contacts,
+                    public_map,
                     voluntary_scrap_guard,
                 },
                 budget,
@@ -1658,6 +1748,36 @@ mod tests {
         dials
     }
 
+    #[test]
+    fn foundry_logistics_layout_unions_projected_and_contested_danger() {
+        let mut obs = observation();
+        let projected = TilePos::new(30, 18);
+        let contested = TilePos::new(17, 17);
+        let mut enemy = sentinel(90, projected);
+        enemy.player = PlayerId(1);
+        obs.enemy_units = vec![enemy];
+        let mut policy = UtilityPolicy::new();
+        policy.contested_harvest_regions = vec![ContestedHarvestRegion {
+            center: contested,
+            last_evidence: obs.tick,
+            sweep_started_at: None,
+        }];
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(35, 20),
+            |_| '.',
+        );
+        let danger = policy.harvest_danger_projection(&obs, None, None);
+
+        let blocked = policy.foundry_logistics_blocked_layout(&public_map, &danger);
+
+        assert!(blocked.contains(projected));
+        assert!(blocked.contains(contested));
+        assert!(!blocked.contains(TilePos::new(1, 1)));
+    }
+
     fn array_ready_observation() -> Observation {
         let mut obs = observation();
         obs.my_buildings.push(building(
@@ -1728,6 +1848,38 @@ mod tests {
                     reserved: &[],
                 },
             ),
+            &mut budget,
+            &mut intents,
+        );
+        intents
+    }
+
+    fn expansion_construction_intents(
+        policy: &mut UtilityPolicy,
+        dials: &Dials,
+        obs: &Observation,
+    ) -> Vec<Intent> {
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+        let mut budget = obs.scrap;
+        let mut intents = Vec::new();
+        policy.construction(
+            dials,
+            obs,
+            ConstructionContext::new(
+                HOME,
+                ConstructionClaims {
+                    player_facing: true,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            )
+            .with_public_map(Some(&public_map)),
             &mut budget,
             &mut intents,
         );
@@ -2385,34 +2537,365 @@ mod tests {
         dials.tech = true;
         dials.deep_tech = true;
         dials.expansion = true;
-        dials.foundry_cap = 4;
+        dials.expansion_greed = 100;
         dials
     }
 
     fn generic_expansion_claim(
         policy: &UtilityPolicy,
         obs: &Observation,
-    ) -> Option<(TilePos, TilePos, UnitId)> {
+    ) -> Option<FoundryExpansionPlan> {
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+        direct_expansion_plans(policy, obs, &public_map, false, true)
+            .into_iter()
+            .next()
+    }
+
+    fn direct_expansion_plans(
+        policy: &UtilityPolicy,
+        obs: &Observation,
+        public_map: &PublicMapBriefing,
+        support_extractors: bool,
+        ordinary_frontiers: bool,
+    ) -> Vec<FoundryExpansionPlan> {
         let (foundries, _) = UtilityPolicy::projected_foundries(obs);
         let builders = policy.construction_builders(obs, &[], &[]);
-        policy.player_facing_foundry_claim(
+        let construction = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible");
+        policy.player_facing_foundry_plans(
             obs,
             FoundryClaimContext {
                 home: HOME,
                 projected_foundries: &foundries,
                 builders: &builders,
-                support_extractors: false,
-                ordinary_frontiers: true,
+                support_extractors,
+                ordinary_frontiers,
                 unit_contacts: None,
                 building_contacts: None,
+            },
+            public_map,
+            expansion::ExpansionEconomy {
+                greed: 100,
+                uncommitted_surplus: 0,
+                foundry_cost: construction.cost,
+                ticks_per_minute: u64::from(crate::TICKS_PER_SECOND) * 60,
+                now: obs.tick,
+                build_ticks: u64::from(construction.build_ticks),
+                foundry_drip_start: crate::stats::FOUNDRY_DRIP_START_TICK,
             },
         )
     }
 
     #[test]
-    fn first_expansion_remains_available_without_an_ordinary_screen() {
-        let obs = developed_expansion_observation();
-        let intents = construction_intents(&mut UtilityPolicy::new(), &expansion_dials(), &obs);
+    fn expansion_plan_values_a_group_of_extractors_as_one_opportunity() {
+        let mut obs = observation();
+        obs.known_scrap.clear();
+        let isolated = TilePos::new(4, 20);
+        let cluster = [
+            TilePos::new(28, 4),
+            TilePos::new(30, 4),
+            TilePos::new(32, 4),
+        ];
+        for (index, anchor) in [isolated].into_iter().chain(cluster).enumerate() {
+            obs.my_buildings.push(building(
+                10 + u32::try_from(index).expect("small fixture index"),
+                PlayerId(0),
+                BuildingKind::Extractor,
+                anchor,
+            ));
+            obs.my_queues.push(Vec::new());
+        }
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(37, 22),
+            |_| '.',
+        );
+
+        let plans = direct_expansion_plans(&UtilityPolicy::new(), &obs, &public_map, true, false);
+        let plan = plans
+            .first()
+            .expect("three jointly supported Extractors repay one Foundry");
+
+        assert!(cluster.into_iter().all(|extractor| {
+            UtilityPolicy::foundry_supports_extractor(plan.anchor, extractor)
+        }));
+        assert!(!UtilityPolicy::foundry_supports_extractor(
+            plan.anchor,
+            isolated
+        ));
+        assert_eq!(plan.builder, UnitId(1));
+        assert_eq!(plan.opportunity.recurring_gain_per_minute, 200);
+        assert!(plans.windows(2).all(|pair| {
+            pair[0].opportunity.projected_return >= pair[1].opportunity.projected_return
+        }));
+        assert!(plans.iter().any(|candidate| {
+            UtilityPolicy::foundry_supports_extractor(candidate.anchor, isolated)
+                && !cluster.into_iter().all(|extractor| {
+                    UtilityPolicy::foundry_supports_extractor(candidate.anchor, extractor)
+                })
+        }));
+    }
+
+    #[test]
+    fn expansion_plan_does_not_value_remembered_scrap_as_current_logistics() {
+        let frontier = TilePos::new(32, 12);
+        let mut obs = observation();
+        obs.known_scrap = vec![(frontier, 800)];
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(37, 22),
+            |_| '.',
+        );
+        assert!(
+            !direct_expansion_plans(&UtilityPolicy::new(), &obs, &public_map, false, true)
+                .is_empty(),
+            "currently visible scrap should justify a shorter logistics route"
+        );
+
+        let index = usize::try_from(frontier.y * obs.map_width + frontier.x)
+            .expect("frontier index is in bounds");
+        obs.visible[index] = false;
+        assert!(
+            direct_expansion_plans(&UtilityPolicy::new(), &obs, &public_map, false, true)
+                .is_empty(),
+            "remembered scrap must not receive current economic credit"
+        );
+    }
+
+    #[test]
+    fn expansion_plan_routes_its_exact_builder_with_public_terrain() {
+        let frontier = TilePos::new(32, 12);
+        let mut obs = observation();
+        obs.known_scrap = vec![(frontier, 800)];
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(37, 22),
+            |tile| if tile.x == 20 { '^' } else { '.' },
+        );
+
+        assert!(
+            direct_expansion_plans(&UtilityPolicy::new(), &obs, &public_map, false, true)
+                .is_empty(),
+            "the observation-only route must not cross a public Peak wall"
+        );
+    }
+
+    #[test]
+    fn expansion_assessment_falls_through_from_an_unroutable_top_quote() {
+        let mut obs = developed_expansion_observation();
+        obs.known_scrap.clear();
+        let isolated = TilePos::new(4, 22);
+        let cluster = [
+            TilePos::new(44, 4),
+            TilePos::new(46, 4),
+            TilePos::new(48, 4),
+        ];
+        for (index, anchor) in [isolated].into_iter().chain(cluster).enumerate() {
+            obs.my_buildings.push(building(
+                10 + u32::try_from(index).expect("small fixture index"),
+                PlayerId(0),
+                BuildingKind::Extractor,
+                anchor,
+            ));
+            obs.my_queues.push(Vec::new());
+        }
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(2, 26),
+            |tile| if tile.x == 30 { '^' } else { '.' },
+        );
+        let dials = expansion_dials();
+        let policy = UtilityPolicy::new();
+        let (foundries, _) = UtilityPolicy::projected_foundries(&obs);
+        let builders = policy.construction_builders(&obs, &[], &[]);
+        let claim = FoundryClaimContext {
+            home: HOME,
+            projected_foundries: &foundries,
+            builders: &builders,
+            support_extractors: true,
+            ordinary_frontiers: false,
+            unit_contacts: None,
+            building_contacts: None,
+        };
+        let economy = expansion_economy(&dials, &obs, obs.scrap, Reserve::Ordinary);
+        let danger = policy.harvest_danger_projection(&obs, None, None);
+        let opportunities =
+            policy.player_facing_foundry_opportunities(&obs, claim, &public_map, economy, &danger);
+        let hostile_starts = policy.uncleared_hostile_starts(&public_map, obs.me);
+        let quotes = expansion::quote_foundry_expansions(
+            opportunities,
+            &expansion::ExpansionAssessmentContext {
+                obs: &obs,
+                public_map: &public_map,
+                unit_contacts: &[],
+                uncleared_hostile_starts: &hostile_starts,
+                combat_core_exclusions: &[],
+                same_think_intents: &[],
+                minimum_core_equivalents: dials.minimum_core_equivalents,
+                own_strength_scale: dials.own_strength_scale,
+                economy,
+            },
+        );
+
+        policy.prepare_ground_producer_egress(&obs);
+        let top = quotes
+            .first()
+            .expect("the rich cluster has a quote")
+            .anchor();
+        assert!(
+            cluster
+                .into_iter()
+                .all(|extractor| UtilityPolicy::foundry_supports_extractor(top, extractor))
+        );
+        assert!(policy.placement_valid_prepared(&obs, BuildingKind::Foundry, top));
+        assert_eq!(
+            policy.legal_foundry_builder_prepared(&obs, &public_map, top, &builders, &danger),
+            None,
+            "the top quote is legal but unreachable across the public Peak wall"
+        );
+        let (fallback, fallback_builder) = quotes
+            .iter()
+            .skip(1)
+            .find_map(|quote| {
+                policy
+                    .legal_foundry_builder_prepared(
+                        &obs,
+                        &public_map,
+                        quote.anchor(),
+                        &builders,
+                        &danger,
+                    )
+                    .map(|builder| (quote.anchor(), builder))
+            })
+            .expect("the lower-ranked isolated Extractor quote is buildable");
+        assert!(UtilityPolicy::foundry_supports_extractor(
+            fallback, isolated
+        ));
+
+        let context = FoundryAssessmentContext {
+            claim,
+            public_map: &public_map,
+            combat_core_exclusions: &[],
+            spendable_scrap: obs.scrap,
+            voluntary_scrap_guard: Reserve::Ordinary,
+            required_anchor: None,
+        };
+        let first = policy
+            .player_facing_foundry_assessment(&dials, &obs, context, &[])
+            .expect("assessment falls through to the reachable quote");
+        let second = policy
+            .player_facing_foundry_assessment(&dials, &obs, context, &[])
+            .expect("repeat assessment remains viable");
+
+        assert_eq!(
+            (first.plan.anchor, first.plan.builder),
+            (fallback, fallback_builder)
+        );
+        assert_eq!(second, first);
+    }
+
+    #[test]
+    fn valuable_nearby_scrap_is_not_hidden_by_the_legacy_distance_gate() {
+        let frontier = HOME.offset(EXPANSION_RADIUS - 1, 0);
+        let mut obs = developed_expansion_observation();
+        obs.known_scrap = vec![(frontier, 800)];
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+
+        let plan = direct_expansion_plans(&UtilityPolicy::new(), &obs, &public_map, false, true)
+            .into_iter()
+            .next()
+            .expect("the logistics saving repays a nearby Foundry");
+        assert!(
+            plan.opportunity.current_scrap_credit
+                >= u64::from(
+                    BuildingKind::Foundry
+                        .base_stats()
+                        .construction
+                        .expect("Foundries are constructible")
+                        .cost
+                )
+        );
+        assert!(plan.anchor.chebyshev(frontier) < frontier.chebyshev(HOME));
+    }
+
+    #[test]
+    fn expansion_enumerates_legal_sites_inside_and_beyond_the_old_anchor_ring() {
+        let frontier = TilePos::new(32, 12);
+        let mut obs = developed_expansion_observation();
+        obs.known_scrap = vec![(frontier, 800)];
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+
+        for radius in [2, 8] {
+            let expected = frontier.offset(-radius, 0);
+            let mut policy = UtilityPolicy::new();
+            policy.dead_anchors = (0..obs.map_height)
+                .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
+                .filter(|anchor| *anchor != expected)
+                .collect();
+
+            let plans = direct_expansion_plans(&policy, &obs, &public_map, false, true);
+            assert_eq!(
+                plans.first().map(|plan| plan.anchor),
+                Some(expected),
+                "radius-{radius} is the only legal profitable anchor"
+            );
+        }
+    }
+
+    #[test]
+    fn public_extractor_frames_are_scouting_priors_not_expansion_income() {
+        let frame = TilePos::new(32, 12);
+        let mut obs = developed_expansion_observation();
+        obs.known_scrap.clear();
+        obs.known_frames = vec![frame];
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+
+        assert!(
+            direct_expansion_plans(&UtilityPolicy::new(), &obs, &public_map, true, true).is_empty(),
+            "an unbuilt public frame has no current income to improve"
+        );
+    }
+
+    #[test]
+    fn first_forward_expansion_needs_only_its_candidate_local_screen() {
+        let mut obs = developed_expansion_observation();
+        obs.my_units.push(sentinel(100, TilePos::new(8, 16)));
+        let intents =
+            expansion_construction_intents(&mut UtilityPolicy::new(), &expansion_dials(), &obs);
         let anchor = assert_build_kind(&intents, BuildingKind::Foundry);
         assert!(
             anchor.chebyshev(TilePos::new(32, 12)) < anchor.chebyshev(TilePos::new(62, 12)),
@@ -2425,10 +2908,10 @@ mod tests {
         let frontier = TilePos::new(32, 12);
         let mut ready = developed_expansion_observation();
         ready.known_scrap = vec![(frontier, 800)];
+        ready.my_units.push(sentinel(100, TilePos::new(8, 16)));
         let expected = generic_expansion_claim(&UtilityPolicy::new(), &ready)
             .expect("the open frontier has one safe expansion claim");
-        assert_eq!(expected.0, frontier);
-        assert_eq!(expected.2, UnitId(1));
+        assert_eq!(expected.builder, UnitId(1));
 
         let mut no_builder = ready.clone();
         no_builder.my_units.clear();
@@ -2439,14 +2922,8 @@ mod tests {
             .collect();
 
         let mut blocked_policy = UtilityPolicy::new();
-        blocked_policy.dead_anchors = (3i32..=7)
-            .flat_map(|radius| {
-                (-radius..=radius).flat_map(move |dy| {
-                    (-radius..=radius)
-                        .filter(move |dx| dx.abs().max(dy.abs()) == radius)
-                        .map(move |dx| frontier.offset(dx, dy))
-                })
-            })
+        blocked_policy.dead_anchors = (0..ready.map_height)
+            .flat_map(|y| (0..ready.map_width).map(move |x| TilePos::new(x, y)))
             .collect();
 
         let mut contested_policy = UtilityPolicy::new();
@@ -2499,14 +2976,15 @@ mod tests {
             );
         }
 
-        let intents = construction_intents(&mut UtilityPolicy::new(), &expansion_dials(), &ready);
+        let intents =
+            expansion_construction_intents(&mut UtilityPolicy::new(), &expansion_dials(), &ready);
         assert!(matches!(
             intents.as_slice(),
             [Intent::BuildWith {
                 builder: UnitId(1),
                 kind: BuildingKind::Foundry,
                 anchor,
-            }] if *anchor == expected.1
+            }] if *anchor == expected.anchor
         ));
 
         let mut policy = UtilityPolicy::new();
@@ -2525,7 +3003,14 @@ mod tests {
                     enlisted: &[],
                     reserved: &[],
                 },
-            ),
+            )
+            .with_public_map(Some(&array_briefing(
+                ready.map_width,
+                ready.map_height,
+                HOME,
+                TilePos::new(ready.map_width - 4, ready.map_height - 4),
+                |_| '.',
+            ))),
             &mut budget,
             &mut ordered,
         );
@@ -2541,7 +3026,7 @@ mod tests {
                     unit: UnitId(1),
                     ..
                 },
-            ] if *anchor == expected.1
+            ] if *anchor == expected.anchor
         ));
         policy.bind_player_facing_builders(&ready, &[], &[], &[], &[], &mut ordered);
         let commands = Executive::new().apply_with_reservations(PlayerId(0), &ready, &ordered, &[]);
@@ -2555,7 +3040,7 @@ mod tests {
                     ..
                 },
                 ..
-            }] if units == &vec![UnitId(1)] && *anchor == expected.1
+            }] if units == &vec![UnitId(1)] && *anchor == expected.anchor
         ));
     }
 
@@ -2576,9 +3061,16 @@ mod tests {
         let (foundries, _) = UtilityPolicy::projected_foundries(&obs);
         let mut policy = UtilityPolicy::new();
         let builders = policy.construction_builders(&obs, &[], &[]);
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
         assert!(
             policy
-                .player_facing_foundry_claim(
+                .player_facing_foundry_plans(
                     &obs,
                     FoundryClaimContext {
                         home: HOME,
@@ -2589,8 +3081,10 @@ mod tests {
                         unit_contacts: Some(&contacts),
                         building_contacts: Some(&[]),
                     },
+                    &public_map,
+                    expansion_economy(&expansion_dials(), &obs, obs.scrap, Reserve::Ordinary,),
                 )
-                .is_none(),
+                .is_empty(),
             "a remembered long-range threat must close every unsafe founder route"
         );
 
@@ -2607,7 +3101,8 @@ mod tests {
                     reserved: &[],
                 },
             )
-            .with_intelligence(Some(&contacts), Some(&[])),
+            .with_intelligence(Some(&contacts), Some(&[]))
+            .with_public_map(Some(&public_map)),
             &mut budget,
             &mut intents,
         );
@@ -2626,7 +3121,7 @@ mod tests {
             &profile,
             DifficultyTuning::for_level(BotDifficulty::Standard),
         );
-        assert_eq!((profile.traits.greed, dials.foundry_cap), (64, 3));
+        assert_eq!((profile.traits.greed, dials.expansion_greed), (64, 64));
 
         let mut obs = developed_expansion_observation();
         obs.known_scrap.clear();
@@ -2636,7 +3131,7 @@ mod tests {
             building(5, PlayerId(0), BuildingKind::Extractor, extractor),
         ]);
         obs.my_queues.extend([Vec::new(), Vec::new()]);
-        obs.my_units.extend((0..6).map(|index| {
+        obs.my_units.extend((0..7).map(|index| {
             sentinel(
                 100 + index,
                 HOME.offset(
@@ -2646,7 +3141,7 @@ mod tests {
             )
         }));
 
-        let intents = construction_intents(&mut UtilityPolicy::new(), &dials, &obs);
+        let intents = expansion_construction_intents(&mut UtilityPolicy::new(), &dials, &obs);
         let [
             Intent::BuildWith {
                 builder,
@@ -2666,60 +3161,59 @@ mod tests {
     }
 
     #[test]
-    fn later_foundry_admission_unlocks_at_six_then_twelve_sentinel_equivalents() {
+    fn greed_changes_payback_horizon_not_foundry_permission() {
+        let extractor = TilePos::new(34, 15);
         let mut obs = developed_expansion_observation();
-        obs.my_buildings.push(building(
-            4,
-            PlayerId(0),
-            BuildingKind::Foundry,
-            TilePos::new(14, 10),
-        ));
+        obs.known_scrap.clear();
+        obs.my_buildings
+            .push(building(4, PlayerId(0), BuildingKind::Extractor, extractor));
         obs.my_queues.push(Vec::new());
-        obs.my_units
-            .extend((100..105).map(|id| sentinel(id, TilePos::new(8 + (id - 100) as i32, 16))));
+        obs.my_units.push(sentinel(100, TilePos::new(8, 16)));
+        obs.scrap = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost
+            + TECH_RESERVE;
+
+        let mut patient = expansion_dials();
+        patient.expansion_greed = 100;
+        let mut impatient = patient.clone();
+        impatient.expansion_greed = 0;
+        assert!(impatient.expansion && patient.expansion);
+
+        assert!(
+            expansion_construction_intents(&mut UtilityPolicy::new(), &impatient, &obs).is_empty(),
+            "the short horizon must reject one remote Extractor's slow payback"
+        );
+        let anchor = assert_build_kind(
+            &expansion_construction_intents(&mut UtilityPolicy::new(), &patient, &obs),
+            BuildingKind::Foundry,
+        );
+        assert!(UtilityPolicy::foundry_supports_extractor(anchor, extractor));
+    }
+
+    #[test]
+    fn a_fifth_foundry_is_admitted_when_a_rich_district_still_pays() {
+        let mut obs = developed_expansion_observation();
+        obs.known_scrap = vec![(TilePos::new(62, 12), 800)];
+        for (id, anchor) in [
+            (4, TilePos::new(14, 10)),
+            (5, TilePos::new(28, 10)),
+            (6, TilePos::new(42, 10)),
+        ] {
+            obs.my_buildings
+                .push(building(id, PlayerId(0), BuildingKind::Foundry, anchor));
+            obs.my_queues.push(Vec::new());
+        }
+        obs.my_units.push(sentinel(100, TilePos::new(45, 16)));
         let dials = expansion_dials();
 
-        let five = construction_intents(&mut UtilityPolicy::new(), &dials, &obs);
+        let intents = expansion_construction_intents(&mut UtilityPolicy::new(), &dials, &obs);
+        let fifth_anchor = assert_build_kind(&intents, BuildingKind::Foundry);
         assert!(
-            five.is_empty(),
-            "five ordinary fighters must not admit the third Foundry: {five:?}"
-        );
-
-        let second_foundry = obs
-            .my_buildings
-            .iter()
-            .position(|building| building.id == BuildingId(4))
-            .expect("the fixture has a second Foundry");
-        obs.my_queues[second_foundry].push(UnitKind::Sentinel);
-        let six = construction_intents(&mut UtilityPolicy::new(), &dials, &obs);
-        let third_anchor = assert_build_kind(&six, BuildingKind::Foundry);
-        assert!(
-            third_anchor.chebyshev(TilePos::new(32, 12))
-                < third_anchor.chebyshev(TilePos::new(62, 12))
-        );
-
-        obs.my_buildings.push(building(
-            5,
-            PlayerId(0),
-            BuildingKind::Foundry,
-            third_anchor,
-        ));
-        obs.my_queues.push(Vec::new());
-        obs.my_units
-            .extend((105..110).map(|id| sentinel(id, TilePos::new(20 + (id - 105) as i32, 16))));
-        let eleven = construction_intents(&mut UtilityPolicy::new(), &dials, &obs);
-        assert!(
-            eleven.is_empty(),
-            "the fourth Foundry must scale past eleven Sentinel-equivalents: {eleven:?}"
-        );
-
-        obs.my_units.push(sentinel(110, TilePos::new(25, 16)));
-        let twelve = construction_intents(&mut UtilityPolicy::new(), &dials, &obs);
-        let fourth_anchor = assert_build_kind(&twelve, BuildingKind::Foundry);
-        assert!(
-            fourth_anchor.chebyshev(TilePos::new(62, 12))
-                < fourth_anchor.chebyshev(TilePos::new(32, 12)),
-            "the fourth Foundry should claim the remaining farther frontier"
+            fifth_anchor.chebyshev(TilePos::new(62, 12)) < EXPANSION_RADIUS,
+            "the fifth Foundry should serve the remaining rich district"
         );
     }
 

@@ -281,10 +281,6 @@ fn weapon_dps100(weapons: &[crate::stats::WeaponStats], domain: crate::stats::Do
         .sum()
 }
 
-/// hp-weighted dps a unit can bring against the given movement domain —
-/// the shared coin every fight estimate is priced in. Damage per 100
-/// ticks keeps it in integers (cooldowns divide 100 unevenly — close
-/// enough for margin calls that carry hysteresis).
 fn strength_vs(u: &UnitObs, domain: crate::stats::Domain) -> u64 {
     u64::from(u.hp) * weapon_dps100(u.kind.stats().weapons, domain)
 }
@@ -294,14 +290,21 @@ fn strength_vs(u: &UnitObs, domain: crate::stats::Domain) -> u64 {
 /// fabricating an observation.
 pub(super) fn full_ground_strength(kind: UnitKind) -> u64 {
     let stats = kind.stats();
-    u64::from(stats.max_hp)
-        .saturating_mul(weapon_dps100(stats.weapons, crate::stats::Domain::Ground))
+    ground_strength(kind, stats.max_hp)
+}
+
+/// Ground-battle strength at an explicitly observed hit-point value.
+pub(super) fn ground_strength(kind: UnitKind, hp: u32) -> u64 {
+    u64::from(hp).saturating_mul(weapon_dps100(
+        kind.stats().weapons,
+        crate::stats::Domain::Ground,
+    ))
 }
 
 /// Ground-battle strength. Weapons that can only look up contribute
 /// nothing, so an anti-air escort never inflates a push estimate.
 pub(super) fn unit_strength(u: &UnitObs) -> u64 {
-    strength_vs(u, crate::stats::Domain::Ground)
+    ground_strength(u.kind, u.hp)
 }
 
 /// Ground strength that the next march order will actually deploy. Long guns

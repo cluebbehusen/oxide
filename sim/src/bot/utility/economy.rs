@@ -184,14 +184,14 @@ impl UtilityPolicy {
         claims: ConstructionClaims<'_>,
         budget: &mut u32,
         intents: &mut Vec<Intent>,
-    ) {
+    ) -> bool {
         self.production_with_air_demand(
             dials,
             obs,
             ProductionContext::new(home, claims, None),
             budget,
             intents,
-        );
+        )
     }
 
     pub(super) fn opening_core_production(
@@ -377,7 +377,7 @@ impl UtilityPolicy {
         context: ProductionContext<'_>,
         budget: &mut u32,
         intents: &mut Vec<Intent>,
-    ) -> std::ops::ControlFlow<(), u32> {
+    ) -> std::ops::ControlFlow<(), Option<u32>> {
         let ProductionContext {
             home,
             claims,
@@ -397,6 +397,7 @@ impl UtilityPolicy {
         let capacity_guard = voluntary_scrap_guard.amount(TECH_RESERVE);
         let mut capacity_site =
             self.airworks_capacity_site(dials, obs, home, claims, outstanding_air_production_ticks);
+        let capacity_active = capacity_site.is_some();
         if let Some(anchor) = capacity_site
             && *budget >= airworks_cost.saturating_add(capacity_guard)
         {
@@ -454,11 +455,13 @@ impl UtilityPolicy {
                 }
             }
         }
-        std::ops::ControlFlow::Continue(if capacity_site.is_some() {
-            airworks_cost.saturating_add(capacity_guard)
-        } else {
-            0
-        })
+        std::ops::ControlFlow::Continue(capacity_active.then(|| {
+            if capacity_site.is_some() {
+                airworks_cost.saturating_add(capacity_guard)
+            } else {
+                0
+            }
+        }))
     }
 
     fn alive_count(obs: &Observation, kind: UnitKind) -> usize {
@@ -669,7 +672,7 @@ impl UtilityPolicy {
         context: ProductionContext<'_>,
         budget: &mut u32,
         intents: &mut Vec<Intent>,
-    ) {
+    ) -> bool {
         let ProductionContext {
             home,
             claims,
@@ -709,17 +712,138 @@ impl UtilityPolicy {
         let capital_context = ConstructionContext::new(home, claims)
             .with_combat_core_exclusions(combat_core_exclusions)
             .with_intelligence(unit_contacts, building_contacts)
+            .with_public_map(public_map)
             .excluding_builders(&unavailable_builders);
+
+        // Finish capital projects that were already admitted before letting a
+        // new expansion claim the bank. A completed capacity purchase still
+        // owns this think's construction channel, while a partial one retains
+        // its fund. Actionable Extractor restoration keeps the same precedence
+        // it has in construction.
+        let capacity_stage =
+            match self.airworks_capacity_stage(dials, obs, context, budget, intents) {
+                std::ops::ControlFlow::Break(()) => return false,
+                std::ops::ControlFlow::Continue(stage) => stage,
+            };
+        let capacity_capital = capacity_stage.unwrap_or(0);
+        let extractor_restoration_precedes_expansion = dials.extractors
+            && self
+                .supported_frame_restoration_claim(obs, capital_context)
+                .is_some();
+        let prior_capital_project =
+            capacity_stage.is_some() || extractor_restoration_precedes_expansion;
+
+        let expansion_inputs = if player_facing && dials.expansion && !prior_capital_project {
+            let (foundries, pending_foundries) = Self::projected_foundries(obs);
+            let builders: Vec<_> = self
+                .construction_builders(obs, claims.enlisted, claims.reserved)
+                .into_iter()
+                .filter(|builder| !unavailable_builders.contains(&builder.id))
+                .collect();
+            (pending_foundries == 0).then_some((foundries, builders))
+        } else {
+            None
+        };
+        let expansion_context = expansion_inputs.as_ref().and_then(|(foundries, builders)| {
+            public_map.map(|public_map| FoundryAssessmentContext {
+                claim: FoundryClaimContext {
+                    home,
+                    projected_foundries: foundries,
+                    builders,
+                    support_extractors: obs.my_buildings.iter().any(|building| {
+                        building.kind == BuildingKind::Fabricator && building.built
+                    }),
+                    ordinary_frontiers: !dials.deep_tech
+                        || Self::projected_count(obs, BuildingKind::Airworks, player_facing) > 0,
+                    unit_contacts,
+                    building_contacts,
+                },
+                public_map,
+                combat_core_exclusions,
+                spendable_scrap: *budget,
+                voluntary_scrap_guard,
+                required_anchor: None,
+            })
+        });
+        let expansion_assessment = expansion_context.and_then(|context| {
+            self.player_facing_foundry_assessment(dials, obs, context, intents)
+        });
+
+        let expansion_assessment = match expansion_assessment {
+            Some(assessment)
+                if matches!(
+                    assessment.disposition,
+                    expansion::ExpansionDisposition::Prepare { .. }
+                ) =>
+            {
+                let selected_anchor = assessment.plan.anchor;
+                let guard = voluntary_scrap_guard.amount(0);
+                let status = super::production::fill_combat_core_to_strength(
+                    obs,
+                    combat_core_exclusions,
+                    assessment.preparation_target_strength,
+                    guard,
+                    budget,
+                    intents,
+                );
+                if !status.ready {
+                    return true;
+                }
+
+                let reassessed = expansion_context.and_then(|context| {
+                    self.player_facing_foundry_assessment(
+                        dials,
+                        obs,
+                        FoundryAssessmentContext {
+                            spendable_scrap: *budget,
+                            required_anchor: Some(selected_anchor),
+                            ..context
+                        },
+                        intents,
+                    )
+                });
+                let Some(reassessed) = reassessed else {
+                    return true;
+                };
+                Some(reassessed)
+            }
+            assessment => assessment,
+        };
+        if let Some(assessment) = expansion_assessment
+            && assessment.disposition == expansion::ExpansionDisposition::Build
+        {
+            let foundry_cost = BuildingKind::Foundry
+                .base_stats()
+                .construction
+                .expect("Foundries are constructible")
+                .cost;
+            let guard = voluntary_scrap_guard.amount(TECH_RESERVE);
+            if *budget >= foundry_cost.saturating_add(guard) {
+                *budget -= foundry_cost;
+                Self::insert_build_before_harvest(
+                    intents,
+                    BuildingKind::Foundry,
+                    assessment.plan.anchor,
+                    Intent::BuildWith {
+                        builder: assessment.plan.builder,
+                        kind: BuildingKind::Foundry,
+                        anchor: assessment.plan.anchor,
+                    },
+                );
+            } else {
+                // A safe, worthwhile project owns the partial fund. Mask the
+                // planning budget so no later channel can turn accumulation
+                // into a permanently receding target.
+                *budget = 0;
+            }
+            return true;
+        }
         let ordinary_capital = if screen < 3 || (self.desperate && self.desperate_road) {
             0
         } else {
             self.capital_reserve(dials, obs, capital_context)
         };
-        let ordinary_capital = if dials.extractors
-            && self
-                .supported_frame_restoration_claim(obs, capital_context)
-                .is_some()
-        {
+        let ordinary_capital = if extractor_restoration_precedes_expansion {
             ordinary_capital.max(
                 BuildingKind::Extractor
                     .base_stats()
@@ -730,11 +854,6 @@ impl UtilityPolicy {
             ordinary_capital
         };
 
-        let capacity_capital =
-            match self.airworks_capacity_stage(dials, obs, context, budget, intents) {
-                std::ops::ControlFlow::Break(()) => return,
-                std::ops::ControlFlow::Continue(capital) => capital,
-            };
         let voluntary_guard = voluntary_scrap_guard.amount(0);
         let capital = ordinary_capital.max(capacity_capital).max(voluntary_guard);
         let allow_repeatable_ground =
@@ -853,7 +972,7 @@ impl UtilityPolicy {
                     intents,
                 );
             }
-            return;
+            return false;
         }
         self.fabricator_drip(dials, obs, voluntary_guard, capital, budget, intents);
         if dials.adaptive_composition {
@@ -870,6 +989,7 @@ impl UtilityPolicy {
                 intents,
             );
         }
+        false
     }
 
     /// Whether another ordinary ground reinforcement has an honestly known
@@ -1018,20 +1138,8 @@ impl UtilityPolicy {
         obs: &Observation,
         context: ConstructionContext<'_>,
     ) -> u32 {
-        let ConstructionContext {
-            home,
-            claims,
-            combat_core_exclusions,
-            unit_contacts,
-            building_contacts,
-            unavailable_builders,
-            ..
-        } = context;
-        let ConstructionClaims {
-            player_facing,
-            enlisted,
-            reserved,
-        } = claims;
+        let ConstructionContext { claims, .. } = context;
+        let player_facing = claims.player_facing;
         let have = |kind: BuildingKind| Self::projected_count(obs, kind, player_facing) > 0;
         let price =
             |kind: BuildingKind| kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
@@ -1042,72 +1150,36 @@ impl UtilityPolicy {
         if dials.deep_tech {
             rungs.push(BuildingKind::Airworks);
         }
-        // The expansion Foundry is a capital rung too. A remote own Extractor
-        // outranks Airworks once the Fabricator prerequisite stands; ordinary
-        // salvage frontiers retain the old deep-tech ordering. The construction
-        // channel still proves exact placement before claiming.
-        if dials.expansion {
-            let (foundries, pending_foundries): (Vec<TilePos>, usize) = if player_facing {
-                Self::projected_foundries(obs)
-            } else {
-                (
-                    obs.my_buildings
-                        .iter()
-                        .filter(|building| building.kind == BuildingKind::Foundry)
-                        .map(|building| building.anchor)
-                        .collect(),
-                    0,
-                )
-            };
+        // The profile-free Overseer remains the frozen QA yardstick. The
+        // player-facing controller prices expansion separately through one
+        // shared opportunity and security assessment.
+        if dials.expansion && !player_facing {
+            let foundries: Vec<_> = obs
+                .my_buildings
+                .iter()
+                .filter(|building| building.kind == BuildingKind::Foundry)
+                .map(|building| building.anchor)
+                .collect();
             let ordinary_frontier_unlocked = !dials.deep_tech || have(BuildingKind::Airworks);
-            let expansion_claim = if player_facing {
-                let builders: Vec<_> = self
-                    .construction_builders(obs, enlisted, reserved)
-                    .into_iter()
-                    .filter(|builder| !unavailable_builders.contains(&builder.id))
-                    .collect();
-                self.player_facing_foundry_claim(
-                    obs,
-                    FoundryClaimContext {
-                        home,
-                        projected_foundries: &foundries,
-                        builders: &builders,
-                        support_extractors: have(BuildingKind::Fabricator),
-                        ordinary_frontiers: ordinary_frontier_unlocked,
-                        unit_contacts,
-                        building_contacts,
-                    },
-                )
-                .is_some()
-            } else {
-                ordinary_frontier_unlocked
-                    && obs
-                        .known_scrap
-                        .iter()
-                        .filter(|(_, amount)| *amount > 0)
-                        .map(|(tile, _)| *tile)
-                        .chain(obs.known_frames.iter().copied().filter(|frame| {
-                            !obs.my_buildings
-                                .iter()
-                                .chain(obs.enemy_buildings.iter())
-                                .any(|building| building.anchor == *frame)
-                        }))
-                        .any(|tile| {
-                            foundries
-                                .iter()
-                                .all(|f| f.chebyshev(tile) > EXPANSION_RADIUS)
-                        })
-            };
-            let foundry_cap = if player_facing { dials.foundry_cap } else { 2 };
-            if pending_foundries == 0
-                && expansion_claim
-                && foundries.len() < foundry_cap
-                && (!player_facing
-                    || super::production::extra_foundry_core_ready(
-                        obs,
-                        combat_core_exclusions,
-                        foundries.len(),
-                    ))
+            let expansion_claim = ordinary_frontier_unlocked
+                && obs
+                    .known_scrap
+                    .iter()
+                    .filter(|(_, amount)| *amount > 0)
+                    .map(|(tile, _)| *tile)
+                    .chain(obs.known_frames.iter().copied().filter(|frame| {
+                        !obs.my_buildings
+                            .iter()
+                            .chain(obs.enemy_buildings.iter())
+                            .any(|building| building.anchor == *frame)
+                    }))
+                    .any(|tile| {
+                        foundries
+                            .iter()
+                            .all(|f| f.chebyshev(tile) > EXPANSION_RADIUS)
+                    });
+            if expansion_claim
+                && foundries.len() < LEGACY_FOUNDRY_CAP
                 && have(BuildingKind::Foundry)
             {
                 return price(BuildingKind::Foundry) + TECH_RESERVE;
@@ -1130,7 +1202,7 @@ mod tests {
     use crate::bot::intelligence::{ContactEvidence, StrategicIntelligence};
     use crate::bot::observation::BuildingObs;
     use crate::ids::{BuildingId, PlayerId};
-    use crate::scenario::{BotConfig, BotDifficulty, BotStance};
+    use crate::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec, Scenario};
     use crate::state::Faction;
 
     fn observation() -> Observation {
@@ -1461,6 +1533,93 @@ mod tests {
             );
         }
         obs
+    }
+
+    fn expansion_briefing(obs: &Observation, home: TilePos, hostile: TilePos) -> PublicMapBriefing {
+        let width = usize::try_from(obs.map_width).expect("fixture width is positive");
+        let height = usize::try_from(obs.map_height).expect("fixture height is positive");
+        let mut map = vec![vec!['.'; width]; height];
+        map[usize::try_from(home.y).expect("home y is in bounds")]
+            [usize::try_from(home.x).expect("home x is in bounds")] = '1';
+        map[usize::try_from(hostile.y).expect("hostile y is in bounds")]
+            [usize::try_from(hostile.x).expect("hostile x is in bounds")] = '2';
+        PublicMapBriefing::from_scenario(&Scenario {
+            name: "expansion economy fixture".into(),
+            seed: 0,
+            map: map
+                .into_iter()
+                .map(|row| row.into_iter().collect())
+                .collect(),
+            players: vec![
+                PlayerSpec {
+                    name: "home".into(),
+                    faction: Faction::Ferrous,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+                PlayerSpec {
+                    name: "hostile".into(),
+                    faction: Faction::Cupric,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+            ],
+            units: Vec::new(),
+            buildings: Vec::new(),
+            meta: None,
+        })
+        .expect("expansion economy briefing is valid")
+    }
+
+    #[derive(Clone, Copy)]
+    struct ExpansionDecisionState<'a> {
+        spendable_scrap: u32,
+        same_think_intents: &'a [Intent],
+    }
+
+    fn player_expansion_assessment(
+        policy: &UtilityPolicy,
+        dials: &Dials,
+        obs: &Observation,
+        home: TilePos,
+        public_map: &PublicMapBriefing,
+        unit_contacts: Option<&[UnitContact]>,
+        decision: ExpansionDecisionState<'_>,
+    ) -> Option<expansion::FoundryExpansionAssessment> {
+        let (foundries, pending_foundries) = UtilityPolicy::projected_foundries(obs);
+        assert_eq!(
+            pending_foundries, 0,
+            "fixture must not include a pending Foundry"
+        );
+        let builders = policy.construction_builders(obs, &[], &[]);
+        policy.player_facing_foundry_assessment(
+            dials,
+            obs,
+            FoundryAssessmentContext {
+                claim: FoundryClaimContext {
+                    home,
+                    projected_foundries: &foundries,
+                    builders: &builders,
+                    support_extractors: obs.my_buildings.iter().any(|building| {
+                        building.kind == BuildingKind::Fabricator && building.built
+                    }),
+                    ordinary_frontiers: !dials.deep_tech
+                        || UtilityPolicy::projected_count(obs, BuildingKind::Airworks, true) > 0,
+                    unit_contacts,
+                    building_contacts: Some(&[]),
+                },
+                public_map,
+                combat_core_exclusions: &[],
+                spendable_scrap: decision.spendable_scrap,
+                voluntary_scrap_guard: Reserve::Ordinary,
+                required_anchor: None,
+            },
+            decision.same_think_intents,
+        )
     }
 
     #[test]
@@ -2212,8 +2371,276 @@ mod tests {
         );
     }
 
+    fn competing_expansion_fixture() -> (TilePos, TilePos, Observation, Dials, PublicMapBriefing) {
+        let home = TilePos::new(1, 1);
+        let extractor = TilePos::new(30, 16);
+        let mut obs = completed_tree();
+        obs.map_width = 48;
+        obs.map_height = 24;
+        obs.visible = vec![true; 48 * 24];
+        obs.explored = obs.visible.clone();
+        obs.known_rock.clear();
+        obs.known_scrap.clear();
+        add_building(
+            &mut obs,
+            10,
+            BuildingKind::Foundry,
+            TilePos::new(11, 1),
+            true,
+        );
+        add_building(&mut obs, 11, BuildingKind::Extractor, extractor, true);
+
+        let mut dials = Dials::full();
+        dials.deep_tech = true;
+        dials.expansion = true;
+        dials.harvester_target = 5;
+        dials.army_size = 3;
+        dials.scouting = false;
+        dials.radar = false;
+        dials.reclaimers = false;
+        dials.repair = false;
+        dials.air_harass = false;
+        dials.ferry = false;
+        dials.mines = false;
+        dials.discretionary_slots = 0;
+
+        let public_map = expansion_briefing(&obs, home, TilePos::new(44, 20));
+        (home, extractor, obs, dials, public_map)
+    }
+
     #[test]
-    fn locked_third_foundry_releases_its_capital_to_core_production() {
+    fn active_airworks_capacity_precedes_an_otherwise_ready_expansion() {
+        let (home, extractor, mut obs, mut dials, public_map) = competing_expansion_fixture();
+        dials.extractors = false;
+        let claims = ConstructionClaims {
+            player_facing: true,
+            enlisted: &[],
+            reserved: &[],
+        };
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundry has construction stats")
+            .cost;
+        let airworks_cost = BuildingKind::Airworks
+            .base_stats()
+            .construction
+            .expect("Airworks has construction stats")
+            .cost;
+        obs.scrap = foundry_cost + airworks_cost + TECH_RESERVE;
+
+        let ready = player_expansion_assessment(
+            &UtilityPolicy::new(),
+            &dials,
+            &obs,
+            home,
+            &public_map,
+            None,
+            ExpansionDecisionState {
+                spendable_scrap: obs.scrap,
+                same_think_intents: &[],
+            },
+        )
+        .expect("the supported Extractor makes an expansion worthwhile");
+        assert_eq!(ready.disposition, expansion::ExpansionDisposition::Build);
+        assert!(UtilityPolicy::foundry_supports_extractor(
+            ready.plan.anchor,
+            extractor
+        ));
+
+        let mut expansion_budget = obs.scrap;
+        let mut expansion_intents = Vec::new();
+        UtilityPolicy::new().production_with_air_demand(
+            &dials,
+            &obs,
+            ProductionContext::new(home, claims, None).with_public_map(Some(&public_map)),
+            &mut expansion_budget,
+            &mut expansion_intents,
+        );
+        assert!(expansion_intents.iter().any(|intent| matches!(
+            intent,
+            Intent::BuildWith {
+                kind: BuildingKind::Foundry,
+                anchor,
+                ..
+            } if *anchor == ready.plan.anchor
+        )));
+
+        let demand = Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS + 1);
+        let capacity_anchor = UtilityPolicy::new()
+            .airworks_capacity_site(&dials, &obs, home, claims, demand)
+            .expect("the outstanding air work needs a second actionable Airworks");
+        let mut competing_budget = obs.scrap;
+        let mut competing_intents = Vec::new();
+        UtilityPolicy::new().production_with_air_demand(
+            &dials,
+            &obs,
+            ProductionContext::new(home, claims, demand).with_public_map(Some(&public_map)),
+            &mut competing_budget,
+            &mut competing_intents,
+        );
+
+        assert!(competing_intents.iter().any(|intent| matches!(
+            intent,
+            Intent::BuildWith {
+                kind: BuildingKind::Airworks,
+                anchor,
+                ..
+            } if *anchor == capacity_anchor
+        )));
+        assert!(competing_intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Foundry,
+                ..
+            } | Intent::BuildWith {
+                kind: BuildingKind::Foundry,
+                ..
+            }
+        )));
+        assert_eq!(
+            competing_intents
+                .iter()
+                .filter(|intent| matches!(intent, Intent::Build { .. } | Intent::BuildWith { .. }))
+                .count(),
+            1,
+            "capacity must exclusively own the construction channel"
+        );
+    }
+
+    #[test]
+    fn actionable_supported_extractor_precedes_an_otherwise_ready_expansion() {
+        let (home, extractor, mut obs, mut dials, public_map) = competing_expansion_fixture();
+        let frame = TilePos::new(9, 1);
+        obs.known_frames = vec![frame];
+        dials.extractors = true;
+        let claims = ConstructionClaims {
+            player_facing: true,
+            enlisted: &[],
+            reserved: &[],
+        };
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundry has construction stats")
+            .cost;
+        let extractor_cost = BuildingKind::Extractor
+            .base_stats()
+            .construction
+            .expect("Extractor has construction stats")
+            .cost;
+        obs.scrap = foundry_cost + extractor_cost + TECH_RESERVE;
+
+        let ready = player_expansion_assessment(
+            &UtilityPolicy::new(),
+            &dials,
+            &obs,
+            home,
+            &public_map,
+            None,
+            ExpansionDecisionState {
+                spendable_scrap: obs.scrap,
+                same_think_intents: &[],
+            },
+        )
+        .expect("the distant supported Extractor makes an expansion worthwhile");
+        assert_eq!(ready.disposition, expansion::ExpansionDisposition::Build);
+        assert!(UtilityPolicy::foundry_supports_extractor(
+            ready.plan.anchor,
+            extractor
+        ));
+        assert!(
+            UtilityPolicy::new()
+                .supported_frame_restoration_claim(
+                    &obs,
+                    ConstructionContext::new(home, claims).with_public_map(Some(&public_map)),
+                )
+                .is_some(),
+            "the nearby supported frame must have a legal builder"
+        );
+
+        let mut without_frame = obs.clone();
+        without_frame.known_frames.clear();
+        let mut expansion_budget = without_frame.scrap;
+        let mut expansion_intents = Vec::new();
+        UtilityPolicy::new().production_with_air_demand(
+            &dials,
+            &without_frame,
+            ProductionContext::new(home, claims, None).with_public_map(Some(&public_map)),
+            &mut expansion_budget,
+            &mut expansion_intents,
+        );
+        assert!(expansion_intents.iter().any(|intent| matches!(
+            intent,
+            Intent::BuildWith {
+                kind: BuildingKind::Foundry,
+                anchor,
+                ..
+            } if *anchor == ready.plan.anchor
+        )));
+
+        let mut policy = UtilityPolicy::new();
+        let mut competing_budget = obs.scrap;
+        let mut competing_intents = Vec::new();
+        policy.production_with_air_demand(
+            &dials,
+            &obs,
+            ProductionContext::new(home, claims, None).with_public_map(Some(&public_map)),
+            &mut competing_budget,
+            &mut competing_intents,
+        );
+        assert!(competing_intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Foundry,
+                ..
+            } | Intent::BuildWith {
+                kind: BuildingKind::Foundry,
+                ..
+            }
+        )));
+        assert_eq!(
+            competing_budget, extractor_cost,
+            "production must preserve the actionable restoration fund"
+        );
+        policy.construction(
+            &dials,
+            &obs,
+            ConstructionContext::new(home, claims).with_public_map(Some(&public_map)),
+            &mut competing_budget,
+            &mut competing_intents,
+        );
+
+        assert!(competing_intents.iter().any(|intent| matches!(
+            intent,
+            Intent::BuildWith {
+                kind: BuildingKind::Extractor,
+                anchor,
+                ..
+            } if *anchor == frame
+        )));
+        assert!(competing_intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Foundry,
+                ..
+            } | Intent::BuildWith {
+                kind: BuildingKind::Foundry,
+                ..
+            }
+        )));
+        assert_eq!(
+            competing_intents
+                .iter()
+                .filter(|intent| matches!(intent, Intent::Build { .. } | Intent::BuildWith { .. }))
+                .count(),
+            1,
+            "restoration must exclusively own the construction channel"
+        );
+    }
+
+    #[test]
+    fn expansion_preparation_queues_only_the_missing_screen_then_commits_the_foundry() {
         let home = TilePos::new(1, 1);
         let mut obs = completed_tree();
         obs.map_width = 40;
@@ -2229,65 +2656,202 @@ mod tests {
             true,
         );
         obs.known_scrap = vec![(TilePos::new(30, 18), 800)];
-        add_unit(&mut obs, 23, UnitKind::Sentinel, TilePos::new(5, 8));
+        for id in 23..26 {
+            add_unit(
+                &mut obs,
+                id,
+                UnitKind::Sentinel,
+                TilePos::new(5 + i32::try_from(id - 23).unwrap(), 8),
+            );
+        }
 
         let profile = BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 1_616_304)
             .resolve_profile();
-        let dials = Dials::scripted(
+        let mut dials = Dials::scripted(
             &profile,
             DifficultyTuning::for_level(BotDifficulty::Standard),
         );
-        assert_eq!((profile.traits.greed, dials.foundry_cap), (64, 3));
+        dials.harvester_target = 4;
+        dials.scouting = false;
+        assert_eq!((profile.traits.greed, dials.expansion_greed), (64, 64));
 
-        let mut policy = UtilityPolicy::new();
-        assert_eq!(
-            capital_reserve_for(&policy, &dials, &obs, home, true),
-            0,
-            "four ordinary fighters must not hoard toward the third Foundry"
-        );
-
-        obs.scrap = UnitKind::Sentinel.stats().cost;
-        let mut budget = obs.scrap;
-        let mut intents = Vec::new();
-        policy.production(
-            &dials,
-            &obs,
-            home,
-            ConstructionClaims {
-                player_facing: true,
-                enlisted: &[],
-                reserved: &[],
-            },
-            &mut budget,
-            &mut intents,
-        );
-        assert_eq!(
-            intents,
-            vec![Intent::TrainAt {
-                building: BuildingId(0),
-                kind: UnitKind::Sentinel,
-            }],
-            "the released finite bank should become the missing ordinary fighter"
-        );
-        assert_eq!(budget, 0);
-
-        add_unit(&mut obs, 24, UnitKind::Sentinel, TilePos::new(6, 8));
-        let second_foundry = obs
-            .my_buildings
-            .iter()
-            .position(|building| building.id == BuildingId(10))
-            .expect("the fixture has a second Foundry");
-        obs.my_queues[second_foundry].push(UnitKind::Sentinel);
         let foundry_fund = BuildingKind::Foundry
             .base_stats()
             .construction
             .expect("Foundry has construction stats")
             .cost
             + TECH_RESERVE;
+        let sentinel_cost = UnitKind::Sentinel.stats().cost;
+        obs.scrap = foundry_fund + sentinel_cost;
+        let public_map = expansion_briefing(&obs, home, TilePos::new(36, 20));
+        let claims = ConstructionClaims {
+            player_facing: true,
+            enlisted: &[],
+            reserved: &[],
+        };
+        let mut policy = UtilityPolicy::new();
+        let before = player_expansion_assessment(
+            &policy,
+            &dials,
+            &obs,
+            home,
+            &public_map,
+            None,
+            ExpansionDecisionState {
+                spendable_scrap: obs.scrap,
+                same_think_intents: &[],
+            },
+        )
+        .expect("the rich forward district is worth one more screen unit");
+        assert_eq!(before.missing_security_scrap, sentinel_cost);
+        assert!(matches!(
+            before.disposition,
+            expansion::ExpansionDisposition::Prepare { .. }
+        ));
+
+        let mut budget = obs.scrap;
+        let mut intents = Vec::new();
+        policy.production_with_air_demand(
+            &dials,
+            &obs,
+            ProductionContext::new(home, claims, None).with_public_map(Some(&public_map)),
+            &mut budget,
+            &mut intents,
+        );
         assert_eq!(
-            capital_reserve_for(&policy, &dials, &obs, home, true),
-            foundry_fund,
-            "five live plus one queued ordinary fighter must unlock the exact capital reserve"
+            intents,
+            vec![
+                Intent::TrainAt {
+                    building: BuildingId(0),
+                    kind: UnitKind::Sentinel,
+                },
+                Intent::BuildWith {
+                    builder: before.plan.builder,
+                    kind: BuildingKind::Foundry,
+                    anchor: before.plan.anchor,
+                },
+            ],
+            "preparation should buy only the missing screen before committing the same site"
+        );
+        assert_eq!(budget, TECH_RESERVE);
+
+        let after = player_expansion_assessment(
+            &policy,
+            &dials,
+            &obs,
+            home,
+            &public_map,
+            None,
+            ExpansionDecisionState {
+                spendable_scrap: foundry_fund,
+                same_think_intents: &intents,
+            },
+        )
+        .expect("the same-think screen order completes expansion security");
+        assert_eq!(after.disposition, expansion::ExpansionDisposition::Build);
+    }
+
+    #[test]
+    fn unfinished_expansion_preparation_blocks_later_capital_projects() {
+        let home = TilePos::new(1, 1);
+        let frontier = TilePos::new(30, 18);
+        let mut obs = completed_tree();
+        obs.map_width = 40;
+        obs.map_height = 24;
+        obs.visible = vec![true; 40 * 24];
+        obs.explored = obs.visible.clone();
+        obs.known_rock.clear();
+        obs.known_scrap = vec![(frontier, 10_000)];
+        add_building(
+            &mut obs,
+            10,
+            BuildingKind::Foundry,
+            TilePos::new(10, 1),
+            true,
+        );
+        for id in 23..26 {
+            add_unit(
+                &mut obs,
+                id,
+                UnitKind::Sentinel,
+                TilePos::new(5 + i32::try_from(id - 23).unwrap(), 8),
+            );
+        }
+        let crucible = obs
+            .my_buildings
+            .iter()
+            .position(|building| building.kind == BuildingKind::Crucible)
+            .expect("the completed-tree fixture has a Crucible");
+        obs.my_buildings.remove(crucible);
+        obs.my_queues.remove(crucible);
+
+        let profile = BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 1_616_304)
+            .resolve_profile();
+        let mut dials = Dials::scripted(
+            &profile,
+            DifficultyTuning::for_level(BotDifficulty::Standard),
+        );
+        dials.extractors = false;
+        dials.upgrades = false;
+        dials.harvester_target = 4;
+        dials.scouting = false;
+        dials.turret_response = false;
+        dials.aa_response = false;
+        dials.own_strength_scale = 2_500;
+
+        let sentinel_cost = UnitKind::Sentinel.stats().cost;
+        obs.scrap = 5_000;
+        let public_map = expansion_briefing(&obs, home, TilePos::new(36, 20));
+        let assessment = player_expansion_assessment(
+            &UtilityPolicy::new(),
+            &dials,
+            &obs,
+            home,
+            &public_map,
+            None,
+            ExpansionDecisionState {
+                spendable_scrap: obs.scrap,
+                same_think_intents: &[],
+            },
+        )
+        .expect("the rich frontier can finance its larger screen");
+        assert!(assessment.missing_security_scrap > sentinel_cost * 4);
+        assert!(matches!(
+            assessment.disposition,
+            expansion::ExpansionDisposition::Prepare { .. }
+        ));
+
+        let context = StrategicUtilityContext::new(&[], &[], &[], &public_map, Vec::new());
+        let intents = UtilityPolicy::new().think_with_intelligence(&dials, &obs, &[], &[], context);
+        let sentinels = intents
+            .iter()
+            .filter(|intent| {
+                matches!(
+                    intent,
+                    Intent::TrainAt {
+                        kind: UnitKind::Sentinel,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert!(
+            sentinels > 0,
+            "preparation should make progress: {intents:?}"
+        );
+        assert!(
+            u32::try_from(sentinels)
+                .unwrap()
+                .saturating_mul(sentinel_cost)
+                < assessment.missing_security_scrap,
+            "the per-think producer depth must leave security unfinished: {intents:?}"
+        );
+        assert!(
+            intents.iter().all(|intent| !matches!(
+                intent,
+                Intent::Build { .. } | Intent::BuildWith { .. } | Intent::Upgrade { .. }
+            )),
+            "unfinished security preparation must retain the remaining Foundry fund: {intents:?}"
         );
     }
 
@@ -2309,7 +2873,7 @@ mod tests {
             TilePos::new(10, 1),
             true,
         );
-        for id in 23..26 {
+        for id in 23..27 {
             add_unit(
                 &mut obs,
                 id,
@@ -2326,58 +2890,101 @@ mod tests {
         );
         dials.extractors = false;
         dials.upgrades = false;
-        assert_eq!((dials.army_size, dials.foundry_cap), (7, 3));
+        dials.harvester_target = 4;
+        dials.scouting = false;
+        assert_eq!(dials.army_size, 7);
+        assert_eq!(dials.expansion_greed, profile.traits.greed);
 
         let claims = ConstructionClaims {
             player_facing: true,
             enlisted: &[],
             reserved: &[],
         };
-        let policy = UtilityPolicy::new();
         let foundry_fund = BuildingKind::Foundry
             .base_stats()
             .construction
             .expect("Foundry has construction stats")
             .cost
             + TECH_RESERVE;
-        assert_eq!(
-            policy.capital_reserve(&dials, &obs, ConstructionContext::new(home, claims),),
-            foundry_fund,
-            "the safe frontier should reserve the exact third-Foundry fund"
+        obs.scrap = foundry_fund;
+        let public_map = expansion_briefing(&obs, home, TilePos::new(36, 20));
+        let safe_policy = UtilityPolicy::new();
+        let safe = player_expansion_assessment(
+            &safe_policy,
+            &dials,
+            &obs,
+            home,
+            &public_map,
+            None,
+            ExpansionDecisionState {
+                spendable_scrap: obs.scrap,
+                same_think_intents: &[],
+            },
+        )
+        .expect("the visible rich frontier has a safe economic plan");
+        assert_eq!(safe.disposition, expansion::ExpansionDisposition::Build);
+        let mut safe_budget = obs.scrap;
+        let mut safe_intents = Vec::new();
+        UtilityPolicy::new().production_with_air_demand(
+            &dials,
+            &obs,
+            ProductionContext::new(home, claims, None).with_public_map(Some(&public_map)),
+            &mut safe_budget,
+            &mut safe_intents,
         );
+        assert_eq!(
+            safe_intents,
+            vec![Intent::BuildWith {
+                builder: safe.plan.builder,
+                kind: BuildingKind::Foundry,
+                anchor: safe.plan.anchor,
+            }]
+        );
+        assert_eq!(safe_budget, TECH_RESERVE);
 
-        let frontier_index = usize::try_from(frontier.y * obs.map_width + frontier.x)
-            .expect("the frontier index is nonnegative");
-        obs.visible[frontier_index] = false;
+        let mut threatened = obs.clone();
+        threatened
+            .my_units
+            .retain(|unit| unit.kind != UnitKind::Sentinel || unit.id <= UnitId(24));
+        threatened.scrap = UnitKind::Sentinel.stats().cost;
+        let threat_tile = frontier.offset(-1, 0);
+        let threat_index = usize::try_from(threat_tile.y * threatened.map_width + threat_tile.x)
+            .expect("the threat index is nonnegative");
+        threatened.visible[threat_index] = false;
         let contacts = [UnitContact {
             id: UnitId(90),
             player: PlayerId(1),
             kind: UnitKind::Avalanche,
-            tile: frontier,
+            tile: threat_tile,
             hp: UnitKind::Avalanche.stats().max_hp,
-            last_seen: obs.tick,
+            last_seen: threatened.tick,
             evidence: ContactEvidence::Remembered,
         }];
-        let context = ProductionContext::new(home, claims, None)
-            .with_intelligence(Some(&contacts), Some(&[]));
-        assert_eq!(
-            policy.capital_reserve(
+        assert!(
+            player_expansion_assessment(
+                &UtilityPolicy::new(),
                 &dials,
-                &obs,
-                ConstructionContext::new(home, claims)
-                    .with_intelligence(Some(&contacts), Some(&[])),
-            ),
-            0,
-            "a Foundry with no danger-safe site or builder route cannot pin capital"
+                &threatened,
+                home,
+                &public_map,
+                Some(&contacts),
+                ExpansionDecisionState {
+                    spendable_scrap: foundry_fund,
+                    same_think_intents: &[],
+                },
+            )
+            .is_none(),
+            "remembered danger covering every site and builder route must release the project"
         );
 
-        obs.scrap = UnitKind::Sentinel.stats().cost;
-        let mut budget = obs.scrap;
+        let mut budget = threatened.scrap;
         let mut intents = Vec::new();
         UtilityPolicy::new().production_with_air_demand(
             &dials,
-            &obs,
-            context,
+            &threatened,
+            ProductionContext::new(home, claims, None)
+                .with_intelligence(Some(&contacts), Some(&[]))
+                .with_public_map(Some(&public_map)),
             &mut budget,
             &mut intents,
         );
@@ -2387,7 +2994,7 @@ mod tests {
                 building: BuildingId(0),
                 kind: UnitKind::Sentinel,
             }],
-            "the released finite bank should buy the still-missing seventh core fighter"
+            "released capital should buy the one fighter still missing from the ordinary core"
         );
         assert_eq!(budget, 0);
     }
@@ -2534,7 +3141,7 @@ mod tests {
     }
 
     #[test]
-    fn third_foundry_capital_matches_the_exact_safe_construction_claim() {
+    fn ready_expansion_commits_the_assessed_builder_and_site_before_other_spending() {
         let home = TilePos::new(1, 1);
         let extractor = TilePos::new(30, 16);
         let mut obs = completed_tree();
@@ -2551,7 +3158,7 @@ mod tests {
             true,
         );
         add_building(&mut obs, 11, BuildingKind::Extractor, extractor, true);
-        for id in 23..26 {
+        for id in 23..27 {
             add_unit(
                 &mut obs,
                 id,
@@ -2559,7 +3166,6 @@ mod tests {
                 TilePos::new(5 + i32::try_from(id - 23).unwrap(), 8),
             );
         }
-        obs.scrap = 10_000;
 
         let profile = BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 1_616_304)
             .resolve_profile();
@@ -2569,88 +3175,149 @@ mod tests {
         );
         dials.extractors = false;
         dials.upgrades = false;
+        dials.harvester_target = 4;
+        dials.scouting = false;
         let fund = BuildingKind::Foundry
             .base_stats()
             .construction
             .expect("Foundry has construction stats")
             .cost
             + TECH_RESERVE;
+        obs.scrap = fund;
+        let public_map = expansion_briefing(&obs, home, TilePos::new(44, 20));
+        let claims = ConstructionClaims {
+            player_facing: true,
+            enlisted: &[],
+            reserved: &[],
+        };
 
         let mut policy = UtilityPolicy::new();
-        assert_eq!(capital_reserve_for(&policy, &dials, &obs, home, true), fund);
-        let mut budget = obs.scrap;
-        let mut intents = Vec::new();
-        policy.construction(
+        let assessed = player_expansion_assessment(
+            &policy,
             &dials,
             &obs,
-            ConstructionContext::new(
-                home,
-                ConstructionClaims {
-                    player_facing: true,
-                    enlisted: &[],
-                    reserved: &[],
-                },
-            ),
-            &mut budget,
-            &mut intents,
+            home,
+            &public_map,
+            None,
+            ExpansionDecisionState {
+                spendable_scrap: fund,
+                same_think_intents: &[],
+            },
+        )
+        .expect("the supported Extractor makes one safe expansion worthwhile");
+        assert_eq!(assessed.disposition, expansion::ExpansionDisposition::Build);
+
+        let mut production_budget = fund;
+        let mut production_intents = Vec::new();
+        let promised = policy.production_with_air_demand(
+            &dials,
+            &obs,
+            ProductionContext::new(home, claims, None).with_public_map(Some(&public_map)),
+            &mut production_budget,
+            &mut production_intents,
         );
+        assert!(promised);
         assert!(matches!(
-            intents.as_slice(),
+            production_intents.as_slice(),
             [Intent::BuildWith {
                 builder,
                 kind: BuildingKind::Foundry,
                 anchor,
-            }] if obs.my_units.iter().any(|unit| unit.id == *builder)
+            }] if *builder == assessed.plan.builder
+                && *anchor == assessed.plan.anchor
                 && UtilityPolicy::foundry_supports_extractor(*anchor, extractor)
         ));
+        assert_eq!(production_budget, TECH_RESERVE);
+    }
 
-        obs.my_buildings
-            .retain(|building| building.kind != BuildingKind::Extractor);
-        obs.my_queues.truncate(obs.my_buildings.len());
-        obs.known_scrap = vec![(extractor, 800)];
-        add_enemy_building(
+    #[test]
+    fn partial_foundry_fund_stops_paid_repairs_and_all_voluntary_spending() {
+        let home = TilePos::new(1, 1);
+        let extractor = TilePos::new(30, 16);
+        let mut obs = completed_tree();
+        obs.map_width = 48;
+        obs.map_height = 24;
+        obs.visible = vec![true; 48 * 24];
+        obs.explored = obs.visible.clone();
+        obs.known_rock.clear();
+        obs.known_scrap.clear();
+        add_building(
             &mut obs,
-            90,
+            10,
             BuildingKind::Foundry,
-            extractor.offset(2, 0),
+            TilePos::new(11, 1),
             true,
         );
+        add_building(&mut obs, 11, BuildingKind::Extractor, extractor, true);
+        for id in 23..27 {
+            add_unit(
+                &mut obs,
+                id,
+                UnitKind::Sentinel,
+                TilePos::new(5 + i32::try_from(id - 23).unwrap(), 8),
+            );
+        }
+        let repairer = obs
+            .my_units
+            .iter_mut()
+            .find(|unit| unit.id == UnitId(4))
+            .expect("fixture has the repair Harvester");
+        repairer.idle = false;
+        repairer.repairing = true;
+        obs.my_buildings[1].hp /= 2;
 
-        let mut refused = UtilityPolicy::new();
-        assert_eq!(
-            capital_reserve_for(&refused, &dials, &obs, home, true),
-            0,
-            "a generic frontier controlled by a nearer known enemy base must not strand the Foundry fund"
+        let profile = BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 1_616_304)
+            .resolve_profile();
+        let mut dials = Dials::scripted(
+            &profile,
+            DifficultyTuning::for_level(BotDifficulty::Standard),
         );
-        let mut budget = obs.scrap;
-        let mut intents = Vec::new();
-        refused.construction(
+        dials.extractors = false;
+        dials.upgrades = false;
+        dials.harvester_target = 4;
+        dials.scouting = false;
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundry has construction stats")
+            .cost;
+        obs.scrap = foundry_cost - 1;
+        let public_map = expansion_briefing(&obs, home, TilePos::new(44, 20));
+        let assessment = player_expansion_assessment(
+            &UtilityPolicy::new(),
             &dials,
             &obs,
-            ConstructionContext::new(
-                home,
-                ConstructionClaims {
-                    player_facing: true,
-                    enlisted: &[],
-                    reserved: &[],
-                },
-            ),
-            &mut budget,
-            &mut intents,
+            home,
+            &public_map,
+            None,
+            ExpansionDecisionState {
+                spendable_scrap: obs.scrap,
+                same_think_intents: &[],
+            },
+        )
+        .expect("the project is safe and worthwhile before its last scrap arrives");
+        assert_eq!(
+            assessment.disposition,
+            expansion::ExpansionDisposition::Build
         );
+
+        let context = StrategicUtilityContext::new(&[], &[], &[], &public_map, Vec::new());
+        let intents = UtilityPolicy::new().think_with_intelligence(&dials, &obs, &[], &[], context);
+
         assert!(
             intents.iter().all(|intent| !matches!(
                 intent,
-                Intent::Build {
-                    kind: BuildingKind::Foundry,
-                    ..
-                } | Intent::BuildWith {
-                    kind: BuildingKind::Foundry,
-                    ..
-                }
+                Intent::TrainAt { .. }
+                    | Intent::Build { .. }
+                    | Intent::BuildWith { .. }
+                    | Intent::Upgrade { .. }
             )),
-            "capital refusal and construction must agree on the enemy-controlled frontier: {intents:?}"
+            "a partial Foundry fund cannot be spent: {intents:?}"
         );
+        assert!(intents.iter().any(|intent| matches!(
+            intent,
+            Intent::StopUnits { units } if units.contains(&UnitId(4))
+        )));
     }
 
     #[test]

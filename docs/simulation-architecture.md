@@ -362,16 +362,17 @@ error. The traits leave visible signatures rather than unlocking private
 strategies: air changes ordinary and island strike composition and timing; siege
 changes artillery volume and preference; support changes support-unit, flak, and
 allied relief investment; fortification changes turrets, mines, and defensive
-reserve; greed changes worker and renewable expansion targets; and guile changes
-raid size, timing, withdrawal, and some mine or airborne-screen emphasis. Every
-adaptive identity receives one perimeter turret after locating the enemy and
-completing its protected opening core; only an observed raid unlocks the
-remainder of its fortification target. Before that core exists, a current
-visible threat may justify one matching emergency Turret, while emergency Flak
-requires a current visible aircraft capable of attacking ground. A pure
-air-to-air flyer cannot unlock that exception. A player-facing controller
-requires this actionable air evidence before investing in flak, so an anonymous
-radar blip cannot turn a small seeded preference into an opening economy cliff.
+reserve; greed changes worker targets and renewable-expansion payback appetite;
+and guile changes raid size, timing, withdrawal, and some mine or
+airborne-screen emphasis. Every adaptive identity receives one perimeter turret
+after locating the enemy and completing its protected opening core; only an
+observed raid unlocks the remainder of its fortification target. Before that
+core exists, a current visible threat may justify one matching emergency Turret,
+while emergency Flak requires a current visible aircraft capable of attacking
+ground. A pure air-to-air flyer cannot unlock that exception. A player-facing
+controller requires this actionable air evidence before investing in flak, so an
+anonymous radar blip cannot turn a small seeded preference into an opening
+economy cliff.
 
 Difficulty schedules are structurally monotone. Scrapheap thinks every 24 ticks;
 Standard, Veteran, and Prime share a 12-tick cadence so controller APM does not
@@ -562,14 +563,33 @@ retains its legacy first-valid placement scan.
 
 The player-facing budget counts each unique deferred construction claim until
 its site is paid and stops voluntary repair programs that could drain that
-commitment. Expansion saving and construction share one exact claim: a legal
-footprint and a specific worker with a known safe route and work area. A generic
-frontier nearer to a known enemy Foundry than to any projected own Foundry is
-not eligible. This is controller discipline, not simulation escrow: automatic
-Repair Bay pulses continue to follow the ordinary bank rules. The profile-free
-Overseer retains its frozen legacy policy and lowering order. The simulation's
-command layer remains the final legality authority. `Brain::overseer` is a
-separate profile-free QA anchor.
+commitment. Player-facing Foundry expansion has no count ceiling. It ranks every
+exact legal site by bounded post-construction payback from newly supported owned
+Extractors, Foundry drip attached to an external objective, and shorter hauling
+for currently visible scrap. Hauling value uses public-ground route distance
+while avoiding observed dynamic danger rather than geometric distance. Public
+unbuilt Extractor frames remain scouting priors rather than live capital value.
+Greed and genuinely uncommitted scrap extend the forecast without changing
+capability.
+
+Expansion saving and construction share one exact claim: a legal footprint and a
+specific worker with a known safe route and work area. Admission preserves the
+difficulty's ordinary core, assigns fog-honest ground threats across the current
+Foundry network, credits only completed defenses whose real coverage protects an
+asset, and adds a one-Sentinel forward reserve toward uncleared reachable public
+starts. A worthwhile underprotected site prepares only its exact missing core;
+its candidate-specific security cost is removed from genuinely uncommitted
+wealth before payback is admitted. Buying that core reduces the outstanding cost
+and cash together. Foundry capital is reserved after projected protection is
+ready, and a partial or complete fund closes later voluntary production,
+construction, and paid-repair spending until the exact build command is emitted.
+A generic frontier nearer to a known enemy Foundry than to any projected own
+Foundry is not eligible, and only one unpaid Foundry claim may exist. This is
+controller discipline, not simulation escrow: automatic Repair Bay pulses
+continue to follow the ordinary bank rules. The profile-free Overseer retains
+its frozen legacy cap, policy, and lowering order. The simulation's command
+layer remains the final legality authority. `Brain::overseer` is a separate
+profile-free QA anchor.
 
 The current wire format deliberately has one maintained controller, `scripted`;
 only difficulty, stance, and personality seed are stored, not the resolved

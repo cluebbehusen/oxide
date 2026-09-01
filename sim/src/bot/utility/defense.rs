@@ -2010,6 +2010,28 @@ fn building_covers(
             || durable_spotter_sees(obs, target))
 }
 
+pub(super) fn completed_ground_defense_covers_asset(
+    obs: &Observation,
+    briefing: &PublicMapBriefing,
+    defense: &BuildingObs,
+    asset_anchor: TilePos,
+    asset_size: (i32, i32),
+) -> bool {
+    defense.built
+        && defense.hp > 0
+        && (0..asset_size.1).all(|dy| {
+            (0..asset_size.0).all(|dx| {
+                building_covers(
+                    obs,
+                    briefing,
+                    defense,
+                    asset_anchor.offset(dx, dy),
+                    DefenseDomain::Ground,
+                )
+            })
+        })
+}
+
 fn planned_defense_covers(
     obs: &Observation,
     briefing: &PublicMapBriefing,
