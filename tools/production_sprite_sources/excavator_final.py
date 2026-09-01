@@ -38,7 +38,7 @@ PALETTES = {
 }
 
 APPROVED_SOURCE_RGBA_SHA256 = (
-    "ee06a327d678858ae076d2fdf9d19839830d690db8d89c07ea65b28b80db736a"
+    "2e18485aac475caa929f3cdcf71f10e479aab13c1630ba92b3011b803a3bbb26"
 )
 
 
@@ -196,7 +196,7 @@ def render_cargo_meter(level: int) -> Image.Image:
 
 
 def source_rgba_digest() -> str:
-    """Digest the approved chassis frames in installation order."""
+    """Digest every approved Excavator frame in installation order."""
     digest = hashlib.sha256()
     for faction in ("ferrous", "cupric"):
         states = (
@@ -208,6 +208,9 @@ def source_rgba_digest() -> str:
         for label, move_phase, work_phase in states:
             digest.update(f"excavator/{faction}/{label}".encode())
             digest.update(render_excavator(faction, move_phase, work_phase).tobytes())
+    for level in range(CARGO_LEVELS):
+        digest.update(f"excavator/cargo{level}".encode())
+        digest.update(render_cargo_meter(level).tobytes())
     return digest.hexdigest()
 
 
