@@ -410,7 +410,7 @@ impl StrategicIntelligence {
         &self.buildings
     }
 
-    /// Assesses known anti-air whose observed weapon envelope covers `target`.
+    /// Assesses known operational anti-air whose observed weapon envelope covers `target`.
     ///
     /// A remembered mobile source is evidence of risk, not proof the unit
     /// remains in place. Conversely, a visible target without known coverage
@@ -440,6 +440,9 @@ impl StrategicIntelligence {
         }
 
         for contact in &self.buildings {
+            if !contact.built {
+                continue;
+            }
             let stats = contact.kind.tier_stats(contact.tier);
             let distance_sq = building_center(contact.anchor, stats.size).dist_sq(target.center());
             let firepower = air_firepower_covering(stats.weapons, distance_sq);
@@ -865,6 +868,59 @@ mod tests {
         assert_eq!(assessment.current_static_sources(), 1);
         assert_eq!(assessment.sources.len(), 2);
         assert!(assessment.weighted_firepower_per_100_ticks() > 0);
+    }
+
+    #[test]
+    fn unfinished_static_aa_remains_known_but_not_operational_until_seen_complete() {
+        let target = TilePos::new(10, 6);
+        let flak_anchor = TilePos::new(12, 6);
+        let mut construction = observation(100);
+        set_visible(&mut construction, target);
+        set_visible(&mut construction, flak_anchor);
+        let mut flak = enemy_building(3, BuildingKind::FlakTurret, flak_anchor, true);
+        flak.built = false;
+        construction.enemy_buildings = vec![flak];
+
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(&construction);
+
+        assert_eq!(intelligence.buildings().len(), 1);
+        assert!(!intelligence.buildings()[0].built);
+        let unfinished = intelligence.air_defense_at(target);
+        assert!(unfinished.sources.is_empty());
+        assert_eq!(
+            unfinished.evidence(),
+            AirDefenseEvidence::VisibleWithoutKnownCoverage
+        );
+
+        let mut hidden = observation(200);
+        let mut ghost = enemy_building(u32::MAX, BuildingKind::FlakTurret, flak_anchor, false);
+        ghost.built = false;
+        hidden.enemy_buildings = vec![ghost];
+        intelligence.update(&hidden);
+
+        assert_eq!(
+            intelligence.buildings()[0].evidence,
+            ContactEvidence::Remembered
+        );
+        assert!(!intelligence.buildings()[0].built);
+        assert!(intelligence.air_defense_at(target).sources.is_empty());
+
+        let mut completed = observation(300);
+        set_visible(&mut completed, target);
+        set_visible(&mut completed, flak_anchor);
+        completed.enemy_buildings = vec![enemy_building(
+            3,
+            BuildingKind::FlakTurret,
+            flak_anchor,
+            true,
+        )];
+        intelligence.update(&completed);
+
+        assert!(intelligence.buildings()[0].built);
+        let operational = intelligence.air_defense_at(target);
+        assert_eq!(operational.current_static_sources(), 1);
+        assert_eq!(operational.evidence(), AirDefenseEvidence::CurrentCoverage);
     }
 
     #[test]

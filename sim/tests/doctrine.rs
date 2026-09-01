@@ -483,8 +483,9 @@ fn forward_enemy_guns_do_not_redefine_the_enemy_home_half() {
 }
 
 #[test]
-fn air_raids_launch_at_bare_economies_and_scrub_against_flak() {
+fn air_raids_ignore_unfinished_flak_but_scrub_against_completed_flak() {
     let mut obs = obs_with_home();
+    let dials = Dials::full();
     obs.my_units = vec![
         unit_obs(0, 0, UnitKind::Buzzard, 4, 4),
         unit_obs(1, 0, UnitKind::Buzzard, 5, 4),
@@ -492,7 +493,7 @@ fn air_raids_launch_at_bare_economies_and_scrub_against_flak() {
     ];
     obs.enemy_units = vec![unit_obs(9, 1, UnitKind::Harvester, 18, 9)];
     let mut policy = UtilityPolicy::new();
-    let intents = think(&mut policy, &obs);
+    let intents = player_think(&mut policy, &dials, &obs);
     assert!(
         intents
             .iter()
@@ -500,13 +501,44 @@ fn air_raids_launch_at_bare_economies_and_scrub_against_flak() {
         "three idle wings and a bare harvest line is a raid: {intents:?}"
     );
 
-    // Known flak over the target scrubs it.
-    obs.enemy_buildings = vec![building_obs(5, 1, BuildingKind::FlakTurret, 17, 8)];
+    let mut flak = building_obs(5, 1, BuildingKind::FlakTurret, 17, 8);
+    flak.built = false;
+    obs.enemy_buildings = vec![flak.clone()];
     let mut policy = UtilityPolicy::new();
-    let intents = think(&mut policy, &obs);
+    let intents = player_think(&mut policy, &dials, &obs);
+    assert!(
+        intents
+            .iter()
+            .any(|i| matches!(i, Intent::RaidAir { target } if *target == TilePos::new(18, 9))),
+        "an unfinished Flak site cannot fire and must not scrub the raid: {intents:?}"
+    );
+
+    flak.built = true;
+    obs.enemy_buildings = vec![flak.clone()];
+    let mut policy = UtilityPolicy::new();
+    let intents = player_think(&mut policy, &dials, &obs);
     assert!(
         !intents.iter().any(|i| matches!(i, Intent::RaidAir { .. })),
-        "no wing flies into known flak: {intents:?}"
+        "no wing flies into completed visible Flak: {intents:?}"
+    );
+
+    flak.seen = false;
+    obs.enemy_buildings = vec![flak];
+    let mut policy = UtilityPolicy::new();
+    let intents = player_think(&mut policy, &dials, &obs);
+    assert!(
+        !intents.iter().any(|i| matches!(i, Intent::RaidAir { .. })),
+        "completed remembered Flak remains actionable risk: {intents:?}"
+    );
+
+    obs.enemy_buildings[0].built = false;
+    let mut overseer_policy = UtilityPolicy::new();
+    let overseer = think(&mut overseer_policy, &obs);
+    assert!(
+        !overseer
+            .iter()
+            .any(|intent| matches!(intent, Intent::RaidAir { .. })),
+        "the frozen profile-free controller retains its legacy Flak assessment: {overseer:?}"
     );
 }
 

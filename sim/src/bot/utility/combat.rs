@@ -179,9 +179,7 @@ impl UtilityPolicy {
         &mut self,
         dials: &Dials,
         obs: &Observation,
-        home: TilePos,
-        enlisted: &[UnitId],
-        reserved: &[UnitId],
+        context: AirRaidContext<'_>,
         intents: &mut Vec<Intent>,
     ) {
         if !dials.air_harass {
@@ -195,8 +193,8 @@ impl UtilityPolicy {
                 stats.domain == crate::stats::Domain::Air
                     && stats.can_target(crate::stats::Domain::Ground)
                     && u.idle
-                    && !enlisted.contains(&u.id)
-                    && !reserved.contains(&u.id)
+                    && !context.enlisted.contains(&u.id)
+                    && !context.reserved.contains(&u.id)
             })
             .count();
         if wings < dials.air_wing {
@@ -208,18 +206,24 @@ impl UtilityPolicy {
             .enemy_units
             .iter()
             .filter(|u| u.kind.stats().harvest.is_some())
-            .map(|u| (u.tile.manhattan(home), u.tile.y, u.tile.x))
+            .map(|u| (u.tile.manhattan(context.home), u.tile.y, u.tile.x))
             .min()
             .map(|(_, y, x)| TilePos::new(x, y))
-            .or_else(|| Self::enemy_site(obs, home));
+            .or_else(|| Self::enemy_site(obs, context.home));
         let Some(target) = target else { return };
-        // Known anti-air over the target scrubs the raid: flak turrets
+        // Known operational anti-air over the target scrubs the raid: flak turrets
         // and AA crawlers in sight or memory near the objective.
         let aa_guard = obs
             .enemy_buildings
             .iter()
-            .filter(|b| b.kind == BuildingKind::FlakTurret)
-            .map(|b| b.anchor)
+            .filter(|building| {
+                building.kind == BuildingKind::FlakTurret
+                    // Keep the profile-free Overseer's historical threat
+                    // assessment while the maintained opponent distinguishes
+                    // an inactive construction site from a working gun.
+                    && (!context.player_facing || building.built)
+            })
+            .map(|building| building.anchor)
             .chain(
                 obs.enemy_units
                     .iter()

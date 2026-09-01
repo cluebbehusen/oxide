@@ -154,6 +154,14 @@ struct FerryClaims<'a> {
 }
 
 #[derive(Clone, Copy)]
+struct AirRaidContext<'a> {
+    home: TilePos,
+    enlisted: &'a [UnitId],
+    reserved: &'a [UnitId],
+    player_facing: bool,
+}
+
+#[derive(Clone, Copy)]
 struct ConstructionClaims<'a> {
     player_facing: bool,
     enlisted: &'a [UnitId],
@@ -2228,7 +2236,17 @@ impl UtilityPolicy {
         self.ferry(dials, obs, armies, home_tile, ferry_claims, &mut intents);
         self.army(dials, obs, armies, home_tile, mode, &mut intents);
         if !opening_core_deficient {
-            self.air_raid(dials, obs, home_tile, enlisted, reserved, &mut intents);
+            self.air_raid(
+                dials,
+                obs,
+                AirRaidContext {
+                    home: home_tile,
+                    enlisted,
+                    reserved,
+                    player_facing,
+                },
+                &mut intents,
+            );
         }
         intents
     }

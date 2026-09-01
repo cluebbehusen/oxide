@@ -1025,6 +1025,18 @@ fn strike(
     let intel = context.intel;
     let home = context.home;
     let landing_sites = context.landing_sites;
+    let flak = if plan.airborne() {
+        targetable_corridor_flak(intel, home, op.target, landing_sites)
+    } else if op.artillery.iter().any(|id| unit(obs, *id).is_some()) {
+        targetable_flak(&intel.air_defense_at(op.target))
+    } else {
+        None
+    };
+    if flak.is_some() {
+        enter(op, AirOperationPhase::SuppressAa, obs.tick);
+        suppress(op, plan, context, out);
+        return;
+    }
     let staging = if plan.airborne() {
         None
     } else {
@@ -1044,12 +1056,6 @@ fn strike(
             ArtilleryStaging::Ready(staging) => Some(staging),
         }
     };
-    if plan.airborne() && targetable_corridor_flak(intel, home, op.target, landing_sites).is_some()
-    {
-        enter(op, AirOperationPhase::SuppressAa, obs.tick);
-        suppress(op, plan, context, out);
-        return;
-    }
     let corridor_clear = if plan.airborne() {
         airborne_corridor_status(op, plan, obs, intel, home, landing_sites)
             == AirborneCorridorStatus::Clear
@@ -3230,6 +3236,127 @@ mod tests {
             out.reservations,
             [UnitId(1), UnitId(2), UnitId(3), UnitId(4)]
         );
+    }
+
+    #[test]
+    fn connected_verification_does_not_treat_unfinished_flak_as_operational() {
+        let flak_anchor = TilePos::new(20, 10);
+        let mut construction = obs(100);
+        see_approach(&mut construction);
+        let dark_approach = approach(HOME, TARGET)
+            .find(|tile| *tile != TARGET && *tile != flak_anchor)
+            .expect("the test route has an approach tile to reacquire");
+        let dark_index =
+            usize::try_from(dark_approach.y * construction.map_width + dark_approach.x).unwrap();
+        construction.visible[dark_index] = false;
+        let mut flak = building(81, 1, BuildingKind::FlakTurret, flak_anchor, true);
+        flak.built = false;
+        construction.enemy_buildings.push(flak);
+
+        let mut intel = knowledge(&construction);
+        assert!(
+            intel
+                .buildings()
+                .iter()
+                .any(|building| building.id == Some(BuildingId(81)) && !building.built),
+            "the observed construction remains available as ordinary intelligence"
+        );
+        let mut planner = with_operation(AirOperationPhase::Verify, construction.tick);
+        let while_unfinished = think(&mut planner, &construction, &intel);
+
+        let operation = planner
+            .air_operation()
+            .expect("the operation remains active");
+        assert_eq!(operation.phase, AirOperationPhase::Verify);
+        assert_eq!(operation.recovery_reason, None);
+        assert!(while_unfinished.intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::AttackUnits {
+                target: Target::Building(BuildingId(81)),
+                ..
+            }
+        )));
+
+        let mut completed = construction;
+        completed.tick += 1;
+        completed
+            .enemy_buildings
+            .iter_mut()
+            .find(|building| building.id == BuildingId(81))
+            .expect("the Flak construction remains in sight")
+            .built = true;
+        intel.update(&completed);
+        let after_completion = think(&mut planner, &completed, &intel);
+
+        let operation = planner
+            .air_operation()
+            .expect("suppression retains the operation");
+        assert_eq!(operation.phase, AirOperationPhase::SuppressAa);
+        assert_eq!(operation.recovery_reason, None);
+        assert!(after_completion.intents.iter().any(|intent| matches!(
+            intent,
+            Intent::AttackUnits {
+                target: Target::Building(BuildingId(81)),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn connected_strike_resumes_artillery_suppression_when_flak_completes() {
+        let flak_anchor = TilePos::new(20, 10);
+        let mut construction = obs(100);
+        see_approach(&mut construction);
+        explore(&mut construction, staging(HOME, TARGET));
+        let mut flak = building(81, 1, BuildingKind::FlakTurret, flak_anchor, true);
+        flak.built = false;
+        construction.enemy_buildings.push(flak);
+
+        let mut intel = knowledge(&construction);
+        let mut planner = with_operation(AirOperationPhase::Strike, construction.tick);
+        let while_unfinished = think(&mut planner, &construction, &intel);
+
+        let operation = planner.air_operation().expect("the strike remains active");
+        assert_eq!(operation.phase, AirOperationPhase::Strike);
+        assert_eq!(operation.recovery_reason, None);
+        assert!(while_unfinished.intents.iter().any(|intent| matches!(
+            intent,
+            Intent::AttackUnits {
+                target: Target::Building(BuildingId(80)),
+                ..
+            }
+        )));
+
+        let mut completed = construction;
+        completed.tick += 1;
+        completed
+            .enemy_buildings
+            .iter_mut()
+            .find(|building| building.id == BuildingId(81))
+            .expect("the Flak construction remains in sight")
+            .built = true;
+        intel.update(&completed);
+        let after_completion = think(&mut planner, &completed, &intel);
+
+        let operation = planner
+            .air_operation()
+            .expect("suppression retains the operation");
+        assert_eq!(operation.phase, AirOperationPhase::SuppressAa);
+        assert_eq!(operation.recovery_reason, None);
+        assert!(after_completion.intents.iter().any(|intent| matches!(
+            intent,
+            Intent::AttackUnits {
+                units,
+                target: Target::Building(BuildingId(81)),
+            } if units.contains(&UnitId(2))
+        )));
+        assert!(after_completion.intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::AttackUnits {
+                target: Target::Building(BuildingId(80)),
+                ..
+            }
+        )));
     }
 
     #[test]
