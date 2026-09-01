@@ -3,7 +3,7 @@
 //! re-validates everything — this module only shapes intent, and its
 //! fog checks exist so a click cannot *probe* what the player can't see.
 
-use super::{InputState, PICK_RADIUS};
+use super::{InputState, unit_pick_radius};
 use crate::game::{Game, PingKind};
 use chassis::grid::TilePos;
 use macroquad::prelude::{Vec2, vec2};
@@ -50,18 +50,18 @@ fn visible_hostile_target_at(
         .filter(|unit| {
             game.state.hostile(game.human, unit.player) && game.my_vision().visible(unit.tile())
         })
-        .map(|unit| {
+        .filter_map(|unit| {
             let position = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
-            (
-                position.distance(world),
+            let distance = position.distance(world);
+            (distance <= unit_pick_radius(unit.kind)).then_some((
+                distance,
                 unit.id,
                 position,
                 // Its layer right now: a parked airframe is a ground
                 // target for the weapons that can reach ground.
                 unit.domain(),
-            )
+            ))
         })
-        .filter(|(distance, ..)| *distance <= PICK_RADIUS)
         .min_by(|left, right| {
             left.0
                 .total_cmp(&right.0)
@@ -274,11 +274,11 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             })
             .map(|u| {
                 let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-                (p.distance(world), u.id)
+                (p.distance(world), u.id, u.kind)
             })
-            .filter(|(d, _)| *d <= PICK_RADIUS)
+            .filter(|(distance, _, kind)| *distance <= unit_pick_radius(*kind))
             .min_by(|a, b| a.0.total_cmp(&b.0));
-        if let Some((_, transport)) = sling {
+        if let Some((_, transport, _)) = sling {
             game.issue(Command::Load {
                 units: carriable,
                 transport,
@@ -319,11 +319,11 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             })
             .map(|u| {
                 let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-                (p.distance(world), u.id)
+                (p.distance(world), u.id, u.kind)
             })
-            .filter(|(d, _)| *d <= PICK_RADIUS)
+            .filter(|(distance, _, kind)| *distance <= unit_pick_radius(*kind))
             .min_by(|a, b| a.0.total_cmp(&b.0));
-        if let Some((_, target)) = patient {
+        if let Some((_, target, _)) = patient {
             game.issue(Command::RepairUnit {
                 units,
                 target,

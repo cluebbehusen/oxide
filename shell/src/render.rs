@@ -662,8 +662,12 @@ fn unit_work_facing(
 
 fn unit_selection_radius(kind: oxide_sim::UnitKind, zoom: f32, padding: f32) -> f32 {
     let collision_radius = kind.stats().radius.to_num::<f32>();
-    let visual_radius = unit_draw_scale(kind) * 0.5;
+    let visual_radius = unit_visual_radius(kind);
     collision_radius.max(visual_radius) * zoom + padding
+}
+
+pub(crate) fn unit_visual_radius(kind: oxide_sim::UnitKind) -> f32 {
+    unit_draw_scale(kind) * 0.5
 }
 
 pub(crate) fn unit_draw_scale(kind: oxide_sim::UnitKind) -> f32 {

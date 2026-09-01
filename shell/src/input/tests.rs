@@ -65,6 +65,141 @@ fn click(x: f32, y: f32) -> [RawEvent; 2] {
     ]
 }
 
+fn skyhook_interaction_game() -> Game {
+    let scenario = oxide_sim::Scenario::from_json(
+        "{
+        \"name\": \"skyhook interaction\",
+        \"seed\": 7,
+        \"players\": [
+            {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
+            {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
+        ],
+        \"map\": [
+            \"####################\",
+            \"#..................#\",
+            \"#.1..............2.#\",
+            \"#..................#\",
+            \"#..................#\",
+            \"#..................#\",
+            \"#..................#\",
+            \"#..................#\",
+            \"####################\"
+        ],
+        \"units\": [
+            {\"player\": 0, \"kind\": \"sentinel\", \"x\": 6, \"y\": 5},
+            {\"player\": 0, \"kind\": \"skyhook\", \"x\": 9, \"y\": 5},
+            {\"player\": 1, \"kind\": \"skyhook\", \"x\": 12, \"y\": 5}
+        ]
+    }",
+    )
+    .expect("inline Skyhook interaction scenario parses");
+    Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("Skyhook interaction builds")
+}
+
+#[test]
+fn skyhook_visible_edge_selects_the_transport() {
+    let mut game = skyhook_interaction_game();
+    let mut input = InputState::new();
+    let skyhook = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Skyhook)
+        .expect("fixture Skyhook");
+    let id = skyhook.id;
+    let center = vec2(skyhook.pos.x.to_num::<f32>(), skyhook.pos.y.to_num::<f32>());
+    game.camera.center = center;
+    game.camera.pan(Vec2::ZERO);
+    let edge = game.camera.to_screen(center + vec2(0.9, 0.0));
+
+    apply_events(&mut game, &mut input, &click(edge.x, edge.y));
+
+    assert_eq!(game.selection.units, vec![id]);
+}
+
+#[test]
+fn skyhook_visible_edge_accepts_a_load_order() {
+    let mut game = skyhook_interaction_game();
+    let mut input = InputState::new();
+    let sentinel = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Sentinel)
+        .expect("fixture Sentinel")
+        .id;
+    let skyhook = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Skyhook)
+        .expect("fixture Skyhook");
+    let transport = skyhook.id;
+    let center = vec2(skyhook.pos.x.to_num::<f32>(), skyhook.pos.y.to_num::<f32>());
+    game.camera.center = center;
+    game.camera.pan(Vec2::ZERO);
+    game.selection.units = vec![sentinel];
+    let edge = game.camera.to_screen(center + vec2(0.9, 0.0));
+
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Right,
+            x: edge.x,
+            y: edge.y,
+        }],
+    );
+
+    assert!(game.pending.iter().any(|command| matches!(
+        command.command,
+        Command::Load { transport: target, .. } if target == transport
+    )));
+}
+
+#[test]
+fn hostile_skyhook_visible_edge_accepts_an_attack_order() {
+    let mut game = skyhook_interaction_game();
+    let mut input = InputState::new();
+    let sentinel = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Sentinel)
+        .expect("fixture Sentinel")
+        .id;
+    let skyhook = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| unit.kind == UnitKind::Skyhook && unit.player != game.human)
+        .expect("fixture hostile Skyhook");
+    let target = skyhook.id;
+    let center = vec2(skyhook.pos.x.to_num::<f32>(), skyhook.pos.y.to_num::<f32>());
+    game.camera.center = center;
+    game.camera.pan(Vec2::ZERO);
+    game.selection.units = vec![sentinel];
+    let edge = game.camera.to_screen(center + vec2(0.9, 0.0));
+
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Right,
+            x: edge.x,
+            y: edge.y,
+        }],
+    );
+
+    assert!(game.pending.iter().any(|command| matches!(
+        command.command,
+        Command::Attack {
+            target: oxide_sim::Target::Unit(unit),
+            ..
+        } if unit == target
+    )));
+}
+
 #[test]
 fn shift_click_selects_and_toggles_same_owner_buildings() {
     let mut game = multi_producer_game();

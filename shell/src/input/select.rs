@@ -52,8 +52,8 @@ pub(super) fn cycle_idle_worker(game: &mut Game) {
 
 /// World-space pick radius around a unit: generous when zoomed out so
 /// units never need tweezers (at least 10 logical px on screen).
-fn pick_radius(game: &Game, ui: f32) -> f32 {
-    (10.0 * ui / game.camera.zoom).max(0.6)
+fn pick_radius(game: &Game, ui: f32, kind: oxide_sim::UnitKind) -> f32 {
+    (10.0 * ui / game.camera.zoom).max(super::unit_pick_radius(kind))
 }
 
 /// HUD chrome that swallows clicks: the top bar always; the bottom panel
@@ -91,17 +91,21 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
     // Nearest visible unit of any owner within pick range wins; own
     // units outrank foreign ones inside the radius so a scrum never
     // steals the click from the machine you can actually command.
-    let radius = pick_radius(game, ui);
     let picked = game
         .state
         .units()
         .iter()
         .filter(|u| selectable(game, u))
-        .map(|u| {
+        .filter_map(|u| {
             let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-            (u.player != game.human, p.distance(world), u.id, u.player)
+            let distance = p.distance(world);
+            (distance <= pick_radius(game, ui, u.kind)).then_some((
+                u.player != game.human,
+                distance,
+                u.id,
+                u.player,
+            ))
         })
-        .filter(|(_, d, ..)| *d <= radius)
         .min_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).expect("finite"));
     if let Some((_, _, id, owner)) = picked {
         game.selection.buildings.clear();
@@ -315,7 +319,6 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
 /// Double-click: everyone of the clicked unit's kind currently on screen.
 pub(super) fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f32) {
     let world = game.camera.to_world(screen);
-    let radius = pick_radius(game, ui);
     // The sweep stays within the PICKED unit's owner: double-clicking
     // an ally harvester gathers that ally's harvesters on screen, never
     // a cross-allegiance soup. Own units outrank foreign at the pick,
@@ -325,11 +328,16 @@ pub(super) fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f3
         .units()
         .iter()
         .filter(|u| selectable(game, u))
-        .map(|u| {
+        .filter_map(|u| {
             let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-            (u.player != game.human, p.distance(world), u.kind, u.player)
+            let distance = p.distance(world);
+            (distance <= pick_radius(game, ui, u.kind)).then_some((
+                u.player != game.human,
+                distance,
+                u.kind,
+                u.player,
+            ))
         })
-        .filter(|(_, d, ..)| *d <= radius)
         .min_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).expect("finite"));
     let Some((_, _, kind, owner)) = picked else {
         return;

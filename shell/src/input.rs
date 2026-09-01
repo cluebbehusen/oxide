@@ -51,6 +51,11 @@ pub(crate) fn drag_feedback(origin: Vec2, at: Vec2, ui: f32) -> DragFeedback {
 
 /// World-unit pick radius around a unit's center.
 const PICK_RADIUS: f32 = 0.6;
+
+fn unit_pick_radius(kind: oxide_sim::UnitKind) -> f32 {
+    PICK_RADIUS.max(crate::render::unit_visual_radius(kind))
+}
+
 /// Camera pan speed in screen pixels per second (converted by zoom).
 const PAN_PX_PER_SEC: f32 = 900.0;
 
@@ -1450,11 +1455,11 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 })
                 .map(|u| {
                     let at = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-                    (at.distance(world), u.id)
+                    (at.distance(world), u.id, u.kind)
                 })
-                .filter(|(d, _)| *d <= PICK_RADIUS)
+                .filter(|(distance, _, kind)| *distance <= unit_pick_radius(*kind))
                 .min_by(|a, b| a.0.total_cmp(&b.0));
-            let Some((_, target)) = patient else {
+            let Some((_, target, _)) = patient else {
                 game.toast("weld wants a damaged own ground unit");
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
@@ -1644,7 +1649,7 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     let sees = |t: TilePos| game.all_seeing() || game.my_vision().visible(t);
     let on_entity = game.state.units().iter().any(|u| {
         let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-        p.distance(world) <= PICK_RADIUS && (u.player == game.human || sees(u.tile()))
+        p.distance(world) <= unit_pick_radius(u.kind) && (u.player == game.human || sees(u.tile()))
     }) || game.state.building_at(tile).is_some_and(|b| {
         // Same rule as fog, for stealth: an undetected buried charge
         // must not flip a rally into a select, or taps would scan for

@@ -719,6 +719,23 @@ enum ShotVisibility {
     Full,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SapperEffectVisibility {
+    body: bool,
+    bloom: bool,
+}
+
+fn sapper_effect_visibility(
+    unredacted: bool,
+    source_visible: bool,
+    impact_visible: bool,
+) -> SapperEffectVisibility {
+    SapperEffectVisibility {
+        body: unredacted || source_visible,
+        bloom: unredacted || impact_visible,
+    }
+}
+
 fn shot_visibility(
     style: crate::game::ShotStyle,
     source_visible: bool,
@@ -882,8 +899,17 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 at,
                 blast_at,
                 player,
+                source_witnessed,
+                impact_witnessed,
                 ..
-            } => player == game.human || sees(at) || sees(blast_at),
+            } => {
+                let visibility = sapper_effect_visibility(
+                    player == game.human,
+                    source_witnessed || sees(at),
+                    impact_witnessed || sees(blast_at),
+                );
+                visibility.body || visibility.bloom
+            }
             EffectKind::Puff { at } => sees(at),
             EffectKind::Falling { at, .. } => sees(at),
             EffectKind::Burst { at, .. } => sees(at),
@@ -1032,6 +1058,8 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 rotation,
                 player,
                 faction,
+                source_witnessed,
+                impact_witnessed,
                 ..
             } => {
                 let age = fx.age_at(game.state.current_tick(), game.tick_fraction());
@@ -1040,42 +1068,55 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 let body = game.camera.to_screen(at);
                 let size = game.camera.zoom * super::unit_draw_scale(oxide_sim::UnitKind::Sapper);
                 let body_size = vec2(size, size);
-                draw_texture_ex(
-                    sprites.texture(),
-                    body.x - size * 0.5,
-                    body.y - size * 0.5,
-                    Color::new(1.0, 1.0, 1.0, fade),
-                    DrawTextureParams {
-                        dest_size: Some(body_size),
-                        source: Some(sprites.unit_action(oxide_sim::UnitKind::Sapper, faction, 2)),
-                        rotation,
-                        ..Default::default()
-                    },
+                let visibility = sapper_effect_visibility(
+                    game.all_seeing() || player == game.human,
+                    source_witnessed || sees(at),
+                    impact_witnessed || sees(blast_at),
                 );
-                if let Some(mut tint) = seat_identity_tint(game, player) {
-                    tint.a *= fade;
+                if visibility.body {
                     draw_texture_ex(
                         sprites.texture(),
                         body.x - size * 0.5,
                         body.y - size * 0.5,
-                        tint,
+                        Color::new(1.0, 1.0, 1.0, fade),
                         DrawTextureParams {
                             dest_size: Some(body_size),
-                            source: Some(
-                                sprites.unit_action_accent(oxide_sim::UnitKind::Sapper, 2),
-                            ),
+                            source: Some(sprites.unit_action(
+                                oxide_sim::UnitKind::Sapper,
+                                faction,
+                                2,
+                            )),
                             rotation,
                             ..Default::default()
                         },
                     );
+                    if let Some(mut tint) = seat_identity_tint(game, player) {
+                        tint.a *= fade;
+                        draw_texture_ex(
+                            sprites.texture(),
+                            body.x - size * 0.5,
+                            body.y - size * 0.5,
+                            tint,
+                            DrawTextureParams {
+                                dest_size: Some(body_size),
+                                source: Some(
+                                    sprites.unit_action_accent(oxide_sim::UnitKind::Sapper, 2),
+                                ),
+                                rotation,
+                                ..Default::default()
+                            },
+                        );
+                    }
                 }
-                draw_splash_bloom(
-                    sprites,
-                    game.camera.to_screen(blast_at),
-                    game.camera.zoom,
-                    oxide_sim::stats::SAPPER_BLAST_RADIUS.to_num::<f32>(),
-                    progress,
-                );
+                if visibility.bloom {
+                    draw_splash_bloom(
+                        sprites,
+                        game.camera.to_screen(blast_at),
+                        game.camera.zoom,
+                        oxide_sim::stats::SAPPER_BLAST_RADIUS.to_num::<f32>(),
+                        progress,
+                    );
+                }
             }
             EffectKind::Falling { at, unit, faction } => {
                 // Gravity takes the wreck: drop accelerates, the hull
@@ -2233,6 +2274,38 @@ mod tests {
         assert_eq!(
             shot_visibility(ShotStyle::ForgeSpot, true, false),
             ShotVisibility::Hidden
+        );
+    }
+
+    #[test]
+    fn sapper_visibility_separates_the_source_body_from_the_impact_bloom() {
+        assert_eq!(
+            sapper_effect_visibility(false, false, true),
+            SapperEffectVisibility {
+                body: false,
+                bloom: true,
+            }
+        );
+        assert_eq!(
+            sapper_effect_visibility(false, true, false),
+            SapperEffectVisibility {
+                body: true,
+                bloom: false,
+            }
+        );
+        assert_eq!(
+            sapper_effect_visibility(false, false, false),
+            SapperEffectVisibility {
+                body: false,
+                bloom: false,
+            }
+        );
+        assert_eq!(
+            sapper_effect_visibility(true, false, false),
+            SapperEffectVisibility {
+                body: true,
+                bloom: true,
+            }
         );
     }
 

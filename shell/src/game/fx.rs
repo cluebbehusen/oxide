@@ -326,6 +326,10 @@ pub enum EffectKind {
         player: oxide_sim::PlayerId,
         /// Faction-specific base art.
         faction: oxide_sim::Faction,
+        /// The source position was legitimately known when the report arrived.
+        source_witnessed: bool,
+        /// The impact position was legitimately known when the report arrived.
+        impact_witnessed: bool,
         /// Simulation tick immediately after the hit was reported.
         completed_tick: u64,
     },
@@ -385,6 +389,32 @@ fn push_direct_report(
         },
         age: 0.0,
     });
+}
+
+fn event_target_owner(
+    state: &oxide_sim::State,
+    events: &[Event],
+    target: oxide_sim::Target,
+) -> Option<oxide_sim::PlayerId> {
+    match target {
+        oxide_sim::Target::Unit(id) => state.unit(id).map(|unit| unit.player).or_else(|| {
+            events.iter().find_map(|event| match event {
+                Event::UnitDied { unit, player, .. } if *unit == id => Some(*player),
+                _ => None,
+            })
+        }),
+        oxide_sim::Target::Building(id) => state
+            .building(id)
+            .map(|building| building.player)
+            .or_else(|| {
+                events.iter().find_map(|event| match event {
+                    Event::BuildingDestroyed {
+                        building, player, ..
+                    } if *building == id => Some(*player),
+                    _ => None,
+                })
+            }),
+    }
 }
 
 impl Game {
@@ -457,16 +487,8 @@ impl Game {
                             (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
                         );
                     }
-                    let own_target = match target {
-                        oxide_sim::Target::Unit(uid) => self
-                            .state
-                            .unit(*uid)
-                            .is_some_and(|u| u.player == self.human),
-                        oxide_sim::Target::Building(bid) => self
-                            .state
-                            .building(*bid)
-                            .is_some_and(|b| b.player == self.human),
-                    };
+                    let target_owner = event_target_owner(&self.state, events, *target);
+                    let own_target = target_owner == Some(self.human);
                     if own_target {
                         self.raise_alert(world_vec(*target_pos));
                     }
@@ -484,9 +506,12 @@ impl Game {
                             })
                         })
                         .flatten();
-                    let heard = sees(self, *attacker_pos)
-                        || sees(self, *target_pos)
-                        || sapper_owner == Some(self.human);
+                    let source_witnessed =
+                        sees(self, *attacker_pos) || sapper_owner == Some(self.human);
+                    let impact_witnessed = sees(self, *target_pos)
+                        || target_owner
+                            .is_some_and(|player| !self.state.hostile(self.human, player));
+                    let heard = source_witnessed || impact_witnessed;
                     let sound = unit_fire_sound(*attacker_kind);
                     // The burst radius comes from the exact weapon that
                     // fired — the event says which slot — so the
@@ -521,6 +546,8 @@ impl Game {
                                     rotation,
                                     player,
                                     faction: self.state.player(player).faction,
+                                    source_witnessed,
+                                    impact_witnessed,
                                     completed_tick: self.state.current_tick(),
                                 },
                                 age: 0.0,
@@ -1115,6 +1142,58 @@ mod tests {
                 .iter()
                 .any(|(sound, _)| *sound == SoundKind::DemolitionBoom)
         );
+    }
+
+    #[test]
+    fn enemy_sapper_report_survives_killing_the_last_local_observer() {
+        let scenario = oxide_sim::Scenario::skirmish();
+        let mut game =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .expect("Sapper presentation scenario builds");
+        let attacker = UnitId(998);
+        let victim = UnitId(999);
+        let at = chassis::grid::TilePos::new(30, 20).center();
+        let events = [
+            oxide_sim::Event::AttackHit {
+                attacker,
+                attacker_kind: UnitKind::Sapper,
+                weapon: 0,
+                target: Target::Unit(victim),
+                attacker_pos: at,
+                target_pos: at,
+            },
+            oxide_sim::Event::UnitDied {
+                unit: attacker,
+                kind: UnitKind::Sapper,
+                player: oxide_sim::PlayerId(1),
+                pos: at,
+                grounded: true,
+            },
+            oxide_sim::Event::UnitDied {
+                unit: victim,
+                kind: UnitKind::Sentinel,
+                player: game.human,
+                pos: at,
+                grounded: true,
+            },
+        ];
+
+        game.spawn_fx(&events);
+
+        assert!(
+            game.sounds_pending
+                .iter()
+                .any(|(sound, _)| *sound == SoundKind::DemolitionBoom),
+            "the witnessed demolition must not become silent after its last observer dies"
+        );
+        assert!(game.fx.iter().any(|effect| matches!(
+            effect.kind,
+            EffectKind::SapperDetonation {
+                source_witnessed: false,
+                impact_witnessed: true,
+                ..
+            }
+        )));
     }
 
     #[test]
