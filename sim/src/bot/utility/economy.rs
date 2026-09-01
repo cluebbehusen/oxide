@@ -1861,7 +1861,7 @@ mod tests {
         dials.adaptive_composition = true;
         let decide = |public_start_demand: bool, persistent_demand: bool, scrap: u32| {
             let mut policy = UtilityPolicy::new();
-            policy.public_start_air_scout_needed = public_start_demand;
+            policy.public_prior_air_scout_needed = public_start_demand;
             policy.persistent_air_scout_needed = persistent_demand;
             let mut current = obs.clone();
             current.scrap = scrap;

@@ -73,13 +73,40 @@ fn ground_weapon_reaches_footprint(unit: &UnitObs, anchor: TilePos, size: (i32, 
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicScoutPrior {
+    HostileStart(StartingFoundry),
+    Extractor(TilePos),
+}
+
+impl PublicScoutPrior {
+    const fn anchor(self) -> TilePos {
+        match self {
+            Self::HostileStart(start) => start.anchor,
+            Self::Extractor(anchor) => anchor,
+        }
+    }
+
+    fn footprint(self) -> (i32, i32) {
+        match self {
+            Self::HostileStart(_) => BuildingKind::Foundry.base_stats().size,
+            Self::Extractor(_) => BuildingKind::Extractor.base_stats().size,
+        }
+    }
+}
+
 impl UtilityPolicy {
     fn scouting_objectives(
         &self,
         obs: &Observation,
         home: TilePos,
         public_map: Option<&PublicMapBriefing>,
-    ) -> (Option<TilePos>, Option<TilePos>, Option<StartingFoundry>) {
+    ) -> (
+        Option<TilePos>,
+        Option<TilePos>,
+        Option<StartingFoundry>,
+        Option<TilePos>,
+    ) {
         let nearest = |foundries_only: bool| {
             obs.enemy_buildings
                 .iter()
@@ -112,19 +139,77 @@ impl UtilityPolicy {
         } else {
             None
         };
-        (known_foundry, known_base, public_start)
+        let public_extractor = public_map.and_then(|public_map| {
+            let footprint = BuildingKind::Extractor.base_stats().size;
+            public_map
+                .extractor_frames()
+                .iter()
+                .copied()
+                .filter(|frame| {
+                    !(0..footprint.1)
+                        .all(|dy| (0..footprint.0).all(|dx| obs.explored(frame.offset(dx, dy))))
+                })
+                .min_by_key(|frame| {
+                    let cluster_size = public_map
+                        .extractor_frames()
+                        .iter()
+                        .filter(|other| {
+                            frame.chebyshev(**other) <= crate::stats::EXTRACTOR_SUPPORT_RADIUS
+                        })
+                        .count();
+                    (
+                        std::cmp::Reverse(cluster_size),
+                        frame.manhattan(home),
+                        frame.y,
+                        frame.x,
+                    )
+                })
+        });
+        (known_foundry, known_base, public_start, public_extractor)
     }
 
-    pub(super) fn refresh_public_start_air_scout_demand(
+    fn selected_public_scout_prior(
+        known_base: Option<TilePos>,
+        public_start: Option<StartingFoundry>,
+        public_extractor: Option<TilePos>,
+        base_recon_due: bool,
+    ) -> Option<PublicScoutPrior> {
+        if known_base.is_none() {
+            public_start
+                .map(PublicScoutPrior::HostileStart)
+                .or_else(|| public_extractor.map(PublicScoutPrior::Extractor))
+        } else if base_recon_due {
+            None
+        } else {
+            public_extractor.map(PublicScoutPrior::Extractor)
+        }
+    }
+
+    pub(super) fn refresh_public_prior_air_scout_demand(
         &mut self,
         obs: &Observation,
         home: TilePos,
         public_map: Option<&PublicMapBriefing>,
     ) {
-        let (_, _, public_start) = self.scouting_objectives(obs, home, public_map);
-        self.public_start_air_scout_needed = public_start.is_some_and(|start| {
+        let (_, known_base, public_start, public_extractor) =
+            self.scouting_objectives(obs, home, public_map);
+        let base_recon_due =
+            known_base.is_some() && obs.tick.saturating_sub(self.scout_sent_at) >= SCOUT_REFRESH;
+        let public_prior = Self::selected_public_scout_prior(
+            known_base,
+            public_start,
+            public_extractor,
+            base_recon_due,
+        );
+        self.public_prior_air_scout_needed = public_prior.is_some_and(|prior| {
             public_map.is_some_and(|public_map| {
-                !Self::public_start_ground_connected(public_map, obs, home, start.anchor)
+                !Self::public_prior_ground_connected(
+                    public_map,
+                    obs,
+                    home,
+                    prior.anchor(),
+                    prior.footprint(),
+                )
             })
         });
     }
@@ -258,8 +343,9 @@ impl UtilityPolicy {
     }
 
     /// Player-facing scouting with immutable authored priors. Public starts
-    /// can only become reconnaissance destinations; dynamic observation still
-    /// owns every combat, construction, and current-base decision.
+    /// and Extractor frames can only become reconnaissance destinations;
+    /// dynamic observation still owns every combat, construction, and
+    /// current-base decision.
     pub(super) fn scouting_with_public_map(
         &mut self,
         obs: &Observation,
@@ -273,8 +359,6 @@ impl UtilityPolicy {
         /// harvester's vision (6), and close enough to aggro (5) that
         /// the peek must rely on the scout's legs, not its armor.
         const STANDOFF: i32 = 5;
-        let prior_public_start_ground_scout = self.public_start_ground_scout;
-
         let standoff = |from: TilePos, objective: TilePos| -> TilePos {
             let (dx, dy) = (objective.x - from.x, objective.y - from.y);
             let d = dx.abs().max(dy.abs());
@@ -299,17 +383,38 @@ impl UtilityPolicy {
             }
         };
 
-        let (known_foundry, known_base, public_start) =
+        let (known_foundry, known_base, public_start, public_extractor) =
             self.scouting_objectives(obs, home, public_map);
-        let public_start_requires_air = public_start.is_some_and(|start| {
+        let base_recon_due =
+            known_base.is_some() && obs.tick.saturating_sub(self.scout_sent_at) >= SCOUT_REFRESH;
+        let public_prior = Self::selected_public_scout_prior(
+            known_base,
+            public_start,
+            public_extractor,
+            base_recon_due,
+        );
+        if public_start.is_none() && public_extractor.is_none() {
+            // A due base refresh temporarily suppresses an authored prior,
+            // but complete exploration retires it. Only the former keeps an
+            // in-flight ground probe classified as authored reconnaissance.
+            self.public_prior_ground_scout = None;
+        }
+        let prior_public_prior_ground_scout = self.public_prior_ground_scout;
+        let public_prior_requires_air = public_prior.is_some_and(|prior| {
             public_map.is_some_and(|public_map| {
-                !Self::public_start_ground_connected(public_map, obs, home, start.anchor)
+                !Self::public_prior_ground_connected(
+                    public_map,
+                    obs,
+                    home,
+                    prior.anchor(),
+                    prior.footprint(),
+                )
             })
         });
-        self.public_start_air_scout_needed = public_start_requires_air;
+        self.public_prior_air_scout_needed = public_prior_requires_air;
         self.contested_recon_air_scout_needed = false;
-        if public_start_requires_air {
-            self.public_start_ground_scout = None;
+        if public_prior_requires_air {
+            self.public_prior_ground_scout = None;
             if self.scout.is_some_and(|id| {
                 obs.my_units
                     .iter()
@@ -320,7 +425,10 @@ impl UtilityPolicy {
             }
         }
         let rear_recon_goal = known_foundry
-            .or_else(|| public_start.map(|start| start.anchor))
+            .or(match public_prior {
+                Some(PublicScoutPrior::HostileStart(start)) => Some(start.anchor),
+                _ => None,
+            })
             .map(|foundry| self.passable_near(obs, rear_side(home, foundry)));
         let foundry_current = known_foundry.is_some_and(|foundry| {
             obs.enemy_buildings.iter().any(|building| {
@@ -333,29 +441,30 @@ impl UtilityPolicy {
             self.scouted_at = obs.tick;
         }
         let due = contested_recon.is_some()
-            || known_base.is_none()
-            || obs.tick.saturating_sub(self.scout_sent_at) >= SCOUT_REFRESH;
+            || base_recon_due
+            || public_prior.is_some()
+            || known_base.is_none();
 
         if let Some(id) = self.scout
             && !obs.my_units.iter().any(|u| u.id == id)
         {
-            let public_start_ground_scout_lost = prior_public_start_ground_scout == Some(id);
+            let public_prior_ground_scout_lost = prior_public_prior_ground_scout == Some(id);
             let contested_scout_lost = self
                 .contested_scout
                 .is_some_and(|(contested, _)| contested == id);
-            let dispatched_air_scout_lost = !public_start_ground_scout_lost
+            let dispatched_air_scout_lost = !public_prior_ground_scout_lost
                 && !contested_scout_lost
                 && self.air_scout_needed()
                 && self.scout_dispatch.is_some_and(|(sent, _, _)| sent == id);
             self.scout = None;
             self.scout_dispatch = None;
-            self.public_start_ground_scout = None;
+            self.public_prior_ground_scout = None;
             if contested_scout_lost {
                 self.contested_scout = None;
                 self.contested_recon_retry_at =
                     obs.tick.saturating_add(CONTESTED_RECON_RETRY_TICKS);
             }
-            if public_start_ground_scout_lost {
+            if public_prior_ground_scout_lost {
                 self.persistent_air_scout_needed = true;
             }
             if dispatched_air_scout_lost {
@@ -363,9 +472,6 @@ impl UtilityPolicy {
                 self.solo_air_scout_dark_since = None;
                 self.solo_air_scout_retry_at = obs.tick.saturating_add(SOLO_SCOUT_RETRY_TICKS);
             }
-        }
-        if public_start.is_none() {
-            self.public_start_ground_scout = None;
         }
         if self.solo_air_scout_suspended {
             let actionable_enemy_sight = obs
@@ -404,7 +510,7 @@ impl UtilityPolicy {
             });
             self.scout = None;
             self.scout_dispatch = None;
-            self.public_start_ground_scout = None;
+            self.public_prior_ground_scout = None;
             if self
                 .contested_scout
                 .is_some_and(|(contested, _)| contested == id)
@@ -429,7 +535,7 @@ impl UtilityPolicy {
             // for the faction's dedicated scout flyer.
             self.scout = None;
             self.scout_dispatch = None;
-            self.public_start_ground_scout = None;
+            self.public_prior_ground_scout = None;
             if self
                 .contested_scout
                 .is_some_and(|(contested, _)| contested == id)
@@ -445,7 +551,7 @@ impl UtilityPolicy {
             {
                 self.scout = None;
                 self.scout_dispatch = None;
-                self.public_start_ground_scout = None;
+                self.public_prior_ground_scout = None;
             }
             return;
         }
@@ -491,7 +597,7 @@ impl UtilityPolicy {
             .expect("the selected scout came from this observation");
         let to = if let Some(recon) = contested_recon {
             recon.target
-        } else if let Some(base) = known_base {
+        } else if base_recon_due && let Some(base) = known_base {
             self.scout_sent_at = obs.tick;
             if member.kind.role() == crate::stats::Role::Scout
                 && member.kind.stats().domain == Domain::Air
@@ -500,14 +606,25 @@ impl UtilityPolicy {
             } else {
                 standoff(home, base)
             }
-        } else if let Some(start) = public_start {
-            self.scout_sent_at = obs.tick;
-            if member.kind.role() == crate::stats::Role::Scout
-                && member.kind.stats().domain == Domain::Air
-            {
-                rear_recon_goal.unwrap_or_else(|| rear_side(home, start.anchor))
-            } else {
-                standoff(home, start.anchor)
+        } else if let Some(prior) = public_prior {
+            match prior {
+                PublicScoutPrior::HostileStart(start) => {
+                    self.scout_sent_at = obs.tick;
+                    if member.kind.role() == crate::stats::Role::Scout
+                        && member.kind.stats().domain == Domain::Air
+                    {
+                        rear_recon_goal.unwrap_or_else(|| rear_side(home, start.anchor))
+                    } else {
+                        standoff(home, start.anchor)
+                    }
+                }
+                PublicScoutPrior::Extractor(frame) => {
+                    if member.kind.stats().domain == Domain::Air {
+                        frame
+                    } else {
+                        standoff(home, frame)
+                    }
+                }
             }
         } else {
             let (w, h) = (obs.map_width, obs.map_height);
@@ -550,7 +667,7 @@ impl UtilityPolicy {
         {
             self.scout = None;
             self.scout_dispatch = None;
-            self.public_start_ground_scout = None;
+            self.public_prior_ground_scout = None;
             self.recall_contested_scout(scout);
             self.persistent_air_scout_needed = true;
             return;
@@ -569,7 +686,8 @@ impl UtilityPolicy {
             return;
         }
         let from = member.tile;
-        self.public_start_ground_scout = (public_start.is_some()
+        self.public_prior_ground_scout = (public_prior.is_some()
+            && contested_recon.is_none()
             && member.kind.stats().domain == Domain::Ground)
             .then_some(scout);
         if let Some(recon) = contested_recon {
@@ -612,11 +730,12 @@ impl UtilityPolicy {
         }
     }
 
-    pub(super) fn public_start_ground_connected(
+    fn public_prior_ground_connected(
         public_map: &PublicMapBriefing,
         obs: &Observation,
         home: TilePos,
         target: TilePos,
+        target_size: (i32, i32),
     ) -> bool {
         let (width, height) = (public_map.map_width(), public_map.map_height());
         if width != obs.map_width || height != obs.map_height {
@@ -642,7 +761,6 @@ impl UtilityPolicy {
         if !ground(home) {
             return false;
         }
-        let target_size = BuildingKind::Foundry.base_stats().size;
         (0..target_size.1)
             .flat_map(|dy| (0..target_size.0).map(move |dx| target.offset(dx, dy)))
             .any(|goal| {
@@ -656,6 +774,22 @@ impl UtilityPolicy {
                 )
                 .is_some()
             })
+    }
+
+    #[cfg(test)]
+    pub(super) fn public_start_ground_connected(
+        public_map: &PublicMapBriefing,
+        obs: &Observation,
+        home: TilePos,
+        target: TilePos,
+    ) -> bool {
+        Self::public_prior_ground_connected(
+            public_map,
+            obs,
+            home,
+            target,
+            BuildingKind::Foundry.base_stats().size,
+        )
     }
 
     /// Army channel: an intruder near home turns every army on it;
@@ -1253,6 +1387,14 @@ mod tests {
     }
 
     fn public_briefing(starts: &[TilePos], separator: Option<(i32, char)>) -> PublicMapBriefing {
+        public_briefing_with_frames(starts, &[], separator)
+    }
+
+    fn public_briefing_with_frames(
+        starts: &[TilePos],
+        frames: &[TilePos],
+        separator: Option<(i32, char)>,
+    ) -> PublicMapBriefing {
         const WIDTH: usize = 40;
         const HEIGHT: usize = 24;
 
@@ -1263,6 +1405,10 @@ mod tests {
             for row in &mut rows {
                 row[x] = authored as u8;
             }
+        }
+        for frame in frames {
+            rows[usize::try_from(frame.y).expect("frame y is in bounds")]
+                [usize::try_from(frame.x).expect("frame x is in bounds")] = b'E';
         }
         for (index, anchor) in starts.iter().enumerate() {
             rows[usize::try_from(anchor.y).expect("start y is in bounds")]
@@ -1350,6 +1496,276 @@ mod tests {
             building_contacts: None,
             public_map: None,
         }
+    }
+
+    #[test]
+    fn authored_extractor_frame_is_a_recon_prior_without_becoming_live_state() {
+        let home = TilePos::new(4, 12);
+        let frame = TilePos::new(28, 12);
+        let public_map = public_briefing_with_frames(&[home], &[frame], None);
+        let obs = recon_observation(home, UnitKind::Harvester);
+        let mut policy = UtilityPolicy::new();
+        let mut intents = Vec::new();
+
+        assert!(obs.known_frames.is_empty());
+        assert!(obs.my_buildings.is_empty());
+        assert!(obs.enemy_buildings.is_empty());
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+
+        assert_eq!(
+            intents,
+            vec![Intent::Scout {
+                unit: UnitId(1),
+                to: TilePos::new(23, 12),
+            }],
+            "the briefing may direct a look without asserting that an Extractor currently exists"
+        );
+        assert!(obs.known_frames.is_empty());
+        assert!(obs.my_buildings.is_empty());
+        assert!(obs.enemy_buildings.is_empty());
+    }
+
+    #[test]
+    fn rich_public_extractor_cluster_outranks_a_nearer_single_frame() {
+        let home = TilePos::new(4, 12);
+        let singleton = TilePos::new(12, 12);
+        let cluster = [
+            TilePos::new(26, 6),
+            TilePos::new(28, 6),
+            TilePos::new(30, 6),
+        ];
+        let frames = [singleton, cluster[0], cluster[1], cluster[2]];
+        let public_map = public_briefing_with_frames(&[home], &frames, None);
+        let obs = recon_observation(home, UnitKind::Harvester);
+        let mut policy = UtilityPolicy::new();
+        let mut intents = Vec::new();
+
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+
+        assert_eq!(
+            intents,
+            vec![Intent::Scout {
+                unit: UnitId(1),
+                to: TilePos::new(21, 7),
+            }],
+            "three support-radius peers should make the remote economic cluster more informative than one nearby frame"
+        );
+    }
+
+    #[test]
+    fn explored_public_extractor_advances_to_the_next_prior_then_generic_sweep() {
+        let home = TilePos::new(4, 12);
+        let first = TilePos::new(16, 12);
+        let second = TilePos::new(28, 12);
+        let public_map = public_briefing_with_frames(&[home], &[first, second], None);
+        let mut obs = recon_observation(home, UnitKind::Harvester);
+        let mut policy = UtilityPolicy::new();
+        let mut intents = Vec::new();
+
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+        assert_eq!(
+            intents,
+            vec![Intent::Scout {
+                unit: UnitId(1),
+                to: TilePos::new(11, 12),
+            }]
+        );
+
+        for dy in 0..2 {
+            for dx in 0..2 {
+                set_visible(&mut obs, first.offset(dx, dy), true);
+            }
+        }
+        obs.tick += 1;
+        obs.my_units[0].tile = TilePos::new(11, 12);
+        intents.clear();
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+        assert_eq!(
+            intents,
+            vec![Intent::Scout {
+                unit: UnitId(1),
+                to: TilePos::new(23, 12),
+            }],
+            "complete exploration must retire the first prior instead of redispatching it"
+        );
+
+        for dy in 0..2 {
+            for dx in 0..2 {
+                set_visible(&mut obs, second.offset(dx, dy), true);
+            }
+        }
+        obs.tick += 1;
+        obs.my_units[0].tile = TilePos::new(23, 12);
+        intents.clear();
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+        assert_eq!(
+            intents,
+            vec![Intent::Scout {
+                unit: UnitId(1),
+                to: TilePos::new(30, 11),
+            }],
+            "once every authored frame has been observed, ordinary map rotation resumes"
+        );
+    }
+
+    #[test]
+    fn public_extractor_air_demand_recomputes_after_a_hidden_scrap_barrier_clears() {
+        let home = TilePos::new(4, 12);
+        let frame = TilePos::new(28, 12);
+        let public_map = public_briefing_with_frames(&[home], &[frame], Some((20, 's')));
+        let mut obs = recon_observation(home, UnitKind::Harvester);
+        let mut policy = UtilityPolicy::new();
+        let mut intents = Vec::new();
+
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+        assert!(intents.is_empty());
+        assert!(policy.public_prior_air_scout_needed);
+        assert!(!policy.persistent_air_scout_needed);
+
+        for y in 0..obs.map_height {
+            set_visible(&mut obs, TilePos::new(20, y), true);
+        }
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+
+        assert!(!policy.air_scout_needed());
+        assert_eq!(
+            intents,
+            vec![Intent::Scout {
+                unit: UnitId(1),
+                to: TilePos::new(23, 12),
+            }],
+            "current negative evidence must reopen the ground route rather than leave a sticky air-only latch"
+        );
+    }
+
+    #[test]
+    fn public_extractor_recon_runs_between_known_base_refreshes() {
+        let home = TilePos::new(4, 12);
+        let frame = TilePos::new(16, 6);
+        let enemy_foundry = TilePos::new(28, 12);
+        let public_map = public_briefing_with_frames(&[home], &[frame], None);
+        let mut obs = recon_observation(home, UnitKind::Kestrel);
+        obs.enemy_buildings = vec![BuildingObs {
+            seen: false,
+            ..defense(20, BuildingKind::Foundry, enemy_foundry)
+        }];
+        let mut policy = UtilityPolicy::new();
+        let mut intents = Vec::new();
+
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+        assert_eq!(
+            intents,
+            vec![Intent::Scout {
+                unit: UnitId(1),
+                to: TilePos::new(33, 12),
+            }],
+            "a due dynamic-base refresh remains the first reconnaissance job"
+        );
+
+        obs.tick += 1;
+        obs.my_units[0].tile = TilePos::new(33, 12);
+        intents.clear();
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+        assert_eq!(
+            intents,
+            vec![Intent::Scout {
+                unit: UnitId(1),
+                to: frame,
+            }],
+            "an existing remembered base must not consume every scout rotation while public economic ground remains unseen"
+        );
+    }
+
+    #[test]
+    fn base_refresh_due_mid_extractor_probe_preserves_loss_escalation() {
+        let home = TilePos::new(4, 12);
+        let frame = TilePos::new(34, 12);
+        let enemy_foundry = TilePos::new(28, 18);
+        let public_map = public_briefing_with_frames(&[home], &[frame], None);
+        let mut obs = recon_observation(home, UnitKind::Harvester);
+        obs.tick = SCOUT_REFRESH - 800;
+        obs.enemy_buildings = vec![BuildingObs {
+            seen: false,
+            ..defense(20, BuildingKind::Foundry, enemy_foundry)
+        }];
+        let mut policy = UtilityPolicy::new();
+        let mut intents = Vec::new();
+
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+        assert_eq!(
+            intents,
+            vec![Intent::Scout {
+                unit: UnitId(1),
+                to: TilePos::new(29, 12),
+            }]
+        );
+        assert_eq!(policy.public_prior_ground_scout, Some(UnitId(1)));
+
+        obs.tick = SCOUT_REFRESH;
+        obs.my_units[0].tile = TilePos::new(16, 12);
+        obs.my_units[0].idle = false;
+        intents.clear();
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+        assert!(intents.is_empty());
+        assert_eq!(
+            policy.public_prior_ground_scout,
+            Some(UnitId(1)),
+            "a newly due base refresh must not rewrite the in-flight probe's job classification"
+        );
+
+        obs.tick += 1;
+        obs.my_units = vec![own(2, UnitKind::Harvester, home.offset(1, 0))];
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+        assert!(intents.is_empty());
+        assert!(policy.persistent_air_scout_needed);
+        assert_eq!(policy.scout, None);
+        assert_eq!(policy.public_prior_ground_scout, None);
+    }
+
+    #[test]
+    fn completed_extractor_probe_does_not_escalate_after_later_loss() {
+        let home = TilePos::new(4, 12);
+        let frame = TilePos::new(34, 12);
+        let public_map = public_briefing_with_frames(&[home], &[frame], None);
+        let mut obs = recon_observation(home, UnitKind::Harvester);
+        let mut policy = UtilityPolicy::new();
+        let mut intents = Vec::new();
+
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+        assert_eq!(
+            intents,
+            vec![Intent::Scout {
+                unit: UnitId(1),
+                to: TilePos::new(29, 12),
+            }]
+        );
+        assert_eq!(policy.public_prior_ground_scout, Some(UnitId(1)));
+
+        for dy in 0..2 {
+            for dx in 0..2 {
+                set_visible(&mut obs, frame.offset(dx, dy), true);
+            }
+        }
+        obs.tick += 1;
+        obs.my_units[0].tile = TilePos::new(16, 12);
+        obs.my_units[0].idle = false;
+        intents.clear();
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+        assert!(intents.is_empty());
+        assert_eq!(
+            policy.public_prior_ground_scout, None,
+            "complete footprint exploration retires the probe even while its old Move remains in flight"
+        );
+
+        obs.tick += 1;
+        obs.my_units.clear();
+        policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
+        assert!(intents.is_empty());
+        assert!(
+            !policy.persistent_air_scout_needed,
+            "losing a worker after its public reconnaissance job completed must not fund a replacement flyer"
+        );
+        assert!(!policy.air_scout_needed());
     }
 
     #[test]
@@ -1661,7 +2077,7 @@ mod tests {
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
         assert!(intents.is_empty());
         assert!(policy.air_scout_needed());
-        assert!(policy.public_start_air_scout_needed);
+        assert!(policy.public_prior_air_scout_needed);
         assert!(!policy.persistent_air_scout_needed);
         assert_eq!(policy.scout, None);
 
@@ -1694,7 +2110,7 @@ mod tests {
             &mut hidden_intents,
         );
         assert!(hidden_intents.is_empty());
-        assert!(policy.public_start_air_scout_needed);
+        assert!(policy.public_prior_air_scout_needed);
         assert!(!policy.persistent_air_scout_needed);
 
         let mut depleted = hidden;
@@ -1732,7 +2148,7 @@ mod tests {
         let mut intents = Vec::new();
 
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
-        assert_eq!(policy.public_start_ground_scout, Some(UnitId(1)));
+        assert_eq!(policy.public_prior_ground_scout, Some(UnitId(1)));
         assert!(!policy.air_scout_needed());
 
         obs.my_units.clear();
@@ -1746,7 +2162,7 @@ mod tests {
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
 
         assert!(intents.is_empty());
-        assert!(policy.public_start_air_scout_needed);
+        assert!(policy.public_prior_air_scout_needed);
         assert!(policy.persistent_air_scout_needed);
         assert!(
             !policy.solo_air_scout_suspended,

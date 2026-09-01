@@ -741,14 +741,15 @@ pub struct UtilityPolicy {
     /// The last scout order: unit, starting tile, and destination. An
     /// idle ground unit still at the start is direct no-route testimony.
     scout_dispatch: Option<(UnitId, TilePos, TilePos)>,
-    /// A ground unit currently probing an authored hostile start. If dynamic
-    /// danger recalls this unit, the same public prior must not draft another
-    /// Harvester; reconnaissance escalates to a dedicated flyer instead.
-    public_start_ground_scout: Option<UnitId>,
-    /// Current authored-start reconnaissance cannot use a ground route. This
+    /// A ground unit currently probing an authored hostile start or Extractor
+    /// frame. If dynamic danger recalls this unit, the same public prior must
+    /// not draft another Harvester; reconnaissance escalates to a dedicated
+    /// flyer instead.
+    public_prior_ground_scout: Option<UnitId>,
+    /// Current authored-prior reconnaissance cannot use a ground route. This
     /// is recomputed from public terrain and current resource knowledge rather
     /// than retained as evidence that the route is permanently severed.
-    public_start_air_scout_needed: bool,
+    public_prior_air_scout_needed: bool,
     /// Current contested reconnaissance has no eligible ordinary body. This is
     /// recomputed as the roster changes; it does not prove a ground route failed.
     contested_recon_air_scout_needed: bool,
@@ -882,7 +883,7 @@ impl UtilityPolicy {
     }
 
     fn air_scout_needed(&self) -> bool {
-        self.public_start_air_scout_needed
+        self.public_prior_air_scout_needed
             || self.contested_recon_air_scout_needed
             || self.persistent_air_scout_needed
     }
@@ -1982,7 +1983,7 @@ impl UtilityPolicy {
             // Production still consumes this recomputable demand when the
             // roster is not yet large enough to dispatch the scouting channel.
             self.contested_recon_air_scout_needed = false;
-            self.refresh_public_start_air_scout_demand(obs, home_tile, mode.public_map);
+            self.refresh_public_prior_air_scout_demand(obs, home_tile, mode.public_map);
         }
         self.economy(
             obs,
@@ -2428,7 +2429,7 @@ impl UtilityPolicy {
             if self.scout == Some(scout) {
                 self.scout = None;
                 self.scout_dispatch = None;
-                self.public_start_ground_scout = None;
+                self.public_prior_ground_scout = None;
             }
         }
     }
@@ -2548,7 +2549,7 @@ impl UtilityPolicy {
         if self.scout == Some(scout) {
             self.scout = None;
             self.scout_dispatch = None;
-            self.public_start_ground_scout = None;
+            self.public_prior_ground_scout = None;
         }
         self.retreating_contested_scout = Some(RetreatingContestedScout {
             unit: scout,
@@ -2607,11 +2608,11 @@ impl UtilityPolicy {
                 self.pending_sites.retain(|pending| *pending != anchor);
             }
             if self.scout == Some(unit.id) {
-                let public_start_probe = self.public_start_ground_scout == Some(unit.id);
+                let public_prior_probe = self.public_prior_ground_scout == Some(unit.id);
                 self.scout = None;
                 self.scout_dispatch = None;
-                self.public_start_ground_scout = None;
-                if public_start_probe {
+                self.public_prior_ground_scout = None;
+                if public_prior_probe {
                     self.persistent_air_scout_needed = true;
                 }
             }

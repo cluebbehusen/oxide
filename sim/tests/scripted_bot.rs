@@ -715,6 +715,156 @@ fn southeast_brain_maps_public_start_recon_through_an_ordinary_state_command() {
 }
 
 #[test]
+fn southeast_brain_maps_a_hidden_public_extractor_prior_without_learning_its_owner() {
+    const WIDTH: usize = 40;
+    const HEIGHT: usize = 24;
+    let enemy_start = TilePos::new(26, 18);
+    let own_start = TilePos::new(34, 18);
+    let frame = TilePos::new(8, 5);
+    let mut rows = vec![vec![b'.'; WIDTH]; HEIGHT];
+    rows[enemy_start.y as usize][enemy_start.x as usize] = b'1';
+    rows[own_start.y as usize][own_start.x as usize] = b'2';
+    rows[frame.y as usize][frame.x as usize] = b'E';
+    let scenario = Scenario {
+        name: "seat-one public Extractor recon orientation".into(),
+        seed: 92,
+        map: rows
+            .into_iter()
+            .map(|row| String::from_utf8(row).expect("ASCII map"))
+            .collect(),
+        players: vec![
+            PlayerSpec {
+                name: "nearby opponent".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            },
+            PlayerSpec {
+                name: "southeast".into(),
+                faction: Faction::Cupric,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            },
+        ],
+        units: vec![
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Harvester,
+                x: 31,
+                y: 16,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Harvester,
+                x: 32,
+                y: 16,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Harvester,
+                x: 33,
+                y: 16,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Harvester,
+                x: 34,
+                y: 16,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Gnat,
+                x: 32,
+                y: 18,
+            },
+        ],
+        buildings: Vec::new(),
+        meta: None,
+    };
+    let mut occupied_scenario = scenario.clone();
+    occupied_scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Extractor,
+        x: frame.x,
+        y: frame.y,
+    });
+    let mut bare = scenario.build().expect("the bare-frame fixture builds");
+    let occupied = occupied_scenario
+        .build()
+        .expect("the hidden occupied-frame fixture builds");
+    let bare_view = Observation::fog_honest(&bare, PlayerId(1));
+    let occupied_view = Observation::fog_honest(&occupied, PlayerId(1));
+    assert_eq!(
+        bare_view, occupied_view,
+        "an unseen restored Extractor must not leak through the fog-honest observation"
+    );
+    assert!(
+        bare_view
+            .enemy_buildings
+            .iter()
+            .any(|building| building.kind == BuildingKind::Foundry && building.seen),
+        "the nearby current base keeps its normal refresh from being due at tick zero"
+    );
+    assert!(!bare_view.explored(frame));
+    let scout = bare
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(1) && unit.kind == UnitKind::Gnat)
+        .expect("the southeast seat owns a dedicated scout")
+        .id;
+    let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 9_002);
+    let briefing = public_map(&scenario);
+    assert_eq!(*briefing, *public_map(&occupied_scenario));
+    let mut bare_brain = Brain::scripted(PlayerId(1), config, Arc::clone(&briefing));
+    let mut occupied_brain = Brain::scripted(PlayerId(1), config, briefing);
+
+    let commands = bare_brain.act(&bare);
+    assert_eq!(
+        commands,
+        occupied_brain.act(&occupied),
+        "hidden current ownership must not influence public-prior reconnaissance"
+    );
+    let expected_goal = frame.offset(1, 1);
+    assert!(
+        commands.iter().any(|command| {
+            command.player == PlayerId(1)
+                && matches!(
+                    &command.command,
+                    Command::Move {
+                        units,
+                        goal,
+                        queue: false,
+                    } if units == &vec![scout] && *goal == expected_goal
+                )
+        }),
+        "the oriented public frame should lower back to a world-space tile inside its footprint: {commands:?}"
+    );
+
+    let report = bare.tick(&commands);
+    assert!(
+        !report.events.iter().any(|event| matches!(
+            event,
+            Event::CommandRejected {
+                player: PlayerId(1),
+                ..
+            }
+        )),
+        "the mapped Extractor reconnaissance command must be accepted: {:?}",
+        report.events
+    );
+    assert_eq!(
+        bare.unit(scout).expect("the scout remains alive").order,
+        Order::Move {
+            goal: expected_goal,
+        },
+    );
+}
+
+#[test]
 fn balanced_mirror_plays_a_complete_decisive_match() {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
