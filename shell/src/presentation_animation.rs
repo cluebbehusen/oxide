@@ -96,10 +96,10 @@ pub(crate) enum LocomotionState {
 pub(crate) enum UnitWorkState {
     /// No mechanism is presently doing work.
     Idle,
-    /// A Harvester is physically extracting an adjacent node or the wreck
+    /// A scrap worker is physically extracting an adjacent node or the wreck
     /// under its chassis.
     Harvesting { target: Vec2Fx, cycle: f32 },
-    /// A Harvester is adjacent to and actively raising this paid site.
+    /// A scrap worker is adjacent to and actively raising this paid site.
     Constructing {
         site: BuildingId,
         target: Vec2Fx,
@@ -107,11 +107,11 @@ pub(crate) enum UnitWorkState {
     },
     /// A field welder is actively repairing a wounded unit or building.
     Repairing { target: Vec2Fx, cycle: f32 },
-    /// A Harvester is actively stripping a friendly structure for scrap.
+    /// A scrap worker is actively stripping a friendly structure for scrap.
     Salvaging { target: Vec2Fx, cycle: f32 },
 }
 
-/// The visible fill of a Harvester's internal cargo bay.
+/// The visible fill of a scrap worker's internal cargo bay.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct CargoState {
     /// Scrap currently aboard.
@@ -162,7 +162,7 @@ pub(crate) struct UnitAnimationState {
     pub(crate) locomotion: LocomotionState,
     /// Economy mechanism state.
     pub(crate) work: UnitWorkState,
-    /// Harvester cargo, absent for every other kind.
+    /// Harvest cargo, present for Harvesters and Excavators.
     pub(crate) cargo: Option<CargoState>,
     /// Event-driven attack report and recovery.
     pub(crate) attack: Option<AttackPhase>,
@@ -222,7 +222,7 @@ impl UnitAnimationFacts {
 pub(crate) struct ConstructionState {
     /// Normalized build completion.
     pub(crate) progress: f32,
-    /// Whether an assigned Harvester is adjacent and advancing the site.
+    /// Whether an assigned scrap worker is adjacent and advancing the site.
     pub(crate) active: bool,
     /// Authored machinery phase. Inactive and reduced-motion sites hold it.
     pub(crate) machinery_cycle: f32,
@@ -727,7 +727,7 @@ fn active_unit_construction(state: &State, unit: &Unit) -> Option<(BuildingId, V
         (!building.built
             && building.progress > 0
             && building.player == unit.player
-            && unit.kind == UnitKind::Harvester
+            && unit.kind.stats().harvest.is_some()
             && tile_adjacent_to_building(unit.tile(), building))
         .then_some((site, building.center()))
     })
@@ -762,7 +762,7 @@ fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
 }
 
 fn active_unit_salvage(state: &State, unit: &Unit) -> Option<Vec2Fx> {
-    if unit.kind != UnitKind::Harvester || unit.progress == 0 || unit.path.is_some() {
+    if unit.kind.stats().harvest.is_none() || unit.progress == 0 || unit.path.is_some() {
         return None;
     }
     let Order::Salvage { building } = unit.order else {
@@ -788,7 +788,7 @@ fn active_site_construction(state: &State, building: &Building) -> bool {
     building.progress > 0
         && state.units().iter().any(|unit| {
             unit.player == building.player
-                && unit.kind == UnitKind::Harvester
+                && unit.kind.stats().harvest.is_some()
                 && matches!(unit.order, Order::Build { site } if site == building.id)
                 && tile_adjacent_to_building(unit.tile(), building)
         })
@@ -814,7 +814,8 @@ mod tests {
 
     use chassis::fx::Vec2Fx;
     use chassis::grid::TilePos;
-    use oxide_sim::{PlayerId, Scenario, Target};
+    use oxide_sim::scenario::{BuildingSpec, UnitSpec};
+    use oxide_sim::{Command, PlayerCommand, PlayerId, Scenario, Target};
 
     use super::*;
 
@@ -848,6 +849,26 @@ mod tests {
 
     fn point() -> Vec2Fx {
         TilePos::new(4, 4).center()
+    }
+
+    fn excavator_state(buildings: Vec<BuildingSpec>) -> State {
+        let mut scenario = Scenario::skirmish();
+        scenario.players[0].scrap = 1_000;
+        scenario.units = vec![UnitSpec {
+            player: 0,
+            kind: UnitKind::Excavator,
+            x: 4,
+            y: 6,
+        }];
+        scenario.buildings = buildings;
+        scenario.build().expect("Excavator work scenario builds")
+    }
+
+    fn player_command(command: Command) -> PlayerCommand {
+        PlayerCommand {
+            player: PlayerId(0),
+            command,
+        }
     }
 
     fn unit_attack_report(tick: u64, attacker: UnitId, weapon: usize) -> TickReport {
@@ -1078,6 +1099,95 @@ mod tests {
             UnitAnimationFacts::capture(&state, &unit, false).work,
             UnitWorkFact::Idle
         );
+    }
+
+    #[test]
+    fn excavator_cargo_uses_its_authoritative_thirty_scrap_capacity() {
+        let mut facts = unit_facts(UnitKind::Excavator);
+        facts.carrying = 15;
+        let animation = AnimationController::default().unit_state(
+            facts,
+            AnimationClock::new(5, 0.0),
+            AnimationOptions::default(),
+        );
+        assert_eq!(
+            animation.cargo,
+            Some(CargoState {
+                amount: 15,
+                capacity: 30,
+                fill: 0.5,
+            })
+        );
+    }
+
+    #[test]
+    fn excavator_construction_activates_unit_and_site_machinery() {
+        let mut state = excavator_state(Vec::new());
+        let excavator = state.units()[0].id;
+        let anchor = TilePos::new(5, 6);
+        state.tick(&[player_command(Command::Build {
+            units: vec![excavator],
+            kind: BuildingKind::Turret,
+            anchor,
+            queue: false,
+            defer: false,
+        })]);
+        state.tick(&[]);
+
+        let site = state
+            .buildings()
+            .iter()
+            .find(|building| building.anchor == anchor)
+            .expect("construction site exists");
+        assert!(!site.built);
+        assert!(site.progress > 0);
+        let unit = state.unit(excavator).expect("Excavator survives");
+        let animation = AnimationController::default().unit_state(
+            UnitAnimationFacts::capture(&state, unit, false),
+            AnimationClock::new(state.current_tick(), 0.0),
+            AnimationOptions::default(),
+        );
+        assert!(matches!(
+            animation.work,
+            UnitWorkState::Constructing { site: active, .. } if active == site.id
+        ));
+        assert!(BuildingAnimationFacts::capture(&state, site).construction_active);
+    }
+
+    #[test]
+    fn excavator_salvage_activates_unit_machinery() {
+        let mut state = excavator_state(vec![BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Turret,
+            x: 5,
+            y: 6,
+        }]);
+        let excavator = state.units()[0].id;
+        let target = state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == BuildingKind::Turret)
+            .expect("salvage target exists")
+            .id;
+        state.tick(&[player_command(Command::Salvage {
+            units: vec![excavator],
+            building: target,
+            queue: false,
+        })]);
+
+        for _ in 0..20 {
+            state.tick(&[]);
+            let unit = state.unit(excavator).expect("Excavator survives");
+            let animation = AnimationController::default().unit_state(
+                UnitAnimationFacts::capture(&state, unit, false),
+                AnimationClock::new(state.current_tick(), 0.0),
+                AnimationOptions::default(),
+            );
+            if matches!(animation.work, UnitWorkState::Salvaging { .. }) {
+                return;
+            }
+        }
+        panic!("Excavator never exposed active salvage work");
     }
 
     #[test]

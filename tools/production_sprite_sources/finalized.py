@@ -22,6 +22,7 @@ from tools.production_sprite_sources import (
     crucible_final,
     defense_mechanisms,
     economy_mechanisms,
+    excavator_final,
     ground_artillery,
     ground_base,
     ground_final,
@@ -847,3 +848,4 @@ def install_finalized_sprites(registry: Registry, out: Path) -> None:
     tender_condor_final.install_tender_condor(registry, out)
     crucible_final.install_crucible_units(registry, out)
     moth_warden_final.install_moth_warden(registry, out)
+    excavator_final.install_excavator(registry, out)

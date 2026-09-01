@@ -11,6 +11,7 @@ from tools.production_sprite_sources import (
     construction_final,
     crucible_final,
     environment_final,
+    excavator_final,
     finalized,
     moth_warden_final,
     tender_condor_final,
@@ -321,6 +322,52 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                         self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
                         image.tobytes(),
                     )
+
+    def test_promoted_excavator_matches_candidate_423_and_keeps_channels_independent(
+        self,
+    ) -> None:
+        self.assertEqual(
+            excavator_final.source_rgba_digest(),
+            excavator_final.APPROVED_SOURCE_RGBA_SHA256,
+        )
+        for faction in ("ferrous", "cupric"):
+            states = (
+                ("", 0, 0),
+                ("_move1", 1, 0),
+                ("_move2", 2, 0),
+                *((f"_action{phase}", 0, phase) for phase in range(1, 5)),
+            )
+            for suffix, move_phase, work_phase in states:
+                image = excavator_final.render_excavator(
+                    faction, move_phase, work_phase
+                )
+                self.assertEqual(image.size, (128, 128))
+                self.assertEqual(
+                    self.registry[f"excavator_{faction}{suffix}"].tobytes(),
+                    image.tobytes(),
+                )
+            idle = self.registry[f"excavator_{faction}"]
+            for phase in (1, 2):
+                moving = self.registry[f"excavator_{faction}_move{phase}"]
+                self.assertEqual(
+                    idle.getchannel("A").tobytes(),
+                    moving.getchannel("A").tobytes(),
+                )
+                self.assertNotEqual(idle.tobytes(), moving.tobytes())
+
+    def test_excavator_meter_matches_the_harvesters_five_load_levels(self) -> None:
+        frames = [
+            self.registry[f"excavator_cargo{level}"]
+            for level in range(excavator_final.CARGO_LEVELS)
+        ]
+        self.assertEqual(len({frame.tobytes() for frame in frames}), 5)
+        self.assertIsNone(frames[0].getchannel("A").getbbox())
+        widths = []
+        for frame in frames:
+            bbox = frame.getchannel("A").getbbox()
+            widths.append(0 if bbox is None else bbox[2] - bbox[0])
+        self.assertTrue(all(left <= right for left, right in pairwise(widths)))
+        self.assertGreater(widths[-1], widths[1])
 
     def test_moth_and_warden_move_without_wobbling_the_hull(self) -> None:
         for stem in ("moth", "warden"):
