@@ -234,6 +234,7 @@ impl UtilityPolicy {
         home: TilePos,
         projected_foundries: &[TilePos],
     ) -> Vec<TilePos> {
+        let mut road_reach = None;
         let mut extractors: Vec<_> = obs
             .my_buildings
             .iter()
@@ -243,7 +244,11 @@ impl UtilityPolicy {
                     .iter()
                     .all(|foundry| !Self::foundry_supports_extractor(*foundry, extractor.anchor))
             })
-            .filter(|extractor| Self::ground_route_known(obs, home, extractor.anchor))
+            .filter(|extractor| {
+                road_reach
+                    .get_or_insert_with(|| Self::known_road_reach(obs, home))
+                    .frame_reached(extractor.anchor)
+            })
             .map(|extractor| {
                 (
                     extractor.anchor.chebyshev(home),
@@ -459,6 +464,7 @@ impl UtilityPolicy {
         }
 
         let danger = self.harvest_danger_projection(obs, unit_contacts, building_contacts);
+        let mut road_reach = None;
         let mut frontiers: Vec<_> = obs
             .known_scrap
             .iter()
@@ -474,7 +480,9 @@ impl UtilityPolicy {
                 projected_foundries
                     .iter()
                     .all(|foundry| foundry.chebyshev(*frontier) > EXPANSION_RADIUS)
-                    && Self::ground_route_known(obs, home, *frontier)
+                    && road_reach
+                        .get_or_insert_with(|| Self::known_road_reach(obs, home))
+                        .frame_reached(*frontier)
                     && !self.harvest_location_contested(*frontier)
                     && !Self::enemy_controls_frontier(obs, projected_foundries, *frontier)
             })
@@ -597,6 +605,7 @@ impl UtilityPolicy {
                 )
                 .map(|(frame, builder)| (frame, Some(builder)))
             } else {
+                let mut road_reach = None;
                 obs.known_frames
                     .iter()
                     .filter(|frame| {
@@ -612,7 +621,11 @@ impl UtilityPolicy {
                     // the optimistic flood survives any unexplored
                     // gulf, and a cross-strait frame it admits eats
                     // every construction think until the map dies.
-                    .filter(|frame| Self::ground_route_known(obs, home, **frame))
+                    .filter(|frame| {
+                        road_reach
+                            .get_or_insert_with(|| Self::known_road_reach(obs, home))
+                            .frame_reached(**frame)
+                    })
                     .filter(|_| can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard))
                     .min_by_key(|frame| (frame.chebyshev(home), frame.y, frame.x))
                     .map(|frame| (*frame, None))
@@ -708,6 +721,7 @@ impl UtilityPolicy {
                 }
 
                 if !player_facing && (!dials.deep_tech || have(BuildingKind::Airworks)) {
+                    let mut road_reach = None;
                     let frontier = obs
                         .known_scrap
                         .iter()
@@ -723,7 +737,9 @@ impl UtilityPolicy {
                             foundries
                                 .iter()
                                 .all(|f| f.chebyshev(*tile) > EXPANSION_RADIUS)
-                                && Self::ground_route_known(obs, home, *tile)
+                                && road_reach
+                                    .get_or_insert_with(|| Self::known_road_reach(obs, home))
+                                    .frame_reached(*tile)
                                 && (!player_facing || !self.harvest_location_contested(*tile))
                         })
                         .min_by_key(|tile| {
@@ -943,10 +959,30 @@ impl UtilityPolicy {
         if self.fabricator_step(dials, obs, context, budget, intents) {
             return;
         }
-        if self.defensive_rungs(dials, obs, context, &builders, budget, intents) {
+        // The defense rungs below share one lazily built grounding: every
+        // rung derives the identical asset ledger and terrain grid from
+        // this observation, and nothing the ladder does invalidates them.
+        let mut grounding = None;
+        if self.defensive_rungs(
+            dials,
+            obs,
+            context,
+            &builders,
+            &mut grounding,
+            budget,
+            intents,
+        ) {
             return;
         }
-        self.late_tech_rungs(dials, obs, context, &builders, budget, intents);
+        self.late_tech_rungs(
+            dials,
+            obs,
+            context,
+            &builders,
+            &mut grounding,
+            budget,
+            intents,
+        );
     }
 
     /// The first tech rung: one Fabricator once the harvest line stands.
@@ -996,12 +1032,17 @@ impl UtilityPolicy {
     /// The threat-answering rungs, priciest evidence first: Turret,
     /// Barricade line, Scuttle Charges, then flak over the harvest line.
     /// One purchase per think.
-    fn defensive_rungs(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the shared defense grounding rides beside the rung context"
+    )]
+    fn defensive_rungs<'g>(
         &mut self,
         dials: &Dials,
-        obs: &Observation,
-        context: ConstructionContext<'_>,
+        obs: &'g Observation,
+        context: ConstructionContext<'g>,
         builders: &[&UnitObs],
+        grounding: &mut Option<super::defense::DefenseGrounding<'g>>,
         budget: &mut u32,
         intents: &mut Vec<Intent>,
     ) -> bool {
@@ -1048,13 +1089,14 @@ impl UtilityPolicy {
                 )
                 && let Some(anchor) = if player_facing {
                     public_map.and_then(|briefing| {
-                        self.strategic_defense_site(
+                        self.strategic_defense_site_grounded(
                             BuildingKind::Turret,
                             obs,
                             briefing,
                             unit_contacts.unwrap_or(&[]),
                             building_contacts.unwrap_or(&[]),
                             builders,
+                            grounding,
                         )
                     })
                 } else {
@@ -1094,13 +1136,14 @@ impl UtilityPolicy {
                     voluntary_scrap_guard,
                 )
                 && let Some(anchor) = public_map.and_then(|briefing| {
-                    self.strategic_defense_site(
+                    self.strategic_defense_site_grounded(
                         BuildingKind::Barricade,
                         obs,
                         briefing,
                         unit_contacts.unwrap_or(&[]),
                         building_contacts.unwrap_or(&[]),
                         builders,
+                        grounding,
                     )
                 })
             {
@@ -1139,13 +1182,14 @@ impl UtilityPolicy {
                 if self.raided || route_known {
                     let anchor = if player_facing {
                         public_map.and_then(|briefing| {
-                            self.strategic_defense_site(
+                            self.strategic_defense_site_grounded(
                                 BuildingKind::ScuttleCharge,
                                 obs,
                                 briefing,
                                 unit_contacts.unwrap_or(&[]),
                                 building_contacts.unwrap_or(&[]),
                                 builders,
+                                grounding,
                             )
                         })
                     } else {
@@ -1191,13 +1235,14 @@ impl UtilityPolicy {
                 )
                 && let Some(anchor) = if player_facing {
                     public_map.and_then(|briefing| {
-                        self.strategic_defense_site(
+                        self.strategic_defense_site_grounded(
                             BuildingKind::FlakTurret,
                             obs,
                             briefing,
                             unit_contacts.unwrap_or(&[]),
                             building_contacts.unwrap_or(&[]),
                             builders,
+                            grounding,
                         )
                     })
                 } else {
@@ -1218,12 +1263,17 @@ impl UtilityPolicy {
 
     /// The developed-base rungs: Array, Repair Bay, Bastion, and
     /// Reclaimers, one purchase per think once their tech stands.
-    fn late_tech_rungs(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the shared defense grounding rides beside the rung context"
+    )]
+    fn late_tech_rungs<'g>(
         &mut self,
         dials: &Dials,
-        obs: &Observation,
-        context: ConstructionContext<'_>,
+        obs: &'g Observation,
+        context: ConstructionContext<'g>,
         builders: &[&UnitObs],
+        grounding: &mut Option<super::defense::DefenseGrounding<'g>>,
         budget: &mut u32,
         intents: &mut Vec<Intent>,
     ) -> bool {
@@ -1342,13 +1392,14 @@ impl UtilityPolicy {
                 && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
                 && let Some(anchor) = if player_facing {
                     public_map.and_then(|briefing| {
-                        self.strategic_defense_site(
+                        self.strategic_defense_site_grounded(
                             BuildingKind::Bastion,
                             obs,
                             briefing,
                             unit_contacts.unwrap_or(&[]),
                             building_contacts.unwrap_or(&[]),
                             builders,
+                            grounding,
                         )
                     })
                 } else {

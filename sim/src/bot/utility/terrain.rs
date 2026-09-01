@@ -446,10 +446,24 @@ impl UtilityPolicy {
     ) -> Option<TilePos> {
         self.prepare_ground_producer_egress(obs);
         candidates.into_iter().find(|anchor| {
-            self.placement_geometry_valid(obs, kind, *anchor)
-                && self.preserves_ground_producer_egress_prepared(&[], (kind, *anchor))
-                && final_check(*anchor)
+            self.placement_valid_prepared(obs, kind, *anchor) && final_check(*anchor)
         })
+    }
+
+    /// One anchor's placement validity against an egress cache the caller
+    /// has already prepared for this exact observation via
+    /// [`Self::prepare_ground_producer_egress`]. Site scans ask this once
+    /// per candidate anchor, and each unprepared ask re-derives the whole
+    /// egress layout comparison; the layout cannot change while the
+    /// scan's observation is borrowed.
+    pub(super) fn placement_valid_prepared(
+        &self,
+        obs: &Observation,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) -> bool {
+        self.placement_geometry_valid(obs, kind, anchor)
+            && self.preserves_ground_producer_egress_prepared(&[], (kind, anchor))
     }
 
     fn placement_geometry_valid(

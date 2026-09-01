@@ -1109,6 +1109,7 @@ impl UtilityPolicy {
             })
             .min()
             .map(|(_, y, x, _, base_y, base_x)| (TilePos::new(x, y), TilePos::new(base_x, base_y)));
+        let mut known_routes = None;
         if let Some((threat, threatened_base)) = intruder {
             let coherent_size = coherent_attack_size(dials, player_facing);
             for army in armies {
@@ -1162,7 +1163,7 @@ impl UtilityPolicy {
                 // interrupting members mid-swing — auto-acquire handles
                 // the last few tiles better than micromanagement does.
                 if should_march(player_facing, army, threat)
-                    && (!player_facing || self.army_reaches(obs, army, threat))
+                    && (!player_facing || self.army_reaches(obs, &mut known_routes, army, threat))
                 {
                     intents.push(Intent::PushArmy {
                         army: army.id,
@@ -1282,7 +1283,7 @@ impl UtilityPolicy {
                 })
             })
             && should_march(player_facing, army, target)
-            && (!player_facing || self.army_reaches(obs, army, target))
+            && (!player_facing || self.army_reaches(obs, &mut known_routes, army, target))
         {
             intents.push(Intent::PushArmy {
                 army: army.id,
@@ -1297,7 +1298,16 @@ impl UtilityPolicy {
     /// ferried onto an island leaves no imaginary road across the intervening
     /// fog. This suppresses island-crossing command storms while still
     /// allowing a landed squad to push locally.
-    fn army_reaches(&self, obs: &Observation, army: &Army, target: TilePos) -> bool {
+    /// `routes` is the caller's lazily built known-ground projection: the
+    /// component labeling depends only on the observation, and one think
+    /// asks this question for several armies and again at the push gate.
+    fn army_reaches<'a>(
+        &self,
+        obs: &'a Observation,
+        routes: &mut Option<crate::bot::routing::RouteProjection<'a>>,
+        army: &Army,
+        target: TilePos,
+    ) -> bool {
         let mut members: Vec<_> = obs
             .my_units
             .iter()
@@ -1307,7 +1317,8 @@ impl UtilityPolicy {
         let Some(goals) = self.ground_attack_goals(obs, target, members.len()) else {
             return false;
         };
-        let mut routes = crate::bot::routing::RouteProjection::known_ground(obs);
+        let routes =
+            routes.get_or_insert_with(|| crate::bot::routing::RouteProjection::known_ground(obs));
         !members.is_empty()
             && members
                 .iter()

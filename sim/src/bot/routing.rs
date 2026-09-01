@@ -61,6 +61,20 @@ impl<'a> RouteProjection<'a> {
         projection
     }
 
+    /// Ground routes projected as if the footprint at `anchor` were already
+    /// blocking terrain — the founder-selection question, where checking the
+    /// current route to the anchor is insufficient when the builder is
+    /// standing in, or must cross, the tiles the new site will claim.
+    pub(super) fn ground_excluding_footprint(
+        obs: &'a Observation,
+        anchor: TilePos,
+        size: (i32, i32),
+    ) -> Self {
+        let mut projection = Self::new(obs, Domain::Ground);
+        projection.blocked_ground_rect = Some((anchor, size));
+        projection
+    }
+
     /// Ground routes that refuse every tile selected by `blocked`. This is
     /// used for work assignments whose endpoints may both be safe while the
     /// only path between them crosses a remembered kill zone.
@@ -242,8 +256,24 @@ impl<'a> RouteProjection<'a> {
 /// footprint becomes blocking terrain. Checking the current route to the
 /// anchor is insufficient when the builder is standing in, or must cross,
 /// the tiles the new site will claim.
+#[cfg(test)]
 pub(super) fn unit_reaches_build_site(
     obs: &Observation,
+    unit: &UnitObs,
+    anchor: TilePos,
+    size: (i32, i32),
+) -> bool {
+    let mut routes = RouteProjection::ground_excluding_footprint(obs, anchor, size);
+    unit_reaches_build_site_via(&mut routes, unit, anchor, size)
+}
+
+/// [`unit_reaches_build_site`] against a caller-held projection built by
+/// [`RouteProjection::ground_excluding_footprint`] for the same `anchor`
+/// and `size`. Candidate-builder scans ask this once per unit, and the
+/// component labeling is a function of the observation and footprint
+/// alone, so one projection serves the whole scan.
+pub(super) fn unit_reaches_build_site_via(
+    routes: &mut RouteProjection<'_>,
     unit: &UnitObs,
     anchor: TilePos,
     size: (i32, i32),
@@ -251,8 +281,6 @@ pub(super) fn unit_reaches_build_site(
     if unit.kind.stats().domain != Domain::Ground {
         return false;
     }
-    let mut routes = RouteProjection::new(obs, Domain::Ground);
-    routes.blocked_ground_rect = Some((anchor, size));
     for tile in crate::tick::rect_adjacent_tiles(anchor, size) {
         if routes.open(tile) && (unit.tile == tile || routes.reaches(unit.tile, tile)) {
             return true;

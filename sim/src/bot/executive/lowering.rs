@@ -604,18 +604,34 @@ impl Executive {
                     && !reserved.contains(&u.id)
             })
             .collect();
-        let mut routes =
-            crate::bot::routing::RouteProjection::new(obs, crate::stats::Domain::Ground);
+        // One lazily built projection serves every candidate: the
+        // footprint (or its absence) is fixed for the whole scan, and a
+        // fresh projection per unit re-flooded the same component.
+        let mut routes = None;
         candidates
             .into_iter()
             .filter(|unit| {
                 !require_route
-                    || proposed_footprint.map_or_else(
-                        || routes.group_reaches_command_goal(&[unit.id], anchor),
-                        |size| {
-                            crate::bot::routing::unit_reaches_build_site(obs, unit, anchor, size)
-                        },
-                    )
+                    || match proposed_footprint {
+                        None => routes
+                            .get_or_insert_with(|| {
+                                crate::bot::routing::RouteProjection::new(
+                                    obs,
+                                    crate::stats::Domain::Ground,
+                                )
+                            })
+                            .group_reaches_command_goal(&[unit.id], anchor),
+                        Some(size) => crate::bot::routing::unit_reaches_build_site_via(
+                            routes.get_or_insert_with(|| {
+                                crate::bot::routing::RouteProjection::ground_excluding_footprint(
+                                    obs, anchor, size,
+                                )
+                            }),
+                            unit,
+                            anchor,
+                            size,
+                        ),
+                    }
             })
             .map(|u| (u.tile.manhattan(anchor), u.id))
             .min()

@@ -1948,6 +1948,13 @@ pub const BOMB_SALVO_SPACING: Fx = Fx::lit("0.8");
 pub const BOMBER_ACCEPT_SLACK: Fx = Fx::lit("0.4");
 /// Ticks an idle turn-limited flier orbits before setting itself down.
 pub const AUTO_LAND_IDLE_TICKS: u16 = 60;
+/// Ticks between auto-land ground scans after a probe finds nowhere to
+/// set down. The scan walks every tile in the radius with full run-in
+/// geometry, so a crowded or sealed pocket must not pay it every tick.
+/// Chosen to divide `u16::MAX - AUTO_LAND_IDLE_TICKS`: `settled`
+/// saturates, and a saturated orbiter falls back to probing every tick
+/// rather than never probing again.
+pub const AUTO_LAND_RETRY_TICKS: u16 = 15;
 /// How close to the tile center a landing pass must come to touch down.
 pub const LANDING_TOUCHDOWN: Fx = Fx::lit("0.35");
 /// Run-in initial-point distances tried farthest first for attack passes.
