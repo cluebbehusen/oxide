@@ -878,6 +878,12 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
             EffectKind::DirectShot {
                 style, from, to, ..
             } => shot_visibility(style, sees(from), sees(to)) != ShotVisibility::Hidden,
+            EffectKind::SapperDetonation {
+                at,
+                blast_at,
+                player,
+                ..
+            } => player == game.human || sees(at) || sees(blast_at),
             EffectKind::Puff { at } => sees(at),
             EffectKind::Falling { at, .. } => sees(at),
             EffectKind::Burst { at, .. } => sees(at),
@@ -1019,6 +1025,57 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                         }
                     }
                 }
+            }
+            EffectKind::SapperDetonation {
+                at,
+                blast_at,
+                rotation,
+                player,
+                faction,
+                ..
+            } => {
+                let age = fx.age_at(game.state.current_tick(), game.tick_fraction());
+                let progress = (age / (crate::game::TICK_DT * 2.0)).clamp(0.0, 1.0);
+                let fade = 1.0 - progress;
+                let body = game.camera.to_screen(at);
+                let size = game.camera.zoom * super::unit_draw_scale(oxide_sim::UnitKind::Sapper);
+                let body_size = vec2(size, size);
+                draw_texture_ex(
+                    sprites.texture(),
+                    body.x - size * 0.5,
+                    body.y - size * 0.5,
+                    Color::new(1.0, 1.0, 1.0, fade),
+                    DrawTextureParams {
+                        dest_size: Some(body_size),
+                        source: Some(sprites.unit_action(oxide_sim::UnitKind::Sapper, faction, 2)),
+                        rotation,
+                        ..Default::default()
+                    },
+                );
+                if let Some(mut tint) = seat_identity_tint(game, player) {
+                    tint.a *= fade;
+                    draw_texture_ex(
+                        sprites.texture(),
+                        body.x - size * 0.5,
+                        body.y - size * 0.5,
+                        tint,
+                        DrawTextureParams {
+                            dest_size: Some(body_size),
+                            source: Some(
+                                sprites.unit_action_accent(oxide_sim::UnitKind::Sapper, 2),
+                            ),
+                            rotation,
+                            ..Default::default()
+                        },
+                    );
+                }
+                draw_splash_bloom(
+                    sprites,
+                    game.camera.to_screen(blast_at),
+                    game.camera.zoom,
+                    oxide_sim::stats::SAPPER_BLAST_RADIUS.to_num::<f32>(),
+                    progress,
+                );
             }
             EffectKind::Falling { at, unit, faction } => {
                 // Gravity takes the wreck: drop accelerates, the hull

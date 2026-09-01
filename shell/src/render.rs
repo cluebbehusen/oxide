@@ -671,7 +671,8 @@ pub(crate) fn unit_draw_scale(kind: oxide_sim::UnitKind) -> f32 {
         oxide_sim::UnitKind::Condor
         | oxide_sim::UnitKind::Moth
         | oxide_sim::UnitKind::Breaker
-        | oxide_sim::UnitKind::Avalanche => LARGE_UNIT_DRAW_SCALE,
+        | oxide_sim::UnitKind::Avalanche
+        | oxide_sim::UnitKind::Skyhook => LARGE_UNIT_DRAW_SCALE,
         oxide_sim::UnitKind::Warden => HEAVY_UNIT_DRAW_SCALE,
         _ => DEFAULT_UNIT_DRAW_SCALE,
     }
@@ -688,6 +689,11 @@ fn air_presentation(kind: oxide_sim::UnitKind, zoom: f32) -> (Vec2, Vec2, f32) {
             vec2(zoom * 1.55, zoom),
             vec2(zoom * 0.11, zoom * 0.17),
             zoom * 0.08,
+        ),
+        oxide_sim::UnitKind::Skyhook => (
+            vec2(zoom * 1.78, zoom * 1.52),
+            vec2(zoom * 0.13, zoom * 0.20),
+            zoom * 0.07,
         ),
         _ => (
             vec2(zoom * 0.9, zoom * 0.9),
@@ -1117,6 +1123,20 @@ mod tests {
                     > super::unit_selection_radius(oxide_sim::UnitKind::Sentinel, zoom, 4.0,)
             );
         }
+    }
+
+    #[test]
+    fn skyhook_uses_its_two_tile_transport_canvas_and_large_shadow() {
+        let zoom = 64.0;
+        assert_eq!(super::unit_draw_scale(oxide_sim::UnitKind::Skyhook), 2.0);
+        let (shadow, offset, lift) = super::air_presentation(oxide_sim::UnitKind::Skyhook, zoom);
+        assert_eq!(shadow, vec2(113.92, 97.28));
+        assert_eq!(offset, vec2(8.32, 12.8));
+        assert_eq!(lift, 4.48);
+        assert!(
+            super::unit_selection_radius(oxide_sim::UnitKind::Skyhook, zoom, 4.0)
+                > super::unit_selection_radius(oxide_sim::UnitKind::Harvester, zoom, 4.0)
+        );
     }
 
     #[test]

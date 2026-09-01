@@ -14,6 +14,7 @@ from tools.production_sprite_sources import (
     excavator_final,
     finalized,
     moth_warden_final,
+    skyhook_sapper_crucible_final,
     tender_condor_final,
 )
 
@@ -240,6 +241,61 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                         image.tobytes(),
                     )
         self.assertEqual(digest.hexdigest(), crucible_final.APPROVED_SOURCE_RGBA_SHA256)
+
+    def test_promoted_skyhook_sapper_and_crucible_match_the_approved_source(self) -> None:
+        source = skyhook_sapper_crucible_final
+        self.assertEqual(source.source_rgba_digest(), source.APPROVED_SOURCE_RGBA_SHA256)
+        for faction in ("ferrous", "cupric"):
+            for stem, renderer, size, action_count in (
+                ("skyhook", source.render_skyhook, 128, 4),
+                ("sapper", source.render_sapper, 64, 3),
+            ):
+                states = [
+                    ("", 0, 0),
+                    ("_move1", 1, 0),
+                    ("_move2", 2, 0),
+                    *(
+                        (f"_action{action}", action - 1, action)
+                        for action in range(1, action_count + 1)
+                    ),
+                ]
+                for suffix, move_phase, action in states:
+                    image = renderer(faction, move_phase, action)
+                    self.assertEqual(image.size, (size, size))
+                    self.assertEqual(
+                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
+                        image.tobytes(),
+                    )
+            for work in range(4):
+                suffix = "" if work == 0 else f"_work{work}"
+                image = source.render_crucible(faction, work)
+                self.assertEqual(image.size, (128, 128))
+                self.assertEqual(
+                    self.registry[f"crucible_{faction}{suffix}"].tobytes(),
+                    image.tobytes(),
+                )
+
+    def test_skyhook_rotors_and_sapper_legs_have_real_movement(self) -> None:
+        for faction in ("ferrous", "cupric"):
+            for stem in ("skyhook", "sapper"):
+                idle = self.registry[f"{stem}_{faction}"]
+                move1 = self.registry[f"{stem}_{faction}_move1"]
+                move2 = self.registry[f"{stem}_{faction}_move2"]
+                self.assertNotEqual(idle.tobytes(), move1.tobytes())
+                self.assertNotEqual(move1.tobytes(), move2.tobytes())
+            self.assertIsNone(
+                skyhook_sapper_crucible_final.render_sapper(faction, action=4)
+                .getchannel("A")
+                .getbbox()
+            )
+
+    def test_crucible_work_row_moves_the_hammers_and_heat(self) -> None:
+        for faction in ("ferrous", "cupric"):
+            frames = [
+                self.registry[f"crucible_{faction}"],
+                *(self.registry[f"crucible_{faction}_work{work}"] for work in range(1, 4)),
+            ]
+            self.assertEqual(len({frame.tobytes() for frame in frames}), 4)
 
     def test_crucible_units_animate_treads_without_wobbling_the_hull(self) -> None:
         for stem in ("breaker", "avalanche"):
