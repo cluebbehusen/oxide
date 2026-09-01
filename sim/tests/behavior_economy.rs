@@ -104,11 +104,75 @@ fn train_costs_scrap_and_spawns_after_build_time() {
     assert!(events.iter().any(|e| matches!(
         e,
         Event::UnitTrained {
+            building,
             kind: UnitKind::Harvester,
             player: PlayerId(0),
             ..
-        }
+        } if *building == foundry
     )));
+}
+
+#[test]
+fn airworks_spawns_aircraft_above_its_roof_bay() {
+    let mut scenario = arena(vec![]);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Airworks,
+        x: 8,
+        y: 2,
+    });
+    let mut state = scenario.build().unwrap();
+    let airworks = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Airworks)
+        .unwrap();
+    let airworks_id = airworks.id;
+    let airworks_center = airworks.center();
+
+    state.tick(&[cmd(
+        0,
+        Command::Train {
+            building: airworks_id,
+            kind: UnitKind::Kestrel,
+        },
+    )]);
+    let events = run_until(
+        &mut state,
+        u64::from(UnitKind::Kestrel.stats().train_ticks) + 1,
+        |_, events| {
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    Event::UnitTrained {
+                        building,
+                        kind: UnitKind::Kestrel,
+                        ..
+                    } if *building == airworks_id
+                )
+            })
+        },
+    );
+    let aircraft = events
+        .iter()
+        .find_map(|event| match event {
+            Event::UnitTrained {
+                building,
+                unit,
+                kind: UnitKind::Kestrel,
+                ..
+            } if *building == airworks_id => state.unit(*unit),
+            _ => None,
+        })
+        .expect("trained Kestrel");
+
+    assert_eq!(aircraft.pos, airworks_center);
+    assert!(
+        state
+            .building(airworks_id)
+            .unwrap()
+            .contains(aircraft.tile())
+    );
 }
 
 /// Foundry drip credits a single-Foundry seat has earned by `state`'s

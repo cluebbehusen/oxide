@@ -744,6 +744,80 @@ fn captures_promoted_tender_and_condor_in_the_real_shell() -> Result<()> {
 }
 
 #[test]
+#[ignore = "opens a real native window and writes visual review artifacts"]
+fn captures_promoted_airworks_and_scouts_in_the_real_shell() -> Result<()> {
+    let mut harness = NativeCapture::spawn()?;
+
+    for kind in [UnitKind::Gnat, UnitKind::Kestrel] {
+        let movement = harness.load(promoted_scout_movement_scenario(kind))?;
+        let mover = unit_kind(&movement, 0, kind)?;
+        harness.command(
+            0,
+            Command::Move {
+                units: vec![mover],
+                goal: TilePos::new(21, 10),
+                queue: false,
+            },
+        )?;
+        harness.capture_stage(&format!("promoted-scout-movement/{}", kind.name()), 12, 1)?;
+    }
+
+    let view = harness.load(airworks_launch_scenario())?;
+    let airworks = building(&view, 0, BuildingKind::Airworks)?;
+    let airworks_anchor = view
+        .buildings
+        .iter()
+        .find(|building| building.id == airworks.0)
+        .context("Airworks disappeared")?
+        .anchor;
+    harness.command(
+        0,
+        Command::Train {
+            building: airworks,
+            kind: UnitKind::Kestrel,
+        },
+    )?;
+    let mut schedule = vec![
+        0,
+        u64::from(UnitKind::Kestrel.stats().train_ticks.saturating_sub(4)),
+    ];
+    schedule.extend(std::iter::repeat_n(1, 20));
+    let events = harness.capture_schedule("promoted-airworks-kestrel-launch", &schedule)?;
+    let aircraft = events
+        .iter()
+        .find_map(|event| match event {
+            oxide_sim::Event::UnitTrained {
+                building,
+                unit,
+                kind: UnitKind::Kestrel,
+                ..
+            } if *building == airworks => Some(*unit),
+            _ => None,
+        })
+        .context("Airworks did not train a Kestrel")?;
+    let final_state = harness.state()?;
+    let aircraft = final_state
+        .units
+        .iter()
+        .find(|unit| unit.id == aircraft.0)
+        .context("trained Kestrel disappeared")?;
+    assert_eq!(
+        aircraft.pos,
+        [
+            f64::from(airworks_anchor[0]) + 1.0,
+            f64::from(airworks_anchor[1]) + 1.0,
+        ],
+        "trained Kestrel did not remain above the open roof bay"
+    );
+
+    eprintln!(
+        "promoted Airworks and scouts review written to {}",
+        harness.output.display()
+    );
+    Ok(())
+}
+
+#[test]
 fn generated_animation_capture_scenarios_are_valid() -> Result<()> {
     let mut scenarios = vec![
         overview_scenario(),
@@ -751,8 +825,10 @@ fn generated_animation_capture_scenarios_are_valid() -> Result<()> {
         tender_repair_scenario(),
         condor_duel_scenario(),
         repair_bay_scenario(),
+        airworks_launch_scenario(),
     ];
     scenarios.extend(ALL_UNIT_KINDS.map(movement_scenario));
+    scenarios.extend([UnitKind::Gnat, UnitKind::Kestrel].map(promoted_scout_movement_scenario));
     scenarios.push(landing_scenario());
     scenarios.extend(combat_kinds().map(unit_duel_scenario));
     scenarios.push(sentinel_sidearm_scenario());
@@ -993,6 +1069,16 @@ fn movement_scenario(kind: UnitKind) -> Value {
     )
 }
 
+fn promoted_scout_movement_scenario(kind: UnitKind) -> Value {
+    let mut value = movement_scenario(kind);
+    if kind == UnitKind::Gnat {
+        value["players"][0]["faction"] = json!("cupric");
+        value["players"][1]["faction"] = json!("ferrous");
+        value["players"][2]["faction"] = json!("ferrous");
+    }
+    value
+}
+
 fn landing_scenario() -> Value {
     movement_scenario(UnitKind::Condor)
 }
@@ -1064,6 +1150,15 @@ fn condor_duel_scenario() -> Value {
             unit(1, UnitKind::Harvester, 15, 8),
         ],
         Vec::new(),
+    )
+}
+
+fn airworks_launch_scenario() -> Value {
+    scenario(
+        "Native Airworks Kestrel Launch",
+        &[],
+        Vec::new(),
+        vec![structure(0, BuildingKind::Airworks, 15, 10)],
     )
 }
 

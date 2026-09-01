@@ -19,6 +19,7 @@ from PIL import Image, ImageDraw
 from tools import gen_sprites as gen
 from tools.production_sprite_sources import (
     air_final,
+    airworks_scouts_final,
     crucible_final,
     defense_mechanisms,
     economy_mechanisms,
@@ -211,6 +212,11 @@ BUILDING_WORK: dict[str, FrameSet] = {
         ("_work1", "_work2", "_work3", "_work4"),
         ("arm_unfold", "weld_contact", "arm_recover", "arm_home"),
         (210, 250, 190, 280),
+    ),
+    "airworks": FrameSet(
+        ("_work1", "_work2", "_work3", "_work4"),
+        ("systems_sequence", "exit_armed", "doors_opening", "doors_open"),
+        (260, 260, 240, 520),
     ),
 }
 
@@ -851,3 +857,4 @@ def install_finalized_sprites(registry: Registry, out: Path) -> None:
     moth_warden_final.install_moth_warden(registry, out)
     excavator_final.install_excavator(registry, out)
     skyhook_sapper_crucible_final.install_skyhook_sapper_crucible(registry, out)
+    airworks_scouts_final.install_airworks_scouts(registry, out)

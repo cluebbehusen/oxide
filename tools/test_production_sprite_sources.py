@@ -8,6 +8,7 @@ from PIL import Image, ImageChops
 
 from tools import gen_sprites as gen
 from tools.production_sprite_sources import (
+    airworks_scouts_final,
     construction_final,
     crucible_final,
     environment_final,
@@ -212,6 +213,58 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                     self.registry[f"condor_{faction}{suffix}"].tobytes(),
                     tender_condor_final.render_condor(faction, state).tobytes(),
                 )
+
+    def test_promoted_airworks_scouts_match_the_approved_rgba_source(self) -> None:
+        self.assertEqual(
+            airworks_scouts_final.source_rgba_digest(),
+            airworks_scouts_final.APPROVED_SOURCE_RGBA_SHA256,
+        )
+        unit_states = (("", 1), ("_move1", 0), ("_move2", 2))
+        for faction in ("ferrous", "cupric"):
+            for suffix, phase in unit_states:
+                for stem, renderer in (
+                    ("gnat", airworks_scouts_final.render_gnat),
+                    ("kestrel", airworks_scouts_final.render_kestrel),
+                ):
+                    image = renderer(faction, phase)
+                    self.assertEqual(image.size, (64, 64))
+                    self.assertEqual(
+                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
+                        image.tobytes(),
+                    )
+            for stage in range(5):
+                suffix = "" if stage == 0 else f"_work{stage}"
+                image = airworks_scouts_final.render_airworks(faction, stage)
+                self.assertEqual(image.size, (128, 128))
+                self.assertEqual(
+                    self.registry[f"airworks_{faction}{suffix}"].tobytes(),
+                    image.tobytes(),
+                )
+
+    def test_kestrel_sequence_keeps_its_airframe_fixed(self) -> None:
+        for faction in ("ferrous", "cupric"):
+            frames = [
+                airworks_scouts_final.render_kestrel(faction, phase)
+                for phase in range(3)
+            ]
+            alpha = frames[0].getchannel("A").tobytes()
+            self.assertTrue(all(frame.getchannel("A").tobytes() == alpha for frame in frames))
+            self.assertTrue(
+                all(_changed_pixels(left, right) > 2 for left, right in pairwise(frames))
+            )
+
+    def test_airworks_queue_frames_keep_the_doors_closed(self) -> None:
+        for faction in ("ferrous", "cupric"):
+            frames = [
+                airworks_scouts_final.render_airworks(faction, stage)
+                for stage in range(5)
+            ]
+            door_box = (29, 44, 100, 106)
+            closed = frames[0].crop(door_box).tobytes()
+            self.assertEqual(frames[1].crop(door_box).tobytes(), closed)
+            self.assertEqual(frames[2].crop(door_box).tobytes(), closed)
+            self.assertNotEqual(frames[3].crop(door_box).tobytes(), closed)
+            self.assertNotEqual(frames[4].crop(door_box).tobytes(), closed)
 
     def test_promoted_crucible_units_match_the_approved_rgba_source(self) -> None:
         digest = hashlib.sha256()

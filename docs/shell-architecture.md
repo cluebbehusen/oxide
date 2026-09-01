@@ -205,6 +205,10 @@ world, fog, sprites, action animation, projectiles, effects, minimap, HUD, and
 screen chrome. Render interpolation and presentation clocks smooth the fixed 20
 Hz simulation without changing its state.
 
+Airworks doors use the authoritative training event only to drive their brief
+completion animation. The newborn aircraft is always drawn, selected, observed,
+and targeted at its simulation position above the roof bay.
+
 All production sprite regions come from one generated atlas loaded by
 `shell/src/assets.rs`. The manifest must match every key the shell resolves, and
 the renderer must not load per-sprite textures. The quarry boundary and pit
