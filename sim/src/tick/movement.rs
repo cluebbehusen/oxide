@@ -673,7 +673,11 @@ fn collision_pairs(
             }
         }
     }
-    pairs.sort_by_key(|&(i, j)| collision_pair_key(state, owner_ranks, i, j));
+    // Cached keys: `sort_by_key` re-evaluates the key on every comparison,
+    // and this key builds two ordered coordinate pairs per ask. Both sorts
+    // are stable, so the pair order — and the resolution order — is
+    // bit-identical.
+    pairs.sort_by_cached_key(|&(i, j)| collision_pair_key(state, owner_ranks, i, j));
     if reversed {
         pairs.reverse();
     }

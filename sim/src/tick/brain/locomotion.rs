@@ -69,9 +69,7 @@ pub(super) fn idle(state: &mut State, index: &super::super::spatial::UnitIndex, 
         // directly rather than assigned so `settled` survives: a parked
         // aircraft is a stationed guard whose fights tether to its pad.
         let stats = unit.kind.stats();
-        let wants_ground = stats.turn_rate > 0
-            && !unit.landed
-            && unit.settled >= crate::stats::AUTO_LAND_IDLE_TICKS;
+        let wants_ground = stats.turn_rate > 0 && !unit.landed && auto_land_probe_due(unit.settled);
         if wants_ground {
             let (tile, pos, heading) = (unit.tile(), unit.pos, unit.heading);
             if let Some(goal) = landing::nearest_landable(
@@ -448,4 +446,44 @@ pub(super) fn approach_rect(
         }
     }
     false
+}
+
+/// Whether an idle airframe's auto-land ground scan fires this tick.
+/// Failed probes retry on a cadence, not every tick: the scan pays full
+/// run-in geometry per tile, and an airframe over a sealed or crowded
+/// pocket would otherwise pay it forever. `settled` keeps counting while
+/// idle, so each unit's phase starts at the moment it went idle and
+/// survives the probe-succeeds-but-landing-stalls loop, which returns to
+/// idle with `settled` preserved. At saturation the schedule degrades to
+/// every tick — the retry period divides the saturated phase — so a very
+/// long orbit never stops probing entirely.
+fn auto_land_probe_due(settled: u16) -> bool {
+    settled >= crate::stats::AUTO_LAND_IDLE_TICKS
+        && (settled - crate::stats::AUTO_LAND_IDLE_TICKS)
+            .is_multiple_of(crate::stats::AUTO_LAND_RETRY_TICKS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::auto_land_probe_due;
+    use crate::stats::{AUTO_LAND_IDLE_TICKS, AUTO_LAND_RETRY_TICKS};
+
+    #[test]
+    fn auto_land_probes_fire_on_the_retry_cadence_not_every_tick() {
+        assert!(!auto_land_probe_due(AUTO_LAND_IDLE_TICKS - 1));
+        assert!(auto_land_probe_due(AUTO_LAND_IDLE_TICKS));
+        for offset in 1..AUTO_LAND_RETRY_TICKS {
+            assert!(
+                !auto_land_probe_due(AUTO_LAND_IDLE_TICKS + offset),
+                "a failed probe must wait out the retry period (offset {offset})"
+            );
+        }
+        assert!(auto_land_probe_due(
+            AUTO_LAND_IDLE_TICKS + AUTO_LAND_RETRY_TICKS
+        ));
+        assert!(
+            auto_land_probe_due(u16::MAX),
+            "a saturated orbiter degrades to every-tick probing, never to silence"
+        );
+    }
 }

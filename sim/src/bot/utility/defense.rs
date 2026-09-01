@@ -113,6 +113,36 @@ struct PlacementFootprint {
     blocks_ground: bool,
 }
 
+/// The observation-derived half of defense-site selection: the terrain
+/// grid, the asset ledger, and the uncleared starts it was scored
+/// against. One construction think walks up to five defense rungs, and
+/// every rung derives this identically from the same observation — the
+/// asset ledger's per-cluster access routing is the most expensive
+/// pathfinding in a planning think, so the ladder builds it once and
+/// shares it.
+pub(super) struct DefenseGrounding<'a> {
+    public_starts: Vec<StartingFoundry>,
+    ground: GroundKnowledge<'a>,
+    assets: Vec<DefendedAsset>,
+}
+
+impl<'a> DefenseGrounding<'a> {
+    pub(super) fn new(
+        policy: &UtilityPolicy,
+        obs: &'a Observation,
+        briefing: &'a PublicMapBriefing,
+    ) -> Self {
+        let public_starts = policy.uncleared_hostile_starts(briefing, obs.me);
+        let ground = GroundKnowledge::new(obs, briefing, &public_starts);
+        let assets = defended_assets(policy, obs, &ground);
+        Self {
+            public_starts,
+            ground,
+            assets,
+        }
+    }
+}
+
 pub(super) struct ResourceAccessGuard<'a> {
     ground: GroundKnowledge<'a>,
     assets: Vec<DefendedAsset>,
@@ -450,6 +480,13 @@ impl UtilityPolicy {
         {
             return false;
         }
+        // Threat origins read only enemy state and visibility, which the
+        // founding-cleared clone below leaves untouched, so the common
+        // no-threat think skips the clone and the defended-asset routing.
+        let origins = emergency_threat_origins(obs, profile.domain);
+        if origins.is_empty() {
+            return false;
+        }
         let mut unclaimed = obs.clone();
         for unit in &mut unclaimed.my_units {
             unit.founding = None;
@@ -460,11 +497,9 @@ impl UtilityPolicy {
         if assets.is_empty() {
             return false;
         }
-        let origins = emergency_threat_origins(&unclaimed, profile.domain);
-        !origins.is_empty()
-            && approaches(&ground, &origins, &assets, None, profile.domain)
-                .into_iter()
-                .any(|approach| approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
+        approaches(&ground, &origins, &assets, None, profile.domain)
+            .into_iter()
+            .any(|approach| approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
     }
 
     pub(super) fn current_emergency_defense_claim_is_useful(
@@ -536,6 +571,7 @@ impl UtilityPolicy {
         coverage.new > 0 || coverage.reinforced > 0
     }
 
+    #[cfg(test)]
     pub(super) fn strategic_defense_site(
         &self,
         kind: BuildingKind,
@@ -545,12 +581,41 @@ impl UtilityPolicy {
         building_contacts: &[BuildingContact],
         builders: &[&UnitObs],
     ) -> Option<TilePos> {
+        if builders.is_empty() {
+            return None;
+        }
+        self.strategic_defense_site_grounded(
+            kind,
+            obs,
+            briefing,
+            unit_contacts,
+            building_contacts,
+            builders,
+            &DefenseGrounding::new(self, obs, briefing),
+        )
+    }
+
+    /// [`Self::strategic_defense_site`] against a caller-held grounding,
+    /// for the rung ladder that asks about several building kinds in one
+    /// think.
+    #[expect(clippy::too_many_arguments, reason = "mirrors strategic_defense_site")]
+    pub(super) fn strategic_defense_site_grounded(
+        &self,
+        kind: BuildingKind,
+        obs: &Observation,
+        briefing: &PublicMapBriefing,
+        unit_contacts: &[UnitContact],
+        building_contacts: &[BuildingContact],
+        builders: &[&UnitObs],
+        grounding: &DefenseGrounding<'_>,
+    ) -> Option<TilePos> {
         self.strategic_defense_site_with_evidence(
             kind,
             obs,
             briefing,
             builders,
             DefenseEvidence::strategic(unit_contacts, building_contacts),
+            grounding,
         )
     }
 
@@ -563,12 +628,16 @@ impl UtilityPolicy {
         building_contacts: &[BuildingContact],
         builders: &[&UnitObs],
     ) -> Option<TilePos> {
+        if builders.is_empty() {
+            return None;
+        }
         self.strategic_defense_site_with_evidence(
             kind,
             obs,
             briefing,
             builders,
             DefenseEvidence::current_emergency(unit_contacts, building_contacts),
+            &DefenseGrounding::new(self, obs, briefing),
         )
     }
 
@@ -579,6 +648,7 @@ impl UtilityPolicy {
         briefing: &PublicMapBriefing,
         builders: &[&UnitObs],
         evidence: DefenseEvidence<'_>,
+        grounding: &DefenseGrounding<'_>,
     ) -> Option<TilePos> {
         let DefenseEvidence {
             unit_contacts,
@@ -586,18 +656,20 @@ impl UtilityPolicy {
             scope,
         } = evidence;
         let profile = DefenseProfile::for_kind(kind)?;
-        let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
+        let DefenseGrounding {
+            public_starts,
+            ground,
+            assets,
+        } = grounding;
         if builders.is_empty() {
             return None;
         }
-        let ground = GroundKnowledge::new(obs, briefing, &public_starts);
-        let assets = defended_assets(self, obs, &ground);
         if assets.is_empty() {
             return None;
         }
         let (origins, approaches) = if scope == DefenseEvidenceScope::CurrentEmergency {
             let origins = emergency_threat_origins(obs, profile.domain);
-            let approaches = approaches(&ground, &origins, &assets, None, profile.domain)
+            let approaches = approaches(ground, &origins, assets, None, profile.domain)
                 .into_iter()
                 .filter(|approach| approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
                 .collect::<Vec<_>>();
@@ -607,13 +679,13 @@ impl UtilityPolicy {
                 obs,
                 unit_contacts,
                 building_contacts,
-                &public_starts,
+                public_starts,
                 profile.domain,
             )
             .into_iter()
             .filter(|origins| !origins.is_empty())
             .find_map(|origins| {
-                let approaches = approaches(&ground, &origins, &assets, None, profile.domain);
+                let approaches = approaches(ground, &origins, assets, None, profile.domain);
                 (!approaches.is_empty()).then_some((origins, approaches))
             })?
         };
@@ -644,20 +716,24 @@ impl UtilityPolicy {
         let mut candidate_tiles: Vec<_> = candidate_tiles.into_iter().collect();
         candidate_tiles.sort_by_key(|tile| (tile.y, tile.x));
 
+        // Prepared once: every candidate below asks the placement question
+        // against the same observation, and an unprepared ask re-derives
+        // the egress layout comparison per anchor.
+        self.prepare_ground_producer_egress(obs);
         candidate_tiles
             .into_iter()
             .filter_map(|anchor| {
-                if self.first_valid_placement(obs, kind, [anchor]) != Some(anchor) {
+                if !self.placement_valid_prepared(obs, kind, anchor) {
                     return None;
                 }
                 let placement = profile.footprint(anchor);
-                let doorsteps = building_doorsteps(&ground, anchor, placement.size);
+                let doorsteps = building_doorsteps(ground, anchor, placement.size);
                 let builder_routes: Vec<_> = builders
                     .iter()
                     .copied()
                     .filter_map(|builder| {
                         shortest_path_between(
-                            &ground,
+                            ground,
                             &[builder.tile],
                             &doorsteps,
                             Some(placement),
@@ -678,12 +754,12 @@ impl UtilityPolicy {
                 )?;
                 let resource_detour_limit = (profile.kind == BuildingKind::Barricade)
                     .then_some(MAX_BARRICADE_RESOURCE_DETOUR_COST);
-                if !scrap_access_survives(&ground, &assets, placement, resource_detour_limit) {
+                if !scrap_access_survives(ground, assets, placement, resource_detour_limit) {
                     return None;
                 }
                 let candidate_approaches = operationally_supported_approaches(
-                    &ground,
-                    &assets,
+                    ground,
+                    assets,
                     &approaches,
                     placement,
                     profile.domain,
@@ -693,7 +769,7 @@ impl UtilityPolicy {
                     &CoverageContext {
                         obs,
                         briefing,
-                        assets: &assets,
+                        assets,
                         approaches: &candidate_approaches,
                         existing: &existing,
                         planned: &planned,

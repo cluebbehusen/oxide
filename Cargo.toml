@@ -37,3 +37,15 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# The `"*"` override reaches only non-workspace dependencies, so the sim
+# still ticked at opt-level 1 everywhere debug builds run it — including
+# the shipped-map soak, where the two crates below are nearly all of the
+# wall clock. Optimizing just them keeps the fast incremental compiles of
+# the thin shell and driver crates. Opt level cannot move outcomes: the
+# sim is integer-only by the determinism contract.
+[profile.dev.package.oxide-sim]
+opt-level = 3
+
+[profile.dev.package.chassis]
+opt-level = 3

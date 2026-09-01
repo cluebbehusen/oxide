@@ -62,6 +62,12 @@ impl UtilityPolicy {
             .collect();
         let threats = self.array_threat_origins(obs, briefing, unit_contacts, building_contacts);
         let resource_access = ResourceAccessGuard::new(self, obs, briefing);
+        // The ring scan validates up to ~1.7k anchors and walks a ~1.7k-tile
+        // coverage disc per survivor. Prepare the egress cache once and memo
+        // the per-tile radar-terrain predicate so neither is re-derived per
+        // anchor; both are pure functions of this observation and briefing.
+        self.prepare_ground_producer_egress(obs);
+        let radar_usable = radar_usable_tiles(briefing);
 
         let mut candidates = Vec::new();
         for radius in minimum_radius..=maximum_radius {
@@ -71,11 +77,11 @@ impl UtilityPolicy {
                         continue;
                     }
                     let anchor = home_center.offset(dx, dy);
-                    if self.first_valid_placement(obs, kind, [anchor]) != Some(anchor) {
+                    if !self.placement_valid_prepared(obs, kind, anchor) {
                         continue;
                     }
                     let (usable_radar, novel_radar, unexplored_sight) =
-                        array_coverage(obs, briefing, anchor, &existing_arrays);
+                        array_coverage(obs, briefing, &radar_usable, anchor, &existing_arrays);
                     let threat_distance = threats
                         .iter()
                         .map(|threat| threat.manhattan(anchor))
@@ -176,9 +182,23 @@ impl UtilityPolicy {
     }
 }
 
+/// Map-sized memo of the coverage scan's terrain predicate: whether a
+/// tile's authored terrain admits radar (anything but a Peak). One
+/// build replaces a briefing binary search per disc tile per anchor.
+fn radar_usable_tiles(briefing: &PublicMapBriefing) -> Vec<bool> {
+    (0..briefing.map_height())
+        .flat_map(|y| (0..briefing.map_width()).map(move |x| TilePos::new(x, y)))
+        .map(|tile| match briefing.terrain_at(tile) {
+            Some(Terrain::Peak) | None => false,
+            Some(Terrain::Ground | Terrain::Rock | Terrain::Pit) => true,
+        })
+        .collect()
+}
+
 fn array_coverage(
     obs: &Observation,
     briefing: &PublicMapBriefing,
+    radar_usable: &[bool],
     anchor: TilePos,
     existing_arrays: &[TilePos],
 ) -> (u32, u32, u32) {
@@ -193,9 +213,12 @@ fn array_coverage(
                 continue;
             }
             let tile = anchor.offset(dx, dy);
-            match briefing.terrain_at(tile) {
-                Some(Terrain::Peak) | None => continue,
-                Some(Terrain::Ground | Terrain::Rock | Terrain::Pit) => {}
+            let in_bounds = tile.x >= 0
+                && tile.y >= 0
+                && tile.x < briefing.map_width()
+                && tile.y < briefing.map_height();
+            if !in_bounds || !radar_usable[(tile.y * briefing.map_width() + tile.x) as usize] {
+                continue;
             }
             usable_radar += 1;
             if existing_arrays.iter().all(|existing| {
@@ -252,8 +275,22 @@ mod tests {
             ..Observation::default()
         };
         let anchor = TilePos::new(3, 3);
-        let ground = array_coverage(&obs, &briefing_with('.'), anchor, &[]);
-        let peak = array_coverage(&obs, &briefing_with('^'), anchor, &[]);
+        let ground_briefing = briefing_with('.');
+        let peak_briefing = briefing_with('^');
+        let ground = array_coverage(
+            &obs,
+            &ground_briefing,
+            &radar_usable_tiles(&ground_briefing),
+            anchor,
+            &[],
+        );
+        let peak = array_coverage(
+            &obs,
+            &peak_briefing,
+            &radar_usable_tiles(&peak_briefing),
+            anchor,
+            &[],
+        );
 
         assert_eq!(ground.0, peak.0 + 1);
         assert_eq!(ground.1, peak.1 + 1);

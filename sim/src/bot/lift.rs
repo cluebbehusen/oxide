@@ -598,6 +598,15 @@ fn select_target(
     pickup: TilePos,
     support: LiftAirSupport,
 ) -> Option<&BuildingObs> {
+    if !routing::ground_open(obs, pickup) {
+        return None;
+    }
+    // One lazily built projection answers every candidate: the known-ground
+    // component is a function of the observation alone, and a fresh
+    // projection per enemy building re-flooded the same component once per
+    // candidate. Built on the first built-and-seen candidate, so the
+    // common no-target admission before scouting allocates nothing.
+    let mut routes = None;
     let coordinated = support_target(support).and_then(|(player, target)| {
         obs.enemy_buildings
             .iter()
@@ -606,7 +615,11 @@ fn select_target(
                     && building.seen
                     && building.player == player
                     && building.anchor == target
-                    && disconnected(obs, pickup, building)
+                    && disconnected_via(
+                        routes.get_or_insert_with(|| RouteProjection::known_ground(obs)),
+                        pickup,
+                        building,
+                    )
             })
             .min_by_key(|building| building.id)
     });
@@ -616,7 +629,15 @@ fn select_target(
 
     obs.enemy_buildings
         .iter()
-        .filter(|building| building.built && building.seen && disconnected(obs, pickup, building))
+        .filter(|building| {
+            building.built
+                && building.seen
+                && disconnected_via(
+                    routes.get_or_insert_with(|| RouteProjection::known_ground(obs)),
+                    pickup,
+                    building,
+                )
+        })
         .min_by_key(|building| {
             (
                 building.kind != BuildingKind::Foundry,
@@ -659,6 +680,17 @@ fn disconnected(obs: &Observation, pickup: TilePos, target: &BuildingObs) -> boo
         return false;
     }
     let mut routes = RouteProjection::known_ground(obs);
+    disconnected_via(&mut routes, pickup, target)
+}
+
+/// [`disconnected`] against a caller-held known-ground projection, for
+/// scans that ask the question once per candidate building. The caller
+/// owns the `ground_open(pickup)` precondition.
+fn disconnected_via(
+    routes: &mut RouteProjection<'_>,
+    pickup: TilePos,
+    target: &BuildingObs,
+) -> bool {
     !footprint_ring(target.anchor, target.kind.base_stats().size)
         .into_iter()
         .any(|tile| routes.reaches(pickup, tile))
