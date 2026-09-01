@@ -22,13 +22,13 @@ use crate::stats::{
     SLIDE_RADIAL_SHARE, WAYPOINT_ACCEPT,
 };
 
-/// Whether skipping from waypoint `cur` toward `nxt` early (from anywhere
-/// within the acceptance radius) can clip impassable ground. Cardinal
+/// Whether skipping from tile `cur` toward `nxt` early can clip impassable ground. Cardinal
 /// neighbors are always safe — the swept band stays inside two open tiles.
 /// Diagonals are safe only when both shared cardinal tiles are open (then
 /// the whole 2×2 block is open); that is the same invariant A* enforces on
-/// the path itself, re-checked here because acceptance cuts the corner
-/// tighter than the path did.
+/// the path itself. Callers check both the authored path leg and the shortcut
+/// from the body's actual tile because collision can carry a body past a
+/// waypoint from an adjacent tile.
 fn early_advance_safe(
     cur: TilePos,
     nxt: TilePos,
@@ -206,7 +206,14 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             if let Some(&next_wp) = path.waypoints.get(path.next as usize + 1)
                 && (dist <= WAYPOINT_ACCEPT
                     || passed_intermediate_waypoint(unit.pos, waypoint, next_wp, stats.radius))
-                && (airborne || early_advance_safe(waypoint, next_wp, map, buildings))
+                && (airborne
+                    || (early_advance_safe(waypoint, next_wp, map, buildings)
+                        && early_advance_safe(
+                            TilePos::containing(unit.pos),
+                            next_wp,
+                            map,
+                            buildings,
+                        )))
             {
                 path.next += 1;
                 continue; // spend the budget on the next leg instead
@@ -858,6 +865,109 @@ mod tests {
         .expect("boundary pair builds")
     }
 
+    fn corner_shortcut_pair(
+        name: &str,
+        kind: UnitKind,
+        pos: Vec2Fx,
+        waypoint: TilePos,
+        next: TilePos,
+        blocked: TilePos,
+    ) -> State {
+        let width = 20;
+        let height = 14;
+        let mirror_tile = |tile: TilePos| TilePos::new(width - 1 - tile.x, height - 1 - tile.y);
+        let mut map = vec![".".repeat(width as usize); height as usize];
+        map[1].replace_range(1..2, "1");
+        map[height as usize - 2].replace_range(width as usize - 2..width as usize - 1, "2");
+        map[blocked.y as usize].replace_range(blocked.x as usize..blocked.x as usize + 1, "#");
+        let mirrored_blocked = mirror_tile(blocked);
+        map[mirrored_blocked.y as usize].replace_range(
+            mirrored_blocked.x as usize..mirrored_blocked.x as usize + 1,
+            "#",
+        );
+
+        let mut state = Scenario {
+            name: name.into(),
+            seed: 24_722,
+            map,
+            players: vec![
+                seat("West", Faction::Ferrous),
+                seat("East", Faction::Cupric),
+            ],
+            units: vec![
+                UnitSpec {
+                    player: 0,
+                    kind,
+                    x: pos.x.floor().to_num(),
+                    y: pos.y.floor().to_num(),
+                },
+                UnitSpec {
+                    player: 1,
+                    kind,
+                    x: width - 1 - pos.x.floor().to_num::<i32>(),
+                    y: height - 1 - pos.y.floor().to_num::<i32>(),
+                },
+            ],
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .expect("corner-shortcut pair builds");
+
+        let mirrored_pos = Vec2Fx::new(Fx::from_num(width) - pos.x, Fx::from_num(height) - pos.y);
+        let paths = [
+            PathFollow {
+                goal: next,
+                waypoints: vec![waypoint, next],
+                next: 0,
+            },
+            PathFollow {
+                goal: mirror_tile(next),
+                waypoints: vec![mirror_tile(waypoint), mirror_tile(next)],
+                next: 0,
+            },
+        ];
+        for ((unit, position), path) in state.units.iter_mut().zip([pos, mirrored_pos]).zip(paths) {
+            unit.pos = position;
+            unit.order = Order::Move { goal: path.goal };
+            unit.path = Some(path);
+        }
+        state
+    }
+
+    fn assert_corner_shortcut_pair_reaches_goal(mut state: State) {
+        let width = Fx::from_num(state.map.width());
+        let height = Fx::from_num(state.map.height());
+        let starts = [state.units[0].pos, state.units[1].pos];
+
+        for _ in 0..64 {
+            run(&mut state);
+            assert_eq!(
+                state.units[1].pos,
+                Vec2Fx::new(width - state.units[0].pos.x, height - state.units[0].pos.y),
+                "corner recovery lost half-turn symmetry"
+            );
+            if state.units.iter().all(|unit| unit.path.is_none()) {
+                break;
+            }
+        }
+
+        for (unit, start) in state.units.iter().zip(starts) {
+            assert_ne!(
+                unit.pos, start,
+                "the worker never escaped the blocked corner"
+            );
+            let Order::Move { goal } = unit.order else {
+                panic!("test worker lost its move order")
+            };
+            assert_eq!(unit.pos, goal.center());
+            assert!(
+                unit.path.is_none(),
+                "the worker did not finish within the bound"
+            );
+        }
+    }
+
     fn collision_trio() -> State {
         Scenario {
             name: "collision-trio".into(),
@@ -1280,6 +1390,34 @@ mod tests {
         assert_eq!(state.units[0].pos, before);
         assert!(state.units[0].path.is_none());
         assert!(state.map.terrain_passable(state.units[0].tile()));
+    }
+
+    #[test]
+    fn harvester_deflected_past_a_waypoint_does_not_drop_its_route() {
+        let state = corner_shortcut_pair(
+            "harvester-corner-shortcut",
+            UnitKind::Harvester,
+            Vec2Fx::new(Fx::lit("7.0030496502"), Fx::lit("7.5430232098")),
+            TilePos::new(6, 7),
+            TilePos::new(6, 8),
+            TilePos::new(7, 8),
+        );
+
+        assert_corner_shortcut_pair_reaches_goal(state);
+    }
+
+    #[test]
+    fn excavator_deflected_past_a_waypoint_does_not_drop_its_route() {
+        let state = corner_shortcut_pair(
+            "excavator-corner-shortcut",
+            UnitKind::Excavator,
+            Vec2Fx::new(Fx::lit("8.4923983465"), Fx::lit("6.9311533265")),
+            TilePos::new(8, 7),
+            TilePos::new(7, 7),
+            TilePos::new(7, 6),
+        );
+
+        assert_corner_shortcut_pair_reaches_goal(state);
     }
 
     #[test]
