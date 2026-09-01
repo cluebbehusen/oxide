@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use chassis::fx::Vec2Fx;
-use oxide_sim::stats::MAX_WEAPONS;
+use oxide_sim::stats::{Domain, MAX_WEAPONS};
 use oxide_sim::{
     Building, BuildingId, BuildingKind, Event, Order, State, Target, TickReport, Unit, UnitId,
     UnitKind, UnitRepairSource,
@@ -29,7 +29,7 @@ const WISP_ROTOR_PERIOD: u64 = 4;
 const SKYHOOK_ROTOR_PERIOD: u64 = 8;
 const SKYHOOK_ACTION_TICKS: f32 = 8.0;
 const REPAIR_PULSE_TICKS: f32 = 6.0;
-const AIRWORKS_LAUNCH_TICKS: f32 = 16.0;
+const AIRWORKS_LAUNCH_TICKS: u64 = 16;
 pub(crate) const FLAKHOUND_REPORT_TICKS: f32 = 2.0;
 pub(crate) const FLAK_TURRET_REPORT_TICKS: f32 = 3.0;
 
@@ -345,19 +345,6 @@ struct TransportActionStamp {
     kind: TransportActionKind,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct AirworksLaunchStamp {
-    building: BuildingId,
-    completed_tick: u64,
-}
-
-/// A newborn aircraft's presentation path out of its producing Airworks.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct AirworksLaunchState {
-    pub(crate) building: BuildingId,
-    pub(crate) progress: f32,
-}
-
 /// Presentation-only memory for output events that have no standing state.
 #[derive(Debug, Default)]
 pub(crate) struct AnimationController {
@@ -365,7 +352,7 @@ pub(crate) struct AnimationController {
     building_attacks: HashMap<BuildingId, AttackStamp>,
     repair_pulses: HashMap<BuildingId, u64>,
     transport_actions: HashMap<UnitId, TransportActionStamp>,
-    airworks_launches: HashMap<UnitId, AirworksLaunchStamp>,
+    airworks_launches: HashMap<BuildingId, u64>,
 }
 
 impl AnimationController {
@@ -432,14 +419,8 @@ impl AnimationController {
                         },
                     );
                 }
-                Event::UnitTrained { building, unit, .. } => {
-                    self.airworks_launches.insert(
-                        *unit,
-                        AirworksLaunchStamp {
-                            building: *building,
-                            completed_tick,
-                        },
-                    );
+                Event::UnitTrained { building, kind, .. } if kind.stats().domain == Domain::Air => {
+                    self.airworks_launches.insert(*building, completed_tick);
                 }
                 _ => {}
             }
@@ -464,8 +445,9 @@ impl AnimationController {
             .retain(|id, _| state.building(*id).is_some());
         self.transport_actions
             .retain(|id, _| state.unit(*id).is_some());
-        self.airworks_launches.retain(|unit, launch| {
-            state.unit(*unit).is_some() && state.building(launch.building).is_some()
+        self.airworks_launches.retain(|building, completed_tick| {
+            state.building(*building).is_some()
+                && state.current_tick().saturating_sub(*completed_tick) < AIRWORKS_LAUNCH_TICKS
         });
     }
 
@@ -645,23 +627,6 @@ impl AnimationController {
         })
     }
 
-    /// Resolves a newborn aircraft's completion sortie while it is active.
-    pub(crate) fn airworks_launch(
-        &self,
-        unit: UnitId,
-        clock: AnimationClock,
-    ) -> Option<AirworksLaunchState> {
-        let stamp = self.airworks_launches.get(&unit)?;
-        let elapsed = clock.elapsed_since(stamp.completed_tick)?;
-        if elapsed >= AIRWORKS_LAUNCH_TICKS {
-            return None;
-        }
-        Some(AirworksLaunchState {
-            building: stamp.building,
-            progress: (elapsed / AIRWORKS_LAUNCH_TICKS).clamp(0.0, 1.0),
-        })
-    }
-
     fn unit_attack(
         &self,
         unit: UnitId,
@@ -712,15 +677,10 @@ impl AnimationController {
     ) -> BuildingActivity {
         if let Some(progress) = self
             .airworks_launches
-            .values()
-            .filter(|launch| launch.building == facts.id)
-            .filter_map(|launch| {
-                let elapsed = clock.elapsed_since(launch.completed_tick)?;
-                (elapsed < AIRWORKS_LAUNCH_TICKS)
-                    .then_some((launch.completed_tick, elapsed / AIRWORKS_LAUNCH_TICKS))
-            })
-            .max_by_key(|(completed_tick, _)| *completed_tick)
-            .map(|(_, progress)| progress.clamp(0.0, 1.0))
+            .get(&facts.id)
+            .and_then(|completed_tick| clock.elapsed_since(*completed_tick))
+            .filter(|elapsed| *elapsed < AIRWORKS_LAUNCH_TICKS as f32)
+            .map(|elapsed| (elapsed / AIRWORKS_LAUNCH_TICKS as f32).clamp(0.0, 1.0))
         {
             return BuildingActivity::AirworksLaunch { progress };
         }
@@ -1506,15 +1466,34 @@ mod tests {
     }
 
     #[test]
-    fn airworks_completion_coordinates_the_bay_and_newborn_aircraft() {
+    fn aircraft_completion_opens_only_its_producer_bay() {
         let facts = building_facts(BuildingKind::Airworks);
-        let unit = UnitId(44);
         let mut controller = AnimationController::default();
+        controller.observe_events(
+            20,
+            &[Event::UnitTrained {
+                building: facts.id,
+                unit: UnitId(43),
+                kind: UnitKind::Sentinel,
+                player: PlayerId(0),
+            }],
+        );
+        assert_eq!(
+            controller
+                .building_state(
+                    facts,
+                    AnimationClock::new(20, 0.0),
+                    AnimationOptions::default()
+                )
+                .activity,
+            BuildingActivity::Idle
+        );
+
         controller.observe_events(
             21,
             &[Event::UnitTrained {
                 building: facts.id,
-                unit,
+                unit: UnitId(44),
                 kind: UnitKind::Gnat,
                 player: PlayerId(0),
             }],
@@ -1527,13 +1506,6 @@ mod tests {
                 .activity,
             BuildingActivity::AirworksLaunch { progress: 0.0 }
         );
-        assert_eq!(
-            controller.airworks_launch(unit, clock),
-            Some(AirworksLaunchState {
-                building: facts.id,
-                progress: 0.0,
-            })
-        );
 
         let finished = AnimationClock::new(37, 0.0);
         assert_eq!(
@@ -1542,7 +1514,30 @@ mod tests {
                 .activity,
             BuildingActivity::Idle
         );
-        assert_eq!(controller.airworks_launch(unit, finished), None);
+    }
+
+    #[test]
+    fn completed_airworks_launches_are_pruned() {
+        let mut state = Scenario::skirmish().build().expect("state");
+        let building = state.buildings()[0].id;
+        let mut controller = AnimationController::default();
+        controller.observe_events(
+            0,
+            &[Event::UnitTrained {
+                building,
+                unit: UnitId(44),
+                kind: UnitKind::Gnat,
+                player: PlayerId(0),
+            }],
+        );
+        controller.retain_live(&state);
+        assert_eq!(controller.airworks_launches.len(), 1);
+
+        for _ in 0..AIRWORKS_LAUNCH_TICKS {
+            state.tick(&[]);
+        }
+        controller.retain_live(&state);
+        assert!(controller.airworks_launches.is_empty());
     }
 
     #[test]

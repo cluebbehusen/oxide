@@ -198,55 +198,6 @@ fn world_vec(pos: chassis::fx::Vec2Fx) -> Vec2 {
     vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>())
 }
 
-/// Presentation-only placement for an aircraft leaving an Airworks bay.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct AirworksLaunchPose {
-    pub(crate) visible: bool,
-    pub(crate) position: Vec2,
-    pub(crate) rotation: f32,
-}
-
-fn smoothstep(progress: f32) -> f32 {
-    let progress = progress.clamp(0.0, 1.0);
-    progress * progress * (3.0 - 2.0 * progress)
-}
-
-fn airworks_sortie_pose(
-    anchor: Vec2,
-    size: (i32, i32),
-    destination: Vec2,
-    progress: f32,
-) -> AirworksLaunchPose {
-    let inside = anchor + vec2(size.0 as f32 * 0.5, size.1 as f32 * 0.57);
-    let doorway = anchor + vec2(size.0 as f32 * 0.5, size.1 as f32 * 0.94);
-    if progress < 0.5 {
-        return AirworksLaunchPose {
-            visible: false,
-            position: inside,
-            rotation: std::f32::consts::PI,
-        };
-    }
-
-    let sortie = ((progress - 0.5) * 2.0).clamp(0.0, 1.0);
-    let (position, direction) = if sortie < 0.6 {
-        let progress = smoothstep(sortie / 0.6);
-        (inside.lerp(doorway, progress), doorway - inside)
-    } else {
-        let progress = smoothstep((sortie - 0.6) / 0.4);
-        (doorway.lerp(destination, progress), destination - doorway)
-    };
-    let rotation = if direction.length_squared() <= f32::EPSILON {
-        std::f32::consts::PI
-    } else {
-        direction.y.atan2(direction.x) + std::f32::consts::FRAC_PI_2
-    };
-    AirworksLaunchPose {
-        visible: true,
-        position,
-        rotation,
-    }
-}
-
 impl Game {
     /// Starts a session from a scenario, at the injected window size
     /// (headless callers get the default without a window).
@@ -858,37 +809,6 @@ impl Game {
             None => now,
         }
     }
-
-    /// Places a newborn aircraft inside its Airworks until the bay opens,
-    /// then carries it through the front doors before joining sim truth.
-    pub(crate) fn airworks_launch_pose(
-        &self,
-        unit: &oxide_sim::Unit,
-        alpha: f32,
-    ) -> Option<AirworksLaunchPose> {
-        if unit.kind.stats().domain != oxide_sim::stats::Domain::Air {
-            return None;
-        }
-        let launch = self.animations.airworks_launch(
-            unit.id,
-            crate::presentation_animation::AnimationClock::from_state(
-                &self.state,
-                self.tick_fraction(),
-            ),
-        )?;
-        let building = self.state.building(launch.building)?;
-        if building.kind != oxide_sim::BuildingKind::Airworks {
-            return None;
-        }
-
-        let destination = self.draw_pos(unit.id, unit.pos, alpha);
-        Some(airworks_sortie_pose(
-            vec2(building.anchor.x as f32, building.anchor.y as f32),
-            building.stats().size,
-            destination,
-            launch.progress,
-        ))
-    }
 }
 
 /// The live session's half of the debug protocol's shared surface: real
@@ -1080,28 +1000,6 @@ mod tests {
             now - macroquad::prelude::vec2(1.0, 2.0)
         );
         assert_eq!(game.draw_pos(UnitId(u32::MAX), current, 0.5), now);
-    }
-
-    #[test]
-    fn airworks_sortie_stays_hidden_then_crosses_the_front_doors() {
-        let anchor = vec2(10.0, 20.0);
-        let destination = vec2(8.5, 20.5);
-        let hidden = airworks_sortie_pose(anchor, (2, 2), destination, 0.49);
-        assert!(!hidden.visible);
-
-        let inside = airworks_sortie_pose(anchor, (2, 2), destination, 0.5);
-        assert!(inside.visible);
-        assert_eq!(inside.position, vec2(11.0, 21.14));
-
-        let approach = airworks_sortie_pose(anchor, (2, 2), destination, 0.79);
-        assert_eq!(approach.rotation, std::f32::consts::PI);
-
-        let doorway = airworks_sortie_pose(anchor, (2, 2), destination, 0.8);
-        assert_eq!(doorway.position, vec2(11.0, 21.88));
-
-        let finished = airworks_sortie_pose(anchor, (2, 2), destination, 1.0);
-        assert_eq!(finished.position, destination);
-        assert!(finished.visible);
     }
 
     #[test]

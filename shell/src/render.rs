@@ -725,14 +725,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             continue;
         }
         let faction = game.state.player(unit.player).faction;
-        let launch = game.airworks_launch_pose(unit, alpha);
-        if launch.is_some_and(|pose| !pose.visible) {
-            continue;
-        }
-        let pos = launch.map_or_else(
-            || game.draw_pos(unit.id, unit.pos, alpha),
-            |pose| pose.position,
-        );
+        let pos = game.draw_pos(unit.id, unit.pos, alpha);
         if pos.x < view_lo.x - CULL_MARGIN
             || pos.y < view_lo.y - CULL_MARGIN
             || pos.x > view_hi.x + CULL_MARGIN
@@ -770,19 +763,15 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         // locomotion resumes movement facing instead of sliding sideways.
         let aim = game.aim_units.get(&unit.id.0).copied();
         let work_facing = unit_work_facing(unit.pos, animation.work);
-        let rotation = launch.map_or_else(
-            || match aim {
-                Some((angle, at))
-                    if animation.attack.is_some()
-                        || !moving && (preparing || game.fx_time() - at < 1.2) =>
-                {
-                    angle
-                }
-                _ => work_facing
-                    .unwrap_or_else(|| game.facing.get(&unit.id.0).copied().unwrap_or(0.0)),
-            },
-            |pose| pose.rotation,
-        );
+        let rotation = match aim {
+            Some((angle, at))
+                if animation.attack.is_some()
+                    || !moving && (preparing || game.fx_time() - at < 1.2) =>
+            {
+                angle
+            }
+            _ => work_facing.unwrap_or_else(|| game.facing.get(&unit.id.0).copied().unwrap_or(0.0)),
+        };
         if airborne {
             let (shadow_size, shadow_offset, body_lift) = air_presentation(unit.kind, zoom);
             draw_texture_ex(

@@ -762,8 +762,14 @@ fn captures_promoted_airworks_and_scouts_in_the_real_shell() -> Result<()> {
         harness.capture_stage(&format!("promoted-scout-movement/{}", kind.name()), 12, 1)?;
     }
 
-    let view = harness.load(airworks_sortie_scenario())?;
+    let view = harness.load(airworks_launch_scenario())?;
     let airworks = building(&view, 0, BuildingKind::Airworks)?;
+    let airworks_anchor = view
+        .buildings
+        .iter()
+        .find(|building| building.id == airworks.0)
+        .context("Airworks disappeared")?
+        .anchor;
     harness.command(
         0,
         Command::Train {
@@ -776,15 +782,33 @@ fn captures_promoted_airworks_and_scouts_in_the_real_shell() -> Result<()> {
         u64::from(UnitKind::Kestrel.stats().train_ticks.saturating_sub(4)),
     ];
     schedule.extend(std::iter::repeat_n(1, 20));
-    let events = harness.capture_schedule("promoted-airworks-kestrel-sortie", &schedule)?;
-    assert!(events.iter().any(|event| matches!(
-        event,
-        oxide_sim::Event::UnitTrained {
-            building,
-            kind: UnitKind::Kestrel,
-            ..
-        } if *building == airworks
-    )));
+    let events = harness.capture_schedule("promoted-airworks-kestrel-launch", &schedule)?;
+    let aircraft = events
+        .iter()
+        .find_map(|event| match event {
+            oxide_sim::Event::UnitTrained {
+                building,
+                unit,
+                kind: UnitKind::Kestrel,
+                ..
+            } if *building == airworks => Some(*unit),
+            _ => None,
+        })
+        .context("Airworks did not train a Kestrel")?;
+    let final_state = harness.state()?;
+    let aircraft = final_state
+        .units
+        .iter()
+        .find(|unit| unit.id == aircraft.0)
+        .context("trained Kestrel disappeared")?;
+    assert_eq!(
+        aircraft.pos,
+        [
+            f64::from(airworks_anchor[0]) + 1.0,
+            f64::from(airworks_anchor[1]) + 1.0,
+        ],
+        "trained Kestrel did not remain above the open roof bay"
+    );
 
     eprintln!(
         "promoted Airworks and scouts review written to {}",
@@ -801,7 +825,7 @@ fn generated_animation_capture_scenarios_are_valid() -> Result<()> {
         tender_repair_scenario(),
         condor_duel_scenario(),
         repair_bay_scenario(),
-        airworks_sortie_scenario(),
+        airworks_launch_scenario(),
     ];
     scenarios.extend(ALL_UNIT_KINDS.map(movement_scenario));
     scenarios.extend([UnitKind::Gnat, UnitKind::Kestrel].map(promoted_scout_movement_scenario));
@@ -1129,9 +1153,9 @@ fn condor_duel_scenario() -> Value {
     )
 }
 
-fn airworks_sortie_scenario() -> Value {
+fn airworks_launch_scenario() -> Value {
     scenario(
-        "Native Airworks Kestrel Sortie",
+        "Native Airworks Kestrel Launch",
         &[],
         Vec::new(),
         vec![structure(0, BuildingKind::Airworks, 15, 10)],
