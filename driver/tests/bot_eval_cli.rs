@@ -715,10 +715,7 @@ fn persisted_evidence_requires_an_explicit_candidate() {
         .output()
         .expect("run persisted bot evaluation");
     assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("--candidate is required with --out or --replay-dir")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--candidate is required"));
     assert!(!dir.join("rows.jsonl").exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -862,5 +859,226 @@ fn rerunning_one_exact_candidate_refuses_to_replace_its_evidence() {
     assert_eq!(std::fs::read(&out).unwrap(), original_index);
     assert_eq!(std::fs::read(&replay_paths[0]).unwrap(), original_replay);
     assert_eq!(std::fs::read_dir(&replay_dir).unwrap().count(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn decision_trace_requires_a_persisted_index_and_candidate() {
+    let dir = scratch("trace-contract");
+    let trace = dir.join("trace.jsonl");
+    let out = dir.join("rows.jsonl");
+
+    let without_index = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+        .args([
+            "bot-eval",
+            "skirmish",
+            "--ticks",
+            "1",
+            "--candidate",
+            "candidate-a",
+            "--decision-trace-out",
+        ])
+        .arg(&trace)
+        .output()
+        .expect("run trace-only evaluation");
+    assert!(!without_index.status.success());
+    let stderr = String::from_utf8_lossy(&without_index.stderr);
+    assert!(
+        stderr.contains("--decision-trace-out")
+            && stderr.contains("--out")
+            && stderr.contains("required"),
+        "trace-only refusal was unclear: {stderr}"
+    );
+
+    let without_candidate = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+        .args(["bot-eval", "skirmish", "--ticks", "1", "--out"])
+        .arg(&out)
+        .arg("--decision-trace-out")
+        .arg(&trace)
+        .output()
+        .expect("run persisted trace without a candidate");
+    assert!(!without_candidate.status.success());
+    assert!(String::from_utf8_lossy(&without_candidate.stderr).contains("--candidate is required"));
+    assert!(!out.exists());
+    assert!(!trace.exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn decision_trace_is_deterministic_opt_in_evidence_and_omits_overseer() {
+    let first = scratch("trace-determinism-first");
+    let second = scratch("trace-determinism-second");
+
+    let run = |dir: &std::path::Path| {
+        let out = dir.join("rows.jsonl");
+        let trace = dir.join("trace.jsonl");
+        let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+            .args([
+                "bot-eval",
+                "skirmish",
+                "--ticks",
+                "25",
+                "--against-overseer",
+                "--paired",
+                "--scenario-seeds",
+                "13",
+                "--personality-seeds",
+                "40",
+                "--candidate",
+                "candidate-a",
+                "--out",
+            ])
+            .arg(&out)
+            .arg("--decision-trace-out")
+            .arg(&trace)
+            .output()
+            .expect("run traced Overseer evaluation");
+        assert!(
+            output.status.success(),
+            "traced bot-eval failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        (std::fs::read(out).unwrap(), std::fs::read(trace).unwrap())
+    };
+
+    let (first_rows, first_trace) = run(&first);
+    let (second_rows, second_trace) = run(&second);
+    assert_eq!(
+        first_rows, second_rows,
+        "compact rows must stay deterministic"
+    );
+    assert_eq!(
+        first_trace, second_trace,
+        "decision trace JSONL must stay deterministic"
+    );
+
+    let without_trace = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+        .args([
+            "bot-eval",
+            "skirmish",
+            "--ticks",
+            "25",
+            "--against-overseer",
+            "--paired",
+            "--scenario-seeds",
+            "13",
+            "--personality-seeds",
+            "40",
+            "--candidate",
+            "candidate-a",
+        ])
+        .output()
+        .expect("run ordinary Overseer evaluation");
+    assert!(without_trace.status.success());
+    assert_eq!(
+        without_trace.stdout, first_rows,
+        "enabling trace output must not change normal evaluation rows"
+    );
+
+    let rows: Vec<Value> = String::from_utf8(first_rows)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let traces: Vec<Value> = String::from_utf8(first_trace)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert!(!traces.is_empty());
+    assert!(rows.iter().all(|row| row.get("trace").is_none()));
+    for trace in &traces {
+        let leg = trace["leg"].as_str().unwrap();
+        let expected_scripted_seat = match leg {
+            "forward" => 0,
+            "swapped" => 1,
+            other => panic!("unexpected traced leg {other}"),
+        };
+        let evaluation = rows.iter().find(|row| row["leg"] == trace["leg"]).unwrap();
+        assert_eq!(trace["version"], 1);
+        assert_eq!(trace["candidate"], evaluation["candidate"]);
+        assert_eq!(
+            trace["evaluation_fingerprint"],
+            evaluation["evaluation_fingerprint"]
+        );
+        assert_eq!(trace["seat"], expected_scripted_seat);
+        assert_eq!(trace["trace"]["player"], expected_scripted_seat);
+        assert_eq!(trace["tick"], trace["trace"]["tick"]);
+        assert!(trace["tick"].as_u64().unwrap() < evaluation["duration_ticks"].as_u64().unwrap());
+    }
+
+    std::fs::remove_dir_all(first).unwrap();
+    std::fs::remove_dir_all(second).unwrap();
+}
+
+#[test]
+fn decision_trace_refuses_overwrite_before_publishing_other_evidence() {
+    let dir = scratch("trace-no-overwrite");
+    let out = dir.join("rows.jsonl");
+    let trace = dir.join("trace.jsonl");
+    std::fs::write(&trace, b"earlier trace").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+        .args([
+            "bot-eval",
+            "skirmish",
+            "--ticks",
+            "1",
+            "--candidate",
+            "candidate-a",
+            "--out",
+        ])
+        .arg(&out)
+        .arg("--decision-trace-out")
+        .arg(&trace)
+        .output()
+        .expect("run evaluation against existing trace evidence");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("refusing to overwrite"),
+        "unexpected refusal: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read(&trace).unwrap(), b"earlier trace");
+    assert!(!out.exists());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn staged_trace_is_cleaned_up_when_replay_staging_fails() {
+    let dir = scratch("trace-stage-cleanup");
+    let out = dir.join("rows.jsonl");
+    let trace = dir.join("trace.jsonl");
+    let replay_blocker = dir.join("not-a-directory");
+    std::fs::write(&replay_blocker, b"keep me").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+        .args([
+            "bot-eval",
+            "skirmish",
+            "--ticks",
+            "1",
+            "--candidate",
+            "candidate-a",
+            "--out",
+        ])
+        .arg(&out)
+        .arg("--decision-trace-out")
+        .arg(&trace)
+        .arg("--replay-dir")
+        .arg(&replay_blocker)
+        .output()
+        .expect("run evaluation with an invalid replay directory");
+    assert!(!output.status.success());
+    assert_eq!(std::fs::read(&replay_blocker).unwrap(), b"keep me");
+    assert!(!out.exists());
+    assert!(!trace.exists());
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        1,
+        "private trace staging files must be removed on another evidence failure"
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -6,14 +6,15 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use oxide_kit::GameReplay;
-use oxide_sim::bot::{PublicMapBriefing, ResolvedProfile, SeatBot};
+use oxide_sim::bot::{DecisionTrace, PublicMapBriefing, ResolvedProfile, SeatBot};
 use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
 use oxide_sim::{Event, Faction, GameResult, PlayerId, SIM_VERSION, Scenario};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const MAX_CANDIDATE_LEN: usize = 128;
 
@@ -529,6 +530,33 @@ pub struct EvaluationRow {
     pub replay: Option<String>,
 }
 
+/// Schema version for [`EvaluationTraceRow`].
+pub const EVALUATION_TRACE_ROW_VERSION: u32 = 1;
+
+/// One opt-in decision trace joined to its exact evaluation leg.
+///
+/// These rows are diagnostic sidecar evidence. They are not replay input and
+/// never become part of [`EvaluationRow`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EvaluationTraceRow {
+    /// Sidecar row schema version.
+    pub version: u32,
+    /// User-supplied candidate or build identifier.
+    pub candidate: String,
+    /// Stable digest of the exact evaluation plan.
+    pub evaluation_fingerprint: String,
+    /// Seat-pair leg.
+    pub leg: EvaluationLeg,
+    /// Player seat whose fog-honest decision produced the trace.
+    pub seat: u8,
+    /// Simulation tick observed by the controller.
+    pub tick: u64,
+    /// Player-facing decision diagnostic.
+    pub trace: DecisionTrace,
+}
+
+type EvaluationTraceSink<'a> = &'a mut dyn FnMut(&EvaluationTraceRow) -> Result<()>;
+
 /// Runs one configured scenario until its result or `tick_limit`.
 ///
 /// A replay is always assembled in memory so command counts and optional
@@ -585,6 +613,42 @@ pub fn evaluate_plan_artifact_with(
     stall_loop_limit: Option<u64>,
     candidate: &str,
 ) -> Result<(EvaluationRow, GameReplay)> {
+    let (row, replay, _) =
+        evaluate_plan_artifact_impl(plan, tick_limit, stall_loop_limit, candidate, None)?;
+    Ok((row, replay))
+}
+
+/// Runs one exact evaluation plan and also captures player-facing decision
+/// diagnostics produced during that run.
+///
+/// The returned replay and compact evaluation row are identical to those from
+/// [`evaluate_plan_artifact_with`]. The frozen Overseer produces no trace rows.
+pub fn evaluate_plan_artifact_traced_with<F>(
+    plan: &EvaluationPlan,
+    tick_limit: u64,
+    stall_loop_limit: Option<u64>,
+    candidate: &str,
+    mut on_trace: F,
+) -> Result<(EvaluationRow, GameReplay, u64)>
+where
+    F: FnMut(&EvaluationTraceRow) -> Result<()>,
+{
+    evaluate_plan_artifact_impl(
+        plan,
+        tick_limit,
+        stall_loop_limit,
+        candidate,
+        Some(&mut on_trace),
+    )
+}
+
+fn evaluate_plan_artifact_impl(
+    plan: &EvaluationPlan,
+    tick_limit: u64,
+    stall_loop_limit: Option<u64>,
+    candidate: &str,
+    mut trace_sink: Option<EvaluationTraceSink<'_>>,
+) -> Result<(EvaluationRow, GameReplay, u64)> {
     ensure!(tick_limit > 0, "bot evaluation tick limit must be positive");
     ensure!(
         stall_loop_limit != Some(0),
@@ -613,10 +677,29 @@ pub fn evaluate_plan_artifact_with(
     ));
     let mut evidence: Vec<SeatEvidence> =
         (0..scenario.players.len()).map(SeatEvidence::new).collect();
+    let mut trace_count = 0_u64;
 
     let mut stall_loop = None;
     'run: while state.current_tick() < tick_limit && state.result().is_none() {
-        let report = oxide_kit::runner::step(&mut state, &mut bots, Some(&mut replay));
+        let report = if let Some(on_trace) = trace_sink.as_mut() {
+            let traced = oxide_kit::runner::step_traced(&mut state, &mut bots, Some(&mut replay));
+            for trace in traced.traces {
+                let row = EvaluationTraceRow {
+                    version: EVALUATION_TRACE_ROW_VERSION,
+                    candidate: candidate.to_string(),
+                    evaluation_fingerprint: evaluation_fingerprint.clone(),
+                    leg: plan.leg,
+                    seat: trace.player.0,
+                    tick: trace.tick,
+                    trace,
+                };
+                on_trace(&row)?;
+                trace_count = trace_count.saturating_add(1);
+            }
+            traced.report
+        } else {
+            oxide_kit::runner::step(&mut state, &mut bots, Some(&mut replay))
+        };
         for event in &report.events {
             if let Some(sample) = record_evidence_event(&mut evidence, event)
                 && stall_loop_limit.is_some_and(|limit| sample.count >= limit)
@@ -688,7 +771,7 @@ pub fn evaluate_plan_artifact_with(
         evidence,
         replay: None,
     };
-    Ok((row, replay))
+    Ok((row, replay, trace_count))
 }
 
 fn record_evidence_event(evidence: &mut [SeatEvidence], event: &Event) -> Option<StallSample> {
@@ -835,6 +918,10 @@ pub fn configured_overseer_plans(
 
 /// Atomically writes compact evaluation records as one JSON object per line.
 pub fn write_jsonl(rows: &[EvaluationRow], path: &Path) -> Result<()> {
+    write_serialized_jsonl(rows, path, "bot evaluation JSONL")
+}
+
+fn write_serialized_jsonl<T: Serialize>(rows: &[T], path: &Path, label: &str) -> Result<()> {
     chassis::fsx::write_atomic(path, |writer| -> Result<()> {
         for row in rows {
             serde_json::to_writer(&mut *writer, row)?;
@@ -842,7 +929,75 @@ pub fn write_jsonl(rows: &[EvaluationRow], path: &Path) -> Result<()> {
         }
         Ok(())
     })
-    .with_context(|| format!("writing bot evaluation JSONL to {}", path.display()))
+    .with_context(|| format!("writing {label} to {}", path.display()))
+}
+
+/// A bounded, unpublished decision-trace JSONL stream.
+///
+/// Call [`finish`](Self::finish) before publishing its [`EvidenceBatch`]. A
+/// dropped or failed stream remains private and the batch removes it.
+pub struct EvaluationTraceWriter {
+    writer: Option<BufWriter<std::fs::File>>,
+    staged: PathBuf,
+    destination: PathBuf,
+    ready: Arc<AtomicBool>,
+    rows: u64,
+}
+
+impl EvaluationTraceWriter {
+    /// Appends one deterministic trace row to the private staging file.
+    pub fn write_row(&mut self, row: &EvaluationTraceRow) -> Result<()> {
+        let writer = self
+            .writer
+            .as_mut()
+            .expect("a live trace writer retains its staging file");
+        serde_json::to_writer(&mut *writer, row).with_context(|| {
+            format!(
+                "serializing bot decision trace for {}",
+                self.destination.display()
+            )
+        })?;
+        writer.write_all(b"\n").with_context(|| {
+            format!(
+                "writing bot decision trace for {}",
+                self.destination.display()
+            )
+        })?;
+        self.rows = self.rows.saturating_add(1);
+        Ok(())
+    }
+
+    /// Flushes and syncs the private trace file, returning its row count.
+    pub fn finish(mut self) -> Result<u64> {
+        let mut writer = self
+            .writer
+            .take()
+            .expect("a live trace writer retains its staging file");
+        writer.flush().with_context(|| {
+            format!(
+                "flushing bot decision trace for {}",
+                self.destination.display()
+            )
+        })?;
+        writer.get_ref().sync_all().with_context(|| {
+            format!(
+                "syncing bot decision trace for {}",
+                self.destination.display()
+            )
+        })?;
+        drop(writer);
+        self.ready.store(true, Ordering::Release);
+        Ok(self.rows)
+    }
+}
+
+impl Drop for EvaluationTraceWriter {
+    fn drop(&mut self) {
+        if !self.ready.load(Ordering::Acquire) {
+            drop(self.writer.take());
+            std::fs::remove_file(&self.staged).ok();
+        }
+    }
 }
 
 /// Unpublished evidence files for one evaluation invocation.
@@ -857,6 +1012,7 @@ pub fn write_jsonl(rows: &[EvaluationRow], path: &Path) -> Result<()> {
 #[derive(Debug, Default)]
 pub struct EvidenceBatch {
     staged: Vec<(PathBuf, PathBuf)>,
+    trace_ready: Vec<Arc<AtomicBool>>,
     published: Vec<PathBuf>,
     committed: bool,
 }
@@ -880,6 +1036,30 @@ impl EvidenceBatch {
             .with_context(|| format!("staging evidence index for {}", destination.display()))
     }
 
+    /// Opens a bounded decision-trace JSONL stream at a private sibling path.
+    pub fn stage_trace_jsonl(&mut self, destination: &Path) -> Result<EvaluationTraceWriter> {
+        let staged = self.reserve_stage(destination)?;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&staged)
+            .with_context(|| {
+                format!(
+                    "opening bot decision trace staging file for {}",
+                    destination.display()
+                )
+            })?;
+        let ready = Arc::new(AtomicBool::new(false));
+        self.trace_ready.push(Arc::clone(&ready));
+        Ok(EvaluationTraceWriter {
+            writer: Some(BufWriter::new(file)),
+            staged,
+            destination: destination.to_path_buf(),
+            ready,
+            rows: 0,
+        })
+    }
+
     /// Publishes every staged file as a create-only hard link.
     ///
     /// Because each staging path is a sibling of its destination, the link
@@ -887,6 +1067,12 @@ impl EvidenceBatch {
     /// Errors returned from this call roll back links already created by this
     /// batch; abrupt process termination can interrupt that rollback.
     pub fn publish(mut self) -> Result<()> {
+        ensure!(
+            self.trace_ready
+                .iter()
+                .all(|ready| ready.load(Ordering::Acquire)),
+            "bot evaluation decision traces must be finished before publication"
+        );
         let mut destinations: Vec<&Path> = self
             .staged
             .iter()
@@ -1252,6 +1438,27 @@ mod tests {
         }
     }
 
+    fn one_evaluation_trace() -> EvaluationTraceRow {
+        let plan = configured_overseer_plans(
+            &Scenario::skirmish(),
+            73,
+            prime_config(),
+            TEST_OVERSEER_POLICY_SEED,
+            false,
+            EvaluationFactionCell::Authored,
+            EvaluationGeometry::Authored,
+        )
+        .unwrap()
+        .remove(0);
+        let mut trace = None;
+        evaluate_plan_artifact_traced_with(&plan, 1, None, "candidate-a", |row| {
+            assert!(trace.replace(row.clone()).is_none());
+            Ok(())
+        })
+        .unwrap();
+        trace.expect("Prime emits one trace at tick zero")
+    }
+
     #[test]
     fn overseer_pair_swaps_only_controllers_on_one_transformed_scenario() {
         let source = Scenario::skirmish();
@@ -1471,6 +1678,68 @@ mod tests {
             assert!(description.contains(&format!(
                 "\"kind\":\"overseer\",\"policy_seed\":{TEST_OVERSEER_POLICY_SEED}"
             )));
+        }
+    }
+
+    #[test]
+    fn traced_evaluation_is_deterministic_and_does_not_change_authoritative_evidence() {
+        let plan = configured_overseer_plans(
+            &Scenario::skirmish(),
+            73,
+            prime_config(),
+            TEST_OVERSEER_POLICY_SEED,
+            false,
+            EvaluationFactionCell::Cf,
+            EvaluationGeometry::Authored,
+        )
+        .unwrap()
+        .remove(0);
+
+        let (ordinary_row, ordinary_replay) =
+            evaluate_plan_artifact_with(&plan, 25, None, "candidate-a").unwrap();
+        let mut traces = Vec::new();
+        let (traced_row, traced_replay, trace_count) =
+            evaluate_plan_artifact_traced_with(&plan, 25, None, "candidate-a", |row| {
+                traces.push(row.clone());
+                Ok(())
+            })
+            .unwrap();
+        let mut repeated_traces = Vec::new();
+        let (_, _, repeated_count) =
+            evaluate_plan_artifact_traced_with(&plan, 25, None, "candidate-a", |row| {
+                repeated_traces.push(row.clone());
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(traced_row, ordinary_row);
+        assert_eq!(traced_row.final_hash, ordinary_row.final_hash);
+        assert_eq!(traced_row.command_hash, ordinary_row.command_hash);
+        assert_eq!(
+            serde_json::to_vec(&traced_replay).unwrap(),
+            serde_json::to_vec(&ordinary_replay).unwrap(),
+            "trace capture must not enter replay metadata or commands"
+        );
+        assert!(!traces.is_empty(), "Prime should produce a decision trace");
+        assert_eq!(trace_count, traces.len() as u64);
+        assert_eq!(repeated_count, repeated_traces.len() as u64);
+        assert_eq!(traces, repeated_traces);
+        assert_eq!(
+            serde_json::to_vec(&traces).unwrap(),
+            serde_json::to_vec(&repeated_traces).unwrap()
+        );
+        for row in &traces {
+            assert_eq!(row.version, EVALUATION_TRACE_ROW_VERSION);
+            assert_eq!(row.candidate, "candidate-a");
+            assert_eq!(
+                row.evaluation_fingerprint,
+                traced_row.evaluation_fingerprint
+            );
+            assert_eq!(row.leg, traced_row.leg);
+            assert_eq!(row.seat, 0, "the frozen Overseer must not emit traces");
+            assert_eq!(row.seat, row.trace.player.0);
+            assert_eq!(row.tick, row.trace.tick);
+            assert!(row.tick < traced_row.duration_ticks);
         }
     }
 
@@ -1887,6 +2156,109 @@ mod tests {
         assert!(!first.exists(), "the earlier publication was rolled back");
         assert_eq!(std::fs::read(&second).unwrap(), b"racing evidence");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_trace_publication_collision_rolls_back_the_compact_index() {
+        let replay_id = NEXT_REPLAY_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "oxide-bot-trace-batch-{}-{replay_id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let index_path = dir.join("rows.jsonl");
+        let trace_path = dir.join("trace.jsonl");
+        let plan = configured_overseer_plans(
+            &Scenario::skirmish(),
+            73,
+            prime_config(),
+            TEST_OVERSEER_POLICY_SEED,
+            false,
+            EvaluationFactionCell::Authored,
+            EvaluationGeometry::Authored,
+        )
+        .unwrap()
+        .remove(0);
+        let mut traces = Vec::new();
+        let (row, _, trace_count) =
+            evaluate_plan_artifact_traced_with(&plan, 1, None, "candidate-a", |row| {
+                traces.push(row.clone());
+                Ok(())
+            })
+            .unwrap();
+        assert!(!traces.is_empty());
+        assert_eq!(trace_count, traces.len() as u64);
+
+        let mut batch = EvidenceBatch::default();
+        batch
+            .stage_jsonl(std::slice::from_ref(&row), &index_path)
+            .unwrap();
+        let mut writer = batch.stage_trace_jsonl(&trace_path).unwrap();
+        for trace in &traces {
+            writer.write_row(trace).unwrap();
+        }
+        assert_eq!(writer.finish().unwrap(), traces.len() as u64);
+        std::fs::write(&trace_path, b"racing trace evidence").unwrap();
+
+        let error = batch.publish().unwrap_err();
+        assert!(error.to_string().contains("without overwriting"));
+        assert!(!index_path.exists(), "the earlier index was rolled back");
+        assert_eq!(
+            std::fs::read(&trace_path).unwrap(),
+            b"racing trace evidence"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_unfinished_trace_stream_cannot_be_published() {
+        let replay_id = NEXT_REPLAY_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "oxide-bot-trace-unfinished-{}-{replay_id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let trace_path = dir.join("trace.jsonl");
+        let mut batch = EvidenceBatch::default();
+        let mut writer = batch.stage_trace_jsonl(&trace_path).unwrap();
+        writer.write_row(&one_evaluation_trace()).unwrap();
+
+        let error = batch.publish().unwrap_err();
+        assert!(error.to_string().contains("must be finished"));
+        assert!(!trace_path.exists(), "unfinished output was not published");
+        drop(writer);
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "closing the unfinished writer removes its private staging file"
+        );
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn an_unfinished_trace_writer_cleans_up_after_its_batch_is_dropped() {
+        let replay_id = NEXT_REPLAY_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "oxide-bot-trace-drop-order-{}-{replay_id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let trace_path = dir.join("trace.jsonl");
+        let writer = {
+            let mut batch = EvidenceBatch::default();
+            let writer = batch.stage_trace_jsonl(&trace_path).unwrap();
+            drop(batch);
+            writer
+        };
+
+        drop(writer);
+        assert!(!trace_path.exists(), "a dropped stream is never published");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "the writer removes a staging file that outlives its batch"
+        );
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]
