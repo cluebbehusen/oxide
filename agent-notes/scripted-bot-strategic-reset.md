@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-02T07:02:51
+updated: 2026-09-02T13:40:17
 ---
 
 # Scripted Bot Strategic Reset
@@ -97,7 +97,7 @@ without arbitrary controller caps.
   - Verified that traced and ordinary runs produce identical commands, replays,
     and state hashes; trace rows are deterministic and bounded to actual
     decision ticks, while Overseer and cadence skips emit none.
-- [ ] 2. Establish one authoritative typed resource and commitment model.
+- [x] 2. Establish one authoritative typed resource and commitment model.
   - Represent current scrap, conservative forecasts, builders, producer lanes
     and time, exact units, and existing obligations once; migrate a real
     consumer and remove its doctored observations and ad hoc budget plumbing.
@@ -108,6 +108,31 @@ without arbitrary controller caps.
     reservations, release and rollback, exact builder and unit ownership,
     producer-time conflicts, and prevention of double counting; do not change
     cross-domain arbitration yet.
+  - Built one fog-honest resource snapshot for each player-facing utility pass,
+    separating current scrap from conservative completed-income forecasts and
+    recording exact builders, obligations, units, producer queues, timing, and
+    egress evidence
+  - Added a deterministic commitment ledger for current-bank spending and holds
+    plus exact unit, builder, site, and contiguous producer claims, with atomic
+    rollback and owner-scoped release
+  - Adapted upstream strategic commitments, reserved units, queue appends,
+    persistent Foundry saving, and deferred foundations into explicit owners
+    while leaving unconverted channel priority intact
+  - Migrated Foundry saving across decisions: it freezes one exact site,
+    builder, and admission fund; yields to survival or required preparation;
+    survives unrelated lowering; and releases on exact dispatch, invalidation,
+    or bounded recovery
+  - Covered current versus forecast funds, canonical ownership, producer timing
+    and conflicts, gross-versus-net legacy decisions, strategic competition,
+    safety-guard changes, rollback, refusal, timeout, mirrored lowering, and
+    successful release with focused regressions
+  - Extended deterministic decision traces with bounded resource, builder,
+    producer, and saved-expansion evidence; refreshed only the approved
+    player-facing behavior rows while frozen Overseer hashes remained unchanged
+  - Verified the resource boundary against authoritative income cadence and
+    support-radius edges, live producer blockage and recovery, current tech
+    prerequisites with prepaid queues, both operation-versus-expansion admission
+    orderings, mirrored exact lowering, and recovery-clock renewal
 - [ ] 3. Replace fixed connected-operation rosters with opportunity-scaled force
       packages.
   - Derive capability demand and deterministic providers from target value,

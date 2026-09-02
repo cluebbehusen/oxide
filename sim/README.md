@@ -60,14 +60,28 @@ an ordinary command source rather than a separate ruleset.
   against public terrain. Player-facing Foundry expansion has no count ceiling:
   it ranks every exact legal site by bounded post-build Extractor, drip, and
   route-safe visible hauling value, then prices candidate-specific security
-  outside uncommitted wealth before committing one unpaid claim. A partial or
-  complete Foundry fund closes later voluntary and paid-repair spending until
-  the exact build command is emitted. Greed changes the forecast and justified
-  preparation, not which actions the bot may take. The profile-free Overseer
-  retains its frozen legacy expansion policy. The player-facing controller can
-  optionally emit one compact, fog-honest decision trace on each think tick;
-  traces are output-only diagnostics and never enter controller memory, state,
-  commands, or replays. The frozen Overseer emits no decision trace.
+  outside uncommitted wealth before committing one unpaid claim. An accepted
+  unpaid plan persists its exact site, builder, and fund across decisions. Its
+  builder lease prevents unrelated work from consuming that worker until the
+  matching build command is emitted, the plan becomes invalid, survival takes
+  priority, or bounded recovery expires. Greed changes the forecast and
+  justified preparation, not which actions the bot may take. Each player-facing
+  utility pass builds one fog-honest resource snapshot that keeps current scrap
+  separate from conservative completed-income forecasts and records exact active
+  or queued builder obligations and completed producer queues. Queued order
+  contents remain private; the policy sees only which own units already have a
+  continuing program. A deterministic commitment ledger imports existing
+  strategic and deferred work, then owns current-bank, unit, builder, site, and
+  producer claims; unmigrated channels retain their existing order through
+  explicit legacy claims. An operation accepted before a saved Foundry plan
+  retains its earlier bank priority, while later operations may spend only the
+  excess. The profile-free Overseer retains its frozen legacy expansion policy.
+  The player-facing controller can optionally emit one compact, fog-honest
+  decision trace on each think tick; its resource section reports current scrap
+  separately from bounded forecast income plus current builder and producer
+  capacity. Traces are output-only diagnostics and never enter controller
+  memory, state, commands, or replays. The frozen Overseer emits no decision
+  trace.
 - `vision` provides visibility and explored-world state.
 
 Repair and salvage share one damage-first building-work resolver and remain

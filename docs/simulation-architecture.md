@@ -38,7 +38,10 @@ Player-facing bot decision traces have the same one-way boundary. An opt-in
 coordinator while returning the same ordinary commands as `Brain::act`. The
 trace recorder is local to that call; traces are not controller memory,
 authoritative state, replay input, or replay metadata. Overseer and ticks on
-which no player-facing decision occurs produce no trace.
+which no player-facing decision occurs produce no trace. Trace schema 2 reports
+current scrap separately from a bounded, normally one-minute forecast based only
+on completed income sources, together with current builder and producer
+capacity.
 
 ## State construction and trust boundary
 
@@ -415,8 +418,33 @@ The player-facing controller distinguishes current sight from remembered
 evidence in `StrategicIntelligence`. Persistent planners retain phased air,
 lift, raid, and allied-relief operations across decisions. They name exact units
 and budget committed scrap before `UtilityPolicy` fills the remaining economy,
-production, defense, support, and combat work. The shared `Executive` owns the
-exact-unit bookkeeping and lowers every intent into ordinary candidate commands.
+production, defense, support, and combat work.
+
+At the boundary between those planners and `UtilityPolicy`, each player-facing
+utility pass constructs one immutable `ResourceSnapshot` from the current
+`Observation`. It keeps current scrap distinct from a conservative forecast
+derived only from completed recurring-income buildings. It also records exact
+own units, construction-capable workers and their active or queued obligations,
+and completed producer lanes with current queues, legal output, conditional
+timing, and current egress evidence. Own queued programs are exposed only as a
+sorted set of occupied unit ids, not as order contents; allied and hostile
+programs remain opaque. Forecast income may inform a proposal but cannot satisfy
+a current-bank claim.
+
+A fresh `CommitmentLedger` imports upstream committed scrap, reserved units,
+strategic queue appends, persistent saving, and retained deferred foundations
+before utility channels run. It attributes current-bank spending and holds plus
+exact units, builders, footprints, and contiguous producer appends to
+deterministic owners. Failed proposals roll back atomically; releasing one owner
+returns only revisable claims and reindexes surviving producer appends.
+Unmigrated channels preserve their existing priority through explicit legacy
+claims. An operation admitted before a persistent Foundry saving retains its
+earlier claim on the bank; an operation admitted afterward can use only the
+capital beyond that saving. Cross-domain allocation has not yet moved to this
+seam. The commitment model owns planning-time exact-resource claims; the shared
+`Executive` owns command-lowering bookkeeping and converts intents into ordinary
+candidate commands.
+
 Reusable air-operation survivors keep their roles only through the operation
 cooldown; aborts caused by unreachable routes or newly observed defenses release
 them immediately. Offensive ground policy compares the force that the Executive
@@ -593,6 +621,14 @@ wealth before payback is admitted. Buying that core reduces the outstanding cost
 and cash together. Foundry capital is reserved after projected protection is
 ready, and a partial or complete fund closes later voluntary production,
 construction, and paid-repair spending until the exact build command is emitted.
+Once saving begins, `UtilityPolicy` preserves the exact site, worker, and
+required total across decisions and imports them into the per-think ledger. The
+worker lease prevents scouting, repair, salvage, queued work, unrelated
+construction, and implicit drafting from stealing it during intent lowering;
+only the matching Foundry build may consume it. Transition, invalidation, or an
+urgent opening-core shortfall releases the claim immediately. A temporarily
+blocked plan gets a bounded recovery window, while a plan that needs new
+protection releases its fund for that preparation before it can be reconsidered.
 A generic frontier nearer to a known enemy Foundry than to any projected own
 Foundry is not eligible, and only one unpaid Foundry claim may exist. This is
 controller discipline, not simulation escrow: automatic Repair Bay pulses
@@ -617,17 +653,18 @@ version check. Serialization emits only the current shape.
 This table names the first source and focused suites to inspect. It is a routing
 map rather than an exhaustive test inventory.
 
-| Contract                                           | Primary source                                                                                                                                                                 | Focused evidence                                                                                                                    |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Scenario build and authored map                    | `sim/src/scenario.rs`, `sim/src/map.rs`                                                                                                                                        | inline module tests, `sim/tests/pits.rs`, `sim/tests/extractors.rs`                                                                 |
-| State, hashing, validation, and teams              | `sim/src/state.rs`, `chassis/src/hash.rs`                                                                                                                                      | `sim/tests/state_integrity.rs`, `sim/tests/determinism.rs`, `sim/tests/teams.rs`                                                    |
-| Placement, deferred founding, and upgrades         | `sim/src/state/placement.rs`, `sim/src/tick/commands.rs`, `sim/src/tick/brain.rs`, `sim/src/tick/brain/economy.rs`                                                             | `sim/tests/behavior_construction.rs`, `sim/tests/extractors.rs`, `sim/tests/upgrades.rs`, `sim/tests/foundries.rs`                  |
-| Tick scheduling, production, cleanup, and charges  | `sim/src/tick/mod.rs`, `sim/src/tick/production.rs`                                                                                                                            | `sim/tests/behavior_rules.rs`, `sim/tests/behavior_economy.rs`, `sim/tests/mines_015.rs`                                            |
-| Command vocabulary and set semantics               | `sim/src/command.rs`, `sim/src/tick/commands.rs`                                                                                                                               | `sim/tests/command_canonicalization.rs`, `sim/tests/fuzz.rs`                                                                        |
-| Unit programs, routing, movement, and collision    | `sim/src/tick/brain.rs`, `sim/src/tick/brain/locomotion.rs`, `sim/src/tick/movement.rs`, `chassis/src/path.rs`                                                                 | `sim/tests/behavior_movement.rs`, `sim/tests/movement_lab.rs`, `sim/tests/peaks.rs`, `sim/tests/pits.rs`                            |
-| Boarding and unloading                             | `sim/src/tick/brain/logistics.rs`                                                                                                                                              | `sim/tests/transports_015.rs`                                                                                                       |
-| Harvesting, income, salvage, and repair            | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs`                                                                                                                  | `sim/tests/harvest_zones.rs`, `sim/tests/salvage.rs`, `sim/tests/repair_unit.rs`, `sim/tests/repair_bay.rs`, `sim/tests/smelter.rs` |
-| Weapons and simultaneous resolution                | `sim/src/stats.rs`, `sim/src/tick/brain/combat.rs`                                                                                                                             | `sim/tests/behavior_combat.rs`, `sim/tests/combat_edges.rs`, `sim/tests/shells.rs`, `sim/tests/peaks.rs`                            |
-| Fog, memory, radar, and stealth                    | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                                                        | `sim/tests/bot_brain.rs`, `sim/tests/bastion_acquisition.rs`, `sim/tests/mines_015.rs`                                              |
-| Bot knowledge, profiles, and fair difficulty       | `sim/src/bot/briefing.rs`, `sim/src/bot/observation.rs`, `sim/src/bot/intelligence.rs`, `sim/src/bot/orient.rs`, `sim/src/bot/profile.rs`, `sim/src/bot/difficulty.rs`         | inline module tests, `sim/tests/bot_brain.rs`                                                                                       |
-| Bot playbooks, routing, reservations, and lowering | `sim/src/bot/strategy.rs`, `sim/src/bot/lift.rs`, `sim/src/bot/raid.rs`, `sim/src/bot/team.rs`, `sim/src/bot/routing.rs`, `sim/src/bot/utility.rs`, `sim/src/bot/executive.rs` | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
+| Contract                                           | Primary source                                                                                                                                                         | Focused evidence                                                                                                                    |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Scenario build and authored map                    | `sim/src/scenario.rs`, `sim/src/map.rs`                                                                                                                                | inline module tests, `sim/tests/pits.rs`, `sim/tests/extractors.rs`                                                                 |
+| State, hashing, validation, and teams              | `sim/src/state.rs`, `chassis/src/hash.rs`                                                                                                                              | `sim/tests/state_integrity.rs`, `sim/tests/determinism.rs`, `sim/tests/teams.rs`                                                    |
+| Placement, deferred founding, and upgrades         | `sim/src/state/placement.rs`, `sim/src/tick/commands.rs`, `sim/src/tick/brain.rs`, `sim/src/tick/brain/economy.rs`                                                     | `sim/tests/behavior_construction.rs`, `sim/tests/extractors.rs`, `sim/tests/upgrades.rs`, `sim/tests/foundries.rs`                  |
+| Tick scheduling, production, cleanup, and charges  | `sim/src/tick/mod.rs`, `sim/src/tick/production.rs`                                                                                                                    | `sim/tests/behavior_rules.rs`, `sim/tests/behavior_economy.rs`, `sim/tests/mines_015.rs`                                            |
+| Command vocabulary and set semantics               | `sim/src/command.rs`, `sim/src/tick/commands.rs`                                                                                                                       | `sim/tests/command_canonicalization.rs`, `sim/tests/fuzz.rs`                                                                        |
+| Unit programs, routing, movement, and collision    | `sim/src/tick/brain.rs`, `sim/src/tick/brain/locomotion.rs`, `sim/src/tick/movement.rs`, `chassis/src/path.rs`                                                         | `sim/tests/behavior_movement.rs`, `sim/tests/movement_lab.rs`, `sim/tests/peaks.rs`, `sim/tests/pits.rs`                            |
+| Boarding and unloading                             | `sim/src/tick/brain/logistics.rs`                                                                                                                                      | `sim/tests/transports_015.rs`                                                                                                       |
+| Harvesting, income, salvage, and repair            | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs`                                                                                                          | `sim/tests/harvest_zones.rs`, `sim/tests/salvage.rs`, `sim/tests/repair_unit.rs`, `sim/tests/repair_bay.rs`, `sim/tests/smelter.rs` |
+| Weapons and simultaneous resolution                | `sim/src/stats.rs`, `sim/src/tick/brain/combat.rs`                                                                                                                     | `sim/tests/behavior_combat.rs`, `sim/tests/combat_edges.rs`, `sim/tests/shells.rs`, `sim/tests/peaks.rs`                            |
+| Fog, memory, radar, and stealth                    | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                                                | `sim/tests/bot_brain.rs`, `sim/tests/bastion_acquisition.rs`, `sim/tests/mines_015.rs`                                              |
+| Bot knowledge, profiles, and fair difficulty       | `sim/src/bot/briefing.rs`, `sim/src/bot/observation.rs`, `sim/src/bot/intelligence.rs`, `sim/src/bot/orient.rs`, `sim/src/bot/profile.rs`, `sim/src/bot/difficulty.rs` | inline module tests, `sim/tests/bot_brain.rs`                                                                                       |
+| Bot resource evidence and planning commitments     | `sim/src/bot/resources.rs`, `sim/src/bot/resources/ledger.rs`, `sim/src/bot/utility.rs`, `sim/src/bot/executive/lowering.rs`                                           | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
+| Bot playbooks, routing, reservations, and lowering | `sim/src/bot/strategy.rs`, `sim/src/bot/lift.rs`, `sim/src/bot/raid.rs`, `sim/src/bot/team.rs`, `sim/src/bot/routing.rs`, `sim/src/bot/executive.rs`                   | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
