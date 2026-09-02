@@ -15,6 +15,7 @@ from tools.production_sprite_sources import (
     excavator_final,
     finalized,
     moth_warden_final,
+    shrike_sylph_final,
     skyhook_sapper_crucible_final,
     tender_condor_final,
 )
@@ -248,9 +249,13 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 for phase in range(3)
             ]
             alpha = frames[0].getchannel("A").tobytes()
-            self.assertTrue(all(frame.getchannel("A").tobytes() == alpha for frame in frames))
             self.assertTrue(
-                all(_changed_pixels(left, right) > 2 for left, right in pairwise(frames))
+                all(frame.getchannel("A").tobytes() == alpha for frame in frames)
+            )
+            self.assertTrue(
+                all(
+                    _changed_pixels(left, right) > 2 for left, right in pairwise(frames)
+                )
             )
 
     def test_airworks_queue_frames_keep_the_doors_closed(self) -> None:
@@ -295,9 +300,13 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                     )
         self.assertEqual(digest.hexdigest(), crucible_final.APPROVED_SOURCE_RGBA_SHA256)
 
-    def test_promoted_skyhook_sapper_and_crucible_match_the_approved_source(self) -> None:
+    def test_promoted_skyhook_sapper_and_crucible_match_the_approved_source(
+        self,
+    ) -> None:
         source = skyhook_sapper_crucible_final
-        self.assertEqual(source.source_rgba_digest(), source.APPROVED_SOURCE_RGBA_SHA256)
+        self.assertEqual(
+            source.source_rgba_digest(), source.APPROVED_SOURCE_RGBA_SHA256
+        )
         for faction in ("ferrous", "cupric"):
             for stem, renderer, size, action_count in (
                 ("skyhook", source.render_skyhook, 128, 4),
@@ -346,7 +355,10 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         for faction in ("ferrous", "cupric"):
             frames = [
                 self.registry[f"crucible_{faction}"],
-                *(self.registry[f"crucible_{faction}_work{work}"] for work in range(1, 4)),
+                *(
+                    self.registry[f"crucible_{faction}_work{work}"]
+                    for work in range(1, 4)
+                ),
             ]
             self.assertEqual(len({frame.tobytes() for frame in frames}), 4)
 
@@ -356,6 +368,45 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 idle = self.registry[f"{stem}_{faction}"]
                 move1 = self.registry[f"{stem}_{faction}_move1"]
                 move2 = self.registry[f"{stem}_{faction}_move2"]
+                self.assertEqual(
+                    idle.getchannel("A").tobytes(), move1.getchannel("A").tobytes()
+                )
+                self.assertEqual(
+                    idle.getchannel("A").tobytes(), move2.getchannel("A").tobytes()
+                )
+                self.assertNotEqual(idle.tobytes(), move1.tobytes())
+                self.assertNotEqual(move1.tobytes(), move2.tobytes())
+
+    def test_promoted_interceptors_match_the_approved_rgba_source(self) -> None:
+        self.assertEqual(
+            shrike_sylph_final.source_rgba_digest(),
+            shrike_sylph_final.APPROVED_SOURCE_RGBA_SHA256,
+        )
+        renderers = (
+            ("shrike", shrike_sylph_final.render_shrike),
+            ("sylph", shrike_sylph_final.render_sylph),
+        )
+        suffixes = (
+            "",
+            "_move1",
+            "_move2",
+            "_action1",
+            "_action2",
+            "_action3",
+            "_action4",
+        )
+        for faction in ("ferrous", "cupric"):
+            for stem, renderer in renderers:
+                frames = tuple(
+                    renderer(faction, state) for state in shrike_sylph_final.STATES
+                )
+                for suffix, frame in zip(suffixes, frames, strict=True):
+                    self.assertEqual(frame.size, (64, 64))
+                    self.assertEqual(
+                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
+                        frame.tobytes(),
+                    )
+                idle, move1, move2 = frames[:3]
                 self.assertEqual(
                     idle.getchannel("A").tobytes(), move1.getchannel("A").tobytes()
                 )
