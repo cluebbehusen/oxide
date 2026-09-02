@@ -33,6 +33,13 @@ readable protocol views are not substitutes for that fingerprint.
 statistics, effects, animation, sound, and assertions, or drop them entirely.
 The simulation never reads an event back.
 
+Player-facing bot decision traces have the same one-way boundary. An opt-in
+`Brain::act_traced` call reports only facts already owned by the fog-honest
+coordinator while returning the same ordinary commands as `Brain::act`. The
+trace recorder is local to that call; traces are not controller memory,
+authoritative state, replay input, or replay metadata. Overseer and ticks on
+which no player-facing decision occurs produce no trace.
+
 ## State construction and trust boundary
 
 `Scenario::build` is the normal constructor. It parses and validates authored

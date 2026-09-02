@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, builder::TypedValueParser};
 use oxide_driver::client::Client;
 use oxide_driver::runner;
 use oxide_driver::{render, smoke};
@@ -137,7 +137,8 @@ enum Cmd {
         #[arg(long)]
         paired: bool,
         /// Stable candidate or build identifier. Required when evidence is
-        /// persisted with `--out` or `--replay-dir`.
+        /// persisted with `--out`, `--replay-dir`, or
+        /// `--decision-trace-out`.
         #[arg(long)]
         candidate: Option<String>,
         /// Atomically publish JSONL here instead of standard output. An
@@ -148,6 +149,14 @@ enum Cmd {
         /// any existing evidence.
         #[arg(long, requires = "out")]
         replay_dir: Option<PathBuf>,
+        /// Atomically publish opt-in player-facing decision traces as JSONL.
+        /// Requires the compact evaluation index to be persisted too.
+        #[arg(
+            long,
+            requires = "out",
+            value_parser = clap::builder::PathBufValueParser::new().map(Box::new)
+        )]
+        decision_trace_out: Option<Box<PathBuf>>,
     },
     /// Re-execute a replay and report (or check) the final hash.
     Replay {
@@ -516,12 +525,15 @@ fn main() -> Result<()> {
             candidate,
             out,
             replay_dir,
+            decision_trace_out,
         } => {
             let stall_loop_limit = (stall_loop_limit > 0).then_some(stall_loop_limit);
             let candidate = match candidate {
                 Some(candidate) => candidate,
-                None if out.is_some() || replay_dir.is_some() => {
-                    bail!("--candidate is required with --out or --replay-dir")
+                None if out.is_some() || replay_dir.is_some() || decision_trace_out.is_some() => {
+                    bail!(
+                        "--candidate is required with --out, --replay-dir, or --decision-trace-out"
+                    )
                 }
                 None => "ad-hoc".to_string(),
             };
@@ -668,28 +680,58 @@ fn main() -> Result<()> {
                 .filter_map(|(_, replay_path)| replay_path.clone())
                 .collect();
             destinations.extend(out.iter().cloned());
+            destinations.extend(decision_trace_out.iter().map(|path| (**path).clone()));
             oxide_driver::bot_eval::preflight_destinations(&destinations)?;
 
             let mut rows = Vec::with_capacity(plans.len());
             let mut evidence = oxide_driver::bot_eval::EvidenceBatch::default();
+            let mut trace_writer = decision_trace_out
+                .as_deref()
+                .map(|path| evidence.stage_trace_jsonl(path))
+                .transpose()?;
+            let mut trace_row_count = 0_u64;
             for (plan, replay_path) in plans {
-                let (mut row, replay) = oxide_driver::bot_eval::evaluate_plan_artifact_with(
-                    &plan,
-                    ticks,
-                    stall_loop_limit,
-                    &candidate,
-                )?;
+                let (mut row, replay) = if let Some(writer) = trace_writer.as_mut() {
+                    let (row, replay, leg_trace_count) =
+                        oxide_driver::bot_eval::evaluate_plan_artifact_traced_with(
+                            &plan,
+                            ticks,
+                            stall_loop_limit,
+                            &candidate,
+                            |trace| writer.write_row(trace),
+                        )?;
+                    trace_row_count = trace_row_count.saturating_add(leg_trace_count);
+                    (row, replay)
+                } else {
+                    oxide_driver::bot_eval::evaluate_plan_artifact_with(
+                        &plan,
+                        ticks,
+                        stall_loop_limit,
+                        &candidate,
+                    )?
+                };
                 if let Some(path) = replay_path {
                     evidence.stage_replay(&replay, &path)?;
                     row.replay = Some(path.display().to_string());
                 }
                 rows.push(row);
             }
+            if let Some(writer) = trace_writer {
+                let written = writer.finish()?;
+                debug_assert_eq!(written, trace_row_count);
+            }
             if let Some(path) = out.as_deref() {
                 evidence.stage_jsonl(&rows, path)?;
             }
             evidence.publish()?;
 
+            if let Some(path) = decision_trace_out {
+                eprintln!(
+                    "wrote {} bot decision trace rows to {}",
+                    trace_row_count,
+                    path.display()
+                );
+            }
             if let Some(path) = out {
                 eprintln!(
                     "wrote {} bot evaluation rows to {}",

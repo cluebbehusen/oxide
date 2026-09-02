@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-02T05:55:07
+updated: 2026-09-02T07:02:51
 ---
 
 # Scripted Bot Strategic Reset
@@ -67,21 +67,36 @@ without arbitrary controller caps.
 - Connected operations still assemble a fixed two-Bombard and one-Moth cohort,
   while ordinary production falls back to repeatable Sentinel and Lancer demand
   after that small operation is satisfied.
+- The current planners often represent a rejected or absent candidate as
+  silence. PR 1 cannot truthfully reconstruct proposal forecasts or rejection
+  reasons without changing policy, so its trace must not infer them by rerunning
+  predicates.
 
 ## Actions
 
-- [ ] 1. Make strategic decisions explainable through a deterministic decision
+- [x] 1. Make strategic decisions explainable through a deterministic decision
       trace and representative baselines.
-  - Record considered proposals, evidence, forecasts, resource claims,
-    acceptance or rejection reasons, and outcomes through a compact fog-honest
-    trace; preserve representative current behavior baselines and avoid
-    intentional command changes.
   - Boundary: observe and report the current controller decisions without
     changing policy, command order, authoritative state, or replay semantics.
+  - Record only facts the current coordinator actually owns: control flow,
+    explicit gates, scrap holds, planner lifecycle and effects, exact claims,
+    commitments, utility output, and lowering. Extend the schema with real
+    proposal evidence and rejection reasons when those concepts exist in later
+    slices.
   - Close only after identical seed and command inputs retain their existing
     command and state hashes, trace output is deterministic and bounded,
-    representative baselines are preserved, and the driver can expose rejection
-    reasons without omniscient data.
+    representative baselines are preserved, and the driver exposes every
+    coordinator gate or idle outcome it can state truthfully without omniscient
+    data.
+  - Added an opt-in, schema-versioned decision trace at player-facing decision
+    ticks, limited to fog-honest facts already owned by the coordinator and
+    excluded from authoritative state and replays.
+  - Streamed trace sidecars transactionally with compact evaluation evidence,
+    linked by evaluation fingerprint, leg, seat, and tick; unfinished streams
+    cannot be published.
+  - Verified that traced and ordinary runs produce identical commands, replays,
+    and state hashes; trace rows are deterministic and bounded to actual
+    decision ticks, while Overseer and cadence skips emit none.
 - [ ] 2. Establish one authoritative typed resource and commitment model.
   - Represent current scrap, conservative forecasts, builders, producer lanes
     and time, exact units, and existing obligations once; migrate a real

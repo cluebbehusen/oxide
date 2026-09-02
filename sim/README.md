@@ -64,7 +64,10 @@ an ordinary command source rather than a separate ruleset.
   complete Foundry fund closes later voluntary and paid-repair spending until
   the exact build command is emitted. Greed changes the forecast and justified
   preparation, not which actions the bot may take. The profile-free Overseer
-  retains its frozen legacy expansion policy.
+  retains its frozen legacy expansion policy. The player-facing controller can
+  optionally emit one compact, fog-honest decision trace on each think tick;
+  traces are output-only diagnostics and never enter controller memory, state,
+  commands, or replays. The frozen Overseer emits no decision trace.
 - `vision` provides visibility and explored-world state.
 
 Repair and salvage share one damage-first building-work resolver and remain
