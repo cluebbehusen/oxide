@@ -57,6 +57,8 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 gen.harvester(faction)
                 gen.harvester(faction, dig=1)
                 gen.harvester(faction, dig=2)
+                gen.barricade(faction)
+                gen.scuttle_charge(faction)
             finalized.install_finalized_sprites(cls.registry, cls.out)
             construction_final.install_finalized_construction(cls.registry, cls.out)
             environment_final.install_finalized_environment(cls.registry, cls.out)
@@ -78,6 +80,26 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         self.assertNotIn("from tools import batch", production_sources)
         self.assertNotIn("gen._review", production_sources)
         self.assertNotIn("gen.REVIEW_ROUTE", production_sources)
+
+    def test_construction_bank_covers_every_building(self) -> None:
+        self.assertEqual(
+            construction_final.BUILDING_STEMS,
+            (
+                "foundry",
+                "turret",
+                "fabricator",
+                "flak_turret",
+                "bastion",
+                "array",
+                "reclaimer",
+                "repair_bay",
+                "extractor",
+                "airworks",
+                "crucible",
+                "barricade",
+                "scuttle_charge",
+            ),
+        )
 
     def test_finalized_environment_bank_is_complete_and_pixel_stable(self) -> None:
         self.assertEqual(len(environment_final.FIELD_DEBRIS_KEYS), 10)
