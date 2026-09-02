@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, builder::TypedValueParser};
 use oxide_driver::client::Client;
 use oxide_driver::runner;
 use oxide_driver::{render, smoke};
@@ -151,8 +151,12 @@ enum Cmd {
         replay_dir: Option<PathBuf>,
         /// Atomically publish opt-in player-facing decision traces as JSONL.
         /// Requires the compact evaluation index to be persisted too.
-        #[arg(long, requires = "out")]
-        decision_trace_out: Option<PathBuf>,
+        #[arg(
+            long,
+            requires = "out",
+            value_parser = clap::builder::PathBufValueParser::new().map(Box::new)
+        )]
+        decision_trace_out: Option<Box<PathBuf>>,
     },
     /// Re-execute a replay and report (or check) the final hash.
     Replay {
@@ -676,7 +680,7 @@ fn main() -> Result<()> {
                 .filter_map(|(_, replay_path)| replay_path.clone())
                 .collect();
             destinations.extend(out.iter().cloned());
-            destinations.extend(decision_trace_out.iter().cloned());
+            destinations.extend(decision_trace_out.iter().map(|path| (**path).clone()));
             oxide_driver::bot_eval::preflight_destinations(&destinations)?;
 
             let mut rows = Vec::with_capacity(plans.len());
