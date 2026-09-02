@@ -22,11 +22,13 @@ automated players use the same command path as every other player.
   controller configurations between seats for paired personality or difficulty
   comparisons, or compare a player-facing profile with the frozen Overseer
   through an evaluation-only command source. Persisted batches are staged and
-  never replace earlier evidence. A returned publication error rolls back files
-  created by that invocation. Abrupt process termination can leave hidden
-  staging files or a partial replay set because arbitrary final paths cannot be
-  published atomically; inspect and remove that incomplete batch, then rerun it
-  under a fresh candidate.
+  never replace earlier evidence. Optional decision traces stream fog-honest
+  controller diagnostics to a separate JSONL sidecar without entering compact
+  rows or replays. A returned publication error rolls back files created by that
+  invocation. Abrupt process termination can leave hidden staging files or a
+  partial replay set because arbitrary final paths cannot be published
+  atomically; inspect and remove that incomplete batch, then rerun it under a
+  fresh candidate.
 - `audit`, `sweep`, `pace`, and `factorial`, plus the `matchup` CLI backed by
   `oxide-kit`, measure maps, pacing, fairness, and combat behavior.
 - `auto`, `smoke`, `shots`, and `profile` exercise the real shell where a
@@ -69,6 +71,14 @@ faction, and map-end effects can be separated. Supply independent
 randomness, the latter Prime's deterministic profile, and `bot-eval` evaluates
 their cross-product rather than confounding the two sources. The runner refuses
 nominal axis cells that resolve to the same executable matchup.
+
+`--decision-trace-out` requires `--out` and an explicit candidate. It records
+only diagnostics produced by the player-facing controller at actual decision
+ticks; the frozen Overseer contributes no rows. The sidecar is captured during
+the authoritative evaluation run because reconstructing policy reasoning later
+from a replay may use different controller code. It is not replay input, and
+enabling it does not change the compact row, command stream, final hash, or
+replay payload.
 
 `--against-overseer` refuses a map whose seats share no ground route: the frozen
 Overseer has no severed-ground play, so such a cell would measure a missing

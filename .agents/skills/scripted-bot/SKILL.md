@@ -375,6 +375,15 @@ cargo run -p oxide-driver -- bot-eval skirmish \
   --replay-dir replays/bot-eval
 ```
 
+When a compact row or replay shows suspicious behavior, capture the
+player-facing controller's runtime decisions with
+`--decision-trace-out replays/bot-eval-trace.jsonl`. The trace sidecar requires
+`--out` and `--candidate`, joins each record to its exact evaluation leg, and
+contains only fog-honest facts the current coordinator can state directly. It
+does not reconstruct explanations from a replay, infer reasons from absent
+planner output, or trace the frozen Overseer. Treat the sidecar as disposable
+diagnostic evidence and keep it out of production commits.
+
 For the maintained Prime-versus-Overseer yardstick, keep Overseer confined to
 the evaluation-only `--against-overseer` path. Do not encode it in `BotConfig`,
 a scenario, or player-facing match setup. Run a controlled paired block across

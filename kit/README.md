@@ -12,7 +12,9 @@ while reusable game-independent primitives stay in `chassis`.
 
 - `load_replay` owns bounded Oxide replay loading and version-scoped setup
   compatibility.
-- `runner` executes scenarios and replays headlessly.
+- `runner` executes scenarios and replays headlessly through the same
+  record-then-tick composition. Its opt-in traced step returns player-facing bot
+  diagnostics without changing replay input or the ordinary step path.
 - `playback` provides bounded seeking and replay-viewer state.
 - `stats` derives match summaries from simulation truth.
 - `render` is the deterministic CPU renderer used for previews and goldens.
