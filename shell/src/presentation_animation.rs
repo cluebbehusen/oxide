@@ -23,6 +23,7 @@ const FABRICATOR_PRODUCTION_PERIOD: u64 = 12;
 const CRUCIBLE_PRODUCTION_PERIOD: u64 = 16;
 const AIRWORKS_PRODUCTION_PERIOD: u64 = 12;
 const ARRAY_SWEEP_PERIOD: u64 = 32;
+const EXTRACTOR_PERIOD: u64 = 12;
 const RECLAIMER_PERIOD: u64 = 12;
 const BUZZARD_ROTOR_PERIOD: u64 = 6;
 const WISP_ROTOR_PERIOD: u64 = 4;
@@ -266,6 +267,8 @@ pub(crate) enum BuildingActivity {
     AirworksLaunch { progress: f32 },
     /// A completed Array's continuous full-bearing scan.
     ArraySweep { cycle: f32 },
+    /// A completed Extractor's continuous radial auger cycle.
+    Extracting { cycle: f32 },
     /// A completed Reclaimer's continuous grind.
     Reclaiming { cycle: f32 },
     /// A Repair Bay actually delivered at least one accepted repair pulse.
@@ -581,6 +584,9 @@ impl AnimationController {
                 BuildingKind::Airworks => self.airworks_activity(facts, clock, options),
                 BuildingKind::Array => BuildingActivity::ArraySweep {
                     cycle: clock.cycle(facts.id.0, ARRAY_SWEEP_PERIOD, options.reduced_motion),
+                },
+                BuildingKind::Extractor => BuildingActivity::Extracting {
+                    cycle: clock.cycle(facts.id.0, EXTRACTOR_PERIOD, options.reduced_motion),
                 },
                 BuildingKind::Reclaimer => BuildingActivity::Reclaiming {
                     cycle: clock.cycle(facts.id.0, RECLAIMER_PERIOD, options.reduced_motion),
@@ -1624,7 +1630,7 @@ mod tests {
     }
 
     #[test]
-    fn array_and_reclaimer_are_the_only_continuous_building_loops() {
+    fn income_and_scan_buildings_use_continuous_activity_loops() {
         let controller = AnimationController::default();
         let clock = AnimationClock::new(10, 0.5);
         let options = AnimationOptions::default();
@@ -1633,6 +1639,12 @@ mod tests {
                 .building_state(building_facts(BuildingKind::Array), clock, options)
                 .activity,
             BuildingActivity::ArraySweep { .. }
+        ));
+        assert!(matches!(
+            controller
+                .building_state(building_facts(BuildingKind::Extractor), clock, options)
+                .activity,
+            BuildingActivity::Extracting { .. }
         ));
         assert!(matches!(
             controller

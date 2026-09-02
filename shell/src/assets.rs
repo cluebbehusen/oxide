@@ -27,6 +27,7 @@ pub struct Sprites {
     turret_t2: [Rect; 3],
     flak_turret_t1: [Rect; 3],
     reclaimer_t1: [Rect; 3],
+    reclaimer_t1_work: [[Rect; 3]; 3],
     array_t1: [Rect; 3],
     turret_barrel: [Rect; 3],
     flak_mount: [Rect; 3],
@@ -680,6 +681,9 @@ fn atlas_keys() -> Vec<String> {
     ] {
         keys.extend(variant_keys(stem, ""));
     }
+    for suffix in WORK_SUFFIXES_3 {
+        keys.extend(variant_keys("reclaimer_t1", suffix));
+    }
     keys.extend(variant_keys(FLAK_MOUNT_STEM, ""));
     keys.extend(variant_keys(BASTION_MOUNT_STEM, ""));
     for suffix in ACTION_SUFFIXES_4 {
@@ -830,6 +834,7 @@ impl Sprites {
             turret_t2: variant_row(&rects, "turret_t2", "")?,
             flak_turret_t1: variant_row(&rects, "flak_turret_t1", "")?,
             reclaimer_t1: variant_row(&rects, "reclaimer_t1", "")?,
+            reclaimer_t1_work: variant_rows(&rects, "reclaimer_t1", WORK_SUFFIXES_3)?,
             array_t1: variant_row(&rects, "array_t1", "")?,
             turret_barrel: variant_row(&rects, TURRET_BARREL_STEM, "")?,
             flak_mount: variant_row(&rects, FLAK_MOUNT_STEM, "")?,
@@ -1220,16 +1225,18 @@ impl Sprites {
         (source, placement)
     }
 
-    fn building_work_row(&self, kind: BuildingKind, frame: usize) -> Option<&[Rect; 3]> {
-        let rows: &[[Rect; 3]] = match kind {
-            BuildingKind::Foundry => &self.foundry_work,
-            BuildingKind::Fabricator => &self.fabricator_work,
-            BuildingKind::Array => &self.array_work,
-            BuildingKind::Reclaimer => &self.reclaimer_work,
-            BuildingKind::RepairBay => &self.repair_bay_work,
-            BuildingKind::Extractor => &self.extractor_work,
-            BuildingKind::Airworks => &self.airworks_work,
-            BuildingKind::Crucible => &self.crucible_work,
+    fn building_work_row(&self, kind: BuildingKind, tier: u8, frame: usize) -> Option<&[Rect; 3]> {
+        let rows: &[[Rect; 3]] = match (kind, tier) {
+            (BuildingKind::Reclaimer, 1) => &self.reclaimer_t1_work,
+            (_, tier) if tier != 0 => return None,
+            (BuildingKind::Foundry, 0) => &self.foundry_work,
+            (BuildingKind::Fabricator, 0) => &self.fabricator_work,
+            (BuildingKind::Array, 0) => &self.array_work,
+            (BuildingKind::Reclaimer, 0) => &self.reclaimer_work,
+            (BuildingKind::RepairBay, 0) => &self.repair_bay_work,
+            (BuildingKind::Extractor, 0) => &self.extractor_work,
+            (BuildingKind::Airworks, 0) => &self.airworks_work,
+            (BuildingKind::Crucible, 0) => &self.crucible_work,
             _ => return None,
         };
         frame.checked_sub(1).and_then(|index| rows.get(index))
@@ -1237,14 +1244,22 @@ impl Sprites {
 
     /// A complete authored activity frame for a working building. Frame 0
     /// is the ordinary base art and is also the reduced-motion pose.
-    pub fn building_working(&self, kind: BuildingKind, faction: Faction, frame: usize) -> Rect {
-        self.building_work_row(kind, frame)
+    pub fn building_working(
+        &self,
+        kind: BuildingKind,
+        tier: u8,
+        faction: Faction,
+        frame: usize,
+    ) -> Rect {
+        self.building_work_row(kind, tier, frame)
+            .or_else(|| self.tier_row(kind, tier))
             .unwrap_or_else(|| self.building_row(kind))[faction_index(faction)]
     }
 
     /// The allegiance mask matched to [`Self::building_working`].
-    pub fn building_working_accent(&self, kind: BuildingKind, frame: usize) -> Rect {
-        self.building_work_row(kind, frame)
+    pub fn building_working_accent(&self, kind: BuildingKind, tier: u8, frame: usize) -> Rect {
+        self.building_work_row(kind, tier, frame)
+            .or_else(|| self.tier_row(kind, tier))
             .unwrap_or_else(|| self.building_row(kind))[ACCENT]
     }
 
@@ -1963,6 +1978,14 @@ mod tests {
             }
             assert!(changed, "{stem} needs at least one visible work pose");
         }
+        let refinery = sprite_image("reclaimer_t1_ferrous");
+        let mut changed = false;
+        for suffix in WORK_SUFFIXES_3 {
+            assert_animation_variant("reclaimer_t1", suffix);
+            changed |=
+                sprite_image(&format!("reclaimer_t1_ferrous{suffix}")).bytes != refinery.bytes;
+        }
+        assert!(changed, "reclaimer_t1 needs at least one visible work pose");
         for kind in ALL_BUILDING_KINDS {
             let stem = building_stem(kind);
             let base = sprite_image(&format!("{stem}_ferrous"));
