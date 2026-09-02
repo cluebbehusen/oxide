@@ -20,6 +20,7 @@ from tools import gen_sprites as gen
 from tools.production_sprite_sources import (
     air_final,
     airworks_scouts_final,
+    core_unit_art_final,
     crucible_final,
     defense_mechanisms,
     economy_mechanisms,
@@ -185,14 +186,25 @@ UNIT_ACTIONS: dict[str, FrameSet] = {
 
 HARVESTER_ACTIONS = FrameSet(
     ("", "_scoop1", "_scoop2", "_scoop1", ""),
-    ("ready", "bite_lower", "bite", "pull", "scoop_complete"),
+    (
+        "ready",
+        "pincers_deploy",
+        "bucket_advance",
+        "bucket_retract",
+        "pincers_home",
+    ),
     (360, 180, 220, 180, 260),
 )
 
 BUILDING_WORK: dict[str, FrameSet] = {
     "foundry": FrameSet(
         ("_work1", "_work2", "_work3", "_work4"),
-        ("eye_warm", "eye_peak", "eye_cool", "eye_rest"),
+        (
+            "crane_left+light_1+eye_warm",
+            "crane_center+light_2+eye_peak",
+            "crane_right+light_3+eye_cool",
+            "crane_home+light_4+eye_rest",
+        ),
         (500, 500, 500, 500),
     ),
     "fabricator": FrameSet(
@@ -844,9 +856,9 @@ def install_finalized_sprites(registry: Registry, out: Path) -> None:
     """Replace machine rows with the finalized native art and action frames.
 
     Call this after the legacy base generator has populated ``registry`` and
-    before construction frames, allegiance masks, and atlas packing.  The
-    Harvester deliberately reads the existing approved claw pixels before
-    replacing its chassis; no external presentation asset is read.
+    before construction frames, allegiance masks, and atlas packing. Earlier
+    family passes may use legacy pixels as ancestry, while later focused banks
+    replace their complete rows. No external presentation asset is read.
     """
     out.mkdir(parents=True, exist_ok=True)
     for faction in ("ferrous", "cupric"):
@@ -862,3 +874,4 @@ def install_finalized_sprites(registry: Registry, out: Path) -> None:
     skyhook_sapper_crucible_final.install_skyhook_sapper_crucible(registry, out)
     airworks_scouts_final.install_airworks_scouts(registry, out)
     extractor_reclaimer_final.install_extractor_reclaimer(registry, out)
+    core_unit_art_final.install_core_unit_art(registry, out)

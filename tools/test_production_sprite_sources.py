@@ -10,6 +10,7 @@ from tools import gen_sprites as gen
 from tools.production_sprite_sources import (
     airworks_scouts_final,
     construction_final,
+    core_unit_art_final,
     crucible_final,
     environment_final,
     excavator_final,
@@ -264,6 +265,14 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                     self.registry[f"airworks_{faction}{suffix}"].tobytes(),
                     image.tobytes(),
                 )
+
+    def test_promoted_core_unit_art_matches_the_approved_rgba_source(self) -> None:
+        self.assertEqual(
+            core_unit_art_final.source_rgba_digest(),
+            core_unit_art_final.APPROVED_SOURCE_RGBA_SHA256,
+        )
+        for key, image in core_unit_art_final.source_frames():
+            self.assertEqual(self.registry[key].tobytes(), image.tobytes(), key)
 
     def test_promoted_extractor_reclaimer_family_matches_approved_source(self) -> None:
         self.assertEqual(
@@ -705,7 +714,29 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 self.assertEqual(
                     self.registry[prefix].crop((8, 0, 56, 14)).tobytes(),
                     self.registry[prefix + "_tread1"].crop((8, 0, 56, 14)).tobytes(),
-                    "movement must retain the approved claw",
+                    "movement must retain the approved tool",
+                )
+                self.assertEqual(
+                    self.registry[prefix].crop((25, 7, 40, 16)).tobytes(),
+                    self.registry[prefix + "_scoop1"].crop((25, 7, 40, 16)).tobytes(),
+                    "the bucket stays tucked while the pincers deploy",
+                )
+                for pincer_box in ((5, 5, 23, 32), (41, 5, 59, 32)):
+                    self.assertGreater(
+                        _changed_pixels(
+                            self.registry[prefix].crop(pincer_box),
+                            self.registry[prefix + "_scoop1"].crop(pincer_box),
+                        ),
+                        100,
+                        "both pincers must deploy before the bucket advances",
+                    )
+                self.assertGreater(
+                    _changed_pixels(
+                        self.registry[prefix + "_scoop1"].crop((23, 5, 42, 25)),
+                        self.registry[prefix + "_scoop2"].crop((23, 5, 42, 25)),
+                    ),
+                    20,
+                    "the bucket advances only after the pincers deploy",
                 )
                 self.assertGreater(
                     _changed_pixels(
@@ -894,27 +925,31 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             edge = list(frame.crop((0, 0, frame.width, 1)).get_flattened_data())
             self.assertFalse(any(edge), f"{faction} muzzle flare is clipped")
 
-    def test_foundry_work_frames_only_pulse_the_centered_eye(self) -> None:
+    def test_foundry_work_frames_move_the_crane_and_sequence_the_lights(self) -> None:
         frames = [
             self.registry[f"foundry_ferrous{suffix}"].convert("RGBA")
             for suffix in ("", "_work1", "_work2", "_work3", "_work4")
         ]
-        outside_eye = Image.new("L", frames[0].size, 255)
-        outside_eye.paste(0, (36, 44, 93, 101))
+        self.assertEqual(len({frame.tobytes() for frame in frames}), len(frames))
         for frame in frames[1:]:
-            difference = ImageChops.difference(frames[0], frame)
-            outside_difference = Image.new("RGBA", frames[0].size)
-            outside_difference.paste(difference, mask=outside_eye)
-            self.assertIsNone(
-                outside_difference.getbbox(),
-                "the Foundry gantry must remain fixed while its eye pulses",
+            self.assertGreater(
+                _changed_pixels(
+                    frames[0].crop((20, 12, 108, 58)), frame.crop((20, 12, 108, 58))
+                ),
+                20,
+                "the Foundry crane must travel while production advances",
             )
 
         center_values = [sum(frame.getpixel((64, 72))[:3]) for frame in frames]
         self.assertLess(center_values[0], center_values[1])
         self.assertLess(center_values[1], center_values[2])
         self.assertEqual(center_values[1], center_values[3])
-        self.assertEqual(frames[0].tobytes(), frames[4].tobytes())
+        self.assertEqual(center_values[0], center_values[4])
+
+        lit_positions = ((19, 27), (19, 45), (19, 63), (19, 81))
+        for work, frame in enumerate(frames[1:], start=1):
+            values = [sum(frame.getpixel(position)[:3]) for position in lit_positions]
+            self.assertEqual(values.index(max(values)), work - 1)
 
     def test_bastion_ready_and_reload_frames_have_physical_charge_cells(self) -> None:
         centers = [(19, 94 - index * 9) for index in range(5)]
