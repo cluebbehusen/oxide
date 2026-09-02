@@ -14,6 +14,12 @@ Build one opponent that plays a recognizable, complete game under the same
 constraints as a person. Do not turn aggregate success into a claim that its
 matches are sensible or fun.
 
+For work that changes strategic allocation, forecasting, personality,
+opportunity scaling, or coordination across domains, first read the normative
+[scripted bot strategy](../../../docs/bot-strategy.md). Keep detailed procedures
+and implementation-specific invariants in this skill rather than duplicating
+that design model here.
+
 ## Preserve the level playing field
 
 The bot is an ordinary command source. It receives a fog-honest observation and

@@ -80,6 +80,12 @@ information and shares human costs, prerequisites, queues, caps, build times,
 movement, combat, and economy. Never hide bot-only income, vision, stats, legal
 actions, or construction privileges behind controller code.
 
+[`docs/bot-strategy.md`](docs/bot-strategy.md) is the normative design model for
+the player-facing opponent. It defines the observe, remember, forecast,
+allocate, plan, commit, and evaluate loop. Personality influences both
+cross-domain investment and execution within a funded domain, but never access
+to information, strategies, units, commands, or rules.
+
 Normal matches use one configurable rules-based controller. Scrapheap, Standard,
 Veteran, and Prime alter fair macro competence plus cognitive and execution
 limits such as opening army commitment, attention, reaction time, memory,
