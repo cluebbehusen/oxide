@@ -494,16 +494,9 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 sprites.building_tiered(building.kind, building.tier, faction),
                 sprites.building_tiered_accent(building.kind, building.tier),
             ),
-            super::motion::BuildingBodyFrame::Work(work) if building.tier == 0 => (
-                sprites.building_working(building.kind, faction, work + 1),
-                sprites.building_working_accent(building.kind, work + 1),
-            ),
-            // The atlas carries work rows only for base hulls; an
-            // upgraded works keeps its tier identity rather than
-            // animating as its old self forever.
-            super::motion::BuildingBodyFrame::Work(_) => (
-                sprites.building_tiered(building.kind, building.tier, faction),
-                sprites.building_tiered_accent(building.kind, building.tier),
+            super::motion::BuildingBodyFrame::Work(work) => (
+                sprites.building_working(building.kind, building.tier, faction, work + 1),
+                sprites.building_working_accent(building.kind, building.tier, work + 1),
             ),
             super::motion::BuildingBodyFrame::Construction { stage, phase } => (
                 sprites.construction(building.kind, faction, stage, phase),

@@ -13,6 +13,7 @@ from tools.production_sprite_sources import (
     crucible_final,
     environment_final,
     excavator_final,
+    extractor_reclaimer_final,
     finalized,
     moth_warden_final,
     shrike_sylph_final,
@@ -241,6 +242,26 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                     self.registry[f"airworks_{faction}{suffix}"].tobytes(),
                     image.tobytes(),
                 )
+
+    def test_promoted_extractor_reclaimer_family_matches_approved_source(self) -> None:
+        self.assertEqual(
+            extractor_reclaimer_final.source_rgba_digest(),
+            extractor_reclaimer_final.APPROVED_SOURCE_RGBA_SHA256,
+        )
+        for faction in ("ferrous", "cupric"):
+            for phase, suffix in enumerate(extractor_reclaimer_final.WORK_SUFFIXES):
+                for stem, renderer in (
+                    ("extractor", extractor_reclaimer_final.render_extractor),
+                    ("reclaimer", extractor_reclaimer_final.render_reclaimer),
+                    ("reclaimer_t1", extractor_reclaimer_final.render_refinery),
+                ):
+                    image = renderer(faction, phase)
+                    expected_size = (128, 128) if stem == "extractor" else (64, 64)
+                    self.assertEqual(image.size, expected_size)
+                    self.assertEqual(
+                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
+                        image.tobytes(),
+                    )
 
     def test_kestrel_sequence_keeps_its_airframe_fixed(self) -> None:
         for faction in ("ferrous", "cupric"):
@@ -812,12 +833,12 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                         )
                     )
 
-    def test_reclaimer_is_the_exact_approved_open_works_sequence(self) -> None:
+    def test_reclaimer_is_the_exact_approved_guarded_feed_sequence(self) -> None:
         expected = (
-            "d5e1716c973f640419d30bc2291a5c5d4ef4d1e4c58cb29d8f1d408c7d151d81",
-            "0c6c3d5294f510e63be162e9efbcee66166a7984587b0e6c4311805afd256504",
-            "cbec01349a5b78465be3341c51ac472306df19df3738958da29b4df2589a65ce",
-            "6a216a8cf3049dc76848be6e0b18436efe1460b40b0cb46c46ad695dc3a85790",
+            "13b9f75a7086f79676776d7a28e9542bd86ef29ce14af013348c5ec7554581b5",
+            "5ac8b3f9486beeacfe959a5e0590813bd91c88d48349e93221c41ea5cc6bc84d",
+            "ac6ea8df80b1d7a2183b081beee261060ea82c7cf2b99d1889219e3f4645170f",
+            "879f3ae9ac5a271e03aabe77f41d50e2427f328aadb4a46d557c2189166c5c42",
         )
         actual = tuple(
             hashlib.sha256(

@@ -24,6 +24,7 @@ from tools.production_sprite_sources import (
     defense_mechanisms,
     economy_mechanisms,
     excavator_final,
+    extractor_reclaimer_final,
     ground_artillery,
     ground_base,
     ground_final,
@@ -860,3 +861,4 @@ def install_finalized_sprites(registry: Registry, out: Path) -> None:
     excavator_final.install_excavator(registry, out)
     skyhook_sapper_crucible_final.install_skyhook_sapper_crucible(registry, out)
     airworks_scouts_final.install_airworks_scouts(registry, out)
+    extractor_reclaimer_final.install_extractor_reclaimer(registry, out)
