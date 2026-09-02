@@ -13,6 +13,7 @@
 //! targeting, and state transitions order by explicit keys ending in ids.
 
 use super::observation::{Observation, UnitObs};
+use super::resources::BuilderLease;
 use crate::command::{Command, PlayerCommand};
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::stats::{BuildingKind, UnitKind};

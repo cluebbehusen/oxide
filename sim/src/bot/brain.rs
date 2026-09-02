@@ -16,6 +16,7 @@ use super::observation::Observation;
 use super::orient::Orientation;
 use super::profile::ResolvedProfile;
 use super::raid::{RaidPlanner, RaidPlanningContext};
+use super::resources::BuilderLease;
 use super::strategy::{
     AirOperationOutcome, AirOperationPhase, LiftSupportRequest, StrategicCoordination,
     StrategicDecision, StrategicPlanner,
@@ -406,6 +407,9 @@ impl Brain {
             u64::from(self.dials.minimum_core_equivalents),
         );
         let allow_new_voluntary_operations = opening_core.ready;
+        let foundry_saving = self
+            .policy
+            .validated_foundry_saving(&oriented, allow_new_voluntary_operations);
         if let Some(recorder) = recorder.as_deref_mut() {
             recorder.trace_mut().gates.opening_core = Some(CoreGateTrace {
                 projected_strength: opening_core.projected_strength,
@@ -417,6 +421,7 @@ impl Brain {
         }
         let mut ledger = ScrapLedger {
             bank: oriented.scrap,
+            foundry_saving,
             frozen: !allow_new_voluntary_operations,
             ..ScrapLedger::default()
         };
@@ -458,8 +463,12 @@ impl Brain {
                 &planner_claims,
             );
         }
+        let air_precedes_foundry_saving = strategy
+            .as_ref()
+            .and_then(StrategicPlanner::air_admitted_at)
+            .is_some_and(|admitted_at| self.policy.operation_precedes_foundry_saving(admitted_at));
         let mut strategic_observation = oriented.clone();
-        strategic_observation.scrap = ledger.strategic_spendable();
+        strategic_observation.scrap = ledger.strategic_spendable_for(air_precedes_foundry_saving);
         let lift_support_request = lifts
             .as_ref()
             .and_then(LiftPlanner::operation)
@@ -548,17 +557,27 @@ impl Brain {
         } else {
             0
         };
-        let uncommitted_scrap = strategic_observation
-            .scrap
+        let uncommitted_scrap = ledger
+            .strategic_spendable_for(false)
             .saturating_sub(strategic.committed_scrap);
         let prospective_carrier_hold =
             applied_prospective_carrier_hold(prospective_carrier_commitment, uncommitted_scrap);
         strategic.committed_scrap = strategic
             .committed_scrap
             .saturating_add(prospective_carrier_hold);
+        let lift_operation_was_active = lifts
+            .as_ref()
+            .is_some_and(|lifts| lifts.operation().is_some());
+        let lift_precedes_foundry_saving = lifts
+            .as_ref()
+            .and_then(LiftPlanner::operation)
+            .is_some_and(|operation| {
+                self.policy
+                    .operation_precedes_foundry_saving(operation.started_at)
+            });
         let mut lift_observation = project_strategic_queues(&strategic_observation, &strategic);
-        lift_observation.scrap = lift_observation
-            .scrap
+        lift_observation.scrap = ledger
+            .strategic_spendable_for(lift_precedes_foundry_saving)
             .saturating_sub(strategic.committed_scrap);
         let mut support = strategy
             .as_ref()
@@ -578,9 +597,6 @@ impl Brain {
                 _ => LiftAirSupport::Independent,
             };
         }
-        let lift_operation_was_active = lifts
-            .as_ref()
-            .is_some_and(|lifts| lifts.operation().is_some());
         let lift_before_state = recorder
             .is_some()
             .then(|| lift_channel_state(lifts.as_ref()));
@@ -686,22 +702,21 @@ impl Brain {
             .saturating_add(lifts.as_ref().map_or(0, |lifts| {
                 lifts.remaining_airwork_ticks(&oriented, &lift_unavailable)
             }));
-        let mut policy_observation = oriented.clone();
-        policy_observation.scrap = policy_observation
-            .scrap
-            .saturating_sub(strategic.committed_scrap);
+        let utility_spendable = oriented.scrap.saturating_sub(strategic.committed_scrap);
         if let Some(recorder) = recorder.as_deref_mut() {
             recorder.trace_mut().budget = Some(ScrapBudgetTrace {
                 bank: ledger.bank,
+                foundry_saving: ledger.foundry_saving,
                 deferred_construction: ledger.deferred_construction,
                 airworks_capacity: ledger.airworks_capacity,
                 shallow_sentinel: ledger.shallow_sentinel,
                 opening_bootstrap: ledger.opening_bootstrap,
                 frozen: ledger.frozen,
-                strategic_spendable: ledger.strategic_spendable(),
+                prior_operation_spendable: ledger.strategic_spendable_for(true),
+                strategic_spendable: ledger.strategic_spendable_for(false),
                 strategic_committed: strategic.committed_scrap,
                 prospective_carrier: prospective_carrier_hold,
-                utility_spendable: policy_observation.scrap,
+                utility_spendable,
             });
         }
         let strategic_intents = strategic.intents.len();
@@ -714,7 +729,8 @@ impl Brain {
             oriented_public_map,
             strategic.intents,
         )
-        .with_combat_core_exclusions(&strategic_core_exclusions);
+        .with_combat_core_exclusions(&strategic_core_exclusions)
+        .with_prior_scrap_commitment(strategic.committed_scrap);
         let utility_context = if air_active || lift_active {
             utility_context.with_outstanding_air_production_ticks(outstanding_air_production_ticks)
         } else {
@@ -722,7 +738,7 @@ impl Brain {
         };
         let mut intents = self.policy.think_with_intelligence(
             &self.dials,
-            &policy_observation,
+            &oriented,
             &armies,
             &enlisted,
             utility_context,
@@ -738,6 +754,13 @@ impl Brain {
             &reservations,
             &mut intents,
         );
+        let builder_lease = self.policy.foundry_builder_lease(&oriented).map(|lease| {
+            BuilderLease::new(
+                lease.builder(),
+                lease.kind(),
+                orientation.anchor(lease.anchor(), lease.kind().base_stats().size),
+            )
+        });
         if let Some(recorder) = recorder.as_deref_mut() {
             recorder.trace_mut().utility = UtilityTrace {
                 input_intents: bounded_count(strategic_intents),
@@ -746,16 +769,27 @@ impl Brain {
             };
         }
         let intents = orientation.emit(intents);
-        let lowered = self
-            .exec
-            .apply_with_reservations(self.player, &obs, &intents, &reservations);
+        let lowered = self.exec.apply_with_builder_lease(
+            self.player,
+            &obs,
+            &intents,
+            &reservations,
+            builder_lease,
+        );
         for command in &lowered {
             if let Some(units) = queue_replacing_non_harvest_units(&command.command) {
                 self.policy.record_dispatched_retask(units);
             }
             match &command.command {
-                Command::Build { kind, anchor, .. } => {
+                Command::Build {
+                    units,
+                    kind,
+                    anchor,
+                    ..
+                } => {
                     let oriented_anchor = orientation.anchor(*anchor, kind.base_stats().size);
+                    self.policy
+                        .record_dispatched_foundry_build(units, *kind, oriented_anchor);
                     self.policy
                         .record_dispatched_build(&oriented, *kind, oriented_anchor);
                 }
@@ -978,6 +1012,8 @@ fn merge_strategic(into: &mut StrategicDecision, mut additional: StrategicDecisi
 struct ScrapLedger {
     /// The oriented bank before any hold.
     bank: u32,
+    /// Capital owned by a validated persistent Foundry expansion.
+    foundry_saving: u32,
     /// Scrap already promised to accepted deferred construction.
     deferred_construction: u32,
     /// The held fund for an extra Airworks while air production runs hot.
@@ -991,14 +1027,20 @@ struct ScrapLedger {
 }
 
 impl ScrapLedger {
-    /// What the strategic planners may spend: the bank behind every
-    /// hold, or nothing while the opening core is unmet. The saturating
-    /// chain reproduces the historical subtraction order exactly.
-    fn strategic_spendable(&self) -> u32 {
+    /// What one strategic planner may spend, or nothing while the opening core
+    /// is unmet. Work already active when the Foundry plan was accepted keeps
+    /// its earlier priority; a later admission sees the saved expansion first.
+    /// The remaining holds retain their historical subtraction order.
+    fn strategic_spendable_for(&self, operation_precedes_foundry_saving: bool) -> u32 {
         if self.frozen {
             return 0;
         }
-        self.bank
+        let after_foundry = if operation_precedes_foundry_saving {
+            self.bank
+        } else {
+            self.bank.saturating_sub(self.foundry_saving)
+        };
+        after_foundry
             .saturating_sub(self.deferred_construction)
             .saturating_sub(self.airworks_capacity)
             .saturating_sub(self.shallow_sentinel)
@@ -1341,6 +1383,31 @@ mod tests {
         assert_eq!(applied_prospective_carrier_hold(250, 40), 40);
         assert_eq!(applied_prospective_carrier_hold(40, 250), 40);
         assert_eq!(applied_prospective_carrier_hold(250, 0), 0);
+    }
+
+    #[test]
+    fn foundry_saving_respects_temporal_priority_without_bypassing_other_holds() {
+        let ledger = ScrapLedger {
+            bank: 500,
+            foundry_saving: 200,
+            deferred_construction: 40,
+            airworks_capacity: 30,
+            shallow_sentinel: 20,
+            opening_bootstrap: 10,
+            frozen: false,
+        };
+
+        assert_eq!(ledger.strategic_spendable_for(true), 400);
+        assert_eq!(ledger.strategic_spendable_for(false), 200);
+        assert_eq!(
+            ScrapLedger {
+                frozen: true,
+                ..ledger
+            }
+            .strategic_spendable_for(true),
+            0,
+            "survival freezes even an operation that predates the expansion"
+        );
     }
 
     #[test]
@@ -3229,7 +3296,8 @@ mod tests {
         let mut brain = operation_identity_brain(PlayerId(0), &scenario);
         enlist_opening_core(&mut brain, &state);
 
-        let commands = brain.act(&state);
+        let result = brain.act_traced(&state);
+        let commands = result.commands;
 
         let air = brain
             .mind()
@@ -4449,6 +4517,770 @@ mod tests {
     }
 
     #[test]
+    fn accepted_foundry_saving_owns_the_bank_before_later_connected_air_production() {
+        use super::super::profile::PersonalityTraits;
+
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+        let scenario = foundry_saving_air_competition_scenario(foundry_cost - 1);
+        let state = scenario
+            .build()
+            .expect("the Foundry-saving air competition scenario builds");
+        let profile = ResolvedProfile {
+            difficulty: BotDifficulty::Standard,
+            stance: BotStance::Balanced,
+            personality_seed: 1_616_304,
+            primary: Specialty::Air,
+            secondary: Specialty::Siege,
+            traits: PersonalityTraits {
+                air: 70,
+                siege: 60,
+                support: 35,
+                fortification: 35,
+                greed: 64,
+                guile: 36,
+            },
+        };
+        let mut brain = scripted_brain(
+            &scenario,
+            PlayerId(0),
+            BotConfig::scripted(profile.difficulty, profile.stance, profile.personality_seed),
+        );
+        brain.dials = Dials::scripted(&profile, DifficultyTuning::for_level(profile.difficulty));
+        brain.dials.harvester_target = 4;
+        brain.dials.army_size = 100;
+        brain.dials.scouting = false;
+        brain.dials.extractors = false;
+        brain.dials.upgrades = false;
+        let mind = brain.mind_mut();
+        mind.profile = profile;
+        mind.strategy = None;
+        mind.team = None;
+        mind.lifts = None;
+        mind.raids = None;
+
+        let first_commands = brain.act(&state);
+        let raw = Observation::fog_honest(&state, PlayerId(0));
+        let orientation = brain
+            .orientation
+            .expect("the first think latches the policy frame");
+        let oriented = orientation.observe(&raw);
+        let saved = brain.policy.validated_foundry_saving(&oriented, true);
+        assert!(
+            saved > foundry_cost - 1,
+            "the first think must accept the underfunded expansion before strategic competition: saved={saved}, commands={first_commands:?}, buildings={:?}, units={}, frames={:?}",
+            oriented
+                .my_buildings
+                .iter()
+                .map(|building| (building.kind, building.anchor))
+                .collect::<Vec<_>>(),
+            oriented.my_units.len(),
+            oriented.known_frames,
+        );
+        brain.dials.expansion = false;
+
+        let mut continuation = scenario.clone();
+        let scout = continuation
+            .units
+            .iter_mut()
+            .find(|unit| unit.player == 0 && unit.kind == UnitKind::Kestrel)
+            .expect("the continuation has one connected-air scout");
+        (scout.x, scout.y) = (42, 19);
+        let mut state = continuation
+            .build()
+            .expect("the connected-air continuation builds");
+        state.tick(&[]);
+        while !state.current_tick().is_multiple_of(brain.dials.cadence)
+            || !super::super::difficulty::strategic_admission_tick(state.current_tick())
+        {
+            state.tick(&[]);
+        }
+        brain.mind_mut().strategy = Some(StrategicPlanner::new());
+        let mut wealthy_brain = brain.clone();
+
+        let mut document = serde_json::to_value(&state).expect("the state serializes");
+        document["players"][0]["scrap"] = serde_json::json!(saved - 1);
+        let starved_state: State =
+            serde_json::from_value(document.clone()).expect("the underfunded state remains valid");
+        let starved = brain.act_traced(&starved_state);
+        let starved_trace = starved.trace.expect("the admission think is traced");
+        let starved_budget = starved_trace
+            .budget
+            .expect("the admission think records its scrap ledger");
+        assert_eq!(starved_budget.foundry_saving, saved);
+        assert_eq!(starved_budget.strategic_spendable, 0);
+        assert_eq!(
+            starved_trace.channels.connected_air.after,
+            ChannelState::Active(ChannelPhase::AirRecon),
+            "the connected-air opportunity must exist independently of its bank"
+        );
+        assert_eq!(
+            starved_trace.channels.connected_air.effects.committed_scrap, 0,
+            "connected air may see only bank beyond the frozen Foundry total"
+        );
+        let mut continued_state = starved_state.clone();
+        for _ in 0..brain.dials.cadence {
+            continued_state.tick(&[]);
+        }
+        let mut continued_document =
+            serde_json::to_value(&continued_state).expect("the continued state serializes");
+        continued_document["players"][0]["scrap"] = serde_json::json!(saved - 1);
+        let continued_state = serde_json::from_value(continued_document)
+            .expect("the normalized continued state remains valid");
+        let continued = brain.act_traced(&continued_state);
+        let continued_trace = continued
+            .trace
+            .expect("the active operation's next think is traced");
+        let continued_budget = continued_trace
+            .budget
+            .expect("the active operation's next think records its scrap ledger");
+        assert!(
+            continued_budget.prior_operation_spendable > 0,
+            "the bank would fund some prior operation work after the non-Foundry holds"
+        );
+        assert_eq!(continued_budget.strategic_spendable, 0);
+        assert_eq!(
+            continued_trace.channels.connected_air.after,
+            ChannelState::Active(ChannelPhase::AirRecon)
+        );
+        assert_eq!(
+            continued_trace
+                .channels
+                .connected_air
+                .effects
+                .committed_scrap,
+            0,
+            "becoming active cannot move a post-saving operation ahead of the Foundry hold"
+        );
+        let starved_raw = Observation::fog_honest(&starved_state, PlayerId(0));
+        assert_eq!(
+            brain
+                .policy
+                .validated_foundry_saving(&orientation.observe(&starved_raw), true),
+            saved,
+            "strategic competition cannot shrink the accepted saving"
+        );
+
+        let operation_fund = UnitKind::Bombard
+            .stats()
+            .cost
+            .max(UnitKind::Avalanche.stats().cost)
+            .saturating_add(UnitKind::Condor.stats().cost);
+        document["players"][0]["scrap"] = serde_json::json!(saved.saturating_add(operation_fund));
+        let funded_state: State =
+            serde_json::from_value(document).expect("the fully funded state remains valid");
+        let funded = wealthy_brain.act_traced(&funded_state);
+        let funded_trace = funded.trace.expect("the funded admission think is traced");
+        let funded_budget = funded_trace
+            .budget
+            .expect("the funded think records its scrap ledger");
+        assert_eq!(funded_budget.foundry_saving, saved);
+        let other_holds = funded_budget
+            .deferred_construction
+            .saturating_add(funded_budget.airworks_capacity)
+            .saturating_add(funded_budget.shallow_sentinel)
+            .saturating_add(funded_budget.opening_bootstrap);
+        assert_eq!(
+            funded_budget.strategic_spendable,
+            operation_fund.saturating_sub(other_holds),
+            "the accepted saving remains the first deduction before other current commitments"
+        );
+        assert!(
+            funded_trace.channels.connected_air.effects.committed_scrap > 0,
+            "connected air may claim the independent excess bank"
+        );
+        assert!(
+            funded
+                .commands
+                .iter()
+                .any(|command| matches!(command.command, Command::Train { .. })),
+            "bank covering both obligations must admit ordinary paid air-operation work: {:?}",
+            funded.commands
+        );
+    }
+
+    #[test]
+    fn connected_air_admitted_before_foundry_saving_keeps_priority() {
+        use super::super::profile::PersonalityTraits;
+
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+        let mut scenario = foundry_saving_air_competition_scenario(foundry_cost - 1);
+        let scout = scenario
+            .units
+            .iter_mut()
+            .find(|unit| unit.player == 0 && unit.kind == UnitKind::Kestrel)
+            .expect("the competition scenario has one connected-air scout");
+        (scout.x, scout.y) = (42, 19);
+        scenario.units.extend([
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Bombard,
+                x: 9,
+                y: 17,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Condor,
+                x: 10,
+                y: 18,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Condor,
+                x: 11,
+                y: 18,
+            },
+        ]);
+        let mut state = scenario
+            .build()
+            .expect("the fully staffed connected-air scenario builds");
+        let profile = ResolvedProfile {
+            difficulty: BotDifficulty::Standard,
+            stance: BotStance::Balanced,
+            personality_seed: 1_616_304,
+            primary: Specialty::Air,
+            secondary: Specialty::Siege,
+            traits: PersonalityTraits {
+                air: 70,
+                siege: 60,
+                support: 35,
+                fortification: 35,
+                greed: 64,
+                guile: 36,
+            },
+        };
+        let mut brain = scripted_brain(
+            &scenario,
+            PlayerId(0),
+            BotConfig::scripted(profile.difficulty, profile.stance, profile.personality_seed),
+        );
+        brain.dials = Dials::scripted(&profile, DifficultyTuning::for_level(profile.difficulty));
+        brain.dials.harvester_target = 4;
+        brain.dials.army_size = 100;
+        brain.dials.scouting = false;
+        brain.dials.extractors = false;
+        brain.dials.upgrades = false;
+        let mind = brain.mind_mut();
+        mind.profile = profile;
+        mind.strategy = Some(StrategicPlanner::new());
+        mind.team = None;
+        mind.lifts = None;
+        mind.raids = None;
+
+        let admission_tick = state.current_tick();
+        let first = brain.act_traced(&state);
+        let first_trace = first.trace.as_ref().expect("the admission think is traced");
+        assert_eq!(
+            first_trace.channels.connected_air.before,
+            ChannelState::Idle
+        );
+        assert_eq!(
+            first_trace.channels.connected_air.after,
+            ChannelState::Active(ChannelPhase::AirRecon)
+        );
+        assert_eq!(
+            first_trace.channels.connected_air.effects.committed_scrap, 0,
+            "the admitted operation begins with its complete connected-air roster"
+        );
+        let (admitted_at, trailing_condor) = {
+            let strategy = brain
+                .mind()
+                .strategy
+                .as_ref()
+                .expect("the connected-air planner remains enabled");
+            let operation = strategy
+                .air_operation()
+                .expect("the normal strategic pass admits connected air");
+            assert!(operation.scout.is_some());
+            assert_eq!(operation.artillery.len(), 1);
+            assert_eq!(operation.bombers.len(), 2);
+            (
+                strategy
+                    .air_admitted_at()
+                    .expect("the admitted operation records its priority tick"),
+                *operation
+                    .bombers
+                    .last()
+                    .expect("the complete wing has a trailing Condor"),
+            )
+        };
+        assert_eq!(admitted_at, admission_tick);
+        let orientation = brain
+            .orientation
+            .expect("the first think latches the policy frame");
+        let first_raw = Observation::fog_honest(&state, PlayerId(0));
+        let first_oriented = orientation.observe(&first_raw);
+        let saved = brain.policy.validated_foundry_saving(&first_oriented, true);
+        assert!(
+            saved > state.player(PlayerId(0)).scrap,
+            "utility accepts the underfunded Foundry after the fully staffed operation"
+        );
+        assert!(
+            brain.policy.operation_precedes_foundry_saving(admitted_at),
+            "same-pass strategic admission precedes utility expansion"
+        );
+
+        let report = state.tick(&first.commands);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            crate::event::Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )));
+        while state.current_tick() < admission_tick.saturating_add(brain.dials.cadence) {
+            state.tick(&[]);
+        }
+        assert_eq!(
+            state.current_tick(),
+            admission_tick.saturating_add(brain.dials.cadence)
+        );
+
+        let mut document = serde_json::to_value(&state).expect("the continuation serializes");
+        document["units"]
+            .as_array_mut()
+            .expect("state units serialize as an array")
+            .retain(|unit| unit["id"].as_u64() != Some(u64::from(trailing_condor.0)));
+        document["players"][0]["scrap"] = serde_json::json!(saved - 1);
+        let later_state: State =
+            serde_json::from_value(document).expect("the one-Condor loss remains valid");
+        assert_eq!(
+            later_state
+                .units()
+                .iter()
+                .filter(|unit| { unit.player == PlayerId(0) && unit.kind == UnitKind::Condor })
+                .count(),
+            1,
+            "the later cadence is missing only the trailing Condor"
+        );
+
+        let later = brain.act_traced(&later_state);
+        let later_trace = later.trace.expect("the later cadence think is traced");
+        let later_budget = later_trace
+            .budget
+            .expect("the later think records its scrap ledger");
+        assert!(later_budget.bank < saved);
+        assert_eq!(later_budget.foundry_saving, saved);
+        assert!(
+            later_budget.prior_operation_spendable > 0,
+            "some bank remains available to the earlier connected-air operation"
+        );
+        assert_eq!(later_budget.strategic_spendable, 0);
+        assert!(
+            later_trace.channels.connected_air.effects.committed_scrap > 0,
+            "the earlier operation keeps funding its missing Condor"
+        );
+        let later_raw = Observation::fog_honest(&later_state, PlayerId(0));
+        assert_eq!(
+            brain
+                .policy
+                .validated_foundry_saving(&orientation.observe(&later_raw), true),
+            saved,
+            "the earlier operation spends ahead of, but does not erase, the saved Foundry"
+        );
+    }
+
+    #[test]
+    fn recon_promoted_to_assault_keeps_its_original_foundry_priority_in_brain() {
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+        let scenario = foundry_saving_air_competition_scenario(foundry_cost - 1);
+        let mut state = scenario
+            .build()
+            .expect("the Foundry-saving air competition scenario builds");
+        state.tick = 6_000;
+        let raw = Observation::fog_honest(&state, PlayerId(0));
+        assert!(raw.enemy_buildings.is_empty());
+        let enemy_foundry = state
+            .buildings()
+            .iter()
+            .find(|building| {
+                building.player == PlayerId(1) && building.kind == BuildingKind::Foundry
+            })
+            .expect("the remembered enemy Foundry stands");
+        let home = raw
+            .my_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::Foundry)
+            .min_by_key(|building| building.id)
+            .expect("the home Foundry stands")
+            .anchor;
+        let orientation = Orientation::for_home(&raw, home);
+
+        let mut brain = foundry_competition_brain(&scenario);
+        brain.mind_mut().strategy = Some(StrategicPlanner::new());
+        brain.mind_mut().lifts = None;
+        brain.orientation = Some(orientation);
+        let mut prior = raw.clone();
+        prior.tick = prior.tick.saturating_sub(100);
+        prior.enemy_buildings.push(BuildingObs {
+            id: enemy_foundry.id,
+            player: enemy_foundry.player,
+            kind: enemy_foundry.kind,
+            anchor: enemy_foundry.anchor,
+            hp: enemy_foundry.hp,
+            built: enemy_foundry.built,
+            seen: true,
+            tier: enemy_foundry.tier,
+        });
+        brain
+            .mind_mut()
+            .intelligence
+            .update(&orientation.observe(&prior));
+
+        let admitted = brain.act_traced(&state);
+        let (admitted_at, initial_started_at) = {
+            let planner = brain
+                .mind()
+                .strategy
+                .as_ref()
+                .expect("the connected-air planner remains enabled");
+            let operation = planner
+                .air_operation()
+                .expect("the remembered objective admits reconnaissance");
+            assert!(!operation.assault_admitted);
+            (
+                planner
+                    .air_admitted_at()
+                    .expect("the reconnaissance records its immutable admission"),
+                operation.started_at,
+            )
+        };
+        assert_eq!(admitted_at, state.current_tick());
+        assert_eq!(initial_started_at, admitted_at);
+        let oriented = orientation.observe(&raw);
+        let saved = brain.policy.validated_foundry_saving(&oriented, true);
+        assert!(saved > state.player(PlayerId(0)).scrap);
+        assert!(brain.policy.operation_precedes_foundry_saving(admitted_at));
+        assert_eq!(
+            admitted
+                .trace
+                .expect("the reconnaissance admission is traced")
+                .channels
+                .connected_air
+                .after,
+            ChannelState::Active(ChannelPhase::AirRecon)
+        );
+
+        let mut visible_scenario = scenario.clone();
+        let scout = visible_scenario
+            .units
+            .iter_mut()
+            .find(|unit| unit.player == 0 && unit.kind == UnitKind::Kestrel)
+            .expect("the continuation retains the reconnaissance aircraft");
+        (scout.x, scout.y) = (42, 19);
+        let mut visible_state = visible_scenario
+            .build()
+            .expect("the current-sight continuation builds");
+        visible_state.tick =
+            super::super::difficulty::next_strategic_admission_tick(state.current_tick());
+        visible_state.player_mut(PlayerId(0)).scrap = saved - 1;
+
+        let promoted = brain.act_traced(&visible_state);
+        let (preserved_admission, restarted_at) = {
+            let planner = brain
+                .mind()
+                .strategy
+                .as_ref()
+                .expect("the connected-air planner remains enabled");
+            let operation = planner
+                .air_operation()
+                .expect("current sight promotes the reconnaissance");
+            assert!(operation.assault_admitted);
+            (
+                planner
+                    .air_admitted_at()
+                    .expect("the promoted operation retains its admission"),
+                operation.started_at,
+            )
+        };
+        assert_eq!(preserved_admission, admitted_at);
+        assert_eq!(restarted_at, visible_state.current_tick());
+        assert!(restarted_at > admitted_at);
+        assert!(brain.policy.operation_precedes_foundry_saving(admitted_at));
+        assert!(!brain.policy.operation_precedes_foundry_saving(restarted_at));
+        assert!(promoted.trace.is_some());
+
+        visible_state.tick =
+            super::super::difficulty::next_strategic_admission_tick(visible_state.current_tick());
+        visible_state.player_mut(PlayerId(0)).scrap = saved - 1;
+        let continued = brain.act_traced(&visible_state);
+        let trace = continued
+            .trace
+            .expect("the post-promotion decision is traced");
+        let budget = trace
+            .budget
+            .expect("the post-promotion decision records its budget");
+        assert_eq!(budget.foundry_saving, saved);
+        assert!(budget.prior_operation_spendable > 0);
+        assert_eq!(budget.strategic_spendable, 0);
+        assert!(
+            trace.channels.connected_air.effects.committed_scrap > 0,
+            "Brain must rank the promoted assault by its immutable recon admission"
+        );
+        assert!(
+            continued
+                .commands
+                .iter()
+                .any(|command| matches!(command.command, Command::Train { .. }))
+        );
+        let continued_raw = Observation::fog_honest(&visible_state, PlayerId(0));
+        assert_eq!(
+            brain
+                .policy
+                .validated_foundry_saving(&orientation.observe(&continued_raw), true),
+            saved
+        );
+    }
+
+    #[test]
+    fn brain_funds_bulk_lifts_according_to_foundry_admission_order() {
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+
+        let earlier_scenario = foundry_saving_lift_competition_scenario(foundry_cost - 1);
+        let mut earlier_state = earlier_scenario
+            .build()
+            .expect("the earlier-lift competition scenario builds");
+        let raw = Observation::fog_honest(&earlier_state, PlayerId(0));
+        let home = raw
+            .my_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::Foundry)
+            .min_by_key(|building| building.id)
+            .expect("the earlier-lift fixture retains its home Foundry")
+            .anchor;
+        let orientation = Orientation::for_home(&raw, home);
+        assert!(orientation.is_identity());
+        let lift = seeded_bulk_lift(&earlier_state, orientation);
+        let lift_admitted_at = lift
+            .operation()
+            .expect("the earlier lift is active")
+            .started_at;
+        let mut earlier_brain = foundry_competition_brain(&earlier_scenario);
+        earlier_brain.orientation = Some(orientation);
+        earlier_brain.mind_mut().strategy = None;
+        earlier_brain.mind_mut().lifts = Some(lift);
+
+        let accepted_raw = Observation::fog_honest(&earlier_state, PlayerId(0));
+        let accepted_oriented = orientation.observe(&accepted_raw);
+        let oriented_public_map = orientation.briefing(&earlier_brain.mind().public_map);
+        let context = StrategicUtilityContext::new(&[], &[], &[], &oriented_public_map, Vec::new());
+        let _ = earlier_brain.policy.think_with_intelligence(
+            &earlier_brain.dials,
+            &accepted_oriented,
+            &[],
+            &[],
+            context,
+        );
+        let saved = earlier_brain
+            .policy
+            .validated_foundry_saving(&accepted_oriented, true);
+        assert!(saved > earlier_state.player(PlayerId(0)).scrap);
+        assert!(
+            earlier_brain
+                .policy
+                .operation_precedes_foundry_saving(lift_admitted_at)
+        );
+        earlier_state.player_mut(PlayerId(0)).scrap = saved - 1;
+
+        let continued = earlier_brain.act_traced(&earlier_state);
+        let continued_trace = continued
+            .trace
+            .expect("the older lift continuation is traced");
+        let continued_budget = continued_trace
+            .budget
+            .expect("the older lift continuation records its budget");
+        assert_eq!(continued_budget.foundry_saving, saved);
+        assert!(continued_budget.prior_operation_spendable >= UnitKind::Skyhook.stats().cost);
+        assert_eq!(continued_budget.strategic_spendable, 0);
+        assert!(continued_trace.channels.lift.effects.committed_scrap > 0);
+        assert!(continued.commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Skyhook,
+                ..
+            }
+        )));
+
+        let later_scenario = foundry_saving_lift_competition_scenario(foundry_cost - 1);
+        let mut later_state = later_scenario
+            .build()
+            .expect("the later-lift competition scenario builds");
+        let mut later_brain = foundry_competition_brain(&later_scenario);
+        later_brain.mind_mut().strategy = None;
+        later_brain.mind_mut().lifts = None;
+        let first_commands = later_brain.act(&later_state);
+        let later_orientation = later_brain
+            .orientation
+            .expect("the saving-first think latches its orientation");
+        let first_raw = Observation::fog_honest(&later_state, PlayerId(0));
+        let first_oriented = later_orientation.observe(&first_raw);
+        let later_saved = later_brain
+            .policy
+            .validated_foundry_saving(&first_oriented, true);
+        assert!(later_saved > later_state.player(PlayerId(0)).scrap);
+        let report = later_state.tick(&first_commands);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            crate::event::Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )));
+        while !later_state
+            .current_tick()
+            .is_multiple_of(later_brain.dials.cadence)
+            || !super::super::difficulty::strategic_admission_tick(later_state.current_tick())
+        {
+            later_state.tick(&[]);
+        }
+        later_state.player_mut(PlayerId(0)).scrap = later_saved - 1;
+        let later_lift = seeded_bulk_lift(&later_state, later_orientation);
+        let later_lift_admitted_at = later_lift
+            .operation()
+            .expect("the later lift is active")
+            .started_at;
+        assert!(
+            !later_brain
+                .policy
+                .operation_precedes_foundry_saving(later_lift_admitted_at)
+        );
+        later_brain.mind_mut().lifts = Some(later_lift);
+        later_brain.dials.expansion = false;
+
+        let blocked = later_brain.act_traced(&later_state);
+        let blocked_trace = blocked
+            .trace
+            .expect("the later lift continuation is traced");
+        let blocked_budget = blocked_trace
+            .budget
+            .expect("the later lift continuation records its budget");
+        assert_eq!(blocked_budget.foundry_saving, later_saved);
+        assert!(blocked_budget.prior_operation_spendable >= UnitKind::Skyhook.stats().cost);
+        assert_eq!(blocked_budget.strategic_spendable, 0);
+        assert_eq!(blocked_trace.channels.lift.effects.committed_scrap, 0);
+        assert!(blocked.commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Skyhook,
+                ..
+            }
+        )));
+        let blocked_raw = Observation::fog_honest(&later_state, PlayerId(0));
+        assert_eq!(
+            later_brain
+                .policy
+                .validated_foundry_saving(&later_orientation.observe(&blocked_raw), true),
+            later_saved
+        );
+    }
+
+    #[test]
+    fn mirrored_brain_dispatches_and_releases_the_exact_foundry_lease() {
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+        let scenario = mirrored_foundry_saving_scenario(foundry_cost - 1);
+        let mut state = scenario
+            .build()
+            .expect("the mirrored Foundry-saving scenario builds");
+        let mut brain = foundry_competition_brain(&scenario);
+        brain.mind_mut().strategy = None;
+        brain.mind_mut().lifts = None;
+
+        let first_commands = brain.act(&state);
+        let orientation = brain
+            .orientation
+            .expect("the southeast home latches an orientation");
+        assert!(!orientation.is_identity());
+        let raw = Observation::fog_honest(&state, PlayerId(0));
+        let oriented = orientation.observe(&raw);
+        let saved = brain.policy.validated_foundry_saving(&oriented, true);
+        assert!(saved > state.player(PlayerId(0)).scrap);
+        let lease = brain
+            .policy
+            .foundry_builder_lease(&oriented)
+            .expect("the accepted expansion owns one exact canonical lease");
+        let world_anchor = orientation.anchor(lease.anchor(), lease.kind().base_stats().size);
+        assert_ne!(world_anchor, lease.anchor());
+
+        let first_report = state.tick(&first_commands);
+        assert!(first_report.events.iter().all(|event| !matches!(
+            event,
+            crate::event::Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )));
+        while !state.current_tick().is_multiple_of(brain.dials.cadence)
+            || !super::super::difficulty::strategic_admission_tick(state.current_tick())
+        {
+            state.tick(&[]);
+        }
+        state.player_mut(PlayerId(0)).scrap = saved;
+
+        let result = brain.act_traced(&state);
+        let commands = result.commands;
+        assert!(
+            commands.iter().any(|command| matches!(
+                &command.command,
+                Command::Build {
+                    units,
+                    kind: BuildingKind::Foundry,
+                    anchor,
+                    ..
+                } if units == &[lease.builder()] && *anchor == world_anchor
+            )),
+            "the canonical lease must lower to its exact mirrored world command: {commands:?}; trace={:?}",
+            result.trace
+        );
+        let funded_raw = Observation::fog_honest(&state, PlayerId(0));
+        let funded_oriented = orientation.observe(&funded_raw);
+        assert_eq!(
+            brain
+                .policy
+                .validated_foundry_saving(&funded_oriented, true),
+            0,
+            "dispatching the exact mirrored command clears the persistent saving"
+        );
+        assert!(
+            brain
+                .policy
+                .foundry_builder_lease(&funded_oriented)
+                .is_none()
+        );
+
+        let report = state.tick(&commands);
+        assert!(
+            report.events.iter().all(|event| !matches!(
+                event,
+                crate::event::Event::CommandRejected {
+                    player: PlayerId(0),
+                    ..
+                }
+            )),
+            "the mirrored lease must be legal in authoritative world space: {:?}",
+            report.events
+        );
+    }
+
+    #[test]
     fn exact_prime_core_cannot_be_frozen_into_a_new_team_relief() {
         let scenario = opening_core_team_relief_scenario();
         let state = scenario
@@ -5220,6 +6052,256 @@ mod tests {
             x: 14,
             y: 6,
         });
+        scenario
+    }
+
+    fn foundry_saving_air_competition_scenario(scrap: u32) -> Scenario {
+        let width = 48usize;
+        let height = 24usize;
+        let mut rows = vec![vec!['.'; width]; height];
+        rows.first_mut().expect("map has a north edge").fill('#');
+        rows.last_mut().expect("map has a south edge").fill('#');
+        for row in &mut rows {
+            row[0] = '#';
+            row[width - 1] = '#';
+        }
+        rows[1][1] = '1';
+        rows[20][44] = '2';
+        rows[16][30] = 'E';
+
+        let mut units: Vec<_> = (0..4)
+            .map(|index| UnitSpec {
+                player: 0,
+                kind: UnitKind::Harvester,
+                x: 5 + index,
+                y: 11,
+            })
+            .collect();
+        units.extend(
+            [
+                (4, 4),
+                (7, 9),
+                (10, 10),
+                (13, 11),
+                (16, 12),
+                (19, 13),
+                (22, 14),
+                (25, 15),
+                (27, 17),
+                (28, 14),
+                (24, 12),
+                (20, 10),
+            ]
+            .into_iter()
+            .map(|(x, y)| UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x,
+                y,
+            }),
+        );
+        units.push(UnitSpec {
+            player: 0,
+            kind: UnitKind::Kestrel,
+            x: 9,
+            y: 18,
+        });
+
+        Scenario {
+            name: "accepted Foundry saving competes with connected air".into(),
+            seed: 1_616_305,
+            map: rows
+                .into_iter()
+                .map(|row| row.into_iter().collect())
+                .collect(),
+            players: vec![
+                PlayerSpec {
+                    name: "West Ferrous".into(),
+                    faction: Faction::Ferrous,
+                    team: None,
+                    scrap,
+                    bot: false,
+                    bot_config: None,
+                },
+                PlayerSpec {
+                    name: "East Cupric".into(),
+                    faction: Faction::Cupric,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+            ],
+            units,
+            buildings: vec![
+                BuildingSpec {
+                    player: 0,
+                    kind: BuildingKind::Fabricator,
+                    x: 5,
+                    y: 2,
+                },
+                BuildingSpec {
+                    player: 0,
+                    kind: BuildingKind::Airworks,
+                    x: 1,
+                    y: 6,
+                },
+                BuildingSpec {
+                    player: 0,
+                    kind: BuildingKind::Crucible,
+                    x: 5,
+                    y: 6,
+                },
+                BuildingSpec {
+                    player: 0,
+                    kind: BuildingKind::Foundry,
+                    x: 11,
+                    y: 1,
+                },
+                BuildingSpec {
+                    player: 0,
+                    kind: BuildingKind::Extractor,
+                    x: 30,
+                    y: 16,
+                },
+            ],
+            meta: None,
+        }
+    }
+
+    fn foundry_competition_brain(scenario: &Scenario) -> Brain {
+        use super::super::profile::PersonalityTraits;
+
+        let profile = ResolvedProfile {
+            difficulty: BotDifficulty::Standard,
+            stance: BotStance::Balanced,
+            personality_seed: 1_616_304,
+            primary: Specialty::Air,
+            secondary: Specialty::Siege,
+            traits: PersonalityTraits {
+                air: 70,
+                siege: 60,
+                support: 35,
+                fortification: 35,
+                greed: 64,
+                guile: 36,
+            },
+        };
+        let mut brain = scripted_brain(
+            scenario,
+            PlayerId(0),
+            BotConfig::scripted(profile.difficulty, profile.stance, profile.personality_seed),
+        );
+        brain.dials = Dials::scripted(&profile, DifficultyTuning::for_level(profile.difficulty));
+        brain.dials.harvester_target = 4;
+        brain.dials.army_size = 100;
+        brain.dials.scouting = false;
+        brain.dials.extractors = false;
+        brain.dials.upgrades = false;
+        let mind = brain.mind_mut();
+        mind.profile = profile;
+        mind.team = None;
+        mind.raids = None;
+        brain
+    }
+
+    fn foundry_saving_lift_competition_scenario(scrap: u32) -> Scenario {
+        let mut scenario = bulk_lift_capacity_scenario();
+        scenario.name = "accepted Foundry saving competes with a bulk lift".into();
+        scenario.players[0].scrap = scrap;
+        let frame = TilePos::new(14, 11);
+        let row = scenario
+            .map
+            .get_mut(frame.y as usize)
+            .expect("the lift fixture contains the frame row");
+        let mut bytes = row.as_bytes().to_vec();
+        bytes[frame.x as usize] = b'E';
+        *row = String::from_utf8(bytes).expect("the lift fixture map remains ASCII");
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Extractor,
+            x: frame.x,
+            y: frame.y,
+        });
+        scenario.units.extend((0..7).map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Skyhook,
+            x: 3 + index,
+            y: 20,
+        }));
+        scenario
+    }
+
+    fn seeded_bulk_lift(state: &State, orientation: Orientation) -> LiftPlanner {
+        let raw = Observation::fog_honest(state, PlayerId(0));
+        let oriented = orientation.observe(&raw);
+        let home = oriented
+            .my_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::Foundry)
+            .min_by_key(|building| building.id)
+            .expect("the lift fixture retains its home Foundry")
+            .anchor;
+        let mut planner = LiftPlanner::new();
+        let decision = planner.think(&oriented, home, &[], LiftAirSupport::Independent);
+        assert!(
+            planner.operation().is_some(),
+            "the bulk lift must be admissible"
+        );
+        assert!(
+            decision.intents.iter().any(|intent| matches!(
+                intent,
+                Intent::TrainAt {
+                    kind: UnitKind::Skyhook,
+                    ..
+                }
+            )),
+            "the seeded lift must still need one carrier: operation={:?}, intents={:?}",
+            planner.operation(),
+            decision.intents
+        );
+        planner
+    }
+
+    fn mirrored_foundry_saving_scenario(scrap: u32) -> Scenario {
+        let mut scenario = foundry_saving_air_competition_scenario(scrap);
+        scenario.name = "mirrored Foundry saving dispatch".into();
+        let width = i32::try_from(scenario.map[0].len()).expect("fixture width fits i32");
+        let height = i32::try_from(scenario.map.len()).expect("fixture height fits i32");
+        for row in &mut scenario.map {
+            *row = row
+                .chars()
+                .map(|tile| {
+                    if matches!(tile, '1' | '2' | 'E') {
+                        '.'
+                    } else {
+                        tile
+                    }
+                })
+                .collect();
+        }
+        for (anchor, marker) in [
+            (TilePos::new(44, 20), b'1'),
+            (TilePos::new(1, 1), b'2'),
+            (TilePos::new(16, 6), b'E'),
+        ] {
+            let row = scenario
+                .map
+                .get_mut(anchor.y as usize)
+                .expect("the mirrored marker row exists");
+            let mut bytes = row.as_bytes().to_vec();
+            bytes[anchor.x as usize] = marker;
+            *row = String::from_utf8(bytes).expect("the mirrored fixture map remains ASCII");
+        }
+        for unit in &mut scenario.units {
+            unit.x = width - 1 - unit.x;
+            unit.y = height - 1 - unit.y;
+        }
+        for building in &mut scenario.buildings {
+            let size = building.kind.base_stats().size;
+            building.x = width - size.0 - building.x;
+            building.y = height - size.1 - building.y;
+        }
         scenario
     }
 

@@ -9,12 +9,14 @@
 //! difficulty, Balanced stance, and fixed per-seat personality seeds, to a
 //! combat-phase horizon.
 //!
-//! Two rows per map: the final state hash, and a running fold of the full
-//! command stream — each tick's commands folded with the tick they were
-//! staged for — keyed `<map>#commands`. The command fold moves whenever
-//! any decision or its timing changes, even where the worlds later
-//! reconverge, so it is the sharper refactoring tripwire; the state hash
-//! anchors the world the commands actually built.
+//! Two rows per map at the common 6,000-tick horizon: the state hash, and a
+//! running fold of the full command stream — each tick's commands folded with
+//! the tick they were staged for — keyed `<map>#commands`. Separately keyed
+//! later-horizon probes may extend a map without replacing that comparable
+//! baseline. The command fold moves whenever any decision or its timing
+//! changes, even where the worlds later reconverge, so it is the sharper
+//! refactoring tripwire; the state hash anchors the world the commands actually
+//! built.
 //!
 //! `tests/goldens/player-facing-hashes.json` obeys the same bless discipline
 //! as the Overseer golden. An intentional player-facing behavior change is
@@ -31,7 +33,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use support::check_or_bless;
 
-const FIXTURE_TICKS: u64 = 6_000;
+const DEFAULT_FIXTURE_TICKS: u64 = 6_000;
+const SKYHOOK_EXTENDED_TICKS: u64 = 9_000;
 
 /// Representative repertoire spread: a 1v1, small and large team maps, the
 /// transport-island economy, and the two largest shipped bot loads.
@@ -50,10 +53,33 @@ const fn personality_seed(seat: usize) -> u64 {
     9_000 + seat as u64
 }
 
+fn run_ticks(name: &str) -> u64 {
+    if name == "skyhook-anchorage" {
+        SKYHOOK_EXTENDED_TICKS
+    } else {
+        DEFAULT_FIXTURE_TICKS
+    }
+}
+
 struct MapRun {
-    state_row: (String, String),
-    commands_row: (String, String),
+    rows: Vec<(String, String)>,
     saw_lift_load: bool,
+}
+
+fn hash_rows(
+    name: &str,
+    suffix: &str,
+    state_hash: u64,
+    command_fold: u64,
+) -> [(String, String); 2] {
+    let key = format!("{name}{suffix}");
+    [
+        (key.clone(), oxide_protocol::hash_hex(state_hash)),
+        (
+            format!("{key}#commands"),
+            oxide_protocol::hash_hex(command_fold),
+        ),
+    ]
 }
 
 fn run_map(name: &str) -> MapRun {
@@ -81,7 +107,9 @@ fn run_map(name: &str) -> MapRun {
 
     let mut command_fold: u64 = 0;
     let mut saw_lift_load = false;
-    for _ in 0..FIXTURE_TICKS {
+    let mut rows = Vec::new();
+    let final_tick = run_ticks(name);
+    for _ in 0..final_tick {
         let mut commands = Vec::new();
         for bot in &mut bots {
             commands.extend(bot.act(&state));
@@ -98,13 +126,20 @@ fn run_map(name: &str) -> MapRun {
                 .any(|c| matches!(c.command, oxide_sim::Command::Load { .. }));
         }
         state.tick(&commands);
+        if state.current_tick() == DEFAULT_FIXTURE_TICKS {
+            rows.extend(hash_rows(name, "", state.hash(), command_fold));
+        }
+    }
+    if final_tick > DEFAULT_FIXTURE_TICKS {
+        rows.extend(hash_rows(
+            name,
+            &format!("@{final_tick}"),
+            state.hash(),
+            command_fold,
+        ));
     }
     MapRun {
-        state_row: (name.to_string(), oxide_protocol::hash_hex(state.hash())),
-        commands_row: (
-            format!("{name}#commands"),
-            oxide_protocol::hash_hex(command_fold),
-        ),
+        rows,
         saw_lift_load,
     }
 }
@@ -126,10 +161,7 @@ fn scripted_controller_matches_hash_fixtures() {
         "no fixture map exercised a transport Load — the lift path is uncovered; \
          adjust the map set or seeds so the fixture demonstrably reaches it"
     );
-    let actual: BTreeMap<String, String> = runs
-        .into_iter()
-        .flat_map(|run| [run.state_row, run.commands_row])
-        .collect();
+    let actual: BTreeMap<String, String> = runs.into_iter().flat_map(|run| run.rows).collect();
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/player-facing-hashes.json");
     check_or_bless(&fixture, actual);

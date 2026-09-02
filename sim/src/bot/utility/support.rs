@@ -12,11 +12,12 @@ impl UtilityPolicy {
         dials: &Dials,
         obs: &Observation,
         player_facing: bool,
+        available_scrap: u32,
         intents: &mut Vec<Intent>,
     ) {
         if !dials.adaptive_composition
             || !dials.repair
-            || obs.scrap < UnitKind::Sentinel.stats().cost
+            || available_scrap < UnitKind::Sentinel.stats().cost
         {
             return;
         }
@@ -111,7 +112,7 @@ mod tests {
         dials.support_target = 2;
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(&dials, &observation(), true, &mut intents);
+        UtilityPolicy::new().mobile_support(&dials, &observation(), true, 200, &mut intents);
 
         assert_eq!(
             intents,
@@ -129,14 +130,19 @@ mod tests {
     }
 
     #[test]
-    fn mobile_support_preserves_the_fighting_reserve() {
+    fn mobile_support_uses_the_uncommitted_budget_not_the_gross_bank() {
         let mut dials = Dials::balanced();
         dials.adaptive_composition = true;
-        let mut obs = observation();
-        obs.scrap = UnitKind::Sentinel.stats().cost - 1;
+        let obs = observation();
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(&dials, &obs, true, &mut intents);
+        UtilityPolicy::new().mobile_support(
+            &dials,
+            &obs,
+            true,
+            UnitKind::Sentinel.stats().cost - 1,
+            &mut intents,
+        );
 
         assert!(intents.is_empty());
     }
@@ -153,7 +159,7 @@ mod tests {
         obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(8, y)).collect();
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(&dials, &obs, true, &mut intents);
+        UtilityPolicy::new().mobile_support(&dials, &obs, true, obs.scrap, &mut intents);
 
         assert!(intents.is_empty());
     }
@@ -174,7 +180,7 @@ mod tests {
         }
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(&dials, &obs, true, &mut intents);
+        UtilityPolicy::new().mobile_support(&dials, &obs, true, obs.scrap, &mut intents);
 
         assert!(intents.is_empty());
     }
@@ -194,7 +200,7 @@ mod tests {
         }
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(&dials, &obs, true, &mut intents);
+        UtilityPolicy::new().mobile_support(&dials, &obs, true, obs.scrap, &mut intents);
 
         assert_eq!(
             intents,
@@ -220,7 +226,7 @@ mod tests {
             .collect();
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(&dials, &obs, true, &mut intents);
+        UtilityPolicy::new().mobile_support(&dials, &obs, true, obs.scrap, &mut intents);
 
         assert_eq!(
             intents,
@@ -243,7 +249,7 @@ mod tests {
         obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(8, y)).collect();
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(&dials, &obs, false, &mut intents);
+        UtilityPolicy::new().mobile_support(&dials, &obs, false, obs.scrap, &mut intents);
 
         assert_eq!(
             intents,

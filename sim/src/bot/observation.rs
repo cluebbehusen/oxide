@@ -30,7 +30,8 @@ use serde::{Deserialize, Serialize};
 /// team's anonymous, bounded salvage-danger incidents. Version 12 exposes
 /// whether an airframe is parked on the ground. Version 13 exposes an own
 /// Harvester's current work node without revealing allied or enemy orders.
-pub const OBSERVATION_VERSION: u32 = 13;
+/// Version 14 exposes which own units have queued or looping programs.
+pub const OBSERVATION_VERSION: u32 = 14;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +145,12 @@ pub struct Observation {
     /// Training queue contents per own building, aligned with
     /// `my_buildings`.
     pub my_queues: Vec<Vec<UnitKind>>,
+    /// Own units whose current order has a queued continuation or loops.
+    /// Sorted by id. The continuation itself stays opaque to policy code;
+    /// this ownership bit is enough to keep autonomous work from replacing a
+    /// player's existing program with a non-queued command.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub my_queued_units: Vec<UnitId>,
     /// Teammates' units — always in team sight, never commandable.
     /// Their intent is as opaque as an enemy's: allies coordinate by
     /// position, not telepathy.
@@ -224,6 +231,7 @@ impl Default for Observation {
             my_units: Vec::new(),
             my_buildings: Vec::new(),
             my_queues: Vec::new(),
+            my_queued_units: Vec::new(),
             ally_units: Vec::new(),
             ally_buildings: Vec::new(),
             enemy_units: Vec::new(),
@@ -245,6 +253,12 @@ impl Default for Observation {
 }
 
 impl Observation {
+    /// Whether an own unit already has work queued behind its current order or
+    /// is running a looping program.
+    pub fn has_queued_program(&self, unit: UnitId) -> bool {
+        self.my_queued_units.binary_search(&unit).is_ok()
+    }
+
     /// Whether `tile` is known impassable terrain — a binary point lookup
     /// into `known_rock`, which is sorted by (y, x) both by row-major
     /// construction and by the orientation re-sort.
@@ -301,6 +315,9 @@ impl Observation {
             }
             if u.player == me {
                 obs.my_units.push(own_unit(u));
+                if !u.queue.is_empty() || u.looping {
+                    obs.my_queued_units.push(u.id);
+                }
             } else if !state.hostile(me, u.player) {
                 obs.ally_units.push(enemy_unit(u));
             } else {
@@ -378,6 +395,9 @@ impl Observation {
             }
             if u.player == me {
                 obs.my_units.push(own_unit(u));
+                if !u.queue.is_empty() || u.looping {
+                    obs.my_queued_units.push(u.id);
+                }
             } else if !state.hostile(me, u.player) {
                 // Teammates stamp this player's vision, so they are
                 // always in sight by construction.
@@ -505,6 +525,7 @@ impl Observation {
             my_units: Vec::new(),
             my_buildings: Vec::new(),
             my_queues: Vec::new(),
+            my_queued_units: Vec::new(),
             ally_units: Vec::new(),
             ally_buildings: Vec::new(),
             enemy_units: Vec::new(),
@@ -872,6 +893,54 @@ mod tests {
                 None,
                 "an enemy's Harvest order remains private even in a complete test view"
             );
+        }
+    }
+
+    #[test]
+    fn owner_observation_marks_queued_and_looping_programs_without_leaking_them() {
+        let mut state = Scenario::skirmish()
+            .build()
+            .expect("the skirmish scenario builds");
+        let own_workers: Vec<_> = state
+            .units()
+            .iter()
+            .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Harvester)
+            .take(2)
+            .map(|unit| unit.id)
+            .collect();
+        let hostile_worker = state
+            .units()
+            .iter()
+            .find(|unit| unit.player == PlayerId(1) && unit.kind == UnitKind::Harvester)
+            .expect("the opposing seat starts with a Harvester")
+            .id;
+        state
+            .unit_mut(own_workers[0])
+            .expect("the first own Harvester exists")
+            .queue
+            .push_back(Order::Move {
+                goal: TilePos::new(8, 8),
+            });
+        state
+            .unit_mut(own_workers[1])
+            .expect("the second own Harvester exists")
+            .looping = true;
+        state
+            .unit_mut(hostile_worker)
+            .expect("the hostile Harvester exists")
+            .queue
+            .push_back(Order::Move {
+                goal: TilePos::new(30, 15),
+            });
+
+        for observation in [
+            Observation::fog_honest(&state, PlayerId(0)),
+            Observation::omniscient(&state, PlayerId(0)),
+        ] {
+            assert_eq!(observation.my_queued_units, own_workers);
+            assert!(observation.has_queued_program(own_workers[0]));
+            assert!(observation.has_queued_program(own_workers[1]));
+            assert!(!observation.has_queued_program(hostile_worker));
         }
     }
 }

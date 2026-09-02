@@ -28,6 +28,7 @@ pub mod observation;
 pub mod orient;
 pub mod profile;
 pub mod raid;
+mod resources;
 mod routing;
 pub mod strategy;
 pub mod team;

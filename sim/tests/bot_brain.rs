@@ -783,7 +783,7 @@ fn own_observations_expose_salvage_and_deferred_found_commitments() {
 }
 
 #[test]
-fn own_observations_expose_current_paid_repairs_without_disclosing_queued_programs() {
+fn own_observations_expose_current_repairs_and_only_the_presence_of_queued_programs() {
     let mut scenario = open_arena(vec![
         unit(0, UnitKind::Harvester, 4, 3),
         unit(0, UnitKind::Harvester, 4, 9),
@@ -852,6 +852,12 @@ fn own_observations_expose_current_paid_repairs_without_disclosing_queued_progra
             .any(|unit| unit.id == queued && !unit.repairing),
         "a queued program stays opaque until it becomes current"
     );
+    assert_eq!(
+        observation.my_queued_units,
+        vec![queued],
+        "the owner may protect a queued program without exposing its contents to policy code"
+    );
+    assert!(!observation.has_queued_program(active));
 
     state.tick(&[cmd(
         0,
@@ -1356,6 +1362,7 @@ fn qa_rear_line_stays_frozen_while_player_facing_releases_repaired_units() {
         my_units: units,
         my_buildings: Vec::new(),
         my_queues: Vec::new(),
+        my_queued_units: Vec::new(),
         ally_units: Vec::new(),
         ally_buildings: Vec::new(),
         enemy_units: Vec::new(),

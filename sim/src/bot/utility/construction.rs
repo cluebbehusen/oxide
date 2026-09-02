@@ -1,6 +1,7 @@
 //! Construction, repair, upgrade, and salvage decisions.
 
 use super::*;
+use crate::Tick;
 
 /// One economically worthwhile, command-feasible player-facing expansion.
 ///
@@ -13,11 +14,186 @@ pub(super) struct FoundryExpansionPlan {
     pub(super) opportunity: expansion::FoundryOpportunity,
 }
 
+/// Accepted expansion capital that has not yet reached its build threshold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FoundrySavingCommitment {
+    pub(super) plan: FoundryExpansionPlan,
+    pub(super) accepted_at: Tick,
+    pub(super) required_scrap: u32,
+    pub(super) blocked_since: Option<u64>,
+}
+
+/// How long a temporarily unexecutable frozen plan keeps its fund before the
+/// policy releases it for deterministic replanning.
+pub(super) const FOUNDRY_RECOVERY_TICKS: u64 = 600;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FoundryCommitment {
+    pub(super) plan: FoundryExpansionPlan,
+    pub(super) required_scrap: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum FoundryCommitmentOutcome {
+    Build(FoundryCommitment),
+    Save(FoundryCommitment),
+}
+
+pub(super) fn commit_foundry_plan(
+    commitments: &mut PolicyCommitments,
+    budget: &mut u32,
+    plan: FoundryExpansionPlan,
+    guard: u32,
+    save_if_short: bool,
+) -> Option<FoundryCommitmentOutcome> {
+    commitments.import_legacy_spending(*budget);
+    let checkpoint = commitments.checkpoint();
+    let imported_owner = commitments.foundry_saving_owner.take();
+    let owner = if let Some(owner) = imported_owner {
+        commitments.ledger.release(owner);
+        if owner.domain == CommitmentDomain::Economy {
+            owner
+        } else {
+            commitments.next_economy_owner()
+        }
+    } else {
+        commitments.next_economy_owner()
+    };
+    let cost = BuildingKind::Foundry
+        .base_stats()
+        .construction
+        .expect("Foundries are constructible")
+        .cost;
+    let required_scrap = cost.saturating_add(guard);
+    let available = commitments.available_scrap();
+    let (claim, build) = if available >= required_scrap {
+        (ScrapClaim::SpendNow(cost), true)
+    } else if save_if_short {
+        (ScrapClaim::Hold(required_scrap.min(available)), false)
+    } else {
+        commitments.rollback(checkpoint);
+        return None;
+    };
+    let site = SiteFootprint::new(plan.anchor, BuildingKind::Foundry.base_stats().size)
+        .expect("Foundries have a positive footprint");
+    let result = commitments
+        .ledger
+        .claim_builder(owner, plan.builder)
+        .and_then(|()| commitments.ledger.claim_site(owner, site))
+        .and_then(|()| commitments.ledger.claim_scrap(owner, claim));
+    if result.is_err() {
+        commitments.rollback(checkpoint);
+        return None;
+    }
+
+    commitments.foundry_saving_owner = Some(owner);
+    let commitment = FoundryCommitment {
+        plan,
+        required_scrap,
+    };
+    *budget = commitments.available_scrap();
+    Some(if build {
+        FoundryCommitmentOutcome::Build(commitment)
+    } else {
+        FoundryCommitmentOutcome::Save(commitment)
+    })
+}
+
 fn can_fund(budget: u32, cost: u32, ordinary_reserve: u32, voluntary_guard: Reserve) -> bool {
     budget >= cost.saturating_add(voluntary_guard.amount(ordinary_reserve))
 }
 
 impl UtilityPolicy {
+    /// Whether an existing operation owns its place in the legacy ordering
+    /// ahead of the saved Foundry. Equal ticks mean the operation was admitted
+    /// earlier in the same normal decision pass, before utility expansion.
+    pub(in crate::bot) fn operation_precedes_foundry_saving(&self, started_at: Tick) -> bool {
+        self.foundry_saving
+            .as_ref()
+            .is_none_or(|saving| started_at <= saving.accepted_at)
+    }
+
+    fn foundry_saving_transitioned(obs: &Observation, saving: &FoundrySavingCommitment) -> bool {
+        obs.my_buildings.iter().any(|building| {
+            building.kind == BuildingKind::Foundry && building.anchor == saving.plan.anchor
+        }) || obs.my_units.iter().any(|unit| {
+            unit.id == saving.plan.builder
+                && unit.founding == Some((BuildingKind::Foundry, saving.plan.anchor))
+        })
+    }
+
+    fn foundry_saving_invalid(&self, obs: &Observation, saving: &FoundrySavingCommitment) -> bool {
+        self.dead_anchors.contains(&saving.plan.anchor)
+            || obs
+                .my_units
+                .iter()
+                .find(|unit| unit.id == saving.plan.builder)
+                .is_none_or(|builder| !builder_is_free(obs, builder))
+    }
+
+    pub(in crate::bot) fn foundry_builder_lease(&self, obs: &Observation) -> Option<BuilderLease> {
+        self.foundry_saving
+            .as_ref()
+            .filter(|saving| {
+                !Self::foundry_saving_transitioned(obs, saving)
+                    && !self.foundry_saving_invalid(obs, saving)
+            })
+            .map(|saving| {
+                BuilderLease::new(
+                    saving.plan.builder,
+                    BuildingKind::Foundry,
+                    saving.plan.anchor,
+                )
+            })
+    }
+
+    /// Returns the currently valid saved expansion capital. Survival releases
+    /// the persistent claim before any same-think ledger can import its hold.
+    pub(in crate::bot) fn validated_foundry_saving(
+        &mut self,
+        obs: &Observation,
+        opening_core_ready: bool,
+    ) -> u32 {
+        let release = !opening_core_ready
+            || self.foundry_saving.as_ref().is_some_and(|saving| {
+                Self::foundry_saving_transitioned(obs, saving)
+                    || self.foundry_saving_invalid(obs, saving)
+            });
+        if release {
+            self.foundry_saving = None;
+        }
+        self.foundry_saving
+            .as_ref()
+            .map_or(0, |saving| saving.required_scrap)
+    }
+
+    pub(super) fn retain_blocked_foundry_saving(&mut self, now: u64) -> bool {
+        let Some(saving) = self.foundry_saving.as_mut() else {
+            return false;
+        };
+        let blocked_since = *saving.blocked_since.get_or_insert(now);
+        if now.saturating_sub(blocked_since) >= FOUNDRY_RECOVERY_TICKS {
+            self.foundry_saving = None;
+            false
+        } else {
+            true
+        }
+    }
+
+    pub(super) fn release_foundry_saving(
+        &mut self,
+        commitments: Option<&mut PolicyCommitments>,
+        budget: &mut u32,
+    ) {
+        self.foundry_saving = None;
+        if let Some(commitments) = commitments {
+            if let Some(owner) = commitments.foundry_saving_owner.take() {
+                commitments.ledger.release(owner);
+            }
+            *budget = commitments.available_scrap();
+        }
+    }
+
     fn unfinished_turret_currently_unsafe(obs: &Observation, site: &BuildingObs) -> bool {
         let (width, height) = site.kind.base_stats().size;
         (-1..=height).any(|dy| {
@@ -292,6 +468,10 @@ impl UtilityPolicy {
                     && !enlisted.contains(&unit.id)
                     && !reserved.contains(&unit.id)
                     && self.scout != Some(unit.id)
+                    && self
+                        .foundry_saving
+                        .as_ref()
+                        .is_none_or(|saving| saving.plan.builder != unit.id)
             })
             .collect()
     }
@@ -649,6 +829,7 @@ impl UtilityPolicy {
         obs: &Observation,
         context: AdvancedConstructionContext<'_>,
         budget: &mut u32,
+        commitments: Option<&mut PolicyCommitments>,
         intents: &mut Vec<Intent>,
     ) -> bool {
         let AdvancedConstructionContext {
@@ -753,6 +934,11 @@ impl UtilityPolicy {
                 .unwrap_or(0);
             if player_facing {
                 let (foundries, pending_foundries) = Self::projected_foundries(obs);
+                let foundry_builders: Vec<_> = builders
+                    .iter()
+                    .copied()
+                    .filter(|builder| builder_is_free(obs, builder))
+                    .collect();
                 let assessment = (pending_foundries == 0)
                     .then(|| {
                         public_map.and_then(|public_map| {
@@ -763,7 +949,7 @@ impl UtilityPolicy {
                                     claim: FoundryClaimContext {
                                         home,
                                         projected_foundries: &foundries,
-                                        builders,
+                                        builders: &foundry_builders,
                                         support_extractors: have_built(BuildingKind::Fabricator),
                                         ordinary_frontiers: !dials.deep_tech
                                             || have(BuildingKind::Airworks),
@@ -785,7 +971,18 @@ impl UtilityPolicy {
                     && assessment.disposition == expansion::ExpansionDisposition::Build
                     && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
                 {
-                    *budget -= cost;
+                    let plan = if let Some(commitments) = commitments {
+                        let guard = voluntary_scrap_guard.amount(TECH_RESERVE);
+                        let Some(FoundryCommitmentOutcome::Build(commitment)) =
+                            commit_foundry_plan(commitments, budget, assessment.plan, guard, false)
+                        else {
+                            return false;
+                        };
+                        commitment.plan
+                    } else {
+                        *budget -= cost;
+                        assessment.plan
+                    };
                     let before_harvest = intents
                         .iter()
                         .position(|intent| matches!(intent, Intent::AssignHarvest { .. }))
@@ -793,9 +990,9 @@ impl UtilityPolicy {
                     intents.insert(
                         before_harvest,
                         Intent::BuildWith {
-                            builder: assessment.plan.builder,
+                            builder: plan.builder,
                             kind: BuildingKind::Foundry,
-                            anchor: assessment.plan.anchor,
+                            anchor: plan.anchor,
                         },
                     );
                     return true;
@@ -897,12 +1094,25 @@ impl UtilityPolicy {
 
     /// Construction channel: recover paid work first, then choose at most one
     /// economy, tech, support, or role-specific fortification project.
+    #[cfg(test)]
     pub(super) fn construction(
         &mut self,
         dials: &Dials,
         obs: &Observation,
         context: ConstructionContext<'_>,
         budget: &mut u32,
+        intents: &mut Vec<Intent>,
+    ) {
+        self.construction_with_commitments(dials, obs, context, budget, None, intents);
+    }
+
+    pub(super) fn construction_with_commitments(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        context: ConstructionContext<'_>,
+        budget: &mut u32,
+        commitments: Option<&mut PolicyCommitments>,
         intents: &mut Vec<Intent>,
     ) {
         let ConstructionContext {
@@ -1040,6 +1250,7 @@ impl UtilityPolicy {
                     voluntary_scrap_guard,
                 },
                 budget,
+                commitments,
                 intents,
             )
         {

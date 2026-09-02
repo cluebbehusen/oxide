@@ -358,6 +358,7 @@ mod tests {
             )],
             my_buildings: vec![building(1, 0, BuildingKind::Foundry, TilePos::new(1, 1))],
             my_queues: vec![vec![UnitKind::Harvester]],
+            my_queued_units: vec![UnitId(1)],
             ally_units: vec![unit(2, 1, UnitKind::Wisp, TilePos::new(2, 3), None)],
             ally_buildings: vec![building(2, 1, BuildingKind::Array, TilePos::new(2, 1))],
             enemy_units: vec![unit(3, 2, UnitKind::Darter, TilePos::new(3, 4), None)],

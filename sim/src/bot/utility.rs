@@ -22,9 +22,13 @@ use super::executive::{Army, ArmyState, Intent};
 use super::intelligence::{BuildingContact, UnitContact};
 use super::observation::{BuildingObs, Observation, UnitObs};
 use super::profile::ResolvedProfile;
+use super::resources::{
+    BuilderLease, BuilderObligation, CommitmentDomain, CommitmentLedger, CommitmentOwner,
+    LedgerCheckpoint, ResourceSnapshot, ScrapClaim, SiteFootprint, UnitClaimRole, builder_is_free,
+};
 use super::routing::{self, RouteProjection};
 use super::{PublicMapBriefing, StartingFoundry};
-use crate::ids::{PlayerId, UnitId};
+use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::scenario::BotStance;
 use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::grid::TilePos;
@@ -861,6 +865,9 @@ pub struct UtilityPolicy {
     pending_sites: Vec<TilePos>,
     /// Anchors the sim refused.
     dead_anchors: Vec<TilePos>,
+    /// Player-facing expansion whose exact site and builder own the partial
+    /// fund while current scrap accumulates to its admission threshold.
+    foundry_saving: Option<construction::FoundrySavingCommitment>,
     /// The designated scout, held only mid-sweep (released between
     /// sweeps so the draft can have it back).
     scout: Option<UnitId>,
@@ -942,8 +949,221 @@ struct ThinkContext<'a> {
     reserved: &'a [UnitId],
     combat_core_exclusions: &'a [UnitId],
     outstanding_air_production_ticks: Option<u64>,
+    prior_scrap_commitment: u32,
     prelude: Vec<Intent>,
     mode: PolicyMode<'a>,
+}
+
+struct PolicyCommitments {
+    ledger: CommitmentLedger,
+    next_legacy_sequence: u32,
+    next_economy_sequence: u32,
+    next_strategic_sequence: u32,
+    foundry_saving_owner: Option<CommitmentOwner>,
+}
+
+struct PolicyCommitmentsCheckpoint {
+    ledger: LedgerCheckpoint,
+    next_legacy_sequence: u32,
+    next_economy_sequence: u32,
+    next_strategic_sequence: u32,
+    foundry_saving_owner: Option<CommitmentOwner>,
+}
+
+fn strategic_production_claims(prelude: &[Intent]) -> Vec<(BuildingId, UnitKind)> {
+    prelude
+        .iter()
+        .filter_map(|intent| match intent {
+            Intent::TrainAt { building, kind } => Some((*building, *kind)),
+            _ => None,
+        })
+        .collect()
+}
+
+impl PolicyCommitments {
+    fn new(
+        obs: &Observation,
+        prior_scrap_commitment: u32,
+        reserved: &[UnitId],
+        strategic_production: &[(BuildingId, UnitKind)],
+    ) -> Self {
+        let resources = ResourceSnapshot::from_observation(obs);
+        let mut commitments = Self {
+            ledger: CommitmentLedger::new(&resources),
+            next_legacy_sequence: 0,
+            next_economy_sequence: 0,
+            next_strategic_sequence: 0,
+            foundry_saving_owner: None,
+        };
+        commitments.hold_legacy_saturating(prior_scrap_commitment);
+        commitments.import_strategic_reservations(reserved);
+        commitments.import_strategic_production(strategic_production);
+        commitments
+    }
+
+    fn available_scrap(&self) -> u32 {
+        self.ledger.available_scrap()
+    }
+
+    fn checkpoint(&self) -> PolicyCommitmentsCheckpoint {
+        PolicyCommitmentsCheckpoint {
+            ledger: self.ledger.checkpoint(),
+            next_legacy_sequence: self.next_legacy_sequence,
+            next_economy_sequence: self.next_economy_sequence,
+            next_strategic_sequence: self.next_strategic_sequence,
+            foundry_saving_owner: self.foundry_saving_owner,
+        }
+    }
+
+    fn rollback(&mut self, checkpoint: PolicyCommitmentsCheckpoint) {
+        self.ledger
+            .rollback(checkpoint.ledger)
+            .expect("the checkpoint belongs to this observation");
+        self.next_legacy_sequence = checkpoint.next_legacy_sequence;
+        self.next_economy_sequence = checkpoint.next_economy_sequence;
+        self.next_strategic_sequence = checkpoint.next_strategic_sequence;
+        self.foundry_saving_owner = checkpoint.foundry_saving_owner;
+    }
+
+    fn available_for_foundry_saving(&self) -> u32 {
+        let owned = self
+            .foundry_saving_owner
+            .and_then(|owner| {
+                self.ledger
+                    .holds()
+                    .iter()
+                    .find(|hold| hold.owner == owner)
+                    .map(|hold| hold.amount)
+            })
+            .unwrap_or(0);
+        self.available_scrap().saturating_add(owned)
+    }
+
+    fn next_legacy_owner(&mut self) -> CommitmentOwner {
+        let owner = CommitmentOwner::new(CommitmentDomain::Legacy, self.next_legacy_sequence);
+        self.next_legacy_sequence = self.next_legacy_sequence.saturating_add(1);
+        owner
+    }
+
+    fn next_economy_owner(&mut self) -> CommitmentOwner {
+        let owner = CommitmentOwner::new(CommitmentDomain::Economy, self.next_economy_sequence);
+        self.next_economy_sequence = self.next_economy_sequence.saturating_add(1);
+        owner
+    }
+
+    fn next_strategic_owner(&mut self) -> CommitmentOwner {
+        let owner = CommitmentOwner::new(CommitmentDomain::Strategic, self.next_strategic_sequence);
+        self.next_strategic_sequence = self.next_strategic_sequence.saturating_add(1);
+        owner
+    }
+
+    fn hold_legacy_saturating(&mut self, requested: u32) -> CommitmentOwner {
+        let held = requested.min(self.available_scrap());
+        let owner = self.next_legacy_owner();
+        self.ledger
+            .claim_scrap(owner, ScrapClaim::Hold(held))
+            .expect("a saturating legacy hold fits the observed bank");
+        owner
+    }
+
+    fn import_strategic_reservations(&mut self, reserved: &[UnitId]) {
+        let mut units = reserved.to_vec();
+        units.sort_unstable();
+        units.dedup();
+        for unit in units {
+            let owner = self.next_strategic_owner();
+            self.ledger
+                .claim_unit(owner, unit, UnitClaimRole::Strategic)
+                .expect("strategic reservations must name distinct free own units");
+        }
+    }
+
+    fn import_strategic_production(&mut self, production: &[(BuildingId, UnitKind)]) {
+        for (building, kind) in production {
+            let owner = self.next_strategic_owner();
+            self.ledger
+                .append_production(owner, *building, *kind)
+                .expect("strategic production must name a legal contiguous producer slot");
+        }
+    }
+
+    fn import_deferred_claims(&mut self, obs: &Observation, claims: &[(BuildingKind, TilePos)]) {
+        let mut ordered = claims.to_vec();
+        ordered.sort_unstable_by_key(|(kind, anchor)| (*kind, anchor.y, anchor.x));
+        ordered.dedup();
+        for (kind, anchor) in ordered {
+            self.import_deferred_claim(obs, kind, anchor);
+        }
+    }
+
+    fn import_foundry_saving(&mut self, saving: &construction::FoundrySavingCommitment) {
+        let checkpoint = self.checkpoint();
+        let owner = self.next_economy_owner();
+        let held = saving.required_scrap.min(self.available_scrap());
+        let site = SiteFootprint::new(saving.plan.anchor, BuildingKind::Foundry.base_stats().size)
+            .expect("Foundries have a positive footprint");
+        let exact = self
+            .ledger
+            .claim_scrap(owner, ScrapClaim::Hold(held))
+            .and_then(|()| self.ledger.claim_site(owner, site))
+            .and_then(|()| self.ledger.claim_builder(owner, saving.plan.builder));
+        if exact.is_ok() {
+            self.foundry_saving_owner = Some(owner);
+        } else {
+            self.rollback(checkpoint);
+            self.foundry_saving_owner = Some(self.hold_legacy_saturating(saving.required_scrap));
+        }
+    }
+
+    fn import_deferred_claim(&mut self, obs: &Observation, kind: BuildingKind, anchor: TilePos) {
+        let checkpoint = self.checkpoint();
+        let owner = if kind == BuildingKind::Foundry {
+            self.next_economy_owner()
+        } else {
+            self.next_legacy_owner()
+        };
+        let cost = kind
+            .base_stats()
+            .construction
+            .map_or(0, |construction| construction.cost);
+        let held = cost.min(self.available_scrap());
+        let site = SiteFootprint::new(anchor, kind.base_stats().size)
+            .expect("constructible buildings have a positive footprint");
+        let obligation = BuilderObligation::Found { kind, anchor };
+        let exact = self
+            .ledger
+            .claim_scrap(owner, ScrapClaim::Hold(held))
+            .and_then(|()| self.ledger.claim_site(owner, site))
+            .and_then(|()| {
+                let mut founders: Vec<_> = obs
+                    .my_units
+                    .iter()
+                    .filter(|unit| unit.founding == Some((kind, anchor)))
+                    .map(|unit| unit.id)
+                    .collect();
+                founders.sort_unstable();
+                founders.dedup();
+                for founder in founders {
+                    self.ledger
+                        .import_builder_obligation(owner, founder, obligation)?;
+                }
+                Ok(())
+            });
+        if exact.is_err() {
+            self.rollback(checkpoint);
+            self.hold_legacy_saturating(cost);
+        }
+    }
+
+    fn import_legacy_spending(&mut self, remaining_budget: u32) {
+        let available = self.available_scrap();
+        debug_assert!(remaining_budget <= available);
+        let spent = available.saturating_sub(remaining_budget);
+        let owner = self.next_legacy_owner();
+        self.ledger
+            .claim_scrap(owner, ScrapClaim::SpendNow(spent))
+            .expect("the legacy budget delta fits its remaining bank");
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -963,6 +1183,7 @@ pub(super) struct StrategicUtilityContext<'a> {
     building_contacts: &'a [BuildingContact],
     public_map: &'a PublicMapBriefing,
     outstanding_air_production_ticks: Option<u64>,
+    prior_scrap_commitment: u32,
     prelude: Vec<Intent>,
 }
 
@@ -981,6 +1202,7 @@ impl<'a> StrategicUtilityContext<'a> {
             building_contacts,
             public_map,
             outstanding_air_production_ticks: None,
+            prior_scrap_commitment: 0,
             prelude,
         }
     }
@@ -996,6 +1218,11 @@ impl<'a> StrategicUtilityContext<'a> {
     /// factories on their own.
     pub(super) fn with_outstanding_air_production_ticks(mut self, ticks: u64) -> Self {
         self.outstanding_air_production_ticks = Some(ticks);
+        self
+    }
+
+    pub(super) const fn with_prior_scrap_commitment(mut self, amount: u32) -> Self {
+        self.prior_scrap_commitment = amount;
         self
     }
 }
@@ -1371,6 +1598,10 @@ impl UtilityPolicy {
                                 && !reserved.contains(&unit.id)
                                 && !claimed.contains(&unit.id)
                                 && self.scout != Some(unit.id)
+                                && self
+                                    .foundry_saving
+                                    .as_ref()
+                                    .is_none_or(|saving| saving.plan.builder != unit.id)
                         })
                         .collect();
                     if let Some(builder) = self.safe_implicit_builder(
@@ -1525,7 +1756,7 @@ impl UtilityPolicy {
                     .any(|building| building.kind == *kind && building.anchor == *anchor)
             })
             .collect();
-        claims.sort_unstable();
+        claims.sort_unstable_by_key(|(kind, anchor)| (*kind, anchor.y, anchor.x));
         claims.dedup();
         claims
     }
@@ -1876,6 +2107,7 @@ impl UtilityPolicy {
                 reserved: &[],
                 combat_core_exclusions: &[],
                 outstanding_air_production_ticks: None,
+                prior_scrap_commitment: 0,
                 prelude: Vec::new(),
                 mode: PolicyMode {
                     player_facing: false,
@@ -1908,6 +2140,7 @@ impl UtilityPolicy {
                 reserved,
                 combat_core_exclusions: reserved,
                 outstanding_air_production_ticks: None,
+                prior_scrap_commitment: 0,
                 prelude: Vec::new(),
                 mode: PolicyMode {
                     player_facing: true,
@@ -1939,6 +2172,7 @@ impl UtilityPolicy {
                 reserved: context.reserved,
                 combat_core_exclusions: context.combat_core_exclusions,
                 outstanding_air_production_ticks: context.outstanding_air_production_ticks,
+                prior_scrap_commitment: context.prior_scrap_commitment,
                 prelude: context.prelude,
                 mode: PolicyMode {
                     player_facing: true,
@@ -1963,9 +2197,11 @@ impl UtilityPolicy {
             reserved,
             combat_core_exclusions,
             outstanding_air_production_ticks,
+            prior_scrap_commitment,
             prelude,
             mode,
         } = context;
+        let strategic_reserved = reserved;
         let player_facing = mode.player_facing;
         let strategic_capital_advanced = player_facing
             && prelude.iter().any(|intent| {
@@ -1977,6 +2213,7 @@ impl UtilityPolicy {
                         | Intent::Upgrade { .. }
                 )
             });
+        let strategic_production = strategic_production_claims(&prelude);
         let mut intents = prelude;
         let Some(home) = obs
             .my_buildings
@@ -2011,7 +2248,7 @@ impl UtilityPolicy {
                 &mut intents,
             );
         }
-        let mut protected = reserved.to_vec();
+        let mut protected = strategic_reserved.to_vec();
         if player_facing {
             protected.extend(self.evacuating_workers.iter().copied());
             protected.extend(self.retreating_contested_scout.map(|retreat| retreat.unit));
@@ -2031,38 +2268,56 @@ impl UtilityPolicy {
             return intents;
         }
 
-        if obs.scrap > self.bank_seen || obs.tick == 0 {
-            self.bank_grew_at = obs.tick;
+        let mut commitments = player_facing.then(|| {
+            PolicyCommitments::new(
+                obs,
+                prior_scrap_commitment,
+                strategic_reserved,
+                &strategic_production,
+            )
+        });
+        let utility_admission_scrap = commitments
+            .as_ref()
+            .map_or(obs.scrap, PolicyCommitments::available_scrap);
+        let mut spendable = obs.clone();
+        spendable.scrap = utility_admission_scrap;
+        let admission_obs = &spendable;
+
+        if utility_admission_scrap > self.bank_seen || admission_obs.tick == 0 {
+            self.bank_grew_at = admission_obs.tick;
         }
-        self.bank_seen = obs.scrap;
+        self.bank_seen = utility_admission_scrap;
         // The clock must undercut the liveness gate's stall patience
         // (roughly two thousand ticks): desperation is the designed
         // answer to an economic freeze, so it has to fire before the
         // freeze detector calls the game dead between pushes.
-        self.desperate = obs.tick.saturating_sub(self.bank_grew_at) > 1_600;
+        self.desperate = admission_obs.tick.saturating_sub(self.bank_grew_at) > 1_600;
         if self.desperate {
-            self.desperate_march = Self::ground_reaches(obs, home_tile, mirror_site);
-            self.desperate_road = Self::ground_route_known(obs, home_tile, mirror_site);
+            self.desperate_march = Self::ground_reaches(admission_obs, home_tile, mirror_site);
+            self.desperate_road = Self::ground_route_known(admission_obs, home_tile, mirror_site);
         }
-        self.audit_harvests(obs);
-        self.audit_sites(obs);
-        self.audit_raids(dials, obs, player_facing);
+        self.audit_harvests(admission_obs);
+        self.audit_sites(admission_obs);
+        self.audit_raids(dials, admission_obs, player_facing);
 
         let has_ground_objective = player_facing
             && dials.minimum_core_equivalents > 0
-            && self.has_honest_ground_objective(dials, obs, home_tile, mode.public_map);
+            && self.has_honest_ground_objective(dials, admission_obs, home_tile, mode.public_map);
 
         let opening_core_at_start = combat_core_status(
-            obs,
+            admission_obs,
             combat_core_exclusions,
             &intents,
             u64::from(dials.minimum_core_equivalents),
         );
         let opening_core_active =
             player_facing && dials.minimum_core_equivalents > 0 && !opening_core_at_start.ready;
+        if player_facing {
+            self.validated_foundry_saving(admission_obs, !opening_core_active);
+        }
         let retained_deferred_claims = if opening_core_active {
             self.opening_core_deferred_claims(
-                obs,
+                admission_obs,
                 OpeningClaimContext {
                     dials,
                     home: home_tile,
@@ -2078,7 +2333,7 @@ impl UtilityPolicy {
             && !Self::shallow_sentinel_reinforcement(obs, &intents)
         {
             self.post_floor_deferred_claims(
-                obs,
+                admission_obs,
                 home_tile,
                 mode.unit_contacts,
                 mode.building_contacts,
@@ -2086,12 +2341,21 @@ impl UtilityPolicy {
                 &mut intents,
             )
         } else {
-            Self::deferred_claims(obs)
+            Self::deferred_claims(admission_obs)
         };
-        let construction_commitment = Self::deferred_claims_commitment(&retained_deferred_claims);
-        let mut spendable = obs.clone();
+        let foundry_saving_commitment = self
+            .foundry_saving
+            .as_ref()
+            .map_or(0, |saving| saving.required_scrap);
+        let construction_commitment = Self::deferred_claims_commitment(&retained_deferred_claims)
+            .saturating_add(foundry_saving_commitment);
+        if let Some(commitments) = &mut commitments {
+            commitments.import_deferred_claims(admission_obs, &retained_deferred_claims);
+            if let Some(saving) = &self.foundry_saving {
+                commitments.import_foundry_saving(saving);
+            }
+        }
         if player_facing {
-            spendable.scrap = spendable.scrap.saturating_sub(construction_commitment);
             for unit in &mut spendable.my_units {
                 if unit
                     .founding
@@ -2102,7 +2366,10 @@ impl UtilityPolicy {
             }
         }
         let obs = &spendable;
-        let mut budget = obs.scrap;
+        let uncommitted_scrap_at_admission = commitments
+            .as_ref()
+            .map_or(obs.scrap, PolicyCommitments::available_scrap);
+        let mut budget = uncommitted_scrap_at_admission;
         let mut expansion_capital_promised = false;
 
         let harvesters = obs
@@ -2121,6 +2388,11 @@ impl UtilityPolicy {
             // Exact scout ownership precedes every implicit utility claim.
             let mut unavailable = enlisted.to_vec();
             unavailable.extend_from_slice(reserved);
+            unavailable.extend(
+                self.foundry_saving
+                    .as_ref()
+                    .map(|saving| saving.plan.builder),
+            );
             unavailable.sort_unstable();
             unavailable.dedup();
             self.scouting_with_public_map(
@@ -2163,11 +2435,12 @@ impl UtilityPolicy {
         let mut opening_core_deficient = false;
 
         if manages_opening {
-            self.construction(
+            self.construction_with_commitments(
                 dials,
                 obs,
                 construction_context.during_opening_core(dials.turret_response, dials.aa_response),
                 &mut budget,
+                commitments.as_mut(),
                 &mut intents,
             );
             let status = self.opening_core_production(
@@ -2217,7 +2490,7 @@ impl UtilityPolicy {
 
         if manages_opening && !opening_core_deficient && !opening_bootstrap_active {
             let production_guard = shallow_capital_guard.max(opening_bootstrap_reserve);
-            expansion_capital_promised = self.production_with_air_demand(
+            expansion_capital_promised = self.production_with_commitments(
                 dials,
                 obs,
                 ProductionContext::new(
@@ -2230,16 +2503,18 @@ impl UtilityPolicy {
                 .with_public_map(mode.public_map)
                 .with_voluntary_scrap_guard(Reserve::Exact(production_guard)),
                 &mut budget,
+                commitments.as_mut(),
                 &mut intents,
             );
 
             if !expansion_capital_promised && !Self::construction_channel_spent(&intents) {
-                self.construction(
+                self.construction_with_commitments(
                     dials,
                     obs,
                     construction_context
                         .with_voluntary_scrap_guard(Reserve::Exact(production_guard)),
                     &mut budget,
+                    commitments.as_mut(),
                     &mut intents,
                 );
             }
@@ -2274,17 +2549,18 @@ impl UtilityPolicy {
             let mut planned_construction = Vec::new();
             if construction_precedes_discretionary {
                 let mut construction_budget = budget;
-                self.construction(
+                self.construction_with_commitments(
                     dials,
                     obs,
                     construction_context,
                     &mut construction_budget,
+                    commitments.as_mut(),
                     &mut planned_construction,
                 );
                 budget = construction_budget;
             }
             if outstanding_air_production_ticks.is_some() {
-                expansion_capital_promised = self.production_with_air_demand(
+                expansion_capital_promised = self.production_with_commitments(
                     dials,
                     obs,
                     ProductionContext::new(
@@ -2296,22 +2572,30 @@ impl UtilityPolicy {
                     .with_intelligence(mode.unit_contacts, mode.building_contacts)
                     .with_public_map(mode.public_map),
                     &mut budget,
+                    commitments.as_mut(),
                     &mut intents,
                 );
             } else {
-                expansion_capital_promised = self.production(
+                expansion_capital_promised = self.production_with_commitments(
                     dials,
                     obs,
-                    home_tile,
-                    construction_claims,
+                    ProductionContext::new(home_tile, construction_claims, None),
                     &mut budget,
+                    commitments.as_mut(),
                     &mut intents,
                 );
             }
             if construction_precedes_discretionary {
                 intents.extend(planned_construction);
             } else if !expansion_capital_promised && !Self::construction_channel_spent(&intents) {
-                self.construction(dials, obs, construction_context, &mut budget, &mut intents);
+                self.construction_with_commitments(
+                    dials,
+                    obs,
+                    construction_context,
+                    &mut budget,
+                    commitments.as_mut(),
+                    &mut intents,
+                );
             }
         }
         let construction_promised = expansion_capital_promised
@@ -2344,7 +2628,7 @@ impl UtilityPolicy {
                             || shallow_capital_guard > 0
                             || expansion_capital_promised
                             || unit.kind.stats().harvest.is_some()
-                            || obs.scrap == 0)
+                            || uncommitted_scrap_at_admission == 0)
                 })
                 .map(|unit| unit.id)
                 .collect();
@@ -2367,7 +2651,7 @@ impl UtilityPolicy {
             self.repairs(dials, obs, mode, &mut budget, &mut intents);
         }
         if !opening_core_deficient && !opening_bootstrap_active && shallow_capital_guard == 0 {
-            self.mobile_support(dials, obs, player_facing, &mut intents);
+            self.mobile_support(dials, obs, player_facing, budget, &mut intents);
         }
         self.salvage(dials, obs, &mut intents);
         if !player_facing && dials.scouting && harvesters >= dials.harvester_target as usize {
@@ -2974,6 +3258,25 @@ impl UtilityPolicy {
         }
     }
 
+    /// Releases a frozen expansion lease only once its exact construction
+    /// command survives lowering. A refused or displaced intent remains owned
+    /// and can be retried on the next observation.
+    pub(super) fn record_dispatched_foundry_build(
+        &mut self,
+        builders: &[UnitId],
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) {
+        let dispatched = self.foundry_saving.as_ref().is_some_and(|saving| {
+            kind == BuildingKind::Foundry
+                && saving.plan.anchor == anchor
+                && builders.contains(&saving.plan.builder)
+        });
+        if dispatched {
+            self.foundry_saving = None;
+        }
+    }
+
     /// A shrinking harvest line means raiders. Player-facing identities keep
     /// the response open until every configured Turret is complete; the
     /// profile-free controller preserves its historical one-site reset.
@@ -3404,6 +3707,398 @@ mod tests {
             [Intent::StopUnits {
                 units: vec![UnitId(1), UnitId(2), UnitId(3), UnitId(4)]
             }]
+        );
+    }
+
+    #[test]
+    fn deferred_stop_insertion_cannot_hide_a_strategic_production_claim() {
+        let home = TilePos::new(3, 3);
+        let stale_site = TilePos::new(9, 3);
+        let mut obs = obs_with(vec![harvester(1, Some((BuildingKind::Turret, stale_site)))]);
+        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![Vec::new()];
+        let map = public_map_with_home_and_frames(&obs, home, &[]);
+        let dials = Dials::full();
+        let mut intents = vec![Intent::TrainAt {
+            building: BuildingId(10),
+            kind: UnitKind::Sentinel,
+        }];
+
+        let strategic_production = strategic_production_claims(&intents);
+        let retained = UtilityPolicy::new().opening_core_deferred_claims(
+            &obs,
+            OpeningClaimContext {
+                dials: &dials,
+                home,
+                unit_contacts: None,
+                building_contacts: None,
+                public_map: Some(&map),
+            },
+            &mut intents,
+        );
+
+        assert!(retained.is_empty());
+        assert!(matches!(
+            intents.as_slice(),
+            [Intent::StopUnits { units }, Intent::TrainAt { building, kind }]
+                if units == &[UnitId(1)]
+                    && *building == BuildingId(10)
+                    && *kind == UnitKind::Sentinel
+        ));
+        let commitments = PolicyCommitments::new(&obs, 0, &[], &strategic_production);
+        let claims = commitments.ledger.producer_claims();
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].slot.producer, BuildingId(10));
+        assert_eq!(claims[0].slot.queue_index, 0);
+        assert_eq!(claims[0].kind, UnitKind::Sentinel);
+    }
+
+    #[test]
+    fn prior_and_deferred_claims_reduce_the_observed_bank_exactly_once() {
+        let fabricator = (BuildingKind::Fabricator, TilePos::new(9, 3));
+        let turret = (BuildingKind::Turret, TilePos::new(4, 12));
+        let mut obs = obs_with(vec![
+            harvester(1, Some(fabricator)),
+            harvester(2, Some(fabricator)),
+            harvester(3, Some(turret)),
+        ]);
+        obs.scrap = 1_000;
+        let prior = 70;
+        let deferred = [fabricator, turret, fabricator];
+        let expected_deferred = [fabricator.0, turret.0]
+            .into_iter()
+            .map(|kind| {
+                kind.base_stats()
+                    .construction
+                    .expect("the deferred fixture uses constructible buildings")
+                    .cost
+            })
+            .sum::<u32>();
+
+        let mut commitments = PolicyCommitments::new(&obs, prior, &[], &[]);
+        commitments.import_deferred_claims(&obs, &deferred);
+
+        let after_obligations = obs.scrap - prior - expected_deferred;
+        assert_eq!(commitments.available_scrap(), after_obligations);
+        assert_eq!(commitments.ledger.held_scrap(), prior + expected_deferred);
+        assert_eq!(commitments.ledger.site_claims().len(), 2);
+        assert_eq!(commitments.ledger.unit_claims().len(), 3);
+        let deferred_owners: Vec<_> = commitments
+            .ledger
+            .site_claims()
+            .iter()
+            .map(|claim| claim.owner)
+            .collect();
+
+        commitments.import_legacy_spending(after_obligations - 13);
+        assert_eq!(commitments.available_scrap(), after_obligations - 13);
+        assert_eq!(commitments.ledger.spent_scrap(), 13);
+        let released = deferred_owners
+            .into_iter()
+            .map(|owner| commitments.ledger.release(owner))
+            .fold(
+                crate::bot::resources::ReleaseSummary::default(),
+                |mut total, released| {
+                    total.held_scrap = total.held_scrap.saturating_add(released.held_scrap);
+                    total.units += released.units;
+                    total.sites += released.sites;
+                    total.producers += released.producers;
+                    total
+                },
+            );
+        assert_eq!(released.held_scrap, expected_deferred);
+        assert_eq!((released.units, released.sites), (3, 2));
+        assert_eq!(commitments.available_scrap(), obs.scrap - prior - 13);
+    }
+
+    #[test]
+    fn policy_commitment_rollback_restores_owner_sequences_and_saving_handle() {
+        let mut obs = obs_with(vec![harvester(1, None)]);
+        obs.scrap = 100;
+        let mut commitments = PolicyCommitments::new(&obs, 10, &[], &[]);
+        let before_ledger = commitments.ledger.clone();
+        let before_sequences = (
+            commitments.next_legacy_sequence,
+            commitments.next_economy_sequence,
+            commitments.next_strategic_sequence,
+        );
+        let before_saving_owner = commitments.foundry_saving_owner;
+        let checkpoint = commitments.checkpoint();
+
+        let legacy = commitments.next_legacy_owner();
+        let economy = commitments.next_economy_owner();
+        let strategic = commitments.next_strategic_owner();
+        commitments.foundry_saving_owner = Some(economy);
+        commitments
+            .ledger
+            .claim_scrap(legacy, ScrapClaim::Hold(5))
+            .unwrap();
+        commitments
+            .ledger
+            .claim_builder(economy, UnitId(1))
+            .unwrap();
+        commitments
+            .ledger
+            .claim_scrap(strategic, ScrapClaim::SpendNow(7))
+            .unwrap();
+
+        commitments.rollback(checkpoint);
+
+        assert_eq!(commitments.ledger, before_ledger);
+        assert_eq!(
+            (
+                commitments.next_legacy_sequence,
+                commitments.next_economy_sequence,
+                commitments.next_strategic_sequence,
+            ),
+            before_sequences
+        );
+        assert_eq!(commitments.foundry_saving_owner, before_saving_owner);
+    }
+
+    #[test]
+    fn deferred_retention_uses_the_bank_after_strategic_commitments() {
+        let home = TilePos::new(3, 3);
+        let claim = (BuildingKind::Fabricator, TilePos::new(9, 3));
+        let mut units: Vec<_> = (0..8)
+            .map(|id| {
+                fighter(
+                    id,
+                    PlayerId(0),
+                    TilePos::new(5 + i32::try_from(id).expect("small fixture id"), 8),
+                )
+            })
+            .collect();
+        units.push(UnitObs {
+            tile: TilePos::new(6, 4),
+            ..harvester(20, Some(claim))
+        });
+        units.extend((21..24).map(|id| harvester(id, None)));
+        let mut obs = obs_with(units);
+        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![Vec::new()];
+        let mut enemy = standing_building(30, BuildingKind::Foundry, TilePos::new(24, 12));
+        enemy.player = PlayerId(1);
+        obs.enemy_buildings.push(enemy);
+        let capital_cost = BuildingKind::Fabricator
+            .base_stats()
+            .construction
+            .expect("Fabricators have a construction price")
+            .cost;
+        let sentinel_cost = UnitKind::Sentinel.stats().cost;
+        obs.scrap = capital_cost + sentinel_cost;
+        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201)
+            .resolve_profile();
+        let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
+        let map = public_map(&obs);
+        let context = StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new())
+            .with_prior_scrap_commitment(1);
+
+        let intents = UtilityPolicy::new().think_with_intelligence(&dials, &obs, &[], &[], context);
+
+        assert!(intents.iter().any(|intent| matches!(
+            intent,
+            Intent::StopUnits { units } if units == &[UnitId(20)]
+        )));
+    }
+
+    #[test]
+    fn starvation_clock_tracks_the_fixed_utility_admission_bank() {
+        let home = TilePos::new(3, 3);
+        let mut obs = obs_with(Vec::new());
+        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![Vec::new()];
+        obs.scrap = 100;
+        let map = public_map(&obs);
+        let dials = Dials::full();
+        let mut policy = UtilityPolicy::new();
+        let first = StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new())
+            .with_prior_scrap_commitment(50);
+        policy.think_with_intelligence(&dials, &obs, &[], &[], first);
+        assert_eq!(policy.bank_seen, 50);
+
+        obs.tick = 1_608;
+        obs.scrap = 150;
+        let second = StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new())
+            .with_prior_scrap_commitment(100);
+        policy.think_with_intelligence(&dials, &obs, &[], &[], second);
+
+        assert_eq!(policy.bank_seen, 50);
+        assert!(
+            policy.desperate,
+            "growth already owned by strategy must not reset utility's starvation clock"
+        );
+
+        let mut profile_free = UtilityPolicy::new();
+        profile_free.think(&dials, &obs, &[], &[]);
+        assert_eq!(profile_free.bank_seen, obs.scrap);
+    }
+
+    #[test]
+    fn strategic_scrap_cannot_unlock_mobile_support() {
+        let home = TilePos::new(3, 3);
+        let tender = UnitObs {
+            id: UnitId(1),
+            player: PlayerId(0),
+            kind: UnitKind::Tender,
+            tile: TilePos::new(5, 5),
+            hp: UnitKind::Tender.stats().max_hp,
+            idle: true,
+            carrying: 0,
+            harvesting: None,
+            cargo: 0,
+            site: None,
+            salvaging: None,
+            founding: None,
+            repairing: false,
+            grounded: false,
+        };
+        let patient = UnitObs {
+            id: UnitId(2),
+            player: PlayerId(0),
+            kind: UnitKind::Sentinel,
+            tile: TilePos::new(6, 5),
+            hp: UnitKind::Sentinel.stats().max_hp / 4,
+            idle: true,
+            carrying: 0,
+            harvesting: None,
+            cargo: 0,
+            site: None,
+            salvaging: None,
+            founding: None,
+            repairing: false,
+            grounded: false,
+        };
+        let mut obs = obs_with(vec![tender, patient]);
+        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![Vec::new()];
+        obs.scrap = UnitKind::Sentinel.stats().cost;
+        let map = public_map(&obs);
+        let mut dials = Dials::full();
+        dials.adaptive_composition = true;
+        dials.discretionary_slots = 0;
+        dials.harvester_target = 0;
+        dials.army_size = 0;
+        dials.tech = false;
+        dials.scouting = false;
+        dials.salvage = false;
+
+        let available = UtilityPolicy::new().think_with_intelligence(
+            &dials,
+            &obs,
+            &[],
+            &[],
+            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new()),
+        );
+        assert!(available.iter().any(|intent| matches!(
+            intent,
+            Intent::RepairUnits { welders, target }
+                if welders == &[UnitId(1)] && *target == UnitId(2)
+        )));
+
+        let held = UtilityPolicy::new().think_with_intelligence(
+            &dials,
+            &obs,
+            &[],
+            &[],
+            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new())
+                .with_prior_scrap_commitment(1),
+        );
+        assert!(
+            held.iter()
+                .all(|intent| !matches!(intent, Intent::RepairUnits { .. }))
+        );
+
+        dials.army_size = 2;
+        let spent_earlier_this_think = UtilityPolicy::new().think_with_intelligence(
+            &dials,
+            &obs,
+            &[],
+            &[],
+            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new()),
+        );
+        assert!(spent_earlier_this_think.iter().any(|intent| matches!(
+            intent,
+            Intent::TrainAt {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )));
+        assert!(
+            spent_earlier_this_think
+                .iter()
+                .all(|intent| !matches!(intent, Intent::RepairUnits { .. })),
+            "mobile support cannot reuse scrap already committed to ordinary production"
+        );
+    }
+
+    #[test]
+    fn strategic_scrap_cannot_hide_salvage_desperation() {
+        let home = TilePos::new(3, 3);
+        let mut obs = obs_with(vec![harvester(1, None)]);
+        obs.my_buildings = vec![
+            standing_building(10, BuildingKind::Foundry, home),
+            standing_building(11, BuildingKind::Turret, TilePos::new(8, 3)),
+        ];
+        obs.my_queues = vec![Vec::new(), Vec::new()];
+        obs.scrap = UnitKind::Harvester.stats().cost;
+        let map = public_map(&obs);
+        let mut dials = Dials::full();
+        dials.harvester_target = 0;
+        dials.tech = false;
+        dials.scouting = false;
+        dials.repair = false;
+
+        let raw = UtilityPolicy::new().think_with_intelligence(
+            &dials,
+            &obs,
+            &[],
+            &[],
+            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new()),
+        );
+        assert!(
+            raw.iter()
+                .all(|intent| !matches!(intent, Intent::Salvage { .. }))
+        );
+
+        let held = UtilityPolicy::new().think_with_intelligence(
+            &dials,
+            &obs,
+            &[],
+            &[],
+            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new())
+                .with_prior_scrap_commitment(1),
+        );
+        assert!(held.contains(&Intent::Salvage {
+            building: BuildingId(11),
+        }));
+    }
+
+    #[test]
+    fn deferred_claim_owners_follow_kind_then_row_major_anchor() {
+        let first = (BuildingKind::Turret, TilePos::new(9, 2));
+        let second = (BuildingKind::Turret, TilePos::new(1, 8));
+        let mut obs = obs_with(Vec::new());
+        obs.scrap = 1_000;
+        let mut commitments = PolicyCommitments::new(&obs, 0, &[], &[]);
+
+        commitments.import_deferred_claims(&obs, &[second, first]);
+
+        let sites = commitments.ledger.site_claims();
+        assert_eq!(sites.len(), 2);
+        assert_eq!(
+            (sites[0].site, sites[0].owner),
+            (
+                SiteFootprint::new(first.1, first.0.base_stats().size).unwrap(),
+                CommitmentOwner::new(CommitmentDomain::Legacy, 1),
+            )
+        );
+        assert_eq!(
+            (sites[1].site, sites[1].owner),
+            (
+                SiteFootprint::new(second.1, second.0.base_stats().size).unwrap(),
+                CommitmentOwner::new(CommitmentDomain::Legacy, 2),
+            )
         );
     }
 

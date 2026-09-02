@@ -20,6 +20,7 @@ fn obs_base() -> Observation {
         my_units: Vec::new(),
         my_buildings: Vec::new(),
         my_queues: Vec::new(),
+        my_queued_units: Vec::new(),
         ally_units: Vec::new(),
         ally_buildings: Vec::new(),
         enemy_units: Vec::new(),
