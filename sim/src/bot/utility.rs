@@ -1591,9 +1591,7 @@ impl UtilityPolicy {
                         .my_units
                         .iter()
                         .filter(|unit| {
-                            unit.kind.stats().harvest.is_some()
-                                && unit.site.is_none()
-                                && unit.founding.is_none()
+                            builder_is_free(obs, unit)
                                 && !enlisted.contains(&unit.id)
                                 && !reserved.contains(&unit.id)
                                 && !claimed.contains(&unit.id)
@@ -4938,6 +4936,39 @@ mod tests {
                 anchor,
             }]
         );
+    }
+
+    #[test]
+    fn builder_binding_skips_workers_with_queued_or_looping_programs() {
+        let anchor = TilePos::new(22, 5);
+        let mut obs =
+            construction_route_observation(&[(1, TilePos::new(18, 5)), (2, TilePos::new(18, 8))]);
+        obs.my_queued_units = vec![UnitId(1)];
+        let mut intents = vec![Intent::Build {
+            kind: BuildingKind::Turret,
+            anchor,
+        }];
+
+        let policy = UtilityPolicy::new();
+        policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
+
+        assert_eq!(
+            intents,
+            vec![Intent::BuildWith {
+                builder: UnitId(2),
+                kind: BuildingKind::Turret,
+                anchor,
+            }],
+            "an existing queued or looping program must not hide a feasible free builder"
+        );
+        let commands = Executive::new().apply_with_reservations(PlayerId(0), &obs, &intents, &[]);
+        assert!(matches!(
+            commands.as_slice(),
+            [PlayerCommand {
+                command: Command::Build { units, kind: BuildingKind::Turret, anchor: command_anchor, .. },
+                ..
+            }] if units == &[UnitId(2)] && *command_anchor == anchor
+        ));
     }
 
     #[test]
