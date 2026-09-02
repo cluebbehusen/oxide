@@ -4,13 +4,16 @@
 //! state, events, or replay input, and nothing in the policy may read them back.
 
 use super::observation::Observation;
+use super::resources::ResourceSnapshot;
 use crate::PlayerCommand;
 use crate::ids::{PlayerId, UnitId};
 use chassis::Tick;
 use serde::Serialize;
 
 /// Schema version for serialized decision traces.
-pub const DECISION_TRACE_VERSION: u32 = 1;
+pub const DECISION_TRACE_VERSION: u32 = 2;
+
+const RESOURCE_FORECAST_TICKS: Tick = crate::TICKS_PER_SECOND as Tick * 60;
 
 /// Commands from one bot act plus its optional player-facing diagnostic.
 ///
@@ -37,6 +40,8 @@ pub struct DecisionTrace {
     pub control_flow: DecisionControlFlow,
     /// Compact facts from the already-built fog-honest observation.
     pub evidence: EvidenceTrace,
+    /// Typed current resources and a bounded completed-income forecast.
+    pub resources: ResourceTrace,
     /// Coordinator-owned gates. `None` means the full strategic path did not
     /// reach that gate.
     pub gates: GateTrace,
@@ -52,13 +57,13 @@ pub struct DecisionTrace {
 
 impl DecisionTrace {
     fn from_observation(observation: &Observation) -> Self {
+        let resources = ResourceSnapshot::from_observation(observation);
         Self {
             version: DECISION_TRACE_VERSION,
             tick: observation.tick,
             player: observation.me,
             control_flow: DecisionControlFlow::Policy,
             evidence: EvidenceTrace {
-                scrap: observation.scrap,
                 current_enemy_units: bounded_count(observation.enemy_units.len()),
                 current_enemy_buildings: bounded_count(
                     observation
@@ -76,11 +81,58 @@ impl DecisionTrace {
                 ),
                 radar_blips: bounded_count(observation.blips.len()),
             },
+            resources: ResourceTrace::from_snapshot(observation.tick, &resources),
             gates: GateTrace::default(),
             budget: None,
             channels: ChannelTraces::default(),
             utility: UtilityTrace::default(),
             lowering: LoweringTrace::default(),
+        }
+    }
+}
+
+/// Bounded resource evidence from the typed, fog-honest snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ResourceTrace {
+    /// Current bank; forecast income is never added to this amount.
+    pub current_scrap: u32,
+    /// Bounded future interval used for the completed-income forecast. This is
+    /// normally one minute and shortens only near the tick range limit.
+    pub forecast_horizon_ticks: Tick,
+    /// Income due from currently completed recurring sources in that interval.
+    pub forecast_scrap: u32,
+    /// Construction-capable units without an observed obligation.
+    pub free_builders: u32,
+    /// Construction-capable units already building, founding, repairing, or salvaging.
+    pub obligated_builders: u32,
+    /// Completed, live producers visible to this player.
+    pub completed_producers: u32,
+    /// Queue positions currently open across those producers.
+    pub open_producer_slots: u32,
+}
+
+impl ResourceTrace {
+    fn from_snapshot(observed_at: Tick, resources: &ResourceSnapshot) -> Self {
+        let last_offset = RESOURCE_FORECAST_TICKS
+            .saturating_sub(1)
+            .min(Tick::MAX.saturating_sub(observed_at));
+        let forecast_horizon_ticks = last_offset.saturating_add(1);
+        let deadline = observed_at
+            .checked_add(last_offset)
+            .expect("the forecast offset is bounded by the remaining tick range");
+        let free_builders = resources
+            .builders()
+            .iter()
+            .filter(|builder| builder.obligation.is_none())
+            .count();
+        Self {
+            current_scrap: resources.current_scrap().amount(),
+            forecast_horizon_ticks,
+            forecast_scrap: resources.forecast().income_through(deadline).amount(),
+            free_builders: bounded_count(free_builders),
+            obligated_builders: bounded_count(resources.builders().len() - free_builders),
+            completed_producers: bounded_count(resources.producers().len()),
+            open_producer_slots: bounded_count(resources.producer_slots().len()),
         }
     }
 }
@@ -98,8 +150,6 @@ pub enum DecisionControlFlow {
 /// Fog-honest facts already present in the controller observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct EvidenceTrace {
-    /// Own current bank.
-    pub scrap: u32,
     /// Currently visible hostile units.
     pub current_enemy_units: u32,
     /// Currently visible hostile buildings.
@@ -156,6 +206,8 @@ pub struct RaidAttentionTrace {
 pub struct ScrapBudgetTrace {
     /// Own bank before coordinator holds.
     pub bank: u32,
+    /// Capital owned by a validated persistent Foundry expansion.
+    pub foundry_saving: u32,
     /// Scrap promised to accepted deferred construction.
     pub deferred_construction: u32,
     /// Capital held for an additional Airworks.
@@ -166,7 +218,9 @@ pub struct ScrapBudgetTrace {
     pub opening_bootstrap: u32,
     /// Whether the unmet opening core closed voluntary spending.
     pub frozen: bool,
-    /// Scrap exposed to strategic planners after those holds.
+    /// Scrap exposed to an operation that predates the saved Foundry plan.
+    pub prior_operation_spendable: u32,
+    /// Scrap exposed to a newly admitted strategic operation after those holds.
     pub strategic_spendable: u32,
     /// Scrap claimed by strategic planners during this think.
     pub strategic_committed: u32,
@@ -379,15 +433,17 @@ mod tests {
         });
         trace.budget = Some(ScrapBudgetTrace {
             bank: 1,
-            deferred_construction: 2,
-            airworks_capacity: 3,
-            shallow_sentinel: 4,
-            opening_bootstrap: 5,
+            foundry_saving: 2,
+            deferred_construction: 3,
+            airworks_capacity: 4,
+            shallow_sentinel: 5,
+            opening_bootstrap: 6,
             frozen: false,
-            strategic_spendable: 6,
-            strategic_committed: 7,
-            prospective_carrier: 8,
-            utility_spendable: 9,
+            prior_operation_spendable: 7,
+            strategic_spendable: 8,
+            strategic_committed: 9,
+            prospective_carrier: 10,
+            utility_spendable: 11,
         });
         trace.channels.connected_air = ChannelTrace {
             before: ChannelState::Preparing,
@@ -413,6 +469,7 @@ mod tests {
                 "gates",
                 "lowering",
                 "player",
+                "resources",
                 "tick",
                 "utility",
                 "version",
@@ -428,13 +485,24 @@ mod tests {
 
         let expected_objects = [
             (
+                "resources",
+                BTreeSet::from([
+                    "completed_producers",
+                    "current_scrap",
+                    "forecast_horizon_ticks",
+                    "forecast_scrap",
+                    "free_builders",
+                    "obligated_builders",
+                    "open_producer_slots",
+                ]),
+            ),
+            (
                 "evidence",
                 BTreeSet::from([
                     "current_enemy_buildings",
                     "current_enemy_units",
                     "radar_blips",
                     "remembered_enemy_buildings",
-                    "scrap",
                 ]),
             ),
             (
@@ -453,8 +521,10 @@ mod tests {
                     "airworks_capacity",
                     "bank",
                     "deferred_construction",
+                    "foundry_saving",
                     "frozen",
                     "opening_bootstrap",
+                    "prior_operation_spendable",
                     "prospective_carrier",
                     "shallow_sentinel",
                     "strategic_committed",
@@ -533,5 +603,20 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from(["admitted", "attention_slots", "strategic_load"])
         );
+    }
+
+    #[test]
+    fn resource_trace_shortens_an_unrepresentable_horizon() {
+        let observation = Observation {
+            tick: Tick::MAX,
+            scrap: 17,
+            ..Observation::default()
+        };
+
+        let trace = DecisionTrace::from_observation(&observation);
+
+        assert_eq!(trace.resources.current_scrap, 17);
+        assert_eq!(trace.resources.forecast_horizon_ticks, 1);
+        assert_eq!(trace.resources.forecast_scrap, 0);
     }
 }

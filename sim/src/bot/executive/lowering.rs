@@ -66,7 +66,7 @@ impl Executive {
         obs: &Observation,
         intents: &[Intent],
     ) -> Vec<PlayerCommand> {
-        self.apply_inner(me, obs, intents, &[], false)
+        self.apply_inner(me, obs, intents, &[], None, false)
     }
 
     /// Applies intents while keeping an exact operation's members out of
@@ -80,7 +80,18 @@ impl Executive {
         intents: &[Intent],
         reservations: &[UnitId],
     ) -> Vec<PlayerCommand> {
-        self.apply_inner(me, obs, intents, reservations, true)
+        self.apply_inner(me, obs, intents, reservations, None, true)
+    }
+
+    pub(crate) fn apply_with_builder_lease(
+        &mut self,
+        me: PlayerId,
+        obs: &Observation,
+        intents: &[Intent],
+        reservations: &[UnitId],
+        lease: Option<BuilderLease>,
+    ) -> Vec<PlayerCommand> {
+        self.apply_inner(me, obs, intents, reservations, lease, true)
     }
 
     fn apply_inner(
@@ -89,6 +100,7 @@ impl Executive {
         obs: &Observation,
         intents: &[Intent],
         reservations: &[UnitId],
+        lease: Option<BuilderLease>,
         defer_unseen_builds: bool,
     ) -> Vec<PlayerCommand> {
         let mut out = Vec::new();
@@ -96,6 +108,13 @@ impl Executive {
             .then(|| self.player_frame.as_ref().map(|tactics| tactics.frame))
             .flatten();
         let reserved = canonical_owned_units(me, obs, reservations, &[]);
+        let mut implicit_reserved = reserved.clone();
+        if let Some(lease) = lease
+            && !implicit_reserved.contains(&lease.builder())
+        {
+            implicit_reserved.push(lease.builder());
+            implicit_reserved.sort_unstable();
+        }
         // Units spoken for by an earlier intent in this same think — keeps
         // a Scout's unit from being drafted by a FormArmy a line later.
         let mut claimed: Vec<UnitId> = Vec::new();
@@ -123,7 +142,7 @@ impl Executive {
                         *anchor,
                         Some(kind.base_stats().size),
                         &claimed,
-                        &reserved,
+                        &implicit_reserved,
                         defer_unseen_builds,
                     ) {
                         claimed.push(builder);
@@ -154,8 +173,16 @@ impl Executive {
                             && unit.kind.stats().harvest.is_some()
                             && unit.site.is_none()
                             && unit.founding.is_none()
+                            && !obs.has_queued_program(unit.id)
                     });
-                    if !valid || claimed.contains(builder) || reserved.contains(builder) {
+                    let lease_mismatch = lease.is_some_and(|lease| {
+                        lease.builder() == *builder && !lease.permits(*builder, *kind, *anchor)
+                    });
+                    if !valid
+                        || claimed.contains(builder)
+                        || reserved.contains(builder)
+                        || lease_mismatch
+                    {
                         continue;
                     }
                     claimed.push(*builder);
@@ -204,7 +231,7 @@ impl Executive {
                         *staging,
                         want as u32,
                         &claimed,
-                        &reserved,
+                        &implicit_reserved,
                         defer_unseen_builds,
                     );
                     if !draft.is_empty() {
@@ -345,6 +372,7 @@ impl Executive {
                         .copied()
                         .filter(|id| {
                             *id != *target
+                                && lease.is_none_or(|lease| lease.builder() != *id)
                                 && obs
                                     .my_units
                                     .iter()
@@ -383,7 +411,10 @@ impl Executive {
                     }
                 }
                 Intent::Scout { unit, to } => {
-                    if claimed.contains(unit) || reserved.contains(unit) {
+                    if claimed.contains(unit)
+                        || reserved.contains(unit)
+                        || lease.is_some_and(|lease| lease.builder() == *unit)
+                    {
                         continue;
                     }
                     // A dispatched scout leaves its army, mirroring
@@ -415,7 +446,7 @@ impl Executive {
                             anchor,
                             None,
                             &claimed,
-                            &reserved,
+                            &implicit_reserved,
                             defer_unseen_builds,
                         )
                     {
@@ -527,8 +558,14 @@ impl Executive {
                         .find(|b| b.id == *building)
                         .map(|b| b.anchor);
                     if let Some(anchor) = anchor
-                        && let Some(stripper) =
-                            self.free_harvester(obs, anchor, None, &claimed, &reserved, false)
+                        && let Some(stripper) = self.free_harvester(
+                            obs,
+                            anchor,
+                            None,
+                            &claimed,
+                            &implicit_reserved,
+                            false,
+                        )
                     {
                         claimed.push(stripper);
                         out.push(PlayerCommand {
@@ -553,7 +590,7 @@ impl Executive {
                                 && u.idle
                                 && !enlisted.contains(&u.id)
                                 && !claimed.contains(&u.id)
-                                && !reserved.contains(&u.id)
+                                && !implicit_reserved.contains(&u.id)
                         })
                         .map(|u| u.id)
                         .collect();
@@ -599,6 +636,7 @@ impl Executive {
                     // on site: re-tasking it silently drops the
                     // promised claim.
                     && u.founding.is_none()
+                    && !obs.has_queued_program(u.id)
                     && !enlisted.contains(&u.id)
                     && !claimed.contains(&u.id)
                     && !reserved.contains(&u.id)
@@ -833,6 +871,7 @@ mod tests {
             my_units: units,
             my_buildings: Vec::new(),
             my_queues: Vec::new(),
+            my_queued_units: Vec::new(),
             ally_units: Vec::new(),
             ally_buildings: Vec::new(),
             enemy_units: Vec::new(),
@@ -924,6 +963,7 @@ mod tests {
             my_units: units,
             my_buildings: Vec::new(),
             my_queues: Vec::new(),
+            my_queued_units: Vec::new(),
             ally_units: Vec::new(),
             ally_buildings: Vec::new(),
             enemy_units: Vec::new(),
@@ -1228,6 +1268,165 @@ mod tests {
                     },
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn construction_lowering_never_replaces_owned_builder_programs() {
+        let (mut obs, _) = target_holding_position();
+        let anchor = TilePos::new(18, 6);
+        let queued = unit(
+            1,
+            0,
+            UnitKind::Harvester,
+            UnitKind::Harvester.stats().max_hp,
+        );
+        obs.my_units = vec![queued];
+        obs.my_queued_units = vec![UnitId(1)];
+
+        let commands = Executive::new().apply_with_reservations(
+            PlayerId(0),
+            &obs,
+            &[
+                Intent::BuildWith {
+                    builder: UnitId(1),
+                    kind: BuildingKind::Turret,
+                    anchor,
+                },
+                Intent::Build {
+                    kind: BuildingKind::Turret,
+                    anchor,
+                },
+            ],
+            &[],
+        );
+
+        assert!(
+            commands.is_empty(),
+            "a non-queued build command must not erase the worker's queued program"
+        );
+    }
+
+    #[test]
+    fn foundry_builder_lease_allows_harvest_safety_stop_and_exact_build() {
+        let (mut obs, _) = target_holding_position();
+        let builder = UnitId(1);
+        obs.my_units = vec![unit(
+            builder.0,
+            0,
+            UnitKind::Harvester,
+            UnitKind::Harvester.stats().max_hp,
+        )];
+        let anchor = TilePos::new(12, 8);
+        let lease = BuilderLease::new(builder, BuildingKind::Foundry, anchor);
+
+        let harvest = Executive::new().apply_with_builder_lease(
+            PlayerId(0),
+            &obs,
+            &[Intent::AssignHarvest {
+                unit: builder,
+                node: TilePos::new(6, 6),
+            }],
+            &[],
+            Some(lease),
+        );
+        assert!(matches!(
+            harvest.as_slice(),
+            [PlayerCommand {
+                command: Command::Harvest { units, .. },
+                ..
+            }] if units == &[builder]
+        ));
+
+        let stop = Executive::new().apply_with_builder_lease(
+            PlayerId(0),
+            &obs,
+            &[Intent::StopUnits {
+                units: vec![builder],
+            }],
+            &[],
+            Some(lease),
+        );
+        assert!(matches!(
+            stop.as_slice(),
+            [PlayerCommand {
+                command: Command::Stop { units },
+                ..
+            }] if units == &[builder]
+        ));
+
+        let build = Executive::new().apply_with_builder_lease(
+            PlayerId(0),
+            &obs,
+            &[Intent::BuildWith {
+                builder,
+                kind: BuildingKind::Foundry,
+                anchor,
+            }],
+            &[],
+            Some(lease),
+        );
+        assert!(matches!(
+            build.as_slice(),
+            [PlayerCommand {
+                command: Command::Build { units, kind: BuildingKind::Foundry, anchor: command_anchor, .. },
+                ..
+            }] if units == &[builder] && *command_anchor == anchor
+        ));
+    }
+
+    #[test]
+    fn foundry_builder_lease_rejects_wrong_build_and_implicit_worker_theft() {
+        let (mut obs, _) = target_holding_position();
+        let builder = UnitId(1);
+        obs.my_units = vec![unit(
+            builder.0,
+            0,
+            UnitKind::Harvester,
+            UnitKind::Harvester.stats().max_hp,
+        )];
+        obs.my_buildings = vec![crate::bot::observation::BuildingObs {
+            id: BuildingId(9),
+            player: PlayerId(0),
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(8, 8),
+            hp: 1,
+            built: true,
+            seen: true,
+            tier: 0,
+        }];
+        obs.my_queues = vec![Vec::new()];
+        let lease = BuilderLease::new(builder, BuildingKind::Foundry, TilePos::new(12, 8));
+        let commands = Executive::new().apply_with_builder_lease(
+            PlayerId(0),
+            &obs,
+            &[
+                Intent::BuildWith {
+                    builder,
+                    kind: BuildingKind::Foundry,
+                    anchor: TilePos::new(13, 8),
+                },
+                Intent::Build {
+                    kind: BuildingKind::Turret,
+                    anchor: TilePos::new(15, 8),
+                },
+                Intent::Scout {
+                    unit: builder,
+                    to: TilePos::new(20, 8),
+                },
+                Intent::Repair {
+                    building: BuildingId(9),
+                },
+                Intent::Salvage {
+                    building: BuildingId(9),
+                },
+            ],
+            &[],
+            Some(lease),
+        );
+        assert!(
+            commands.is_empty(),
+            "the lease must reject every unrelated worker selection: {commands:?}"
         );
     }
 

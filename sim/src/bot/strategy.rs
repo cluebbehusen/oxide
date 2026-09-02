@@ -55,6 +55,7 @@ enum AirborneCorridorStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AirPlan {
+    admitted_at: Tick,
     suppression: AirSuppression,
     desired_artillery: usize,
     desired_bombers: usize,
@@ -88,6 +89,7 @@ impl AirPlan {
         };
         let desired_bombers = if siege_leading { 1 } else { STANDARD_BOMBERS };
         let plan = Self {
+            admitted_at: obs.tick,
             suppression: AirSuppression::GroundArtillery,
             desired_artillery,
             desired_bombers,
@@ -159,6 +161,7 @@ impl AirPlan {
             .saturating_add(queued_delay)
             .saturating_add(requested_training.div_ceil(airworks_u64));
         Self {
+            admitted_at: obs.tick,
             suppression: AirSuppression::Airborne,
             desired_artillery: 0,
             desired_bombers,
@@ -372,6 +375,13 @@ impl StrategicPlanner {
         self.air.as_ref().map(|active| &active.op)
     }
 
+    /// Immutable admission tick for resource-priority comparisons. The public
+    /// operation's timeout clock may restart when reconnaissance becomes an
+    /// assault, but its place in the commitment order does not.
+    pub(super) fn air_admitted_at(&self) -> Option<Tick> {
+        self.air.as_ref().map(|active| active.plan.admitted_at)
+    }
+
     #[cfg(test)]
     fn air_plan(&self) -> Option<&AirPlan> {
         self.air.as_ref().map(|active| &active.plan)
@@ -570,6 +580,7 @@ impl StrategicPlanner {
             && strategic_admission_tick(obs.tick)
             && let Some(current_target) = current_target_contact(&op, intel)
         {
+            let admitted_at = plan.admitted_at;
             op.assault_admitted = true;
             op.started_at = obs.tick;
             op.phase_started_at = obs.tick;
@@ -578,6 +589,7 @@ impl StrategicPlanner {
             } else {
                 AirPlan::combined(profile, obs)
             };
+            plan.admitted_at = admitted_at;
         }
         if !began_in_recovery {
             abort_if_needed(&mut op, &plan, profile, obs, intel);
@@ -4753,6 +4765,10 @@ mod tests {
             let recon = planner.think(&identity, tuning, &ghost, &intel, HOME, &[]);
             let ghost_operation = planner.air_operation().unwrap();
             assert!(!ghost_operation.assault_admitted, "{difficulty:?}");
+            let admitted_at = planner
+                .air_admitted_at()
+                .expect("remembered reconnaissance owns an admission tick");
+            assert_eq!(admitted_at, ghost.tick, "{difficulty:?}");
             assert!(ghost_operation.artillery.is_empty(), "{difficulty:?}");
             assert!(ghost_operation.bombers.is_empty(), "{difficulty:?}");
             assert_eq!(recon.reservations, [UnitId(1)], "{difficulty:?}");
@@ -4764,6 +4780,11 @@ mod tests {
             let admitted = planner.air_operation().unwrap();
             assert!(admitted.assault_admitted, "{difficulty:?}");
             assert_eq!(admitted.started_at, 5_016, "{difficulty:?}");
+            assert_eq!(
+                planner.air_admitted_at(),
+                Some(admitted_at),
+                "reacquiring the target must not reorder the operation behind later commitments"
+            );
             let plan = planner.air_plan().unwrap();
             snapshots.push((
                 admitted.artillery.clone(),
