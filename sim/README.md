@@ -57,7 +57,14 @@ an ordinary command source rather than a separate ruleset.
   sensor-site scorer that preserves useful in-map and nonredundant radar
   coverage, faces equally useful sites toward fog-honest hostile evidence,
   preserves active resource access, and binds a builder whose route is proven
-  against public terrain.
+  against public terrain. Player-facing Foundry expansion has no count ceiling:
+  it ranks every exact legal site by bounded post-build Extractor, drip, and
+  route-safe visible hauling value, then prices candidate-specific security
+  outside uncommitted wealth before committing one unpaid claim. A partial or
+  complete Foundry fund closes later voluntary and paid-repair spending until
+  the exact build command is emitted. Greed changes the forecast and justified
+  preparation, not which actions the bot may take. The profile-free Overseer
+  retains its frozen legacy expansion policy.
 - `vision` provides visibility and explored-world state.
 
 Repair and salvage share one damage-first building-work resolver and remain

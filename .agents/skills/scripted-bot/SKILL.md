@@ -91,14 +91,42 @@ Extractor without completed or projected support is a priority objective, but
 only across fog-honestly known reachable ground. Reserve capital only when a
 legal support footprint has a route-capable builder, and try other known
 Extractors when the nearest one cannot be supported. Count paid and deferred
-Foundry claims before promising another. Expansion saving and construction must
-use the same exact safe worker-and-site claim. Treat a generic frontier nearer
-to a known enemy Foundry than to any projected own Foundry as enemy-controlled,
-not as a reason to hoard. Count completed, upgrading, pending, and uniquely
-deferred Reclaimer income once when projecting supply. Reclaimer construction
-should answer completed production demand and known resource exhaustion; do not
-impose a fixed count ceiling that a human player does not share. Preserve
-Overseer's documented legacy policy when evolving these rules.
+Foundry claims before promising another.
+
+Do not impose a player-facing Foundry count ceiling. Rank every exact legal site
+by the economic work it would add: the supported-minus-remote gain for owned
+completed Extractors, Foundry drip only when the site serves an external
+objective, and reduced hauling distance for currently visible positive scrap.
+Calculate hauling savings from public-ground routes that avoid observed dynamic
+danger, not geometric distance. Public unbuilt Extractor frames are scouting
+priors, not live income. Start recurring payback only after construction
+completes, and let greed plus genuinely uncommitted scrap extend a bounded
+forecast rather than unlock the capability.
+
+Expansion saving and construction must consume the same exact safe
+worker-and-site assessment. Preserve the difficulty's unreserved ordinary core,
+assign current and confidence-weighted remembered ground threats to the nearest
+reachable Foundry, and charge a forward site one additional Sentinel-equivalent
+when it advances toward an uncleared reachable public hostile start. Completed
+ground defenses count only where their real weapon and sight geometry covers the
+asset. A valuable unsafe site may prepare the exact missing ordinary core only
+when its projected surplus and greed justify that security; wealth never waives
+the requirement. Price each candidate after removing its own missing-security
+cost from genuinely uncommitted wealth; buying that protection must reduce the
+remaining cost and cash together so the opportunity does not invalidate itself.
+Reserve Foundry capital only after projected security is ready, and keep at most
+one unpaid Foundry claim. Once a safe opportunity owns a partial or complete
+Foundry fund, close later voluntary production, construction, and paid-repair
+spending until its exact `BuildWith` command is emitted. Automatic Repair Bay
+pulses remain ordinary simulation spending.
+
+Treat a generic frontier nearer to a known enemy Foundry than to any projected
+own Foundry as enemy-controlled, not as a reason to hoard. Count completed,
+upgrading, pending, and uniquely deferred Reclaimer income once when projecting
+supply. Reclaimer construction should answer completed production demand and
+known resource exhaustion; do not impose a fixed count ceiling that a human
+player does not share. Preserve Overseer's documented legacy Foundry cap and
+policy when evolving these rules.
 
 For adaptive profiles, fill an ordinary unreserved ground core before optional
 specialties. HP-weight live Sentinel, Warden, and Breaker hulls; count queued
@@ -241,9 +269,10 @@ strength, and they never roll private competence such as strength-estimation
 accuracy. Expect each axis to leave an observable signature: air in wing size
 and timing; siege in artillery volume and preference; support in support units,
 flak, and allied relief; fortification in turrets, mines, and defensive reserve;
-greed in worker and renewable expansion targets; and guile in raid size, timing,
-withdrawal, and some mine or airborne-screen emphasis. Store the seed in the
-scenario and replay rather than serializing resolved traits or planner state.
+greed in worker targets and renewable-expansion payback appetite; and guile in
+raid size, timing, withdrawal, and some mine or airborne-screen emphasis. Store
+the seed in the scenario and replay rather than serializing resolved traits or
+planner state.
 
 Keep early defensive choices bounded across identities. After the protected core
 is projected, one perimeter turret may precede contact once the enemy has been

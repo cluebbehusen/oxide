@@ -11,7 +11,6 @@ use std::cmp::Reverse;
 const PLANNING_DEPTH: usize = 2;
 const ADAPTIVE_AIRWORKS_DEPTH: usize = 1;
 const ALLY_DISCOUNT: usize = 2;
-const SENTINEL_EQUIVALENTS_PER_EXTRA_FOUNDRY: u64 = 6;
 
 #[derive(Debug, Clone, Copy)]
 struct Producer {
@@ -256,7 +255,26 @@ pub(super) fn fill_combat_core(
     intents: &mut Vec<Intent>,
 ) -> CombatCoreStatus {
     let sentinel_strength = full_ground_strength(UnitKind::Sentinel);
-    let status = combat_core_status(obs, reserved, intents, sentinel_equivalent_floor);
+    fill_combat_core_to_strength(
+        obs,
+        reserved,
+        sentinel_strength.saturating_mul(sentinel_equivalent_floor),
+        capital_reserve,
+        budget,
+        intents,
+    )
+}
+
+pub(super) fn fill_combat_core_to_strength(
+    obs: &Observation,
+    reserved: &[UnitId],
+    target_strength: u64,
+    capital_reserve: u32,
+    budget: &mut u32,
+    intents: &mut Vec<Intent>,
+) -> CombatCoreStatus {
+    let sentinel_strength = full_ground_strength(UnitKind::Sentinel);
+    let status = combat_core_status_for_strength(obs, reserved, intents, target_strength);
     if status.ready {
         return status;
     }
@@ -303,7 +321,7 @@ pub(super) fn fill_combat_core(
         }
     }
 
-    combat_core_status(obs, reserved, intents, sentinel_equivalent_floor)
+    combat_core_status_for_strength(obs, reserved, intents, target_strength)
 }
 
 /// Measure an explicit Sentinel-equivalent floor without inferring ownership
@@ -318,6 +336,16 @@ pub(in crate::bot) fn combat_core_status(
 ) -> CombatCoreStatus {
     let sentinel_strength = full_ground_strength(UnitKind::Sentinel);
     let target_strength = sentinel_strength.saturating_mul(sentinel_equivalent_floor);
+    combat_core_status_for_strength(obs, reserved, intents, target_strength)
+}
+
+pub(super) fn combat_core_status_for_strength(
+    obs: &Observation,
+    reserved: &[UnitId],
+    intents: &[Intent],
+    target_strength: u64,
+) -> CombatCoreStatus {
+    let sentinel_strength = full_ground_strength(UnitKind::Sentinel);
     let live = obs
         .my_units
         .iter()
@@ -360,23 +388,6 @@ fn missing_core_scrap(missing_strength: u64, sentinel_strength: u64, sentinel_co
     u32::try_from(missing_sentinels)
         .unwrap_or(u32::MAX)
         .saturating_mul(sentinel_cost)
-}
-
-/// Whether the ordinary fighting line can support one more Foundry.
-///
-/// The first expansion, from one total Foundry to two, is the common economic
-/// baseline. Every later Foundry requires another six Sentinel-equivalents of
-/// unreserved live or queued ordinary-core ground strength.
-pub(super) fn extra_foundry_core_ready(
-    obs: &Observation,
-    reserved: &[UnitId],
-    projected_foundries: usize,
-) -> bool {
-    let extra_expansions = projected_foundries.saturating_sub(1);
-    let required_equivalents = u64::try_from(extra_expansions)
-        .unwrap_or(u64::MAX)
-        .saturating_mul(SENTINEL_EQUIVALENTS_PER_EXTRA_FOUNDRY);
-    combat_core_status(obs, reserved, &[], required_equivalents).ready
 }
 
 fn ordinary_core_unit(kind: UnitKind) -> bool {
@@ -1585,46 +1596,6 @@ mod tests {
     }
 
     #[test]
-    fn extra_foundry_gate_counts_unreserved_ordinary_strength_and_scales() {
-        let mut obs = observation();
-        obs.my_units
-            .extend((10..15).map(|id| unit(id, 0, UnitKind::Sentinel)));
-
-        assert!(
-            extra_foundry_core_ready(&obs, &[], 1),
-            "the common second Foundry must not require a prior army"
-        );
-        assert!(
-            !extra_foundry_core_ready(&obs, &[], 2),
-            "five Sentinel-equivalents are below the third-Foundry boundary"
-        );
-
-        obs.my_queues.push(vec![UnitKind::Lancer]);
-        assert!(
-            !extra_foundry_core_ready(&obs, &[], 2),
-            "a specialist cannot substitute for the ordinary screen"
-        );
-        obs.my_queues[0] = vec![UnitKind::Sentinel];
-        assert!(extra_foundry_core_ready(&obs, &[], 2));
-        assert!(
-            !extra_foundry_core_ready(&obs, &[UnitId(10)], 2),
-            "strategically reserved fighters are not the available home screen"
-        );
-
-        obs.my_units
-            .extend((15..20).map(|id| unit(id, 0, UnitKind::Sentinel)));
-        assert!(
-            !extra_foundry_core_ready(&obs, &[], 3),
-            "eleven Sentinel-equivalents are below the fourth-Foundry boundary"
-        );
-        obs.my_units.push(unit(20, 0, UnitKind::Sentinel));
-        assert!(
-            extra_foundry_core_ready(&obs, &[], 3),
-            "the fourth Foundry unlocks at exactly twelve Sentinel-equivalents"
-        );
-    }
-
-    #[test]
     fn finite_bank_higher_rungs_extend_the_same_core_prefix() {
         let mut obs = observation();
         obs.my_units
@@ -1757,7 +1728,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_production_does_not_double_reserve_a_walking_founder() {
+    fn walking_founder_spends_only_scrap_outside_its_single_escrow() {
         let mut obs = observation();
         obs.my_units.extend(
             (0..4)
@@ -1779,13 +1750,11 @@ mod tests {
         obs.known_scrap = vec![(TilePos::new(23, 13), 500)];
         let mut dials = adaptive_dials(6);
         dials.expansion = true;
-        dials.foundry_cap = 4;
         let foundry_cost = BuildingKind::Foundry
             .base_stats()
             .construction
             .expect("Foundries have a build price")
             .cost;
-        let capital = foundry_cost + TECH_RESERVE;
         obs.scrap = foundry_cost + UnitKind::Sentinel.stats().cost;
 
         let run = |world: &Observation| {
@@ -1816,20 +1785,6 @@ mod tests {
         assert_eq!(
             walking_budget, 0,
             "only scrap outside the walking Foundry's escrow may be spent"
-        );
-
-        obs.my_units[0].founding = None;
-        let mut third = building(6, BuildingKind::Foundry);
-        third.anchor = promised;
-        obs.my_buildings.push(third);
-        obs.my_queues.push(Vec::new());
-        obs.my_units
-            .extend((13..22).map(|id| unit(id, 0, UnitKind::Sentinel)));
-        obs.scrap = capital;
-        assert_eq!(
-            run(&obs),
-            (Vec::new(), capital),
-            "a twelve-Sentinel-equivalent screen unlocks the fourth Foundry's fresh bank"
         );
     }
 

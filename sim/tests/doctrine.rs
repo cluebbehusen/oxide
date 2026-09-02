@@ -3002,10 +3002,13 @@ fn a_walking_foundry_founder_blocks_another_capital_commitment() {
     obs.my_buildings
         .push(building_obs(1, 0, BuildingKind::Fabricator, 6, 2));
     obs.my_queues.push(Vec::new());
+    obs.my_buildings
+        .push(building_obs(2, 0, BuildingKind::Extractor, 20, 9));
+    obs.my_queues.push(Vec::new());
     obs.my_units = (0..4)
         .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
         .collect();
-    obs.known_scrap = vec![(TilePos::new(20, 9), 500), (TilePos::new(3, 10), 500)];
+    obs.known_scrap.clear();
     for y in 0..obs.map_height {
         for x in obs.map_width / 2..obs.map_width {
             let index = usize::try_from(y * obs.map_width + x).unwrap();
@@ -3016,7 +3019,6 @@ fn a_walking_foundry_founder_blocks_another_capital_commitment() {
     let mut dials = Dials::full();
     dials.deep_tech = false;
     dials.expansion = true;
-    dials.foundry_cap = 4;
     dials.scouting = false;
     let mut policy = UtilityPolicy::new();
 
@@ -3034,16 +3036,19 @@ fn a_walking_foundry_founder_blocks_another_capital_commitment() {
         .expect("a rich seat with an unserved frontier commits one expansion");
     let commands =
         oxide_sim::bot::Executive::new().apply_with_reservations(PlayerId(0), &obs, &first, &[]);
-    assert!(commands.iter().any(|command| matches!(
-        &command.command,
-        Command::Build {
-            units,
-            kind: BuildingKind::Foundry,
-            anchor,
-            defer: true,
-            ..
-        } if units == &[founder] && *anchor == promised
-    )));
+    assert!(
+        commands.iter().any(|command| matches!(
+            &command.command,
+            Command::Build {
+                units,
+                kind: BuildingKind::Foundry,
+                anchor,
+                defer: true,
+                ..
+            } if units == &[founder] && *anchor == promised
+        )),
+        "the unpaid claim must remain a deferred Foundry command: {commands:?}"
+    );
 
     obs.tick = oxide_sim::bot::difficulty::STRATEGIC_ADMISSION_CADENCE;
     obs.visible.fill(true);
@@ -3307,7 +3312,6 @@ fn an_underfunded_foundry_promise_escrows_every_player_facing_spend() {
     dials.adaptive_composition = true;
     dials.discretionary_slots = 6;
     dials.expansion = true;
-    dials.foundry_cap = 4;
     dials.scouting = false;
     let mut policy = UtilityPolicy::new();
     let _ = player_think(&mut policy, &dials, &obs);

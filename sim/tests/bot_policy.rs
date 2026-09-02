@@ -1264,8 +1264,7 @@ fn remote_own_extractor_focuses_a_supporting_foundry_before_airworks() {
         observed_building(2, BuildingKind::Extractor, extractor, true),
     );
     obs.known_frames.push(extractor);
-    let mut dials = standard_dials_without_opening_core_floor();
-    dials.foundry_cap = 4;
+    let dials = standard_dials_without_opening_core_floor();
 
     let pretech = player_facing_intents(&dials, &obs);
     assert!(
@@ -1327,10 +1326,9 @@ fn remote_own_extractor_focuses_a_supporting_foundry_before_airworks() {
         ) <= EXTRACTOR_SUPPORT_RADIUS,
         "the expansion at {anchor:?} must actually support the Extractor at {extractor:?}"
     );
-    assert_eq!(
-        anchor.chebyshev(extractor),
-        2,
-        "adjacent 2x2 footprints are the nearest legal support geometry"
+    assert!(
+        anchor.chebyshev(extractor) < home.chebyshev(extractor),
+        "the support Foundry must materially shorten the remote Extractor's logistics"
     );
 }
 
@@ -1348,8 +1346,7 @@ fn extractor_support_search_reaches_the_full_legal_edge() {
     }
     obs.known_frames.push(extractor);
     block_support_anchors(&mut obs, extractor, 8);
-    let mut dials = standard_dials_without_opening_core_floor();
-    dials.foundry_cap = 4;
+    let dials = standard_dials_without_opening_core_floor();
 
     let intents = player_facing_intents(&dials, &obs);
     let (builder, anchor) = intents
@@ -1400,8 +1397,7 @@ fn impossible_extractor_support_does_not_pin_the_crucible_fund() {
     }
     obs.known_frames.push(extractor);
     block_support_anchors(&mut obs, extractor, EXTRACTOR_SUPPORT_RADIUS + 1);
-    let mut dials = standard_dials();
-    dials.foundry_cap = 4;
+    let dials = standard_dials();
 
     let intents = player_facing_intents(&dials, &obs);
     assert!(
@@ -1448,8 +1444,7 @@ fn extractor_support_requires_a_builder_on_the_reachable_side() {
     }
     obs.known_frames.push(extractor);
     obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(18, y)).collect();
-    let mut dials = standard_dials();
-    dials.foundry_cap = 4;
+    let dials = standard_dials();
 
     let intents = player_facing_intents(&dials, &obs);
     assert!(
@@ -1497,8 +1492,7 @@ fn projected_support_and_unknown_routes_do_not_create_duplicate_foundry_claims()
         observed_building(3, BuildingKind::Foundry, planned_support, false),
     );
     obs.known_frames.push(extractor);
-    let mut dials = standard_dials();
-    dials.foundry_cap = 4;
+    let dials = standard_dials();
 
     let already_planned = player_facing_intents(&dials, &obs);
     let foundry_claims: Vec<TilePos> = already_planned

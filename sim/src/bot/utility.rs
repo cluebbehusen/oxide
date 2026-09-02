@@ -35,6 +35,7 @@ mod construction;
 mod danger;
 mod defense;
 mod economy;
+mod expansion;
 mod production;
 mod sensor;
 mod support;
@@ -81,9 +82,10 @@ const SALVAGE_LOW: u32 = 250;
 const PASSIVE_INCOME_PER_PRODUCER: u32 = 120;
 /// Known anti-air within this range of a raid target scrubs the raid.
 const RAID_AA_RADIUS: i32 = 6;
-/// A salvage field farther than this (Chebyshev) from every own
-/// Foundry counts as an unserved frontier worth an expansion.
+/// Frozen profile-free Overseer distance gate for salvage expansion.
 const EXPANSION_RADIUS: i32 = 12;
+/// Frozen profile-free Overseer expansion boundary.
+const LEGACY_FOUNDRY_CAP: usize = 2;
 /// Idle ground fighters gathered before the ferry loads a lift.
 const FERRY_SQUAD: usize = 3;
 
@@ -410,6 +412,7 @@ struct AdvancedConstructionContext<'a> {
     combat_core_exclusions: &'a [UnitId],
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
+    public_map: Option<&'a PublicMapBriefing>,
     voluntary_scrap_guard: Reserve,
 }
 
@@ -420,6 +423,7 @@ struct ExtractorClaimContext<'a> {
     building_contacts: Option<&'a [BuildingContact]>,
 }
 
+#[derive(Clone, Copy)]
 struct FoundryClaimContext<'a> {
     home: TilePos,
     projected_foundries: &'a [TilePos],
@@ -428,6 +432,16 @@ struct FoundryClaimContext<'a> {
     ordinary_frontiers: bool,
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
+}
+
+#[derive(Clone, Copy)]
+struct FoundryAssessmentContext<'a> {
+    claim: FoundryClaimContext<'a>,
+    public_map: &'a PublicMapBriefing,
+    combat_core_exclusions: &'a [UnitId],
+    spendable_scrap: u32,
+    voluntary_scrap_guard: Reserve,
+    required_anchor: Option<TilePos>,
 }
 
 #[derive(Clone, Copy)]
@@ -492,8 +506,10 @@ pub struct Dials {
     /// Maximum lane-shaping Barricades. Zero preserves the frozen QA policy's
     /// historical repertoire.
     pub barricade_cap: usize,
-    /// Maximum Foundries, including the starting base.
-    pub foundry_cap: usize,
+    /// Appetite for expansion payback and its supporting security investment.
+    /// This changes when a legal expansion becomes worthwhile, never whether
+    /// the controller is allowed to build one.
+    pub expansion_greed: u8,
     /// Use the player-facing multi-factory composition scheduler.
     pub adaptive_composition: bool,
     /// Most discretionary production candidates serviced per think.
@@ -559,6 +575,30 @@ fn immediate_harvester_target(dials: &Dials) -> u32 {
     }
 }
 
+fn expansion_economy(
+    dials: &Dials,
+    obs: &Observation,
+    spendable_scrap: u32,
+    voluntary_guard: Reserve,
+) -> expansion::ExpansionEconomy {
+    let construction = BuildingKind::Foundry
+        .base_stats()
+        .construction
+        .expect("Foundries are constructible");
+    let protected = construction
+        .cost
+        .saturating_add(voluntary_guard.amount(TECH_RESERVE));
+    expansion::ExpansionEconomy {
+        greed: dials.expansion_greed,
+        uncommitted_surplus: spendable_scrap.saturating_sub(protected),
+        foundry_cost: construction.cost,
+        ticks_per_minute: u64::from(crate::TICKS_PER_SECOND).saturating_mul(60),
+        now: obs.tick,
+        build_ticks: u64::from(construction.build_ticks),
+        foundry_drip_start: crate::stats::FOUNDRY_DRIP_START_TICK,
+    }
+}
+
 impl Dials {
     /// The player-facing rules-based opponent. Keep this as its own
     /// literal so later balance work can tune the opponent without
@@ -579,7 +619,7 @@ impl Dials {
             reclaimer_cap: RECLAIMER_CAP,
             mine_cap: MINE_CAP,
             barricade_cap: 0,
-            foundry_cap: 3,
+            expansion_greed: 50,
             adaptive_composition: false,
             discretionary_slots: 1,
             own_strength_scale: 10_000,
@@ -624,7 +664,7 @@ impl Dials {
             reclaimer_cap: RECLAIMER_CAP,
             mine_cap: MINE_CAP,
             barricade_cap: 0,
-            foundry_cap: 3,
+            expansion_greed: 50,
             adaptive_composition: false,
             discretionary_slots: 1,
             own_strength_scale: 10_000,
@@ -672,7 +712,7 @@ impl Dials {
             reclaimer_cap: RECLAIMER_CAP,
             mine_cap: MINE_CAP,
             barricade_cap: 0,
-            foundry_cap: 3,
+            expansion_greed: 50,
             adaptive_composition: false,
             discretionary_slots: 1,
             own_strength_scale: 10_000,
@@ -743,7 +783,7 @@ impl Dials {
             barricade_cap: usize::from(traits.fortification >= 55)
                 + usize::from(traits.fortification >= 75)
                 + usize::from(traits.fortification >= 90),
-            foundry_cap: (1 + usize::from(traits.greed) / 25).clamp(2, 4),
+            expansion_greed: traits.greed,
             adaptive_composition: true,
             discretionary_slots: tuning.production_slots,
             own_strength_scale: tuning
@@ -772,6 +812,9 @@ pub struct UtilityPolicy {
     /// Lazily materialized, immutable worker-danger surface for the latest
     /// effective fog-honest threat layout.
     harvest_danger_cache: std::cell::RefCell<danger::HarvestDangerCache>,
+    /// Bounded public-terrain route fields shared by expansion economics and
+    /// security across repeated assessments and stationary route sources.
+    expansion_routing_cache: std::cell::RefCell<expansion::ExpansionRoutingCache>,
     /// Largest hostile ground force observed within the difficulty's
     /// strategic memory window. Its exact old position may be stale; voluntary
     /// attack timing consumes only the common recent portion of this fact.
@@ -2060,6 +2103,7 @@ impl UtilityPolicy {
         }
         let obs = &spendable;
         let mut budget = obs.scrap;
+        let mut expansion_capital_promised = false;
 
         let harvesters = obs
             .my_units
@@ -2173,7 +2217,7 @@ impl UtilityPolicy {
 
         if manages_opening && !opening_core_deficient && !opening_bootstrap_active {
             let production_guard = shallow_capital_guard.max(opening_bootstrap_reserve);
-            self.production_with_air_demand(
+            expansion_capital_promised = self.production_with_air_demand(
                 dials,
                 obs,
                 ProductionContext::new(
@@ -2189,7 +2233,7 @@ impl UtilityPolicy {
                 &mut intents,
             );
 
-            if !Self::construction_channel_spent(&intents) {
+            if !expansion_capital_promised && !Self::construction_channel_spent(&intents) {
                 self.construction(
                     dials,
                     obs,
@@ -2240,7 +2284,7 @@ impl UtilityPolicy {
                 budget = construction_budget;
             }
             if outstanding_air_production_ticks.is_some() {
-                self.production_with_air_demand(
+                expansion_capital_promised = self.production_with_air_demand(
                     dials,
                     obs,
                     ProductionContext::new(
@@ -2255,7 +2299,7 @@ impl UtilityPolicy {
                     &mut intents,
                 );
             } else {
-                self.production(
+                expansion_capital_promised = self.production(
                     dials,
                     obs,
                     home_tile,
@@ -2266,12 +2310,13 @@ impl UtilityPolicy {
             }
             if construction_precedes_discretionary {
                 intents.extend(planned_construction);
-            } else if !Self::construction_channel_spent(&intents) {
+            } else if !expansion_capital_promised && !Self::construction_channel_spent(&intents) {
                 self.construction(dials, obs, construction_context, &mut budget, &mut intents);
             }
         }
-        let construction_promised =
-            construction_commitment > 0 || Self::unpaid_deferred_construction(obs, &intents);
+        let construction_promised = expansion_capital_promised
+            || construction_commitment > 0
+            || Self::unpaid_deferred_construction(obs, &intents);
         if player_facing
             && (construction_promised
                 || opening_core_deficient
@@ -2297,6 +2342,7 @@ impl UtilityPolicy {
                         && (opening_core_deficient
                             || opening_bootstrap_active
                             || shallow_capital_guard > 0
+                            || expansion_capital_promised
                             || unit.kind.stats().harvest.is_some()
                             || obs.scrap == 0)
                 })
@@ -6306,11 +6352,11 @@ mod tests {
         let high = dials_for_traits(high_traits);
         assert_eq!((low.harvester_target, high.harvester_target), (4, 6));
         assert_eq!((low.reclaimer_cap, high.reclaimer_cap), (1, 4));
-        assert_eq!((low.foundry_cap, high.foundry_cap), (2, 4));
+        assert_eq!((low.expansion_greed, high.expansion_greed), (24, 80));
         assert_only_expected_dials_change(&low, &high, |candidate, expected| {
             candidate.harvester_target = expected.harvester_target;
             candidate.reclaimer_cap = expected.reclaimer_cap;
-            candidate.foundry_cap = expected.foundry_cap;
+            candidate.expansion_greed = expected.expansion_greed;
         });
 
         low_traits = baseline;
@@ -6327,7 +6373,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_greed_changes_real_expansion_appetite_at_the_foundry_boundary() {
+    fn resolved_greed_reaches_the_expansion_appetite_without_changing_capability() {
         let high_profile =
             BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 1_616_304)
                 .resolve_profile();
@@ -6341,99 +6387,9 @@ mod tests {
         let tuning = DifficultyTuning::for_level(BotDifficulty::Standard);
         let low_dials = Dials::scripted(&low_profile, tuning);
         let high_dials = Dials::scripted(&high_profile, tuning);
-        assert_eq!(low_dials.foundry_cap, 2, "premise: {low_profile:?}");
-        assert_eq!(high_dials.foundry_cap, 3, "premise: {high_profile:?}");
-
-        let mut obs = obs_with((0..7).map(|id| harvester(id, None)).collect());
-        obs.my_units.extend((0..6).map(|index| {
-            fighter(
-                100 + index,
-                PlayerId(0),
-                TilePos::new(4 + i32::try_from(index).unwrap(), 12),
-            )
-        }));
-        obs.scrap = 10_000;
-        obs.tick = 2_000;
-        let home = TilePos::new(2, 8);
-        for (id, kind, anchor) in [
-            (20, BuildingKind::Foundry, home),
-            (21, BuildingKind::Foundry, TilePos::new(14, 8)),
-            (22, BuildingKind::Fabricator, TilePos::new(2, 2)),
-            (23, BuildingKind::Airworks, TilePos::new(7, 2)),
-            (24, BuildingKind::Crucible, TilePos::new(12, 2)),
-            (25, BuildingKind::Array, TilePos::new(17, 2)),
-            (26, BuildingKind::RepairBay, TilePos::new(22, 2)),
-        ] {
-            obs.my_buildings.push(standing_building(id, kind, anchor));
-            obs.my_queues.push(Vec::new());
-        }
-        let served_salvage = TilePos::new(5, 15);
-        let unserved_frontier = TilePos::new(30, 17);
-        obs.known_scrap = vec![(served_salvage, 300), (unserved_frontier, 800)];
-        assert!(
-            obs.my_buildings
-                .iter()
-                .filter(|building| building.kind == BuildingKind::Foundry)
-                .all(|foundry| foundry.anchor.chebyshev(unserved_frontier) > EXPANSION_RADIUS),
-            "premise: the rich salvage lies beyond both current Foundries"
-        );
-
-        let decide = |dials: &Dials| {
-            let mut budget = obs.scrap;
-            let mut intents = Vec::new();
-            UtilityPolicy::new().construction(
-                dials,
-                &obs,
-                ConstructionContext::new(
-                    home,
-                    ConstructionClaims {
-                        player_facing: true,
-                        enlisted: &[],
-                        reserved: &[],
-                    },
-                ),
-                &mut budget,
-                &mut intents,
-            );
-            intents
-        };
-        let low_intents = decide(&low_dials);
-        let high_intents = decide(&high_dials);
-        assert!(
-            low_intents.is_empty(),
-            "the low-greed identity has already reached its two-Foundry appetite: {low_intents:?}"
-        );
-        let [
-            Intent::BuildWith {
-                kind: BuildingKind::Foundry,
-                anchor,
-                ..
-            },
-        ] = high_intents.as_slice()
-        else {
-            panic!("the high-greed identity should claim the unserved frontier: {high_intents:?}");
-        };
-        assert!(
-            anchor.chebyshev(unserved_frontier) < anchor.chebyshev(served_salvage),
-            "the expansion must serve the remote economic objective"
-        );
-
-        let high_commands =
-            Executive::new().apply_with_reservations(PlayerId(0), &obs, &high_intents, &[]);
-        assert!(high_commands.iter().any(|command| matches!(
-            command.command,
-            Command::Build {
-                kind: BuildingKind::Foundry,
-                anchor: command_anchor,
-                ..
-            } if command_anchor == *anchor
-        )));
-        assert!(
-            Executive::new()
-                .apply_with_reservations(PlayerId(0), &obs, &low_intents, &[])
-                .is_empty(),
-            "the lower appetite must not be reintroduced during command lowering"
-        );
+        assert_eq!(low_dials.expansion_greed, low_profile.traits.greed);
+        assert_eq!(high_dials.expansion_greed, high_profile.traits.greed);
+        assert!(low_dials.expansion && high_dials.expansion);
     }
 
     #[test]
@@ -6457,7 +6413,7 @@ mod tests {
                 assert!((1..=4).contains(&dials.reclaimer_cap));
                 assert!((1..=5).contains(&dials.mine_cap));
                 assert!(dials.barricade_cap <= 3);
-                assert!((2..=4).contains(&dials.foundry_cap));
+                assert_eq!(dials.expansion_greed, profile.traits.greed);
                 assert!(dials.tech && dials.deep_tech && dials.scouting);
                 assert!(dials.repair && dials.aa_response && dials.turret_response);
                 assert!(dials.expansion && dials.extractors && dials.reclaimers);
