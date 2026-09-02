@@ -31,6 +31,7 @@ pub mod raid;
 mod routing;
 pub mod strategy;
 pub mod team;
+pub mod trace;
 pub mod utility;
 
 pub use brain::Brain;
@@ -51,6 +52,11 @@ pub use strategy::{
     AirOperation, AirOperationPhase, AirRecoveryReason, StrategicDecision, StrategicPlanner,
 };
 pub use team::{TeamReliefExitReason, TeamReliefOperation, TeamReliefPhase, TeamReliefPlanner};
+pub use trace::{
+    ChannelEffects, ChannelPhase, ChannelState, ChannelTrace, ChannelTraces, CoreGateTrace,
+    DECISION_TRACE_VERSION, DecisionControlFlow, DecisionTrace, EvidenceTrace, GateTrace,
+    LoweringTrace, RaidAttentionTrace, ScrapBudgetTrace, TracedBotAct, UtilityTrace,
+};
 pub use utility::{Dials, UtilityPolicy};
 
 /// A bot seat as the shell and driver run it.
@@ -84,6 +90,11 @@ impl SeatBot {
     /// Commands for this tick.
     pub fn act(&mut self, state: &crate::state::State) -> Vec<crate::command::PlayerCommand> {
         self.0.act(state)
+    }
+
+    /// Commands plus an opt-in player-facing decision trace for this tick.
+    pub fn act_traced(&mut self, state: &crate::state::State) -> TracedBotAct {
+        self.0.act_traced(state)
     }
 
     /// The player this bot drives.

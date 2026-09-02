@@ -21,6 +21,11 @@ use super::strategy::{
     StrategicDecision, StrategicPlanner,
 };
 use super::team::{TeamReliefAdmission, TeamReliefPlanner};
+use super::trace::{
+    ChannelPhase, ChannelState, ChannelTrace, CoreGateTrace, DecisionControlFlow,
+    DecisionTraceRecorder, LoweringTrace, RaidAttentionTrace, ScrapBudgetTrace, TracedBotAct,
+    UtilityTrace, bounded_count, channel_effects,
+};
 use super::utility::{Dials, StrategicUtilityContext, UtilityPolicy, combat_core_status};
 use crate::command::{Command, PlayerCommand};
 use crate::ids::{PlayerId, UnitId};
@@ -194,6 +199,28 @@ impl Brain {
 
     /// Commands for this tick (usually none — brains think on a cadence).
     pub fn act(&mut self, state: &State) -> Vec<PlayerCommand> {
+        self.act_inner(state, None)
+    }
+
+    /// Commands plus an observational trace for a player-facing decision tick.
+    ///
+    /// Overseer, post-result calls, and cadence skips return no trace. The
+    /// recorder is stack-local and cannot become controller or replay state.
+    pub fn act_traced(&mut self, state: &State) -> TracedBotAct {
+        let mut recorder = matches!(&self.controller, Controller::PlayerFacing(_))
+            .then(DecisionTraceRecorder::default);
+        let commands = self.act_inner(state, recorder.as_mut());
+        TracedBotAct {
+            commands,
+            trace: recorder.and_then(DecisionTraceRecorder::finish),
+        }
+    }
+
+    fn act_inner(
+        &mut self,
+        state: &State,
+        mut recorder: Option<&mut DecisionTraceRecorder>,
+    ) -> Vec<PlayerCommand> {
         if state.result().is_some() || !state.current_tick().is_multiple_of(self.dials.cadence) {
             return Vec::new();
         }
@@ -202,6 +229,9 @@ impl Brain {
         } else {
             Observation::omniscient(state, self.player)
         };
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.begin(&obs);
+        }
         // The wounded rear line lives on the home-side corner of the Foundry:
         // behind everything, and every march home routes past friendly
         // production. A footprint anchor is not itself a symmetric point goal
@@ -234,8 +264,19 @@ impl Brain {
         } else {
             self.exec.maintain(self.player, &obs, rear)
         };
+        let maintenance_commands = commands.len();
         if let Some(recovery) = self.exec.harvester_recovery(self.player, &obs) {
+            let recovery_commands = recovery.len();
             commands.extend(recovery);
+            if let Some(recorder) = recorder.as_deref_mut() {
+                let trace = recorder.trace_mut();
+                trace.control_flow = DecisionControlFlow::HarvesterRecovery;
+                trace.lowering = LoweringTrace {
+                    maintenance_commands: bounded_count(maintenance_commands),
+                    decision_commands: bounded_count(recovery_commands),
+                    total_commands: bounded_count(commands.len()),
+                };
+            }
             return commands;
         }
         // The policy thinks in seat-oriented space (see [`Orientation`]):
@@ -289,6 +330,9 @@ impl Brain {
         let prior_team_core_claims = team
             .as_ref()
             .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
+        let team_before_state = recorder
+            .is_some()
+            .then(|| team_channel_state(team.as_ref()));
         let claims = ClaimLedger {
             enlisted: &enlisted,
             strategy,
@@ -305,6 +349,9 @@ impl Brain {
             u64::from(self.dials.minimum_core_equivalents),
         )
         .ready;
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.trace_mut().gates.team_relief_core_ready = Some(allow_team_admission);
+        }
         let team_before_decision = team.clone();
         let mut team_decision = if let Some(team) = team.as_mut() {
             team.think_with_admission(
@@ -326,9 +373,10 @@ impl Brain {
         let mut team_core_claims = team
             .as_ref()
             .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
+        let mut team_relief_rolled_back = false;
         if prior_team_core_claims.is_empty() && !team_core_claims.is_empty() {
             let candidate_core_exclusions = claims.core_exclusions(&team_core_claims);
-            roll_back_unless_core_ready(
+            team_relief_rolled_back = roll_back_unless_core_ready(
                 &oriented,
                 &candidate_core_exclusions,
                 u64::from(self.dials.minimum_core_equivalents),
@@ -336,6 +384,15 @@ impl Brain {
                 team_before_decision,
                 &mut team_decision,
                 Some(&mut team_core_claims),
+            );
+        }
+        if let Some(recorder) = recorder.as_deref_mut() {
+            let trace = recorder.trace_mut();
+            trace.gates.team_relief_rolled_back = team_relief_rolled_back;
+            trace.channels.team_relief = channel_trace(
+                team_before_state.expect("a traced decision captured the prior team state"),
+                team_channel_state(team.as_ref()),
+                &team_decision,
             );
         }
         let team_claims = team_decision.reservations.clone();
@@ -349,6 +406,15 @@ impl Brain {
             u64::from(self.dials.minimum_core_equivalents),
         );
         let allow_new_voluntary_operations = opening_core.ready;
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.trace_mut().gates.opening_core = Some(CoreGateTrace {
+                projected_strength: opening_core.projected_strength,
+                target_strength: opening_core.target_strength,
+                missing_strength: opening_core.missing_strength,
+                missing_scrap: opening_core.missing_scrap,
+                ready: opening_core.ready,
+            });
+        }
         let mut ledger = ScrapLedger {
             bank: oriented.scrap,
             frozen: !allow_new_voluntary_operations,
@@ -404,6 +470,9 @@ impl Brain {
                 planned_drops: operation.planned_drops.clone(),
             });
         let lift_was_active = lift_support_request.is_some();
+        let air_before_state = recorder
+            .is_some()
+            .then(|| air_channel_state(strategy.as_ref()));
         // Intelligence ages with the strategic think: a test that nulls
         // the strategic planner also expects contact memory to hold
         // still, so the update stays inside the planner's arm.
@@ -427,6 +496,13 @@ impl Brain {
         let air_active = strategy
             .as_ref()
             .is_some_and(|strategy| strategy.air_operation().is_some());
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.trace_mut().channels.connected_air = channel_trace(
+                air_before_state.expect("a traced decision captured the prior air state"),
+                air_channel_state(strategy.as_ref()),
+                &strategic,
+            );
+        }
         merge_strategic(&mut strategic, team_decision);
         let team_active = team.as_ref().is_some_and(|team| team.operation().is_some());
         // A raid group already mustering or under way keeps ownership while a
@@ -475,9 +551,11 @@ impl Brain {
         let uncommitted_scrap = strategic_observation
             .scrap
             .saturating_sub(strategic.committed_scrap);
+        let prospective_carrier_hold =
+            applied_prospective_carrier_hold(prospective_carrier_commitment, uncommitted_scrap);
         strategic.committed_scrap = strategic
             .committed_scrap
-            .saturating_add(prospective_carrier_commitment.min(uncommitted_scrap));
+            .saturating_add(prospective_carrier_hold);
         let mut lift_observation = project_strategic_queues(&strategic_observation, &strategic);
         lift_observation.scrap = lift_observation
             .scrap
@@ -503,6 +581,9 @@ impl Brain {
         let lift_operation_was_active = lifts
             .as_ref()
             .is_some_and(|lifts| lifts.operation().is_some());
+        let lift_before_state = recorder
+            .is_some()
+            .then(|| lift_channel_state(lifts.as_ref()));
         let lifts_before_decision = lifts.clone();
         let mut lift_decision = if let Some(lifts) = lifts.as_mut() {
             lifts.think_with_admission(
@@ -519,6 +600,7 @@ impl Brain {
         } else {
             StrategicDecision::default()
         };
+        let mut lift_rolled_back = false;
         if !lift_operation_was_active
             && lifts
                 .as_ref()
@@ -533,7 +615,7 @@ impl Brain {
                 lifts,
             };
             let candidate_core_exclusions = claims.core_exclusions(&team_core_claims);
-            roll_back_unless_core_ready(
+            lift_rolled_back = roll_back_unless_core_ready(
                 &oriented,
                 &candidate_core_exclusions,
                 u64::from(self.dials.minimum_core_equivalents),
@@ -541,6 +623,15 @@ impl Brain {
                 lifts_before_decision,
                 &mut lift_decision,
                 None,
+            );
+        }
+        if let Some(recorder) = recorder.as_deref_mut() {
+            let trace = recorder.trace_mut();
+            trace.gates.lift_rolled_back = lift_rolled_back;
+            trace.channels.lift = channel_trace(
+                lift_before_state.expect("a traced decision captured the prior lift state"),
+                lift_channel_state(lifts.as_ref()),
+                &lift_decision,
             );
         }
         merge_strategic(&mut strategic, lift_decision);
@@ -555,10 +646,21 @@ impl Brain {
             .is_some_and(|raids| !raids.reservations().is_empty());
         let can_begin_raid =
             allow_new_voluntary_operations && can_admit_optional_raid(tuning, strategic_load);
+        let raid_before_state = recorder
+            .is_some()
+            .then(|| raid_channel_state(raids.as_ref()));
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.trace_mut().gates.raid_attention = Some(RaidAttentionTrace {
+                strategic_load: bounded_count(strategic_load),
+                attention_slots: bounded_count(tuning.attention_slots),
+                admitted: can_begin_raid,
+            });
+        }
+        let mut raid_decision = StrategicDecision::default();
         if (raid_claimed || can_begin_raid)
             && let Some(raids) = raids.as_mut()
         {
-            let raid = raids.think_with_admission(
+            raid_decision = raids.think_with_admission(
                 RaidPlanningContext::new(
                     profile,
                     tuning,
@@ -569,8 +671,15 @@ impl Brain {
                 )
                 .with_admission(allow_new_voluntary_operations),
             );
-            merge_strategic(&mut strategic, raid);
         }
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.trace_mut().channels.raid = channel_trace(
+                raid_before_state.expect("a traced decision captured the prior raid state"),
+                raid_channel_state(raids.as_ref()),
+                &raid_decision,
+            );
+        }
+        merge_strategic(&mut strategic, raid_decision);
         let outstanding_air_production_ticks = strategy
             .as_ref()
             .map_or(0, |strategy| strategy.remaining_airwork_ticks(&oriented))
@@ -581,6 +690,21 @@ impl Brain {
         policy_observation.scrap = policy_observation
             .scrap
             .saturating_sub(strategic.committed_scrap);
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.trace_mut().budget = Some(ScrapBudgetTrace {
+                bank: ledger.bank,
+                deferred_construction: ledger.deferred_construction,
+                airworks_capacity: ledger.airworks_capacity,
+                shallow_sentinel: ledger.shallow_sentinel,
+                opening_bootstrap: ledger.opening_bootstrap,
+                frozen: ledger.frozen,
+                strategic_spendable: ledger.strategic_spendable(),
+                strategic_committed: strategic.committed_scrap,
+                prospective_carrier: prospective_carrier_hold,
+                utility_spendable: policy_observation.scrap,
+            });
+        }
+        let strategic_intents = strategic.intents.len();
         let mut reservations = strategic.reservations;
         let intelligence = &*intelligence;
         let utility_context = StrategicUtilityContext::new(
@@ -614,6 +738,13 @@ impl Brain {
             &reservations,
             &mut intents,
         );
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.trace_mut().utility = UtilityTrace {
+                input_intents: bounded_count(strategic_intents),
+                output_intents: bounded_count(intents.len()),
+                reserved_units: bounded_count(reservations.len()),
+            };
+        }
         let intents = orientation.emit(intents);
         let lowered = self
             .exec
@@ -638,6 +769,13 @@ impl Brain {
                 _ => {}
             }
         }
+        if let Some(recorder) = recorder {
+            recorder.trace_mut().lowering = LoweringTrace {
+                maintenance_commands: bounded_count(maintenance_commands),
+                decision_commands: bounded_count(lowered.len()),
+                total_commands: bounded_count(commands.len().saturating_add(lowered.len())),
+            };
+        }
         commands.extend(lowered);
         commands
     }
@@ -645,6 +783,93 @@ impl Brain {
 
 fn can_admit_optional_raid(tuning: DifficultyTuning, strategic_load: usize) -> bool {
     strategic_load == 0 || tuning.attention_slots >= (strategic_load + 1).saturating_mul(2)
+}
+
+fn channel_trace(
+    before: ChannelState,
+    after: ChannelState,
+    decision: &StrategicDecision,
+) -> ChannelTrace {
+    ChannelTrace {
+        before,
+        after,
+        effects: channel_effects(
+            decision.intents.len(),
+            &decision.reservations,
+            decision.committed_scrap,
+        ),
+    }
+}
+
+fn team_channel_state(planner: Option<&TeamReliefPlanner>) -> ChannelState {
+    let Some(planner) = planner else {
+        return ChannelState::Disabled;
+    };
+    if let Some(operation) = planner.operation() {
+        let phase = match operation.phase {
+            super::team::TeamReliefPhase::Deploying => ChannelPhase::TeamDeploying,
+            super::team::TeamReliefPhase::Holding => ChannelPhase::TeamHolding,
+            super::team::TeamReliefPhase::Withdrawing => ChannelPhase::TeamWithdrawing,
+        };
+        ChannelState::Active(phase)
+    } else if !planner.core_reservations().is_empty() {
+        ChannelState::Preparing
+    } else {
+        ChannelState::Idle
+    }
+}
+
+fn air_channel_state(planner: Option<&StrategicPlanner>) -> ChannelState {
+    let Some(planner) = planner else {
+        return ChannelState::Disabled;
+    };
+    let Some(operation) = planner.air_operation() else {
+        return ChannelState::Idle;
+    };
+    let phase = match operation.phase {
+        AirOperationPhase::Recon => ChannelPhase::AirRecon,
+        AirOperationPhase::Assemble => ChannelPhase::AirAssemble,
+        AirOperationPhase::SuppressAa => ChannelPhase::AirSuppressAa,
+        AirOperationPhase::Verify => ChannelPhase::AirVerify,
+        AirOperationPhase::Strike => ChannelPhase::AirStrike,
+        AirOperationPhase::Recover => ChannelPhase::AirRecover,
+    };
+    ChannelState::Active(phase)
+}
+
+fn lift_channel_state(planner: Option<&LiftPlanner>) -> ChannelState {
+    let Some(planner) = planner else {
+        return ChannelState::Disabled;
+    };
+    let Some(operation) = planner.operation() else {
+        return ChannelState::Idle;
+    };
+    let phase = match operation.phase {
+        super::lift::LiftPhase::Provision => ChannelPhase::LiftProvision,
+        super::lift::LiftPhase::Boarding => ChannelPhase::LiftBoarding,
+        super::lift::LiftPhase::AwaitSupport => ChannelPhase::LiftAwaitSupport,
+        super::lift::LiftPhase::Landing => ChannelPhase::LiftLanding,
+        super::lift::LiftPhase::Recover => ChannelPhase::LiftRecover,
+    };
+    ChannelState::Active(phase)
+}
+
+fn raid_channel_state(planner: Option<&RaidPlanner>) -> ChannelState {
+    let Some(planner) = planner else {
+        return ChannelState::Disabled;
+    };
+    if let Some(operation) = planner.operation() {
+        let phase = match operation.phase {
+            super::raid::RaidPhase::Ingress => ChannelPhase::RaidIngress,
+            super::raid::RaidPhase::Strike => ChannelPhase::RaidStrike,
+            super::raid::RaidPhase::Egress => ChannelPhase::RaidEgress,
+        };
+        ChannelState::Active(phase)
+    } else if !planner.reservations().is_empty() {
+        ChannelState::Preparing
+    } else {
+        ChannelState::Idle
+    }
 }
 
 /// The footprint tile that occupies its anchor corner in the owner's oriented
@@ -781,6 +1006,10 @@ impl ScrapLedger {
     }
 }
 
+fn applied_prospective_carrier_hold(requested: u32, uncommitted_scrap: u32) -> u32 {
+    requested.min(uncommitted_scrap)
+}
+
 /// The speculative-admission rollback shared by the team and lift
 /// thinks: when the opening core is no longer met against the candidate
 /// exclusions, the planner is restored to its pre-think snapshot, its
@@ -797,7 +1026,7 @@ fn roll_back_unless_core_ready<P>(
     snapshot: Option<P>,
     decision: &mut StrategicDecision,
     derived_claims: Option<&mut Vec<UnitId>>,
-) {
+) -> bool {
     if combat_core_status(
         oriented,
         candidate_core_exclusions,
@@ -806,13 +1035,14 @@ fn roll_back_unless_core_ready<P>(
     )
     .ready
     {
-        return;
+        return false;
     }
     *planner = snapshot;
     *decision = StrategicDecision::default();
     if let Some(claims) = derived_claims {
         claims.clear();
     }
+    true
 }
 
 /// One view over every unit the planners currently claim, so each
@@ -1107,6 +1337,13 @@ mod tests {
     }
 
     #[test]
+    fn prospective_carrier_hold_never_exceeds_uncommitted_scrap() {
+        assert_eq!(applied_prospective_carrier_hold(250, 40), 40);
+        assert_eq!(applied_prospective_carrier_hold(40, 250), 40);
+        assert_eq!(applied_prospective_carrier_hold(250, 0), 0);
+    }
+
+    #[test]
     fn only_the_player_facing_controller_receives_the_public_map_briefing() {
         let scenario = Scenario::skirmish();
         let public_map = public_map(&scenario);
@@ -1116,6 +1353,105 @@ mod tests {
         assert!(Arc::ptr_eq(&scripted.mind().public_map, &public_map));
         assert!(scripted.mind().oriented_public_map.is_none());
         assert!(matches!(overseer.controller, Controller::ProfileFree));
+    }
+
+    #[test]
+    fn traced_and_untraced_player_facing_acts_are_behaviorally_identical() {
+        let scenario = Scenario::skirmish();
+        let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 9_113);
+        let mut direct_state = scenario.build().expect("the skirmish builds");
+        let mut first_traced_state = direct_state.clone();
+        let mut second_traced_state = direct_state.clone();
+        let mut direct = scripted_brain(&scenario, PlayerId(0), config);
+        let mut first_traced = scripted_brain(&scenario, PlayerId(0), config);
+        let mut second_traced = scripted_brain(&scenario, PlayerId(0), config);
+        let mut traces = 0;
+
+        for _ in 0..600 {
+            let direct_commands = direct.act(&direct_state);
+            let first = first_traced.act_traced(&first_traced_state);
+            let second = second_traced.act_traced(&second_traced_state);
+
+            assert_eq!(first.commands, direct_commands);
+            assert_eq!(second.commands, direct_commands);
+            assert_eq!(first.trace, second.trace);
+            if let Some(trace) = &first.trace {
+                traces += 1;
+                assert_eq!(trace.tick, direct_state.current_tick());
+                assert_eq!(trace.player, PlayerId(0));
+                assert_eq!(
+                    trace.lowering.total_commands as usize,
+                    direct_commands.len()
+                );
+                assert_eq!(
+                    serde_json::to_string(trace).expect("the trace serializes"),
+                    serde_json::to_string(second.trace.as_ref().expect("the second trace exists"))
+                        .expect("the second trace serializes")
+                );
+                for effects in [
+                    &trace.channels.team_relief.effects,
+                    &trace.channels.connected_air.effects,
+                    &trace.channels.lift.effects,
+                    &trace.channels.raid.effects,
+                ] {
+                    assert!(effects.unit_claims.windows(2).all(|pair| pair[0] < pair[1]));
+                    assert!(effects.unit_claims.len() <= direct_state.units().len());
+                }
+            }
+
+            direct_state.tick(&direct_commands);
+            first_traced_state.tick(&first.commands);
+            second_traced_state.tick(&second.commands);
+            assert_eq!(first_traced_state.hash(), direct_state.hash());
+            assert_eq!(second_traced_state.hash(), direct_state.hash());
+        }
+
+        assert_eq!(
+            traces,
+            600 / direct.dials.cadence,
+            "the trace is bounded to actual decision ticks"
+        );
+        assert_brain_unchanged(&direct, &first_traced);
+        assert_brain_unchanged(&direct, &second_traced);
+    }
+
+    #[test]
+    fn traced_act_marks_recovery_and_omits_non_decisions_and_overseer() {
+        let mut scenario = Scenario::skirmish();
+        scenario
+            .units
+            .retain(|unit| unit.player != 0 || unit.kind.stats().harvest.is_none());
+        let mut state = scenario.build().expect("the stranded skirmish builds");
+        let mut scripted = scripted_brain(&scenario, PlayerId(0), BotConfig::default());
+
+        let recovery = scripted.act_traced(&state);
+        let trace = recovery
+            .trace
+            .expect("a player-facing recovery think is traced");
+        assert_eq!(trace.control_flow, DecisionControlFlow::HarvesterRecovery);
+        assert_eq!(
+            trace.lowering.total_commands as usize,
+            recovery.commands.len()
+        );
+        assert!(trace.budget.is_none());
+        assert_eq!(
+            trace.channels,
+            super::super::trace::ChannelTraces::default()
+        );
+
+        state.tick(&recovery.commands);
+        assert!(
+            scripted.act_traced(&state).trace.is_none(),
+            "a cadence skip is not a decision record"
+        );
+
+        let fresh = scenario.build().expect("the stranded skirmish rebuilds");
+        let mut overseer = Brain::overseer(PlayerId(0), scenario.seed);
+        let mut direct = overseer.clone();
+        let traced = overseer.act_traced(&fresh);
+        assert!(traced.trace.is_none());
+        assert_eq!(traced.commands, direct.act(&fresh));
+        assert_brain_unchanged(&direct, &overseer);
     }
 
     #[test]
@@ -1823,7 +2159,15 @@ mod tests {
         let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 20_042);
         let mut baseline = scripted_brain(&scenario, PlayerId(0), config);
         let mut changed = scripted_brain(&scenario, PlayerId(0), config);
-        assert_eq!(baseline.act(&state), changed.act(&counterfactual));
+        let baseline_act = baseline.act_traced(&state);
+        let changed_act = changed.act_traced(&counterfactual);
+        assert_eq!(baseline_act.commands, changed_act.commands);
+        assert_eq!(baseline_act.trace, changed_act.trace);
+        assert_eq!(
+            serde_json::to_string(&baseline_act.trace).expect("the baseline trace serializes"),
+            serde_json::to_string(&changed_act.trace).expect("the counterfactual trace serializes"),
+            "a decision trace must not expose authoritative facts absent from the fog-honest observation"
+        );
         assert_brain_unchanged(&baseline, &changed);
     }
 
