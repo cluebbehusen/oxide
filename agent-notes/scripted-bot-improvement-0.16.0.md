@@ -1,6 +1,6 @@
 ---
 created: 2026-08-29T08:00:10
-updated: 2026-08-31T19:11:05
+updated: 2026-09-02T05:58:37
 ---
 
 # Oxide 0.16.0 Scripted Bot Improvement
@@ -80,6 +80,20 @@ surface, and promoting only behavior proven against Overseer and human play.
 - Treat this branch as ready for code review, not as final release promotion.
   Human difficulty and stance play, broader macro calibration, and remaining
   correctness work stay explicit follow-up tasks on smaller branches.
+- Keep the movement-liveness fix and Repair Bay building-heal change in separate
+  branches and PRs based on current main.
+- Analyze the one-Moth production stop and missed rich Extractor frames before
+  proposing or changing bot policy.
+- Require explicit human approval for every workspace or SIM_VERSION bump. A
+  request to implement simulation behavior is not approval to change
+  compatibility versions.
+- Preserve the established observation, intelligence, domain-planner, Intent,
+  and Executive boundaries during the strategic reset; generalize only proven
+  coordination seams as defined by `docs/bot-strategy.md`.
+- Track attack and production scaling, cross-domain allocation, remaining cap
+  removal, outcome learning, personality, difficulty, and promotion in
+  `scripted-bot-strategic-reset.md`; keep this note as the 0.16.0 recovery
+  history and its still-open standalone gaps.
 
 ## Findings
 
@@ -146,6 +160,12 @@ surface, and promoting only behavior proven against Overseer and human play.
   ferry ranks riders without a route check and never recalls an empty carrier.
   The player-facing path now uses routable command filtering; the yardstick
   remains deliberately unchanged.
+- Prime's apparently abandoned air attack was two interacting policy failures
+  around an intentionally tiny cohort: unfinished Flak counted as active AA,
+  then operation cooldown exceeded target memory without renewed reconnaissance.
+- The missed rich Extractor district was not a builder or funding failure. Prime
+  never explored the public three-frame cluster, and its resolved two-Foundry
+  hard cap would have forbidden supporting it anyway.
 
 ## Actions
 
@@ -465,14 +485,76 @@ surface, and promoting only behavior proven against Overseer and human play.
     chokepoints, hidden Peaks and Pits, exact builder dispatch, and Overseer
     parity.
 - [ ] Give badly wounded combat formations a deliberate repair policy.
+- [x] Fix the silent ground-movement stall near blocked corners and open a
+      focused PR.
+  - Reproduced the replay geometry: collision deflection could move a worker
+    past an intermediate waypoint, after which the authored diagonal was legal
+    but the actual body-to-next shortcut was not.
+  - Passed the full workspace, documentation, formatting, hash, and coverage
+    gates and opened the focused PR.
+  - Validated waypoint advancement from the body's actual tile and covered the
+    stuck Harvester and Excavator cases plus half-turn mirrors with bounded
+    liveness regressions.
+  - Restored the branch to 0.16.0 under explicit human approval while retaining
+    every intentional state and player-facing hash change.
+  - Merged the movement-liveness fix into `main` without changing simulation
+    version.
+- [x] Extend Repair Bay healing to nearby owned buildings and open an
+      independent PR.
+  - Kept units as the first repair priority, then healed completed owned
+    buildings in deterministic ID order with tier-aware proportional cost,
+    footprint-edge range, and the Harvester recovery reserve.
+  - Prevented self-healing while allowing overlapping Bays to repair one
+    another, preserved damage-first resolution, and emitted accepted
+    building-repair telemetry for presentation.
+  - Added adversarial integration coverage, including proof that one affordable
+    pulse heals a wounded unit before a wounded building; all required gates
+    passed and the independent PR merged into `main`.
+- [x] Explain from the 24,722-tick replay and current policy why Prime stopped
+      after one Moth and skipped nearby rich Extractor frames.
+  - Prime intentionally assembled a siege-led cohort of two Bombards and one
+    Moth; generic Airworks production does not build Moths, so no larger bomber
+    wave followed once the strategic planner stopped.
+  - The Moth attack was recalled when an unfinished Flak ghost was counted as
+    full air defense. The 847-tick operation cooldown then outlasted the
+    600-tick target memory without reconnaissance refreshing it.
+  - Prime claimed every own-side Extractor frame it explored, but never scouted
+    the rich southwest three-frame cluster. Its personality-derived two-Foundry
+    hard cap would also have barred the supporting expansion after discovery.
+- [x] Ignore unfinished air defenses in strategic AA assessment and let
+      surviving artillery resume suppression when a completed counter appears.
+  - Merged the correction into `main`: unfinished defenses remain known but
+    contribute no live AA, and surviving artillery returns to suppression when
+    observed Flak completes.
+- [x] Scout valuable public Extractor-frame clusters and replace the personality
+      hard Foundry cap with fog-honest, return-driven expansion pressure.
+  - Merged both halves into `main`: public Extractor clusters drive fog-honest
+    scouting, and Foundry expansion now ranks exact sites by economic return
+    without a personality count ceiling.
+- [x] Address valid Repair Bay review findings without changing its unit-first
+      healing contract.
+  - Reproduced the conflict between automatic aura healing and both active and
+    queued Salvage commitments, then excluded those structures before billing.
+  - Added focused active and queued Salvage regressions and completed the
+    maintained player, simulation, architecture, and agent-workflow
+    documentation.
+  - Passed the full workspace, Clippy, rustdoc, formatting, skill, and coverage
+    gates; pushed a signed follow-up commit to the Repair Bay PR.
+- [x] Enforce human-approved simulation versioning and return the Repair Bay PR
+      to 0.16.0.
+  - Updated the repository contract, simulation skill, and hash-fixture guidance
+    so implementation work never implies approval for a version bump or
+    same-version bless.
+  - Restored the workspace and both fixture stamps to 0.16.0 without changing or
+    re-blessing any hash payload.
+- [ ] Preserve or reacquire strategic targets across operation cooldowns when
+      legal evidence still supports reconnaissance or a renewed plan.
 
 ## Open Questions
 
 - Which observable economy signals should determine worker demand: active
   resource sites, safe work capacity, producer count, replacement pressure,
   expansion plans, or a bounded combination?
-- How much of the current strategic planner surface should be retained after the
-  competent macro foundation is established?
 - What exact Overseer margin and human-play evidence should constitute the Prime
   promotion bar?
 - Does human play support the 491-frame economy, especially Skyhook Anchorage's
