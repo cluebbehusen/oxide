@@ -1,4 +1,4 @@
-"""Canonical full-hull construction frames for finalized Oxide buildings."""
+"""Canonical full-hull construction frames for every Oxide building."""
 
 from __future__ import annotations
 
@@ -19,6 +19,11 @@ BUILDING_STEMS = (
     "array",
     "reclaimer",
     "repair_bay",
+    "extractor",
+    "airworks",
+    "crucible",
+    "barricade",
+    "scuttle_charge",
 )
 
 DEFENSE_MOUNTS = {
@@ -119,7 +124,7 @@ def construction_frame(
 
 
 def install_finalized_construction(registry: Registry, out: Path) -> None:
-    """Replaces legacy reveal-and-trolley sites with full-hull cages."""
+    """Installs the shared full-hull construction treatment."""
     out.mkdir(parents=True, exist_ok=True)
     for faction in gen.FACTIONS:
         for stem in BUILDING_STEMS:

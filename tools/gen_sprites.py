@@ -24,7 +24,7 @@ import random
 import tempfile
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageDraw
 
 OUT = Path(__file__).resolve().parent.parent / "assets" / "sprites"
 SS = 4  # supersample factor
@@ -3211,140 +3211,6 @@ THEMES = (
     "verdigris",
 )
 
-BUILDING_STEMS = (
-    "foundry",
-    "turret",
-    "fabricator",
-    "flak_turret",
-    "bastion",
-    "array",
-    "reclaimer",
-    "repair_bay",
-    # 0.15 placeholders ahead of the asset pass: procedural site frames
-    # only; the finalized construction bank keeps its approved eight.
-    "extractor",
-    "airworks",
-    "crucible",
-    "barricade",
-    "scuttle_charge",
-)
-
-
-def construction_site_frame(
-    stem: str,
-    faction: str,
-    stage: int,
-    phase: int,
-) -> None:
-    """Builds one physical assembly frame from the final hull.
-
-    The renderer selects the progress stage and trolley phase.  The actual
-    structure rises bottom-up beneath a compact gantry; no translucent final
-    silhouette or generic lattice is painted over the site.
-    """
-    source = REGISTRY[f"{stem}_{faction}"]
-    width, height = source.size
-    scale = width / 64
-    out = Image.new("RGBA", source.size, (0, 0, 0, 0))
-
-    def p(value: float) -> int:
-        return round(value * scale)
-
-    # Reveal the real authored hull from its foundation upward.  Each band
-    # has a slightly different lift height so the leading edge reads as
-    # individual panels being installed, not a rectangular crop wipe.
-    reveal_y = (43, 27, 10)[stage]
-    mask = Image.new("L", source.size, 0)
-    md = ImageDraw.Draw(mask)
-    band = max(1, width // 8)
-    edge_steps = (2, 0, 3, 1, 1, 3, 0, 2)
-    for index, lift in enumerate(edge_steps):
-        left = index * band
-        right = width if index == len(edge_steps) - 1 else (index + 1) * band
-        top = min(height, p(reveal_y + lift))
-        md.rectangle([left, top, right, height], fill=255)
-    assembled = source.copy()
-    assembled.putalpha(ImageChops.multiply(source.getchannel("A"), mask))
-    out.alpha_composite(assembled)
-    d = ImageDraw.Draw(out)
-
-    dark = (*IRON_DARK, 245)
-    beam = (*IRON_LIGHT, 245)
-    pal = FACTIONS[faction]
-    accent = (*pal["light"], 255)
-
-    stroke = max(2, p(2))
-    left_post = p(6)
-    right_post = width - p(6)
-    rail_y = p(8)
-    floor_y = height - p(6)
-    # A restrained permanent-looking build rig: two legs, one overhead rail,
-    # and a foundation skid.  It frames the work without hiding the machine's
-    # own silhouette.
-    d.line([(left_post, rail_y), (left_post, floor_y)], fill=dark, width=stroke)
-    d.line([(right_post, rail_y), (right_post, floor_y)], fill=dark, width=stroke)
-    d.line([(left_post, rail_y), (right_post, rail_y)], fill=beam, width=stroke)
-    d.line(
-        [(p(8), floor_y), (width - p(8), floor_y)],
-        fill=dark,
-        width=max(3, p(3)),
-    )
-    # Short foot braces make the supports structural without recreating the
-    # old full-face X lattice.
-    d.line(
-        [(left_post, floor_y), (p(13), floor_y - p(7))],
-        fill=beam,
-        width=max(1, p(1)),
-    )
-    d.line(
-        [(right_post, floor_y), (width - p(13), floor_y - p(7))],
-        fill=beam,
-        width=max(1, p(1)),
-    )
-
-    trolley_x = p(20 if phase == 0 else 44)
-    d.rounded_rectangle(
-        [trolley_x - p(4), rail_y - p(3), trolley_x + p(4), rail_y + p(4)],
-        radius=max(1, p(1)),
-        fill=accent,
-    )
-    cable_end = p((36, 29, 20)[stage] + phase * 2)
-    d.line(
-        [(trolley_x, rail_y + p(3)), (trolley_x, cable_end)],
-        fill=beam,
-        width=max(1, p(1)),
-    )
-    # The carried hull plate is the moving part.  It shortens as the build
-    # nears completion, reading as a cap rather than an abstract hook.
-    plate_half_w = p((7, 6, 4)[stage])
-    plate_h = p((5, 4, 3)[stage])
-    d.rounded_rectangle(
-        [
-            trolley_x - plate_half_w,
-            cable_end,
-            trolley_x + plate_half_w,
-            cable_end + plate_h,
-        ],
-        radius=max(1, p(1)),
-        fill=dark,
-        outline=accent,
-        width=max(1, p(1)),
-    )
-    d.line(
-        [
-            (trolley_x - plate_half_w + p(2), cable_end + plate_h // 2),
-            (trolley_x + plate_half_w - p(2), cable_end + plate_h // 2),
-        ],
-        fill=beam,
-        width=max(1, p(1)),
-    )
-
-    name = f"{stem}_{faction}_site{stage}_{phase}"
-    out.save(OUT / f"{name}.png")
-    REGISTRY[name] = out
-    print(f"  {name}.png")
-
-
 def generate(output: Path) -> None:
     """Generates the complete sprite directory at `output`."""
     global OUT
@@ -3457,11 +3323,6 @@ def generate(output: Path) -> None:
         scuttle_charge(faction)
     _install_finalized_sprite_bank()
     _install_finalized_environment_bank()
-    for faction in FACTIONS:
-        for stem in BUILDING_STEMS:
-            for stage in range(3):
-                for phase in range(2):
-                    construction_site_frame(stem, faction, stage, phase)
     _install_finalized_construction_bank()
     accent_masks()
     icon_stop()
