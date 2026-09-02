@@ -30,6 +30,7 @@ from tools.production_sprite_sources import (
     heavy_structures,
     lancer_final,
     moth_warden_final,
+    shrike_sylph_final,
     skyhook_sapper_crucible_final,
     structures_base,
     tender_condor_final,
@@ -855,6 +856,7 @@ def install_finalized_sprites(registry: Registry, out: Path) -> None:
     tender_condor_final.install_tender_condor(registry, out)
     crucible_final.install_crucible_units(registry, out)
     moth_warden_final.install_moth_warden(registry, out)
+    shrike_sylph_final.install_shrike_sylph(registry, out)
     excavator_final.install_excavator(registry, out)
     skyhook_sapper_crucible_final.install_skyhook_sapper_crucible(registry, out)
     airworks_scouts_final.install_airworks_scouts(registry, out)
