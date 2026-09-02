@@ -18,8 +18,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    /// A Foundry finished a unit.
+    /// A production building finished a unit.
     UnitTrained {
+        /// The building that completed it.
+        building: BuildingId,
         /// The new unit.
         unit: UnitId,
         /// Its kind.

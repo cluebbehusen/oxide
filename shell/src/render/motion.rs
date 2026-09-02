@@ -189,7 +189,11 @@ pub(crate) fn building_frame(kind: BuildingKind, state: BuildingAnimationState) 
         let body = match state.activity {
             BuildingActivity::Idle => BuildingBodyFrame::Idle,
             BuildingActivity::Production { cycle, .. } => {
-                BuildingBodyFrame::Work(cycle_index(cycle, 4))
+                let frames = if kind == BuildingKind::Airworks { 2 } else { 4 };
+                BuildingBodyFrame::Work(cycle_index(cycle, frames))
+            }
+            BuildingActivity::AirworksLaunch { progress } => {
+                BuildingBodyFrame::Work(2 + cycle_index(progress, 2))
             }
             BuildingActivity::ArraySweep { cycle } => {
                 BuildingBodyFrame::Work(cycle_index(cycle, 6))
@@ -775,6 +779,20 @@ mod tests {
             building_frame(BuildingKind::Crucible, state).body,
             BuildingBodyFrame::Work(3)
         );
+        assert_eq!(
+            building_frame(BuildingKind::Airworks, state).body,
+            BuildingBodyFrame::Work(1)
+        );
+        state.activity = BuildingActivity::AirworksLaunch { progress: 0.0 };
+        assert_eq!(
+            building_frame(BuildingKind::Airworks, state).body,
+            BuildingBodyFrame::Work(2)
+        );
+        state.activity = BuildingActivity::AirworksLaunch { progress: 0.5 };
+        assert_eq!(
+            building_frame(BuildingKind::Airworks, state).body,
+            BuildingBodyFrame::Work(3)
+        );
         state.activity = BuildingActivity::ArraySweep { cycle: 0.99 };
         assert_eq!(
             building_frame(BuildingKind::Array, state).body,
@@ -793,6 +811,7 @@ mod tests {
             BuildingKind::Foundry,
             BuildingKind::Fabricator,
             BuildingKind::Crucible,
+            BuildingKind::Airworks,
             BuildingKind::RepairBay,
         ] {
             assert_eq!(

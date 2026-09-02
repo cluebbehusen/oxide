@@ -207,9 +207,12 @@ escape path while preserving its order and work progress.
 
 Approaching a footprint orders passable doorsteps in the body's local approach
 frame, then uses an owner-local unit rank to spread equivalent workers.
-Production orders spawn doorsteps in the producer's radial frame around the map.
-In both cases, dot and cross products replace an absolute scan direction, so
-half-turned producers and workers receive corresponding geometric orderings.
+Ground-production orders spawn doorsteps in the producer's radial frame around
+the map. In both cases, dot and cross products replace an absolute scan
+direction, so half-turned producers and workers receive corresponding geometric
+orderings. Airworks aircraft instead spawn at the authoritative center of the
+open roof bay and follow ordinary idle, rally, or player-issued orders from
+there.
 
 Group `Move`, `Advance`, and `AttackMove` commands likewise resolve a blocked
 center and spread per-unit destinations in the approaching body's half-turn

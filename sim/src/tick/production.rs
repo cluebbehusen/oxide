@@ -1,15 +1,17 @@
 //! Phase 2: Foundry production queues.
 //!
-//! One queue per building, front item in progress. A finished unit spawns on
-//! a passable ring tile in the footprint's map-relative outward direction; if
-//! the ring is fully blocked the unit waits at 100% until a tile opens up. A
-//! rally point, when set, hands the newborn its first order.
+//! One queue per building, front item in progress. A finished ground unit
+//! spawns on a passable ring tile in the footprint's map-relative outward
+//! direction; if the ring is fully blocked the unit waits at 100% until a tile
+//! opens up. Airworks aircraft instead spawn above the roof bay at the
+//! building's center. A rally point, when set, hands the newborn its first
+//! order.
 
 use super::rect_adjacent_tiles;
 use crate::event::Event;
 use crate::ids::PlayerId;
 use crate::state::{Order, State};
-use crate::stats::UnitKind;
+use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::grid::TilePos;
 use std::cmp::Reverse;
 
@@ -195,19 +197,36 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         if b.progress < kind.stats().train_ticks {
             continue;
         }
-        // Ready — look for a doorstep tile (any in-bounds tile serves a
-        // flyer; the ground ring can be walled shut).
-        let (anchor, size, player, rally) = (b.anchor, b.stats().size, b.player, b.rally);
+        // Ready — aircraft occupy the open Airworks roof bay itself. Ground
+        // production still needs a passable doorstep outside the footprint.
+        let (anchor, size, player, rally, producer, center) = (
+            b.anchor,
+            b.stats().size,
+            b.player,
+            b.rally,
+            b.kind,
+            b.center(),
+        );
         let domain = kind.stats().domain;
         let map_size = (state.map.width(), state.map.height());
-        let spawn = rect_adjacent_tiles(anchor, size)
-            .filter(|&tile| state.passable_for(domain, tile))
-            .min_by_key(|&tile| spawn_doorstep_key(map_size, anchor, size, tile));
-        let Some(tile) = spawn else {
+        let spawn = if producer == BuildingKind::Airworks && domain == Domain::Air {
+            Some(center)
+        } else {
+            rect_adjacent_tiles(anchor, size)
+                .filter(|&tile| state.passable_for(domain, tile))
+                .min_by_key(|&tile| spawn_doorstep_key(map_size, anchor, size, tile))
+                .map(TilePos::center)
+        };
+        let Some(spawn) = spawn else {
             continue; // fully walled in; retry next tick
         };
-        let unit = state.spawn_unit(player, kind, tile.center());
-        events.push(Event::UnitTrained { unit, kind, player });
+        let unit = state.spawn_unit(player, kind, spawn);
+        events.push(Event::UnitTrained {
+            building: id,
+            unit,
+            kind,
+            player,
+        });
         if let Some(rally) = rally
             && let Some(order) = rally_order(state, player, kind, rally)
             && let Some(newborn) = state.unit_mut(unit)
