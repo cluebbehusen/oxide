@@ -851,7 +851,8 @@ impl StrategicPlanner {
 
     /// Airworks training time still required by the current operation roster.
     /// Queued units remain factory work and therefore still contribute to the
-    /// capacity signal; only completed members reduce it.
+    /// capacity signal; visible progress on each paid front reduces only the
+    /// work that factory has already completed.
     pub(super) fn remaining_airwork_ticks(&self, obs: &Observation) -> Tick {
         let Some(ActiveAirOperation { op, plan }) = &self.air else {
             return 0;
@@ -874,7 +875,7 @@ impl StrategicPlanner {
                             unit(obs, *id).is_some_and(|member| member.kind == demand.kind)
                         })
                         .count();
-                    training_ticks(demand.count.saturating_sub(live), demand.kind)
+                    remaining_training_ticks(obs, demand.count.saturating_sub(live), demand.kind)
                 })
                 .fold(0, Tick::saturating_add);
         }
@@ -897,15 +898,19 @@ impl StrategicPlanner {
             .count();
         let missing_scout = 1usize.saturating_sub(live_scout);
         if !op.assault_admitted {
-            return training_ticks(missing_scout, scout_kind);
+            return remaining_training_ticks(obs, missing_scout, scout_kind);
         }
         let missing_screen = plan.desired_screen.saturating_sub(live_screen);
         let missing_strike_aircraft = plan
             .desired_strike_aircraft
             .saturating_sub(live_strike_aircraft);
-        training_ticks(missing_scout, scout_kind)
-            .saturating_add(training_ticks(missing_screen, screen_kind))
-            .saturating_add(training_ticks(missing_strike_aircraft, bomber_kind))
+        remaining_training_ticks(obs, missing_scout, scout_kind)
+            .saturating_add(remaining_training_ticks(obs, missing_screen, screen_kind))
+            .saturating_add(remaining_training_ticks(
+                obs,
+                missing_strike_aircraft,
+                bomber_kind,
+            ))
     }
 
     #[cfg(test)]
@@ -1397,6 +1402,31 @@ impl StrategicPlanner {
             rejected_connected_candidate,
         }
     }
+}
+
+fn remaining_training_ticks(obs: &Observation, count: usize, kind: UnitKind) -> Tick {
+    let mut front_progress: Vec<_> = obs
+        .my_buildings
+        .iter()
+        .enumerate()
+        .filter_map(|(index, building)| {
+            (obs.my_queues.get(index)?.first() == Some(&kind))
+                .then(|| obs.own_queue_progress(index))
+                .flatten()
+                .map(|progress| {
+                    let remaining = kind.stats().train_ticks.saturating_sub(progress).max(1);
+                    let completed = kind.stats().train_ticks.saturating_sub(remaining);
+                    (Reverse(completed), building.id)
+                })
+        })
+        .collect();
+    front_progress.sort_unstable();
+    let completed_ticks = front_progress
+        .into_iter()
+        .take(count)
+        .map(|(Reverse(progress), _)| Tick::from(progress))
+        .fold(0, Tick::saturating_add);
+    training_ticks(count, kind).saturating_sub(completed_ticks)
 }
 
 fn capability_components(capability: NormalizedCapability) -> [u64; 3] {
@@ -2901,7 +2931,7 @@ fn connected_provider_unavailable<'a>(
     excluded.extend(obs.my_units.iter().filter_map(|member| {
         let compatible = if is_artillery(member.kind) {
             staging.is_some_and(|goal| {
-                ground_routes.unit_reaches(member, goal)
+                ground_routes.ground_command_reaches(member.tile, goal)
                     && suppression_targets_reachable(
                         &mut ground_routes,
                         obs,
@@ -3067,7 +3097,7 @@ fn connected_target_selection<'a>(
         let suppression_reachable = proposed_suppression.is_empty()
             || staging.is_some_and(|staging| {
                 suppression_origins.iter().any(|origin| {
-                    ground_routes.reaches(origin.tile, staging)
+                    ground_routes.ground_command_reaches(origin.tile, staging)
                         && suppression_targets_reachable(
                             &mut ground_routes,
                             obs,
@@ -3333,7 +3363,7 @@ fn suppression_firing_stands(
         for x in near.x.saturating_sub(radius)..=far.x.saturating_add(radius) {
             let stand = TilePos::new(x, y);
             if !public_ground_open(obs, stand, public_map)
-                || !routes.reaches(origin.tile, stand)
+                || !routes.ground_command_reaches(origin.tile, stand)
                 || !suppression_shot_is_legal(obs, public_map, weapon, stand, geometry)
             {
                 continue;
@@ -4966,6 +4996,24 @@ mod tests {
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         }
+    }
+
+    fn movement_cap_serpentine_map(observation: &Observation) -> PublicMapBriefing {
+        assert_eq!((observation.map_width, observation.map_height), (256, 256));
+        let width = observation.map_width;
+        public_map_with_terrain(
+            observation,
+            (0..observation.map_height).flat_map(|y| {
+                (0..width).filter_map(move |x| {
+                    let tile = TilePos::new(x, y);
+                    let open = y % 2 == 0
+                        || (y % 4 == 1 && x == width - 1)
+                        || (y % 4 == 3 && x == 0)
+                        || tile == TilePos::new(255, 255);
+                    (!open).then_some((tile, Terrain::Pit))
+                })
+            }),
+        )
     }
 
     fn knowledge(obs: &Observation) -> StrategicIntelligence {
@@ -8096,21 +8144,7 @@ mod tests {
         )];
         observation.my_queues = vec![Vec::new()];
         observation.enemy_buildings.clear();
-        let open = |tile: TilePos| {
-            tile.y % 2 == 0
-                || (tile.y % 4 == 1 && tile.x == observation.map_width - 1)
-                || (tile.y % 4 == 3 && tile.x == 0)
-                || tile == TilePos::new(255, 255)
-        };
-        let public_map = public_map_with_terrain(
-            &observation,
-            (0..observation.map_height).flat_map(|y| {
-                (0..observation.map_width).filter_map(move |x| {
-                    let tile = TilePos::new(x, y);
-                    (!open(tile)).then_some((tile, Terrain::Pit))
-                })
-            }),
-        );
+        let public_map = movement_cap_serpentine_map(&observation);
         let home = TilePos::new(0, 84);
         let target = TilePos::new(3, 84);
         let orientation = Orientation::for_home(&observation, home);
@@ -8160,6 +8194,229 @@ mod tests {
         assert!(
             !access.allows(BuildingId(10), UnitKind::Bombard),
             "an operation must not buy artillery whose authoritative route will exhaust"
+        );
+    }
+
+    #[test]
+    fn connected_operation_excludes_live_artillery_beyond_the_movement_search_cap() {
+        let mut observation = obs(120);
+        observation.map_width = 256;
+        observation.map_height = 256;
+        observation.visible = vec![true; 256 * 256];
+        observation.explored = observation.visible.clone();
+        observation.my_units = vec![own(2, UnitKind::Bombard, TilePos::new(255, 255))];
+        observation.my_buildings.clear();
+        observation.my_queues.clear();
+        observation.enemy_buildings.clear();
+        let public_map = movement_cap_serpentine_map(&observation);
+        let intelligence = knowledge(&observation);
+        let home = TilePos::new(0, 84);
+        let target = TilePos::new(3, 84);
+        let staging =
+            connected_artillery_staging_goal(&observation, home, target, Some(&public_map))
+                .expect("the Foundry-side staging tile is in the same component");
+        let mut routes = route_projection_with_orientation(
+            &observation,
+            Domain::Ground,
+            Some(&public_map),
+            test_orientation(),
+        );
+        assert!(
+            routes.reaches(observation.my_units[0].tile, staging),
+            "the uncapped component flood sees the complete serpentine"
+        );
+        assert!(
+            !routes.ground_command_reaches(observation.my_units[0].tile, staging),
+            "the live Bombard's eventual movement command exhausts its bounded search"
+        );
+
+        let unavailable = connected_provider_unavailable(
+            &observation,
+            &ConnectedTargetSelection {
+                target_anchors: vec![target],
+                suppression_targets: Vec::new(),
+                growth_order: Vec::new(),
+            },
+            &[],
+            ConnectedRouteContext {
+                intel: &intelligence,
+                home,
+                target,
+                public_map: Some(&public_map),
+                orientation: test_orientation(),
+            },
+        );
+
+        assert_eq!(
+            unavailable,
+            vec![UnitId(2)],
+            "a live provider must not be admitted when its staging command will exhaust"
+        );
+    }
+
+    #[test]
+    fn connected_cluster_rejects_suppression_whose_staging_route_exceeds_the_command_cap() {
+        let primary = TilePos::new(240, 251);
+        let secondary = TilePos::new(244, 251);
+        let flak = TilePos::new(249, 251);
+        let home = TilePos::new(0, 0);
+        let mut observation = obs(120);
+        observation.map_width = 256;
+        observation.map_height = 256;
+        observation.visible = vec![true; 256 * 256];
+        observation.explored = observation.visible.clone();
+        observation.my_units = vec![
+            own(1, UnitKind::Kestrel, TilePos::new(255, 254)),
+            own(2, UnitKind::Bombard, TilePos::new(255, 255)),
+            own(3, UnitKind::Condor, TilePos::new(254, 254)),
+        ];
+        observation.my_buildings.clear();
+        observation.my_queues.clear();
+        observation.enemy_buildings = vec![
+            building(80, 1, BuildingKind::Turret, primary, true),
+            building(82, 1, BuildingKind::Turret, secondary, true),
+            building(81, 1, BuildingKind::FlakTurret, flak, true),
+        ];
+        let mut public_map = movement_cap_serpentine_map(&observation);
+        public_map
+            .non_ground_terrain
+            .retain(|(tile, _)| *tile != primary && *tile != secondary && *tile != flak);
+        let intelligence = knowledge(&observation);
+        assert_eq!(targetable_flak(&intelligence.air_defense_at(primary)), None);
+        assert_eq!(
+            targetable_flak(&intelligence.air_defense_at(secondary)),
+            Some(BuildingId(81))
+        );
+        let target = intelligence
+            .buildings()
+            .iter()
+            .find(|contact| contact.anchor == primary)
+            .expect("the primary target is current");
+        let staging =
+            connected_artillery_staging_goal(&observation, home, primary, Some(&public_map))
+                .expect("the public component contains a staging tile");
+        let origin = SuppressionOrigin {
+            tile: TilePos::new(255, 255),
+            kind: UnitKind::Bombard,
+        };
+        let mut routes = route_projection_with_orientation(
+            &observation,
+            Domain::Ground,
+            Some(&public_map),
+            test_orientation(),
+        );
+        assert!(
+            routes.reaches(origin.tile, staging),
+            "the uncapped component flood sees the complete serpentine"
+        );
+        assert!(
+            !routes.ground_command_reaches(origin.tile, staging),
+            "the suppression provider cannot execute its staging command"
+        );
+        assert!(
+            suppression_targets_reachable(
+                &mut routes,
+                &observation,
+                origin,
+                &[Target::Building(BuildingId(81))],
+                &intelligence,
+                Some(&public_map),
+            ),
+            "the nearby firing stand is reachable, isolating the staging-leg rejection"
+        );
+
+        let selection = connected_target_selection(
+            &observation,
+            target,
+            &[],
+            ConnectedRouteContext {
+                intel: &intelligence,
+                home,
+                target: primary,
+                public_map: Some(&public_map),
+                orientation: test_orientation(),
+            },
+        );
+
+        assert_eq!(selection.target_anchors, vec![primary]);
+        assert!(selection.suppression_targets.is_empty());
+        assert!(selection.growth_order.is_empty());
+    }
+
+    #[test]
+    fn suppression_rejects_a_firing_stand_beyond_the_movement_search_cap() {
+        let mut observation = obs(120);
+        observation.map_width = 256;
+        observation.map_height = 256;
+        observation.visible = vec![true; 256 * 256];
+        observation.explored = observation.visible.clone();
+        observation.known_rock.clear();
+        observation.enemy_buildings = vec![building(
+            81,
+            1,
+            BuildingKind::FlakTurret,
+            TilePos::new(250, 84),
+            true,
+        )];
+        let public_map = movement_cap_serpentine_map(&observation);
+        let intelligence = knowledge(&observation);
+        let target = Target::Building(BuildingId(81));
+        let local_origin = SuppressionOrigin {
+            tile: TilePos::new(255, 84),
+            kind: UnitKind::Bombard,
+        };
+        let mut local_routes = route_projection_with_orientation(
+            &observation,
+            Domain::Ground,
+            Some(&public_map),
+            test_orientation(),
+        );
+        let stand = suppression_firing_stands(
+            &mut local_routes,
+            &observation,
+            local_origin,
+            target,
+            &intelligence,
+            Some(&public_map),
+        )
+        .next()
+        .expect("the nearby Bombard has a legal firing stand");
+        let remote_origin = SuppressionOrigin {
+            tile: TilePos::new(255, 255),
+            kind: UnitKind::Bombard,
+        };
+        let mut component_routes = route_projection_with_orientation(
+            &observation,
+            Domain::Ground,
+            Some(&public_map),
+            test_orientation(),
+        );
+        assert!(
+            component_routes.reaches(remote_origin.tile, stand),
+            "the uncapped component flood sees the complete serpentine"
+        );
+        assert!(
+            !component_routes.ground_command_reaches(remote_origin.tile, stand),
+            "the authoritative ground command exhausts its bounded search"
+        );
+        let mut actual_routes = route_projection_with_orientation(
+            &observation,
+            Domain::Ground,
+            Some(&public_map),
+            test_orientation(),
+        );
+        assert_eq!(
+            suppression_firing_stands(
+                &mut actual_routes,
+                &observation,
+                remote_origin,
+                target,
+                &intelligence,
+                Some(&public_map),
+            )
+            .next(),
+            None,
+            "suppression must not admit a stand its eventual movement command cannot reach"
         );
     }
 
@@ -10985,6 +11242,48 @@ mod tests {
         assert!(
             plan.assembly_timeout >= 2_660,
             "the deadline covers the faction's exact scheduled production time"
+        );
+    }
+
+    #[test]
+    fn connected_capacity_uses_exact_paid_front_progress() {
+        let mut observation = obs(5_016);
+        observation.my_buildings = vec![
+            building(10, 0, BuildingKind::Airworks, TilePos::new(2, 2), true),
+            building(11, 0, BuildingKind::Airworks, TilePos::new(5, 2), true),
+        ];
+        observation.my_queues = vec![vec![UnitKind::Condor], vec![UnitKind::Condor]];
+        observation.my_queue_progress = vec![UnitKind::Condor.stats().train_ticks, 1];
+        let mut plan = connected_test_plan(&observation);
+        let package = plan
+            .connected_package
+            .as_mut()
+            .expect("the operation owns a connected package");
+        package.recon.clear();
+        package.strike = vec![ProviderDemand {
+            kind: UnitKind::Condor,
+            count: 6,
+        }];
+        let planner = StrategicPlanner {
+            air: Some(ActiveAirOperation {
+                op: operation(AirOperationPhase::Assemble, observation.tick),
+                plan,
+            }),
+            standby: AirStandby::default(),
+            cooldown_until: 0,
+            terminal_outcome: None,
+        };
+
+        assert_eq!(
+            planner.remaining_airwork_ticks(&observation),
+            2_400,
+            "a ready-but-not-yet-spawned front still needs one authoritative production tick"
+        );
+        observation.my_queue_progress.fill(0);
+        assert_eq!(
+            planner.remaining_airwork_ticks(&observation),
+            3_200,
+            "without visible progress all four missing bombers retain their full training work"
         );
     }
 

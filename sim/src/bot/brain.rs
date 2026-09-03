@@ -442,19 +442,21 @@ impl Brain {
         let prior_lift_unavailable =
             lift_unavailable(&oriented, &armies, &enlisted, &prior_non_lift_claims);
         ledger.deferred_construction = UtilityPolicy::deferred_construction_commitment(&oriented);
-        let active_air_production_ticks = strategy
+        let connected_air_production_ticks = strategy
             .as_ref()
-            .map_or(0, |strategy| strategy.remaining_airwork_ticks(&oriented))
-            .saturating_add(lifts.as_ref().map_or(0, |lifts| {
-                lifts.remaining_airwork_ticks(&oriented, &prior_lift_unavailable)
-            }));
+            .map_or(0, |strategy| strategy.remaining_airwork_ticks(&oriented));
+        let lift_air_production_ticks = lifts.as_ref().map_or(0, |lifts| {
+            lifts.remaining_airwork_ticks(&oriented, &prior_lift_unavailable)
+        });
+        let active_air_production_ticks =
+            connected_air_production_ticks.saturating_add(lift_air_production_ticks);
         let connected_air_active = strategy
             .as_ref()
             .is_some_and(|strategy| strategy.air_operation().is_some());
-        let air_capacity_active = connected_air_active
-            || lifts
-                .as_ref()
-                .is_some_and(|lifts| lifts.operation().is_some());
+        let lift_air_active = lifts
+            .as_ref()
+            .is_some_and(|lifts| lifts.operation().is_some());
+        let air_capacity_active = connected_air_active || lift_air_active;
         if allow_new_voluntary_operations {
             ledger.airworks_capacity = self.policy.airworks_capacity_commitment(
                 &self.dials,
@@ -463,6 +465,15 @@ impl Brain {
                 air_capacity_active.then_some(active_air_production_ticks),
                 &planner_claims,
             );
+            if connected_air_active && lift_air_active {
+                ledger.independent_airworks_capacity = self.policy.airworks_capacity_commitment(
+                    &self.dials,
+                    &oriented,
+                    oriented_home,
+                    Some(lift_air_production_ticks),
+                    &planner_claims,
+                );
+            }
         }
         let air_precedes_foundry_saving = strategy
             .as_ref()
@@ -513,8 +524,13 @@ impl Brain {
                         } else {
                             ledger.strategic_current_reserve_for(air_precedes_foundry_saving)
                         },
-                        protected_forecast_scrap: ledger
-                            .strategic_forecast_reserve_for(air_precedes_foundry_saving),
+                        protected_forecast_scrap: if connected_air_active {
+                            ledger.strategic_forecast_reserve_for_airworks_source(
+                                air_precedes_foundry_saving,
+                            )
+                        } else {
+                            ledger.strategic_forecast_reserve_for(air_precedes_foundry_saving)
+                        },
                         public_map: Some(oriented_public_map),
                         orientation,
                     },
@@ -1058,6 +1074,10 @@ struct ScrapLedger {
     deferred_construction: u32,
     /// The held fund for an extra Airworks while air production runs hot.
     airworks_capacity: u32,
+    /// The share independently required by a simultaneous lift. An active
+    /// connected operation may ignore capacity caused by its own package, but
+    /// not a factory already warranted by another operation.
+    independent_airworks_capacity: u32,
     /// One shallow Sentinel kept affordable after the opening core stands.
     shallow_sentinel: u32,
     /// The protected home-Extractor restoration fund.
@@ -1072,7 +1092,10 @@ impl ScrapLedger {
     /// its earlier priority; a later admission sees the saved expansion first.
     /// The remaining holds retain their historical subtraction order.
     fn strategic_spendable_for(&self, operation_precedes_foundry_saving: bool) -> u32 {
-        self.strategic_spendable_with_airworks_capacity(operation_precedes_foundry_saving, true)
+        self.strategic_spendable_with_airworks_capacity(
+            operation_precedes_foundry_saving,
+            self.airworks_capacity,
+        )
     }
 
     /// What the active air operation that created the capacity request may
@@ -1082,13 +1105,16 @@ impl ScrapLedger {
         &self,
         operation_precedes_foundry_saving: bool,
     ) -> u32 {
-        self.strategic_spendable_with_airworks_capacity(operation_precedes_foundry_saving, false)
+        self.strategic_spendable_with_airworks_capacity(
+            operation_precedes_foundry_saving,
+            self.independent_airworks_capacity,
+        )
     }
 
     fn strategic_spendable_with_airworks_capacity(
         &self,
         operation_precedes_foundry_saving: bool,
-        protect_airworks_capacity: bool,
+        protected_airworks_capacity: u32,
     ) -> u32 {
         if self.frozen {
             return 0;
@@ -1099,11 +1125,7 @@ impl ScrapLedger {
             self.bank.saturating_sub(self.foundry_saving)
         };
         let after_deferred = after_foundry.saturating_sub(self.deferred_construction);
-        let after_airworks = if protect_airworks_capacity {
-            after_deferred.saturating_sub(self.airworks_capacity)
-        } else {
-            after_deferred
-        };
+        let after_airworks = after_deferred.saturating_sub(protected_airworks_capacity);
         after_airworks
             .saturating_sub(self.shallow_sentinel)
             .saturating_sub(self.opening_bootstrap)
@@ -1130,6 +1152,27 @@ impl ScrapLedger {
     /// operation may use it as feasibility evidence. Current bank already
     /// covering those commitments does not reserve the forecast a second time.
     fn strategic_forecast_reserve_for(&self, operation_precedes_foundry_saving: bool) -> u32 {
+        self.strategic_forecast_reserve_with_airworks_capacity(
+            operation_precedes_foundry_saving,
+            self.airworks_capacity,
+        )
+    }
+
+    fn strategic_forecast_reserve_for_airworks_source(
+        &self,
+        operation_precedes_foundry_saving: bool,
+    ) -> u32 {
+        self.strategic_forecast_reserve_with_airworks_capacity(
+            operation_precedes_foundry_saving,
+            self.independent_airworks_capacity,
+        )
+    }
+
+    fn strategic_forecast_reserve_with_airworks_capacity(
+        &self,
+        operation_precedes_foundry_saving: bool,
+        protected_airworks_capacity: u32,
+    ) -> u32 {
         if self.frozen {
             return u32::MAX;
         }
@@ -1140,6 +1183,7 @@ impl ScrapLedger {
         };
         foundry
             .saturating_add(self.deferred_construction)
+            .saturating_add(protected_airworks_capacity)
             .saturating_add(self.shallow_sentinel)
             .saturating_add(self.opening_bootstrap)
             .saturating_sub(self.bank)
@@ -1490,6 +1534,7 @@ mod tests {
             foundry_saving: 200,
             deferred_construction: 40,
             airworks_capacity: 30,
+            independent_airworks_capacity: 0,
             shallow_sentinel: 20,
             opening_bootstrap: 10,
             frozen: false,
@@ -1510,7 +1555,7 @@ mod tests {
         assert_eq!(underfunded.strategic_forecast_reserve_for(true), 0);
         assert_eq!(underfunded.strategic_spendable_for(false), 0);
         assert_eq!(underfunded.strategic_current_reserve_for(false), 100);
-        assert_eq!(underfunded.strategic_forecast_reserve_for(false), 170);
+        assert_eq!(underfunded.strategic_forecast_reserve_for(false), 200);
         assert_eq!(
             ScrapLedger {
                 frozen: true,
@@ -1546,7 +1591,11 @@ mod tests {
             capacity.strategic_current_reserve_for_airworks_source(true),
             0
         );
-        assert_eq!(capacity.strategic_forecast_reserve_for(true), 0);
+        assert_eq!(capacity.strategic_forecast_reserve_for(true), 30);
+        assert_eq!(
+            capacity.strategic_forecast_reserve_for_airworks_source(true),
+            0
+        );
 
         let with_prior_promise = ScrapLedger {
             bank: 0,
@@ -1554,7 +1603,28 @@ mod tests {
             ..capacity
         };
         assert_eq!(with_prior_promise.strategic_spendable_for(true), 0);
-        assert_eq!(with_prior_promise.strategic_forecast_reserve_for(true), 40);
+        assert_eq!(
+            with_prior_promise.strategic_forecast_reserve_for_airworks_source(true),
+            40
+        );
+
+        let with_independent_lift = ScrapLedger {
+            independent_airworks_capacity: 90,
+            ..capacity
+        };
+        assert_eq!(
+            with_independent_lift.strategic_spendable_for_airworks_source(true),
+            0
+        );
+        assert_eq!(
+            with_independent_lift.strategic_current_reserve_for_airworks_source(true),
+            60
+        );
+        assert_eq!(
+            with_independent_lift.strategic_forecast_reserve_for_airworks_source(true),
+            30,
+            "future income still belongs to capacity independently required by the lift"
+        );
     }
 
     #[test]
@@ -3652,6 +3722,125 @@ mod tests {
             )),
             "strategic reservations and residual utility spending must lower through one legal bank: {:?}",
             report.events
+        );
+    }
+
+    #[test]
+    fn connected_air_cannot_spend_capacity_independently_required_by_a_lift() {
+        let mut scenario = combined_operation_scenario();
+        scenario
+            .buildings
+            .last_mut()
+            .expect("the fixture has a reachable enemy structure")
+            .kind = BuildingKind::Crucible;
+        scenario.buildings.extend([
+            BuildingSpec {
+                player: 1,
+                kind: BuildingKind::Foundry,
+                x: 10,
+                y: 10,
+            },
+            BuildingSpec {
+                player: 1,
+                kind: BuildingKind::Airworks,
+                x: 16,
+                y: 4,
+            },
+        ]);
+        let mut state = scenario
+            .build()
+            .expect("combined-operation capacity scenario builds");
+        state.tick = 6_000;
+        while !super::super::difficulty::strategic_admission_tick(state.current_tick()) {
+            state.tick(&[]);
+        }
+        let raw = Observation::fog_honest(&state, PlayerId(0));
+        let home = raw
+            .my_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::Foundry)
+            .min_by_key(|building| building.id)
+            .expect("the home Foundry remains visible")
+            .anchor;
+        let orientation = Orientation::for_home(&raw, home);
+        assert!(orientation.is_identity());
+        let oriented = orientation.observe(&raw);
+        let mut lift = LiftPlanner::new();
+        let _ = lift.think(&oriented, home, &[], LiftAirSupport::Independent);
+        let lift_airwork = lift.remaining_airwork_ticks(&oriented, &[]);
+        assert!(lift.operation().is_some());
+        assert!(lift_airwork > 2_400);
+
+        let mut connected_obs = oriented.clone();
+        connected_obs
+            .enemy_buildings
+            .retain(|building| building.anchor.x < 20);
+        let mut connected_intel = StrategicIntelligence::new();
+        connected_intel.update(&connected_obs);
+        let mut strategy = StrategicPlanner::new();
+        let mut brain = operation_identity_brain(PlayerId(0), &scenario);
+        brain.dials.minimum_core_equivalents = 0;
+        let profile = *brain
+            .profile()
+            .expect("the player-facing brain owns a profile");
+        let oriented_public_map = orientation.briefing(&brain.mind().public_map);
+        let connected_result = strategy.think_with_lift_support_diagnosed(
+            &profile,
+            DifficultyTuning::for_level(profile.difficulty),
+            &connected_obs,
+            &connected_intel,
+            home,
+            StrategicCoordination {
+                enlisted: &[],
+                lift_support: None,
+                allow_new_operation: true,
+                protected_current_scrap: 0,
+                protected_forecast_scrap: 0,
+                public_map: Some(&oriented_public_map),
+                orientation,
+            },
+        );
+        assert!(
+            strategy.connected_package_diagnostics().is_some(),
+            "the near structure admits a connected package: {connected_result:?}"
+        );
+        assert!(
+            strategy.remaining_airwork_ticks(&oriented) > 0,
+            "the connected operation still needs Airworks time"
+        );
+        let capacity_fund = brain.policy.airworks_capacity_commitment(
+            &brain.dials,
+            &oriented,
+            home,
+            Some(lift_airwork),
+            &[],
+        );
+        assert!(capacity_fund > 0);
+        enlist_opening_core(&mut brain, &state);
+        brain.orientation = Some(orientation);
+        brain.mind_mut().strategy = Some(strategy);
+        brain.mind_mut().lifts = Some(lift);
+        brain.mind_mut().team = None;
+        brain.mind_mut().raids = None;
+
+        let next_think = state.current_tick().saturating_add(brain.dials().cadence);
+        while state.current_tick() < next_think {
+            state.tick(&[]);
+        }
+        let spendable_after_capacity = UnitKind::Condor.stats().cost;
+        state.player_mut(PlayerId(0)).scrap = spendable_after_capacity + capacity_fund;
+
+        let result = brain.act_traced(&state);
+        let trace = result.trace.expect("the capacity decision is traced");
+        assert!(
+            trace.channels.connected_air.effects.committed_scrap <= spendable_after_capacity,
+            "the connected package must size itself inside the bank left after the lift's capacity fund"
+        );
+        let budget = trace.budget.expect("the ledger decision is traced");
+        assert_eq!(budget.airworks_capacity, capacity_fund);
+        assert!(
+            budget.utility_spendable >= capacity_fund,
+            "the independently warranted Airworks fund must survive connected and lift planning"
         );
     }
 
