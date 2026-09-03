@@ -36,7 +36,7 @@ pub(super) mod force_package;
 use force_package::{
     ConnectedForcePackage, ConnectedTargetEvidence, ForceFamily, ForcePackageRejection,
     NormalizedCapability, PreparationConstraints, ProductionEvidence, ProviderDemand,
-    ProviderDemandTranche, ProviderPriority, building_value, current_target_cluster,
+    ProviderDemandTranche, building_value, current_target_cluster,
     derive_connected_force_package_for_cluster, provider_demands_fit_funded_horizon,
     strike_capability, suppression_capability, target_cluster_air_defense,
 };
@@ -1214,7 +1214,7 @@ impl StrategicPlanner {
                 .filter(|package| package.derived_at < obs.tick)
                 .map(|package| package.preparation_deadline)
             && obs.tick <= deadline
-            && let Some(current_target) = current_target_contact(&op, intel)
+            && let Some(current_target) = current_package_revision_target(&op, &plan, intel)
         {
             let package_unavailable = excluding_owned(enlisted, &reservations(&op, &plan, obs));
             let resources = connected_resources.get_or_insert_with(|| {
@@ -1251,7 +1251,12 @@ impl StrategicPlanner {
                     },
                 },
             ) {
-                Ok(package) => plan.revise_connected(package),
+                Ok(package) => {
+                    op.target_kind = current_target.kind;
+                    op.target = current_target.anchor;
+                    op.target_id = current_target.id;
+                    plan.revise_connected(package);
+                }
                 Err(reason) => {
                     rejected_connected_candidate = Some(RejectedConnectedCandidate {
                         target: current_target.clone(),
@@ -1534,7 +1539,7 @@ fn recon(
         enlisted,
         |kind| kind == screen_kind,
     );
-    if !connected_minimum_is_feasible(op, plan, context) {
+    if !connected_package_is_feasible(op, plan, context) {
         recover(op, AirRecoveryReason::PreparationInfeasible, obs.tick);
         return;
     }
@@ -1632,7 +1637,7 @@ fn assemble(
         enlisted,
         |kind| kind == screen_kind,
     );
-    if !connected_minimum_is_feasible(op, plan, context) {
+    if !connected_package_is_feasible(op, plan, context) {
         recover(op, AirRecoveryReason::PreparationInfeasible, obs.tick);
         return;
     }
@@ -3671,7 +3676,7 @@ fn schedule_missing_members(
     schedule(obs, &demands, out);
 }
 
-fn connected_minimum_is_feasible(
+fn connected_package_is_feasible(
     op: &AirOperation,
     plan: &AirPlan,
     context: &AirPlanningContext<'_>,
@@ -3686,18 +3691,15 @@ fn connected_minimum_is_feasible(
         .connected_resources
         .as_ref()
         .expect("connected preparation has one observation-bound resource view");
-    let minimum = missing_package_demands(
+    let outstanding = missing_package_demands(
         package,
         op,
         context.obs,
         &resources.snapshot,
         package.preparation_deadline,
         &resources.access,
-    )
-    .into_iter()
-    .filter(|demand| demand.priority == ProviderPriority::Minimum)
-    .collect::<Vec<_>>();
-    let production_demands = minimum
+    );
+    let production_demands = outstanding
         .iter()
         .map(|demand| ProductionDemand {
             kind: demand.kind,
@@ -3711,7 +3713,7 @@ fn connected_minimum_is_feasible(
         &resources.access,
     ) && provider_demands_fit_funded_horizon(
         &resources.snapshot,
-        &minimum,
+        &outstanding,
         context.obs.tick,
         PreparationConstraints {
             deadline: package.preparation_deadline,
@@ -4091,6 +4093,20 @@ fn current_target_contact<'a>(
             && building.anchor == op.target
             && building.evidence == ContactEvidence::Current
     })
+}
+
+fn current_package_revision_target<'a>(
+    op: &AirOperation,
+    plan: &AirPlan,
+    intel: &'a StrategicIntelligence,
+) -> Option<&'a BuildingContact> {
+    let Some(package) = plan.connected_package.as_ref() else {
+        return current_target_contact(op, intel);
+    };
+    frozen_connected_target_contacts(op, package, intel)
+        .into_iter()
+        .filter(|building| building.evidence == ContactEvidence::Current)
+        .min_by_key(|building| operation_target_key(op, building))
 }
 
 fn target_visible(op: &AirOperation, obs: &Observation) -> bool {
@@ -9323,6 +9339,72 @@ mod tests {
     }
 
     #[test]
+    fn precommit_package_rebases_when_its_primary_target_is_destroyed() {
+        let admitted_at = 120;
+        let surviving_anchor = TARGET.offset(-3, 0);
+        let mut initial = developed_connected_obs(admitted_at);
+        initial.enemy_buildings.push(building(
+            81,
+            1,
+            BuildingKind::Foundry,
+            surviving_anchor,
+            true,
+        ));
+        initial
+            .enemy_buildings
+            .sort_unstable_by_key(|building| building.id);
+        let mut intelligence = knowledge(&initial);
+        let mut plan = connected_test_plan(&initial);
+        let package = plan
+            .connected_package
+            .as_mut()
+            .expect("the fixture begins with a connected package");
+        package.target_anchors.push(surviving_anchor);
+        package
+            .target_anchors
+            .sort_unstable_by_key(|anchor| (anchor.y, anchor.x));
+        let mut planner = StrategicPlanner {
+            air: Some(ActiveAirOperation {
+                op: operation(AirOperationPhase::Assemble, admitted_at),
+                plan,
+            }),
+            standby: AirStandby::default(),
+            cooldown_until: 0,
+            terminal_outcome: None,
+        };
+
+        let mut after_destruction = initial;
+        after_destruction.tick += 12;
+        after_destruction
+            .enemy_buildings
+            .retain(|building| building.anchor != TARGET);
+        intelligence.update(&after_destruction);
+        let decision = think(&mut planner, &after_destruction, &intelligence);
+
+        let active = planner
+            .air
+            .as_ref()
+            .expect("the surviving admitted target keeps preparation active");
+        assert_ne!(active.op.phase, AirOperationPhase::Recover);
+        assert_eq!(active.op.recovery_reason, None);
+        assert_eq!(active.op.target, surviving_anchor);
+        assert_eq!(active.op.target_kind, BuildingKind::Foundry);
+        assert_eq!(active.op.target_id, Some(BuildingId(81)));
+        let revised = active
+            .plan
+            .connected_package
+            .as_ref()
+            .expect("the surviving target retains a connected package");
+        assert_eq!(revised.derived_at, after_destruction.tick);
+        assert!(revised.target_anchors.contains(&surviving_anchor));
+        assert!(!revised.target_anchors.contains(&TARGET));
+        assert!(decision.intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        )));
+    }
+
+    #[test]
     fn rich_targets_scale_connected_packages_beyond_the_old_fixed_cohort() {
         let mut observation = developed_connected_obs(120);
         observation.scrap = 50_000;
@@ -9614,6 +9696,51 @@ mod tests {
     }
 
     #[test]
+    fn hidden_target_revalidates_the_full_scaled_package_funding() {
+        let initial = developed_connected_obs(120);
+        let mut intelligence = knowledge(&initial);
+        let mut hidden = initial.clone();
+        hidden.tick += 12;
+        hidden.scrap = 0;
+        hidden.visible.fill(false);
+        hidden.enemy_buildings[0].seen = false;
+        hidden.my_units.retain(|unit| unit.id != UnitId(4));
+        intelligence.update(&hidden);
+
+        let plan = connected_test_plan(&initial);
+        let mut operation = operation(AirOperationPhase::Recon, initial.tick);
+        operation.strike_aircraft = vec![UnitId(3)];
+        let mut planner = StrategicPlanner {
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
+            standby: AirStandby::default(),
+            cooldown_until: 0,
+            terminal_outcome: None,
+        };
+
+        let decision = think(&mut planner, &hidden, &intelligence);
+
+        let operation = planner
+            .air_operation()
+            .expect("the infeasible scaled package remains observable during recovery");
+        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(
+            operation.recovery_reason,
+            Some(AirRecoveryReason::PreparationInfeasible)
+        );
+        assert!(decision.intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::TrainAt {
+                kind: UnitKind::Condor,
+                ..
+            }
+        )));
+        assert_eq!(decision.committed_scrap, 0);
+    }
+
+    #[test]
     fn paid_front_queue_keeps_an_admitted_package_feasible_until_its_fixed_deadline() {
         fn run(reobserved_after: u32) -> (StrategicDecision, StrategicPlanner) {
             let admitted_at = 100;
@@ -9647,19 +9774,19 @@ mod tests {
             }];
             package.provider_priority = vec![
                 ProviderDemandTranche {
-                    priority: ProviderPriority::Minimum,
+                    priority: force_package::ProviderPriority::Minimum,
                     family: ForceFamily::Recon,
                     kind: UnitKind::Kestrel,
                     count: 1,
                 },
                 ProviderDemandTranche {
-                    priority: ProviderPriority::Minimum,
+                    priority: force_package::ProviderPriority::Minimum,
                     family: ForceFamily::Suppression,
                     kind: UnitKind::Bombard,
                     count: 1,
                 },
                 ProviderDemandTranche {
-                    priority: ProviderPriority::Minimum,
+                    priority: force_package::ProviderPriority::Minimum,
                     family: ForceFamily::Strike,
                     kind: UnitKind::Buzzard,
                     count: 1,
