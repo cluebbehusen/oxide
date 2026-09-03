@@ -4,6 +4,7 @@ use super::difficulty::strategic_admission_tick;
 use super::executive::{Intent, unit_strength};
 use super::intelligence::{BuildingContact, ContactEvidence};
 use super::observation::{BuildingObs, Observation, UnitObs};
+use super::resources::ProducerLaneReservations;
 use super::routing::{self, RouteProjection};
 use super::strategy::StrategicDecision;
 use super::utility::combat_core_status;
@@ -211,6 +212,9 @@ pub struct LiftPlanner {
 #[derive(Clone, Copy)]
 pub(super) struct LiftAdmission<'a> {
     pub(super) allow_new_commitments: bool,
+    /// Current bank this planner may commit after higher-priority shared
+    /// obligations, without altering the truthful observation.
+    pub(super) spendable_scrap: u32,
     pub(super) core_reservations: &'a [UnitId],
     pub(super) minimum_core_equivalents: u64,
 }
@@ -305,6 +309,7 @@ impl LiftPlanner {
             support,
             LiftAdmission {
                 allow_new_commitments: true,
+                spendable_scrap: obs.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },
@@ -319,8 +324,28 @@ impl LiftPlanner {
         support: LiftAirSupport,
         admission: LiftAdmission<'_>,
     ) -> StrategicDecision {
+        self.think_with_admission_and_producer_lanes(
+            obs,
+            home,
+            unavailable,
+            support,
+            admission,
+            ProducerLaneReservations::empty(),
+        )
+    }
+
+    pub(super) fn think_with_admission_and_producer_lanes(
+        &mut self,
+        obs: &Observation,
+        home: TilePos,
+        unavailable: &[UnitId],
+        support: LiftAirSupport,
+        admission: LiftAdmission<'_>,
+        producer_lane_reservations: &ProducerLaneReservations,
+    ) -> StrategicDecision {
         let LiftAdmission {
             allow_new_commitments,
+            spendable_scrap,
             core_reservations,
             minimum_core_equivalents,
         } = admission;
@@ -348,10 +373,15 @@ impl LiftPlanner {
                 .filter(|member| can_defend_ground(member))
                 .map(|member| u32::from(member.kind.stats().transport_size))
                 .sum();
-            let built_airworks = obs
-                .my_buildings
-                .iter()
-                .any(|building| building.built && building.kind == BuildingKind::Airworks);
+            let built_airworks = obs.my_buildings.iter().any(|building| {
+                building.built
+                    && building.kind == BuildingKind::Airworks
+                    && producer_lane_reservations.allows_immediate_append(
+                        building.id,
+                        &[],
+                        UnitKind::Skyhook,
+                    )
+            });
             let enough_existing_carriers =
                 available_carriers(obs, &unavailable).len() >= plan.desired_carriers;
             let planned_drops =
@@ -457,7 +487,14 @@ impl LiftPlanner {
         match operation.phase {
             LiftPhase::Provision => {
                 if allow_new_commitments {
-                    provision(&operation, obs, &unavailable, &mut decision);
+                    provision(
+                        &operation,
+                        obs,
+                        &unavailable,
+                        producer_lane_reservations,
+                        spendable_scrap,
+                        &mut decision,
+                    );
                 }
                 if assign_manifests(&mut operation, obs, home, &unavailable) {
                     enter(&mut operation, LiftPhase::Boarding, obs.tick);
@@ -1136,6 +1173,8 @@ fn provision(
     operation: &LiftOperation,
     obs: &Observation,
     unavailable: &[UnitId],
+    producer_lane_reservations: &ProducerLaneReservations,
+    spendable_scrap: u32,
     decision: &mut StrategicDecision,
 ) {
     let live = available_carriers(obs, unavailable).len();
@@ -1159,7 +1198,7 @@ fn provision(
         return;
     }
 
-    let mut bank = obs.scrap;
+    let mut bank = obs.scrap.min(spendable_scrap);
     let mut added = vec![0usize; obs.my_buildings.len()];
     while missing > 0 {
         let producer = obs
@@ -1167,8 +1206,14 @@ fn provision(
             .iter()
             .enumerate()
             .filter(|(index, building)| {
+                let prior_immediate = vec![UnitKind::Skyhook; added[*index]];
                 building.built
                     && building.kind == BuildingKind::Airworks
+                    && producer_lane_reservations.allows_immediate_append(
+                        building.id,
+                        &prior_immediate,
+                        UnitKind::Skyhook,
+                    )
                     && obs.my_queues.get(*index).is_some_and(|queue| {
                         queue.len().saturating_add(added[*index]) < SHALLOW_QUEUE_DEPTH
                     })
@@ -1961,6 +2006,7 @@ mod tests {
     use super::*;
     use crate::bot::intelligence::{BuildingContact, ContactEvidence};
     use crate::bot::observation::BuildingObs;
+    use crate::bot::resources::ReservedProducerJob;
     use crate::scenario::BotDifficulty;
 
     const HOME: TilePos = TilePos::new(5, 15);
@@ -2102,6 +2148,7 @@ mod tests {
         add_airworks(&mut obs, 200, Vec::new());
         let admission = LiftAdmission {
             allow_new_commitments: true,
+            spendable_scrap: obs.scrap,
             core_reservations: &[],
             minimum_core_equivalents: 8,
         };
@@ -2559,6 +2606,61 @@ mod tests {
     }
 
     #[test]
+    fn provisioning_preserves_a_future_lane_and_uses_an_unrelated_airworks() {
+        let mut obs = island_obs();
+        add_fighters(&mut obs, 20);
+        add_airworks(&mut obs, 10, Vec::new());
+        add_airworks(&mut obs, 11, Vec::new());
+        obs.scrap = 1_000;
+        let kind = UnitKind::Skyhook;
+        let ready_at = 12 + Tick::from(kind.stats().train_ticks) - 1;
+        let resources = crate::bot::resources::ResourceSnapshot::from_observation(&obs);
+        let projection = resources.planning_projection(ready_at + 1, 12).unwrap();
+        let reservations = ProducerLaneReservations::from_jobs(
+            &projection,
+            [ReservedProducerJob {
+                producer: BuildingId(10),
+                kind,
+                enqueued_at: 12,
+                starts_at: 12,
+                ready_at,
+                ready_before: ready_at + 1,
+            }],
+        );
+        let before = obs.my_queues.clone();
+
+        let mut planner = LiftPlanner::new();
+        let decision = planner.think_with_admission_and_producer_lanes(
+            &obs,
+            HOME,
+            &[],
+            LiftAirSupport::Independent,
+            LiftAdmission {
+                allow_new_commitments: true,
+                spendable_scrap: obs.scrap,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+            &reservations,
+        );
+        let orders: Vec<_> = decision
+            .intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::TrainAt {
+                    building,
+                    kind: UnitKind::Skyhook,
+                } => Some(*building),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(orders, [BuildingId(11), BuildingId(11)]);
+        assert_eq!(obs.my_queues, before);
+        assert!(obs.my_queues.iter().flatten().all(|queued| *queued != kind));
+    }
+
+    #[test]
     fn provisioning_counts_live_and_queued_carriers_before_buying_more() {
         let mut obs = island_obs();
         add_fighters(&mut obs, 20);
@@ -2692,6 +2794,7 @@ mod tests {
                 LiftAirSupport::Independent,
                 LiftAdmission {
                     allow_new_commitments: false,
+                    spendable_scrap: obs.scrap,
                     core_reservations: &[],
                     minimum_core_equivalents: 0,
                 },
@@ -2709,6 +2812,7 @@ mod tests {
             LiftAirSupport::Independent,
             LiftAdmission {
                 allow_new_commitments: true,
+                spendable_scrap: obs.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },
@@ -2727,6 +2831,7 @@ mod tests {
             LiftAirSupport::Independent,
             LiftAdmission {
                 allow_new_commitments: false,
+                spendable_scrap: obs.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },
@@ -2756,6 +2861,7 @@ mod tests {
             LiftAirSupport::Independent,
             LiftAdmission {
                 allow_new_commitments: false,
+                spendable_scrap: obs.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },

@@ -8,15 +8,28 @@
 //! units and lower intents to commands.
 
 use super::PublicMapBriefing;
+use super::allocation::{
+    AdvancedPlannerWork, AllocationBudgetOutcome, AllocationParticipants, AllocationSession,
+    AllocationSessionContext, AllocationSessionOutcome, PlannerClaims, PlannerSnapshots,
+};
+#[cfg(test)]
+use super::allocation::{
+    AllocationPersonality, BoundedCapitalReserve, CrossDomainAllocation, LegacyChannel,
+    ObligationKey, prior_planner_claims, push_bounded_capital_reserve,
+};
 use super::difficulty::DifficultyTuning;
 use super::executive::{Army, ArmyState, Executive, Intent};
 use super::intelligence::StrategicIntelligence;
-use super::lift::{LiftAdmission, LiftAirSupport, LiftOperation, LiftPlanner};
+use super::lift::{LiftAdmission, LiftAirSupport, LiftPlanner};
 use super::observation::Observation;
 use super::orient::Orientation;
 use super::profile::ResolvedProfile;
 use super::raid::{RaidPlanner, RaidPlanningContext};
 use super::resources::BuilderLease;
+#[cfg(test)]
+use super::resources::ResourceSnapshot;
+#[cfg(test)]
+use super::strategy::connected_preparation_horizon;
 use super::strategy::{
     AirOperationOutcome, AirOperationPhase, LiftSupportRequest, StrategicCoordination,
     StrategicDecision, StrategicPlanner,
@@ -328,163 +341,77 @@ impl Brain {
             .map(|building| building.anchor)
             .unwrap_or(TilePos::new(0, 0));
         let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let prior_team_core_claims = team
-            .as_ref()
-            .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
         let team_before_state = recorder
             .is_some()
             .then(|| team_channel_state(team.as_ref()));
-        let claims = ClaimLedger {
-            enlisted: &enlisted,
-            strategy,
-            raids,
-            lifts,
-        };
-        let team_external_claims = claims.external_to_team();
-        let team_other_core_exclusions = claims.core_exclusions(&[]);
-        let prior_team_core_exclusions = claims.core_exclusions(&prior_team_core_claims);
-        let allow_team_admission = combat_core_status(
-            &oriented,
-            &prior_team_core_exclusions,
-            &[],
-            u64::from(self.dials.minimum_core_equivalents),
-        )
-        .ready;
-        if let Some(recorder) = recorder.as_deref_mut() {
-            recorder.trace_mut().gates.team_relief_core_ready = Some(allow_team_admission);
-        }
-        let team_before_decision = team.clone();
-        let mut team_decision = if let Some(team) = team.as_mut() {
-            team.think_with_admission(
-                profile,
-                tuning,
-                &oriented,
-                oriented_home,
-                &team_external_claims,
-                TeamReliefAdmission {
-                    additionally_reserved: &[],
-                    allow_new_operation: allow_team_admission,
-                    core_reservations: &team_other_core_exclusions,
-                    minimum_core_equivalents: u64::from(self.dials.minimum_core_equivalents),
-                },
-            )
+        let air_before_state = recorder
+            .is_some()
+            .then(|| air_channel_state(strategy.as_ref()));
+        let lift_before_state = recorder
+            .is_some()
+            .then(|| lift_channel_state(lifts.as_ref()));
+        let raid_before_state = recorder
+            .is_some()
+            .then(|| raid_channel_state(raids.as_ref()));
+        let allocation_snapshots = PlannerSnapshots::capture(strategy, team, lifts, raids);
+
+        // Accepted legacy operations advance first so the allocation pass sees
+        // the exact units and commands they still own. Idle planners do not get
+        // a fresh admission until allocation has selected this think's migrated
+        // investments.
+        let team_was_active = team
+            .as_ref()
+            .is_some_and(|planner| planner.operation().is_some());
+        let lift_was_active = lifts
+            .as_ref()
+            .is_some_and(|planner| planner.operation().is_some());
+        let raid_was_active = raids
+            .as_ref()
+            .is_some_and(|planner| planner.operation().is_some());
+        let team_started_at = team
+            .as_ref()
+            .and_then(TeamReliefPlanner::operation)
+            .map(|operation| operation.started_at)
+            .unwrap_or(oriented.tick);
+        let lift_started_at = lifts
+            .as_ref()
+            .and_then(LiftPlanner::operation)
+            .map(|operation| operation.started_at)
+            .unwrap_or(oriented.tick);
+        let raid_started_at = raids
+            .as_ref()
+            .and_then(RaidPlanner::operation)
+            .map(|operation| operation.started_at)
+            .unwrap_or(oriented.tick);
+
+        let initial_claims = PlannerClaims::new(&enlisted, strategy, raids, lifts);
+        let initial_team_external = initial_claims.external_to_team();
+        let initial_team_core_exclusions = initial_claims.core_exclusions(&[]);
+        let team_decision = if team_was_active {
+            team.as_mut()
+                .expect("an active team planner exists")
+                .think_with_admission(
+                    profile,
+                    tuning,
+                    &oriented,
+                    oriented_home,
+                    &initial_team_external,
+                    TeamReliefAdmission {
+                        additionally_reserved: &[],
+                        allow_new_operation: false,
+                        core_reservations: &initial_team_core_exclusions,
+                        minimum_core_equivalents: u64::from(self.dials.minimum_core_equivalents),
+                    },
+                )
         } else {
             StrategicDecision::default()
         };
-        let mut team_core_claims = team
-            .as_ref()
-            .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
-        let mut team_relief_rolled_back = false;
-        if prior_team_core_claims.is_empty() && !team_core_claims.is_empty() {
-            let candidate_core_exclusions = claims.core_exclusions(&team_core_claims);
-            team_relief_rolled_back = roll_back_unless_core_ready(
-                &oriented,
-                &candidate_core_exclusions,
-                u64::from(self.dials.minimum_core_equivalents),
-                team,
-                team_before_decision,
-                &mut team_decision,
-                Some(&mut team_core_claims),
-            );
+
+        // Intelligence ages once per strategic think. Keeping the update inside
+        // the planner arm preserves the focused profile-null test contract.
+        if strategy.is_some() {
+            intelligence.update(&oriented);
         }
-        if let Some(recorder) = recorder.as_deref_mut() {
-            let trace = recorder.trace_mut();
-            trace.gates.team_relief_rolled_back = team_relief_rolled_back;
-            trace.channels.team_relief = channel_trace(
-                team_before_state.expect("a traced decision captured the prior team state"),
-                team_channel_state(team.as_ref()),
-                &team_decision,
-            );
-        }
-        let team_claims = team_decision.reservations.clone();
-        let prior_non_lift_claims = claims.without_lift(&team_claims);
-        let planner_claims = claims.all(&team_claims);
-        let strategic_core_exclusions = claims.core_exclusions(&team_core_claims);
-        let opening_core = combat_core_status(
-            &oriented,
-            &strategic_core_exclusions,
-            &[],
-            u64::from(self.dials.minimum_core_equivalents),
-        );
-        let allow_new_voluntary_operations = opening_core.ready;
-        let foundry_saving = self
-            .policy
-            .validated_foundry_saving(&oriented, allow_new_voluntary_operations);
-        if let Some(recorder) = recorder.as_deref_mut() {
-            recorder.trace_mut().gates.opening_core = Some(CoreGateTrace {
-                projected_strength: opening_core.projected_strength,
-                target_strength: opening_core.target_strength,
-                missing_strength: opening_core.missing_strength,
-                missing_scrap: opening_core.missing_scrap,
-                ready: opening_core.ready,
-            });
-        }
-        let mut ledger = ScrapLedger {
-            bank: oriented.scrap,
-            foundry_saving,
-            frozen: !allow_new_voluntary_operations,
-            ..ScrapLedger::default()
-        };
-        if allow_new_voluntary_operations {
-            ledger.shallow_sentinel = self.policy.shallow_sentinel_capital_reserve(
-                &self.dials,
-                &oriented,
-                oriented_home,
-                oriented_public_map,
-            );
-            ledger.opening_bootstrap = self.policy.strategic_opening_bootstrap_reserve(
-                &self.dials,
-                &oriented,
-                oriented_home,
-                oriented_public_map,
-            );
-        }
-        let prior_lift_unavailable =
-            lift_unavailable(&oriented, &armies, &enlisted, &prior_non_lift_claims);
-        ledger.deferred_construction = UtilityPolicy::deferred_construction_commitment(&oriented);
-        let connected_air_production_ticks = strategy
-            .as_ref()
-            .map_or(0, |strategy| strategy.remaining_airwork_ticks(&oriented));
-        let lift_air_production_ticks = lifts.as_ref().map_or(0, |lifts| {
-            lifts.remaining_airwork_ticks(&oriented, &prior_lift_unavailable)
-        });
-        let active_air_production_ticks =
-            connected_air_production_ticks.saturating_add(lift_air_production_ticks);
-        let connected_air_active = strategy
-            .as_ref()
-            .is_some_and(|strategy| strategy.air_operation().is_some());
-        let lift_air_active = lifts
-            .as_ref()
-            .is_some_and(|lifts| lifts.operation().is_some());
-        let air_capacity_active = connected_air_active || lift_air_active;
-        if allow_new_voluntary_operations {
-            ledger.airworks_capacity = self.policy.airworks_capacity_commitment(
-                &self.dials,
-                &oriented,
-                oriented_home,
-                air_capacity_active.then_some(active_air_production_ticks),
-                &planner_claims,
-            );
-            if connected_air_active && lift_air_active {
-                ledger.independent_airworks_capacity = self.policy.airworks_capacity_commitment(
-                    &self.dials,
-                    &oriented,
-                    oriented_home,
-                    Some(lift_air_production_ticks),
-                    &planner_claims,
-                );
-            }
-        }
-        let air_precedes_foundry_saving = strategy
-            .as_ref()
-            .and_then(StrategicPlanner::air_admitted_at)
-            .is_some_and(|admitted_at| self.policy.operation_precedes_foundry_saving(admitted_at));
-        let mut strategic_observation = oriented.clone();
-        strategic_observation.scrap = if connected_air_active {
-            ledger.strategic_spendable_for_airworks_source(air_precedes_foundry_saving)
-        } else {
-            ledger.strategic_spendable_for(air_precedes_foundry_saving)
-        };
         let lift_support_request = lifts
             .as_ref()
             .and_then(LiftPlanner::operation)
@@ -494,97 +421,357 @@ impl Brain {
                 target: operation.target,
                 planned_drops: operation.planned_drops.clone(),
             });
-        let lift_was_active = lift_support_request.is_some();
-        let air_before_state = recorder
+        let initial_support = strategy
+            .as_ref()
+            .map_or(LiftAirSupport::Independent, |strategy| {
+                air_support(strategy.air_operation(), strategy.terminal_outcome())
+            });
+        let claims_after_team = PlannerClaims::new(&enlisted, strategy, raids, lifts);
+        let team_claims = team
+            .as_ref()
+            .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
+        let prior_non_lift_claims = claims_after_team.without_lift(&team_claims);
+        let lift_unavailable_before =
+            lift_unavailable(&oriented, &armies, &enlisted, &prior_non_lift_claims);
+        let preliminary_core_exclusions = claims_after_team.core_exclusions(&team_claims);
+        let preliminary_core = combat_core_status(
+            &oriented,
+            &preliminary_core_exclusions,
+            &[],
+            u64::from(self.dials.minimum_core_equivalents),
+        );
+        let raid_exclusions =
+            PlannerClaims::new(&enlisted, strategy, raids, lifts).all(&team_claims);
+        let raid_decision = if raid_was_active {
+            raids
+                .as_mut()
+                .expect("an active raid planner exists")
+                .think_with_admission(
+                    RaidPlanningContext::new(
+                        profile,
+                        tuning,
+                        &oriented,
+                        oriented_home,
+                        &enlisted,
+                        &raid_exclusions,
+                    )
+                    .with_admission(false),
+                )
+        } else {
+            StrategicDecision::default()
+        };
+
+        let connected_force_before = recorder
             .is_some()
-            .then(|| air_channel_state(strategy.as_ref()));
-        // Intelligence ages with the strategic think: a test that nulls
-        // the strategic planner also expects contact memory to hold
-        // still, so the update stays inside the planner's arm.
-        let (strategic_result, connected_force_before) = if let Some(strategy) = strategy.as_mut() {
-            intelligence.update(&oriented);
-            let before = recorder
-                .is_some()
-                .then(|| connected_force_trace(Some(strategy), intelligence, None));
-            (
-                strategy.think_with_lift_support_diagnosed(
-                    profile,
-                    tuning,
-                    &strategic_observation,
-                    intelligence,
-                    oriented_home,
-                    StrategicCoordination {
-                        enlisted: &planner_claims,
-                        lift_support: lift_support_request.as_ref(),
-                        allow_new_operation: allow_new_voluntary_operations,
-                        protected_current_scrap: if connected_air_active {
-                            ledger.strategic_current_reserve_for_airworks_source(
-                                air_precedes_foundry_saving,
-                            )
-                        } else {
-                            ledger.strategic_current_reserve_for(air_precedes_foundry_saving)
-                        },
-                        protected_forecast_scrap: if connected_air_active {
-                            ledger.strategic_forecast_reserve_for_airworks_source(
-                                air_precedes_foundry_saving,
-                            )
-                        } else {
-                            ledger.strategic_forecast_reserve_for(air_precedes_foundry_saving)
-                        },
-                        public_map: Some(oriented_public_map),
-                        orientation,
+            .then(|| connected_force_trace(strategy.as_ref(), intelligence, None));
+        let allocation_outcome = AllocationSession::new(
+            AllocationSessionContext {
+                dials: &self.dials,
+                profile,
+                tuning,
+                observation: &oriented,
+                home: oriented_home,
+                public_map: oriented_public_map,
+                orientation,
+                intelligence,
+                enlisted: &enlisted,
+                lift_support: lift_support_request.as_ref(),
+            },
+            AllocationParticipants {
+                policy: &mut self.policy,
+                strategy,
+                lifts,
+                team,
+                raids,
+            },
+            AdvancedPlannerWork {
+                team_decision,
+                raid_decision,
+                team_started_at,
+                lift_started_at,
+                raid_started_at,
+                lift_was_active,
+                initial_lift_support: initial_support,
+                lift_unavailable: lift_unavailable_before,
+                preliminary_core,
+                preliminary_core_exclusions,
+                snapshots: allocation_snapshots,
+            },
+            recorder
+                .as_deref_mut()
+                .map(|recorder| &mut recorder.trace_mut().allocation),
+        )
+        .run();
+        let AllocationSessionOutcome {
+            opening_core,
+            allow_new_voluntary_operations,
+            mut team_decision,
+            mut lift_decision,
+            mut raid_decision,
+            planner_claims,
+            strategic_core_exclusions,
+            connected_continues,
+            connected_accepted_at,
+            mut rejected_connected_candidate,
+            staged_strategy,
+            fresh_foundry_intents,
+            allocation_ok,
+            accepted_connected,
+            producer_lane_reservations,
+            budget:
+                AllocationBudgetOutcome {
+                    foundry_saving,
+                    airworks_capacity,
+                    shallow_sentinel,
+                    opening_bootstrap,
+                    residual_scrap,
+                    connected_spendable,
+                    connected_forecast_hold,
+                    mut utility_spendable,
+                    prior_operation_spendable,
+                },
+        } = allocation_outcome;
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.trace_mut().gates.opening_core = Some(CoreGateTrace {
+                projected_strength: opening_core.projected_strength,
+                target_strength: opening_core.target_strength,
+                missing_strength: opening_core.missing_strength,
+                missing_scrap: opening_core.missing_scrap,
+                ready: opening_core.ready,
+            });
+        }
+        let strategic_was_staged = staged_strategy.is_some();
+        let strategic_result = if let Some(staged) = staged_strategy {
+            staged
+        } else if let Some(planner) = strategy.as_mut() {
+            let continue_connected = connected_continues;
+            planner.think_after_connected_adjudication(
+                profile,
+                tuning,
+                &oriented,
+                intelligence,
+                oriented_home,
+                StrategicCoordination {
+                    enlisted: &planner_claims,
+                    lift_support: lift_support_request.as_ref(),
+                    allow_new_operation: continue_connected
+                        || (allocation_ok && allow_new_voluntary_operations),
+                    protected_current_scrap: if continue_connected && !allocation_ok {
+                        0
+                    } else {
+                        oriented.scrap.saturating_sub(connected_spendable)
                     },
-                ),
-                before,
+                    protected_forecast_scrap: if continue_connected && !allocation_ok {
+                        0
+                    } else {
+                        connected_forecast_hold
+                    },
+                    public_map: Some(oriented_public_map),
+                    orientation,
+                },
             )
         } else {
-            (
-                Default::default(),
-                recorder
-                    .is_some()
-                    .then(|| connected_force_trace(None, intelligence, None)),
-            )
+            Default::default()
         };
-        let rejected_connected_candidate = strategic_result.rejected_connected_candidate;
+        if rejected_connected_candidate.is_none() {
+            rejected_connected_candidate = strategic_result.rejected_connected_candidate;
+        }
+        let air_decision_for_trace = strategic_result.decision.clone();
         let mut strategic = strategic_result.decision;
+        strategic.intents.splice(0..0, fresh_foundry_intents);
+        let connected_is_typed = accepted_connected
+            || connected_continues
+            || (strategic_was_staged && allocation_ok)
+            || strategy
+                .as_ref()
+                .and_then(|planner| planner.active_connected_obligation(&oriented))
+                .is_some();
+        let allocation_observation = oriented.clone();
+        let mut post_allocation_commitment = if connected_is_typed {
+            0
+        } else {
+            strategic.committed_scrap
+        };
+        merge_strategic(&mut strategic, team_decision.clone());
+        merge_strategic(&mut strategic, lift_decision.clone());
+        merge_strategic(&mut strategic, raid_decision.clone());
+
+        // Idle legacy planners now see only allocation's true residual and the
+        // exact units retained by selected or active work.
+        let mut residual_observation =
+            project_strategic_queues(&allocation_observation, &strategic);
+        residual_observation.scrap = residual_scrap.saturating_sub(post_allocation_commitment);
+        let mut team_relief_rolled_back = false;
+        if !team_was_active {
+            let claims = PlannerClaims::new(&enlisted, strategy, raids, lifts);
+            let prior_team_claims = team
+                .as_ref()
+                .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
+            let external = claims.external_to_team();
+            let core_before = claims.core_exclusions(&prior_team_claims);
+            let allow_team = allocation_ok
+                && combat_core_status(
+                    &oriented,
+                    &core_before,
+                    &[],
+                    u64::from(self.dials.minimum_core_equivalents),
+                )
+                .ready;
+            if let Some(recorder) = recorder.as_deref_mut() {
+                recorder.trace_mut().gates.team_relief_core_ready = Some(allow_team);
+            }
+            let snapshot = team.clone();
+            if let Some(planner) = team.as_mut() {
+                team_decision = planner.think_with_admission(
+                    profile,
+                    tuning,
+                    &residual_observation,
+                    oriented_home,
+                    &external,
+                    TeamReliefAdmission {
+                        additionally_reserved: &[],
+                        allow_new_operation: allow_team,
+                        core_reservations: &core_before,
+                        minimum_core_equivalents: u64::from(self.dials.minimum_core_equivalents),
+                    },
+                );
+            }
+            let mut resulting_core = team
+                .as_ref()
+                .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
+            if prior_team_claims.is_empty() && !resulting_core.is_empty() {
+                let after = PlannerClaims::new(&enlisted, strategy, raids, lifts);
+                let exclusions = after.core_exclusions(&resulting_core);
+                team_relief_rolled_back = roll_back_unless_core_ready(
+                    &oriented,
+                    &exclusions,
+                    u64::from(self.dials.minimum_core_equivalents),
+                    team,
+                    snapshot,
+                    &mut team_decision,
+                    Some(&mut resulting_core),
+                );
+            }
+            post_allocation_commitment =
+                post_allocation_commitment.saturating_add(team_decision.committed_scrap);
+            merge_strategic(&mut strategic, team_decision.clone());
+        }
+
+        let claims_before_lift = PlannerClaims::new(&enlisted, strategy, raids, lifts);
+        let team_core_claims = team
+            .as_ref()
+            .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
+        let core_exclusions_after_team = claims_before_lift.core_exclusions(&team_core_claims);
+        let prior_non_lift = claims_before_lift.without_lift(&team_core_claims);
+        let lift_unavailable_after =
+            lift_unavailable(&oriented, &armies, &enlisted, &prior_non_lift);
+        let mut lift_rolled_back = false;
+        if !lift_was_active {
+            let snapshot = lifts.clone();
+            let mut support = strategy
+                .as_ref()
+                .map_or(LiftAirSupport::Independent, |planner| {
+                    air_support(planner.air_operation(), planner.terminal_outcome())
+                });
+            let air_accepts_new_lift = strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation)
+                .is_some_and(|operation| operation.phase != AirOperationPhase::Recover);
+            support = match (air_accepts_new_lift, support) {
+                (true, LiftAirSupport::Released { player, target }) => {
+                    LiftAirSupport::Suppressing { player, target }
+                }
+                (true, support @ LiftAirSupport::Suppressing { .. }) => support,
+                _ => LiftAirSupport::Independent,
+            };
+            let mut lift_observation =
+                project_strategic_queues(&allocation_observation, &strategic);
+            lift_observation.scrap = residual_scrap.saturating_sub(post_allocation_commitment);
+            if let Some(planner) = lifts.as_mut() {
+                lift_decision = planner.think_with_admission_and_producer_lanes(
+                    &lift_observation,
+                    oriented_home,
+                    &lift_unavailable_after,
+                    support,
+                    LiftAdmission {
+                        allow_new_commitments: allocation_ok && allow_new_voluntary_operations,
+                        spendable_scrap: lift_observation.scrap,
+                        core_reservations: &core_exclusions_after_team,
+                        minimum_core_equivalents: u64::from(self.dials.minimum_core_equivalents),
+                    },
+                    &producer_lane_reservations,
+                );
+            }
+            if lifts
+                .as_ref()
+                .is_some_and(|planner| planner.operation().is_some())
+            {
+                let after = PlannerClaims::new(&enlisted, strategy, raids, lifts);
+                let exclusions = after.core_exclusions(&team_core_claims);
+                lift_rolled_back = roll_back_unless_core_ready(
+                    &oriented,
+                    &exclusions,
+                    u64::from(self.dials.minimum_core_equivalents),
+                    lifts,
+                    snapshot,
+                    &mut lift_decision,
+                    None,
+                );
+            }
+            post_allocation_commitment =
+                post_allocation_commitment.saturating_add(lift_decision.committed_scrap);
+            merge_strategic(&mut strategic, lift_decision.clone());
+        }
+
         let air_active = strategy
             .as_ref()
-            .is_some_and(|strategy| strategy.air_operation().is_some());
-        if let Some(recorder) = recorder.as_deref_mut() {
-            let trace = recorder.trace_mut();
-            trace.channels.connected_air = channel_trace(
-                air_before_state.expect("a traced decision captured the prior air state"),
-                air_channel_state(strategy.as_ref()),
-                &strategic,
-            );
-            let mut connected_force = connected_force_trace(
-                strategy.as_ref(),
-                intelligence,
-                rejected_connected_candidate.as_ref(),
-            );
-            connected_force.preserve_terminal_package(
-                connected_force_before
-                    .expect("a traced decision captured the prior connected force"),
-            );
-            trace.connected_force = connected_force;
-        }
-        merge_strategic(&mut strategic, team_decision);
-        let team_active = team.as_ref().is_some_and(|team| team.operation().is_some());
-        // A raid group already mustering or under way keeps ownership while a
-        // new lift is planned. A merely optional new raid does not get to
-        // shrink the primary island assault before the lift sees the roster.
-        let prior_raid_reservations: Vec<_> = raids
+            .is_some_and(|planner| planner.air_operation().is_some());
+        let team_active = team
             .as_ref()
-            .into_iter()
-            .flat_map(|raids| raids.reservations().iter().copied())
-            .collect();
-        let mut reservations_before_lift = strategic.reservations.clone();
-        reservations_before_lift.extend(prior_raid_reservations);
-        reservations_before_lift.sort_unstable();
-        reservations_before_lift.dedup();
-        let lift_unavailable =
-            lift_unavailable(&oriented, &armies, &enlisted, &reservations_before_lift);
-        let prospective_carrier_commitment = if allow_new_voluntary_operations {
+            .is_some_and(|planner| planner.operation().is_some());
+        let lift_active = lifts
+            .as_ref()
+            .is_some_and(|planner| planner.operation().is_some());
+        let strategic_load =
+            usize::from(air_active) + usize::from(team_active) + usize::from(lift_active);
+        let raid_claimed = raids
+            .as_ref()
+            .is_some_and(|planner| !planner.reservations().is_empty());
+        let can_begin_raid = allocation_ok
+            && allow_new_voluntary_operations
+            && can_admit_optional_raid(tuning, strategic_load);
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.trace_mut().gates.raid_attention = Some(RaidAttentionTrace {
+                strategic_load: bounded_count(strategic_load),
+                attention_slots: bounded_count(tuning.attention_slots),
+                admitted: can_begin_raid,
+            });
+        }
+        if !raid_was_active && (raid_claimed || can_begin_raid) {
+            let raid_exclusions =
+                PlannerClaims::new(&enlisted, strategy, raids, lifts).all(&team_core_claims);
+            let mut raid_observation =
+                project_strategic_queues(&allocation_observation, &strategic);
+            raid_observation.scrap = residual_scrap.saturating_sub(post_allocation_commitment);
+            if let Some(planner) = raids.as_mut() {
+                raid_decision = planner.think_with_admission(
+                    RaidPlanningContext::new(
+                        profile,
+                        tuning,
+                        &raid_observation,
+                        oriented_home,
+                        &enlisted,
+                        &raid_exclusions,
+                    )
+                    .with_admission(can_begin_raid),
+                );
+            }
+            post_allocation_commitment =
+                post_allocation_commitment.saturating_add(raid_decision.committed_scrap);
+            merge_strategic(&mut strategic, raid_decision.clone());
+        }
+
+        let prospective_carrier_commitment = if allocation_ok && allow_new_voluntary_operations {
             strategy
                 .as_ref()
                 .and_then(StrategicPlanner::air_operation)
@@ -598,12 +785,12 @@ impl Brain {
                     })
                 })
                 .and_then(|target| {
-                    lifts.as_ref().map(|lifts| {
-                        lifts.prospective_first_carrier_commitment(
+                    lifts.as_ref().map(|planner| {
+                        planner.prospective_first_carrier_commitment(
                             &oriented,
                             oriented_home,
-                            &lift_unavailable,
-                            &strategic_core_exclusions,
+                            &lift_unavailable_after,
+                            &core_exclusions_after_team,
                             u64::from(self.dials.minimum_core_equivalents),
                             target,
                         )
@@ -613,163 +800,78 @@ impl Brain {
         } else {
             0
         };
-        let uncommitted_scrap = ledger
-            .strategic_spendable_for(false)
-            .saturating_sub(strategic.committed_scrap);
-        let prospective_carrier_hold =
-            applied_prospective_carrier_hold(prospective_carrier_commitment, uncommitted_scrap);
+        let prospective_carrier_hold = applied_prospective_carrier_hold(
+            prospective_carrier_commitment,
+            residual_scrap.saturating_sub(post_allocation_commitment),
+        );
+        post_allocation_commitment =
+            post_allocation_commitment.saturating_add(prospective_carrier_hold);
         strategic.committed_scrap = strategic
             .committed_scrap
             .saturating_add(prospective_carrier_hold);
-        let lift_operation_was_active = lifts
+
+        let outstanding_air_production_ticks = strategy
             .as_ref()
-            .is_some_and(|lifts| lifts.operation().is_some());
-        let lift_precedes_foundry_saving = lifts
-            .as_ref()
-            .and_then(LiftPlanner::operation)
-            .is_some_and(|operation| {
-                self.policy
-                    .operation_precedes_foundry_saving(operation.started_at)
-            });
-        let mut lift_observation = project_strategic_queues(&strategic_observation, &strategic);
-        lift_observation.scrap = ledger
-            .strategic_spendable_for(lift_precedes_foundry_saving)
-            .saturating_sub(strategic.committed_scrap);
-        let mut support = strategy
-            .as_ref()
-            .map_or(LiftAirSupport::Independent, |strategy| {
-                air_support(strategy.air_operation(), strategy.terminal_outcome())
-            });
-        let air_accepts_new_lift = strategy
-            .as_ref()
-            .and_then(StrategicPlanner::air_operation)
-            .is_some_and(|operation| operation.phase != AirOperationPhase::Recover);
-        if !lift_was_active {
-            support = match (air_accepts_new_lift, support) {
-                (true, LiftAirSupport::Released { player, target }) => {
-                    LiftAirSupport::Suppressing { player, target }
-                }
-                (true, support @ LiftAirSupport::Suppressing { .. }) => support,
-                _ => LiftAirSupport::Independent,
-            };
-        }
-        let lift_before_state = recorder
-            .is_some()
-            .then(|| lift_channel_state(lifts.as_ref()));
-        let lifts_before_decision = lifts.clone();
-        let mut lift_decision = if let Some(lifts) = lifts.as_mut() {
-            lifts.think_with_admission(
-                &lift_observation,
-                oriented_home,
-                &lift_unavailable,
-                support,
-                LiftAdmission {
-                    allow_new_commitments: allow_new_voluntary_operations,
-                    core_reservations: &strategic_core_exclusions,
-                    minimum_core_equivalents: u64::from(self.dials.minimum_core_equivalents),
-                },
-            )
-        } else {
-            StrategicDecision::default()
-        };
-        let mut lift_rolled_back = false;
-        if !lift_operation_was_active
-            && lifts
-                .as_ref()
-                .is_some_and(|lifts| lifts.operation().is_some())
-        {
-            // Rebuilt rather than reused: the strategic and lift thinks
-            // have both mutated their planners since the pre-think ledger.
-            let claims = ClaimLedger {
-                enlisted: &enlisted,
-                strategy,
-                raids,
-                lifts,
-            };
-            let candidate_core_exclusions = claims.core_exclusions(&team_core_claims);
-            lift_rolled_back = roll_back_unless_core_ready(
-                &oriented,
-                &candidate_core_exclusions,
-                u64::from(self.dials.minimum_core_equivalents),
-                lifts,
-                lifts_before_decision,
-                &mut lift_decision,
-                None,
-            );
-        }
+            .map_or(0, |planner| planner.remaining_airwork_ticks(&oriented))
+            .saturating_add(lifts.as_ref().map_or(0, |planner| {
+                planner.remaining_airwork_ticks(&oriented, &lift_unavailable_after)
+            }));
+        let utility_prior_commitment = oriented
+            .scrap
+            .saturating_sub(utility_spendable)
+            .saturating_add(post_allocation_commitment);
+        utility_spendable = oriented.scrap.saturating_sub(utility_prior_commitment);
+
         if let Some(recorder) = recorder.as_deref_mut() {
             let trace = recorder.trace_mut();
+            trace.gates.team_relief_rolled_back = team_relief_rolled_back;
             trace.gates.lift_rolled_back = lift_rolled_back;
+            trace.channels.team_relief = channel_trace(
+                team_before_state.expect("a traced decision captured the prior team state"),
+                team_channel_state(team.as_ref()),
+                &team_decision,
+            );
+            trace.channels.connected_air = channel_trace(
+                air_before_state.expect("a traced decision captured the prior air state"),
+                air_channel_state(strategy.as_ref()),
+                &air_decision_for_trace,
+            );
             trace.channels.lift = channel_trace(
                 lift_before_state.expect("a traced decision captured the prior lift state"),
                 lift_channel_state(lifts.as_ref()),
                 &lift_decision,
             );
-        }
-        merge_strategic(&mut strategic, lift_decision);
-        let lift_active = lifts
-            .as_ref()
-            .is_some_and(|lifts| lifts.operation().is_some());
-
-        let strategic_load =
-            usize::from(air_active) + usize::from(team_active) + usize::from(lift_active);
-        let raid_claimed = raids
-            .as_ref()
-            .is_some_and(|raids| !raids.reservations().is_empty());
-        let can_begin_raid =
-            allow_new_voluntary_operations && can_admit_optional_raid(tuning, strategic_load);
-        let raid_before_state = recorder
-            .is_some()
-            .then(|| raid_channel_state(raids.as_ref()));
-        if let Some(recorder) = recorder.as_deref_mut() {
-            recorder.trace_mut().gates.raid_attention = Some(RaidAttentionTrace {
-                strategic_load: bounded_count(strategic_load),
-                attention_slots: bounded_count(tuning.attention_slots),
-                admitted: can_begin_raid,
-            });
-        }
-        let mut raid_decision = StrategicDecision::default();
-        if (raid_claimed || can_begin_raid)
-            && let Some(raids) = raids.as_mut()
-        {
-            raid_decision = raids.think_with_admission(
-                RaidPlanningContext::new(
-                    profile,
-                    tuning,
-                    &strategic_observation,
-                    oriented_home,
-                    &planner_claims,
-                    &strategic.reservations,
-                )
-                .with_admission(allow_new_voluntary_operations),
-            );
-        }
-        if let Some(recorder) = recorder.as_deref_mut() {
-            recorder.trace_mut().channels.raid = channel_trace(
+            trace.channels.raid = channel_trace(
                 raid_before_state.expect("a traced decision captured the prior raid state"),
                 raid_channel_state(raids.as_ref()),
                 &raid_decision,
             );
-        }
-        merge_strategic(&mut strategic, raid_decision);
-        let outstanding_air_production_ticks = strategy
-            .as_ref()
-            .map_or(0, |strategy| strategy.remaining_airwork_ticks(&oriented))
-            .saturating_add(lifts.as_ref().map_or(0, |lifts| {
-                lifts.remaining_airwork_ticks(&oriented, &lift_unavailable)
-            }));
-        let utility_spendable = oriented.scrap.saturating_sub(strategic.committed_scrap);
-        if let Some(recorder) = recorder.as_deref_mut() {
-            recorder.trace_mut().budget = Some(ScrapBudgetTrace {
-                bank: ledger.bank,
-                foundry_saving: ledger.foundry_saving,
-                deferred_construction: ledger.deferred_construction,
-                airworks_capacity: ledger.airworks_capacity,
-                shallow_sentinel: ledger.shallow_sentinel,
-                opening_bootstrap: ledger.opening_bootstrap,
-                frozen: ledger.frozen,
-                prior_operation_spendable: ledger.strategic_spendable_for(true),
-                strategic_spendable: ledger.strategic_spendable_for(false),
+            let mut connected_force = connected_force_trace(
+                strategy.as_ref(),
+                intelligence,
+                rejected_connected_candidate.as_ref(),
+            );
+            connected_force.preserve_terminal_package(
+                connected_force_before
+                    .expect("a traced decision captured the prior connected force"),
+            );
+            trace.connected_force = connected_force;
+            trace.budget = Some(ScrapBudgetTrace {
+                bank: oriented.scrap,
+                foundry_saving,
+                deferred_construction: UtilityPolicy::deferred_construction_commitment(&oriented),
+                airworks_capacity,
+                shallow_sentinel,
+                opening_bootstrap,
+                frozen: !allow_new_voluntary_operations || !allocation_ok,
+                prior_operation_spendable,
+                strategic_spendable: if accepted_connected
+                    && connected_accepted_at == Some(oriented.tick)
+                {
+                    connected_spendable
+                } else {
+                    0
+                },
                 strategic_committed: strategic.committed_scrap,
                 prospective_carrier: prospective_carrier_hold,
                 utility_spendable,
@@ -786,7 +888,9 @@ impl Brain {
             strategic.intents,
         )
         .with_combat_core_exclusions(&strategic_core_exclusions)
-        .with_prior_scrap_commitment(strategic.committed_scrap);
+        .with_prior_scrap_commitment(utility_prior_commitment)
+        .with_producer_lane_reservations(&producer_lane_reservations)
+        .with_adjudicated_fresh_foundry();
         let utility_context = if air_active || lift_active {
             utility_context.with_outstanding_air_production_ticks(outstanding_air_production_ticks)
         } else {
@@ -794,7 +898,7 @@ impl Brain {
         };
         let mut intents = self.policy.think_with_intelligence(
             &self.dials,
-            &oriented,
+            &allocation_observation,
             &armies,
             &enlisted,
             utility_context,
@@ -1056,140 +1160,6 @@ fn merge_strategic(into: &mut StrategicDecision, mut additional: StrategicDecisi
         .saturating_add(additional.committed_scrap);
 }
 
-/// The per-think scrap holds the brain places against the oriented bank
-/// before the strategic planners see a doctored observation. Each hold
-/// keeps the exact inputs and position of the computation it replaces.
-/// The policy layer deliberately re-derives the shallow-sentinel and
-/// opening-bootstrap reserves later in the same think with live intent
-/// context, so the two sides can legitimately disagree within one
-/// think; reconciling them is a behavior change owned by the roadmap,
-/// not by this ledger.
-#[derive(Debug, Default)]
-struct ScrapLedger {
-    /// The oriented bank before any hold.
-    bank: u32,
-    /// Capital owned by a validated persistent Foundry expansion.
-    foundry_saving: u32,
-    /// Scrap already promised to accepted deferred construction.
-    deferred_construction: u32,
-    /// The held fund for an extra Airworks while air production runs hot.
-    airworks_capacity: u32,
-    /// The share independently required by a simultaneous lift. An active
-    /// connected operation may ignore capacity caused by its own package, but
-    /// not a factory already warranted by another operation.
-    independent_airworks_capacity: u32,
-    /// One shallow Sentinel kept affordable after the opening core stands.
-    shallow_sentinel: u32,
-    /// The protected home-Extractor restoration fund.
-    opening_bootstrap: u32,
-    /// An unmet opening core closes every voluntary channel outright.
-    frozen: bool,
-}
-
-impl ScrapLedger {
-    /// What one strategic planner may spend, or nothing while the opening core
-    /// is unmet. Work already active when the Foundry plan was accepted keeps
-    /// its earlier priority; a later admission sees the saved expansion first.
-    /// The remaining holds retain their historical subtraction order.
-    fn strategic_spendable_for(&self, operation_precedes_foundry_saving: bool) -> u32 {
-        self.strategic_spendable_with_airworks_capacity(
-            operation_precedes_foundry_saving,
-            self.airworks_capacity,
-        )
-    }
-
-    /// What the active air operation that created the capacity request may
-    /// spend. The requested factory is a response to that package, not an
-    /// older promise that may resize the package on the next think.
-    fn strategic_spendable_for_airworks_source(
-        &self,
-        operation_precedes_foundry_saving: bool,
-    ) -> u32 {
-        self.strategic_spendable_with_airworks_capacity(
-            operation_precedes_foundry_saving,
-            self.independent_airworks_capacity,
-        )
-    }
-
-    fn strategic_spendable_with_airworks_capacity(
-        &self,
-        operation_precedes_foundry_saving: bool,
-        protected_airworks_capacity: u32,
-    ) -> u32 {
-        if self.frozen {
-            return 0;
-        }
-        let after_foundry = if operation_precedes_foundry_saving {
-            self.bank
-        } else {
-            self.bank.saturating_sub(self.foundry_saving)
-        };
-        let after_deferred = after_foundry.saturating_sub(self.deferred_construction);
-        let after_airworks = after_deferred.saturating_sub(protected_airworks_capacity);
-        after_airworks
-            .saturating_sub(self.shallow_sentinel)
-            .saturating_sub(self.opening_bootstrap)
-    }
-
-    /// Current bank already owned by earlier commitments at this priority.
-    /// This is diagnostic evidence only: the strategic observation has already
-    /// had this amount removed before a planner sees it.
-    fn strategic_current_reserve_for(&self, operation_precedes_foundry_saving: bool) -> u32 {
-        self.bank
-            .saturating_sub(self.strategic_spendable_for(operation_precedes_foundry_saving))
-    }
-
-    fn strategic_current_reserve_for_airworks_source(
-        &self,
-        operation_precedes_foundry_saving: bool,
-    ) -> u32 {
-        self.bank.saturating_sub(
-            self.strategic_spendable_for_airworks_source(operation_precedes_foundry_saving),
-        )
-    }
-
-    /// Older commitments consume future income before a newly admitted
-    /// operation may use it as feasibility evidence. Current bank already
-    /// covering those commitments does not reserve the forecast a second time.
-    fn strategic_forecast_reserve_for(&self, operation_precedes_foundry_saving: bool) -> u32 {
-        self.strategic_forecast_reserve_with_airworks_capacity(
-            operation_precedes_foundry_saving,
-            self.airworks_capacity,
-        )
-    }
-
-    fn strategic_forecast_reserve_for_airworks_source(
-        &self,
-        operation_precedes_foundry_saving: bool,
-    ) -> u32 {
-        self.strategic_forecast_reserve_with_airworks_capacity(
-            operation_precedes_foundry_saving,
-            self.independent_airworks_capacity,
-        )
-    }
-
-    fn strategic_forecast_reserve_with_airworks_capacity(
-        &self,
-        operation_precedes_foundry_saving: bool,
-        protected_airworks_capacity: u32,
-    ) -> u32 {
-        if self.frozen {
-            return u32::MAX;
-        }
-        let foundry = if operation_precedes_foundry_saving {
-            0
-        } else {
-            self.foundry_saving
-        };
-        foundry
-            .saturating_add(self.deferred_construction)
-            .saturating_add(protected_airworks_capacity)
-            .saturating_add(self.shallow_sentinel)
-            .saturating_add(self.opening_bootstrap)
-            .saturating_sub(self.bank)
-    }
-}
-
 fn applied_prospective_carrier_hold(requested: u32, uncommitted_scrap: u32) -> u32 {
     requested.min(uncommitted_scrap)
 }
@@ -1227,115 +1197,6 @@ fn roll_back_unless_core_ready<P>(
         claims.clear();
     }
     true
-}
-
-/// One view over every unit the planners currently claim, so each
-/// admission question composes its exclusion set through a named
-/// selector instead of a hand-picked five-argument tuple. Rebuild it
-/// after a planner mutates; a new claiming planner is a new field here,
-/// and the compiler then walks every selector.
-struct ClaimLedger<'a> {
-    enlisted: &'a [UnitId],
-    strategy: &'a Option<StrategicPlanner>,
-    raids: &'a Option<RaidPlanner>,
-    lifts: &'a Option<LiftPlanner>,
-}
-
-impl ClaimLedger<'_> {
-    fn air(&self) -> Option<&super::strategy::AirOperation> {
-        self.strategy
-            .as_ref()
-            .and_then(StrategicPlanner::air_operation)
-    }
-
-    fn raid_reservations(&self) -> &[UnitId] {
-        self.raids.as_ref().map_or(&[], RaidPlanner::reservations)
-    }
-
-    fn lift(&self) -> Option<&LiftOperation> {
-        self.lifts.as_ref().and_then(LiftPlanner::operation)
-    }
-
-    /// Everything spoken for from the team planner's point of view:
-    /// executive enlistment plus every other planner's claims.
-    fn external_to_team(&self) -> Vec<UnitId> {
-        prior_planner_claims(
-            self.enlisted,
-            self.air(),
-            &[],
-            self.raid_reservations(),
-            self.lift(),
-        )
-    }
-
-    /// The units excluded from the opening-core measurement: planner
-    /// claims only — enlisted fighters still stand in the core.
-    fn core_exclusions(&self, relief: &[UnitId]) -> Vec<UnitId> {
-        prior_planner_claims(
-            &[],
-            self.air(),
-            relief,
-            self.raid_reservations(),
-            self.lift(),
-        )
-    }
-
-    /// Every claim except the lift planner's own, for sizing what a
-    /// prospective lift could still recruit.
-    fn without_lift(&self, relief: &[UnitId]) -> Vec<UnitId> {
-        prior_planner_claims(
-            self.enlisted,
-            self.air(),
-            relief,
-            self.raid_reservations(),
-            None,
-        )
-    }
-
-    /// Every claim from every source.
-    fn all(&self, relief: &[UnitId]) -> Vec<UnitId> {
-        prior_planner_claims(
-            self.enlisted,
-            self.air(),
-            relief,
-            self.raid_reservations(),
-            self.lift(),
-        )
-    }
-}
-
-fn prior_planner_claims(
-    enlisted: &[UnitId],
-    air: Option<&super::strategy::AirOperation>,
-    relief: &[UnitId],
-    raid: &[UnitId],
-    lift: Option<&LiftOperation>,
-) -> Vec<UnitId> {
-    let mut claims = enlisted.to_vec();
-    if let Some(operation) = air {
-        claims.extend(operation.scout);
-        claims.extend(operation.artillery.iter().copied());
-        claims.extend(operation.strike_aircraft.iter().copied());
-    }
-    claims.extend_from_slice(relief);
-    claims.extend_from_slice(raid);
-    if let Some(operation) = lift {
-        if operation.manifests.is_empty() {
-            claims.extend(operation.payload.iter().copied());
-        } else {
-            for manifest in &operation.manifests {
-                if !manifest.closed {
-                    claims.push(manifest.carrier);
-                }
-                if manifest.retains_rider_ownership() {
-                    claims.extend(manifest.riders.iter().copied());
-                }
-            }
-        }
-    }
-    claims.sort_unstable();
-    claims.dedup();
-    claims
 }
 
 fn lift_unavailable(
@@ -1528,102 +1389,53 @@ mod tests {
     }
 
     #[test]
-    fn foundry_saving_respects_temporal_priority_without_bypassing_other_holds() {
-        let ledger = ScrapLedger {
-            bank: 500,
-            foundry_saving: 200,
-            deferred_construction: 40,
-            airworks_capacity: 30,
-            independent_airworks_capacity: 0,
-            shallow_sentinel: 20,
-            opening_bootstrap: 10,
-            frozen: false,
-        };
-
-        assert_eq!(ledger.strategic_spendable_for(true), 400);
-        assert_eq!(ledger.strategic_spendable_for(false), 200);
-        assert_eq!(ledger.strategic_current_reserve_for(true), 100);
-        assert_eq!(ledger.strategic_current_reserve_for(false), 300);
-        assert_eq!(ledger.strategic_forecast_reserve_for(true), 0);
-        assert_eq!(ledger.strategic_forecast_reserve_for(false), 0);
-        let underfunded = ScrapLedger {
-            bank: 100,
-            ..ledger
-        };
-        assert_eq!(underfunded.strategic_spendable_for(true), 0);
-        assert_eq!(underfunded.strategic_current_reserve_for(true), 100);
-        assert_eq!(underfunded.strategic_forecast_reserve_for(true), 0);
-        assert_eq!(underfunded.strategic_spendable_for(false), 0);
-        assert_eq!(underfunded.strategic_current_reserve_for(false), 100);
-        assert_eq!(underfunded.strategic_forecast_reserve_for(false), 200);
-        assert_eq!(
-            ScrapLedger {
-                frozen: true,
-                ..ledger
-            }
-            .strategic_spendable_for(true),
-            0,
-            "survival freezes even an operation that predates the expansion"
-        );
-        assert_eq!(
-            ScrapLedger {
-                frozen: true,
-                ..ledger
-            }
-            .strategic_forecast_reserve_for(true),
-            u32::MAX,
-            "survival also withholds forecast income from voluntary work"
-        );
-    }
-
-    #[test]
-    fn transient_airworks_capacity_is_not_a_prior_operation_obligation() {
-        let capacity = ScrapLedger {
-            bank: 60,
-            airworks_capacity: 90,
-            ..ScrapLedger::default()
-        };
-
-        assert_eq!(capacity.strategic_spendable_for(true), 0);
-        assert_eq!(capacity.strategic_spendable_for_airworks_source(true), 60);
-        assert_eq!(capacity.strategic_current_reserve_for(true), 60);
-        assert_eq!(
-            capacity.strategic_current_reserve_for_airworks_source(true),
-            0
-        );
-        assert_eq!(capacity.strategic_forecast_reserve_for(true), 30);
-        assert_eq!(
-            capacity.strategic_forecast_reserve_for_airworks_source(true),
-            0
+    fn lift_capacity_owns_current_bank_and_completed_source_income() {
+        let mut scenario = foundry_saving_air_competition_scenario(10);
+        scenario.name = "lift capacity forecast ownership".into();
+        let state = scenario
+            .build()
+            .expect("the capacity forecast scenario builds");
+        let obs = Observation::fog_honest(&state, PlayerId(0));
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let deadline = obs.tick.saturating_add(connected_preparation_horizon());
+        let forecast = resources.forecast().income_through(deadline).amount();
+        assert!(
+            forecast >= 50,
+            "the completed Extractor supplies bounded income"
         );
 
-        let with_prior_promise = ScrapLedger {
-            bank: 0,
-            deferred_construction: 40,
-            ..capacity
-        };
-        assert_eq!(with_prior_promise.strategic_spendable_for(true), 0);
-        assert_eq!(
-            with_prior_promise.strategic_forecast_reserve_for_airworks_source(true),
-            40
-        );
+        let mut obligations = Vec::new();
+        push_bounded_capital_reserve(
+            &mut obligations,
+            &resources,
+            BoundedCapitalReserve {
+                cadence: 12,
+                bank: obs.scrap,
+                accepted_at: obs.tick,
+                decision_tick: obs.tick,
+                key: ObligationKey::Legacy {
+                    channel: LegacyChannel::AirworksCapacity,
+                    sequence: 1,
+                },
+                desired: obs.scrap + 50,
+                forecast_deadline: deadline,
+                older_capital_reserve: 0,
+            },
+        )
+        .expect("the lift capacity claim is well formed");
+        let mut allocation = CrossDomainAllocation::new(&resources, deadline, 12)
+            .expect("the completed-source forecast is projectable");
+        allocation.import(obligations.pop().expect("one capacity obligation exists"));
+        let settlement = allocation
+            .resolve(AllocationPersonality::default(), None)
+            .expect("current bank plus completed-source income fund the retained capacity");
 
-        let with_independent_lift = ScrapLedger {
-            independent_airworks_capacity: 90,
-            ..capacity
-        };
+        assert_eq!(settlement.connected_current_scrap(), 0);
+        assert_eq!(settlement.connected_forecast_reserve_through(deadline), 50);
         assert_eq!(
-            with_independent_lift.strategic_spendable_for_airworks_source(true),
-            0
-        );
-        assert_eq!(
-            with_independent_lift.strategic_current_reserve_for_airworks_source(true),
-            60
-        );
-        assert_eq!(
-            with_independent_lift.strategic_forecast_reserve_for_airworks_source(true),
-            30,
-            "future income still belongs to capacity independently required by the lift"
+            settlement.utility_current_scrap(),
+            obs.scrap,
+            "Utility remains the execution path that may spend the owned Airworks fund"
         );
     }
 
@@ -3202,6 +3014,7 @@ mod tests {
             LiftAirSupport::Independent,
             LiftAdmission {
                 allow_new_commitments: true,
+                spendable_scrap: planning.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 8,
             },
@@ -3240,6 +3053,7 @@ mod tests {
             LiftAirSupport::Independent,
             LiftAdmission {
                 allow_new_commitments: false,
+                spendable_scrap: planning.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 8,
             },
@@ -3281,6 +3095,7 @@ mod tests {
             LiftAirSupport::Independent,
             LiftAdmission {
                 allow_new_commitments: false,
+                spendable_scrap: planning.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 8,
             },
@@ -3306,6 +3121,7 @@ mod tests {
             LiftAirSupport::Independent,
             LiftAdmission {
                 allow_new_commitments: false,
+                spendable_scrap: planning.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 8,
             },
@@ -3345,6 +3161,7 @@ mod tests {
             LiftAirSupport::Independent,
             LiftAdmission {
                 allow_new_commitments: false,
+                spendable_scrap: planning.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 8,
             },
@@ -3558,6 +3375,84 @@ mod tests {
     }
 
     #[test]
+    fn active_bulk_lift_spends_only_the_bank_beyond_its_airworks_capacity() {
+        let airworks_capacity = BuildingKind::Airworks
+            .base_stats()
+            .construction
+            .expect("Airworks have a construction price")
+            .cost
+            .saturating_add(UnitKind::Sentinel.stats().cost);
+        let carrier_cost = UnitKind::Skyhook.stats().cost;
+        let mut scenario = bulk_lift_capacity_scenario();
+        scenario.players[0].scrap = airworks_capacity
+            .saturating_add(UnitKind::Sentinel.stats().cost)
+            .saturating_add(carrier_cost);
+        let mut state = scenario
+            .build()
+            .expect("open-lane bulk-lift scenario builds");
+        let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 17);
+        let mut brain = scripted_brain(&scenario, PlayerId(0), config);
+        let obs = Observation::fog_honest(&state, PlayerId(0));
+        let home = obs
+            .my_buildings
+            .iter()
+            .find(|building| building.kind == BuildingKind::Foundry)
+            .expect("the observation retains the home Foundry")
+            .anchor;
+        let lifts = brain
+            .mind_mut()
+            .lifts
+            .as_mut()
+            .expect("scripted brains own lift planners");
+        let mut seed_obs = obs.clone();
+        seed_obs.scrap = 0;
+        let seeded = lifts.think(&seed_obs, home, &[], LiftAirSupport::Independent);
+        assert!(lifts.operation().is_some());
+        assert!(seeded.intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::TrainAt {
+                kind: UnitKind::Skyhook,
+                ..
+            }
+        )));
+
+        let result = brain.act_traced(&state);
+        let carrier_commands = result
+            .commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command.command,
+                    Command::Train {
+                        kind: UnitKind::Skyhook,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            carrier_commands, 1,
+            "the lift may spend exactly the non-capacity remainder: {:?}",
+            result.trace
+        );
+        assert!(result.commands.iter().any(|command| matches!(
+            command.command,
+            Command::Build {
+                kind: BuildingKind::Airworks,
+                ..
+            }
+        )));
+        let report = state.tick(&result.commands);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            crate::event::Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )));
+    }
+
+    #[test]
     fn active_bulk_lift_holds_exact_airworks_capital_through_full_queues() {
         let airworks_cost = BuildingKind::Airworks
             .base_stats()
@@ -3693,7 +3588,8 @@ mod tests {
             "the full Airworks queue cannot accept another planned order"
         );
 
-        let commands = brain.act(&state);
+        let result = brain.act_traced(&state);
+        let commands = result.commands;
         assert!(
             commands.iter().any(|command| matches!(
                 command.command,
@@ -3702,7 +3598,8 @@ mod tests {
                     ..
                 }
             )),
-            "Utility must receive and spend the capital hidden from active strategic production: {commands:?}"
+            "Utility must receive and spend the capital hidden from active strategic production: {commands:?}; trace={:?}",
+            result.trace
         );
         assert!(
             commands.iter().all(|command| !matches!(
@@ -3722,125 +3619,6 @@ mod tests {
             )),
             "strategic reservations and residual utility spending must lower through one legal bank: {:?}",
             report.events
-        );
-    }
-
-    #[test]
-    fn connected_air_cannot_spend_capacity_independently_required_by_a_lift() {
-        let mut scenario = combined_operation_scenario();
-        scenario
-            .buildings
-            .last_mut()
-            .expect("the fixture has a reachable enemy structure")
-            .kind = BuildingKind::Crucible;
-        scenario.buildings.extend([
-            BuildingSpec {
-                player: 1,
-                kind: BuildingKind::Foundry,
-                x: 10,
-                y: 10,
-            },
-            BuildingSpec {
-                player: 1,
-                kind: BuildingKind::Airworks,
-                x: 16,
-                y: 4,
-            },
-        ]);
-        let mut state = scenario
-            .build()
-            .expect("combined-operation capacity scenario builds");
-        state.tick = 6_000;
-        while !super::super::difficulty::strategic_admission_tick(state.current_tick()) {
-            state.tick(&[]);
-        }
-        let raw = Observation::fog_honest(&state, PlayerId(0));
-        let home = raw
-            .my_buildings
-            .iter()
-            .filter(|building| building.kind == BuildingKind::Foundry)
-            .min_by_key(|building| building.id)
-            .expect("the home Foundry remains visible")
-            .anchor;
-        let orientation = Orientation::for_home(&raw, home);
-        assert!(orientation.is_identity());
-        let oriented = orientation.observe(&raw);
-        let mut lift = LiftPlanner::new();
-        let _ = lift.think(&oriented, home, &[], LiftAirSupport::Independent);
-        let lift_airwork = lift.remaining_airwork_ticks(&oriented, &[]);
-        assert!(lift.operation().is_some());
-        assert!(lift_airwork > 2_400);
-
-        let mut connected_obs = oriented.clone();
-        connected_obs
-            .enemy_buildings
-            .retain(|building| building.anchor.x < 20);
-        let mut connected_intel = StrategicIntelligence::new();
-        connected_intel.update(&connected_obs);
-        let mut strategy = StrategicPlanner::new();
-        let mut brain = operation_identity_brain(PlayerId(0), &scenario);
-        brain.dials.minimum_core_equivalents = 0;
-        let profile = *brain
-            .profile()
-            .expect("the player-facing brain owns a profile");
-        let oriented_public_map = orientation.briefing(&brain.mind().public_map);
-        let connected_result = strategy.think_with_lift_support_diagnosed(
-            &profile,
-            DifficultyTuning::for_level(profile.difficulty),
-            &connected_obs,
-            &connected_intel,
-            home,
-            StrategicCoordination {
-                enlisted: &[],
-                lift_support: None,
-                allow_new_operation: true,
-                protected_current_scrap: 0,
-                protected_forecast_scrap: 0,
-                public_map: Some(&oriented_public_map),
-                orientation,
-            },
-        );
-        assert!(
-            strategy.connected_package_diagnostics().is_some(),
-            "the near structure admits a connected package: {connected_result:?}"
-        );
-        assert!(
-            strategy.remaining_airwork_ticks(&oriented) > 0,
-            "the connected operation still needs Airworks time"
-        );
-        let capacity_fund = brain.policy.airworks_capacity_commitment(
-            &brain.dials,
-            &oriented,
-            home,
-            Some(lift_airwork),
-            &[],
-        );
-        assert!(capacity_fund > 0);
-        enlist_opening_core(&mut brain, &state);
-        brain.orientation = Some(orientation);
-        brain.mind_mut().strategy = Some(strategy);
-        brain.mind_mut().lifts = Some(lift);
-        brain.mind_mut().team = None;
-        brain.mind_mut().raids = None;
-
-        let next_think = state.current_tick().saturating_add(brain.dials().cadence);
-        while state.current_tick() < next_think {
-            state.tick(&[]);
-        }
-        let spendable_after_capacity = UnitKind::Condor.stats().cost;
-        state.player_mut(PlayerId(0)).scrap = spendable_after_capacity + capacity_fund;
-
-        let result = brain.act_traced(&state);
-        let trace = result.trace.expect("the capacity decision is traced");
-        assert!(
-            trace.channels.connected_air.effects.committed_scrap <= spendable_after_capacity,
-            "the connected package must size itself inside the bank left after the lift's capacity fund"
-        );
-        let budget = trace.budget.expect("the ledger decision is traced");
-        assert_eq!(budget.airworks_capacity, capacity_fund);
-        assert!(
-            budget.utility_spendable >= capacity_fund,
-            "the independently warranted Airworks fund must survive connected and lift planning"
         );
     }
 
@@ -4196,9 +3974,23 @@ mod tests {
         let mut target_unloads = Vec::new();
         let mut loaded_riders = Vec::new();
         let mut landed_assault = Vec::new();
+        let mut allocated_while_cargo_was_in_transit = false;
 
         for _ in 0..8_000 {
-            let commands = brain.act(&state);
+            let cargo_is_transitively_owned = loaded_riders
+                .iter()
+                .any(|rider| state.unit(*rider).is_none());
+            let act = brain.act_traced(&state);
+            if cargo_is_transitively_owned && let Some(trace) = act.trace.as_ref() {
+                assert!(
+                    trace.allocation.error.is_none()
+                        && trace.allocation.coordinator_failure.is_none(),
+                    "loaded riders are owned through their carrier rather than imported as missing independent units: {:?}",
+                    trace.allocation
+                );
+                allocated_while_cargo_was_in_transit = true;
+            }
+            let commands = act.commands;
             if shared_target.is_none()
                 && let (Some(air), Some(lift)) = (
                     brain
@@ -4335,7 +4127,7 @@ mod tests {
         );
         assert!(
             first_target_unload_tick >= bomber_release_tick,
-            "the shared lift cannot launch before the bomber operation releases it"
+            "the shared lift cannot launch before the bomber operation releases it: first_target_unload_tick={first_target_unload_tick:?}, bomber_release_tick={bomber_release_tick:?}"
         );
         assert!(
             carrier_loads.len() >= 3,
@@ -4344,6 +4136,10 @@ mod tests {
         assert!(
             !loaded_riders.is_empty(),
             "the manifests contain a real ground wave"
+        );
+        assert!(
+            allocated_while_cargo_was_in_transit,
+            "at least one allocation boundary observes riders transitively owned as carrier cargo"
         );
         assert_eq!(
             target_unloads, carrier_loads,
@@ -5207,22 +5003,26 @@ mod tests {
             super::super::trace::ConnectedForceStatus::Idle
         );
         assert!(starved_trace.connected_force.package.is_none());
-        let rejected = starved_trace
-            .connected_force
-            .rejected_candidate
-            .as_ref()
-            .expect("the current opportunity records why protected capital rejected it");
-        assert_eq!(rejected.target.kind, BuildingKind::Foundry);
-        assert_eq!(
-            rejected.target.evidence,
-            super::super::trace::TargetEvidenceTrace::Current
+        assert!(
+            starved_trace.connected_force.rejected_candidate.is_none(),
+            "the connected domain produced a legal proposal for shared adjudication"
         );
+        let rejected = starved_trace
+            .allocation
+            .proposals
+            .entries
+            .iter()
+            .find(|proposal| {
+                matches!(
+                    proposal.key,
+                    super::super::trace::ProposalKeyTrace::ConnectedOffenseMinimum { .. }
+                )
+            })
+            .expect("the allocator traces the connected opportunity");
         assert!(matches!(
-            rejected.reason,
-            super::super::trace::ConnectedRejectionReasonTrace::ProtectedFunds {
-                protected_current_scrap,
-                ..
-            } if protected_current_scrap > 0
+            rejected.disposition,
+            super::super::trace::ProposalDispositionTrace::Infeasible { .. }
+                | super::super::trace::ProposalDispositionTrace::ConflictsWithSelected { .. }
         ));
         assert_eq!(
             starved_trace.channels.connected_air.effects.committed_scrap, 0,
@@ -5242,9 +5042,9 @@ mod tests {
         let continued_budget = continued_trace
             .budget
             .expect("the active operation's next think records its scrap ledger");
-        assert!(
-            continued_budget.prior_operation_spendable > 0,
-            "the bank would fund some prior operation work after the non-Foundry holds"
+        assert_eq!(
+            continued_budget.prior_operation_spendable, 0,
+            "no operation predates the accepted Foundry saving"
         );
         assert_eq!(continued_budget.strategic_spendable, 0);
         assert_eq!(
@@ -5283,15 +5083,9 @@ mod tests {
             .budget
             .expect("the funded think records its scrap ledger");
         assert_eq!(funded_budget.foundry_saving, saved);
-        let other_holds = funded_budget
-            .deferred_construction
-            .saturating_add(funded_budget.airworks_capacity)
-            .saturating_add(funded_budget.shallow_sentinel)
-            .saturating_add(funded_budget.opening_bootstrap);
         assert_eq!(
-            funded_budget.strategic_spendable,
-            operation_fund.saturating_sub(other_holds),
-            "the accepted saving remains the first deduction before other current commitments"
+            funded_budget.strategic_spendable, operation_fund,
+            "the saved total already includes its protected opening reserve, so shared allocation must not deduct that reserve twice"
         );
         assert!(
             funded_trace.channels.connected_air.effects.committed_scrap > 0,
@@ -5419,7 +5213,7 @@ mod tests {
     }
 
     #[test]
-    fn connected_air_admitted_before_foundry_saving_keeps_priority() {
+    fn compatible_connected_minimum_and_foundry_defer_only_residual_scale() {
         use super::super::profile::PersonalityTraits;
 
         let foundry_cost = BuildingKind::Foundry
@@ -5501,14 +5295,18 @@ mod tests {
             first_trace.channels.connected_air.after,
             ChannelState::Active(ChannelPhase::AirRecon)
         );
-        let first_budget = first_trace
-            .budget
-            .as_ref()
-            .expect("the admission think records its scrap ledger");
+        let accepted_domains = first_trace
+            .allocation
+            .proposals
+            .entries
+            .iter()
+            .filter(|proposal| {
+                proposal.disposition == super::super::trace::ProposalDispositionTrace::Accepted
+            })
+            .count();
         assert_eq!(
-            first_trace.channels.connected_air.effects.committed_scrap,
-            first_budget.strategic_spendable,
-            "the admitted package owns the bank available before the later Foundry saving"
+            accepted_domains, 2,
+            "the staffed connected minimum and expansion are compatible"
         );
         let package = first_trace
             .connected_force
@@ -5532,13 +5330,26 @@ mod tests {
         assert!(package.demands.strike.iter().any(|demand| {
             matches!(demand.kind, UnitKind::Buzzard | UnitKind::Condor) && demand.count > 0
         }));
-        assert!(first.commands.iter().any(|command| matches!(
+        assert!(first.commands.iter().all(|command| !matches!(
             command.command,
             Command::Train {
                 kind: UnitKind::Buzzard,
                 ..
             }
         )));
+        let residual_buzzard = first_trace
+            .allocation
+            .producer_schedule
+            .entries
+            .iter()
+            .find(|job| job.kind == UnitKind::Buzzard)
+            .expect("the residual connected scale retains its optional Buzzard");
+        assert!(residual_buzzard.enqueued_at > admission_tick);
+        assert_eq!(residual_buzzard.current_scrap, 0);
+        assert_eq!(
+            residual_buzzard.forecast_scrap,
+            UnitKind::Buzzard.stats().cost
+        );
         let admitted_at = {
             let strategy = brain
                 .mind()
@@ -5616,6 +5427,279 @@ mod tests {
             saved,
             "the earlier operation spends ahead of, but does not erase, the saved Foundry"
         );
+    }
+
+    #[test]
+    fn one_allocation_dispatches_compatible_foundry_and_connected_offense_commands() {
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+        let mut scenario = foundry_saving_air_competition_scenario(
+            foundry_cost
+                .saturating_add(UnitKind::Buzzard.stats().cost)
+                .saturating_add(UnitKind::Sentinel.stats().cost),
+        );
+        scenario.name = "simultaneous Foundry and connected offense dispatch".into();
+        let scout = scenario
+            .units
+            .iter_mut()
+            .find(|unit| unit.player == 0 && unit.kind == UnitKind::Kestrel)
+            .expect("the scenario has one connected-operation scout");
+        (scout.x, scout.y) = (42, 19);
+        scenario.units.extend([
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Bombard,
+                x: 9,
+                y: 17,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Condor,
+                x: 10,
+                y: 18,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Condor,
+                x: 11,
+                y: 18,
+            },
+        ]);
+        let mut state = scenario
+            .build()
+            .expect("the simultaneous allocation scenario builds");
+        let mut brain = foundry_competition_brain(&scenario);
+        brain.mind_mut().lifts = None;
+
+        let act = brain.act_traced(&state);
+        let trace = act.trace.expect("the shared admission boundary is traced");
+        assert!(
+            act.commands.iter().any(|command| matches!(
+                command.command,
+                Command::Build {
+                    kind: BuildingKind::Foundry,
+                    ..
+                }
+            )),
+            "the accepted expansion must lower its exact build command: {:?}",
+            act.commands
+        );
+        assert!(
+            act.commands.iter().any(|command| matches!(
+                command.command,
+                Command::Train {
+                    kind: UnitKind::Buzzard,
+                    ..
+                }
+            )),
+            "the compatible connected package must lower its due provider command: {:?}",
+            act.commands
+        );
+        assert_eq!(trace.allocation.proposals.total, 2);
+        assert!(trace.allocation.error.is_none());
+        assert!(trace.allocation.coordinator_failure.is_none());
+
+        let report = state.tick(&act.commands);
+        assert!(
+            report.events.iter().all(|event| !matches!(
+                event,
+                crate::event::Event::CommandRejected {
+                    player: PlayerId(0),
+                    ..
+                }
+            )),
+            "the authoritative State must accept both domains' commands in one transaction: {:?}",
+            report.events
+        );
+    }
+
+    #[test]
+    fn admitted_island_air_trains_before_a_fresh_foundry_without_being_thought_twice() {
+        use super::super::trace::{
+            ClaimOwnerTrace, LegacyChannelTrace, ObligationKeyTrace, ProducerJobAccessTrace,
+        };
+
+        let mut scenario = foundry_saving_air_competition_scenario(50_000);
+        scenario.name = "admitted island air precedes a fresh Foundry".into();
+        for row in scenario.map.iter_mut().skip(1).take(22) {
+            let mut bytes = row.as_bytes().to_vec();
+            bytes[38] = b'^';
+            *row = String::from_utf8(bytes).expect("the fixture map remains ASCII");
+        }
+        let scout = scenario
+            .units
+            .iter_mut()
+            .find(|unit| unit.player == 0 && unit.kind == UnitKind::Kestrel)
+            .expect("the island fixture has one scout");
+        (scout.x, scout.y) = (42, 19);
+        let mut state = scenario
+            .build()
+            .expect("the island allocation scenario builds");
+        state.tick = 6_000;
+
+        let mut brain = foundry_competition_brain(&scenario);
+        let profile = *brain
+            .profile()
+            .expect("the scripted brain owns a resolved profile");
+        let tuning = DifficultyTuning::for_level(profile.difficulty);
+        let raw = Observation::fog_honest(&state, PlayerId(0));
+        let home = raw
+            .my_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::Foundry)
+            .min_by_key(|building| building.id)
+            .expect("the home Foundry stands")
+            .anchor;
+        let orientation = Orientation::for_home(&raw, home);
+        let observed = orientation.observe(&raw);
+        let public_map = orientation.briefing(
+            &PublicMapBriefing::from_scenario(&scenario)
+                .expect("the island fixture has a public briefing"),
+        );
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(&observed);
+        let mut planner = StrategicPlanner::new();
+        let admission = planner.think_after_connected_adjudication(
+            &profile,
+            tuning,
+            &observed,
+            &intelligence,
+            home,
+            StrategicCoordination {
+                enlisted: &[],
+                lift_support: None,
+                allow_new_operation: true,
+                protected_current_scrap: 0,
+                protected_forecast_scrap: 0,
+                public_map: Some(&public_map),
+                orientation,
+            },
+        );
+        assert!(planner.air_operation().is_some_and(|operation| {
+            operation.assault_admitted && operation.phase == AirOperationPhase::Recon
+        }));
+        assert!(planner.active_connected_obligation(&observed).is_none());
+        assert!(admission.decision.intents.iter().any(|intent| matches!(
+            intent,
+            Intent::TrainAt {
+                kind: UnitKind::Buzzard,
+                ..
+            }
+        )));
+        let admitted_at = planner
+            .air_admitted_at()
+            .expect("the island operation has an immutable priority tick");
+
+        let decision_tick = super::super::difficulty::strategic_admission_at_or_after(
+            admitted_at.saturating_add(tuning.reaction_delay),
+        );
+        state.tick = decision_tick;
+        state.player_mut(PlayerId(0)).scrap = UnitKind::Buzzard
+            .stats()
+            .cost
+            .saturating_add(UnitKind::Sentinel.stats().cost);
+        let mind = brain.mind_mut();
+        mind.intelligence = intelligence;
+        mind.strategy = Some(planner);
+        mind.team = None;
+        mind.lifts = None;
+        mind.raids = None;
+        brain.orientation = Some(orientation);
+
+        let act = brain.act_traced(&state);
+        let training = act
+            .commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command.command,
+                    Command::Train {
+                        kind: UnitKind::Buzzard,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            training, 1,
+            "the due island append lowers exactly once: {:?}",
+            act.commands
+        );
+        assert!(act.commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Build {
+                kind: BuildingKind::Foundry,
+                ..
+            }
+        )));
+        let operation = brain
+            .mind()
+            .strategy
+            .as_ref()
+            .and_then(StrategicPlanner::air_operation)
+            .expect("the island operation remains active");
+        assert_eq!(operation.phase, AirOperationPhase::Assemble);
+        assert_eq!(operation.phase_started_at, decision_tick);
+
+        let trace = act.trace.expect("the allocation decision is traced");
+        assert!(trace.allocation.proposals.entries.iter().any(|proposal| {
+            matches!(
+                proposal.key,
+                super::super::trace::ProposalKeyTrace::FoundryExpansion { .. }
+            )
+        }));
+        let strategic_air = trace
+            .allocation
+            .obligations
+            .entries
+            .iter()
+            .find(|obligation| {
+                matches!(
+                    obligation.key,
+                    ObligationKeyTrace::Legacy {
+                        channel: LegacyChannelTrace::StrategicAir,
+                        sequence: 1,
+                    }
+                )
+            })
+            .expect("the due island decision is an explicit prior obligation");
+        assert_eq!(strategic_air.accepted_at, admitted_at);
+        let job = trace
+            .allocation
+            .producer_schedule
+            .entries
+            .iter()
+            .find(|job| {
+                matches!(
+                    job.owner,
+                    ClaimOwnerTrace::Obligation {
+                        accepted_at,
+                        key: ObligationKeyTrace::Legacy {
+                            channel: LegacyChannelTrace::StrategicAir,
+                            sequence: 1,
+                        },
+                        ..
+                    } if accepted_at == admitted_at
+                )
+            })
+            .expect("the island operation retains its exact producer assignment");
+        assert_eq!(job.enqueued_at, decision_tick);
+        assert!(matches!(
+            strategic_air.claims.producer_jobs.entries[0].access,
+            ProducerJobAccessTrace::Fixed { enqueued_at, .. } if enqueued_at == decision_tick
+        ));
+
+        let report = state.tick(&act.commands);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            crate::event::Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -5727,7 +5811,11 @@ mod tests {
             let operation = planner
                 .air_operation()
                 .expect("current sight promotes the reconnaissance");
-            assert!(operation.assault_admitted);
+            assert!(
+                operation.assault_admitted,
+                "current reconnaissance must promote through its retained allocation priority: {:?}",
+                promoted.trace
+            );
             (
                 planner
                     .air_admitted_at()
@@ -5742,8 +5830,19 @@ mod tests {
         assert!(!brain.policy.operation_precedes_foundry_saving(restarted_at));
         assert!(promoted.trace.is_some());
 
-        visible_state.tick =
+        let report = visible_state.tick(&promoted.commands);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            crate::event::Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )));
+        let next_admission =
             super::super::difficulty::next_strategic_admission_tick(visible_state.current_tick());
+        while visible_state.current_tick() < next_admission {
+            visible_state.tick(&[]);
+        }
         visible_state.player_mut(PlayerId(0)).scrap = saved - 1;
         let continued = brain.act_traced(&visible_state);
         let trace = continued
@@ -5753,18 +5852,69 @@ mod tests {
             .budget
             .expect("the post-promotion decision records its budget");
         assert_eq!(budget.foundry_saving, saved);
-        assert!(budget.prior_operation_spendable > 0);
+        assert!(
+            budget.prior_operation_spendable > 0,
+            "the retained operation exposes its current allocation ahead of the saved Foundry: {trace:?}"
+        );
         assert_eq!(budget.strategic_spendable, 0);
         assert!(
             trace.channels.connected_air.effects.committed_scrap > 0,
             "Brain must rank the promoted assault by its immutable recon admission"
         );
+        assert!(trace.allocation.coordinator_failure.is_none());
+        let next_job = trace
+            .allocation
+            .producer_schedule
+            .entries
+            .iter()
+            .min_by_key(|job| job.enqueued_at)
+            .expect("the retained operation has a later exact provider job");
+        let (due_at, due_producer, due_kind) =
+            (next_job.enqueued_at, next_job.producer, next_job.kind);
+        assert!(due_at > visible_state.current_tick());
         assert!(
             continued
                 .commands
                 .iter()
-                .any(|command| matches!(command.command, Command::Train { .. }))
+                .all(|command| !matches!(command.command, Command::Train { .. })),
+            "after the first exact provider command is paid, later retained ordinals must wait for their original enqueue ticks"
         );
+        while visible_state.current_tick() < due_at {
+            visible_state.tick(&[]);
+        }
+        let due = brain.act_traced(&visible_state);
+        assert_eq!(
+            due.commands
+                .iter()
+                .filter(|command| {
+                    matches!(
+                        command.command,
+                        Command::Train { building, kind }
+                            if building == due_producer && kind == due_kind
+                    )
+                })
+                .count(),
+            1,
+            "the surviving original ordinal emits exactly on its allocated command tick"
+        );
+        let report = visible_state.tick(&due.commands);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            crate::event::Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )));
+        let next_think = due_at.saturating_add(brain.dials.cadence);
+        while visible_state.current_tick() < next_think {
+            visible_state.tick(&[]);
+        }
+        let after_due = brain.act_traced(&visible_state);
+        assert!(after_due.commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Train { building, kind }
+                if building == due_producer && kind == due_kind
+        )));
         let continued_raw = Observation::fog_honest(&visible_state, PlayerId(0));
         assert_eq!(
             brain
@@ -5835,7 +5985,11 @@ mod tests {
         let continued_budget = continued_trace
             .budget
             .expect("the older lift continuation records its budget");
-        assert_eq!(continued_budget.foundry_saving, saved);
+        assert_eq!(
+            continued_budget.foundry_saving,
+            (saved - 1).saturating_sub(UnitKind::Skyhook.stats().cost),
+            "the older lift owns its due carrier while the durable Foundry plan retains the exact remainder"
+        );
         assert!(continued_budget.prior_operation_spendable >= UnitKind::Skyhook.stats().cost);
         assert_eq!(continued_budget.strategic_spendable, 0);
         assert!(continued_trace.channels.lift.effects.committed_scrap > 0);
@@ -5901,7 +6055,10 @@ mod tests {
             .budget
             .expect("the later lift continuation records its budget");
         assert_eq!(blocked_budget.foundry_saving, later_saved);
-        assert!(blocked_budget.prior_operation_spendable >= UnitKind::Skyhook.stats().cost);
+        assert_eq!(
+            blocked_budget.prior_operation_spendable, 0,
+            "a lift accepted after the Foundry saving receives no predecessor allowance"
+        );
         assert_eq!(blocked_budget.strategic_spendable, 0);
         assert_eq!(blocked_trace.channels.lift.effects.committed_scrap, 0);
         assert!(blocked.commands.iter().all(|command| !matches!(
@@ -6196,6 +6353,7 @@ mod tests {
                 LiftAirSupport::Independent,
                 LiftAdmission {
                     allow_new_commitments: true,
+                    spendable_scrap: obs.scrap,
                     core_reservations: &[],
                     minimum_core_equivalents: 0,
                 },
@@ -6303,6 +6461,171 @@ mod tests {
                 .all(|member| !lift.payload.contains(member)),
             "a new lift cannot steal members from a raid already under way"
         );
+    }
+
+    #[test]
+    fn conflicting_active_legacy_planners_roll_back_as_one_allocation_session() {
+        let mut scenario = opening_core_team_relief_scenario();
+        scenario.name = "conflicting active legacy planner rollback".into();
+        for row in scenario.map.iter_mut().skip(1).take(22) {
+            let mut bytes = row.as_bytes().to_vec();
+            bytes[20] = b'~';
+            *row = String::from_utf8(bytes).expect("the fixture map remains ASCII");
+        }
+        let mut marker_row = scenario.map[10].as_bytes().to_vec();
+        marker_row[24] = b'.';
+        marker_row[15] = b'2';
+        scenario.map[10] = String::from_utf8(marker_row).expect("the fixture map remains ASCII");
+        let pressure = scenario
+            .units
+            .iter_mut()
+            .find(|unit| unit.player == 2 && unit.kind == UnitKind::Sentinel)
+            .expect("the team fixture has one pressure unit");
+        (pressure.x, pressure.y) = (17, 10);
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Airworks,
+            x: 6,
+            y: 3,
+        });
+        scenario.units.extend((0..4).map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Skyhook,
+            x: 4 + index,
+            y: 18,
+        }));
+        scenario.units.push(UnitSpec {
+            player: 0,
+            kind: UnitKind::Kestrel,
+            x: 32,
+            y: 10,
+        });
+        let mut state = scenario
+            .build()
+            .expect("the conflicting-operation scenario builds");
+        state.tick = 6_000;
+
+        let mut brain = operation_identity_brain(PlayerId(0), &scenario);
+        brain.dials.minimum_core_equivalents = 0;
+        brain.mind_mut().strategy = None;
+        brain.mind_mut().raids = None;
+        let mut profile = *brain
+            .profile()
+            .expect("the scripted brain owns a resolved profile");
+        profile.traits.support = 70;
+        profile.traits.fortification = 65;
+        brain.mind_mut().profile = profile;
+        let tuning = DifficultyTuning::for_level(profile.difficulty);
+        let obs = Observation::fog_honest(&state, PlayerId(0));
+        let home = obs
+            .my_buildings
+            .iter()
+            .find(|building| building.kind == BuildingKind::Foundry)
+            .expect("the home Foundry stands")
+            .anchor;
+
+        let mut team = TeamReliefPlanner::new();
+        let _ = team.think(&profile, tuning, &obs, home, &[], &[]);
+        assert!(
+            !team.reservations().is_empty(),
+            "the first current-pressure observation must freeze a credible relief watch: allies={:?}, enemies={:?}",
+            obs.ally_buildings,
+            obs.enemy_units
+        );
+        let mut admitted_obs = obs.clone();
+        admitted_obs.tick = super::super::difficulty::strategic_admission_at_or_after(
+            admitted_obs
+                .tick
+                .saturating_add(u64::from(crate::TICKS_PER_SECOND))
+                .saturating_add(tuning.reaction_delay),
+        );
+        state.tick = admitted_obs.tick;
+        let _ = team.think(&profile, tuning, &admitted_obs, home, &[], &[]);
+        let team_members = team
+            .operation()
+            .expect("sustained allied pressure admits a relief")
+            .members
+            .clone();
+        let mut lift = LiftPlanner::new();
+        let _ = lift.think_with_admission(
+            &admitted_obs,
+            home,
+            &[],
+            LiftAirSupport::Independent,
+            LiftAdmission {
+                allow_new_commitments: true,
+                spendable_scrap: admitted_obs.scrap,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+        );
+        let lift_payload = lift
+            .operation()
+            .expect("the disconnected enemy Foundry admits a lift")
+            .payload
+            .to_vec();
+        assert!(
+            team_members
+                .iter()
+                .any(|member| lift_payload.binary_search(member).is_ok()),
+            "independent legacy admissions must intentionally claim at least one common unit"
+        );
+
+        let ally_foundry = admitted_obs
+            .ally_buildings
+            .iter()
+            .find(|building| building.kind == BuildingKind::Foundry)
+            .expect("the relief target stands before the conflicting turn")
+            .id;
+        state
+            .building_mut(ally_foundry)
+            .expect("the relief target remains authoritative")
+            .hp = 0;
+        let failed_turn_obs = Observation::fog_honest(&state, PlayerId(0));
+        let mut independently_advanced_team = team.clone();
+        let _ = independently_advanced_team.think_with_admission(
+            &profile,
+            tuning,
+            &failed_turn_obs,
+            home,
+            &[],
+            TeamReliefAdmission {
+                additionally_reserved: &[],
+                allow_new_operation: false,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+        );
+        assert_ne!(
+            independently_advanced_team, team,
+            "the failed turn must exercise rollback of a real planner transition"
+        );
+
+        let team_before = team.clone();
+        let lift_before = lift.clone();
+        brain.mind_mut().team = Some(team);
+        brain.mind_mut().lifts = Some(lift);
+
+        let result = brain.act_traced(&state);
+        let trace = result
+            .trace
+            .expect("the conflicting allocation boundary is traced");
+        assert!(matches!(
+            trace.allocation.error,
+            Some(super::super::trace::AllocationErrorTrace::ObligationConflict { .. })
+        ));
+        assert!(
+            trace
+                .budget
+                .is_some_and(|budget| { budget.frozen && budget.utility_spendable == 0 }),
+            "a malformed shared session must not reopen the current bank to residual utility"
+        );
+        assert_eq!(brain.mind().team.as_ref(), Some(&team_before));
+        assert_eq!(brain.mind().lifts.as_ref(), Some(&lift_before));
+        assert!(result.commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Build { .. } | Command::Train { .. }
+        )));
     }
 
     #[test]
@@ -6429,13 +6752,19 @@ mod tests {
             while !state.current_tick().is_multiple_of(brain.dials().cadence) {
                 state.tick(&[]);
             }
-            let commands = brain.act(&state);
+            let result = brain.act_traced(&state);
+            let commands = result.commands;
             let operation = brain
                 .mind()
                 .lifts
                 .as_ref()
                 .and_then(LiftPlanner::operation)
-                .expect("the severed enemy Foundry freezes a lift payload");
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the severed enemy Foundry freezes a lift payload on think {think}: commands={commands:?}; trace={:?}",
+                        result.trace
+                    )
+                });
             assert_eq!(operation.phase, LiftPhase::Provision);
             assert!(!operation.payload.is_empty());
             assert!(

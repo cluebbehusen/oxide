@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-02T23:11:47
+updated: 2026-09-03T05:45:12
 ---
 
 # Scripted Bot Strategic Reset
@@ -171,12 +171,10 @@ without arbitrary controller caps.
     units, scaled suppression through Bombards and Avalanche against observed
     AA, substituted Buzzards and Condors at higher opportunity, and reproduced
     the same command and terminal hashes under an identical seed.
+  - Closed adversarial review gaps: remembered frozen targets remain inside AA clearance until their full footprints are re-scouted, and admission now proves a distinct reachable firing stand for every suppression provider rather than extrapolating from one artillery piece.
+  - Revalidated active hidden-target preparation against the latest spendable bank and surviving completed-income forecast, so a destroyed income source releases an infeasible package instead of holding resources until timeout.
 - [ ] 4. Admit compatible investments through a deterministic cross-domain
       allocator.
-  - Introduce exhaustive economy, offense, defense, technology, reconnaissance,
-    and support proposals; select a compatible deterministic portfolio,
-    beginning with a real comparison among expansion, offense, and protected
-    ordinary production.
   - Boundary: compare structured proposals and claims while leaving each domain
     responsible for its own target, placement, composition, phases, and micro;
     adapt unmigrated work through explicit legacy obligations.
@@ -184,6 +182,14 @@ without arbitrary controller caps.
     mutually exclusive scrap, builders, factories and units, stable tie-breaks,
     personality weighting without zeroing a domain, and traceable approval or
     rejection.
+  - First slice: compare exactly two fresh proposals, one currently safe and command-legal Foundry expansion and one connected-operation minimum. Treat saved Foundry plans, active operations, paid work, opening recovery, bootstrap work, emergency survival, and the shallow Sentinel as obligations; leave other fresh unmigrated channels on residual resources.
+  - Select among the four possible proposal subsets with no search cutoff. Apply current and forecast scrap, exact builders, sites, units, and shared producer timing as one atomic claim bundle so higher-order conflicts cannot double-spend a forecast or factory lane.
+  - Store exact proposal payloads and commit only the accepted site, builder, target, minimum package, and production evidence without rerunning domain ranking. Scale connected marginal capability only from resources left after the accepted minimum and expansion.
+  - Verify an independent four-mask oracle, atomic rollback, current and forecast conflicts, compatible concurrency, producer hyperedges, persistent obligations, deterministic lowering and tie-breaks, a real personality near-tie, and a composed state-accepted expansion-plus-offense case.
+  - Implemented the pure two-domain allocator with exhaustive four-mask selection, named semantic bands, exact current and deadline-scoped forecast capital, actor and site ownership, producer FIFO scheduling, atomic rollback, deterministic ties, and additions-only connected scaling.
+  - Integration is not complete until accepted future jobs retain both money and exact producer timing without fabricating queued inventory; due commands spend exactly once; saved Foundries dispatch after accrual; active legacy planners roll back atomically on failure; and current-reserve clamps use the observation tick rather than an owner's acceptance tick.
+  - Keep Action 4 open through focused adversarial regressions, composed State acceptance, deterministic behavior hashes, representative headless evaluation, maintainability extraction, and full repository gates.
+  - Rejected a producer abstraction that conflated command enqueue and payment with production start; allocation must retain decision-tick admission, FIFO start, slot reopening, strict readiness, and post-income spendability.
 - [ ] 5. Replace default unit sinks with tech-aware standing-army and
       ordinary-production demand.
   - Derive standing force from known counters, strategic plans, technology,

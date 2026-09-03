@@ -86,7 +86,17 @@ impl SiteFootprint {
         }
     }
 
-    fn overlaps(self, other: Self) -> bool {
+    /// Top-left tile retained by this exact construction claim.
+    pub(crate) const fn anchor(self) -> TilePos {
+        self.anchor
+    }
+
+    /// Width and height retained by this exact construction claim.
+    pub(crate) const fn size(self) -> (i32, i32) {
+        self.size
+    }
+
+    pub(crate) fn overlaps(self, other: Self) -> bool {
         let self_left = i64::from(self.anchor.x);
         let self_top = i64::from(self.anchor.y);
         let self_right = self_left + i64::from(self.size.0);
@@ -103,6 +113,18 @@ impl SiteFootprint {
 
     fn row_major_key(self) -> (i32, i32, i32, i32) {
         (self.anchor.y, self.anchor.x, self.size.1, self.size.0)
+    }
+}
+
+impl Ord for SiteFootprint {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.row_major_key().cmp(&other.row_major_key())
+    }
+}
+
+impl PartialOrd for SiteFootprint {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 

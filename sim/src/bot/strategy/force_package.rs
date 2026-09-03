@@ -148,6 +148,14 @@ pub(super) struct ConnectedForcePackage {
     /// providers remain represented so lowering can consume them before
     /// scheduling the missing remainder.
     pub(super) provider_priority: Vec<ProviderDemandTranche>,
+    /// New providers whose payment and production timing made this exact
+    /// package feasible. Existing live and already-paid providers are omitted.
+    pub(super) funded_providers: Vec<FundedProvider>,
+    /// Exact allocator-selected producer/timing evidence. `None` identifies a
+    /// legacy package that still uses local production scheduling; a freshly
+    /// adjudicated package binds this before commitment, including when its
+    /// funded-provider list is empty.
+    pub(super) producer_assignments: Option<Vec<super::ConnectedProducerAssignment>>,
     /// Personality-independent complete repertoire required for admission.
     pub(super) minimum_capability: NormalizedCapability,
     /// Opportunity-scaled ceiling. Production stops here even if scrap remains.
@@ -204,9 +212,9 @@ enum AddProviderFailure {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct FundedProvider {
-    kind: UnitKind,
-    command_tick: Tick,
+pub(super) struct FundedProvider {
+    pub(super) kind: UnitKind,
+    pub(super) command_tick: Tick,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -281,7 +289,7 @@ struct PackageBuilder<'a> {
     resources: &'a ResourceSnapshot,
     committed_scrap: u32,
     production_access: &'a ProductionAccess,
-    funded_providers: Vec<FundedProvider>,
+    pub(super) funded_providers: Vec<FundedProvider>,
     preserved: Vec<PreservedProvider>,
     provider_priority: Vec<ProviderDemandTranche>,
     recon: Vec<ProviderDemand>,
@@ -686,6 +694,43 @@ pub(super) fn derive_connected_force_package_for_cluster(
     unavailable: &[UnitId],
     constraints: PreparationConstraints,
 ) -> Result<ConnectedForcePackage, ForcePackageRejection> {
+    derive_connected_force_package_options_for_cluster(
+        profile,
+        observation,
+        intelligence,
+        targets,
+        production,
+        unavailable,
+        constraints,
+    )
+    .map(ConnectedForcePackageOptions::into_largest)
+}
+
+/// Exact common minimum followed by deterministic, additions-only marginal
+/// variants on the same evidence, target cluster, and preparation deadline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ConnectedForcePackageOptions {
+    pub(super) minimum: ConnectedForcePackage,
+    pub(super) marginal: Vec<ConnectedForcePackage>,
+}
+
+impl ConnectedForcePackageOptions {
+    pub(super) fn into_largest(self) -> ConnectedForcePackage {
+        self.marginal.into_iter().last().unwrap_or(self.minimum)
+    }
+}
+
+/// Derives the independently admissible minimum and every useful marginal
+/// extension without changing the minimum's target or production basis.
+pub(super) fn derive_connected_force_package_options_for_cluster(
+    profile: &ResolvedProfile,
+    observation: &Observation,
+    intelligence: &StrategicIntelligence,
+    targets: ConnectedTargetEvidence<'_>,
+    production: ProductionEvidence<'_>,
+    unavailable: &[UnitId],
+    constraints: PreparationConstraints,
+) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
     let ConnectedTargetEvidence {
         primary: target,
         cluster,
@@ -858,34 +903,44 @@ pub(super) fn derive_connected_force_package_for_cluster(
             minimum_capability,
         ));
     }
-    let mut builder = best_complete_portfolio(
+    let builders = best_complete_portfolio_path(
         profile,
         useful_capability,
         bombing.useful,
         minimum_candidates,
     );
-
-    builder.canonicalize_provider_priority(profile);
-    builder.sort_demands();
-    let chosen_capability = builder.capability;
-    Ok(ConnectedForcePackage {
-        derived_at: observation.tick,
-        preparation_deadline,
-        target_anchors: cluster.iter().map(|contact| contact.anchor).collect(),
-        recon: builder.recon,
-        suppression: builder.suppression,
-        strike: builder.strike,
-        provider_priority: builder.provider_priority,
-        minimum_capability,
-        useful_capability,
-        useful_bombing: bombing.useful,
-        target_value,
-        current_scrap: resources.current_scrap().amount(),
-        observed_aa_firepower: air_defense.total_firepower,
-        suppressible_aa_firepower: air_defense.suppressible_firepower,
-        forecast_scrap,
-        chosen_capability,
-        chosen_bombing: builder.bombing,
+    let mut packages = builders.into_iter().map(|mut builder| {
+        builder.canonicalize_provider_priority(profile);
+        builder.sort_demands();
+        let chosen_capability = builder.capability;
+        ConnectedForcePackage {
+            derived_at: observation.tick,
+            preparation_deadline,
+            target_anchors: cluster.iter().map(|contact| contact.anchor).collect(),
+            recon: builder.recon,
+            suppression: builder.suppression,
+            strike: builder.strike,
+            provider_priority: builder.provider_priority,
+            funded_providers: builder.funded_providers,
+            producer_assignments: None,
+            minimum_capability,
+            useful_capability,
+            useful_bombing: bombing.useful,
+            target_value,
+            current_scrap: resources.current_scrap().amount(),
+            observed_aa_firepower: air_defense.total_firepower,
+            suppressible_aa_firepower: air_defense.suppressible_firepower,
+            forecast_scrap,
+            chosen_capability,
+            chosen_bombing: builder.bombing,
+        }
+    });
+    let minimum = packages
+        .next()
+        .expect("the common minimum produced one complete package");
+    Ok(ConnectedForcePackageOptions {
+        minimum,
+        marginal: packages.collect(),
     })
 }
 
@@ -970,32 +1025,36 @@ fn diagnose_minimum_rejection(
     unreachable!("an exhaustive minimum search cannot fail when the diagnostic path succeeds")
 }
 
-fn best_complete_portfolio<'a>(
+fn best_complete_portfolio_path<'a>(
     profile: &ResolvedProfile,
     useful: NormalizedCapability,
     useful_bombing: u64,
     minimum_candidates: Vec<PackageBuilder<'a>>,
-) -> PackageBuilder<'a> {
+) -> Vec<PackageBuilder<'a>> {
     let mut seen = BTreeSet::new();
     let mut pending = VecDeque::new();
     for candidate in minimum_candidates {
         if seen.insert(candidate.search_key()) {
-            pending.push_back(candidate);
+            pending.push_back(vec![candidate]);
         }
     }
 
-    let mut best = None;
-    while let Some(candidate) = pending.pop_front() {
-        best = Some(match best {
-            Some(current) => select_package_candidate(
-                profile,
-                useful,
-                useful_bombing,
-                current,
-                candidate.clone(),
-            ),
-            None => candidate.clone(),
-        });
+    let mut best_path: Option<Vec<PackageBuilder<'a>>> = None;
+    while let Some(path) = pending.pop_front() {
+        let candidate = path
+            .last()
+            .expect("every package search path begins with a common minimum");
+        if best_path.as_ref().is_none_or(|best| {
+            package_candidate_score(profile, useful, useful_bombing, candidate)
+                > package_candidate_score(
+                    profile,
+                    useful,
+                    useful_bombing,
+                    best.last().expect("the best path has a common minimum"),
+                )
+        }) {
+            best_path = Some(path.clone());
+        }
         for family in [ForceFamily::Suppression, ForceFamily::Strike] {
             if candidate.capability_for(family) >= useful.for_family(family)
                 && (family != ForceFamily::Strike || candidate.bombing >= useful_bombing)
@@ -1019,12 +1078,14 @@ fn best_complete_portfolio<'a>(
                     continue;
                 }
                 if seen.insert(successor.search_key()) {
-                    pending.push_back(successor);
+                    let mut successor_path = path.clone();
+                    successor_path.push(successor);
+                    pending.push_back(successor_path);
                 }
             }
         }
     }
-    best.expect("the common minimum produced at least one complete package")
+    best_path.expect("the common minimum produced at least one complete package")
 }
 
 fn unique_search_states<'a>(candidates: Vec<PackageBuilder<'a>>) -> Vec<PackageBuilder<'a>> {
@@ -1033,23 +1094,6 @@ fn unique_search_states<'a>(candidates: Vec<PackageBuilder<'a>>) -> Vec<PackageB
         .into_iter()
         .filter(|candidate| seen.insert(candidate.search_key()))
         .collect()
-}
-
-fn select_package_candidate<'a>(
-    profile: &ResolvedProfile,
-    useful: NormalizedCapability,
-    useful_bombing: u64,
-    conservative: PackageBuilder<'a>,
-    advanced: PackageBuilder<'a>,
-) -> PackageBuilder<'a> {
-    let conservative_score =
-        package_candidate_score(profile, useful, useful_bombing, &conservative);
-    let advanced_score = package_candidate_score(profile, useful, useful_bombing, &advanced);
-    if advanced_score > conservative_score {
-        advanced
-    } else {
-        conservative
-    }
 }
 
 fn package_candidate_score(

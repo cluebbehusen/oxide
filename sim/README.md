@@ -19,16 +19,20 @@ an ordinary command source rather than a separate ruleset.
 - `stats` is the single home for units, buildings, and balance constants.
 - `bot` implements the normal configurable opponent and the frozen Overseer QA
   yardstick. It turns a fog-honest `Observation` plus immutable public-map
-  briefing into persistent strategic plans, resource and unit commitments,
-  utility intents, and finally ordinary player commands. Connected air-and-siege
-  operations derive opportunity-scaled reconnaissance, suppression, direct
-  strike, and current-visible non-suppression bombing value, then freeze exact
-  members at commitment. Their route and queue preflight covers the complete
-  admitted target cluster, whose canonical anchors are exposed in optional
-  decision traces without entering controller state. See
-  [Bot Strategy](../docs/bot-strategy.md) for the policy direction and
-  [Simulation Architecture](../docs/simulation-architecture.md) for the current
-  implementation contracts.
+  briefing into persistent strategic plans, exact investment claims, utility
+  intents, and finally ordinary player commands. One allocation session imports
+  retained work and compares a safe Foundry expansion with a minimum connected
+  offense package across shared scrap, builders, sites, units, and producer
+  timing. Accepted domain payloads keep their exact choices; compatible work may
+  proceed together, while unmigrated planners and utility use only the residual
+  capacity. Connected air-and-siege operations derive opportunity-scaled
+  reconnaissance, suppression, direct strike, and current-visible
+  non-suppression bombing value, then freeze exact members at commitment. Their
+  route and queue preflight covers the complete admitted target cluster, whose
+  canonical anchors are exposed in optional decision traces without entering
+  controller state. See [Bot Strategy](../docs/bot-strategy.md) for the policy
+  direction and [Simulation Architecture](../docs/simulation-architecture.md)
+  for the current implementation contracts.
 - `vision` provides visibility and explored-world state.
 
 Repair and salvage share one damage-first building-work resolver and remain

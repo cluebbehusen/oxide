@@ -23,8 +23,9 @@ use super::intelligence::{BuildingContact, UnitContact};
 use super::observation::{BuildingObs, Observation, UnitObs};
 use super::profile::ResolvedProfile;
 use super::resources::{
-    BuilderLease, BuilderObligation, CommitmentDomain, CommitmentLedger, CommitmentOwner,
-    LedgerCheckpoint, ResourceSnapshot, ScrapClaim, SiteFootprint, UnitClaimRole, builder_is_free,
+    BuilderLease, BuilderObligation, ClaimConflict, CommitmentDomain, CommitmentLedger,
+    CommitmentOwner, LedgerCheckpoint, ProducerLaneReservations, ResourceSnapshot, ScrapClaim,
+    SiteFootprint, UnitClaimRole, builder_is_free,
 };
 use super::routing::{self, RouteProjection};
 use super::{PublicMapBriefing, StartingFoundry};
@@ -45,6 +46,13 @@ mod sensor;
 mod support;
 mod terrain;
 
+#[cfg(test)]
+pub(in crate::bot) use construction::AdjudicatedFoundryCommit;
+pub(in crate::bot) use construction::{
+    FoundryConfidence, FoundryExecutionSafety, FoundryOpportunityCase, FoundryStrategicValue,
+    FoundryTimeToImpact, FoundryUrgency, FreshEmergencyDefense, FreshEmergencyDefenseContext,
+    FreshFoundryProposal, FreshFoundryProposalContext, ValidatedFoundryObligation,
+};
 pub(in crate::bot) use production::{CombatCoreStatus, combat_core_status};
 
 /// How far from home an enemy unit counts as an intruder (Chebyshev).
@@ -288,6 +296,8 @@ struct ConstructionContext<'a> {
     public_map: Option<&'a PublicMapBriefing>,
     scope: ConstructionScope,
     voluntary_scrap_guard: Reserve,
+    fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission,
+    fresh_foundry_admission: FreshFoundryAdmission,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -297,6 +307,35 @@ enum ConstructionScope {
         ground_emergency: bool,
         air_emergency: bool,
     },
+}
+
+/// Whether opening-core construction may choose a new emergency defense.
+///
+/// Cross-domain allocation freezes the exact kind, site, and builder before
+/// residual utility runs. Existing sites and deferred work still recover in
+/// either mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::bot) enum FreshEmergencyDefenseAdmission {
+    /// Preserve the utility-owned emergency selection path.
+    #[default]
+    Legacy,
+    /// A shared caller already adjudicated fresh emergency construction.
+    Adjudicated,
+}
+
+/// Whether a fresh player-facing Foundry may still be chosen by the residual
+/// utility channels on this decision pass.
+///
+/// Cross-domain adjudication chooses or rejects the one exact fresh proposal
+/// before utility runs. Saved Foundry plans are prior obligations and continue
+/// in either mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::bot) enum FreshFoundryAdmission {
+    /// Preserve the existing utility-domain admission path.
+    #[default]
+    Legacy,
+    /// A cross-domain caller has already adjudicated fresh Foundry investment.
+    Adjudicated,
 }
 
 impl<'a> ConstructionContext<'a> {
@@ -311,6 +350,8 @@ impl<'a> ConstructionContext<'a> {
             public_map: None,
             scope: ConstructionScope::Full,
             voluntary_scrap_guard: Reserve::Ordinary,
+            fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission::Legacy,
+            fresh_foundry_admission: FreshFoundryAdmission::Legacy,
         }
     }
 
@@ -351,6 +392,19 @@ impl<'a> ConstructionContext<'a> {
         self.voluntary_scrap_guard = guard;
         self
     }
+
+    const fn with_fresh_emergency_defense_admission(
+        mut self,
+        admission: FreshEmergencyDefenseAdmission,
+    ) -> Self {
+        self.fresh_emergency_defense_admission = admission;
+        self
+    }
+
+    const fn with_fresh_foundry_admission(mut self, admission: FreshFoundryAdmission) -> Self {
+        self.fresh_foundry_admission = admission;
+        self
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -363,10 +417,12 @@ struct ProductionContext<'a> {
     building_contacts: Option<&'a [BuildingContact]>,
     public_map: Option<&'a PublicMapBriefing>,
     voluntary_scrap_guard: Reserve,
+    fresh_foundry_admission: FreshFoundryAdmission,
+    producer_lane_reservations: &'a ProducerLaneReservations,
 }
 
 impl<'a> ProductionContext<'a> {
-    const fn new(
+    fn new(
         home: TilePos,
         claims: ConstructionClaims<'a>,
         outstanding_air_production_ticks: Option<u64>,
@@ -380,6 +436,8 @@ impl<'a> ProductionContext<'a> {
             building_contacts: None,
             public_map: None,
             voluntary_scrap_guard: Reserve::Ordinary,
+            fresh_foundry_admission: FreshFoundryAdmission::Legacy,
+            producer_lane_reservations: ProducerLaneReservations::empty(),
         }
     }
 
@@ -407,6 +465,19 @@ impl<'a> ProductionContext<'a> {
         self.voluntary_scrap_guard = guard;
         self
     }
+
+    const fn with_fresh_foundry_admission(mut self, admission: FreshFoundryAdmission) -> Self {
+        self.fresh_foundry_admission = admission;
+        self
+    }
+
+    const fn with_producer_lane_reservations(
+        mut self,
+        reservations: &'a ProducerLaneReservations,
+    ) -> Self {
+        self.producer_lane_reservations = reservations;
+        self
+    }
 }
 
 struct AdvancedConstructionContext<'a> {
@@ -418,6 +489,7 @@ struct AdvancedConstructionContext<'a> {
     building_contacts: Option<&'a [BuildingContact]>,
     public_map: Option<&'a PublicMapBriefing>,
     voluntary_scrap_guard: Reserve,
+    fresh_foundry_admission: FreshFoundryAdmission,
 }
 
 struct ExtractorClaimContext<'a> {
@@ -951,6 +1023,9 @@ struct ThinkContext<'a> {
     outstanding_air_production_ticks: Option<u64>,
     prior_scrap_commitment: u32,
     prelude: Vec<Intent>,
+    fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission,
+    fresh_foundry_admission: FreshFoundryAdmission,
+    producer_lane_reservations: &'a ProducerLaneReservations,
     mode: PolicyMode<'a>,
 }
 
@@ -960,6 +1035,7 @@ struct PolicyCommitments {
     next_economy_sequence: u32,
     next_strategic_sequence: u32,
     foundry_saving_owner: Option<CommitmentOwner>,
+    foundry_saving_blocked: bool,
 }
 
 struct PolicyCommitmentsCheckpoint {
@@ -968,6 +1044,13 @@ struct PolicyCommitmentsCheckpoint {
     next_economy_sequence: u32,
     next_strategic_sequence: u32,
     foundry_saving_owner: Option<CommitmentOwner>,
+    foundry_saving_blocked: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FoundrySavingImport {
+    Imported,
+    Blocked(ClaimConflict),
 }
 
 fn strategic_production_claims(prelude: &[Intent]) -> Vec<(BuildingId, UnitKind)> {
@@ -994,6 +1077,7 @@ impl PolicyCommitments {
             next_economy_sequence: 0,
             next_strategic_sequence: 0,
             foundry_saving_owner: None,
+            foundry_saving_blocked: false,
         };
         commitments.hold_legacy_saturating(prior_scrap_commitment);
         commitments.import_strategic_reservations(reserved);
@@ -1012,6 +1096,7 @@ impl PolicyCommitments {
             next_economy_sequence: self.next_economy_sequence,
             next_strategic_sequence: self.next_strategic_sequence,
             foundry_saving_owner: self.foundry_saving_owner,
+            foundry_saving_blocked: self.foundry_saving_blocked,
         }
     }
 
@@ -1023,6 +1108,7 @@ impl PolicyCommitments {
         self.next_economy_sequence = checkpoint.next_economy_sequence;
         self.next_strategic_sequence = checkpoint.next_strategic_sequence;
         self.foundry_saving_owner = checkpoint.foundry_saving_owner;
+        self.foundry_saving_blocked = checkpoint.foundry_saving_blocked;
     }
 
     fn available_for_foundry_saving(&self) -> u32 {
@@ -1096,7 +1182,10 @@ impl PolicyCommitments {
         }
     }
 
-    fn import_foundry_saving(&mut self, saving: &construction::FoundrySavingCommitment) {
+    fn import_foundry_saving(
+        &mut self,
+        saving: &construction::FoundrySavingCommitment,
+    ) -> FoundrySavingImport {
         let checkpoint = self.checkpoint();
         let owner = self.next_economy_owner();
         let held = saving.required_scrap.min(self.available_scrap());
@@ -1107,12 +1196,22 @@ impl PolicyCommitments {
             .claim_scrap(owner, ScrapClaim::Hold(held))
             .and_then(|()| self.ledger.claim_site(owner, site))
             .and_then(|()| self.ledger.claim_builder(owner, saving.plan.builder));
-        if exact.is_ok() {
-            self.foundry_saving_owner = Some(owner);
-        } else {
-            self.rollback(checkpoint);
-            self.foundry_saving_owner = Some(self.hold_legacy_saturating(saving.required_scrap));
+        match exact {
+            Ok(()) => {
+                self.foundry_saving_owner = Some(owner);
+                self.foundry_saving_blocked = false;
+                FoundrySavingImport::Imported
+            }
+            Err(conflict) => {
+                self.rollback(checkpoint);
+                self.foundry_saving_blocked = true;
+                FoundrySavingImport::Blocked(conflict)
+            }
         }
+    }
+
+    fn foundry_saving_blocked(&self) -> bool {
+        self.foundry_saving_blocked
     }
 
     fn import_deferred_claim(&mut self, obs: &Observation, kind: BuildingKind, anchor: TilePos) {
@@ -1185,6 +1284,9 @@ pub(super) struct StrategicUtilityContext<'a> {
     outstanding_air_production_ticks: Option<u64>,
     prior_scrap_commitment: u32,
     prelude: Vec<Intent>,
+    fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission,
+    fresh_foundry_admission: FreshFoundryAdmission,
+    producer_lane_reservations: &'a ProducerLaneReservations,
 }
 
 impl<'a> StrategicUtilityContext<'a> {
@@ -1204,6 +1306,9 @@ impl<'a> StrategicUtilityContext<'a> {
             outstanding_air_production_ticks: None,
             prior_scrap_commitment: 0,
             prelude,
+            fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission::Legacy,
+            fresh_foundry_admission: FreshFoundryAdmission::Legacy,
+            producer_lane_reservations: ProducerLaneReservations::empty(),
         }
     }
 
@@ -1223,6 +1328,30 @@ impl<'a> StrategicUtilityContext<'a> {
 
     pub(super) const fn with_prior_scrap_commitment(mut self, amount: u32) -> Self {
         self.prior_scrap_commitment = amount;
+        self
+    }
+
+    /// Prevents the residual economy and construction channels from deriving a
+    /// second fresh Foundry after cross-domain allocation has made that choice.
+    pub(in crate::bot) const fn with_adjudicated_fresh_foundry(mut self) -> Self {
+        self.fresh_foundry_admission = FreshFoundryAdmission::Adjudicated;
+        self
+    }
+
+    /// Prevents opening-core utility from choosing a second fresh emergency
+    /// defense after shared allocation has made that choice.
+    pub(in crate::bot) const fn with_adjudicated_fresh_emergency_defense(mut self) -> Self {
+        self.fresh_emergency_defense_admission = FreshEmergencyDefenseAdmission::Adjudicated;
+        self
+    }
+
+    /// Protects exact future producer timing accepted by the cross-domain
+    /// allocator while leaving observed queue inventory unchanged.
+    pub(in crate::bot) const fn with_producer_lane_reservations(
+        mut self,
+        reservations: &'a ProducerLaneReservations,
+    ) -> Self {
+        self.producer_lane_reservations = reservations;
         self
     }
 }
@@ -1478,6 +1607,7 @@ impl UtilityPolicy {
 
     fn maintain_shallow_sentinel_reinforcement(
         obs: &Observation,
+        producer_lane_reservations: &ProducerLaneReservations,
         budget: &mut u32,
         intents: &mut Vec<Intent>,
     ) -> bool {
@@ -1499,7 +1629,14 @@ impl UtilityPolicy {
                     .get(queue_index)
                     .map_or(2, Vec::len)
                     .saturating_add(production::planned_at(intents, building.id));
-                (depth < 2).then_some((depth, building.id))
+                let prior_immediate = production::planned_kinds_at(intents, building.id);
+                (depth < 2
+                    && producer_lane_reservations.allows_immediate_append(
+                        building.id,
+                        &prior_immediate,
+                        UnitKind::Sentinel,
+                    ))
+                .then_some((depth, building.id))
             })
             .min();
         let Some((_, building)) = producer else {
@@ -2107,6 +2244,9 @@ impl UtilityPolicy {
                 outstanding_air_production_ticks: None,
                 prior_scrap_commitment: 0,
                 prelude: Vec::new(),
+                fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission::Legacy,
+                fresh_foundry_admission: FreshFoundryAdmission::Legacy,
+                producer_lane_reservations: ProducerLaneReservations::empty(),
                 mode: PolicyMode {
                     player_facing: false,
                     admit_voluntary_macro: true,
@@ -2140,6 +2280,9 @@ impl UtilityPolicy {
                 outstanding_air_production_ticks: None,
                 prior_scrap_commitment: 0,
                 prelude: Vec::new(),
+                fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission::Legacy,
+                fresh_foundry_admission: FreshFoundryAdmission::Legacy,
+                producer_lane_reservations: ProducerLaneReservations::empty(),
                 mode: PolicyMode {
                     player_facing: true,
                     admit_voluntary_macro: strategic_admission_tick(obs.tick),
@@ -2172,6 +2315,9 @@ impl UtilityPolicy {
                 outstanding_air_production_ticks: context.outstanding_air_production_ticks,
                 prior_scrap_commitment: context.prior_scrap_commitment,
                 prelude: context.prelude,
+                fresh_emergency_defense_admission: context.fresh_emergency_defense_admission,
+                fresh_foundry_admission: context.fresh_foundry_admission,
+                producer_lane_reservations: context.producer_lane_reservations,
                 mode: PolicyMode {
                     player_facing: true,
                     admit_voluntary_macro: strategic_admission_tick(obs.tick),
@@ -2197,6 +2343,9 @@ impl UtilityPolicy {
             outstanding_air_production_ticks,
             prior_scrap_commitment,
             prelude,
+            fresh_emergency_defense_admission,
+            fresh_foundry_admission,
+            producer_lane_reservations,
             mode,
         } = context;
         let strategic_reserved = reserved;
@@ -2349,8 +2498,12 @@ impl UtilityPolicy {
             .saturating_add(foundry_saving_commitment);
         if let Some(commitments) = &mut commitments {
             commitments.import_deferred_claims(admission_obs, &retained_deferred_claims);
-            if let Some(saving) = &self.foundry_saving {
-                commitments.import_foundry_saving(saving);
+            let foundry_import = self
+                .foundry_saving
+                .as_ref()
+                .map(|saving| commitments.import_foundry_saving(saving));
+            if matches!(foundry_import, Some(FoundrySavingImport::Blocked(_))) {
+                self.retain_blocked_foundry_saving(admission_obs.tick);
             }
         }
         if player_facing {
@@ -2428,7 +2581,9 @@ impl UtilityPolicy {
             .with_combat_core_exclusions(combat_core_exclusions)
             .with_intelligence(mode.unit_contacts, mode.building_contacts)
             .with_public_map(mode.public_map)
-            .excluding_builders(&unavailable_builders);
+            .excluding_builders(&unavailable_builders)
+            .with_fresh_emergency_defense_admission(fresh_emergency_defense_admission)
+            .with_fresh_foundry_admission(fresh_foundry_admission);
         let manages_opening = player_facing && dials.minimum_core_equivalents > 0;
         let mut opening_core_deficient = false;
 
@@ -2447,7 +2602,9 @@ impl UtilityPolicy {
                 ProductionContext::new(home_tile, construction_claims, None)
                     .with_combat_core_exclusions(combat_core_exclusions)
                     .with_intelligence(mode.unit_contacts, mode.building_contacts)
-                    .with_public_map(mode.public_map),
+                    .with_public_map(mode.public_map)
+                    .with_fresh_foundry_admission(fresh_foundry_admission)
+                    .with_producer_lane_reservations(producer_lane_reservations),
                 &mut budget,
                 &mut intents,
             );
@@ -2477,7 +2634,12 @@ impl UtilityPolicy {
             && !opening_bootstrap_active
             && paid_site_needs_shallow_reinforcement
         {
-            Self::maintain_shallow_sentinel_reinforcement(obs, &mut budget, &mut intents);
+            Self::maintain_shallow_sentinel_reinforcement(
+                obs,
+                producer_lane_reservations,
+                &mut budget,
+                &mut intents,
+            );
         }
         let shallow_capital_guard =
             if has_ground_objective && !Self::shallow_sentinel_reinforcement(obs, &intents) {
@@ -2499,7 +2661,9 @@ impl UtilityPolicy {
                 .with_combat_core_exclusions(combat_core_exclusions)
                 .with_intelligence(mode.unit_contacts, mode.building_contacts)
                 .with_public_map(mode.public_map)
-                .with_voluntary_scrap_guard(Reserve::Exact(production_guard)),
+                .with_voluntary_scrap_guard(Reserve::Exact(production_guard))
+                .with_fresh_foundry_admission(fresh_foundry_admission)
+                .with_producer_lane_reservations(producer_lane_reservations),
                 &mut budget,
                 commitments.as_mut(),
                 &mut intents,
@@ -2527,7 +2691,12 @@ impl UtilityPolicy {
             let unpaid_deferred_capital =
                 construction_commitment > 0 || Self::unpaid_deferred_construction(obs, &intents);
             if has_ground_objective && capital_advanced && !unpaid_deferred_capital {
-                Self::maintain_shallow_sentinel_reinforcement(obs, &mut budget, &mut intents);
+                Self::maintain_shallow_sentinel_reinforcement(
+                    obs,
+                    producer_lane_reservations,
+                    &mut budget,
+                    &mut intents,
+                );
             }
         } else if !player_facing || dials.minimum_core_equivalents == 0 {
             // Preserve the profile-free controller's frozen ordering, and
@@ -2568,7 +2737,9 @@ impl UtilityPolicy {
                     )
                     .with_combat_core_exclusions(combat_core_exclusions)
                     .with_intelligence(mode.unit_contacts, mode.building_contacts)
-                    .with_public_map(mode.public_map),
+                    .with_public_map(mode.public_map)
+                    .with_fresh_foundry_admission(fresh_foundry_admission)
+                    .with_producer_lane_reservations(producer_lane_reservations),
                     &mut budget,
                     commitments.as_mut(),
                     &mut intents,
@@ -2577,7 +2748,9 @@ impl UtilityPolicy {
                 expansion_capital_promised = self.production_with_commitments(
                     dials,
                     obs,
-                    ProductionContext::new(home_tile, construction_claims, None),
+                    ProductionContext::new(home_tile, construction_claims, None)
+                        .with_fresh_foundry_admission(fresh_foundry_admission)
+                        .with_producer_lane_reservations(producer_lane_reservations),
                     &mut budget,
                     commitments.as_mut(),
                     &mut intents,
@@ -4028,6 +4201,89 @@ mod tests {
                 .all(|intent| !matches!(intent, Intent::RepairUnits { .. })),
             "mobile support cannot reuse scrap already committed to ordinary production"
         );
+    }
+
+    #[test]
+    fn strategic_utility_does_not_rerank_an_adjudicated_emergency_defense() {
+        let home = TilePos::new(3, 3);
+        let mut second = harvester(2, None);
+        second.tile = TilePos::new(6, 7);
+        let mut obs = obs_with(vec![harvester(1, None), second]);
+        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![Vec::new()];
+        obs.scrap = 10_000;
+        obs.enemy_units
+            .push(fighter(20, PlayerId(1), TilePos::new(3, 12)));
+        let map = public_map(&obs);
+        let mut dials = Dials::full();
+        dials.extractors = false;
+        dials.tech = false;
+        dials.deep_tech = false;
+        dials.radar = false;
+        dials.reclaimers = false;
+        dials.upgrades = false;
+        dials.expansion = false;
+        dials.mines = false;
+
+        let available = [UnitId(1), UnitId(2)];
+        let mut policy = UtilityPolicy::new();
+        let defense = policy
+            .fresh_emergency_defense(
+                &dials,
+                &obs,
+                FreshEmergencyDefenseContext {
+                    home,
+                    available_builders: &available,
+                    unit_contacts: &[],
+                    building_contacts: &[],
+                    public_map: &map,
+                    same_think_intents: &[],
+                    current_scrap: obs.scrap,
+                },
+            )
+            .expect("the current ground attack admits an emergency defense");
+        let cost = defense.construction_cost();
+        let mut prelude = Vec::new();
+        policy.commit_adjudicated_emergency_defense(defense, &mut prelude);
+
+        let intents = policy.think_with_intelligence(
+            &dials,
+            &obs,
+            &[],
+            &[],
+            StrategicUtilityContext::new(&[], &[], &[], &map, prelude)
+                .with_prior_scrap_commitment(cost)
+                .with_adjudicated_fresh_emergency_defense(),
+        );
+
+        let emergency_builds: Vec<_> = intents
+            .iter()
+            .filter(|intent| {
+                matches!(
+                    intent,
+                    Intent::Build {
+                        kind: BuildingKind::Turret | BuildingKind::FlakTurret,
+                        ..
+                    } | Intent::BuildWith {
+                        kind: BuildingKind::Turret | BuildingKind::FlakTurret,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(
+            emergency_builds.len(),
+            1,
+            "residual utility must retain the exact prelude without choosing a second emergency: {intents:?}"
+        );
+        assert!(matches!(
+            emergency_builds[0],
+            Intent::BuildWith {
+                builder,
+                kind: BuildingKind::Turret,
+                anchor,
+            } if *builder == defense.builder() && *anchor == defense.anchor()
+        ));
     }
 
     #[test]

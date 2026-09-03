@@ -1829,6 +1829,31 @@ mod tests {
     }
 
     #[test]
+    fn paid_queue_access_does_not_authorize_a_new_append() {
+        let producer = BuildingId(7);
+        let resources = snapshot(
+            0,
+            vec![lane(
+                producer.0,
+                BuildingKind::Airworks,
+                vec![UnitKind::Condor],
+                Vec::new(),
+                ProducerEgress::NotRequired,
+            )],
+        );
+        let access = ProductionAccess::restricted_kinds_with_paid(
+            Vec::new(),
+            vec![(producer, UnitKind::Condor)],
+        );
+
+        assert!(!access.allows(producer, UnitKind::Condor));
+        assert_eq!(
+            count_paid_queued_ready_with_access(&resources, UnitKind::Condor, Tick::MAX, &access),
+            1
+        );
+    }
+
+    #[test]
     fn paid_queue_credit_requires_completion_before_the_deadline_observation() {
         let resources = snapshot(
             0,

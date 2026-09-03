@@ -18,6 +18,7 @@
 //! the configurable player-facing opponent. [`Brain::overseer`] remains a
 //! separate QA yardstick.
 
+mod allocation;
 pub mod brain;
 pub mod briefing;
 pub mod difficulty;

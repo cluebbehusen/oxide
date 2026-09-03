@@ -75,7 +75,7 @@ pub(super) struct ExpansionEconomy {
 }
 
 impl ExpansionEconomy {
-    fn horizon_ticks(self) -> u64 {
+    pub(super) fn horizon_ticks(self) -> u64 {
         BASE_HORIZON_TICKS
             .saturating_add(u64::from(self.greed).saturating_mul(GREED_HORIZON_TICKS))
             .saturating_add(
