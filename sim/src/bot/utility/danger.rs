@@ -536,6 +536,7 @@ mod tests {
             kind,
             tile,
             hp: kind.stats().max_hp,
+            grounded: false,
             last_seen,
             evidence: ContactEvidence::Remembered,
         }

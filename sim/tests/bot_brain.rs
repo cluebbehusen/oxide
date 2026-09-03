@@ -1362,6 +1362,7 @@ fn qa_rear_line_stays_frozen_while_player_facing_releases_repaired_units() {
         my_units: units,
         my_buildings: Vec::new(),
         my_queues: Vec::new(),
+        my_queue_progress: Vec::new(),
         my_queued_units: Vec::new(),
         ally_units: Vec::new(),
         ally_buildings: Vec::new(),

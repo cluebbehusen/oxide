@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-02T13:40:17
+updated: 2026-09-02T23:11:47
 ---
 
 # Scripted Bot Strategic Reset
@@ -64,13 +64,14 @@ without arbitrary controller caps.
   implicitly arbitrate spending, is the reset target.
 - Opportunity-scaled Foundry expansion is already merged and provides a concrete
   precedent for marginal-value investment without a player-facing count ceiling.
-- Connected operations still assemble a fixed two-Bombard and one-Moth cohort,
-  while ordinary production falls back to repeatable Sentinel and Lancer demand
-  after that small operation is satisfied.
 - The current planners often represent a rejected or absent candidate as
   silence. PR 1 cannot truthfully reconstruct proposal forecasts or rejection
   reasons without changing policy, so its trace must not infer them by rerunning
   predicates.
+- At the start of the reset, connected operations assembled a fixed two-Bombard
+  and one-Moth cohort, while ordinary production fell back to repeated Sentinel
+  and Lancer demand. PR 3 replaces the fixed operation cohort; PR 5 owns the
+  ordinary-production fallback.
 
 ## Actions
 
@@ -133,7 +134,7 @@ without arbitrary controller caps.
     support-radius edges, live producer blockage and recovery, current tech
     prerequisites with prepaid queues, both operation-versus-expansion admission
     orderings, mirrored exact lowering, and recovery-clock renewal
-- [ ] 3. Replace fixed connected-operation rosters with opportunity-scaled force
+- [x] 3. Replace fixed connected-operation rosters with opportunity-scaled force
       packages.
   - Derive capability demand and deterministic providers from target value,
     observed defenses, technology, existing forces, protected capital,
@@ -147,6 +148,29 @@ without arbitrary controller caps.
     personality emphasis without capability gates, non-extending deadlines,
     exact-ID freeze, abort, and recovery; evaluate across ordinary and rich
     maps.
+  - Isolated prerequisite: classified connected versus island opportunities from
+    the immutable public terrain briefing, so unexplored authored terrain cannot
+    send a wealthy bot into the wrong doctrine.
+  - Scope clarification: preserved the Recon -> Assemble -> Suppress AA ->
+    Verify -> Strike -> Recover lifecycle and its existing move, hold, attack,
+    and recovery mechanics. Changed admission, package composition, route
+    preflight, live strike-target selection, and suppression-target selection.
+  - Replaced the fixed connected cohort with a capability package derived from
+    current target value, operational AA, completed production, available
+    funding, technology, existing forces, and personality; revisions stop at
+    exact-ID commitment and cannot extend the deadline.
+  - Added an exact deterministic producer scheduler with no policy count cutoff;
+    independent brute-force oracles matched 215,000 generated queue,
+    eligibility, release-order, and lane-allocation cases.
+  - Aligned reconnaissance, target-cluster liveness, artillery firing stands,
+    group spreading, producer egress, and attack routes with public terrain and
+    the authoritative command geometry; an infeasible preferred target now
+    yields to the next viable current objective.
+  - Evaluated 14 persisted ordinary- and rich-map matches with 34,338 trace
+    rows. Connected packages ranged from the shared three-unit minimum to 15
+    units, scaled suppression through Bombards and Avalanche against observed
+    AA, substituted Buzzards and Condors at higher opportunity, and reproduced
+    the same command and terminal hashes under an identical seed.
 - [ ] 4. Admit compatible investments through a deterministic cross-domain
       allocator.
   - Introduce exhaustive economy, offense, defense, technology, reconnaissance,
@@ -235,5 +259,8 @@ without arbitrary controller caps.
     paired map and seat matrices, duplicate-seed detection,
     Prime-versus-Overseer evidence, watched full replays, human play, final
     documentation, final hashes, and the approved 0.17.0 version bump.
+  - One paired control cell had Standard defeat Prime in all four legs across
+    Cinder Steppe and Terrace Ledger; retain this as difficulty-calibration
+    evidence rather than tuning it inside the force-package slice.
 
 ## Open Questions

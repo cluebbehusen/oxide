@@ -361,39 +361,25 @@ fn spread_goals_by(
 /// approach. The first selected unit not already at the goal defines the
 /// frame; an owned Foundry is the deterministic fallback for a stacked group.
 fn spread_scan_reversed(state: &State, center: TilePos, ids: &[UnitId]) -> bool {
-    let reversed = |dx: i64, dy: i64| dy < 0 || (dy == 0 && dx < 0);
-    for id in ids {
-        let tile = state.unit(*id).expect("accepted spread unit exists").tile();
-        let dx = i64::from(center.x) - i64::from(tile.x);
-        let dy = i64::from(center.y) - i64::from(tile.y);
-        if dx != 0 || dy != 0 {
-            return reversed(dx, dy);
-        }
-    }
-
     let player = state
         .unit(ids[0])
         .expect("a spread has at least one accepted unit")
         .player;
-    if let Some(foundry) = state.buildings.iter().find(|building| {
-        building.player == player && building.kind == crate::stats::BuildingKind::Foundry
-    }) {
-        let (width, height) = foundry.kind.base_stats().size;
-        let dx = i64::from(center.x) * 2 + 1 - (i64::from(foundry.anchor.x) * 2 + i64::from(width));
-        let dy =
-            i64::from(center.y) * 2 + 1 - (i64::from(foundry.anchor.y) * 2 + i64::from(height));
-        if dx != 0 || dy != 0 {
-            return reversed(dx, dy);
-        }
-    }
-
-    let dx = i64::from(center.x) * 2 + 1 - i64::from(state.map.width());
-    let dy = i64::from(center.y) * 2 + 1 - i64::from(state.map.height());
-    if dx != 0 || dy != 0 {
-        return reversed(dx, dy);
-    }
-
-    player.0 % 2 == 1
+    let foundry = state
+        .buildings
+        .iter()
+        .find(|building| {
+            building.player == player && building.kind == crate::stats::BuildingKind::Foundry
+        })
+        .map(|building| (building.anchor, building.kind.base_stats().size));
+    super::group_spread_scan_reversed(
+        center,
+        ids.iter()
+            .map(|id| state.unit(*id).expect("accepted spread unit exists").tile()),
+        foundry,
+        (state.map.width(), state.map.height()),
+        player,
+    )
 }
 
 /// Resolve a blocked group-command center in the same approach frame used
