@@ -64,22 +64,49 @@ pub(crate) enum ProductionAccess {
     Unrestricted,
     RestrictedKinds {
         allowed: Vec<(BuildingId, UnitKind)>,
+        paid_allowed: Vec<(BuildingId, UnitKind)>,
     },
 }
 
 impl ProductionAccess {
     /// Restricts access to exact producer and unit-kind pairs.
-    pub(crate) fn restricted_kinds(mut allowed: Vec<(BuildingId, UnitKind)>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn restricted_kinds(allowed: Vec<(BuildingId, UnitKind)>) -> Self {
+        Self::restricted_kinds_with_paid(allowed.clone(), allowed)
+    }
+
+    /// Separately restricts new appends and already-paid queue work.
+    pub(crate) fn restricted_kinds_with_paid(
+        mut allowed: Vec<(BuildingId, UnitKind)>,
+        mut paid_allowed: Vec<(BuildingId, UnitKind)>,
+    ) -> Self {
         allowed.sort_unstable();
         allowed.dedup();
-        Self::RestrictedKinds { allowed }
+        paid_allowed.sort_unstable();
+        paid_allowed.dedup();
+        Self::RestrictedKinds {
+            allowed,
+            paid_allowed,
+        }
     }
 
     pub(crate) fn allows(&self, producer: BuildingId, kind: UnitKind) -> bool {
         match self {
             #[cfg(test)]
             Self::Unrestricted => true,
-            Self::RestrictedKinds { allowed } => allowed.binary_search(&(producer, kind)).is_ok(),
+            Self::RestrictedKinds { allowed, .. } => {
+                allowed.binary_search(&(producer, kind)).is_ok()
+            }
+        }
+    }
+
+    fn allows_paid(&self, producer: BuildingId, kind: UnitKind) -> bool {
+        match self {
+            #[cfg(test)]
+            Self::Unrestricted => true,
+            Self::RestrictedKinds { paid_allowed, .. } => {
+                paid_allowed.binary_search(&(producer, kind)).is_ok()
+            }
         }
     }
 }
@@ -922,7 +949,7 @@ pub(crate) fn count_paid_queued_ready_with_access(
         .producers()
         .iter()
         .map(|lane| {
-            if !access.allows(lane.producer, kind)
+            if !access.allows_paid(lane.producer, kind)
                 || !egress_is_credible_for(kind, lane.ground_egress)
             {
                 return 0;

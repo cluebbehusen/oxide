@@ -2941,17 +2941,33 @@ fn connected_production_access<'a>(
     let mut air_routes =
         route_projection_with_orientation(obs, Domain::Air, route.public_map, route.orientation);
     let mut allowed = Vec::new();
+    let mut paid_allowed = Vec::new();
 
     for lane in resources.producers() {
-        let Some(producer) = obs
+        let Some((producer_index, producer)) = obs
             .my_buildings
             .iter()
-            .find(|building| building.id == lane.producer)
+            .enumerate()
+            .find(|(_, building)| building.id == lane.producer)
         else {
             continue;
         };
-        let trainable = completed_producer_trainable_kinds(obs, producer);
-        for kind in trainable {
+        let mut trainable = completed_producer_trainable_kinds(obs, producer);
+        trainable.sort_unstable();
+        trainable.dedup();
+        let mut paid = obs
+            .my_queues
+            .get(producer_index)
+            .cloned()
+            .unwrap_or_default();
+        paid.sort_unstable();
+        paid.dedup();
+        let mut candidates = trainable.clone();
+        candidates.extend_from_slice(&paid);
+        candidates.sort_unstable();
+        candidates.dedup();
+
+        for kind in candidates {
             let accessible = match kind.stats().domain {
                 Domain::Ground if is_artillery(kind) => staging.is_some_and(|staging| {
                     production_spawn_doorstep(obs, producer, route.public_map, route.orientation)
@@ -2981,12 +2997,17 @@ fn connected_production_access<'a>(
                 Domain::Ground | Domain::Air => false,
             };
             if accessible {
-                allowed.push((producer.id, kind));
+                if trainable.binary_search(&kind).is_ok() {
+                    allowed.push((producer.id, kind));
+                }
+                if paid.binary_search(&kind).is_ok() {
+                    paid_allowed.push((producer.id, kind));
+                }
             }
         }
     }
 
-    ProductionAccess::restricted_kinds(allowed)
+    ProductionAccess::restricted_kinds_with_paid(allowed, paid_allowed)
 }
 
 fn connected_target_selection<'a>(
@@ -9741,26 +9762,23 @@ mod tests {
     }
 
     #[test]
-    fn paid_front_queue_keeps_an_admitted_package_feasible_until_its_fixed_deadline() {
-        fn run(reobserved_after: u32) -> (StrategicDecision, StrategicPlanner) {
+    fn paid_front_queue_survives_prerequisite_loss_but_new_work_does_not() {
+        fn run(reobserved_after: u32, paid: bool) -> (StrategicDecision, StrategicPlanner) {
             let admitted_at = 100;
-            let deadline = 280;
+            let deadline = 1_100;
             let mut initial = obs(admitted_at);
             initial.visible.fill(true);
             initial.explored.fill(true);
-            initial.scrap = UnitKind::Buzzard.stats().cost;
+            initial.scrap = UnitKind::Condor.stats().cost;
             initial
                 .my_units
                 .retain(|unit| matches!(unit.kind, UnitKind::Kestrel | UnitKind::Bombard));
-            initial.my_buildings = vec![building(
-                11,
-                0,
-                BuildingKind::Airworks,
-                TilePos::new(5, 2),
-                true,
-            )];
-            initial.my_queues = vec![Vec::new()];
-            initial.my_queue_progress = vec![0];
+            initial.my_buildings = vec![
+                building(11, 0, BuildingKind::Airworks, TilePos::new(5, 2), true),
+                building(12, 0, BuildingKind::Crucible, TilePos::new(8, 2), true),
+            ];
+            initial.my_queues = vec![Vec::new(), Vec::new()];
+            initial.my_queue_progress = vec![0, 0];
 
             let mut plan = connected_test_plan(&initial);
             let package = plan
@@ -9769,7 +9787,7 @@ mod tests {
                 .expect("the admitted plan carries its exact package");
             package.preparation_deadline = deadline;
             package.strike = vec![ProviderDemand {
-                kind: UnitKind::Buzzard,
+                kind: UnitKind::Condor,
                 count: 1,
             }];
             package.provider_priority = vec![
@@ -9788,11 +9806,11 @@ mod tests {
                 ProviderDemandTranche {
                     priority: force_package::ProviderPriority::Minimum,
                     family: ForceFamily::Strike,
-                    kind: UnitKind::Buzzard,
+                    kind: UnitKind::Condor,
                     count: 1,
                 },
             ];
-            let strike = strike_capability(UnitKind::Buzzard, initial.faction);
+            let strike = strike_capability(UnitKind::Condor, initial.faction);
             package.minimum_capability.strike = strike;
             package.useful_capability.strike = strike;
             package.chosen_capability.strike = strike;
@@ -9815,16 +9833,25 @@ mod tests {
             let commissioned = think(&mut planner, &initial, &intelligence);
             assert!(commissioned.intents.contains(&Intent::TrainAt {
                 building: BuildingId(11),
-                kind: UnitKind::Buzzard,
+                kind: UnitKind::Condor,
             }));
 
             let mut later = initial;
             later.tick = admitted_at + Tick::from(reobserved_after);
-            later.scrap = 0;
+            later.scrap = if paid {
+                0
+            } else {
+                UnitKind::Condor.stats().cost
+            };
             later.visible.fill(false);
             later.enemy_buildings[0].seen = false;
-            later.my_queues[0] = vec![UnitKind::Buzzard];
-            later.my_queue_progress[0] = reobserved_after;
+            later.my_buildings.truncate(1);
+            later.my_queues.truncate(1);
+            later.my_queue_progress.truncate(1);
+            if paid {
+                later.my_queues[0] = vec![UnitKind::Condor];
+                later.my_queue_progress[0] = reobserved_after;
+            }
             intelligence.update(&later);
 
             let decision = think(&mut planner, &later, &intelligence);
@@ -9832,8 +9859,8 @@ mod tests {
         }
 
         for reobserved_after in [12, 24, 60] {
-            let (first_decision, first_planner) = run(reobserved_after);
-            let (second_decision, second_planner) = run(reobserved_after);
+            let (first_decision, first_planner) = run(reobserved_after, true);
+            let (second_decision, second_planner) = run(reobserved_after, true);
             assert_eq!(first_decision, second_decision);
             assert_eq!(first_planner, second_planner);
 
@@ -9845,12 +9872,29 @@ mod tests {
             assert!(first_decision.intents.iter().all(|intent| !matches!(
                 intent,
                 Intent::TrainAt {
-                    kind: UnitKind::Buzzard,
+                    kind: UnitKind::Condor,
                     ..
                 }
             )));
             assert_eq!(first_decision.committed_scrap, 0);
         }
+
+        let (decision, planner) = run(12, false);
+        let operation = planner
+            .air_operation()
+            .expect("the infeasible operation remains observable during recovery");
+        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(
+            operation.recovery_reason,
+            Some(AirRecoveryReason::PreparationInfeasible)
+        );
+        assert!(decision.intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::TrainAt {
+                kind: UnitKind::Condor,
+                ..
+            }
+        )));
     }
 
     #[test]
