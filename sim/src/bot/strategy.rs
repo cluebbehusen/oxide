@@ -448,6 +448,16 @@ fn derive_connected_package_for_targets(
             requested: demand_count(&package.suppression),
         });
     }
+    if !connected_suppression_roster_has_firing_assignments(
+        obs,
+        route,
+        &package.suppression,
+        &targets.suppression_targets,
+    ) {
+        return Err(ConnectedPlanRejection::UnreachableGroupStaging {
+            requested: demand_count(&package.suppression),
+        });
+    }
     Ok(package)
 }
 
@@ -2265,7 +2275,7 @@ fn live_strike_target<'a>(
 ) -> Option<&'a BuildingContact> {
     operation_target_cluster(op, plan, intel)
         .into_iter()
-        .filter(|building| building.id.is_some())
+        .filter(|building| building.evidence == ContactEvidence::Current && building.id.is_some())
         .min_by_key(|building| operation_target_key(op, building))
 }
 
@@ -2336,27 +2346,97 @@ fn artillery_firing_assignments(
     let mut members = artillery.to_vec();
     members.sort_unstable();
     members.dedup();
-    let mut routes =
-        route_projection_with_orientation(obs, Domain::Ground, public_map, orientation);
-    let mut assigned = Vec::with_capacity(members.len());
-    for id in members {
-        let member = unit(obs, id)?;
-        let stand = suppression_firing_stands(
-            &mut routes,
-            obs,
-            SuppressionOrigin {
+    let origins: Option<Vec<_>> = members
+        .iter()
+        .map(|id| {
+            unit(obs, *id).map(|member| SuppressionOrigin {
                 tile: member.tile,
                 kind: member.kind,
-            },
-            target,
-            intel,
-            public_map,
-        )
-        .into_iter()
-        .find(|stand| assigned.iter().all(|(_, used)| used != stand))?;
-        assigned.push((id, stand));
+            })
+        })
+        .collect();
+    let firing_stands =
+        suppression_firing_assignment(obs, intel, &origins?, target, public_map, orientation)?;
+    Some(members.into_iter().zip(firing_stands).collect())
+}
+
+fn suppression_firing_assignment(
+    obs: &Observation,
+    intel: &StrategicIntelligence,
+    origins: &[SuppressionOrigin],
+    target: Target,
+    public_map: Option<&PublicMapBriefing>,
+    orientation: Orientation,
+) -> Option<Vec<TilePos>> {
+    if origins.is_empty() {
+        return None;
     }
-    Some(assigned)
+    let mut routes =
+        route_projection_with_orientation(obs, Domain::Ground, public_map, orientation);
+    let stand_options: Vec<Vec<TilePos>> = origins
+        .iter()
+        .map(|origin| {
+            suppression_firing_stands(&mut routes, obs, *origin, target, intel, public_map)
+                .collect()
+        })
+        .collect();
+    if stand_options.iter().any(Vec::is_empty) {
+        return None;
+    }
+
+    let mut stands: Vec<_> = stand_options.iter().flatten().copied().collect();
+    stands.sort_unstable_by_key(|stand| (stand.y, stand.x));
+    stands.dedup();
+    let options: Vec<Vec<usize>> = stand_options
+        .iter()
+        .map(|member_options| {
+            member_options
+                .iter()
+                .map(|stand| {
+                    stands
+                        .binary_search_by_key(&(stand.y, stand.x), |candidate| {
+                            (candidate.y, candidate.x)
+                        })
+                        .expect("every firing option came from the canonical stand set")
+                })
+                .collect()
+        })
+        .collect();
+    let mut owner_by_stand = vec![None; stands.len()];
+    for member in 0..origins.len() {
+        let mut visited = vec![false; stands.len()];
+        if !augment_suppression_assignment(member, &options, &mut visited, &mut owner_by_stand) {
+            return None;
+        }
+    }
+    let mut assigned = vec![None; origins.len()];
+    for (stand, owner) in owner_by_stand.into_iter().enumerate() {
+        if let Some(member) = owner {
+            assigned[member] = Some(stands[stand]);
+        }
+    }
+    assigned.into_iter().collect()
+}
+
+fn augment_suppression_assignment(
+    member: usize,
+    options: &[Vec<usize>],
+    visited: &mut [bool],
+    owner_by_stand: &mut [Option<usize>],
+) -> bool {
+    for &stand in &options[member] {
+        if visited[stand] {
+            continue;
+        }
+        visited[stand] = true;
+        if owner_by_stand[stand].is_none_or(|owner| {
+            augment_suppression_assignment(owner, options, visited, owner_by_stand)
+        }) {
+            owner_by_stand[stand] = Some(member);
+            return true;
+        }
+    }
+    false
 }
 
 fn exact_attack_group_reaches(
@@ -2430,9 +2510,6 @@ fn operation_target_cluster<'a>(
         return current_target_cluster(intel, op.target_player, op.target);
     };
     frozen_connected_target_contacts(op, package, intel)
-        .into_iter()
-        .filter(|contact| contact.evidence == ContactEvidence::Current)
-        .collect()
 }
 
 fn frozen_connected_target_contacts<'a>(
@@ -4333,6 +4410,48 @@ fn connected_artillery_group_has_staging(
                 count,
                 exact_live.as_deref(),
             )
+        })
+}
+
+fn connected_suppression_roster_has_firing_assignments(
+    obs: &Observation,
+    route: ConnectedRouteContext<'_>,
+    demands: &[ProviderDemand],
+    targets: &[Target],
+) -> bool {
+    if targets.is_empty() {
+        return true;
+    }
+    let Some(staging) =
+        connected_artillery_staging_goal(obs, route.home, route.target, route.public_map)
+    else {
+        return false;
+    };
+    let mut demands = demands.to_vec();
+    demands.sort_unstable_by_key(|demand| demand.kind);
+    let origins: Vec<_> = demands
+        .iter()
+        .flat_map(|demand| {
+            std::iter::repeat_n(
+                SuppressionOrigin {
+                    tile: staging,
+                    kind: demand.kind,
+                },
+                demand.count,
+            )
+        })
+        .collect();
+    !origins.is_empty()
+        && targets.iter().all(|target| {
+            suppression_firing_assignment(
+                obs,
+                route.intel,
+                &origins,
+                *target,
+                route.public_map,
+                route.orientation,
+            )
+            .is_some()
         })
 }
 
@@ -6868,6 +6987,128 @@ mod tests {
     }
 
     #[test]
+    fn suppression_preflight_requires_one_reachable_firing_stand_per_provider() {
+        let origin = TilePos::new(0, 7);
+        let first_stand = TilePos::new(1, 7);
+        let second_stand = TilePos::new(2, 7);
+        let target_anchor = TilePos::new(11, 7);
+        let mut observation = obs(300);
+        observation.map_width = 14;
+        observation.map_height = 14;
+        observation.visible = vec![true; 14 * 14];
+        observation.explored = vec![true; 14 * 14];
+        observation.my_units.clear();
+        observation.enemy_buildings = vec![building(
+            81,
+            1,
+            BuildingKind::FlakTurret,
+            target_anchor,
+            true,
+        )];
+        let intelligence = knowledge(&observation);
+        let target = Target::Building(BuildingId(81));
+        let origins = vec![
+            SuppressionOrigin {
+                tile: origin,
+                kind: UnitKind::Bombard,
+            },
+            SuppressionOrigin {
+                tile: origin,
+                kind: UnitKind::Bombard,
+            },
+        ];
+        let terrain_with = |open: Vec<TilePos>| {
+            (0..observation.map_height).flat_map(move |y| {
+                let open = open.clone();
+                (0..observation.map_width).filter_map(move |x| {
+                    let tile = TilePos::new(x, y);
+                    (!open.contains(&tile)).then_some((tile, Terrain::Pit))
+                })
+            })
+        };
+
+        let one_stand_map =
+            public_map_with_terrain(&observation, terrain_with(vec![origin, first_stand]));
+        assert_eq!(
+            suppression_firing_assignment(
+                &observation,
+                &intelligence,
+                &origins[..1],
+                target,
+                Some(&one_stand_map),
+                test_orientation(),
+            ),
+            Some(vec![first_stand])
+        );
+        assert_eq!(
+            suppression_firing_assignment(
+                &observation,
+                &intelligence,
+                &origins,
+                target,
+                Some(&one_stand_map),
+                test_orientation(),
+            ),
+            None,
+            "two providers cannot be admitted against one legal firing tile"
+        );
+
+        let two_stand_map = public_map_with_terrain(
+            &observation,
+            terrain_with(vec![origin, first_stand, second_stand]),
+        );
+        let assigned = suppression_firing_assignment(
+            &observation,
+            &intelligence,
+            &origins,
+            target,
+            Some(&two_stand_map),
+            test_orientation(),
+        )
+        .expect("two connected legal firing tiles admit both providers");
+        assert_eq!(assigned.len(), 2);
+        assert_ne!(assigned[0], assigned[1]);
+        assert!(assigned.iter().all(|stand| {
+            let mut routes = route_projection_with_orientation(
+                &observation,
+                Domain::Ground,
+                Some(&two_stand_map),
+                test_orientation(),
+            );
+            suppression_firing_stands(
+                &mut routes,
+                &observation,
+                origins[0],
+                target,
+                &intelligence,
+                Some(&two_stand_map),
+            )
+            .any(|candidate| candidate == *stand)
+        }));
+    }
+
+    #[test]
+    fn suppression_assignment_backtracks_for_a_constrained_provider() {
+        let options = vec![vec![0, 1], vec![0]];
+        let mut owner_by_stand = vec![None; 2];
+        let mut first_visited = vec![false; 2];
+        assert!(augment_suppression_assignment(
+            0,
+            &options,
+            &mut first_visited,
+            &mut owner_by_stand,
+        ));
+        let mut second_visited = vec![false; 2];
+        assert!(augment_suppression_assignment(
+            1,
+            &options,
+            &mut second_visited,
+            &mut owner_by_stand,
+        ));
+        assert_eq!(owner_by_stand, vec![Some(1), Some(0)]);
+    }
+
+    #[test]
     fn authoritative_spread_preflight_is_scoped_to_connected_operations() {
         let mut observation = obs(300);
         let goal = TilePos::new(12, 10);
@@ -8603,6 +8844,113 @@ mod tests {
             cluster_air_defense(&operation, &plan, &intelligence).evidence,
             AirDefenseEvidence::VisibleWithoutKnownCoverage
         );
+    }
+
+    #[test]
+    fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
+        let primary = TilePos::new(20, 20);
+        let secondary = TilePos::new(24, 20);
+        let flak = TilePos::new(29, 20);
+        let mut battle = obs(400);
+        battle.map_width = 40;
+        battle.map_height = 30;
+        battle.visible = vec![true; 40 * 30];
+        battle.explored = vec![true; 40 * 30];
+        battle.enemy_buildings = vec![
+            building(80, 1, BuildingKind::Crucible, primary, true),
+            building(82, 1, BuildingKind::Airworks, secondary, true),
+            building(81, 1, BuildingKind::FlakTurret, flak, true),
+        ];
+        let mut intelligence = knowledge(&battle);
+
+        let mut hidden = battle;
+        hidden.tick += 12;
+        hidden.visible.fill(false);
+        see_approach_to(&mut hidden, primary);
+        see_building_footprint(&mut hidden, primary, BuildingKind::Crucible);
+        for building in &mut hidden.enemy_buildings {
+            building.seen = building.anchor == primary;
+        }
+        intelligence.update(&hidden);
+        assert!(intelligence.buildings().iter().any(|contact| {
+            contact.anchor == secondary && contact.evidence == ContactEvidence::Remembered
+        }));
+
+        let mut operation = operation(AirOperationPhase::Verify, hidden.tick);
+        operation.target = primary;
+        operation.target_id = Some(BuildingId(80));
+        let mut plan = connected_test_plan(&hidden);
+        plan.connected_package
+            .as_mut()
+            .expect("connected package")
+            .target_anchors = vec![primary, secondary];
+        assert_eq!(
+            cluster_air_defense(&operation, &plan, &intelligence).evidence,
+            AirDefenseEvidence::RememberedCoverage
+        );
+        assert_eq!(
+            connected_scout_focus(&operation, &plan, &hidden, &intelligence),
+            secondary
+        );
+
+        let identity = profile();
+        let mut decision = StrategicDecision::default();
+        verify(
+            &mut operation,
+            &mut plan,
+            &AirPlanningContext {
+                profile: &identity,
+                tuning: DifficultyTuning::for_level(identity.difficulty),
+                obs: &hidden,
+                intel: &intelligence,
+                home: HOME,
+                orientation: test_orientation(),
+                public_map: None,
+                enlisted: &[],
+                landing_sites: &[],
+                connected_resources: None,
+            },
+            &mut decision,
+        );
+        assert_eq!(operation.phase, AirOperationPhase::Verify);
+        assert!(operation.scout_dispatch.is_some());
+        assert!(decision.intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        )));
+
+        let mut cleared = hidden;
+        cleared.tick += 100;
+        cleared
+            .enemy_buildings
+            .retain(|building| building.anchor == primary);
+        see_building_footprint(&mut cleared, secondary, BuildingKind::Airworks);
+        see_building_footprint(&mut cleared, flak, BuildingKind::FlakTurret);
+        intelligence.update(&cleared);
+        assert_eq!(
+            cluster_air_defense(&operation, &plan, &intelligence).evidence,
+            AirDefenseEvidence::VisibleWithoutKnownCoverage
+        );
+
+        let mut decision = StrategicDecision::default();
+        verify(
+            &mut operation,
+            &mut plan,
+            &AirPlanningContext {
+                profile: &identity,
+                tuning: DifficultyTuning::for_level(identity.difficulty),
+                obs: &cleared,
+                intel: &intelligence,
+                home: HOME,
+                orientation: test_orientation(),
+                public_map: None,
+                enlisted: &[],
+                landing_sites: &[],
+                connected_resources: None,
+            },
+            &mut decision,
+        );
+        assert_eq!(operation.phase, AirOperationPhase::Strike);
     }
 
     #[test]
