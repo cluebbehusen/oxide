@@ -36,6 +36,7 @@ from tools.production_sprite_sources import (
     skyhook_sapper_crucible_final,
     structures_base,
     tender_condor_final,
+    turret_family,
 )
 
 Registry = dict[str, Image.Image]
@@ -234,12 +235,16 @@ BUILDING_WORK: dict[str, FrameSet] = {
     ),
 }
 
+TURRET_ACTIONS = FrameSet(
+    tuple(f"_action{i}" for i in range(1, 5)),
+    ("damage+muzzle", "recoil", "reload", "ready"),
+    (90, 130, 190, 270),
+)
+
 DEFENSE_ACTIONS: dict[str, FrameSet] = {
-    "turret_barrel": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 5)),
-        ("damage+muzzle", "recoil", "reload", "ready"),
-        (90, 130, 190, 270),
-    ),
+    "turret_barrel": TURRET_ACTIONS,
+    "turret_barrel_t1": TURRET_ACTIONS,
+    "turret_barrel_t2": TURRET_ACTIONS,
     "flak_mount": FrameSet(
         tuple(f"_action{i}" for i in range(1, 9)),
         (
@@ -580,110 +585,6 @@ def _install_working_buildings(registry: Registry, out: Path, faction: str) -> N
         _put(registry, out, f"foundry_{faction}{suffix}", image)
 
 
-def _turret_base_and_mount(
-    faction: str, *, recoil: int, muzzle: bool, breech_open: bool, feed_phase: int
-) -> tuple[Image.Image, Image.Image]:
-    palette = gen.FACTIONS[faction]
-    base, base_draw = structures_base._new_sprite((64, 64))
-    for x, y in ((12, 25), (52, 25), (12, 51), (52, 51)):
-        structures_base._beveled_plate(
-            base_draw, (x - 5, y - 4, x + 5, y + 4), radius=2
-        )
-    base_draw.ellipse(structures_base._box((8, 13, 56, 61)), fill=(*gen.IRON_DARK, 255))
-    base_draw.ellipse(
-        structures_base._box((13, 18, 51, 56)), fill=(*gen.IRON_LIGHT, 255)
-    )
-    base_draw.ellipse(structures_base._box((18, 23, 46, 51)), fill=(0, 0, 0, 0))
-    base_draw.arc(
-        structures_base._box((11, 16, 53, 58)),
-        205,
-        335,
-        fill=(*palette["base"], 255),
-        width=structures_base._s(4),
-    )
-    for x, y in ((16, 24), (48, 24), (18, 50), (46, 50)):
-        structures_base._bolt(base_draw, x, y, 1.5)
-
-    mount, draw = structures_base._new_sprite((64, 64))
-    structures_base._beveled_plate(
-        draw,
-        (22, 28 + recoil, 42, 48 + recoil),
-        fill=palette["dark"],
-        edge=gen.IRON_DARK,
-        highlight=palette["light"],
-        radius=4,
-    )
-    draw.rectangle(
-        structures_base._box((27, 23 + recoil, 37, 37 + recoil)),
-        fill=(*gen.IRON_DARK, 255),
-    )
-    draw.rectangle(
-        structures_base._box((29, 24 + recoil, 35, 35 + recoil)),
-        fill=(*(palette["base"] if breech_open else gen.IRON_LIGHT), 255),
-    )
-    draw.rectangle(
-        structures_base._box((27, 31 + recoil, 37, 35 + recoil)),
-        fill=(*gen.IRON_DARK, 255),
-    )
-    draw.rounded_rectangle(
-        structures_base._box((27, 5 + recoil, 37, 30 + recoil)),
-        radius=structures_base._s(2),
-        fill=(*gen.IRON_DARK, 255),
-    )
-    draw.rectangle(
-        structures_base._box((30, 6 + recoil, 34, 27 + recoil)),
-        fill=(*gen.IRON_LIGHT, 255),
-    )
-    draw.rectangle(
-        structures_base._box((27, 5 + recoil, 37, 10 + recoil)),
-        fill=(*palette["dark"], 255),
-    )
-    draw.rectangle(
-        structures_base._box((29, 5 + recoil, 35, 7 + recoil)), fill=(12, 12, 15, 255)
-    )
-    cartridges = ((45, 43), (48, 38), (49, 32), (46, 27))
-    draw.line(
-        structures_base._points(((40, 46), (46, 43), (49, 37), (49, 31), (44, 26))),
-        fill=(*gen.IRON_DARK, 255),
-        width=structures_base._s(5),
-    )
-    for index, (x, y) in enumerate(cartridges):
-        color = (
-            gen.SCRAP_LIGHT
-            if (index + feed_phase) % len(cartridges) == 0
-            else gen.SCRAP_DARK
-        )
-        draw.rounded_rectangle(
-            structures_base._box((x - 3, y - 2, x + 3, y + 2)),
-            radius=structures_base._s(1),
-            fill=(*color, 255),
-        )
-        draw.rectangle(
-            structures_base._box((x + 1, y - 2, x + 3, y + 2)), fill=(*gen.BONE, 210)
-        )
-    if muzzle:
-        draw.polygon(
-            structures_base._points(
-                (
-                    (32, 2),
-                    (36, 5),
-                    (41, 7),
-                    (36, 9),
-                    (32, 13),
-                    (28, 9),
-                    (23, 7),
-                    (28, 5),
-                )
-            ),
-            fill=(*gen.SCRAP_LIGHT, 255),
-        )
-        draw.rectangle(structures_base._box((29, 4, 35, 9)), fill=(*gen.BONE, 255))
-    return (
-        structures_base._finish(base, (64, 64)),
-        structures_base._finish(mount, (64, 64)),
-    )
-
-
 def _flak_base_and_mount(
     faction: str, *, phase: int, charge: int
 ) -> tuple[Image.Image, Image.Image]:
@@ -724,88 +625,28 @@ def _flak_base_and_mount(
     )
 
 
-def _bastion_base(source: Image.Image, faction: str, charge: int) -> Image.Image:
-    palette = gen.FACTIONS[faction]
-    image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    draw.ellipse((5, 5, 123, 123), fill=(17, 17, 22, 255))
-    for x, y in ((13, 28), (115, 28), (13, 100), (115, 100)):
-        draw.rounded_rectangle(
-            (x - 8, y - 5, x + 8, y + 5), radius=2, fill=(*gen.IRON_DARK, 255)
-        )
-        draw.line((x - 4, y, x + 4, y), fill=(*palette["dark"], 255), width=2)
-    for polygon in (
-        ((27, 35), (8, 11), (2, 20), (23, 45)),
-        ((101, 35), (120, 11), (126, 20), (105, 45)),
-        ((27, 93), (8, 117), (2, 108), (23, 83)),
-        ((101, 93), (120, 117), (126, 108), (105, 83)),
-    ):
-        draw.polygon(polygon, fill=(*gen.IRON_DARK, 255))
-    image.alpha_composite(source)
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((11, 51, 27, 105), radius=3, fill=(*gen.IRON_DARK, 255))
-    draw.rectangle((14, 54, 24, 102), fill=(9, 9, 12, 255))
-    for index in range(5):
-        y0 = 91 - index * 9
-        color = gen.SCRAP_LIGHT if index < charge else gen.SCRAP_DARK
-        draw.rounded_rectangle((16, y0, 22, y0 + 6), radius=1, fill=(*color, 255))
-        if index < charge:
-            draw.line((17, y0 + 1, 21, y0 + 1), fill=(*gen.SCRAP, 255), width=1)
-    return image
-
-
-def _shifted_mount(source: Image.Image, recoil: int, muzzle: bool) -> Image.Image:
-    moving_mask = Image.new("L", source.size, 0)
-    moving_draw = ImageDraw.Draw(moving_mask)
-    moving_draw.rectangle((48, 0, 80, 72), fill=255)
-    moving_draw.rectangle((31, 53, 97, 85), fill=255)
-
-    moving = Image.new("RGBA", source.size, (0, 0, 0, 0))
-    moving.paste(source, (0, 0), moving_mask)
-    fixed = source.copy()
-    fixed.paste((0, 0, 0, 0), (0, 0, source.width, source.height), moving_mask)
-
-    image = fixed
-    image.alpha_composite(moving, (0, recoil))
-    if muzzle:
-        draw = ImageDraw.Draw(image)
-        draw.polygon(
-            (
-                (64, 2 + recoil),
-                (69, 7 + recoil),
-                (76, 10 + recoil),
-                (69, 13 + recoil),
-                (64, 20 + recoil),
-                (59, 13 + recoil),
-                (52, 10 + recoil),
-                (59, 7 + recoil),
-            ),
-            fill=(*gen.SCRAP_LIGHT, 255),
-        )
-        draw.rectangle((61, 7 + recoil, 67, 13 + recoil), fill=(*gen.BONE, 255))
-    return image
-
-
 def _install_defenses(registry: Registry, out: Path, faction: str) -> None:
-    turret_specs = (
-        (0, False, False, 0),
-        (2, True, False, 0),
-        (5, False, True, 0),
-        (3, False, True, 1),
-        (0, False, False, 2),
-    )
-    turret_frames = tuple(
-        _turret_base_and_mount(
-            faction, recoil=recoil, muzzle=muzzle, breech_open=breech, feed_phase=feed
+    for tier, (base_stem, mount_stem) in enumerate(
+        (
+            ("turret", "turret_barrel"),
+            ("turret_t1", "turret_barrel_t1"),
+            ("turret_t2", "turret_barrel_t2"),
         )
-        for recoil, muzzle, breech, feed in turret_specs
-    )
-    _put(registry, out, f"turret_{faction}", turret_frames[0][0])
-    _put(registry, out, f"turret_barrel_{faction}", turret_frames[0][1])
-    for suffix, (_, mount) in zip(
-        DEFENSE_ACTIONS["turret_barrel"].suffixes, turret_frames[1:], strict=True
     ):
-        _put(registry, out, f"turret_barrel_{faction}{suffix}", mount)
+        _put(
+            registry,
+            out,
+            f"{base_stem}_{faction}",
+            turret_family.turret_base(faction, tier),
+        )
+        mounts = tuple(
+            turret_family.turret_mount(faction, tier, phase) for phase in range(5)
+        )
+        _put(registry, out, f"{mount_stem}_{faction}", mounts[0])
+        for suffix, mount in zip(
+            DEFENSE_ACTIONS[mount_stem].suffixes, mounts[1:], strict=True
+        ):
+            _put(registry, out, f"{mount_stem}_{faction}{suffix}", mount)
 
     flak_specs = (
         (0, 0),
@@ -829,19 +670,16 @@ def _install_defenses(registry: Registry, out: Path, faction: str) -> None:
     ):
         _put(registry, out, f"flak_mount_{faction}{suffix}", mount)
 
-    base_source = heavy_structures.bastion_base(faction)
-    mount_source = heavy_structures.bastion_mount(faction)
     # The base frame is a ready weapon, so its rack is full. Report holds
     # full through the muzzle frame; recovery empties it before the next
     # cooldown advances action1..action5 from one cell back to five.
     charges = (5, 1, 2, 3, 4, 5, 5, 0, 0, 0)
-    recoils = (0, 0, 0, 0, 0, 0, 10, 4, 1, 0)
     bastion_frames = tuple(
         (
-            _bastion_base(base_source, faction, charge),
-            _shifted_mount(mount_source, recoil, index == 6),
+            heavy_structures.bastion_base(faction, charge),
+            heavy_structures.bastion_mount(faction, index),
         )
-        for index, (charge, recoil) in enumerate(zip(charges, recoils, strict=True))
+        for index, charge in enumerate(charges)
     )
     _put(registry, out, f"bastion_{faction}", bastion_frames[0][0])
     _put(registry, out, f"bastion_mount_{faction}", bastion_frames[0][1])

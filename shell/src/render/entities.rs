@@ -274,8 +274,8 @@ fn draw_defense_mount(
         height as f32 * game.camera.zoom,
     );
     let source = match action {
-        Some(frame) => sprites.defense_mount_action(building.kind, faction, frame),
-        None => sprites.defense_mount(building.kind, faction),
+        Some(frame) => sprites.defense_mount_action(building.kind, building.tier, faction, frame),
+        None => sprites.defense_mount(building.kind, building.tier, faction),
     };
     let Some(source) = source else {
         return;
@@ -297,8 +297,8 @@ fn draw_defense_mount(
         },
     );
     let accent_source = match action {
-        Some(frame) => sprites.defense_mount_action_accent(building.kind, frame),
-        None => sprites.defense_mount_accent(building.kind),
+        Some(frame) => sprites.defense_mount_action_accent(building.kind, building.tier, frame),
+        None => sprites.defense_mount_accent(building.kind, building.tier),
     };
     if let (Some(accent), Some(source)) = (seat_identity_tint(game, building.player), accent_source)
     {
@@ -425,7 +425,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 layers.push((body_accent, accent));
             }
             if ghost.built
-                && let Some(mount) = sprites.defense_mount(ghost.kind, faction)
+                && let Some(mount) = sprites.defense_mount(ghost.kind, 0, faction)
             {
                 // Defense bases ship bare; memories retain a static,
                 // north-facing silhouette without inventing live aim.
@@ -433,7 +433,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 if let Some(accent) = accent_tint {
                     layers.push((
                         sprites
-                            .defense_mount_accent(ghost.kind)
+                            .defense_mount_accent(ghost.kind, 0)
                             .expect("a defense mount has an accent"),
                         accent,
                     ));

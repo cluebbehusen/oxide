@@ -321,7 +321,7 @@ pub(crate) fn draw_panel(
     let blit_building =
         |dest: Rect, kind: oxide_sim::BuildingKind, faction: oxide_sim::Faction, tint: Color| {
             blit(dest, sprites.building(kind, faction), tint);
-            if let Some(mount) = sprites.defense_mount(kind, faction) {
+            if let Some(mount) = sprites.defense_mount(kind, 0, faction) {
                 blit(dest, mount, tint);
             }
         };
@@ -361,7 +361,7 @@ pub(crate) fn draw_panel(
                 // A construction ghost is still a bare foundation under
                 // scaffold; live targets and finished orders keep the
                 // complete defense silhouette.
-                if !*ghost && let Some(mount) = sprites.defense_mount(*kind, *f) {
+                if !*ghost && let Some(mount) = sprites.defense_mount(*kind, 0, *f) {
                     blit(dest, mount, hull);
                 }
             }

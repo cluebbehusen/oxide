@@ -305,7 +305,7 @@ impl CodexScreen {
                 Entry::Unit(kind) => blit(sprites.unit(kind, *faction)),
                 Entry::Building(kind) => {
                     blit(sprites.building(kind, *faction));
-                    if let Some(mount) = sprites.defense_mount(kind, *faction) {
+                    if let Some(mount) = sprites.defense_mount(kind, 0, *faction) {
                         blit(mount);
                     }
                 }
