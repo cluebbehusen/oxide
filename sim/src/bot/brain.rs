@@ -448,9 +448,10 @@ impl Brain {
             .saturating_add(lifts.as_ref().map_or(0, |lifts| {
                 lifts.remaining_airwork_ticks(&oriented, &prior_lift_unavailable)
             }));
-        let air_capacity_active = strategy
+        let connected_air_active = strategy
             .as_ref()
-            .is_some_and(|strategy| strategy.air_operation().is_some())
+            .is_some_and(|strategy| strategy.air_operation().is_some());
+        let air_capacity_active = connected_air_active
             || lifts
                 .as_ref()
                 .is_some_and(|lifts| lifts.operation().is_some());
@@ -468,7 +469,11 @@ impl Brain {
             .and_then(StrategicPlanner::air_admitted_at)
             .is_some_and(|admitted_at| self.policy.operation_precedes_foundry_saving(admitted_at));
         let mut strategic_observation = oriented.clone();
-        strategic_observation.scrap = ledger.strategic_spendable_for(air_precedes_foundry_saving);
+        strategic_observation.scrap = if connected_air_active {
+            ledger.strategic_spendable_for_airworks_source(air_precedes_foundry_saving)
+        } else {
+            ledger.strategic_spendable_for(air_precedes_foundry_saving)
+        };
         let lift_support_request = lifts
             .as_ref()
             .and_then(LiftPlanner::operation)
@@ -501,8 +506,13 @@ impl Brain {
                         enlisted: &planner_claims,
                         lift_support: lift_support_request.as_ref(),
                         allow_new_operation: allow_new_voluntary_operations,
-                        protected_current_scrap: ledger
-                            .strategic_current_reserve_for(air_precedes_foundry_saving),
+                        protected_current_scrap: if connected_air_active {
+                            ledger.strategic_current_reserve_for_airworks_source(
+                                air_precedes_foundry_saving,
+                            )
+                        } else {
+                            ledger.strategic_current_reserve_for(air_precedes_foundry_saving)
+                        },
                         protected_forecast_scrap: ledger
                             .strategic_forecast_reserve_for(air_precedes_foundry_saving),
                         public_map: Some(oriented_public_map),
@@ -1062,6 +1072,24 @@ impl ScrapLedger {
     /// its earlier priority; a later admission sees the saved expansion first.
     /// The remaining holds retain their historical subtraction order.
     fn strategic_spendable_for(&self, operation_precedes_foundry_saving: bool) -> u32 {
+        self.strategic_spendable_with_airworks_capacity(operation_precedes_foundry_saving, true)
+    }
+
+    /// What the active air operation that created the capacity request may
+    /// spend. The requested factory is a response to that package, not an
+    /// older promise that may resize the package on the next think.
+    fn strategic_spendable_for_airworks_source(
+        &self,
+        operation_precedes_foundry_saving: bool,
+    ) -> u32 {
+        self.strategic_spendable_with_airworks_capacity(operation_precedes_foundry_saving, false)
+    }
+
+    fn strategic_spendable_with_airworks_capacity(
+        &self,
+        operation_precedes_foundry_saving: bool,
+        protect_airworks_capacity: bool,
+    ) -> u32 {
         if self.frozen {
             return 0;
         }
@@ -1070,9 +1098,13 @@ impl ScrapLedger {
         } else {
             self.bank.saturating_sub(self.foundry_saving)
         };
-        after_foundry
-            .saturating_sub(self.deferred_construction)
-            .saturating_sub(self.airworks_capacity)
+        let after_deferred = after_foundry.saturating_sub(self.deferred_construction);
+        let after_airworks = if protect_airworks_capacity {
+            after_deferred.saturating_sub(self.airworks_capacity)
+        } else {
+            after_deferred
+        };
+        after_airworks
             .saturating_sub(self.shallow_sentinel)
             .saturating_sub(self.opening_bootstrap)
     }
@@ -1083,6 +1115,15 @@ impl ScrapLedger {
     fn strategic_current_reserve_for(&self, operation_precedes_foundry_saving: bool) -> u32 {
         self.bank
             .saturating_sub(self.strategic_spendable_for(operation_precedes_foundry_saving))
+    }
+
+    fn strategic_current_reserve_for_airworks_source(
+        &self,
+        operation_precedes_foundry_saving: bool,
+    ) -> u32 {
+        self.bank.saturating_sub(
+            self.strategic_spendable_for_airworks_source(operation_precedes_foundry_saving),
+        )
     }
 
     /// Older commitments consume future income before a newly admitted
@@ -1099,7 +1140,6 @@ impl ScrapLedger {
         };
         foundry
             .saturating_add(self.deferred_construction)
-            .saturating_add(self.airworks_capacity)
             .saturating_add(self.shallow_sentinel)
             .saturating_add(self.opening_bootstrap)
             .saturating_sub(self.bank)
@@ -1470,7 +1510,7 @@ mod tests {
         assert_eq!(underfunded.strategic_forecast_reserve_for(true), 0);
         assert_eq!(underfunded.strategic_spendable_for(false), 0);
         assert_eq!(underfunded.strategic_current_reserve_for(false), 100);
-        assert_eq!(underfunded.strategic_forecast_reserve_for(false), 200);
+        assert_eq!(underfunded.strategic_forecast_reserve_for(false), 170);
         assert_eq!(
             ScrapLedger {
                 frozen: true,
@@ -1489,6 +1529,32 @@ mod tests {
             u32::MAX,
             "survival also withholds forecast income from voluntary work"
         );
+    }
+
+    #[test]
+    fn transient_airworks_capacity_is_not_a_prior_operation_obligation() {
+        let capacity = ScrapLedger {
+            bank: 60,
+            airworks_capacity: 90,
+            ..ScrapLedger::default()
+        };
+
+        assert_eq!(capacity.strategic_spendable_for(true), 0);
+        assert_eq!(capacity.strategic_spendable_for_airworks_source(true), 60);
+        assert_eq!(capacity.strategic_current_reserve_for(true), 60);
+        assert_eq!(
+            capacity.strategic_current_reserve_for_airworks_source(true),
+            0
+        );
+        assert_eq!(capacity.strategic_forecast_reserve_for(true), 0);
+
+        let with_prior_promise = ScrapLedger {
+            bank: 0,
+            deferred_construction: 40,
+            ..capacity
+        };
+        assert_eq!(with_prior_promise.strategic_spendable_for(true), 0);
+        assert_eq!(with_prior_promise.strategic_forecast_reserve_for(true), 40);
     }
 
     #[test]
