@@ -209,6 +209,47 @@ struct FundedProvider {
     command_tick: Tick,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ProviderFundingEvidence<'a> {
+    observed_at: Tick,
+    current_scrap: u32,
+    forecast: &'a ResourceForecast,
+    constraints: PreparationConstraints,
+}
+
+impl ProviderFundingEvidence<'_> {
+    fn available_scrap_at(self, tick: Tick) -> u32 {
+        self.current_scrap.saturating_add(
+            self.forecast
+                .income_through(tick)
+                .amount()
+                .saturating_sub(self.constraints.protected_forecast_scrap),
+        )
+    }
+
+    fn earliest_command_tick(self, committed_scrap: u32, cost: u32) -> Option<Tick> {
+        let required = committed_scrap.checked_add(cost)?;
+        if self.current_scrap >= required {
+            return Some(self.observed_at);
+        }
+        if self.available_scrap_at(self.constraints.deadline) < required {
+            return None;
+        }
+
+        let mut earliest = self.observed_at;
+        let mut latest = self.constraints.deadline;
+        while earliest < latest {
+            let middle = earliest.saturating_add(latest.saturating_sub(earliest) / 2);
+            if self.available_scrap_at(middle) >= required {
+                latest = middle;
+            } else {
+                earliest = middle.saturating_add(1);
+            }
+        }
+        next_decision_tick_after(earliest, self.constraints.decision_cadence)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct FundedLane {
     eligible_kinds: Vec<UnitKind>,
@@ -271,6 +312,50 @@ fn funded_providers_fit(
     kinds.dedup();
     let lanes = funded_lane_evidence(resources, access, &kinds);
     funded_lane_schedule_fits(lanes, providers, deadline)
+}
+
+/// Whether the current bank and completed-source forecast can fund every
+/// requested provider early enough for the completed production base to expose
+/// it before the fixed preparation deadline.
+pub(super) fn provider_demands_fit_funded_horizon(
+    resources: &ResourceSnapshot,
+    demands: &[ProviderDemandTranche],
+    observed_at: Tick,
+    constraints: PreparationConstraints,
+    access: &ProductionAccess,
+) -> bool {
+    if constraints.decision_cadence == 0 || constraints.deadline < observed_at {
+        return false;
+    }
+
+    let funding = ProviderFundingEvidence {
+        observed_at,
+        current_scrap: resources.current_scrap().amount(),
+        forecast: resources.forecast(),
+        constraints,
+    };
+    let mut committed_scrap = 0_u32;
+    let mut providers = Vec::new();
+    for demand in demands {
+        for _ in 0..demand.count {
+            let Some(command_tick) =
+                funding.earliest_command_tick(committed_scrap, demand.kind.stats().cost)
+            else {
+                return false;
+            };
+            let Some(next_committed_scrap) = committed_scrap.checked_add(demand.kind.stats().cost)
+            else {
+                return false;
+            };
+            committed_scrap = next_committed_scrap;
+            providers.push(FundedProvider {
+                kind: demand.kind,
+                command_tick,
+            });
+        }
+    }
+
+    funded_providers_fit(resources, &providers, constraints.deadline, access)
 }
 
 fn funded_lane_schedule_fits(
@@ -1242,34 +1327,25 @@ impl PackageBuilder<'_> {
     }
 
     fn earliest_funded_command_tick(&self, cost: u32) -> Option<Tick> {
-        let required = self.committed_scrap.checked_add(cost)?;
-        if self.current_scrap >= required {
-            return Some(self.observed_at);
-        }
-        if self.available_scrap_at(self.deadline) < required {
-            return None;
-        }
-
-        let mut earliest = self.observed_at;
-        let mut latest = self.deadline;
-        while earliest < latest {
-            let middle = earliest.saturating_add(latest.saturating_sub(earliest) / 2);
-            if self.available_scrap_at(middle) >= required {
-                latest = middle;
-            } else {
-                earliest = middle.saturating_add(1);
-            }
-        }
-        next_decision_tick_after(earliest, self.decision_cadence)
+        self.funding_evidence()
+            .earliest_command_tick(self.committed_scrap, cost)
     }
 
     fn available_scrap_at(&self, tick: Tick) -> u32 {
-        self.current_scrap.saturating_add(
-            self.forecast
-                .income_through(tick)
-                .amount()
-                .saturating_sub(self.protected_forecast_scrap),
-        )
+        self.funding_evidence().available_scrap_at(tick)
+    }
+
+    fn funding_evidence(&self) -> ProviderFundingEvidence<'_> {
+        ProviderFundingEvidence {
+            observed_at: self.observed_at,
+            current_scrap: self.current_scrap,
+            forecast: self.forecast,
+            constraints: PreparationConstraints {
+                deadline: self.deadline,
+                decision_cadence: self.decision_cadence,
+                protected_forecast_scrap: self.protected_forecast_scrap,
+            },
+        }
     }
 
     fn add_demand(&mut self, family: ForceFamily, kind: UnitKind) {

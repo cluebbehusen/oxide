@@ -37,8 +37,8 @@ use force_package::{
     ConnectedForcePackage, ConnectedTargetEvidence, ForceFamily, ForcePackageRejection,
     NormalizedCapability, PreparationConstraints, ProductionEvidence, ProviderDemand,
     ProviderDemandTranche, ProviderPriority, building_value, current_target_cluster,
-    derive_connected_force_package_for_cluster, strike_capability, suppression_capability,
-    target_cluster_air_defense,
+    derive_connected_force_package_for_cluster, provider_demands_fit_funded_horizon,
+    strike_capability, suppression_capability, target_cluster_air_defense,
 };
 
 /// A connected-map combined-arms operation is an expensive second front, not
@@ -719,6 +719,7 @@ struct AirPlanningContext<'a> {
     enlisted: &'a [UnitId],
     landing_sites: &'a [TilePos],
     connected_resources: Option<ConnectedProductionResources>,
+    protected_forecast_scrap: u32,
 }
 
 /// Exact transport objective and landing envelope offered to the air planner.
@@ -1296,6 +1297,7 @@ impl StrategicPlanner {
             enlisted: &external_enlisted,
             landing_sites: &landing_sites,
             connected_resources,
+            protected_forecast_scrap,
         };
         match op.phase {
             AirOperationPhase::Recon if !op.assault_admitted => {
@@ -3684,7 +3686,7 @@ fn connected_minimum_is_feasible(
         .connected_resources
         .as_ref()
         .expect("connected preparation has one observation-bound resource view");
-    let minimum: Vec<_> = missing_package_demands(
+    let minimum = missing_package_demands(
         package,
         op,
         context.obs,
@@ -3694,15 +3696,28 @@ fn connected_minimum_is_feasible(
     )
     .into_iter()
     .filter(|demand| demand.priority == ProviderPriority::Minimum)
-    .map(|demand| ProductionDemand {
-        kind: demand.kind,
-        count: demand.count,
-    })
-    .collect();
+    .collect::<Vec<_>>();
+    let production_demands = minimum
+        .iter()
+        .map(|demand| ProductionDemand {
+            kind: demand.kind,
+            count: demand.count,
+        })
+        .collect::<Vec<_>>();
     production_demands_fit_horizon_with_access(
         &resources.snapshot,
-        &minimum,
+        &production_demands,
         package.preparation_deadline,
+        &resources.access,
+    ) && provider_demands_fit_funded_horizon(
+        &resources.snapshot,
+        &minimum,
+        context.obs.tick,
+        PreparationConstraints {
+            deadline: package.preparation_deadline,
+            decision_cadence: context.tuning.cadence,
+            protected_forecast_scrap: context.protected_forecast_scrap,
+        },
         &resources.access,
     )
 }
@@ -4658,6 +4673,7 @@ mod tests {
                     orientation: test_orientation(),
                 },
             )),
+            protected_forecast_scrap: 0,
         }
     }
 
@@ -5812,6 +5828,7 @@ mod tests {
             enlisted: &[],
             landing_sites: &[],
             connected_resources: None,
+            protected_forecast_scrap: 0,
         };
         suppress(&mut operation, &mut plan, &context, &mut suppression);
         assert!(suppression.intents.iter().any(|intent| matches!(
@@ -8909,6 +8926,7 @@ mod tests {
                 enlisted: &[],
                 landing_sites: &[],
                 connected_resources: None,
+                protected_forecast_scrap: 0,
             },
             &mut decision,
         );
@@ -8947,6 +8965,7 @@ mod tests {
                 enlisted: &[],
                 landing_sites: &[],
                 connected_resources: None,
+                protected_forecast_scrap: 0,
             },
             &mut decision,
         );
@@ -8987,6 +9006,7 @@ mod tests {
             enlisted: &[],
             landing_sites: &[],
             connected_resources: None,
+            protected_forecast_scrap: 0,
         };
         let mut decision = StrategicDecision::default();
 
@@ -9023,6 +9043,7 @@ mod tests {
             enlisted: &[],
             landing_sites: &[],
             connected_resources: None,
+            protected_forecast_scrap: 0,
         };
         let mut cleared = StrategicDecision::default();
         verify(&mut operation, &mut plan, &context, &mut cleared);
@@ -9068,6 +9089,7 @@ mod tests {
             enlisted: &[],
             landing_sites: &[],
             connected_resources: None,
+            protected_forecast_scrap: 0,
         };
         let mut decision = StrategicDecision::default();
         verify(&mut operation, &mut plan, &context, &mut decision);
@@ -9378,6 +9400,94 @@ mod tests {
                 .iter()
                 .all(|intent| !matches!(intent, Intent::TrainAt { .. }))
         );
+    }
+
+    #[test]
+    fn hidden_connected_target_revalidates_current_funding_evidence() {
+        let mut initial = obs(120);
+        initial.visible.fill(true);
+        initial.explored.fill(true);
+        initial.scrap = 0;
+        initial
+            .my_units
+            .retain(|unit| matches!(unit.kind, UnitKind::Kestrel | UnitKind::Bombard));
+        initial.my_buildings = vec![
+            building(11, 0, BuildingKind::Airworks, TilePos::new(5, 2), true),
+            building(12, 0, BuildingKind::Extractor, TilePos::new(2, 2), true),
+        ];
+        initial.my_queues = vec![Vec::new(); initial.my_buildings.len()];
+
+        let plan = derived_connected_test_plan(&profile(), &initial)
+            .expect("the completed Extractor forecast funds the admitted minimum");
+        let package = plan
+            .connected_package
+            .as_ref()
+            .expect("the fixture derives a connected package");
+        assert_eq!(package.current_scrap, 0);
+        assert!(package.forecast_scrap > 0);
+
+        let mut operation = operation(AirOperationPhase::Assemble, initial.tick);
+        operation.strike_aircraft.clear();
+        let template = StrategicPlanner {
+            air: Some(ActiveAirOperation {
+                op: operation,
+                plan,
+            }),
+            standby: AirStandby::default(),
+            cooldown_until: 0,
+            terminal_outcome: None,
+        };
+        let run = |retain_extractor: bool, current_scrap: u32| {
+            let mut hidden = initial.clone();
+            hidden.tick += 12;
+            hidden.scrap = current_scrap;
+            hidden.visible.fill(false);
+            hidden.enemy_buildings[0].seen = false;
+            if !retain_extractor {
+                let retained: Vec<_> = hidden
+                    .my_buildings
+                    .drain(..)
+                    .zip(hidden.my_queues.drain(..))
+                    .filter(|(building, _)| building.kind != BuildingKind::Extractor)
+                    .collect();
+                (hidden.my_buildings, hidden.my_queues) = retained.into_iter().unzip();
+            }
+            let mut intelligence = knowledge(&initial);
+            intelligence.update(&hidden);
+            assert!(intelligence.buildings().iter().any(|building| {
+                building.anchor == TARGET && building.evidence == ContactEvidence::Remembered
+            }));
+            let mut planner = template.clone();
+            let decision = think(&mut planner, &hidden, &intelligence);
+            (planner, decision)
+        };
+
+        let (forecast_funded, _) = run(true, 0);
+        assert!(forecast_funded.air_operation().is_some_and(|operation| {
+            operation.phase == AirOperationPhase::Assemble && operation.recovery_reason.is_none()
+        }));
+
+        let (bank_funded, _) = run(false, 10_000);
+        assert!(bank_funded.air_operation().is_some_and(|operation| {
+            operation.phase == AirOperationPhase::Assemble && operation.recovery_reason.is_none()
+        }));
+
+        let (unfunded, decision) = run(false, 0);
+        let operation = unfunded
+            .air_operation()
+            .expect("the failed preparation remains observable during recovery");
+        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(
+            operation.recovery_reason,
+            Some(AirRecoveryReason::PreparationInfeasible)
+        );
+        assert!(
+            decision
+                .intents
+                .iter()
+                .all(|intent| !matches!(intent, Intent::TrainAt { .. }))
+        );
+        assert_eq!(decision.committed_scrap, 0);
     }
 
     #[test]
