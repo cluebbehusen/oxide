@@ -2972,7 +2972,7 @@ fn connected_production_access<'a>(
                 Domain::Ground if is_artillery(kind) => staging.is_some_and(|staging| {
                     production_spawn_doorstep(obs, producer, route.public_map, route.orientation)
                         .is_some_and(|spawn| {
-                            ground_routes.reaches(spawn, staging)
+                            ground_routes.ground_command_reaches(spawn, staging)
                                 && suppression_targets_reachable(
                                     &mut ground_routes,
                                     obs,
@@ -3408,11 +3408,13 @@ fn production_spawn_doorstep(
     let size = producer.kind.tier_stats(producer.tier).size;
     let world_anchor = orientation.anchor(producer.anchor, size);
     let map_size = (obs.map_width, obs.map_height);
-    crate::tick::rect_adjacent_tiles(producer.anchor, size)
-        .filter(|tile| public_ground_open(obs, *tile, public_map))
-        .min_by_key(|tile| {
-            crate::tick::spawn_doorstep_key(map_size, world_anchor, size, orientation.tile(*tile))
+    crate::tick::rect_adjacent_tiles(world_anchor, size)
+        .map(|world_tile| (world_tile, orientation.tile(world_tile)))
+        .filter(|(_, oriented_tile)| public_ground_open(obs, *oriented_tile, public_map))
+        .min_by_key(|(world_tile, _)| {
+            crate::tick::spawn_doorstep_key(map_size, world_anchor, size, *world_tile)
         })
+        .map(|(_, oriented_tile)| oriented_tile)
 }
 
 fn available<'a>(
@@ -8078,6 +8080,90 @@ mod tests {
     }
 
     #[test]
+    fn connected_production_rejects_a_route_beyond_the_movement_search_cap() {
+        let mut observation = obs(120);
+        observation.map_width = 256;
+        observation.map_height = 256;
+        observation.visible = vec![true; 256 * 256];
+        observation.explored = observation.visible.clone();
+        observation.my_units.clear();
+        observation.my_buildings = vec![building(
+            10,
+            0,
+            BuildingKind::Fabricator,
+            TilePos::new(253, 253),
+            true,
+        )];
+        observation.my_queues = vec![Vec::new()];
+        observation.enemy_buildings.clear();
+        let open = |tile: TilePos| {
+            tile.y % 2 == 0
+                || (tile.y % 4 == 1 && tile.x == observation.map_width - 1)
+                || (tile.y % 4 == 3 && tile.x == 0)
+                || tile == TilePos::new(255, 255)
+        };
+        let public_map = public_map_with_terrain(
+            &observation,
+            (0..observation.map_height).flat_map(|y| {
+                (0..observation.map_width).filter_map(move |x| {
+                    let tile = TilePos::new(x, y);
+                    (!open(tile)).then_some((tile, Terrain::Pit))
+                })
+            }),
+        );
+        let home = TilePos::new(0, 84);
+        let target = TilePos::new(3, 84);
+        let orientation = Orientation::for_home(&observation, home);
+        assert!(orientation.is_identity());
+        let intelligence = knowledge(&observation);
+        let targets = ConnectedTargetSelection {
+            target_anchors: vec![target],
+            suppression_targets: Vec::new(),
+            growth_order: Vec::new(),
+        };
+        let resources = ResourceSnapshot::from_observation(&observation);
+        let producer = &observation.my_buildings[0];
+        let spawn =
+            production_spawn_doorstep(&observation, producer, Some(&public_map), orientation)
+                .expect("the Fabricator has an open south-east doorstep");
+        let staging =
+            connected_artillery_staging_goal(&observation, home, target, Some(&public_map))
+                .expect("the Foundry-side staging tile is in the same component");
+        let mut projected = route_projection_with_orientation(
+            &observation,
+            Domain::Ground,
+            Some(&public_map),
+            orientation,
+        );
+        assert!(
+            projected.reaches(spawn, staging),
+            "the uncapped component flood sees the complete serpentine"
+        );
+        assert!(
+            !projected.ground_command_reaches(spawn, staging),
+            "the movement command cannot traverse that component within its bounded A* search"
+        );
+
+        let access = connected_production_access(
+            &observation,
+            &targets,
+            &resources,
+            ConnectedRouteContext {
+                intel: &intelligence,
+                home,
+                target,
+                public_map: Some(&public_map),
+                orientation,
+            },
+        );
+
+        assert!(
+            !access.allows(BuildingId(10), UnitKind::Bombard),
+            "an operation must not buy artillery whose authoritative route will exhaust"
+        );
+    }
+
+    #[test]
     fn connected_package_uses_only_producers_that_can_reach_the_operation() {
         let mut observation = developed_connected_obs(120);
         observation
@@ -9183,6 +9269,55 @@ mod tests {
     #[test]
     fn y_only_orientation_preserves_the_authoritative_producer_doorstep() {
         assert_axis_orientation_preserves_producer_doorstep(TilePos::new(2, 17));
+    }
+
+    #[test]
+    fn centered_producer_preserves_the_authoritative_world_order_doorstep() {
+        let mut world = developed_connected_obs(120);
+        let (size, anchor) = {
+            let producer = world
+                .my_buildings
+                .iter_mut()
+                .find(|building| building.id == BuildingId(10))
+                .expect("the fixture has a Fabricator");
+            let size = producer.kind.tier_stats(producer.tier).size;
+            let anchor = TilePos::new(
+                (world.map_width - size.0) / 2,
+                (world.map_height - size.1) / 2,
+            );
+            producer.anchor = anchor;
+            (size, anchor)
+        };
+        let expected = crate::tick::rect_adjacent_tiles(anchor, size)
+            .filter(|tile| public_ground_open(&world, *tile, None))
+            .min_by_key(|tile| {
+                crate::tick::spawn_doorstep_key(
+                    (world.map_width, world.map_height),
+                    anchor,
+                    size,
+                    *tile,
+                )
+            })
+            .expect("the world-frame producer has an open doorstep");
+
+        let orientation = Orientation::for_home(
+            &world,
+            TilePos::new(world.map_width - 1, world.map_height - 1),
+        );
+        let oriented = orientation.observe(&world);
+        let oriented_producer = oriented
+            .my_buildings
+            .iter()
+            .find(|building| building.id == BuildingId(10))
+            .expect("orientation preserves the producer");
+        let actual = production_spawn_doorstep(&oriented, oriented_producer, None, orientation)
+            .expect("the oriented producer has an open doorstep");
+
+        assert_eq!(
+            orientation.tile(actual),
+            expected,
+            "a zero radial key must retain the authoritative world-frame row-major tie"
+        );
     }
 
     #[test]

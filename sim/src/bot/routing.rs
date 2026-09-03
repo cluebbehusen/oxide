@@ -261,6 +261,23 @@ impl<'a> RouteProjection<'a> {
             .any(|neighbor| self.label(neighbor) == Some(target_label))
     }
 
+    /// Whether an ordinary ground movement command can complete the projected
+    /// route without exceeding the simulation's bounded A* search.
+    pub(super) fn ground_command_reaches(&self, from: TilePos, to: TilePos) -> bool {
+        if self.domain != Domain::Ground || !in_bounds(self.obs, from) || !self.open(to) {
+            return false;
+        }
+        chassis::path::astar(
+            self.obs.map_width,
+            self.obs.map_height,
+            from,
+            to,
+            |tile| self.open(tile),
+            crate::stats::PATH_EXPANSION_CAP,
+        )
+        .is_some()
+    }
+
     fn label(&mut self, tile: TilePos) -> Option<u32> {
         if !self.open(tile) || self.labels.is_empty() {
             return None;
@@ -1617,6 +1634,53 @@ mod tests {
         assert!(
             !routes.direct_line_avoids_blocked(TilePos::new(2, 3), TilePos::new(9, 3)),
             "the ordinary command corridor crosses the blocked tile"
+        );
+    }
+
+    #[test]
+    fn component_reach_does_not_overstate_the_bounded_ground_command_search() {
+        let mut obs = observation();
+        obs.map_width = 256;
+        obs.map_height = 256;
+        obs.visible = vec![true; 256 * 256];
+        obs.explored = obs.visible.clone();
+        obs.my_units.clear();
+        let on_serpentine = |tile: TilePos| {
+            tile.y % 2 == 0
+                || (tile.y % 4 == 1 && tile.x == obs.map_width - 1)
+                || (tile.y % 4 == 3 && tile.x == 0)
+        };
+        obs.known_rock = (0..obs.map_height)
+            .flat_map(|y| {
+                (0..obs.map_width).filter_map(move |x| {
+                    let tile = TilePos::new(x, y);
+                    (!on_serpentine(tile)).then_some(tile)
+                })
+            })
+            .collect();
+        let start = TilePos::new(0, 0);
+        let goal = TilePos::new(0, 200);
+        let mut routes = RouteProjection::new(&obs, Domain::Ground);
+
+        assert!(
+            routes.reaches(start, goal),
+            "the serpentine is one connected ground component"
+        );
+        assert!(
+            !routes.ground_command_reaches(start, goal),
+            "authoritative movement gives up after the shared expansion cap"
+        );
+        assert!(
+            chassis::path::astar(
+                obs.map_width,
+                obs.map_height,
+                start,
+                goal,
+                |tile| ground_open(&obs, tile),
+                crate::stats::PATH_EXPANSION_CAP + 10_000,
+            )
+            .is_some(),
+            "the route is genuinely reachable when the authoritative guard is relaxed"
         );
     }
 
