@@ -732,7 +732,6 @@ pub(super) fn derive_connected_force_package_for_cluster(
                 && contact.built
                 && contact.hp > 0
                 && building_value(contact.kind) > 0
-                && manhattan(contact.anchor, target.anchor) <= TARGET_CLUSTER_RADIUS
                 && intelligence
                     .buildings()
                     .iter()

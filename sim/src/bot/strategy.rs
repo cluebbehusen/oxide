@@ -162,12 +162,35 @@ impl ConnectedProductionResources {
         route: ConnectedRouteContext<'_>,
     ) -> Self {
         let snapshot = ResourceSnapshot::from_observation(obs);
-        let cluster: Vec<_> = current_target_cluster(route.intel, target_player, route.target)
-            .into_iter()
-            .filter(|contact| package.target_anchors.contains(&contact.anchor))
-            .collect();
+        let cluster =
+            current_target_contacts_at_anchors(route.intel, target_player, &package.target_anchors);
         let targets = ConnectedTargetSelection {
             target_anchors: package.target_anchors.clone(),
+            suppression_targets: current_cluster_suppression_needs(route.intel, &cluster).targets,
+            growth_order: Vec::new(),
+        };
+        let access = connected_production_access(obs, &targets, &snapshot, route);
+        Self {
+            snapshot,
+            access,
+            targets,
+        }
+    }
+
+    fn from_revision(
+        obs: &Observation,
+        target: &BuildingContact,
+        package: &ConnectedForcePackage,
+        route: ConnectedRouteContext<'_>,
+    ) -> Self {
+        let snapshot = ResourceSnapshot::from_observation(obs);
+        let cluster =
+            current_target_contacts_at_anchors(route.intel, target.player, &package.target_anchors);
+        let mut target_anchors: Vec<_> = cluster.iter().map(|contact| contact.anchor).collect();
+        target_anchors.sort_unstable_by_key(|anchor| (anchor.y, anchor.x));
+        target_anchors.dedup();
+        let targets = ConnectedTargetSelection {
+            target_anchors,
             suppression_targets: current_cluster_suppression_needs(route.intel, &cluster).targets,
             growth_order: Vec::new(),
         };
@@ -396,6 +419,42 @@ fn derive_connected_package(
         }
     }
     Ok(package)
+}
+
+fn rederive_connected_package(
+    profile: &ResolvedProfile,
+    obs: &Observation,
+    intel: &StrategicIntelligence,
+    home: TilePos,
+    target: &BuildingContact,
+    unavailable: &[UnitId],
+    context: ConnectedPlanningContext<'_>,
+) -> Result<ConnectedForcePackage, ConnectedPlanRejection> {
+    if !known_ground_connected(
+        obs,
+        home,
+        target.anchor,
+        target.kind.base_stats().size,
+        context.public_map,
+    ) {
+        return Err(ConnectedPlanRejection::DisconnectedGroundRoute);
+    }
+    let route = ConnectedRouteContext {
+        intel,
+        home,
+        target: target.anchor,
+        public_map: context.public_map,
+        orientation: context.orientation,
+    };
+    derive_connected_package_for_targets(
+        profile,
+        obs,
+        target,
+        unavailable,
+        &context.resources.targets,
+        route,
+        context,
+    )
 }
 
 fn derive_connected_package_for_targets(
@@ -1222,11 +1281,15 @@ impl StrategicPlanner {
             && let Some(current_target) = current_package_revision_target(&op, &plan, intel)
         {
             let package_unavailable = excluding_owned(enlisted, &reservations(&op, &plan, obs));
+            let connected_package = plan
+                .connected_package
+                .as_ref()
+                .expect("connected revision retains its admitted package");
             let resources = connected_resources.get_or_insert_with(|| {
-                ConnectedProductionResources::from_observation(
+                ConnectedProductionResources::from_revision(
                     obs,
                     current_target,
-                    &package_unavailable,
+                    connected_package,
                     ConnectedRouteContext {
                         intel,
                         home,
@@ -1236,7 +1299,7 @@ impl StrategicPlanner {
                     },
                 )
             });
-            match derive_connected_package(
+            match rederive_connected_package(
                 profile,
                 obs,
                 intel,
@@ -3423,9 +3486,25 @@ fn selected_current_target_cluster<'a>(
     original: &BuildingContact,
     anchors: &[TilePos],
 ) -> Vec<&'a BuildingContact> {
-    current_target_cluster(intel, original.player, original.anchor)
-        .into_iter()
-        .filter(|contact| anchors.contains(&contact.anchor))
+    current_target_contacts_at_anchors(intel, original.player, anchors)
+}
+
+fn current_target_contacts_at_anchors<'a>(
+    intel: &'a StrategicIntelligence,
+    player: PlayerId,
+    anchors: &[TilePos],
+) -> Vec<&'a BuildingContact> {
+    intel
+        .buildings()
+        .iter()
+        .filter(|contact| {
+            contact.player == player
+                && anchors.contains(&contact.anchor)
+                && contact.evidence == ContactEvidence::Current
+                && contact.built
+                && contact.hp > 0
+                && building_value(contact.kind) > 0
+        })
         .collect()
 }
 
@@ -9752,30 +9831,85 @@ mod tests {
     }
 
     #[test]
-    fn precommit_package_rebases_when_its_primary_target_is_destroyed() {
+    fn precommit_rebase_preserves_every_surviving_frozen_target() {
         let admitted_at = 120;
-        let surviving_anchor = TARGET.offset(-3, 0);
+        let left_survivor = TARGET.offset(-3, 0);
+        let right_survivor = TARGET.offset(3, 0);
         let mut initial = developed_connected_obs(admitted_at);
-        initial.enemy_buildings.push(building(
-            81,
-            1,
-            BuildingKind::Foundry,
-            surviving_anchor,
-            true,
-        ));
+        initial.scrap = 50_000;
+        initial.enemy_buildings.extend([
+            building(81, 1, BuildingKind::Turret, left_survivor, true),
+            building(82, 1, BuildingKind::Turret, right_survivor, true),
+        ]);
         initial
             .enemy_buildings
             .sort_unstable_by_key(|building| building.id);
         let mut intelligence = knowledge(&initial);
-        let mut plan = connected_test_plan(&initial);
-        let package = plan
-            .connected_package
-            .as_mut()
-            .expect("the fixture begins with a connected package");
-        package.target_anchors.push(surviving_anchor);
-        package
-            .target_anchors
-            .sort_unstable_by_key(|anchor| (anchor.y, anchor.x));
+        let initial_target = intelligence
+            .buildings()
+            .iter()
+            .find(|building| building.anchor == TARGET)
+            .expect("the original target is current");
+        let initial_resources = ConnectedProductionResources::from_observation(
+            &initial,
+            initial_target,
+            &[],
+            ConnectedRouteContext {
+                intel: &intelligence,
+                home: HOME,
+                target: TARGET,
+                public_map: None,
+                orientation: test_orientation(),
+            },
+        );
+        assert_eq!(
+            initial_resources.targets.target_anchors,
+            vec![left_survivor, TARGET, right_survivor]
+        );
+        assert_eq!(
+            initial_resources.targets.growth_order,
+            vec![left_survivor, right_survivor]
+        );
+        let identity = profile();
+        let full_package = derive_connected_package_for_targets(
+            &identity,
+            &initial,
+            initial_target,
+            &[],
+            &initial_resources.targets,
+            ConnectedRouteContext {
+                intel: &intelligence,
+                home: HOME,
+                target: TARGET,
+                public_map: None,
+                orientation: test_orientation(),
+            },
+            ConnectedPlanningContext {
+                orientation: test_orientation(),
+                public_map: None,
+                resources: &initial_resources,
+                preferred_artillery: &[],
+                protected_current_scrap: 0,
+                preparation: PreparationConstraints {
+                    deadline: initial.tick.saturating_add(CONNECTED_PREPARATION_HORIZON),
+                    decision_cadence: DifficultyTuning::for_level(identity.difficulty).cadence,
+                    protected_forecast_scrap: 0,
+                },
+            },
+        );
+        let plan = AirPlan::connected(
+            full_package.unwrap_or_else(|reason| {
+                panic!("the complete initial package is feasible: {reason:?}")
+            }),
+            admitted_at,
+        );
+        assert_eq!(
+            plan.connected_package
+                .as_ref()
+                .expect("the fixture begins with a connected package")
+                .target_anchors,
+            vec![left_survivor, TARGET, right_survivor]
+        );
         let mut planner = StrategicPlanner {
             air: Some(ActiveAirOperation {
                 op: operation(AirOperationPhase::Assemble, admitted_at),
@@ -9792,6 +9926,34 @@ mod tests {
             .enemy_buildings
             .retain(|building| building.anchor != TARGET);
         intelligence.update(&after_destruction);
+        let revision_target = intelligence
+            .buildings()
+            .iter()
+            .find(|building| building.anchor == left_survivor)
+            .expect("the deterministic rebase target remains current");
+        let revision_resources = ConnectedProductionResources::from_revision(
+            &after_destruction,
+            revision_target,
+            planner
+                .air_plan()
+                .and_then(|plan| plan.connected_package.as_ref())
+                .expect("the operation retains its admitted target set"),
+            ConnectedRouteContext {
+                intel: &intelligence,
+                home: HOME,
+                target: left_survivor,
+                public_map: None,
+                orientation: test_orientation(),
+            },
+        );
+        assert_eq!(
+            revision_resources.targets.target_anchors,
+            vec![left_survivor, right_survivor]
+        );
+        assert!(
+            revision_resources.targets.growth_order.is_empty(),
+            "the surviving admitted set is revised atomically rather than regrown"
+        );
         let decision = think(&mut planner, &after_destruction, &intelligence);
 
         let active = planner
@@ -9800,8 +9962,8 @@ mod tests {
             .expect("the surviving admitted target keeps preparation active");
         assert_ne!(active.op.phase, AirOperationPhase::Recover);
         assert_eq!(active.op.recovery_reason, None);
-        assert_eq!(active.op.target, surviving_anchor);
-        assert_eq!(active.op.target_kind, BuildingKind::Foundry);
+        assert_eq!(active.op.target, left_survivor);
+        assert_eq!(active.op.target_kind, BuildingKind::Turret);
         assert_eq!(active.op.target_id, Some(BuildingId(81)));
         let revised = active
             .plan
@@ -9809,8 +9971,7 @@ mod tests {
             .as_ref()
             .expect("the surviving target retains a connected package");
         assert_eq!(revised.derived_at, after_destruction.tick);
-        assert!(revised.target_anchors.contains(&surviving_anchor));
-        assert!(!revised.target_anchors.contains(&TARGET));
+        assert_eq!(revised.target_anchors, vec![left_survivor, right_survivor]);
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
             Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
