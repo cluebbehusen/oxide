@@ -16,10 +16,12 @@ from tools.production_sprite_sources import (
     excavator_final,
     extractor_reclaimer_final,
     finalized,
+    heavy_structures,
     moth_warden_final,
     shrike_sylph_final,
     skyhook_sapper_crucible_final,
     tender_condor_final,
+    turret_family,
 )
 
 
@@ -703,6 +705,37 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 )
                 self.assertGreater(_changed_pixels(ferrous, cupric), 8)
 
+    def test_promoted_bastion_and_turret_family_match_approved_sources(self) -> None:
+        self.assertEqual(
+            heavy_structures.bastion_source_visible_digest(),
+            heavy_structures.BASTION_APPROVED_VISIBLE_RGBA_SHA256,
+        )
+        self.assertEqual(
+            turret_family.turret_source_visible_digest(),
+            turret_family.TURRET_APPROVED_VISIBLE_RGBA_SHA256,
+        )
+        for faction in gen.FACTIONS:
+            for tier, (base_stem, mount_stem) in enumerate(
+                (
+                    ("turret", "turret_barrel"),
+                    ("turret_t1", "turret_barrel_t1"),
+                    ("turret_t2", "turret_barrel_t2"),
+                )
+            ):
+                for phase in range(5):
+                    suffix = "" if phase == 0 else f"_action{phase}"
+                    frame = self.registry[f"{base_stem}_{faction}"].copy()
+                    frame.alpha_composite(
+                        self.registry[f"{mount_stem}_{faction}{suffix}"]
+                    )
+                    self.assertEqual(
+                        turret_family._visible_rgba_bytes(frame),
+                        turret_family._visible_rgba_bytes(
+                            turret_family.turret_frame(faction, tier, phase)
+                        ),
+                        f"{mount_stem}_{faction}{suffix}",
+                    )
+
     def test_harvester_preserves_every_cargo_motion_and_bite_combination(self) -> None:
         for faction in gen.FACTIONS:
             cargo_images = []
@@ -756,6 +789,8 @@ class ProductionSpriteSourceTests(unittest.TestCase):
     def test_defense_foundations_and_mounts_are_separate_square_layers(self) -> None:
         pairs = (
             ("turret", "turret_barrel", 64),
+            ("turret_t1", "turret_barrel_t1", 64),
+            ("turret_t2", "turret_barrel_t2", 64),
             ("flak_turret", "flak_mount", 64),
             ("bastion", "bastion_mount", 128),
         )
@@ -952,7 +987,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             self.assertEqual(values.index(max(values)), work - 1)
 
     def test_bastion_ready_and_reload_frames_have_physical_charge_cells(self) -> None:
-        centers = [(19, 94 - index * 9) for index in range(5)]
+        centers = [(19, 54 + index * 10) for index in range(5)]
         expected = {
             "": 5,
             "_action1": 1,
@@ -974,7 +1009,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 with self.subTest(faction=faction, suffix=suffix):
                     self.assertEqual(lit, count)
 
-    def test_bastion_recoils_on_report_then_returns_quickly(self) -> None:
+    def test_bastion_recoils_after_report_then_returns_quickly(self) -> None:
         for faction in gen.FACTIONS:
             centers = [
                 _alpha_centroid_y(
@@ -990,8 +1025,8 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 )
             ]
             with self.subTest(faction=faction):
-                self.assertGreater(centers[1] - centers[0], 4.0)
-                self.assertGreater(centers[1], centers[2])
+                self.assertAlmostEqual(centers[0], centers[1], delta=1.0)
+                self.assertGreater(centers[2] - centers[1], 4.0)
                 self.assertGreater(centers[2], centers[3])
                 self.assertGreater(centers[3], centers[4])
 

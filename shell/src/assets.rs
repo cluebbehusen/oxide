@@ -30,9 +30,13 @@ pub struct Sprites {
     reclaimer_t1_work: [[Rect; 3]; 3],
     array_t1: [Rect; 3],
     turret_barrel: [Rect; 3],
+    turret_barrel_t1: [Rect; 3],
+    turret_barrel_t2: [Rect; 3],
     flak_mount: [Rect; 3],
     bastion_mount: [Rect; 3],
     turret_barrel_action: [[Rect; 3]; 4],
+    turret_barrel_t1_action: [[Rect; 3]; 4],
+    turret_barrel_t2_action: [[Rect; 3]; 4],
     flak_mount_action: [[Rect; 3]; 8],
     bastion_mount_action: [[Rect; 3]; 9],
     rock_skirt: Rect,
@@ -348,6 +352,8 @@ const DEBRIS_KEYS: [&str; 3] = ["debris_0", "debris_1", "debris_2"];
 
 /// The Turret's gun is faction-varied like a unit, but belongs to no kind.
 const TURRET_BARREL_STEM: &str = "turret_barrel";
+const TURRET_BARREL_T1_STEM: &str = "turret_barrel_t1";
+const TURRET_BARREL_T2_STEM: &str = "turret_barrel_t2";
 const FLAK_MOUNT_STEM: &str = "flak_mount";
 const BASTION_MOUNT_STEM: &str = "bastion_mount";
 
@@ -671,7 +677,13 @@ fn atlas_keys() -> Vec<String> {
         .chain(DEBRIS_KEYS.iter())
         .map(|key| (*key).to_string())
         .collect();
-    keys.extend(variant_keys(TURRET_BARREL_STEM, ""));
+    for stem in [
+        TURRET_BARREL_STEM,
+        TURRET_BARREL_T1_STEM,
+        TURRET_BARREL_T2_STEM,
+    ] {
+        keys.extend(variant_keys(stem, ""));
+    }
     for stem in [
         "turret_t1",
         "turret_t2",
@@ -686,8 +698,14 @@ fn atlas_keys() -> Vec<String> {
     }
     keys.extend(variant_keys(FLAK_MOUNT_STEM, ""));
     keys.extend(variant_keys(BASTION_MOUNT_STEM, ""));
-    for suffix in ACTION_SUFFIXES_4 {
-        keys.extend(variant_keys(TURRET_BARREL_STEM, suffix));
+    for stem in [
+        TURRET_BARREL_STEM,
+        TURRET_BARREL_T1_STEM,
+        TURRET_BARREL_T2_STEM,
+    ] {
+        for suffix in ACTION_SUFFIXES_4 {
+            keys.extend(variant_keys(stem, suffix));
+        }
     }
     for suffix in ACTION_SUFFIXES_8 {
         keys.extend(variant_keys(FLAK_MOUNT_STEM, suffix));
@@ -837,9 +855,21 @@ impl Sprites {
             reclaimer_t1_work: variant_rows(&rects, "reclaimer_t1", WORK_SUFFIXES_3)?,
             array_t1: variant_row(&rects, "array_t1", "")?,
             turret_barrel: variant_row(&rects, TURRET_BARREL_STEM, "")?,
+            turret_barrel_t1: variant_row(&rects, TURRET_BARREL_T1_STEM, "")?,
+            turret_barrel_t2: variant_row(&rects, TURRET_BARREL_T2_STEM, "")?,
             flak_mount: variant_row(&rects, FLAK_MOUNT_STEM, "")?,
             bastion_mount: variant_row(&rects, BASTION_MOUNT_STEM, "")?,
             turret_barrel_action: variant_rows(&rects, TURRET_BARREL_STEM, ACTION_SUFFIXES_4)?,
+            turret_barrel_t1_action: variant_rows(
+                &rects,
+                TURRET_BARREL_T1_STEM,
+                ACTION_SUFFIXES_4,
+            )?,
+            turret_barrel_t2_action: variant_rows(
+                &rects,
+                TURRET_BARREL_T2_STEM,
+                ACTION_SUFFIXES_4,
+            )?,
             flak_mount_action: variant_rows(&rects, FLAK_MOUNT_STEM, ACTION_SUFFIXES_8)?,
             bastion_mount_action: variant_rows(&rects, BASTION_MOUNT_STEM, ACTION_SUFFIXES_9)?,
             rock_skirt,
@@ -1006,10 +1036,23 @@ impl Sprites {
         self.ground_blockers[variant % self.ground_blockers.len()]
     }
 
-    /// A defense's directional mount, if its base art ships bare.
-    pub fn defense_mount(&self, kind: BuildingKind, faction: oxide_sim::Faction) -> Option<Rect> {
+    fn turret_mount_row(&self, tier: u8) -> &[Rect; 3] {
+        match tier {
+            1 => &self.turret_barrel_t1,
+            2 => &self.turret_barrel_t2,
+            _ => &self.turret_barrel,
+        }
+    }
+
+    /// A defense's tier-appropriate directional mount, if its base art ships bare.
+    pub fn defense_mount(
+        &self,
+        kind: BuildingKind,
+        tier: u8,
+        faction: oxide_sim::Faction,
+    ) -> Option<Rect> {
         let row = match kind {
-            BuildingKind::Turret => &self.turret_barrel,
+            BuildingKind::Turret => self.turret_mount_row(tier),
             BuildingKind::FlakTurret => &self.flak_mount,
             BuildingKind::Bastion => &self.bastion_mount,
             _ => return None,
@@ -1018,9 +1061,9 @@ impl Sprites {
     }
 
     /// The allegiance-accent mask matched to [`Self::defense_mount`].
-    pub fn defense_mount_accent(&self, kind: BuildingKind) -> Option<Rect> {
+    pub fn defense_mount_accent(&self, kind: BuildingKind, tier: u8) -> Option<Rect> {
         let row = match kind {
-            BuildingKind::Turret => &self.turret_barrel,
+            BuildingKind::Turret => self.turret_mount_row(tier),
             BuildingKind::FlakTurret => &self.flak_mount,
             BuildingKind::Bastion => &self.bastion_mount,
             _ => return None,
@@ -1028,9 +1071,18 @@ impl Sprites {
         Some(row[ACCENT])
     }
 
-    fn defense_mount_action_row(&self, kind: BuildingKind, frame: usize) -> Option<&[Rect; 3]> {
+    fn defense_mount_action_row(
+        &self,
+        kind: BuildingKind,
+        tier: u8,
+        frame: usize,
+    ) -> Option<&[Rect; 3]> {
         match kind {
-            BuildingKind::Turret => self.turret_barrel_action.get(frame),
+            BuildingKind::Turret => match tier {
+                1 => self.turret_barrel_t1_action.get(frame),
+                2 => self.turret_barrel_t2_action.get(frame),
+                _ => self.turret_barrel_action.get(frame),
+            },
             BuildingKind::FlakTurret => self.flak_mount_action.get(frame),
             BuildingKind::Bastion => self.bastion_mount_action.get(frame),
             _ => None,
@@ -1042,19 +1094,25 @@ impl Sprites {
     pub fn defense_mount_action(
         &self,
         kind: BuildingKind,
+        tier: u8,
         faction: Faction,
         frame: usize,
     ) -> Option<Rect> {
-        self.defense_mount_action_row(kind, frame)
+        self.defense_mount_action_row(kind, tier, frame)
             .map(|row| row[faction_index(faction)])
-            .or_else(|| self.defense_mount(kind, faction))
+            .or_else(|| self.defense_mount(kind, tier, faction))
     }
 
     /// The allegiance mask matched to [`Self::defense_mount_action`].
-    pub fn defense_mount_action_accent(&self, kind: BuildingKind, frame: usize) -> Option<Rect> {
-        self.defense_mount_action_row(kind, frame)
+    pub fn defense_mount_action_accent(
+        &self,
+        kind: BuildingKind,
+        tier: u8,
+        frame: usize,
+    ) -> Option<Rect> {
+        self.defense_mount_action_row(kind, tier, frame)
             .map(|row| row[ACCENT])
-            .or_else(|| self.defense_mount_accent(kind))
+            .or_else(|| self.defense_mount_accent(kind, tier))
     }
 
     /// A full-tile exclusion barrier connected to its peak neighbors.
@@ -1202,10 +1260,10 @@ impl Sprites {
     /// carriage keeps the meter readable at every aim angle.
     pub fn bastion_charge_overlay(&self, faction: Faction, frame: Option<usize>) -> (Rect, Rect) {
         const NATIVE_SIDE: f32 = 128.0;
-        const X: f32 = 10.0;
-        const Y: f32 = 50.0;
-        const W: f32 = 18.0;
-        const H: f32 = 56.0;
+        const X: f32 = 7.0;
+        const Y: f32 = 40.0;
+        const W: f32 = 28.0;
+        const H: f32 = 73.0;
         let base = frame.map_or_else(
             || self.building(BuildingKind::Bastion, faction),
             |action| self.building_action(BuildingKind::Bastion, faction, action),
@@ -1801,7 +1859,13 @@ mod tests {
                 assert!(atlas.contains_key(&key), "no {key} in the atlas");
             }
         }
-        for stem in [TURRET_BARREL_STEM, FLAK_MOUNT_STEM, BASTION_MOUNT_STEM] {
+        for stem in [
+            TURRET_BARREL_STEM,
+            TURRET_BARREL_T1_STEM,
+            TURRET_BARREL_T2_STEM,
+            FLAK_MOUNT_STEM,
+            BASTION_MOUNT_STEM,
+        ] {
             for key in variant_keys(stem, "") {
                 assert!(atlas.contains_key(&key), "no {key} in the atlas");
             }
@@ -1811,24 +1875,34 @@ mod tests {
     #[test]
     fn defense_mounts_match_their_footprints_and_rotate_about_square_canvases() {
         let atlas = manifest();
-        for (kind, mount, actions) in [
+        for (base_stem, mount, actions) in [
             (
-                BuildingKind::Turret,
+                building_stem(BuildingKind::Turret),
                 TURRET_BARREL_STEM,
                 ACTION_SUFFIXES_4.as_slice(),
             ),
             (
-                BuildingKind::FlakTurret,
+                "turret_t1",
+                TURRET_BARREL_T1_STEM,
+                ACTION_SUFFIXES_4.as_slice(),
+            ),
+            (
+                "turret_t2",
+                TURRET_BARREL_T2_STEM,
+                ACTION_SUFFIXES_4.as_slice(),
+            ),
+            (
+                building_stem(BuildingKind::FlakTurret),
                 FLAK_MOUNT_STEM,
                 ACTION_SUFFIXES_8.as_slice(),
             ),
             (
-                BuildingKind::Bastion,
+                building_stem(BuildingKind::Bastion),
                 BASTION_MOUNT_STEM,
                 ACTION_SUFFIXES_9.as_slice(),
             ),
         ] {
-            let base = &atlas[&variant_keys(building_stem(kind), "")[0]];
+            let base = &atlas[&variant_keys(base_stem, "")[0]];
             for suffix in std::iter::once("").chain(actions.iter().copied()) {
                 for key in variant_keys(mount, suffix) {
                     let rect = &atlas[&key];
@@ -2039,6 +2113,8 @@ mod tests {
 
         for (stem, suffixes) in [
             (TURRET_BARREL_STEM, ACTION_SUFFIXES_4.as_slice()),
+            (TURRET_BARREL_T1_STEM, ACTION_SUFFIXES_4.as_slice()),
+            (TURRET_BARREL_T2_STEM, ACTION_SUFFIXES_4.as_slice()),
             (FLAK_MOUNT_STEM, ACTION_SUFFIXES_8.as_slice()),
             (BASTION_MOUNT_STEM, ACTION_SUFFIXES_9.as_slice()),
             ("bastion", ACTION_SUFFIXES_9.as_slice()),
@@ -2051,7 +2127,13 @@ mod tests {
 
     #[test]
     fn defense_mount_art_covers_its_pivot_and_carries_an_allegiance_mask() {
-        for stem in [TURRET_BARREL_STEM, FLAK_MOUNT_STEM, BASTION_MOUNT_STEM] {
+        for stem in [
+            TURRET_BARREL_STEM,
+            TURRET_BARREL_T1_STEM,
+            TURRET_BARREL_T2_STEM,
+            FLAK_MOUNT_STEM,
+            BASTION_MOUNT_STEM,
+        ] {
             let ferrous = sprite_image(&format!("{stem}_ferrous"));
             let cupric = sprite_image(&format!("{stem}_cupric"));
             let accent = sprite_image(&format!("{stem}_accent"));
