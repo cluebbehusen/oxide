@@ -54,9 +54,13 @@ pub use strategy::{
 };
 pub use team::{TeamReliefExitReason, TeamReliefOperation, TeamReliefPhase, TeamReliefPlanner};
 pub use trace::{
-    ChannelEffects, ChannelPhase, ChannelState, ChannelTrace, ChannelTraces, CoreGateTrace,
-    DECISION_TRACE_VERSION, DecisionControlFlow, DecisionTrace, EvidenceTrace, GateTrace,
-    LoweringTrace, RaidAttentionTrace, ScrapBudgetTrace, TracedBotAct, UtilityTrace,
+    AssignedForceTrace, CapabilityTrace, ChannelEffects, ChannelPhase, ChannelState, ChannelTrace,
+    ChannelTraces, ConnectedForceStatus, ConnectedForceTrace, ConnectedPackageTrace,
+    ConnectedRecoveryReasonTrace, ConnectedRejectionReasonTrace, ConnectedTargetTrace,
+    CoreGateTrace, DECISION_TRACE_VERSION, DecisionControlFlow, DecisionTrace, EvidenceTrace,
+    ForceDemandsTrace, ForceFamilyTrace, GateTrace, LoweringTrace, ProviderDemandTrace,
+    RaidAttentionTrace, RejectedConnectedCandidateTrace, ScrapBudgetTrace, TargetEvidenceTrace,
+    TracedBotAct, UtilityTrace,
 };
 pub use utility::{Dials, UtilityPolicy};
 

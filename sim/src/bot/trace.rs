@@ -5,13 +5,22 @@
 
 use super::observation::Observation;
 use super::resources::ResourceSnapshot;
+use super::strategy::force_package::{ForceFamily, ForcePackageRejection};
+use super::strategy::{
+    AirOperation, AirOperationOutcome, AirRecoveryReason, ConnectedPackageDiagnostics,
+    ConnectedPlanRejection, RejectedConnectedCandidate, StrategicPlanner,
+};
+use super::{BuildingContact, ContactEvidence, StrategicIntelligence};
 use crate::PlayerCommand;
-use crate::ids::{PlayerId, UnitId};
+use crate::ids::{BuildingId, PlayerId, UnitId};
+use crate::stats::{BuildingKind, UnitKind};
 use chassis::Tick;
+use chassis::grid::TilePos;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 /// Schema version for serialized decision traces.
-pub const DECISION_TRACE_VERSION: u32 = 2;
+pub const DECISION_TRACE_VERSION: u32 = 3;
 
 const RESOURCE_FORECAST_TICKS: Tick = crate::TICKS_PER_SECOND as Tick * 60;
 
@@ -49,6 +58,8 @@ pub struct DecisionTrace {
     pub budget: Option<ScrapBudgetTrace>,
     /// Fixed current planner channels, in schema rather than insertion order.
     pub channels: ChannelTraces,
+    /// Bounded evidence for the connected force package and its assigned force.
+    pub connected_force: ConnectedForceTrace,
     /// Input and output size of the utility-policy pass.
     pub utility: UtilityTrace,
     /// Final intent-to-command lowering summary.
@@ -85,6 +96,7 @@ impl DecisionTrace {
             gates: GateTrace::default(),
             budget: None,
             channels: ChannelTraces::default(),
+            connected_force: ConnectedForceTrace::default(),
             utility: UtilityTrace::default(),
             lowering: LoweringTrace::default(),
         }
@@ -158,6 +170,303 @@ pub struct EvidenceTrace {
     pub remembered_enemy_buildings: u32,
     /// Unidentified hostile radar contacts.
     pub radar_blips: u32,
+}
+
+/// Current trace state of the connected-package playbook.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConnectedForceTrace {
+    /// Whether the planner is idle, executing, recovering, or just terminated.
+    pub status: ConnectedForceStatus,
+    /// Current fog-honest evidence for the operation's objective.
+    pub target: Option<ConnectedTargetTrace>,
+    /// Evidence and demand from the package's current target-driven revision.
+    pub package: Option<ConnectedPackageTrace>,
+    /// Exact members currently assigned by the operation.
+    pub assigned: AssignedForceTrace,
+    /// Current connected opportunity considered but not admitted or revised.
+    /// This exists for one traced think only and is never planner memory.
+    pub rejected_candidate: Option<RejectedConnectedCandidateTrace>,
+}
+
+impl Default for ConnectedForceTrace {
+    fn default() -> Self {
+        Self {
+            status: ConnectedForceStatus::NotObserved,
+            target: None,
+            package: None,
+            assigned: AssignedForceTrace::default(),
+            rejected_candidate: None,
+        }
+    }
+}
+
+/// One current connected opportunity the planner could not admit or revise.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RejectedConnectedCandidateTrace {
+    /// Fog-honest identity and evidence of the candidate.
+    pub target: ConnectedTargetTrace,
+    /// Exact admission boundary that refused it.
+    pub reason: ConnectedRejectionReasonTrace,
+}
+
+/// Capability family used by package-demand diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForceFamilyTrace {
+    /// Vision required to establish current target evidence.
+    Recon,
+    /// Ground firepower required to remove targetable anti-air defenses.
+    Suppression,
+    /// Air firepower required to destroy the target cluster.
+    Strike,
+}
+
+/// Why a current connected opportunity was not admitted or revised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum ConnectedRejectionReasonTrace {
+    /// The standing army has not reached the protected commitment floor.
+    InsufficientStandingForce {
+        /// Current eligible combat roster.
+        current: u32,
+        /// Minimum roster required before this voluntary operation.
+        required: u32,
+    },
+    /// Public terrain and current obstacles provide no ground staging route.
+    DisconnectedGroundRoute,
+    /// A ground route exists, but the complete suppression group cannot accept
+    /// every authoritative spread slot near its staging line.
+    UnreachableGroupStaging {
+        /// Exact suppression-provider count requested by the package.
+        requested: u32,
+    },
+    /// The configured decision cadence cannot schedule future production.
+    InvalidDecisionCadence,
+    /// The preparation deadline is before this observation.
+    InvalidDeadline {
+        /// Tick that supplied the rejected observation.
+        observed_at: Tick,
+        /// Rejected absolute preparation deadline.
+        deadline: Tick,
+    },
+    /// The candidate no longer has current evidence.
+    TargetNotCurrent,
+    /// The current contact is not a live, completed, valuable target.
+    TargetNotActionable,
+    /// Earlier accepted commitments own enough real capital to explain the
+    /// package's funding shortfall.
+    ProtectedFunds {
+        /// Provider family whose common minimum could not be funded.
+        family: ForceFamilyTrace,
+        /// Cumulative scrap needed through the rejected provider.
+        required_scrap: u32,
+        /// Spendable current and forecast scrap available by the deadline.
+        available_scrap: u32,
+        /// Difference between required and available scrap.
+        deadline_shortfall: u32,
+        /// Current bank withheld by older commitments.
+        protected_current_scrap: u32,
+        /// Completed-source forecast actually reachable but withheld.
+        protected_forecast_scrap: u32,
+    },
+    /// Even without enough older protected capital to explain the gap, the
+    /// spendable economy cannot fund the common minimum.
+    InsufficientSpendableScrap {
+        /// Provider family whose common minimum could not be funded.
+        family: ForceFamilyTrace,
+        /// Cumulative scrap needed through the rejected provider.
+        required_scrap: u32,
+        /// Spendable current and forecast scrap available by the deadline.
+        available_scrap: u32,
+        /// Difference between required and available scrap.
+        deadline_shortfall: u32,
+    },
+    /// No completed producer can train a legal provider for this family.
+    MissingProviderCapability {
+        /// Family with no completed production path.
+        family: ForceFamilyTrace,
+    },
+    /// Legal production exists but cannot expose the provider before expiry.
+    PreparationWindowTooShort {
+        /// Family whose provider misses the fixed window.
+        family: ForceFamilyTrace,
+        /// Tick that supplied the rejected observation.
+        observed_at: Tick,
+        /// Immutable package deadline.
+        deadline: Tick,
+    },
+    /// Current air-domain anti-air covers the cluster and ground suppression
+    /// cannot target it.
+    UntargetableCurrentAirDefense {
+        /// Observed anti-air damage per 100 ticks.
+        firepower: u64,
+        /// Observed hit points that the package cannot suppress.
+        hit_points: u64,
+    },
+}
+
+/// Lifecycle state that can be justified without reading policy-private state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", content = "reason", rename_all = "snake_case")]
+pub enum ConnectedForceStatus {
+    /// The full policy path did not inspect this planner.
+    NotObserved,
+    /// Focused tests disabled the planner.
+    Disabled,
+    /// No air operation is active.
+    Idle,
+    /// An island or target-reacquisition operation has no connected package.
+    OtherAirOperation,
+    /// A connected package is active outside recovery.
+    Active,
+    /// The operation is withdrawing for the recorded reason.
+    Recovering(ConnectedRecoveryReasonTrace),
+    /// The operation released its corridor this think.
+    Released,
+    /// The operation aborted its corridor this think.
+    Aborted,
+}
+
+/// Fog-honest target identity and current evidence at the decision boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ConnectedTargetTrace {
+    /// Last known owner.
+    pub player: PlayerId,
+    /// Last known building kind.
+    pub kind: BuildingKind,
+    /// Stable footprint anchor.
+    pub anchor: TilePos,
+    /// Last live target id retained by the operation.
+    pub last_live_id: Option<BuildingId>,
+    /// Whether current memory still has live, remembered, or no contact.
+    pub evidence: TargetEvidenceTrace,
+}
+
+/// Evidence strength for a connected operation's objective.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetEvidenceTrace {
+    /// The objective is currently visible.
+    Current,
+    /// Only a remembered structure contact remains.
+    Remembered,
+    /// Current intelligence has no matching structure contact.
+    Missing,
+}
+
+/// Evidence and opportunity-scaled demand from the current package revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConnectedPackageTrace {
+    /// Tick on which the planner first owned this operation.
+    pub admitted_at: Tick,
+    /// Tick of the current package derivation or target-driven revision.
+    pub derived_at: Tick,
+    /// Fixed latest tick at which the package may finish preparation.
+    pub preparation_deadline: Tick,
+    /// Canonical footprint anchors admitted as the operation's target cluster.
+    pub target_anchors: Vec<TilePos>,
+    /// Strategic value of the target cluster at the current derivation.
+    pub target_value: u64,
+    /// Spendable bank exposed when this package version was derived.
+    pub current_scrap: u32,
+    /// Completed-source income forecast from derivation through the deadline.
+    pub forecast_scrap: u32,
+    /// Personality-independent minimum for a viable connected operation.
+    pub minimum_capability: CapabilityTrace,
+    /// Maximum capability useful against the observed opportunity.
+    pub useful_capability: CapabilityTrace,
+    /// Capability supplied by the selected indivisible providers.
+    pub chosen_capability: CapabilityTrace,
+    /// Current-visible non-suppression collateral opportunity for attack-run
+    /// bombers.
+    pub useful_bombing: u64,
+    /// Collateral value supplied by selected attack-run bombers.
+    pub chosen_bombing: u64,
+    /// Exact-kind provider counts selected by the current package revision.
+    pub demands: ForceDemandsTrace,
+    /// All currently observed operational anti-air covering the target cluster.
+    pub observed_aa_firepower: u64,
+    /// Observed anti-air attached to completed structures or live grounded
+    /// units that artillery can suppress.
+    pub suppressible_aa_firepower: u64,
+}
+
+/// Reconnaissance, suppression, and strike capability in normalized units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CapabilityTrace {
+    /// Reconnaissance capability.
+    pub recon: u64,
+    /// Ground-targetable anti-air suppression capability.
+    pub suppression: u64,
+    /// Ground-strike capability.
+    pub strike: u64,
+}
+
+impl From<[u64; 3]> for CapabilityTrace {
+    fn from([recon, suppression, strike]: [u64; 3]) -> Self {
+        Self {
+            recon,
+            suppression,
+            strike,
+        }
+    }
+}
+
+/// Selected provider counts in fixed capability-family order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ForceDemandsTrace {
+    /// Reconnaissance providers.
+    pub recon: Vec<ProviderDemandTrace>,
+    /// Ground-targetable anti-air suppression providers.
+    pub suppression: Vec<ProviderDemandTrace>,
+    /// Ground-strike providers.
+    pub strike: Vec<ProviderDemandTrace>,
+}
+
+/// One exact-kind provider demand with a saturating diagnostic count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ProviderDemandTrace {
+    /// Requested unit kind.
+    pub kind: UnitKind,
+    /// Requested count, saturated at the trace representation boundary.
+    pub count: u32,
+}
+
+/// Exact operation assignments, grouped by package role.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct AssignedForceTrace {
+    /// Whether the assignments have crossed the operation's commitment boundary.
+    pub membership_frozen: bool,
+    /// Assigned reconnaissance aircraft.
+    pub scout: Option<UnitId>,
+    /// Assigned artillery ids in canonical order.
+    pub suppression: Vec<UnitId>,
+    /// Assigned strike-aircraft ids in canonical order.
+    pub strike: Vec<UnitId>,
+}
+
+/// Why a connected operation is recovering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectedRecoveryReasonTrace {
+    /// Current sight confirmed the objective was gone.
+    Complete,
+    /// A required assigned provider died.
+    RequiredUnitLost,
+    /// Current sight found anti-air the operation cannot suppress.
+    NewAirDefense,
+    /// The fixed preparation deadline or a bounded tactical phase expired.
+    Timeout,
+    /// Current sight disproved the objective before the strike.
+    ObjectiveLost,
+    /// Remembered target evidence aged out.
+    StaleIntelligence,
+    /// No honestly plausible ground route reaches artillery staging.
+    UnreachableStaging,
+    /// Known peaks seal the air route.
+    UnreachableAirRoute,
+    /// Available resources and completed production cannot finish the package.
+    PreparationInfeasible,
 }
 
 /// Coordinator-owned admission and rollback gates.
@@ -298,7 +607,7 @@ pub enum ChannelPhase {
     AirSuppressAa,
     /// Connected operation is verifying its corridor.
     AirVerify,
-    /// Connected operation committed its bomber wing.
+    /// Connected operation committed its strike aircraft.
     AirStrike,
     /// Connected operation is recovering survivors.
     AirRecover,
@@ -354,6 +663,307 @@ pub struct LoweringTrace {
     pub total_commands: u32,
 }
 
+/// Captures only planner diagnostics and fog-honest intelligence.
+pub(super) fn connected_force_trace(
+    planner: Option<&StrategicPlanner>,
+    intelligence: &StrategicIntelligence,
+    rejected_candidate: Option<&RejectedConnectedCandidate>,
+) -> ConnectedForceTrace {
+    let Some(planner) = planner else {
+        return ConnectedForceTrace {
+            status: ConnectedForceStatus::Disabled,
+            ..ConnectedForceTrace::default()
+        };
+    };
+    let operation = planner.air_operation();
+    let package = planner
+        .connected_package_diagnostics()
+        .map(ConnectedPackageTrace::from_diagnostics);
+    let status = match (planner.terminal_outcome(), operation) {
+        (Some(AirOperationOutcome::Released { .. }), _) => ConnectedForceStatus::Released,
+        (Some(AirOperationOutcome::Aborted { .. }), _) => ConnectedForceStatus::Aborted,
+        (_, Some(operation)) => operation.recovery_reason.map_or_else(
+            || {
+                if package.is_some() {
+                    ConnectedForceStatus::Active
+                } else {
+                    ConnectedForceStatus::OtherAirOperation
+                }
+            },
+            |reason| ConnectedForceStatus::Recovering(reason.into()),
+        ),
+        (None, None) => ConnectedForceStatus::Idle,
+    };
+    ConnectedForceTrace {
+        status,
+        target: operation
+            .map(|operation| ConnectedTargetTrace::from_operation(operation, intelligence)),
+        package,
+        assigned: operation.map_or_else(
+            AssignedForceTrace::default,
+            AssignedForceTrace::from_operation,
+        ),
+        rejected_candidate: rejected_candidate.map(RejectedConnectedCandidateTrace::from),
+    }
+}
+
+impl ConnectedForceTrace {
+    /// Retains the just-finished package across the one-think terminal signal.
+    /// Island operations have no connected package and remain outside this
+    /// diagnostic rather than masquerading as a connected release or abort.
+    pub(super) fn preserve_terminal_package(&mut self, previous: Self) {
+        if !matches!(
+            self.status,
+            ConnectedForceStatus::Released | ConnectedForceStatus::Aborted
+        ) {
+            return;
+        }
+        if previous.package.is_none() {
+            self.status = ConnectedForceStatus::Idle;
+            return;
+        }
+        if self.target.is_none() {
+            self.target = previous.target;
+        }
+        if self.package.is_none() {
+            self.package = previous.package;
+        }
+        if self.assigned == AssignedForceTrace::default() {
+            self.assigned = previous.assigned;
+        }
+    }
+}
+
+impl ConnectedTargetTrace {
+    fn from_operation(operation: &AirOperation, intelligence: &StrategicIntelligence) -> Self {
+        let evidence = intelligence
+            .buildings()
+            .iter()
+            .find(|contact| {
+                contact.player == operation.target_player
+                    && contact.kind == operation.target_kind
+                    && contact.anchor == operation.target
+            })
+            .map_or(TargetEvidenceTrace::Missing, |contact| {
+                match contact.evidence {
+                    ContactEvidence::Current => TargetEvidenceTrace::Current,
+                    ContactEvidence::Remembered => TargetEvidenceTrace::Remembered,
+                }
+            });
+        Self {
+            player: operation.target_player,
+            kind: operation.target_kind,
+            anchor: operation.target,
+            last_live_id: operation.target_id,
+            evidence,
+        }
+    }
+
+    fn from_contact(contact: &BuildingContact) -> Self {
+        Self {
+            player: contact.player,
+            kind: contact.kind,
+            anchor: contact.anchor,
+            last_live_id: contact.id,
+            evidence: match contact.evidence {
+                ContactEvidence::Current => TargetEvidenceTrace::Current,
+                ContactEvidence::Remembered => TargetEvidenceTrace::Remembered,
+            },
+        }
+    }
+}
+
+impl From<&RejectedConnectedCandidate> for RejectedConnectedCandidateTrace {
+    fn from(candidate: &RejectedConnectedCandidate) -> Self {
+        Self {
+            target: ConnectedTargetTrace::from_contact(&candidate.target),
+            reason: candidate.reason.into(),
+        }
+    }
+}
+
+impl From<ConnectedPlanRejection> for ConnectedRejectionReasonTrace {
+    fn from(rejection: ConnectedPlanRejection) -> Self {
+        match rejection {
+            ConnectedPlanRejection::InsufficientStandingForce { current, required } => {
+                Self::InsufficientStandingForce {
+                    current: bounded_count(current),
+                    required: bounded_count(required),
+                }
+            }
+            ConnectedPlanRejection::DisconnectedGroundRoute => Self::DisconnectedGroundRoute,
+            ConnectedPlanRejection::UnreachableGroupStaging { requested } => {
+                Self::UnreachableGroupStaging {
+                    requested: bounded_count(requested),
+                }
+            }
+            ConnectedPlanRejection::Package {
+                reason,
+                protected_current_scrap,
+                protected_forecast_scrap,
+            } => package_rejection_trace(reason, protected_current_scrap, protected_forecast_scrap),
+        }
+    }
+}
+
+fn package_rejection_trace(
+    rejection: ForcePackageRejection,
+    protected_current_scrap: u32,
+    protected_forecast_scrap: u32,
+) -> ConnectedRejectionReasonTrace {
+    match rejection {
+        ForcePackageRejection::InvalidDecisionCadence => {
+            ConnectedRejectionReasonTrace::InvalidDecisionCadence
+        }
+        ForcePackageRejection::InvalidDeadline {
+            observed_at,
+            deadline,
+        } => ConnectedRejectionReasonTrace::InvalidDeadline {
+            observed_at,
+            deadline,
+        },
+        ForcePackageRejection::TargetNotCurrent => ConnectedRejectionReasonTrace::TargetNotCurrent,
+        ForcePackageRejection::TargetNotActionable => {
+            ConnectedRejectionReasonTrace::TargetNotActionable
+        }
+        ForcePackageRejection::InsufficientResources {
+            family,
+            required_scrap,
+            available_scrap,
+            deadline_shortfall,
+        } => {
+            if protected_current_scrap.saturating_add(protected_forecast_scrap)
+                >= deadline_shortfall
+            {
+                ConnectedRejectionReasonTrace::ProtectedFunds {
+                    family: family.into(),
+                    required_scrap,
+                    available_scrap,
+                    deadline_shortfall,
+                    protected_current_scrap,
+                    protected_forecast_scrap,
+                }
+            } else {
+                ConnectedRejectionReasonTrace::InsufficientSpendableScrap {
+                    family: family.into(),
+                    required_scrap,
+                    available_scrap,
+                    deadline_shortfall,
+                }
+            }
+        }
+        ForcePackageRejection::MissingCompletedProviderCapability { family } => {
+            ConnectedRejectionReasonTrace::MissingProviderCapability {
+                family: family.into(),
+            }
+        }
+        ForcePackageRejection::PreparationWindowTooShort {
+            family,
+            observed_at,
+            deadline,
+        } => ConnectedRejectionReasonTrace::PreparationWindowTooShort {
+            family: family.into(),
+            observed_at,
+            deadline,
+        },
+        ForcePackageRejection::UntargetableCurrentAirDefense {
+            firepower,
+            hit_points,
+        } => ConnectedRejectionReasonTrace::UntargetableCurrentAirDefense {
+            firepower,
+            hit_points,
+        },
+    }
+}
+
+impl From<ForceFamily> for ForceFamilyTrace {
+    fn from(family: ForceFamily) -> Self {
+        match family {
+            ForceFamily::Recon => Self::Recon,
+            ForceFamily::Suppression => Self::Suppression,
+            ForceFamily::Strike => Self::Strike,
+        }
+    }
+}
+
+impl ConnectedPackageTrace {
+    fn from_diagnostics(diagnostics: ConnectedPackageDiagnostics) -> Self {
+        let mut target_anchors = diagnostics.target_anchors;
+        target_anchors.sort_unstable_by_key(|anchor| (anchor.y, anchor.x));
+        target_anchors.dedup();
+        Self {
+            admitted_at: diagnostics.admitted_at,
+            derived_at: diagnostics.derived_at,
+            preparation_deadline: diagnostics.preparation_deadline,
+            target_anchors,
+            target_value: diagnostics.target_value,
+            current_scrap: diagnostics.current_scrap,
+            forecast_scrap: diagnostics.forecast_scrap,
+            minimum_capability: diagnostics.minimum_capability.into(),
+            useful_capability: diagnostics.useful_capability.into(),
+            chosen_capability: diagnostics.chosen_capability.into(),
+            useful_bombing: diagnostics.useful_bombing,
+            chosen_bombing: diagnostics.chosen_bombing,
+            demands: ForceDemandsTrace {
+                recon: provider_demands(diagnostics.recon),
+                suppression: provider_demands(diagnostics.suppression),
+                strike: provider_demands(diagnostics.strike),
+            },
+            observed_aa_firepower: diagnostics.observed_aa_firepower,
+            suppressible_aa_firepower: diagnostics.suppressible_aa_firepower,
+        }
+    }
+}
+
+impl AssignedForceTrace {
+    fn from_operation(operation: &AirOperation) -> Self {
+        Self {
+            membership_frozen: operation.membership_frozen_at.is_some(),
+            scout: operation.scout,
+            suppression: canonical_ids(&operation.artillery),
+            strike: canonical_ids(&operation.strike_aircraft),
+        }
+    }
+}
+
+impl From<AirRecoveryReason> for ConnectedRecoveryReasonTrace {
+    fn from(reason: AirRecoveryReason) -> Self {
+        match reason {
+            AirRecoveryReason::Complete => Self::Complete,
+            AirRecoveryReason::RequiredUnitLost => Self::RequiredUnitLost,
+            AirRecoveryReason::NewAirDefense => Self::NewAirDefense,
+            AirRecoveryReason::Timeout => Self::Timeout,
+            AirRecoveryReason::ObjectiveLost => Self::ObjectiveLost,
+            AirRecoveryReason::StaleIntelligence => Self::StaleIntelligence,
+            AirRecoveryReason::UnreachableStaging => Self::UnreachableStaging,
+            AirRecoveryReason::UnreachableAirRoute => Self::UnreachableAirRoute,
+            AirRecoveryReason::PreparationInfeasible => Self::PreparationInfeasible,
+        }
+    }
+}
+
+fn provider_demands(demands: Vec<(UnitKind, usize)>) -> Vec<ProviderDemandTrace> {
+    let mut canonical = BTreeMap::<UnitKind, usize>::new();
+    for (kind, count) in demands.into_iter().filter(|(_, count)| *count > 0) {
+        let total = canonical.entry(kind).or_default();
+        *total = total.saturating_add(count);
+    }
+    canonical
+        .into_iter()
+        .map(|(kind, count)| ProviderDemandTrace {
+            kind,
+            count: bounded_count(count),
+        })
+        .collect()
+}
+
+fn canonical_ids(ids: &[UnitId]) -> Vec<UnitId> {
+    let mut canonical = ids.to_vec();
+    canonical.sort_unstable();
+    canonical.dedup();
+    canonical
+}
+
 /// Stack-local recorder used only by the opt-in traced act path.
 #[derive(Default)]
 pub(super) struct DecisionTraceRecorder {
@@ -401,6 +1011,7 @@ mod tests {
 
     use serde_json::Value;
 
+    use super::super::strategy::AirOperationPhase;
     use super::*;
 
     #[test]
@@ -414,6 +1025,248 @@ mod tests {
         assert_eq!(effects.intents, u32::MAX);
         assert_eq!(effects.unit_claims, [UnitId(2), UnitId(4), UnitId(7)]);
         assert_eq!(effects.committed_scrap, 91);
+    }
+
+    #[test]
+    fn package_diagnostics_are_canonicalized_at_the_trace_boundary() {
+        let package = ConnectedPackageTrace::from_diagnostics(ConnectedPackageDiagnostics {
+            admitted_at: 10,
+            derived_at: 20,
+            preparation_deadline: 30,
+            target_anchors: vec![TilePos::new(9, 8), TilePos::new(12, 7)],
+            target_value: 40,
+            current_scrap: 50,
+            forecast_scrap: 60,
+            minimum_capability: [1, 2, 3],
+            useful_capability: [4, 5, 6],
+            chosen_capability: [7, 8, 9],
+            useful_bombing: 10,
+            chosen_bombing: 11,
+            recon: vec![(UnitKind::Kestrel, usize::MAX), (UnitKind::Kestrel, 1)],
+            suppression: vec![(UnitKind::Avalanche, 2), (UnitKind::Bombard, 1)],
+            strike: vec![(UnitKind::Buzzard, 3), (UnitKind::Buzzard, 0)],
+            observed_aa_firepower: 70,
+            suppressible_aa_firepower: 65,
+        });
+
+        assert_eq!(
+            package.minimum_capability,
+            CapabilityTrace {
+                recon: 1,
+                suppression: 2,
+                strike: 3,
+            }
+        );
+        assert_eq!(package.useful_bombing, 10);
+        assert_eq!(package.chosen_bombing, 11);
+        assert_eq!(
+            package.target_anchors,
+            [TilePos::new(12, 7), TilePos::new(9, 8)]
+        );
+        assert_eq!(
+            package.demands.recon,
+            [ProviderDemandTrace {
+                kind: UnitKind::Kestrel,
+                count: u32::MAX,
+            }]
+        );
+        assert_eq!(
+            package.demands.suppression,
+            [
+                ProviderDemandTrace {
+                    kind: UnitKind::Bombard,
+                    count: 1,
+                },
+                ProviderDemandTrace {
+                    kind: UnitKind::Avalanche,
+                    count: 2,
+                },
+            ]
+        );
+        assert_eq!(
+            package.demands.strike,
+            [ProviderDemandTrace {
+                kind: UnitKind::Buzzard,
+                count: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn assigned_force_reports_the_suppression_commitment_boundary() {
+        let mut operation = AirOperation {
+            target_player: PlayerId(1),
+            target_kind: BuildingKind::Foundry,
+            target: TilePos::new(9, 8),
+            target_id: Some(BuildingId(7)),
+            assault_admitted: true,
+            phase: AirOperationPhase::Assemble,
+            started_at: 10,
+            phase_started_at: 20,
+            scout: Some(UnitId(3)),
+            scout_dispatch: None,
+            strike_hold: None,
+            artillery_staging: None,
+            artillery: vec![UnitId(5), UnitId(4), UnitId(5)],
+            strike_aircraft: vec![UnitId(8), UnitId(6), UnitId(8)],
+            strike_issued_at: None,
+            membership_frozen_at: None,
+            recovery_reason: None,
+        };
+
+        let revisable = AssignedForceTrace::from_operation(&operation);
+        assert!(!revisable.membership_frozen);
+        assert_eq!(revisable.suppression, [UnitId(4), UnitId(5)]);
+        assert_eq!(revisable.strike, [UnitId(6), UnitId(8)]);
+
+        operation.phase = AirOperationPhase::Recover;
+        assert!(
+            !AssignedForceTrace::from_operation(&operation).membership_frozen,
+            "pre-commit recovery must not fabricate a crossed commitment boundary"
+        );
+
+        operation.phase = AirOperationPhase::SuppressAa;
+        operation.membership_frozen_at = Some(30);
+        let committed = AssignedForceTrace::from_operation(&operation);
+        assert!(committed.membership_frozen);
+        assert_eq!(committed.scout, revisable.scout);
+        assert_eq!(committed.suppression, revisable.suppression);
+        assert_eq!(committed.strike, revisable.strike);
+
+        operation.phase = AirOperationPhase::Recover;
+        assert!(
+            AssignedForceTrace::from_operation(&operation).membership_frozen,
+            "recovery after suppression must retain the real commitment history"
+        );
+    }
+
+    #[test]
+    fn rejected_candidate_distinguishes_real_protected_capital_from_nominal_holds() {
+        let target = BuildingContact {
+            id: Some(BuildingId(7)),
+            player: PlayerId(1),
+            kind: BuildingKind::Foundry,
+            anchor: TilePos::new(9, 8),
+            hp: 800,
+            built: true,
+            tier: 0,
+            last_seen: Some(120),
+            evidence: ContactEvidence::Current,
+        };
+        let rejection = ForcePackageRejection::InsufficientResources {
+            family: ForceFamily::Strike,
+            required_scrap: 100,
+            available_scrap: 70,
+            deadline_shortfall: 30,
+        };
+
+        let protected = RejectedConnectedCandidateTrace::from(&RejectedConnectedCandidate {
+            target: target.clone(),
+            reason: ConnectedPlanRejection::Package {
+                reason: rejection,
+                protected_current_scrap: 20,
+                protected_forecast_scrap: 10,
+            },
+        });
+        assert_eq!(
+            protected.reason,
+            ConnectedRejectionReasonTrace::ProtectedFunds {
+                family: ForceFamilyTrace::Strike,
+                required_scrap: 100,
+                available_scrap: 70,
+                deadline_shortfall: 30,
+                protected_current_scrap: 20,
+                protected_forecast_scrap: 10,
+            }
+        );
+        assert_eq!(protected.target.last_live_id, target.id);
+        assert_eq!(protected.target.evidence, TargetEvidenceTrace::Current);
+
+        let genuinely_short = package_rejection_trace(rejection, 20, 9);
+        assert_eq!(
+            genuinely_short,
+            ConnectedRejectionReasonTrace::InsufficientSpendableScrap {
+                family: ForceFamilyTrace::Strike,
+                required_scrap: 100,
+                available_scrap: 70,
+                deadline_shortfall: 30,
+            }
+        );
+
+        assert_eq!(
+            ConnectedRejectionReasonTrace::from(ConnectedPlanRejection::UnreachableGroupStaging {
+                requested: usize::MAX,
+            }),
+            ConnectedRejectionReasonTrace::UnreachableGroupStaging {
+                requested: u32::MAX,
+            },
+            "trace counts remain bounded on wider hosts"
+        );
+    }
+
+    #[test]
+    fn terminal_trace_preserves_only_a_connected_package() {
+        let package = ConnectedPackageTrace {
+            admitted_at: 10,
+            derived_at: 20,
+            preparation_deadline: 30,
+            target_anchors: vec![TilePos::new(9, 8), TilePos::new(12, 7)],
+            target_value: 40,
+            current_scrap: 50,
+            forecast_scrap: 60,
+            minimum_capability: [1, 2, 3].into(),
+            useful_capability: [4, 5, 6].into(),
+            chosen_capability: [7, 8, 9].into(),
+            useful_bombing: 10,
+            chosen_bombing: 11,
+            demands: ForceDemandsTrace {
+                recon: Vec::new(),
+                suppression: Vec::new(),
+                strike: Vec::new(),
+            },
+            observed_aa_firepower: 70,
+            suppressible_aa_firepower: 65,
+        };
+        let previous = ConnectedForceTrace {
+            status: ConnectedForceStatus::Active,
+            target: Some(ConnectedTargetTrace {
+                player: PlayerId(1),
+                kind: BuildingKind::Foundry,
+                anchor: TilePos::new(9, 8),
+                last_live_id: Some(BuildingId(7)),
+                evidence: TargetEvidenceTrace::Current,
+            }),
+            package: Some(package.clone()),
+            assigned: AssignedForceTrace {
+                membership_frozen: true,
+                scout: Some(UnitId(3)),
+                suppression: vec![UnitId(4)],
+                strike: vec![UnitId(5)],
+            },
+            rejected_candidate: None,
+        };
+        let mut terminal = ConnectedForceTrace {
+            status: ConnectedForceStatus::Aborted,
+            ..ConnectedForceTrace::default()
+        };
+
+        terminal.preserve_terminal_package(previous.clone());
+
+        assert_eq!(terminal.status, ConnectedForceStatus::Aborted);
+        assert_eq!(terminal.target, previous.target);
+        assert_eq!(terminal.package, Some(package));
+        assert_eq!(terminal.assigned, previous.assigned);
+
+        let mut island_terminal = ConnectedForceTrace {
+            status: ConnectedForceStatus::Released,
+            ..ConnectedForceTrace::default()
+        };
+        island_terminal.preserve_terminal_package(ConnectedForceTrace {
+            status: ConnectedForceStatus::OtherAirOperation,
+            ..ConnectedForceTrace::default()
+        });
+        assert_eq!(island_terminal.status, ConnectedForceStatus::Idle);
+        assert!(island_terminal.package.is_none());
     }
 
     #[test]
@@ -454,16 +1307,94 @@ mod tests {
                 committed_scrap: 3,
             },
         };
+        trace.connected_force = ConnectedForceTrace {
+            status: ConnectedForceStatus::Recovering(ConnectedRecoveryReasonTrace::NewAirDefense),
+            target: Some(ConnectedTargetTrace {
+                player: PlayerId(1),
+                kind: BuildingKind::Foundry,
+                anchor: TilePos::new(12, 7),
+                last_live_id: Some(BuildingId(9)),
+                evidence: TargetEvidenceTrace::Current,
+            }),
+            package: Some(ConnectedPackageTrace {
+                admitted_at: 100,
+                derived_at: 112,
+                preparation_deadline: 2_500,
+                target_anchors: vec![TilePos::new(12, 7), TilePos::new(15, 7)],
+                target_value: 12_000,
+                current_scrap: 900,
+                forecast_scrap: 300,
+                minimum_capability: CapabilityTrace {
+                    recon: 1_000,
+                    suppression: 1_000,
+                    strike: 1_000,
+                },
+                useful_capability: CapabilityTrace {
+                    recon: 1_000,
+                    suppression: 3_000,
+                    strike: 4_000,
+                },
+                chosen_capability: CapabilityTrace {
+                    recon: 1_000,
+                    suppression: 3_100,
+                    strike: 4_200,
+                },
+                useful_bombing: 2_000,
+                chosen_bombing: 1_500,
+                demands: ForceDemandsTrace {
+                    recon: vec![ProviderDemandTrace {
+                        kind: UnitKind::Kestrel,
+                        count: 1,
+                    }],
+                    suppression: vec![ProviderDemandTrace {
+                        kind: UnitKind::Avalanche,
+                        count: 2,
+                    }],
+                    strike: vec![ProviderDemandTrace {
+                        kind: UnitKind::Condor,
+                        count: 3,
+                    }],
+                },
+                observed_aa_firepower: 240,
+                suppressible_aa_firepower: 180,
+            }),
+            assigned: AssignedForceTrace {
+                membership_frozen: true,
+                scout: Some(UnitId(2)),
+                suppression: vec![UnitId(3), UnitId(4)],
+                strike: vec![UnitId(5), UnitId(6), UnitId(7)],
+            },
+            rejected_candidate: Some(RejectedConnectedCandidateTrace {
+                target: ConnectedTargetTrace {
+                    player: PlayerId(1),
+                    kind: BuildingKind::Foundry,
+                    anchor: TilePos::new(14, 7),
+                    last_live_id: Some(BuildingId(10)),
+                    evidence: TargetEvidenceTrace::Current,
+                },
+                reason: ConnectedRejectionReasonTrace::ProtectedFunds {
+                    family: ForceFamilyTrace::Strike,
+                    required_scrap: 80,
+                    available_scrap: 50,
+                    deadline_shortfall: 30,
+                    protected_current_scrap: 20,
+                    protected_forecast_scrap: 10,
+                },
+            }),
+        };
         let Value::Object(trace) = serde_json::to_value(trace).expect("the trace serializes")
         else {
             panic!("a decision trace serializes as an object");
         };
+
+        assert_eq!(trace.get("version"), Some(&Value::from(3)));
 
         assert_eq!(
             trace.keys().map(String::as_str).collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 "budget",
                 "channels",
+                "connected_force",
                 "control_flow",
                 "evidence",
                 "gates",
@@ -572,6 +1503,106 @@ mod tests {
         assert_eq!(
             effects.keys().map(String::as_str).collect::<BTreeSet<_>>(),
             BTreeSet::from(["committed_scrap", "intents", "unit_claims"])
+        );
+
+        let Some(Value::Object(connected_force)) = trace.get("connected_force") else {
+            panic!("the connected force trace serializes as an object");
+        };
+        assert_eq!(
+            connected_force
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "assigned",
+                "package",
+                "rejected_candidate",
+                "status",
+                "target",
+            ])
+        );
+        let Some(Value::Object(package)) = connected_force.get("package") else {
+            panic!("the connected package serializes as an object");
+        };
+        assert_eq!(
+            package.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "admitted_at",
+                "chosen_bombing",
+                "chosen_capability",
+                "current_scrap",
+                "demands",
+                "derived_at",
+                "forecast_scrap",
+                "minimum_capability",
+                "observed_aa_firepower",
+                "preparation_deadline",
+                "suppressible_aa_firepower",
+                "target_anchors",
+                "target_value",
+                "useful_bombing",
+                "useful_capability",
+            ])
+        );
+        assert_eq!(
+            package.get("target_anchors"),
+            Some(&serde_json::json!([
+                { "x": 12, "y": 7 },
+                { "x": 15, "y": 7 }
+            ]))
+        );
+        let Some(Value::Object(demands)) = package.get("demands") else {
+            panic!("package demands serialize as an object");
+        };
+        assert_eq!(
+            demands.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            BTreeSet::from(["recon", "strike", "suppression"])
+        );
+        for capability in [
+            "minimum_capability",
+            "useful_capability",
+            "chosen_capability",
+        ] {
+            let Some(Value::Object(capability)) = package.get(capability) else {
+                panic!("package capability serializes as an object");
+            };
+            assert_eq!(
+                capability
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>(),
+                BTreeSet::from(["recon", "strike", "suppression"])
+            );
+        }
+
+        let Some(Value::Object(assigned)) = connected_force.get("assigned") else {
+            panic!("the assigned force serializes as an object");
+        };
+        assert_eq!(
+            assigned.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            BTreeSet::from(["membership_frozen", "scout", "strike", "suppression"])
+        );
+        let Some(Value::Object(rejected)) = connected_force.get("rejected_candidate") else {
+            panic!("the rejected candidate serializes as an object");
+        };
+        assert_eq!(
+            rejected.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            BTreeSet::from(["reason", "target"])
+        );
+        let Some(Value::Object(reason)) = rejected.get("reason") else {
+            panic!("the rejection reason serializes as an object");
+        };
+        assert_eq!(
+            reason.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "available_scrap",
+                "deadline_shortfall",
+                "family",
+                "protected_current_scrap",
+                "protected_forecast_scrap",
+                "reason",
+                "required_scrap",
+            ])
         );
 
         let Some(Value::Object(gates)) = trace.get("gates") else {

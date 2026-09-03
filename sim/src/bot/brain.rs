@@ -25,7 +25,7 @@ use super::team::{TeamReliefAdmission, TeamReliefPlanner};
 use super::trace::{
     ChannelPhase, ChannelState, ChannelTrace, CoreGateTrace, DecisionControlFlow,
     DecisionTraceRecorder, LoweringTrace, RaidAttentionTrace, ScrapBudgetTrace, TracedBotAct,
-    UtilityTrace, bounded_count, channel_effects,
+    UtilityTrace, bounded_count, channel_effects, connected_force_trace,
 };
 use super::utility::{Dials, StrategicUtilityContext, UtilityPolicy, combat_core_status};
 use crate::command::{Command, PlayerCommand};
@@ -485,32 +485,62 @@ impl Brain {
         // Intelligence ages with the strategic think: a test that nulls
         // the strategic planner also expects contact memory to hold
         // still, so the update stays inside the planner's arm.
-        let mut strategic = if let Some(strategy) = strategy.as_mut() {
+        let (strategic_result, connected_force_before) = if let Some(strategy) = strategy.as_mut() {
             intelligence.update(&oriented);
-            strategy.think_with_lift_support(
-                profile,
-                tuning,
-                &strategic_observation,
-                intelligence,
-                oriented_home,
-                StrategicCoordination {
-                    enlisted: &planner_claims,
-                    lift_support: lift_support_request.as_ref(),
-                    allow_new_operation: allow_new_voluntary_operations,
-                },
+            let before = recorder
+                .is_some()
+                .then(|| connected_force_trace(Some(strategy), intelligence, None));
+            (
+                strategy.think_with_lift_support_diagnosed(
+                    profile,
+                    tuning,
+                    &strategic_observation,
+                    intelligence,
+                    oriented_home,
+                    StrategicCoordination {
+                        enlisted: &planner_claims,
+                        lift_support: lift_support_request.as_ref(),
+                        allow_new_operation: allow_new_voluntary_operations,
+                        protected_current_scrap: ledger
+                            .strategic_current_reserve_for(air_precedes_foundry_saving),
+                        protected_forecast_scrap: ledger
+                            .strategic_forecast_reserve_for(air_precedes_foundry_saving),
+                        public_map: Some(oriented_public_map),
+                        orientation,
+                    },
+                ),
+                before,
             )
         } else {
-            Default::default()
+            (
+                Default::default(),
+                recorder
+                    .is_some()
+                    .then(|| connected_force_trace(None, intelligence, None)),
+            )
         };
+        let rejected_connected_candidate = strategic_result.rejected_connected_candidate;
+        let mut strategic = strategic_result.decision;
         let air_active = strategy
             .as_ref()
             .is_some_and(|strategy| strategy.air_operation().is_some());
         if let Some(recorder) = recorder.as_deref_mut() {
-            recorder.trace_mut().channels.connected_air = channel_trace(
+            let trace = recorder.trace_mut();
+            trace.channels.connected_air = channel_trace(
                 air_before_state.expect("a traced decision captured the prior air state"),
                 air_channel_state(strategy.as_ref()),
                 &strategic,
             );
+            let mut connected_force = connected_force_trace(
+                strategy.as_ref(),
+                intelligence,
+                rejected_connected_candidate.as_ref(),
+            );
+            connected_force.preserve_terminal_package(
+                connected_force_before
+                    .expect("a traced decision captured the prior connected force"),
+            );
+            trace.connected_force = connected_force;
         }
         merge_strategic(&mut strategic, team_decision);
         let team_active = team.as_ref().is_some_and(|team| team.operation().is_some());
@@ -1046,6 +1076,34 @@ impl ScrapLedger {
             .saturating_sub(self.shallow_sentinel)
             .saturating_sub(self.opening_bootstrap)
     }
+
+    /// Current bank already owned by earlier commitments at this priority.
+    /// This is diagnostic evidence only: the strategic observation has already
+    /// had this amount removed before a planner sees it.
+    fn strategic_current_reserve_for(&self, operation_precedes_foundry_saving: bool) -> u32 {
+        self.bank
+            .saturating_sub(self.strategic_spendable_for(operation_precedes_foundry_saving))
+    }
+
+    /// Older commitments consume future income before a newly admitted
+    /// operation may use it as feasibility evidence. Current bank already
+    /// covering those commitments does not reserve the forecast a second time.
+    fn strategic_forecast_reserve_for(&self, operation_precedes_foundry_saving: bool) -> u32 {
+        if self.frozen {
+            return u32::MAX;
+        }
+        let foundry = if operation_precedes_foundry_saving {
+            0
+        } else {
+            self.foundry_saving
+        };
+        foundry
+            .saturating_add(self.deferred_construction)
+            .saturating_add(self.airworks_capacity)
+            .saturating_add(self.shallow_sentinel)
+            .saturating_add(self.opening_bootstrap)
+            .saturating_sub(self.bank)
+    }
 }
 
 fn applied_prospective_carrier_hold(requested: u32, uncommitted_scrap: u32) -> u32 {
@@ -1173,7 +1231,7 @@ fn prior_planner_claims(
     if let Some(operation) = air {
         claims.extend(operation.scout);
         claims.extend(operation.artillery.iter().copied());
-        claims.extend(operation.bombers.iter().copied());
+        claims.extend(operation.strike_aircraft.iter().copied());
     }
     claims.extend_from_slice(relief);
     claims.extend_from_slice(raid);
@@ -1399,6 +1457,20 @@ mod tests {
 
         assert_eq!(ledger.strategic_spendable_for(true), 400);
         assert_eq!(ledger.strategic_spendable_for(false), 200);
+        assert_eq!(ledger.strategic_current_reserve_for(true), 100);
+        assert_eq!(ledger.strategic_current_reserve_for(false), 300);
+        assert_eq!(ledger.strategic_forecast_reserve_for(true), 0);
+        assert_eq!(ledger.strategic_forecast_reserve_for(false), 0);
+        let underfunded = ScrapLedger {
+            bank: 100,
+            ..ledger
+        };
+        assert_eq!(underfunded.strategic_spendable_for(true), 0);
+        assert_eq!(underfunded.strategic_current_reserve_for(true), 100);
+        assert_eq!(underfunded.strategic_forecast_reserve_for(true), 0);
+        assert_eq!(underfunded.strategic_spendable_for(false), 0);
+        assert_eq!(underfunded.strategic_current_reserve_for(false), 100);
+        assert_eq!(underfunded.strategic_forecast_reserve_for(false), 200);
         assert_eq!(
             ScrapLedger {
                 frozen: true,
@@ -1407,6 +1479,15 @@ mod tests {
             .strategic_spendable_for(true),
             0,
             "survival freezes even an operation that predates the expansion"
+        );
+        assert_eq!(
+            ScrapLedger {
+                frozen: true,
+                ..ledger
+            }
+            .strategic_forecast_reserve_for(true),
+            u32::MAX,
+            "survival also withholds forecast income from voluntary work"
         );
     }
 
@@ -1480,6 +1561,230 @@ mod tests {
         );
         assert_brain_unchanged(&direct, &first_traced);
         assert_brain_unchanged(&direct, &second_traced);
+    }
+
+    #[test]
+    fn connected_package_trace_is_deterministic_and_behaviorally_observational() {
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+        let mut scenario = foundry_saving_air_competition_scenario(foundry_cost - 1);
+        let scout = scenario
+            .units
+            .iter_mut()
+            .find(|unit| unit.player == 0 && unit.kind == UnitKind::Kestrel)
+            .expect("the trace scenario has one connected-air scout");
+        (scout.x, scout.y) = (42, 19);
+        scenario.units.extend([
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Bombard,
+                x: 9,
+                y: 17,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Condor,
+                x: 10,
+                y: 18,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Condor,
+                x: 11,
+                y: 18,
+            },
+        ]);
+        let mut direct_state = scenario
+            .build()
+            .expect("the connected-operation trace scenario builds");
+        let mut traced_state = direct_state.clone();
+        let mut direct = foundry_competition_brain(&scenario);
+        let mind = direct.mind_mut();
+        mind.strategy = Some(StrategicPlanner::new());
+        mind.lifts = None;
+        let mut traced = direct.clone();
+
+        let direct_commands = direct.act(&direct_state);
+        let traced_act = traced.act_traced(&traced_state);
+
+        assert_eq!(traced_act.commands, direct_commands);
+        let trace = traced_act
+            .trace
+            .expect("the connected-operation admission is traced");
+        assert_eq!(
+            trace.connected_force.status,
+            super::super::trace::ConnectedForceStatus::Active
+        );
+        let target = trace
+            .connected_force
+            .target
+            .expect("the connected package records its target");
+        assert_eq!(target.kind, BuildingKind::Foundry);
+        assert_eq!(
+            target.evidence,
+            super::super::trace::TargetEvidenceTrace::Current
+        );
+        let package = trace
+            .connected_force
+            .package
+            .expect("the admitted connected package is recorded");
+        assert_eq!(package.admitted_at, direct_state.current_tick());
+        assert_eq!(package.derived_at, direct_state.current_tick());
+        assert!(package.preparation_deadline > package.derived_at);
+        assert!(package.target_anchors.contains(&target.anchor));
+        assert!(
+            package
+                .target_anchors
+                .windows(2)
+                .all(|pair| (pair[0].y, pair[0].x) < (pair[1].y, pair[1].x))
+        );
+        assert!(!package.demands.recon.is_empty());
+        assert!(!package.demands.suppression.is_empty());
+        assert!(!package.demands.strike.is_empty());
+        assert!(package.chosen_capability.recon >= package.minimum_capability.recon);
+        assert!(package.chosen_capability.suppression >= package.minimum_capability.suppression);
+        assert!(package.chosen_capability.strike >= package.minimum_capability.strike);
+        assert_eq!(package.observed_aa_firepower, 0);
+        assert_eq!(package.suppressible_aa_firepower, 0);
+        assert!(trace.connected_force.assigned.scout.is_some());
+        assert!(!trace.connected_force.assigned.membership_frozen);
+
+        direct_state.tick(&direct_commands);
+        traced_state.tick(&traced_act.commands);
+        assert_eq!(traced_state.hash(), direct_state.hash());
+        assert_brain_unchanged(&direct, &traced);
+    }
+
+    #[test]
+    fn terminal_connected_trace_uses_target_evidence_from_the_termination_tick() {
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+        let mut scenario = foundry_saving_air_competition_scenario(foundry_cost - 1);
+        let scout = scenario
+            .units
+            .iter_mut()
+            .find(|unit| unit.player == 0 && unit.kind == UnitKind::Kestrel)
+            .expect("the trace scenario has one connected-air scout");
+        (scout.x, scout.y) = (42, 19);
+        for (index, kind) in [
+            UnitKind::Bombard,
+            UnitKind::Avalanche,
+            Role::AirGround.unit_for(scenario.players[0].faction),
+            Role::Bomber.unit_for(scenario.players[0].faction),
+        ]
+        .into_iter()
+        .cycle()
+        .take(24)
+        .enumerate()
+        {
+            scenario.units.push(UnitSpec {
+                player: 0,
+                kind,
+                x: 7 + i32::try_from(index % 8).expect("small fixture index"),
+                y: 16 + i32::try_from(index / 8).expect("small fixture index"),
+            });
+        }
+        let mut state = scenario
+            .build()
+            .expect("the terminal-trace scenario builds");
+        let mut brain = foundry_competition_brain(&scenario);
+        let mind = brain.mind_mut();
+        mind.strategy = Some(StrategicPlanner::new());
+        mind.lifts = None;
+
+        let mut frozen = None;
+        for _ in 0..1_000 {
+            let decision = brain.act_traced(&state);
+            if let Some(trace) = &decision.trace
+                && trace.connected_force.assigned.membership_frozen
+            {
+                let target = trace
+                    .connected_force
+                    .target
+                    .expect("the frozen connected package retains its target");
+                assert_eq!(
+                    target.evidence,
+                    super::super::trace::TargetEvidenceTrace::Current
+                );
+                let package = trace
+                    .connected_force
+                    .package
+                    .as_ref()
+                    .expect("the frozen connected force retains its package");
+                let assigned = &trace.connected_force.assigned;
+                let mut members: Vec<_> = assigned
+                    .scout
+                    .into_iter()
+                    .chain(assigned.suppression.iter().copied())
+                    .chain(assigned.strike.iter().copied())
+                    .collect();
+                members.sort_unstable();
+                members.dedup();
+                assert!(!members.is_empty());
+                frozen = Some((target, package.target_anchors.clone(), members));
+            }
+            state.tick(&decision.commands);
+            if frozen.is_some() {
+                break;
+            }
+        }
+        let (target, target_anchors, members) =
+            frozen.expect("the connected package reaches exact-id freeze");
+
+        let mut document = serde_json::to_value(&state).expect("the fixture state serializes");
+        document["units"]
+            .as_array_mut()
+            .expect("state units serialize as an array")
+            .retain(|unit| {
+                let id = UnitId(
+                    u32::try_from(unit["id"].as_u64().expect("unit ids are numeric"))
+                        .expect("unit ids fit u32"),
+                );
+                members.binary_search(&id).is_err()
+            });
+        let mut state: State =
+            serde_json::from_value(document).expect("removing the frozen force remains valid");
+        while !state.current_tick().is_multiple_of(brain.dials.cadence) {
+            state.tick(&[]);
+        }
+
+        let terminal = brain.act_traced(&state);
+        let trace = terminal.trace.expect("the terminal decision is traced");
+        assert_eq!(
+            trace.connected_force.status,
+            super::super::trace::ConnectedForceStatus::Aborted
+        );
+        let terminal_target = trace
+            .connected_force
+            .target
+            .expect("the terminal trace preserves the package target");
+        assert_eq!(
+            (
+                terminal_target.player,
+                terminal_target.kind,
+                terminal_target.anchor
+            ),
+            (target.player, target.kind, target.anchor)
+        );
+        assert_eq!(
+            terminal_target.evidence,
+            super::super::trace::TargetEvidenceTrace::Remembered,
+            "the lost scout makes the still-live objective a ghost on the termination tick"
+        );
+        assert_eq!(
+            trace
+                .connected_force
+                .package
+                .expect("the terminal trace preserves the frozen package")
+                .target_anchors,
+            target_anchors
+        );
     }
 
     #[test]
@@ -2483,11 +2788,12 @@ mod tests {
             phase_started_at: 120,
             scout: Some(UnitId(8)),
             scout_dispatch: None,
-            bomber_hold: None,
+            strike_hold: None,
             artillery_staging: None,
             artillery: vec![UnitId(7), UnitId(9)],
-            bombers: vec![UnitId(10), UnitId(11)],
+            strike_aircraft: vec![UnitId(10), UnitId(11)],
             strike_issued_at: None,
+            membership_frozen_at: None,
             recovery_reason: None,
         };
         let relief = TeamReliefOperation {
@@ -3683,7 +3989,7 @@ mod tests {
                                 target_id.expect("the shared Foundry is currently identified"),
                             ) =>
                         {
-                            let bombers = units
+                            let strike_aircraft = units
                                 .iter()
                                 .filter(|id| {
                                     state.unit(**id).is_some_and(|unit| {
@@ -3699,7 +4005,7 @@ mod tests {
                                     })
                                 })
                                 .count();
-                            if bombers >= 4 && screen >= 2 {
+                            if strike_aircraft >= 4 && screen >= 2 {
                                 bomber_release = true;
                                 bomber_release_tick.get_or_insert(state.current_tick());
                             }
@@ -3881,13 +4187,14 @@ mod tests {
             }
         }
 
-        let (tick, bombers, screen, wing) = launched.expect("the independent bomber wing launches");
+        let (tick, strike_aircraft, screen, wing) =
+            launched.expect("the independent bomber wing launches");
         assert!(tick < 10_000);
-        assert_eq!(bombers, 6);
+        assert_eq!(strike_aircraft, 6);
         assert_eq!(screen, 3);
         assert_eq!(
             wing,
-            bombers + screen,
+            strike_aircraft + screen,
             "the frozen roster launches together"
         );
     }
@@ -4314,6 +4621,7 @@ mod tests {
     fn strategic_air_spending_cannot_consume_the_shallow_sentinel_reserve() {
         let mut scenario = independent_bomber_operation_scenario();
         scenario.name = "brain shallow reinforcement reserve".into();
+        scenario.map[11].replace_range(20..=20, ".");
         scenario.players[0].scrap = 0;
         scenario.units.extend((0..4).map(|index| UnitSpec {
             player: 0,
@@ -4372,15 +4680,13 @@ mod tests {
 
         let mut reinforcement_scenario = scenario.clone();
         reinforcement_scenario.players[0].scrap = UnitKind::Sentinel.stats().cost;
-        reinforcement_scenario
+        let missing_scout = reinforcement_scenario
             .units
-            .retain(|unit| unit.kind != UnitKind::Kestrel);
-        reinforcement_scenario.units.push(UnitSpec {
-            player: 1,
-            kind: UnitKind::Harvester,
-            x: 10,
-            y: 11,
-        });
+            .iter_mut()
+            .find(|unit| unit.player == 0 && unit.kind == UnitKind::Kestrel)
+            .expect("the operation has one scout to remove");
+        missing_scout.player = 1;
+        missing_scout.kind = UnitKind::Gnat;
         let mut reinforcement_state = reinforcement_scenario
             .build()
             .expect("the missing-scout continuation builds");
@@ -4397,7 +4703,22 @@ mod tests {
         reinforcement_state =
             serde_json::from_value(document).expect("the exact-bank continuation is valid");
 
-        let commands = brain.act(&reinforcement_state);
+        let act = brain.act_traced(&reinforcement_state);
+        let trace = act.trace.expect("the reinforcement boundary is traced");
+        let budget = trace
+            .budget
+            .as_ref()
+            .expect("the reinforcement boundary records its scrap ledger");
+        assert_eq!(
+            budget.shallow_sentinel,
+            UnitKind::Sentinel.stats().cost,
+            "the nearby reachable enemy start should reserve one shallow Sentinel"
+        );
+        assert_eq!(
+            budget.strategic_spendable, 0,
+            "the exact reinforcement bank must remain unavailable to new operations"
+        );
+        let commands = act.commands;
         assert!(
             commands.iter().all(|command| !matches!(
                 command.command,
@@ -4409,7 +4730,7 @@ mod tests {
                     ..
                 }
             )),
-            "strategic air capital cannot consume the exact shallow reinforcement bank: {commands:?}"
+            "strategic air capital cannot consume the exact shallow reinforcement bank: {commands:?}; trace={trace:?}"
         );
         let report = reinforcement_state.tick(&commands);
         assert!(report.events.iter().all(|event| !matches!(
@@ -4605,7 +4926,16 @@ mod tests {
         document["players"][0]["scrap"] = serde_json::json!(saved - 1);
         let starved_state: State =
             serde_json::from_value(document.clone()).expect("the underfunded state remains valid");
+        let mut direct_starved_brain = brain.clone();
+        let direct_starved_commands = direct_starved_brain.act(&starved_state);
         let starved = brain.act_traced(&starved_state);
+        assert_eq!(starved.commands, direct_starved_commands);
+        let mut direct_after = starved_state.clone();
+        let mut traced_after = starved_state.clone();
+        direct_after.tick(&direct_starved_commands);
+        traced_after.tick(&starved.commands);
+        assert_eq!(traced_after.hash(), direct_after.hash());
+        assert_brain_unchanged(&direct_starved_brain, &brain);
         let starved_trace = starved.trace.expect("the admission think is traced");
         let starved_budget = starved_trace
             .budget
@@ -4614,9 +4944,31 @@ mod tests {
         assert_eq!(starved_budget.strategic_spendable, 0);
         assert_eq!(
             starved_trace.channels.connected_air.after,
-            ChannelState::Active(ChannelPhase::AirRecon),
-            "the connected-air opportunity must exist independently of its bank"
+            ChannelState::Idle,
+            "an unfunded coherent package must not become an active operation"
         );
+        assert_eq!(
+            starved_trace.connected_force.status,
+            super::super::trace::ConnectedForceStatus::Idle
+        );
+        assert!(starved_trace.connected_force.package.is_none());
+        let rejected = starved_trace
+            .connected_force
+            .rejected_candidate
+            .as_ref()
+            .expect("the current opportunity records why protected capital rejected it");
+        assert_eq!(rejected.target.kind, BuildingKind::Foundry);
+        assert_eq!(
+            rejected.target.evidence,
+            super::super::trace::TargetEvidenceTrace::Current
+        );
+        assert!(matches!(
+            rejected.reason,
+            super::super::trace::ConnectedRejectionReasonTrace::ProtectedFunds {
+                protected_current_scrap,
+                ..
+            } if protected_current_scrap > 0
+        ));
         assert_eq!(
             starved_trace.channels.connected_air.effects.committed_scrap, 0,
             "connected air may see only bank beyond the frozen Foundry total"
@@ -4631,9 +4983,7 @@ mod tests {
         let continued_state = serde_json::from_value(continued_document)
             .expect("the normalized continued state remains valid");
         let continued = brain.act_traced(&continued_state);
-        let continued_trace = continued
-            .trace
-            .expect("the active operation's next think is traced");
+        let continued_trace = continued.trace.expect("the next strategic think is traced");
         let continued_budget = continued_trace
             .budget
             .expect("the active operation's next think records its scrap ledger");
@@ -4644,7 +4994,7 @@ mod tests {
         assert_eq!(continued_budget.strategic_spendable, 0);
         assert_eq!(
             continued_trace.channels.connected_air.after,
-            ChannelState::Active(ChannelPhase::AirRecon)
+            ChannelState::Idle
         );
         assert_eq!(
             continued_trace
@@ -4653,7 +5003,7 @@ mod tests {
                 .effects
                 .committed_scrap,
             0,
-            "becoming active cannot move a post-saving operation ahead of the Foundry hold"
+            "a post-saving opportunity cannot move ahead of the Foundry hold"
         );
         let starved_raw = Observation::fog_honest(&starved_state, PlayerId(0));
         assert_eq!(
@@ -4700,6 +5050,117 @@ mod tests {
             "bank covering both obligations must admit ordinary paid air-operation work: {:?}",
             funded.commands
         );
+    }
+
+    #[test]
+    fn older_construction_promise_owns_forecast_until_current_bank_covers_it() {
+        let promised_kind = BuildingKind::Foundry;
+        let promised_scrap = promised_kind
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+        let mut scenario = foundry_saving_air_competition_scenario(0);
+        let scout = scenario
+            .units
+            .iter_mut()
+            .find(|unit| unit.player == 0 && unit.kind == UnitKind::Kestrel)
+            .expect("the scenario has one connected-operation scout");
+        (scout.x, scout.y) = (42, 19);
+        scenario.buildings.extend([
+            BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Reclaimer,
+                x: 18,
+                y: 4,
+            },
+            BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Reclaimer,
+                x: 21,
+                y: 4,
+            },
+        ]);
+        let mut state = scenario
+            .build()
+            .expect("the forecast-ownership scenario builds");
+        let founder = state
+            .units()
+            .iter()
+            .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Harvester)
+            .expect("the scenario has a builder")
+            .id;
+        let promised_anchor = TilePos::new(20, 9);
+        let founder = state.unit_mut(founder).expect("the builder remains live");
+        founder.order = crate::state::Order::Found {
+            kind: promised_kind,
+            anchor: promised_anchor,
+        };
+        founder.path = None;
+
+        let mut brain = foundry_competition_brain(&scenario);
+        brain.dials.expansion = false;
+        brain.dials.minimum_core_equivalents = 0;
+        let mind = brain.mind_mut();
+        mind.strategy = Some(StrategicPlanner::new());
+        mind.lifts = None;
+        let mut funded_brain = brain.clone();
+        let mut funded_state = state.clone();
+
+        let starved = brain.act_traced(&state);
+        let starved_trace = starved.trace.expect("the admission think is traced");
+        let starved_budget = starved_trace
+            .budget
+            .expect("the admission think records its scrap ledger");
+        assert_eq!(starved_budget.bank, 0);
+        assert_eq!(starved_budget.deferred_construction, promised_scrap);
+        assert_eq!(starved_budget.strategic_spendable, 0);
+        assert_eq!(
+            starved_trace.channels.connected_air.after,
+            ChannelState::Idle,
+            "forecast promised to older construction cannot admit a new operation"
+        );
+        let rejection = starved_trace
+            .connected_force
+            .rejected_candidate
+            .expect("the current opportunity records the protected forecast");
+        assert!(
+            matches!(
+                rejection.reason,
+                super::super::trace::ConnectedRejectionReasonTrace::ProtectedFunds {
+                    protected_current_scrap: 0,
+                    protected_forecast_scrap,
+                    ..
+                } if protected_forecast_scrap == promised_scrap
+            ),
+            "unexpected rejection: {:?}",
+            rejection.reason
+        );
+
+        funded_state.player_mut(PlayerId(0)).scrap = promised_scrap;
+        let funded = funded_brain.act_traced(&funded_state);
+        let funded_trace = funded.trace.expect("the funded think is traced");
+        let funded_budget = funded_trace
+            .budget
+            .expect("the funded think records its scrap ledger");
+        assert_eq!(funded_budget.deferred_construction, promised_scrap);
+        assert_eq!(
+            funded_budget.strategic_spendable, 0,
+            "the current bank remains owned by the older construction promise"
+        );
+        assert!(
+            matches!(
+                funded_trace.channels.connected_air.after,
+                ChannelState::Active(_)
+            ),
+            "covering the old promise with current capital frees recurring income for admission"
+        );
+        let package = funded_trace
+            .connected_force
+            .package
+            .expect("the recurring-income surplus admits a concrete package");
+        assert_eq!(package.current_scrap, 0);
+        assert!(package.forecast_scrap > promised_scrap);
     }
 
     #[test]
@@ -4785,11 +5246,45 @@ mod tests {
             first_trace.channels.connected_air.after,
             ChannelState::Active(ChannelPhase::AirRecon)
         );
+        let first_budget = first_trace
+            .budget
+            .as_ref()
+            .expect("the admission think records its scrap ledger");
         assert_eq!(
-            first_trace.channels.connected_air.effects.committed_scrap, 0,
-            "the admitted operation begins with its complete connected-air roster"
+            first_trace.channels.connected_air.effects.committed_scrap,
+            first_budget.strategic_spendable,
+            "the admitted package owns the bank available before the later Foundry saving"
         );
-        let (admitted_at, trailing_condor) = {
+        let package = first_trace
+            .connected_force
+            .package
+            .as_ref()
+            .expect("the admitted operation exposes its scaled package");
+        assert!(
+            package
+                .demands
+                .recon
+                .iter()
+                .any(|demand| { demand.kind == UnitKind::Kestrel && demand.count > 0 })
+        );
+        assert!(
+            package
+                .demands
+                .suppression
+                .iter()
+                .any(|demand| { demand.kind == UnitKind::Bombard && demand.count > 0 })
+        );
+        assert!(package.demands.strike.iter().any(|demand| {
+            matches!(demand.kind, UnitKind::Buzzard | UnitKind::Condor) && demand.count > 0
+        }));
+        assert!(first.commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Buzzard,
+                ..
+            }
+        )));
+        let admitted_at = {
             let strategy = brain
                 .mind()
                 .strategy
@@ -4799,17 +5294,11 @@ mod tests {
                 .air_operation()
                 .expect("the normal strategic pass admits connected air");
             assert!(operation.scout.is_some());
-            assert_eq!(operation.artillery.len(), 1);
-            assert_eq!(operation.bombers.len(), 2);
-            (
-                strategy
-                    .air_admitted_at()
-                    .expect("the admitted operation records its priority tick"),
-                *operation
-                    .bombers
-                    .last()
-                    .expect("the complete wing has a trailing Condor"),
-            )
+            assert!(!operation.artillery.is_empty());
+            assert!(!operation.strike_aircraft.is_empty());
+            strategy
+                .air_admitted_at()
+                .expect("the admitted operation records its priority tick")
         };
         assert_eq!(admitted_at, admission_tick);
         let orientation = brain
@@ -4844,22 +5333,9 @@ mod tests {
         );
 
         let mut document = serde_json::to_value(&state).expect("the continuation serializes");
-        document["units"]
-            .as_array_mut()
-            .expect("state units serialize as an array")
-            .retain(|unit| unit["id"].as_u64() != Some(u64::from(trailing_condor.0)));
         document["players"][0]["scrap"] = serde_json::json!(saved - 1);
         let later_state: State =
-            serde_json::from_value(document).expect("the one-Condor loss remains valid");
-        assert_eq!(
-            later_state
-                .units()
-                .iter()
-                .filter(|unit| { unit.player == PlayerId(0) && unit.kind == UnitKind::Condor })
-                .count(),
-            1,
-            "the later cadence is missing only the trailing Condor"
-        );
+            serde_json::from_value(document).expect("the underfunded continuation remains valid");
 
         let later = brain.act_traced(&later_state);
         let later_trace = later.trace.expect("the later cadence think is traced");
@@ -4875,7 +5351,7 @@ mod tests {
         assert_eq!(later_budget.strategic_spendable, 0);
         assert!(
             later_trace.channels.connected_air.effects.committed_scrap > 0,
-            "the earlier operation keeps funding its missing Condor"
+            "the earlier operation keeps funding its remaining package demand"
         );
         let later_raw = Observation::fog_honest(&later_state, PlayerId(0));
         assert_eq!(
@@ -5730,7 +6206,7 @@ mod tests {
             {
                 strategic_claims.extend(air.scout);
                 strategic_claims.extend(air.artillery.iter().copied());
-                strategic_claims.extend(air.bombers.iter().copied());
+                strategic_claims.extend(air.strike_aircraft.iter().copied());
             }
             if let Some(relief) = brain
                 .mind()

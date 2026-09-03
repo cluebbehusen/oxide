@@ -7,33 +7,12 @@
 //! building's center. A rally point, when set, hands the newborn its first
 //! order.
 
-use super::rect_adjacent_tiles;
+use super::{rect_adjacent_tiles, spawn_doorstep_key};
 use crate::event::Event;
 use crate::ids::PlayerId;
 use crate::state::{Order, State};
 use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::grid::TilePos;
-use std::cmp::Reverse;
-
-/// Orders spawn doorsteps in the producer's radial frame around the map.
-/// Mirrored producers have negated radial and candidate rays, preserving both
-/// dot and cross products and therefore selecting mirrored spawn tiles.
-fn spawn_doorstep_key(
-    map_size: (i32, i32),
-    anchor: TilePos,
-    size: (i32, i32),
-    candidate: TilePos,
-) -> (Reverse<i64>, i64) {
-    let center_x = i64::from(anchor.x) * 2 + i64::from(size.0);
-    let center_y = i64::from(anchor.y) * 2 + i64::from(size.1);
-    let radial_x = center_x - i64::from(map_size.0);
-    let radial_y = center_y - i64::from(map_size.1);
-    let candidate_x = i64::from(candidate.x) * 2 + 1 - center_x;
-    let candidate_y = i64::from(candidate.y) * 2 + 1 - center_y;
-    let dot = radial_x * candidate_x + radial_y * candidate_y;
-    let cross = radial_x * candidate_y - radial_y * candidate_x;
-    (Reverse(dot), cross)
-}
 
 /// Arms each newly stranded seat from the state that existed at the tick
 /// boundary. Commands run afterward, so spending or reshaping a queue on

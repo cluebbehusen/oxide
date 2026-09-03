@@ -45,6 +45,9 @@ pub struct UnitContact {
     pub tile: TilePos,
     /// Last observed hit points.
     pub hp: u32,
+    /// Whether the airframe was parked on the ground when last observed.
+    /// Always false for kinds that cannot land.
+    pub grounded: bool,
     /// Tick on which this unit was last in current sight.
     pub last_seen: Tick,
     /// Current or remembered evidence.
@@ -52,6 +55,15 @@ pub struct UnitContact {
 }
 
 impl UnitContact {
+    /// The physical layer occupied when this contact was last observed.
+    pub fn body_domain(&self) -> Domain {
+        if self.grounded {
+            Domain::Ground
+        } else {
+            self.kind.stats().domain
+        }
+    }
+
     /// Confidence in this unit still occupying its remembered area.
     ///
     /// Zero confidence does not mean the unit died. It means the old position
@@ -281,6 +293,7 @@ impl StrategicIntelligence {
                     kind: unit.kind,
                     tile: unit.tile,
                     hp: unit.hp,
+                    grounded: unit.grounded,
                     last_seen: observation.tick,
                     evidence: ContactEvidence::Current,
                 };
@@ -291,6 +304,7 @@ impl StrategicIntelligence {
                     kind: unit.kind,
                     tile: unit.tile,
                     hp: unit.hp,
+                    grounded: unit.grounded,
                     last_seen: observation.tick,
                     evidence: ContactEvidence::Current,
                 });

@@ -1488,6 +1488,7 @@ mod tests {
             kind: UnitKind::Sentinel,
             tile: TilePos::new(22, 10),
             hp: UnitKind::Sentinel.stats().max_hp,
+            grounded: false,
             last_seen: obs.tick,
             evidence: ContactEvidence::Remembered,
         };
@@ -3060,6 +3061,7 @@ mod tests {
             kind: UnitKind::Avalanche,
             tile: threat_tile,
             hp: UnitKind::Avalanche.stats().max_hp,
+            grounded: false,
             last_seen: threatened.tick,
             evidence: ContactEvidence::Remembered,
         }];
@@ -3211,6 +3213,7 @@ mod tests {
             kind: UnitKind::Avalanche,
             tile: contact_tile,
             hp: UnitKind::Avalanche.stats().max_hp,
+            grounded: false,
             last_seen: obs.tick,
             evidence: ContactEvidence::Remembered,
         }];

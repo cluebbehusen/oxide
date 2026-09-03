@@ -2316,6 +2316,7 @@ mod tests {
             kind: UnitKind::Sentinel,
             tile: TilePos::new(3, 3),
             hp: 60,
+            grounded: false,
             last_seen: 0,
             evidence: ContactEvidence::Remembered,
         }];

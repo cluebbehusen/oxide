@@ -2631,6 +2631,7 @@ mod tests {
             kind: UnitKind::Sentinel,
             tile: LEFT_HOME.offset(7, 0),
             hp: UnitKind::Sentinel.stats().max_hp,
+            grounded: false,
             last_seen: dark.tick,
             evidence: ContactEvidence::Remembered,
         };
@@ -2681,6 +2682,7 @@ mod tests {
             kind: UnitKind::Condor,
             tile: LEFT_HOME.offset(6, -4),
             hp: UnitKind::Condor.stats().max_hp,
+            grounded: false,
             last_seen: dark.tick,
             evidence: ContactEvidence::Remembered,
         };
@@ -2895,6 +2897,7 @@ mod tests {
             kind: UnitKind::Sentinel,
             tile: TilePos::new(4, 0),
             hp: UnitKind::Sentinel.stats().max_hp,
+            grounded: false,
             last_seen: current.tick,
             evidence: ContactEvidence::Remembered,
         };
@@ -3530,6 +3533,7 @@ mod tests {
             kind: UnitKind::Avalanche,
             tile: TilePos::new(30, 10),
             hp: UnitKind::Avalanche.stats().max_hp,
+            grounded: false,
             last_seen: obs.tick,
             evidence: ContactEvidence::Remembered,
         };

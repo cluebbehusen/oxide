@@ -166,6 +166,57 @@ ground-attack-air cohorts; a persistent air or lift operation owns those cohorts
 and its outstanding Airworks capacity. A shallow independently useful
 air-defense purchase is allowed only when no operation owns that capacity.
 
+For a connected air-and-siege operation, derive a shared capability minimum and
+an opportunity-specific useful capability target in reconnaissance, suppression,
+and strike. Use only the bounded current building cluster around the selected
+target, every currently observed operational anti-air source covering that
+cluster, unclaimed live units, already-paid queue work that can conservatively
+finish, the spendable current bank after prior reserves, completed-source income
+forecasts net of earlier promises, and completed producer throughput. Require
+providers, producer exits, staging, reconnaissance, and strike routes to agree
+with public terrain and observed dynamic blockers. Treat the forecast as
+feasibility evidence only; lower commands with the current spendable bank and
+exact legal producer slots. Preserve useful lower-tier providers instead of
+replacing them merely because later tech is available.
+
+Rank current connected objectives canonically and try them in that order until
+one admits a complete package; an infeasible top choice must not hide a viable
+lower-ranked target. Within that objective's bounded current cluster, retain an
+optional target only when the complete revised package still fits the same
+producer access, queues, funds, and fixed preparation deadline. Before absence
+of anti-air becomes usable evidence, reconnaissance must clear every footprint
+tile of every surviving admitted target. Canonical target anchors belong in the
+decision trace so the package's actual scope remains inspectable.
+
+Give every personality the complete connected-operation repertoire. After every
+family reaches the shared capability minimum, package selection maximizes capped
+total useful capability first and uses personality to weight how otherwise
+competitive marginal capability is divided between air and siege. Personality
+never gates either family. For otherwise identical evidence, more current scrap,
+more available preparation time at derivation, or additional completed usable
+production capability must not revoke admission or reduce capped total useful
+capability. Fix the decision deadline when the current target admits spending.
+Revisions during Recon and Assemble may change demand without moving that
+deadline. Providers produced before the deadline may first appear in its
+observation; incomplete preparation at that observation enters recovery. Freeze
+exact assignments when SuppressAa begins. Later suppression- and strike-cohort
+losses are measured against the shared capability minimum; the required scout
+remains an exact-identity requirement.
+
+Route preflight carries the active seat's original `Orientation` into the
+oriented observation. It reproduces authoritative center snapping and group
+spreading for `Move` and `AttackMove`, uses the authoritative world-frame
+producer doorstep, and validates a reachable legal firing stand for every exact
+suppression `Attack` member without applying group spread. When the complete
+live suppression roster already exists, staging preflight reproduces its one
+authoritative spread. When scheduled members do not yet have positions, prove
+both possible deterministic spread scans. Operational mobile anti-air already
+priced as mandatory suppression work is not counted again as optional bomber
+collateral. Cover deadline and queue boundaries, egress, current versus forecast
+funds, lower- and higher-tier mixes, target and defense evidence, personality
+invariants, exact-id freeze, and bounded abort and recovery with pure and
+composed tests.
+
 Defend every completed owned Foundry, not only the starting base. Choose sites
 for Turrets, Bastions, Flak Turrets, Scuttle Charges, and Barricades from
 exposed strategic value and credible hostile approaches. Score each kind's
@@ -219,16 +270,19 @@ not start the lift, claim riders, or queue the carrier until current evidence
 admits the ordinary operation, and release the reservation when any premise no
 longer holds.
 
-A wealthy island bot should consider a screen and bomber wing even when air is
-not its seeded specialty, because personality may change emphasis but cannot
-remove the only credible attack domain. Let airborne screen and bomber targets
-grow during Recon and Assemble, then freeze the requested force when the
-operation enters SuppressAa. Use current sight for uncoordinated commitments,
-remembered objectives only for honest reconnaissance, and currently visible flak
-along the complete known corridor for suppression. Air and lift plans must
-remain independently viable. When both choose the same objective, coordinate
-only through an explicit target-specific hold, release, or abort signal; neither
-may infer the other's success from missing omniscient state.
+A wealthy island operation has a separate admission gate of 12 currently armed
+units. This is a standing-roster readiness check, not its desired screen or
+bomber count and not a ceiling on later force scaling. Once admitted, it should
+consider a screen and bomber wing even when air is not the bot's seeded
+specialty, because personality may change emphasis but cannot remove the only
+credible attack domain. Let airborne screen and bomber targets grow during Recon
+and Assemble, then freeze the requested force when the operation enters
+SuppressAa. Use current sight for uncoordinated commitments, remembered
+objectives only for honest reconnaissance, and currently visible flak along the
+complete known corridor for suppression. Air and lift plans must remain
+independently viable. When both choose the same objective, coordinate only
+through an explicit target-specific hold, release, or abort signal; neither may
+infer the other's success from missing omniscient state.
 
 Aircraft that can land are ground bodies while parked. `UnitObs::grounded`
 reports that physical fact for own, allied, and visible enemy units, and

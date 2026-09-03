@@ -30,8 +30,10 @@ use serde::{Deserialize, Serialize};
 /// team's anonymous, bounded salvage-danger incidents. Version 12 exposes
 /// whether an airframe is parked on the ground. Version 13 exposes an own
 /// Harvester's current work node without revealing allied or enemy orders.
-/// Version 14 exposes which own units have queued or looping programs.
-pub const OBSERVATION_VERSION: u32 = 14;
+/// Version 14 exposes which own units have queued or looping programs. Version
+/// 15 exposes exact owner-visible progress for the front of each training
+/// queue.
+pub const OBSERVATION_VERSION: u32 = 15;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +147,9 @@ pub struct Observation {
     /// Training queue contents per own building, aligned with
     /// `my_buildings`.
     pub my_queues: Vec<Vec<UnitKind>>,
+    /// Current progress of the front training item per own building, aligned
+    /// with `my_buildings` and `my_queues`. Empty queues report zero.
+    pub my_queue_progress: Vec<u32>,
     /// Own units whose current order has a queued continuation or loops.
     /// Sorted by id. The continuation itself stays opaque to policy code;
     /// this ownership bit is enough to keep autonomous work from replacing a
@@ -231,6 +236,7 @@ impl Default for Observation {
             my_units: Vec::new(),
             my_buildings: Vec::new(),
             my_queues: Vec::new(),
+            my_queue_progress: Vec::new(),
             my_queued_units: Vec::new(),
             ally_units: Vec::new(),
             ally_buildings: Vec::new(),
@@ -257,6 +263,23 @@ impl Observation {
     /// is running a looping program.
     pub fn has_queued_program(&self, unit: UnitId) -> bool {
         self.my_queued_units.binary_search(&unit).is_ok()
+    }
+
+    /// Exact progress for one own building's front training item. Malformed
+    /// alignment or progress outside the front item's legal range yields no
+    /// timing evidence.
+    pub(crate) fn own_queue_progress(&self, index: usize) -> Option<u32> {
+        if self.my_buildings.len() != self.my_queues.len()
+            || self.my_queue_progress.len() != self.my_buildings.len()
+        {
+            return None;
+        }
+        let progress = *self.my_queue_progress.get(index)?;
+        match self.my_queues.get(index)?.first() {
+            Some(kind) if progress <= kind.stats().train_ticks => Some(progress),
+            None if progress == 0 => Some(0),
+            Some(_) | None => None,
+        }
     }
 
     /// Whether `tile` is known impassable terrain — a binary point lookup
@@ -328,6 +351,8 @@ impl Observation {
             if b.player == me {
                 obs.my_buildings.push(own_building(b));
                 obs.my_queues.push(b.queue.iter().copied().collect());
+                obs.my_queue_progress
+                    .push(if b.queue.is_empty() { 0 } else { b.progress });
             } else if !state.hostile(me, b.player) {
                 obs.ally_buildings.push(BuildingObs {
                     id: b.id,
@@ -410,6 +435,8 @@ impl Observation {
             if b.player == me {
                 obs.my_buildings.push(own_building(b));
                 obs.my_queues.push(b.queue.iter().copied().collect());
+                obs.my_queue_progress
+                    .push(if b.queue.is_empty() { 0 } else { b.progress });
             } else if !state.hostile(me, b.player) {
                 obs.ally_buildings.push(BuildingObs {
                     id: b.id,
@@ -525,6 +552,7 @@ impl Observation {
             my_units: Vec::new(),
             my_buildings: Vec::new(),
             my_queues: Vec::new(),
+            my_queue_progress: Vec::new(),
             my_queued_units: Vec::new(),
             ally_units: Vec::new(),
             ally_buildings: Vec::new(),
@@ -653,6 +681,94 @@ mod tests {
             },
         ];
         scenario
+    }
+
+    #[test]
+    fn owner_training_progress_is_exact_aligned_and_required_by_the_schema() {
+        let mut state = Scenario::skirmish()
+            .build()
+            .expect("the skirmish scenario builds");
+        let producer = state
+            .buildings()
+            .iter()
+            .find(|building| {
+                building.player == PlayerId(0) && building.kind == BuildingKind::Foundry
+            })
+            .expect("player zero has a Foundry")
+            .id;
+        let foundry = state
+            .building_mut(producer)
+            .expect("the Foundry remains live");
+        foundry.queue.clear();
+        foundry.queue.push_back(UnitKind::Harvester);
+        foundry.progress = 17;
+
+        for observation in [
+            Observation::fog_honest(&state, PlayerId(0)),
+            Observation::omniscient(&state, PlayerId(0)),
+        ] {
+            let index = observation
+                .my_buildings
+                .iter()
+                .position(|building| building.id == producer)
+                .expect("the owner observes its producer");
+            assert_eq!(observation.my_queues[index], vec![UnitKind::Harvester]);
+            assert_eq!(observation.my_queue_progress[index], 17);
+            assert_eq!(observation.own_queue_progress(index), Some(17));
+            assert_eq!(observation.my_buildings.len(), observation.my_queues.len());
+            assert_eq!(
+                observation.my_buildings.len(),
+                observation.my_queue_progress.len()
+            );
+
+            let encoded = serde_json::to_value(&observation).expect("the observation serializes");
+            assert_eq!(
+                serde_json::from_value::<Observation>(encoded.clone())
+                    .expect("the current observation schema round-trips"),
+                observation
+            );
+            let mut obsolete = encoded;
+            obsolete
+                .as_object_mut()
+                .expect("an observation serializes as an object")
+                .remove("my_queue_progress");
+            assert!(
+                serde_json::from_value::<Observation>(obsolete).is_err(),
+                "an older snapshot must not silently invent exact progress"
+            );
+        }
+    }
+
+    #[test]
+    fn hostile_training_progress_never_enters_an_observation() {
+        let control = Scenario::skirmish()
+            .build()
+            .expect("the skirmish scenario builds");
+        let mut variant = control.clone();
+        let hostile_producer = variant
+            .buildings()
+            .iter()
+            .find(|building| {
+                building.player == PlayerId(1) && building.kind == BuildingKind::Foundry
+            })
+            .expect("player one has a Foundry")
+            .id;
+        let foundry = variant
+            .building_mut(hostile_producer)
+            .expect("the hostile Foundry remains live");
+        foundry.queue.push_back(UnitKind::Harvester);
+        foundry.progress = 31;
+
+        assert_eq!(
+            Observation::fog_honest(&control, PlayerId(0)),
+            Observation::fog_honest(&variant, PlayerId(0)),
+            "fog-honest policy input must not expose hostile production intent"
+        );
+        assert_eq!(
+            Observation::omniscient(&control, PlayerId(0)),
+            Observation::omniscient(&variant, PlayerId(0)),
+            "even the complete test view keeps hostile production private"
+        );
     }
 
     #[test]

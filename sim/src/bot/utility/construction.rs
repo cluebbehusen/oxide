@@ -3266,6 +3266,7 @@ mod tests {
             kind: UnitKind::Avalanche,
             tile: frontier,
             hp: UnitKind::Avalanche.stats().max_hp,
+            grounded: false,
             last_seen: obs.tick,
             evidence: crate::bot::intelligence::ContactEvidence::Remembered,
         }];
@@ -3649,6 +3650,7 @@ mod tests {
             kind: UnitKind::Avalanche,
             tile: choke,
             hp: UnitKind::Avalanche.stats().max_hp,
+            grounded: false,
             last_seen: obs.tick,
             evidence: crate::bot::intelligence::ContactEvidence::Remembered,
         }];

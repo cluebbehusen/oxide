@@ -517,6 +517,62 @@ pub(crate) fn rect_adjacent_tiles(
     })
 }
 
+/// Orders production doorsteps in the producer's radial frame around the map.
+/// Mirrored producers have negated radial and candidate rays, preserving both
+/// dot and cross products and therefore selecting mirrored spawn tiles.
+pub(crate) fn spawn_doorstep_key(
+    map_size: (i32, i32),
+    anchor: TilePos,
+    size: (i32, i32),
+    candidate: TilePos,
+) -> (std::cmp::Reverse<i64>, i64) {
+    let center_x = i64::from(anchor.x) * 2 + i64::from(size.0);
+    let center_y = i64::from(anchor.y) * 2 + i64::from(size.1);
+    let radial_x = center_x - i64::from(map_size.0);
+    let radial_y = center_y - i64::from(map_size.1);
+    let candidate_x = i64::from(candidate.x) * 2 + 1 - center_x;
+    let candidate_y = i64::from(candidate.y) * 2 + 1 - center_y;
+    let dot = radial_x * candidate_x + radial_y * candidate_y;
+    let cross = radial_x * candidate_y - radial_y * candidate_x;
+    (std::cmp::Reverse(dot), cross)
+}
+
+/// Whether a group command scans snapped and spread goals in the half-turned
+/// approach frame. Command execution and fog-honest route projection share
+/// this pure calculation so they cannot assign different tiles.
+pub(crate) fn group_spread_scan_reversed(
+    center: TilePos,
+    unit_tiles: impl IntoIterator<Item = TilePos>,
+    foundry: Option<(TilePos, (i32, i32))>,
+    map_size: (i32, i32),
+    player: crate::ids::PlayerId,
+) -> bool {
+    let reversed = |dx: i64, dy: i64| dy < 0 || (dy == 0 && dx < 0);
+    for tile in unit_tiles {
+        let dx = i64::from(center.x) - i64::from(tile.x);
+        let dy = i64::from(center.y) - i64::from(tile.y);
+        if dx != 0 || dy != 0 {
+            return reversed(dx, dy);
+        }
+    }
+
+    if let Some((anchor, (width, height))) = foundry {
+        let dx = i64::from(center.x) * 2 + 1 - (i64::from(anchor.x) * 2 + i64::from(width));
+        let dy = i64::from(center.y) * 2 + 1 - (i64::from(anchor.y) * 2 + i64::from(height));
+        if dx != 0 || dy != 0 {
+            return reversed(dx, dy);
+        }
+    }
+
+    let dx = i64::from(center.x) * 2 + 1 - i64::from(map_size.0);
+    let dy = i64::from(center.y) * 2 + 1 - i64::from(map_size.1);
+    if dx != 0 || dy != 0 {
+        return reversed(dx, dy);
+    }
+
+    player.0 % 2 == 1
+}
+
 /// A doorstep's stable key in the approaching body's local frame.
 ///
 /// The dot and cross products are unchanged by a 180-degree rotation of both

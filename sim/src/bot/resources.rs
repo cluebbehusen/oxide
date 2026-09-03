@@ -11,8 +11,10 @@ use chassis::Tick;
 use chassis::grid::TilePos;
 
 mod ledger;
+mod production;
 
 pub(crate) use ledger::*;
+pub(crate) use production::*;
 
 /// Scrap present in the player's bank at the observation boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,12 +248,13 @@ pub(crate) enum ProducerEgress {
 /// Honest timing evidence for one append-only production claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProductionTiming {
-    /// Earliest tick the unit can be ready, assuming prior current work is as
-    /// advanced as the observation permits.
+    /// Earliest tick the unit can be ready, using exact owner-visible front
+    /// progress when available and otherwise the most favorable honest bound.
     pub(crate) earliest_ready_tick: Tick,
-    /// Latest ready tick if the hidden front-item progress is zero and every
-    /// ground spawn has an open doorstep when needed. This is a conditional
-    /// no-block bound, not a promise that egress will remain available.
+    /// Latest ready tick using exact owner-visible front progress when
+    /// available, otherwise assuming it is zero, and assuming every ground
+    /// spawn has an open doorstep when needed. This is a conditional no-block
+    /// bound, not a promise that egress will remain available.
     pub(crate) no_block_latest_ready_tick: Tick,
     /// Current egress evidence. This is not a promise that a ground unit will
     /// spawn by any finite deadline.
@@ -271,11 +274,15 @@ pub(crate) struct ProducerLane {
     trainable: Vec<UnitKind>,
     /// Observation tick whose command and production phases come next.
     observed_at: Tick,
+    /// Exact owner-visible progress of the current front item. `None` means
+    /// the observation rows were malformed or came from a hand-built fixture,
+    /// so deadline claims must retain the old conservative bound.
+    front_progress: Option<u32>,
     /// Fewest production-phase executions consumed before an appended unit,
     /// accounting for an observed front item that may already be complete.
     earliest_preceding_ticks: Option<Tick>,
-    /// Most production-phase executions consumed by current queue work if the
-    /// hidden front-item progress is zero and every spawn can leave promptly.
+    /// Most production-phase executions consumed by current queue work with
+    /// the available progress evidence and prompt spawn egress.
     no_block_latest_preceding_ticks: Option<Tick>,
     /// Current evidence for the ground spawn ring.
     ground_egress: ProducerEgress,
@@ -304,9 +311,24 @@ impl ProducerLane {
 
     /// Earliest readiness and current egress evidence for a proposed sequence.
     pub(crate) fn production_timing(&self, planned: &[UnitKind]) -> Option<ProductionTiming> {
-        if self.queued.len().saturating_add(planned.len()) > QUEUE_CAP
-            || planned.iter().any(|kind| !self.trainable.contains(kind))
-        {
+        if self.queued.len().saturating_add(planned.len()) > QUEUE_CAP {
+            return None;
+        }
+        self.sequence_timing(planned)
+    }
+
+    /// Conservative readiness for a sequence that may refill queue slots as
+    /// current work completes during a fixed planning horizon.
+    ///
+    /// This is feasibility evidence, not permission to enqueue beyond today's
+    /// open slots. Command lowering continues to use [`Self::production_timing`]
+    /// and the exact slots returned by [`Self::open_slots`].
+    pub(crate) fn horizon_timing(&self, planned: &[UnitKind]) -> Option<ProductionTiming> {
+        self.sequence_timing(planned)
+    }
+
+    fn sequence_timing(&self, planned: &[UnitKind]) -> Option<ProductionTiming> {
+        if planned.iter().any(|kind| !self.trainable.contains(kind)) {
             return None;
         }
         if planned.is_empty() {
@@ -391,13 +413,14 @@ impl ResourceSnapshot {
             .my_buildings
             .iter()
             .zip(&obs.my_queues)
-            .filter(|(building, _)| {
+            .enumerate()
+            .filter(|(_, (building, _))| {
                 building.player == obs.me
                     && building.built
                     && building.hp > 0
                     && !building.kind.tier_stats(building.tier).produces.is_empty()
             })
-            .map(|(building, queue)| {
+            .map(|(index, (building, queue))| {
                 let stats = building.kind.tier_stats(building.tier);
                 let trainable = UnitKind::ALL
                     .into_iter()
@@ -411,14 +434,16 @@ impl ResourceSnapshot {
                     })
                     .collect();
                 let queued = queue.clone();
+                let front_progress = obs.own_queue_progress(index).filter(|_| !queued.is_empty());
                 let (earliest_preceding_ticks, no_block_latest_preceding_ticks) =
-                    producer_preceding_ticks(&queued);
+                    producer_preceding_ticks(&queued, front_progress);
                 ProducerLane {
                     producer: building.id,
                     kind: building.kind,
                     queued,
                     trainable,
                     observed_at: obs.tick,
+                    front_progress,
                     earliest_preceding_ticks,
                     no_block_latest_preceding_ticks,
                     ground_egress: ground_producer_egress(obs, building),
@@ -484,9 +509,23 @@ impl ResourceSnapshot {
     }
 }
 
-fn producer_preceding_ticks(queued: &[UnitKind]) -> (Option<Tick>, Option<Tick>) {
+fn producer_preceding_ticks(
+    queued: &[UnitKind],
+    front_progress: Option<u32>,
+) -> (Option<Tick>, Option<Tick>) {
     if queued.is_empty() {
         return (Some(0), Some(0));
+    }
+    if let Some(progress) = front_progress {
+        let front_ticks = queued[0].stats().train_ticks;
+        let remaining_front = Tick::from(front_ticks.saturating_sub(progress).max(1));
+        let exact = queued
+            .iter()
+            .skip(1)
+            .try_fold(remaining_front, |ticks, kind| {
+                ticks.checked_add(Tick::from(kind.stats().train_ticks))
+            });
+        return (exact, exact);
     }
     let earliest = queued.iter().skip(1).try_fold(1_u64, |ticks, kind| {
         ticks.checked_add(Tick::from(kind.stats().train_ticks))

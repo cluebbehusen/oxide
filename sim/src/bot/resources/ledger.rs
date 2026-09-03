@@ -1775,7 +1775,7 @@ mod tests {
     }
 
     #[test]
-    fn producer_timing_bounds_match_authoritative_empty_and_hidden_front_progress() {
+    fn producer_timing_matches_authoritative_owner_visible_front_progress() {
         let mut base = crate::Scenario::skirmish().build().unwrap();
         base.player_mut(ME).scrap = u32::MAX;
         let producer = base
@@ -1818,9 +1818,17 @@ mod tests {
         }
         let mut just_started = almost_done.clone();
         just_started.building_mut(producer).unwrap().progress = 0;
-        let observed = Observation::omniscient(&almost_done, ME);
-        assert_eq!(observed, Observation::omniscient(&just_started, ME));
-        let timing = ResourceSnapshot::from_observation(&observed)
+        let almost_done_obs = Observation::omniscient(&almost_done, ME);
+        let just_started_obs = Observation::omniscient(&just_started, ME);
+        assert_ne!(almost_done_obs, just_started_obs);
+        let almost_done_timing = ResourceSnapshot::from_observation(&almost_done_obs)
+            .producers
+            .iter()
+            .find(|lane| lane.producer == producer)
+            .unwrap()
+            .production_timing(&[UnitKind::Sentinel])
+            .unwrap();
+        let just_started_timing = ResourceSnapshot::from_observation(&just_started_obs)
             .producers
             .iter()
             .find(|lane| lane.producer == producer)
@@ -1828,10 +1836,94 @@ mod tests {
             .production_timing(&[UnitKind::Sentinel])
             .unwrap();
 
-        let earliest_actual = run_until_trained(&mut almost_done, producer, UnitKind::Sentinel);
-        let latest_actual = run_until_trained(&mut just_started, producer, UnitKind::Sentinel);
-        assert_eq!(timing.earliest_ready_tick, earliest_actual);
-        assert_eq!(timing.no_block_latest_ready_tick, latest_actual);
+        let almost_done_actual = run_until_trained(&mut almost_done, producer, UnitKind::Sentinel);
+        let just_started_actual =
+            run_until_trained(&mut just_started, producer, UnitKind::Sentinel);
+        assert_eq!(almost_done_timing.earliest_ready_tick, almost_done_actual);
+        assert_eq!(
+            almost_done_timing.no_block_latest_ready_tick,
+            almost_done_actual
+        );
+        assert_eq!(just_started_timing.earliest_ready_tick, just_started_actual);
+        assert_eq!(
+            just_started_timing.no_block_latest_ready_tick,
+            just_started_actual
+        );
+    }
+
+    #[test]
+    fn misaligned_queue_progress_falls_back_to_conservative_timing() {
+        let mut obs = observation(0);
+        obs.tick = 100;
+        obs.my_buildings = vec![building(
+            12,
+            BuildingKind::Airworks,
+            TilePos::new(20, 5),
+            true,
+        )];
+        obs.my_queues = vec![vec![UnitKind::Buzzard]];
+        obs.my_queue_progress = vec![12, u32::MAX];
+
+        assert_eq!(obs.own_queue_progress(0), None);
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let timing = resources.producers[0]
+            .production_timing(&[UnitKind::Kestrel])
+            .expect("the valid queue still defines conservative timing");
+        assert_eq!(
+            timing.earliest_ready_tick,
+            obs.tick + Tick::from(UnitKind::Kestrel.stats().train_ticks),
+            "the front item may be one production tick from completion"
+        );
+        assert_eq!(
+            timing.no_block_latest_ready_tick,
+            obs.tick
+                + Tick::from(UnitKind::Buzzard.stats().train_ticks)
+                + Tick::from(UnitKind::Kestrel.stats().train_ticks)
+                - 1,
+            "misaligned progress cannot create an optimistic deadline promise"
+        );
+    }
+
+    #[test]
+    fn impossible_queue_progress_falls_back_without_crediting_empty_queues() {
+        let mut obs = observation(0);
+        obs.tick = 100;
+        obs.my_buildings = vec![building(
+            12,
+            BuildingKind::Airworks,
+            TilePos::new(20, 5),
+            true,
+        )];
+        obs.my_queues = vec![vec![UnitKind::Buzzard]];
+        obs.my_queue_progress = vec![UnitKind::Buzzard.stats().train_ticks + 1];
+
+        assert_eq!(obs.own_queue_progress(0), None);
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let timing = resources.producers[0]
+            .production_timing(&[UnitKind::Kestrel])
+            .expect("the valid queue still defines conservative timing");
+        assert_eq!(
+            timing.earliest_ready_tick,
+            obs.tick + Tick::from(UnitKind::Kestrel.stats().train_ticks)
+        );
+        assert_eq!(
+            timing.no_block_latest_ready_tick,
+            obs.tick
+                + Tick::from(UnitKind::Buzzard.stats().train_ticks)
+                + Tick::from(UnitKind::Kestrel.stats().train_ticks)
+                - 1,
+            "overlong progress cannot create optimistic deadline evidence"
+        );
+
+        obs.my_queues[0].clear();
+        obs.my_queue_progress[0] = 1;
+        assert_eq!(
+            obs.own_queue_progress(0),
+            None,
+            "an empty queue cannot carry production progress"
+        );
+        obs.my_queue_progress[0] = 0;
+        assert_eq!(obs.own_queue_progress(0), Some(0));
     }
 
     #[test]
