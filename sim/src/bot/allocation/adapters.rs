@@ -2,9 +2,10 @@
 
 use super::{
     AllocationConflict, AllocationPersonality, AllocationResult, ClaimBundle, ClaimBundleError,
-    Confidence, ConnectedOffenseKey, DeferrableCapitalClaim, ExecutionSafety, FoundryExpansionKey,
-    ImportedObligation, InvestmentProposal, ObligationClass, ObligationKey, ProducerJobClaim,
-    ProposalCase, ProposalKey, ScheduledProducerJob, StrategicValue, TimeToImpact, Urgency,
+    Confidence, ConnectedOffenseKey, DeferrableCapitalClaim, ExecutionSafety, ForecastClaim,
+    FoundryExpansionKey, ImportedObligation, InvestmentProposal, ObligationClass, ObligationKey,
+    ProducerJobClaim, ProposalCase, ProposalKey, ScheduledProducerJob, StrategicValue,
+    TimeToImpact, Urgency,
 };
 use crate::bot::profile::ResolvedProfile;
 use crate::bot::standing_force::StandingForceProposal;
@@ -93,22 +94,37 @@ pub(crate) fn connected_investment_proposal(
     ))
 }
 
-/// Retains one independently useful standing-force purchase as enqueue-now work.
+/// Retains one independently useful standing-force purchase or bounded wait.
 pub(crate) fn standing_force_investment_proposal(
     proposal: StandingForceProposal,
 ) -> Result<DomainInvestmentProposal, ClaimBundleError> {
     let personality_preference = u16::from(proposal.personality_emphasis());
-    let job = ProducerJobClaim::immediate(
-        proposal.key_kind(),
-        proposal.observed_at(),
-        proposal.ready_before(),
-        proposal.eligible_producers().to_vec(),
-    );
+    let claims = if let Some((through, current_scrap, forecast_scrap)) = proposal.accumulation() {
+        ClaimBundle::new(
+            current_scrap,
+            vec![ForecastClaim {
+                through,
+                amount: forecast_scrap,
+            }],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )?
+    } else {
+        let job = ProducerJobClaim::immediate(
+            proposal.key_kind(),
+            proposal.observed_at(),
+            proposal.ready_before(),
+            proposal.eligible_producers().to_vec(),
+        );
+        ClaimBundle::new(0, Vec::new(), Vec::new(), Vec::new(), Vec::new(), vec![job])?
+    }
+    .with_minimum_residual_scrap(proposal.minimum_residual_scrap());
     Ok(InvestmentProposal::fresh(
         ProposalKey::StandingForce(proposal.key()),
         proposal.case(),
-        ClaimBundle::new(0, Vec::new(), Vec::new(), Vec::new(), Vec::new(), vec![job])?
-            .with_minimum_residual_scrap(proposal.minimum_residual_scrap()),
+        claims,
         DomainPayload::StandingForce(proposal),
     )
     .with_personality_preference(personality_preference))
@@ -656,6 +672,137 @@ mod tests {
                 panic!("the standing-force adapter returned the wrong domain payload");
             }
         }
+    }
+
+    #[test]
+    fn standing_force_adapter_makes_provider_wait_compete_as_capital_not_a_command() {
+        let original = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: NOW,
+            ready_before: DEADLINE,
+            kind: UnitKind::Warden,
+            reason: StandingForceReason::ForceProjection,
+            specialty: Specialty::Support,
+            personality_emphasis: 67,
+            case: ProposalCase {
+                urgency: Urgency::Developmental,
+                confidence: Confidence::Supported,
+                value: StrategicValue::Material,
+                time_to_impact: TimeToImpact::Near,
+                safety: ExecutionSafety::Secure,
+            },
+            eligible_producers: vec![BuildingId(3)],
+        })
+        .with_accumulation(DEADLINE, UnitKind::Sentinel.stats().cost);
+        let proposal = standing_force_investment_proposal(original.clone())
+            .expect("a bounded wait is valid deferrable capital");
+
+        assert!(proposal.claims().producer_jobs().is_empty());
+        assert_eq!(
+            proposal.claims().current_scrap(),
+            UnitKind::Sentinel.stats().cost
+        );
+        assert_eq!(
+            proposal.claims().forecast_scrap(),
+            &[ForecastClaim {
+                through: DEADLINE,
+                amount: UnitKind::Warden
+                    .stats()
+                    .cost
+                    .saturating_sub(UnitKind::Sentinel.stats().cost),
+            }]
+        );
+        assert_eq!(proposal.claims().deferrable_capital(), None);
+        assert!(matches!(
+            proposal.payload(),
+            DomainPayload::StandingForce(payload) if payload == &original
+        ));
+    }
+
+    #[test]
+    fn competing_investment_can_displace_provider_wait_without_hiding_fallback() {
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+        let builder = UnitId(1);
+        let producer = BuildingId(3);
+        let case = ProposalCase {
+            urgency: Urgency::Timely,
+            confidence: Confidence::Supported,
+            value: StrategicValue::Material,
+            time_to_impact: TimeToImpact::Near,
+            safety: ExecutionSafety::Secure,
+        };
+        let wait = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: NOW,
+            ready_before: DEADLINE,
+            kind: UnitKind::Warden,
+            reason: StandingForceReason::ForceProjection,
+            specialty: Specialty::Support,
+            personality_emphasis: 60,
+            case,
+            eligible_producers: vec![producer],
+        })
+        .with_accumulation(DEADLINE, UnitKind::Warden.stats().cost);
+        let fallback = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: NOW,
+            ready_before: DEADLINE,
+            kind: UnitKind::Sentinel,
+            reason: StandingForceReason::ForceProjection,
+            specialty: Specialty::Fortification,
+            personality_emphasis: 60,
+            case,
+            eligible_producers: vec![producer],
+        });
+        let mut proposals = vec![
+            foundry_investment_proposal(foundry(builder, foundry_cost, 0))
+                .expect("the Foundry request adapts"),
+        ];
+        proposals.extend(
+            standing_force_investment_proposals(vec![wait, fallback])
+                .expect("the wait and fallback adapt as alternatives"),
+        );
+        let producer = ProducerPlanningProjection::fixture(
+            producer,
+            NOW,
+            12,
+            NOW,
+            vec![NOW],
+            vec![UnitKind::Sentinel],
+        )
+        .expect("the producer fixture is valid");
+        let result = allocate(
+            &capacity(
+                foundry_cost.saturating_add(UnitKind::Sentinel.stats().cost),
+                vec![builder],
+                vec![BuilderResource {
+                    id: builder,
+                    kind: UnitKind::Harvester,
+                    obligation: None,
+                }],
+                vec![producer],
+            ),
+            Vec::new(),
+            proposals,
+            AllocationPersonality::default(),
+        )
+        .expect("the Foundry and fallback form a feasible portfolio");
+
+        assert!(
+            result
+                .accepted
+                .iter()
+                .any(|proposal| { matches!(proposal.key(), ProposalKey::FoundryExpansion(_)) })
+        );
+        assert!(result.accepted.iter().any(|proposal| {
+            proposal.key()
+                == ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Sentinel))
+        }));
+        assert!(!result.accepted.iter().any(|proposal| {
+            proposal.key()
+                == ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Warden))
+        }));
     }
 
     #[test]

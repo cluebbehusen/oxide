@@ -308,6 +308,10 @@ struct AirPlan {
     /// inventory. This monotonic set prevents completed history from claiming
     /// a later ordinary job of the same kind.
     released_connected_provider_ordinals: Vec<usize>,
+    /// Issued jobs observed behind a completed ground unit that could not
+    /// leave its producer. Their accepted ready ticks are no longer proof that
+    /// the matching queue occurrence completed.
+    delayed_connected_provider_ordinals: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,6 +340,7 @@ impl AirPlan {
             connected_package: Some(package),
             issued_connected_provider_assignments: Vec::new(),
             released_connected_provider_ordinals: Vec::new(),
+            delayed_connected_provider_ordinals: Vec::new(),
         }
     }
 
@@ -356,6 +361,7 @@ impl AirPlan {
             connected_package: None,
             issued_connected_provider_assignments: Vec::new(),
             released_connected_provider_ordinals: Vec::new(),
+            delayed_connected_provider_ordinals: Vec::new(),
         }
     }
 
@@ -456,6 +462,7 @@ impl AirPlan {
             connected_package: None,
             issued_connected_provider_assignments: Vec::new(),
             released_connected_provider_ordinals: Vec::new(),
+            delayed_connected_provider_ordinals: Vec::new(),
         }
     }
 
@@ -2884,6 +2891,14 @@ impl StrategicPlanner {
                 None
             }
         };
+        let delayed_connected_provider_ordinals = match &proposal.origin {
+            ConnectedProposalOrigin::Active { active } => {
+                Some(active.plan.delayed_connected_provider_ordinals.clone())
+            }
+            ConnectedProposalOrigin::Idle { .. } | ConnectedProposalOrigin::Remembered { .. } => {
+                None
+            }
+        };
         if !revises_active
             && self
                 .air
@@ -2912,6 +2927,9 @@ impl StrategicPlanner {
         }
         if let Some(released) = released_connected_provider_ordinals {
             selected.active.plan.released_connected_provider_ordinals = released;
+        }
+        if let Some(delayed) = delayed_connected_provider_ordinals {
+            selected.active.plan.delayed_connected_provider_ordinals = delayed;
         }
         if selected
             .active
@@ -3006,9 +3024,27 @@ impl StrategicPlanner {
                 .get_mut(&(assignment.producer, assignment.kind))
                 .filter(|count| **count > 0);
             let command_boundary = assignment.timing.enqueued_at == obs.tick;
+            let queue_blocked = producer_queue_is_blocked(obs, assignment.producer);
+            if queued_count.is_some()
+                && obs.tick >= assignment.timing.ready_at
+                && queue_blocked
+                && let Err(index) = active
+                    .plan
+                    .delayed_connected_provider_ordinals
+                    .binary_search(&assignment.request_ordinal)
+            {
+                active
+                    .plan
+                    .delayed_connected_provider_ordinals
+                    .insert(index, assignment.request_ordinal);
+            }
+            let delayed = active
+                .plan
+                .delayed_connected_provider_ordinals
+                .binary_search(&assignment.request_ordinal)
+                .is_ok();
             let still_owned = (command_boundary || queued_count.is_some())
-                && (obs.tick <= assignment.timing.ready_at
-                    || producer_queue_is_blocked(obs, assignment.producer));
+                && (obs.tick <= assignment.timing.ready_at || queue_blocked || delayed);
             if !still_owned {
                 released.push(assignment.request_ordinal);
                 continue;
@@ -5527,9 +5563,9 @@ fn suppression_targets_reachable(
     public_map: Option<&PublicMapBriefing>,
 ) -> bool {
     targets.iter().all(|target| {
-        suppression_firing_stands(routes, obs, origin, *target, intel, public_map)
-            .next()
-            .is_some()
+        legal_suppression_stands(obs, origin, *target, intel, public_map)
+            .into_iter()
+            .any(|stand| routes.ground_command_reaches(origin.tile, stand))
     })
 }
 
@@ -5614,12 +5650,24 @@ fn suppression_firing_stands(
     intel: &StrategicIntelligence,
     public_map: Option<&PublicMapBriefing>,
 ) -> impl Iterator<Item = TilePos> {
+    let mut stands = legal_suppression_stands(obs, origin, target, intel, public_map);
+    stands.retain(|stand| routes.ground_command_reaches(origin.tile, *stand));
+    stands.into_iter()
+}
+
+fn legal_suppression_stands(
+    obs: &Observation,
+    origin: SuppressionOrigin,
+    target: Target,
+    intel: &StrategicIntelligence,
+    public_map: Option<&PublicMapBriefing>,
+) -> Vec<TilePos> {
     let mut stands = Vec::new();
     let Some(weapon) = suppression_weapon(origin.kind) else {
-        return stands.into_iter();
+        return stands;
     };
     let Some(geometry) = suppression_target_geometry(intel, target) else {
-        return stands.into_iter();
+        return stands;
     };
     let (near, far) = geometry.tile_bounds();
     let radius = weapon.range.ceil().to_num::<i32>();
@@ -5627,7 +5675,6 @@ fn suppression_firing_stands(
         for x in near.x.saturating_sub(radius)..=far.x.saturating_add(radius) {
             let stand = TilePos::new(x, y);
             if !public_ground_open(obs, stand, public_map)
-                || !routes.ground_command_reaches(origin.tile, stand)
                 || !suppression_shot_is_legal(obs, public_map, weapon, stand, geometry)
             {
                 continue;
@@ -5636,7 +5683,7 @@ fn suppression_firing_stands(
         }
     }
     stands.sort_unstable_by_key(|stand| (stand.chebyshev(origin.tile), stand.y, stand.x));
-    stands.into_iter()
+    stands
 }
 
 fn suppression_shot_is_legal(
@@ -8165,6 +8212,14 @@ mod tests {
                 .iter()
                 .any(|proposal| proposal.reason() == StandingForceReason::SiegePressure),
             "a blocked operation-owned Bombard cannot satisfy ordinary siege demand"
+        );
+
+        observation.tick += 1;
+        observation.my_queue_progress[2] = 1;
+        assert_eq!(
+            planner.issued_connected_production_assignments(&observation),
+            vec![assignment],
+            "clearing the egress cannot release a delayed paid job while it still occupies the queue"
         );
 
         observation.tick += 1;

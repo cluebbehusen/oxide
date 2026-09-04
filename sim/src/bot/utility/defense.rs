@@ -743,30 +743,29 @@ impl UtilityPolicy {
                 }
                 let placement = profile.footprint(anchor);
                 let doorsteps = building_doorsteps(ground, anchor, placement.size);
-                let builder_routes: Vec<_> = builders
-                    .iter()
-                    .copied()
-                    .filter_map(|builder| {
-                        shortest_path_between(
+                let mut ordered_builders = builders.to_vec();
+                ordered_builders
+                    .sort_unstable_by_key(|builder| (builder.tile.manhattan(anchor), builder.id));
+                let (builder, builder_travel) =
+                    ordered_builders.into_iter().find_map(|builder| {
+                        let (_, _, path) = shortest_path_between(
                             ground,
                             &[builder.tile],
                             &doorsteps,
                             Some(placement),
                             DefenseDomain::Ground,
-                        )
-                        .map(|(_, _, path)| (builder, path_cost(&path)))
-                    })
-                    .collect();
-                let mut safe_builders: Vec<_> =
-                    builder_routes.iter().map(|(builder, _)| *builder).collect();
-                let builder = self.safe_implicit_builder(
-                    obs,
-                    kind,
-                    anchor,
-                    &mut safe_builders,
-                    &danger,
-                    Some(briefing),
-                )?;
+                        )?;
+                        let mut candidate = [builder];
+                        (self.safe_implicit_builder(
+                            obs,
+                            kind,
+                            anchor,
+                            &mut candidate,
+                            &danger,
+                            Some(briefing),
+                        ) == Some(builder.id))
+                        .then(|| (builder.id, path_cost(&path)))
+                    })?;
                 let resource_detour_limit = (profile.kind == BuildingKind::Barricade)
                     .then_some(MAX_BARRICADE_RESOURCE_DETOUR_COST);
                 if !scrap_access_survives(ground, assets, placement, resource_detour_limit) {
@@ -795,10 +794,6 @@ impl UtilityPolicy {
                 if coverage.new == 0 && coverage.reinforced == 0 {
                     return None;
                 }
-                let builder_travel = builder_routes
-                    .iter()
-                    .find(|(unit, _)| unit.id == builder)
-                    .map_or(u32::MAX, |(_, cost)| *cost);
                 let threat_distance = origins
                     .iter()
                     .map(|origin| origin.anchor.manhattan(anchor))
@@ -1486,6 +1481,13 @@ fn operationally_supported_approaches(
         .enumerate()
         .filter_map(|(index, asset)| {
             let goals = asset.shape.approach_tiles(ground, DefenseDomain::Ground);
+            if !doorsteps.iter().any(|start| {
+                goals
+                    .iter()
+                    .any(|goal| start.chebyshev(*goal) <= DEFENSE_RADIUS)
+            }) {
+                return None;
+            }
             shortest_path_between(
                 ground,
                 &doorsteps,

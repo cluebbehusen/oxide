@@ -139,7 +139,7 @@ pub(crate) enum StandingForceReason {
     ForceProjection,
 }
 
-/// One independently useful, enqueue-now standing-force request.
+/// One independently useful standing-force purchase or bounded accumulation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StandingForceProposal {
     observed_at: Tick,
@@ -152,6 +152,17 @@ pub(crate) struct StandingForceProposal {
     case: ProposalCase,
     eligible_producers: Vec<BuildingId>,
     minimum_residual_scrap: u32,
+    funding: StandingForceFunding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StandingForceFunding {
+    Immediate,
+    Accumulate {
+        through: Tick,
+        current_scrap: u32,
+        forecast_scrap: u32,
+    },
 }
 
 #[cfg(test)]
@@ -202,7 +213,7 @@ impl StandingForceProposal {
         self.reason
     }
 
-    /// Observation tick on which this enqueue-now request was derived.
+    /// Observation tick on which this alternative was derived.
     pub(crate) const fn observed_at(&self) -> Tick {
         self.observed_at
     }
@@ -222,9 +233,33 @@ impl StandingForceProposal {
         self.minimum_residual_scrap
     }
 
+    /// Capital-only bounded wait that competes in shared allocation without
+    /// making its future provider an enqueue-now command.
+    pub(crate) const fn accumulation(&self) -> Option<(Tick, u32, u32)> {
+        match self.funding {
+            StandingForceFunding::Immediate => None,
+            StandingForceFunding::Accumulate {
+                through,
+                current_scrap,
+                forecast_scrap,
+            } => Some((through, current_scrap, forecast_scrap)),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) const fn with_minimum_residual_scrap(mut self, amount: u32) -> Self {
         self.minimum_residual_scrap = amount;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_accumulation(mut self, through: Tick, current_scrap: u32) -> Self {
+        let current_scrap = current_scrap.min(self.kind.stats().cost);
+        self.funding = StandingForceFunding::Accumulate {
+            through,
+            current_scrap,
+            forecast_scrap: self.kind.stats().cost.saturating_sub(current_scrap),
+        };
         self
     }
 
@@ -251,6 +286,7 @@ impl StandingForceProposal {
             case,
             eligible_producers,
             minimum_residual_scrap: 0,
+            funding: StandingForceFunding::Immediate,
         }
     }
 }
@@ -520,6 +556,7 @@ struct DemandCandidate {
     unmet: u32,
     personality: u8,
     provider_value: u128,
+    funding: StandingForceFunding,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -833,6 +870,7 @@ pub(crate) fn derive_standing_force_proposals(
     let current_scrap = resources.current_scrap().amount();
     candidates.retain(|candidate| {
         current_scrap.saturating_sub(context.minimum_residual_scrap) >= candidate.kind.stats().cost
+            || matches!(candidate.funding, StandingForceFunding::Accumulate { .. })
     });
 
     let mut best_by_service =
@@ -965,6 +1003,7 @@ impl StandingForceProposal {
             case: candidate.case,
             eligible_producers: candidate.eligible_producers,
             minimum_residual_scrap,
+            funding: candidate.funding,
         }
     }
 }
@@ -1208,6 +1247,7 @@ fn candidates_for_kinds(
             provider_value: usefulness(kind)
                 .saturating_mul(2)
                 .saturating_add(u128::from(cushion >= kind.stats().cost)),
+            funding: StandingForceFunding::Immediate,
         });
     }
     candidates
@@ -1289,24 +1329,25 @@ fn useful_provider_capacity(full: u64, missing: u64, reason: StandingForceReason
     covered.saturating_add(durable_headroom)
 }
 
-/// Withholds one need's fallback only when completed income can reach a
-/// strictly better completed-producer option within the two alternatives'
-/// exact production horizons. Other needs remain eligible, and no forecast
-/// amount is ever emitted as a spendable proposal.
+/// Adds a capital-only wait beside one need's affordable fallback when
+/// completed income can reach a strictly better completed-producer option
+/// within the two alternatives' exact production horizons. Shared allocation
+/// decides whether the wait or fallback survives alongside other work.
 fn apply_bounded_provider_accumulation(
     obs: &Observation,
     resources: &ResourceSnapshot,
     context: StandingForceContext<'_>,
-    candidates: &mut Vec<DemandCandidate>,
+    candidates: &mut [DemandCandidate],
 ) {
     let current_scrap = resources.current_scrap().amount();
     let affordable = |candidate: &DemandCandidate| {
         current_scrap.saturating_sub(context.minimum_residual_scrap) >= candidate.kind.stats().cost
     };
-    let held_demands = candidates
+    let held_current = candidates
         .iter()
-        .filter(|candidate| affordable(candidate))
-        .filter(|candidate| {
+        .enumerate()
+        .filter(|(_, candidate)| affordable(candidate))
+        .filter(|(_, candidate)| {
             !candidates.iter().any(|other| {
                 other.reason == candidate.reason
                     && other.service == candidate.service
@@ -1314,11 +1355,11 @@ fn apply_bounded_provider_accumulation(
                     && candidate_rank(other) > candidate_rank(candidate)
             })
         })
-        .filter(|current_best| {
+        .filter(|(_, current_best)| {
             current_best.reason != StandingForceReason::CoreRecovery
                 && current_best.case.urgency != Urgency::Pressing
         })
-        .filter(|current_best| {
+        .filter(|(_, current_best)| {
             candidates
                 .iter()
                 .filter(|candidate| {
@@ -1343,12 +1384,50 @@ fn apply_bounded_provider_accumulation(
                         >= candidate.kind.stats().cost
                 })
         })
-        .map(|candidate| (candidate.reason, candidate.service))
+        .map(|(index, _)| index)
         .collect::<Vec<_>>();
 
-    candidates.retain(|candidate| {
-        !affordable(candidate) || !held_demands.contains(&(candidate.reason, candidate.service))
-    });
+    for current_index in held_current {
+        let current_best = &candidates[current_index];
+        let selected = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                candidate.reason == current_best.reason && candidate.service == current_best.service
+            })
+            .filter(|(_, candidate)| !affordable(candidate))
+            .filter(|(_, candidate)| candidate.provider_value > current_best.provider_value)
+            .filter(|(_, candidate)| candidate_rank(candidate) > candidate_rank(current_best))
+            .filter_map(|(index, candidate)| {
+                let fallback_delay = current_best.ready_before.saturating_sub(obs.tick);
+                let through = candidate.ready_before.saturating_add(fallback_delay);
+                (current_scrap
+                    .saturating_add(resources.forecast().income_through(through).amount())
+                    .saturating_sub(context.minimum_residual_scrap)
+                    >= candidate.kind.stats().cost)
+                    .then_some((index, through))
+            })
+            .min_by(|(left, left_through), (right, right_through)| {
+                candidates[*left]
+                    .kind
+                    .stats()
+                    .cost
+                    .cmp(&candidates[*right].kind.stats().cost)
+                    .then_with(|| left_through.cmp(right_through))
+                    .then_with(|| left.cmp(right))
+            });
+        if let Some((index, through)) = selected {
+            let cost = candidates[index].kind.stats().cost;
+            let current_scrap = current_scrap
+                .saturating_sub(context.minimum_residual_scrap)
+                .min(cost);
+            candidates[index].funding = StandingForceFunding::Accumulate {
+                through,
+                current_scrap,
+                forecast_scrap: cost.saturating_sub(current_scrap),
+            };
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2457,17 +2536,23 @@ mod tests {
             None,
         );
 
-        assert!(
-            derive_all(
-                &obs,
-                &StrategicIntelligence::new(),
-                &profile,
-                tuning,
-                context,
-            )
-            .is_empty(),
-            "forecast proves a bounded wait is worthwhile but never creates an unaffordable command"
+        let alternatives = derive_all(
+            &obs,
+            &StrategicIntelligence::new(),
+            &profile,
+            tuning,
+            context,
         );
+        let wait = alternatives
+            .iter()
+            .find(|proposal| proposal.key_kind() == UnitKind::Warden)
+            .expect("forecast should expose the bounded higher-tier wait to allocation");
+        assert!(wait.accumulation().is_some());
+        let fallback = alternatives
+            .iter()
+            .find(|proposal| proposal.key_kind() == UnitKind::Sentinel)
+            .expect("the allocator must retain the affordable fallback as an alternative");
+        assert_eq!(fallback.accumulation(), None);
 
         obs.tick += 1;
         obs.scrap = UnitKind::Warden.stats().cost;
@@ -2481,6 +2566,7 @@ mod tests {
         .expect("the saved current bank can buy the preferred provider normally");
         assert_eq!(proposal.reason(), StandingForceReason::ForceProjection);
         assert_eq!(proposal.key_kind(), UnitKind::Warden);
+        assert_eq!(proposal.accumulation(), None);
         assert_eq!(proposal.eligible_producers(), &[BuildingId(2)]);
     }
 
@@ -2575,17 +2661,21 @@ mod tests {
         let profile = profile(10, 10, 10, 100);
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
 
-        let proposal = derive(
+        let alternatives = derive_all(
             &obs,
             &intelligence,
             &profile,
             tuning,
             StandingForceContext::new(&[], &[]),
-        )
-        .expect("line saving must leave a distinct affordable air counter available");
+        );
+        let proposal = alternatives
+            .iter()
+            .find(|proposal| proposal.reason() == StandingForceReason::AirDefense)
+            .expect("line saving must leave a distinct affordable air counter available");
 
         assert_eq!(proposal.reason(), StandingForceReason::AirDefense);
         assert_eq!(proposal.key_kind(), UnitKind::Flakhound);
+        assert_eq!(proposal.accumulation(), None);
     }
 
     #[test]

@@ -2340,23 +2340,46 @@ fn completed_income_accumulates_into_the_better_shipped_standing_provider() {
         mature_standing_accumulation_scenario(UnitKind::Sentinel.stats().cost, true, false);
     let (mut state, mut brain) = prepared_mature_standing_force(&scenario);
     let held = brain.act_traced(&state);
-    assert!(held.commands.iter().all(|command| !matches!(
-        command.command,
-        Command::Train {
-            kind: UnitKind::Sentinel,
-            ..
-        }
-    )));
     assert!(
-        held.trace
-            .as_ref()
-            .expect("the held decision is traced")
-            .allocation
-            .proposals
-            .entries
-            .iter()
-            .all(|proposal| !matches!(proposal.key, ProposalKeyTrace::StandingForce { .. }))
+        held.commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )),
+        "commands={:?}",
+        held.commands,
     );
+    let held_trace = held.trace.as_ref().expect("the held decision is traced");
+    let wait = held_trace
+        .allocation
+        .proposals
+        .entries
+        .iter()
+        .find(|proposal| {
+            matches!(
+                proposal.key,
+                ProposalKeyTrace::StandingForce {
+                    kind: UnitKind::Warden,
+                    ..
+                }
+            )
+        })
+        .expect("the bounded Warden wait must participate in shared allocation");
+    assert_eq!(wait.disposition, ProposalDispositionTrace::Accepted);
+    assert_eq!(wait.claims.current_scrap, UnitKind::Sentinel.stats().cost);
+    assert_eq!(
+        wait.claims.forecast_scrap_total,
+        u128::from(
+            UnitKind::Warden
+                .stats()
+                .cost
+                .saturating_sub(UnitKind::Sentinel.stats().cost)
+        )
+    );
+    assert_eq!(wait.claims.deferrable_capital, None);
+    assert!(wait.claims.producer_jobs.entries.is_empty());
 
     let started_at = state.current_tick();
     let mut warden_orders = 0_usize;
@@ -4212,12 +4235,6 @@ fn mature_standing_accumulation_scenario(
         x: 35 + index,
         y: 20,
     }));
-    scenario.units.push(UnitSpec {
-        player: 0,
-        kind: UnitKind::Kestrel,
-        x: 70,
-        y: 17,
-    });
     scenario
 }
 

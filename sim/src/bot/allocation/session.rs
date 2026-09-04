@@ -212,6 +212,22 @@ fn merged_production_commitments(
         .collect()
 }
 
+fn residual_current_after_obligations(
+    resources: &ResourceSnapshot,
+    obligations: &[ImportedObligation],
+    horizon: Tick,
+    cadence: Tick,
+) -> Option<u32> {
+    let mut allocation = CrossDomainAllocation::new(resources, horizon, cadence).ok()?;
+    for obligation in obligations.iter().cloned() {
+        allocation.import(obligation);
+    }
+    allocation
+        .resolve(AllocationPersonality::default(), None)
+        .ok()
+        .map(|settlement| settlement.residual_current_scrap())
+}
+
 /// Planner mutations made before the shared allocation verdict.
 ///
 /// Decisions are values, while the original planner snapshots provide the
@@ -2195,6 +2211,21 @@ impl<'a> AllocationSession<'a> {
                     let allocatable_voluntary_scrap_guard = prepared
                         .voluntary_scrap_guard
                         .min(prepared.resources.current_scrap().amount());
+                    let active_revision_voluntary_scrap_guard = prepared
+                        .fresh_connected
+                        .as_ref()
+                        .filter(|proposal| proposal.revises_active_operation())
+                        .and_then(|_| {
+                            residual_current_after_obligations(
+                                &prepared.resources,
+                                &prepared.obligations,
+                                prepared.allocation_horizon,
+                                self.context.dials.cadence,
+                            )
+                        })
+                        .map_or(allocatable_voluntary_scrap_guard, |residual| {
+                            residual.min(allocatable_voluntary_scrap_guard)
+                        });
                     for obligation in prepared.obligations.iter().cloned() {
                         allocation.import(obligation);
                     }
@@ -2216,8 +2247,12 @@ impl<'a> AllocationSession<'a> {
                     }
                     if let Some(proposal) = prepared.fresh_connected.take() {
                         if proposal.revises_active_operation() {
-                            allocation
-                                .offer(active_connected_revision_investment_proposal(proposal));
+                            allocation.offer(
+                                active_connected_revision_investment_proposal(proposal)
+                                    .with_voluntary_scrap_guard(
+                                        active_revision_voluntary_scrap_guard,
+                                    ),
+                            );
                         } else {
                             match connected_investment_proposal(proposal) {
                                 Ok(proposal) => {
@@ -2379,11 +2414,12 @@ impl<'a> AllocationSession<'a> {
         );
         self.commit_fresh_foundry(prepared, &mut payloads, &mut effects, allocation_ok);
         if let Some(standing_force) = payloads.take_standing_force() {
-            debug_assert!(producer_schedule.iter().any(|job| {
+            let scheduled = producer_schedule.iter().any(|job| {
                 job.owner == ClaimOwner::Proposal(ProposalKey::StandingForce(standing_force.key()))
                     && job.enqueued_at == self.context.observation.tick
                     && job.kind == standing_force.key_kind()
-            }));
+            });
+            debug_assert_eq!(scheduled, standing_force.accumulation().is_none());
         }
         effects
     }
@@ -2729,7 +2765,9 @@ fn standing_force_with_voluntary_guard(
         })
     ) {
         proposal.satisfies_voluntary_scrap_guard_within(SHALLOW_QUEUE_DEPTH)
-    } else if proposal.case().urgency == Urgency::Pressing {
+    } else if proposal.claims().current_scrap() >= voluntary_scrap_guard
+        || proposal.case().urgency == Urgency::Pressing
+    {
         proposal
     } else {
         proposal.with_voluntary_scrap_guard(voluntary_scrap_guard)
@@ -5985,13 +6023,26 @@ mod tests {
                 .as_mut()
                 .expect("the active operation remains installed")
                 .issued_connected_production_assignments(&observation),
+            vec![bombard],
+            "a delayed paid Bombard remains owned until its queue occurrence disappears"
+        );
+
+        observation.tick = observation.tick.saturating_add(12);
+        observation.my_queues[producer_index].clear();
+        observation.my_queue_progress[producer_index] = 0;
+        assert_eq!(
+            strategy
+                .as_mut()
+                .expect("the active operation remains installed")
+                .issued_connected_production_assignments(&observation),
             Vec::new(),
-            "the observed progressing Bombard proves the paid queue occurrence left"
+            "observing the paid occurrence leave the queue releases its ownership"
         );
 
         observation.tick = observation
             .tick
             .saturating_add(Tick::from(UnitKind::Bombard.stats().train_ticks));
+        observation.my_queues[producer_index] = vec![UnitKind::Bombard];
         observation.my_queue_progress[producer_index] = UnitKind::Bombard.stats().train_ticks;
         policy = UtilityPolicy::new();
         let later_blocked = run_connected_session(&observation, &mut policy, &mut strategy);
@@ -6362,6 +6413,125 @@ mod tests {
                 })
                 .collect::<Vec<_>>(),
             "a compatible Foundry cannot shift accepted connected jobs while the revision adds new marginal work"
+        );
+    }
+
+    #[test]
+    fn active_connected_revision_marginal_preserves_the_voluntary_scrap_guard() {
+        const HOME: TilePos = TilePos::new(3, 10);
+        let guard = UnitKind::Sentinel.stats().cost;
+        let marginal_kind = UnitKind::Kestrel;
+        let mut observation = connected_observation(120, marginal_kind.stats().cost);
+        observation.my_queues.iter_mut().for_each(Vec::clear);
+        observation.my_queue_progress.fill(0);
+        let deadline = observation
+            .tick
+            .saturating_add(Tick::from(marginal_kind.stats().train_ticks))
+            .saturating_add(1);
+        let proposal = FreshConnectedProposal::fixture(FreshConnectedProposalFixture {
+            objective: BuildingId(700),
+            anchor: TilePos::new(22, 15),
+            deadline,
+            case: ConnectedOpportunityCase::fixture(
+                ConnectedUrgency::Timely,
+                ConnectedConfidence::Current,
+                ConnectedStrategicValue::Material,
+                ConnectedTimeToImpact::Near,
+                ConnectedExecutionSafety::Managed,
+            ),
+            minimum_claims: ConnectedOffenseClaims::fixture(Vec::new(), Vec::new()),
+            marginal_additions: vec![ConnectedOffenseClaims::fixture(
+                Vec::new(),
+                vec![ConnectedProviderJob::fixture(
+                    marginal_kind,
+                    observation.tick,
+                    deadline,
+                    vec![BuildingId(12)],
+                )],
+            )],
+            protected_current_scrap: 0,
+            protected_forecast_scrap: 0,
+        })
+        .into_active_revision_fixture();
+        let key = ConnectedOffenseKey {
+            objective: proposal.objective(),
+            anchor: proposal.anchor(),
+        };
+
+        let profile = prime_profile();
+        let tuning = DifficultyTuning::for_level(profile.difficulty);
+        let dials = Dials::scripted(&profile, tuning);
+        let briefing = connected_briefing(&observation);
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(&observation);
+        let mut policy = UtilityPolicy::new();
+        let original_policy = policy.clone();
+        let mut strategy = None;
+        let mut lifts = None;
+        let mut team = None;
+        let mut raids = None;
+        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+        let mut input = prepared(&observation, None);
+        input.fresh_connected = Some(proposal);
+        input.standing_force = StandingForcePreparation::ConnectedContexts(vec![
+            ContextualStandingForce {
+                context: ConnectedPortfolioContext::Selected {
+                    key,
+                    marginal_depth: 0,
+                },
+                proposals: Vec::new(),
+            },
+            ContextualStandingForce {
+                context: ConnectedPortfolioContext::Selected {
+                    key,
+                    marginal_depth: 1,
+                },
+                proposals: Vec::new(),
+            },
+        ]);
+        input.voluntary_scrap_guard = guard;
+        input.allocation_horizon = deadline;
+        let mut session = AllocationSession::new(
+            AllocationSessionContext {
+                dials: &dials,
+                profile: &profile,
+                tuning,
+                observation: &observation,
+                home: HOME,
+                public_map: &briefing,
+                orientation: Orientation::for_home(&observation, HOME),
+                intelligence: &intelligence,
+                enlisted: &[],
+                lift_support: None,
+            },
+            AllocationParticipants {
+                policy: &mut policy,
+                strategy: &mut strategy,
+                lifts: &mut lifts,
+                team: &mut team,
+                raids: &mut raids,
+            },
+            advanced(snapshots),
+            None,
+        );
+        let resolved = session.resolve(
+            input,
+            CommitSnapshots {
+                policy: original_policy,
+            },
+        );
+        let settlement = resolved
+            .settlement
+            .expect("the guarded active revision has a feasible minimum context");
+
+        assert!(settlement.producer_schedule().is_empty());
+        assert_eq!(
+            settlement.residual_current_scrap(),
+            marginal_kind.stats().cost
+        );
+        assert!(
+            !settlement.voluntary_scrap_guard_satisfied(),
+            "the empty active minimum cannot discharge the shallow reserve"
         );
     }
 

@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-04T07:35:32
+updated: 2026-09-04T10:34:04
 ---
 
 # Scripted Bot Strategic Reset
@@ -308,6 +308,16 @@ without arbitrary controller caps.
     production stayed active, its training commands were accepted, available
     higher tiers dominated late production, and the 2v2 command log repeated
     byte for byte; Prime strength calibration remains later work.
+  - Closed three adversarial review gaps: delayed connected purchases stay
+    operation-owned until the observed queue occurrence leaves; active revisions
+    preserve only the current scrap guard left after mandatory work; and bounded
+    higher-tier waits now claim current and forecast capital inside shared
+    allocation while their affordable fallback remains selectable.
+  - Investigated the coverage regression with per-binary timing and live process
+    samples. Eager firing-stand and defense-placement route searches made the
+    scripted-bot binary take 1,617 seconds under LLVM instrumentation; exact
+    early exits and geometric pruning reduced the same full binary to 373
+    seconds, near the previous slice's 334-second baseline.
 - [ ] 6. Migrate defensive spending to opportunity-scaled investment while
       preserving strategic placement.
   - Scale defense from exposed value, credible current threats, existing

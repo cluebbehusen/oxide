@@ -507,13 +507,16 @@ only when public terrain and observed dynamic blockers let them serve that
 target, preserving independent same-kind alternatives on disconnected fronts.
 The domain retains useful tier-one providers while allowing higher-tier line,
 siege, anti-air, and support units to substitute when their role, route, cost,
-and readiness fit better. Each alternative is current-funded, enqueue-now work
-through one completed producer; forecast income cannot make an unaffordable
-purchase legal. For a non-urgent need, completed recurring income may justify a
-bounded wait for a strictly better unlocked provider. Core recovery and current
-threats never wait, and accumulation for one need does not suppress an
-affordable response to another. The shared allocator may select at most one such
-alternative per cadence and preserves its exact producer through lowering.
+and readiness fit better. Immediate alternatives are current-funded, enqueue-now
+work through one completed producer; forecast income cannot make an unaffordable
+command legal. For a non-urgent need, completed recurring income may add a
+capital-only bounded wait for a strictly better unlocked provider beside the
+affordable immediate fallback. The wait claims its exact current and forecast
+funding in shared allocation, so competing work can displace it without hiding
+the fallback. Core recovery and current threats never wait, and accumulation for
+one need does not suppress an affordable response to another. The shared
+allocator may select at most one such alternative per cadence and preserves an
+immediate purchase's exact producer through lowering.
 
 When a fresh Connected proposal exists, the session derives separate Standing
 proposal sets for Connected absence, its minimum, and every cumulative marginal.

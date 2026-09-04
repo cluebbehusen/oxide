@@ -25,11 +25,12 @@ an ordinary command source rather than a separate ruleset.
   route-local standing-force alternatives across shared scrap, builders, sites,
   units, and producer timing. Connected minimum and marginal contexts account
   for their exact live and paid queue ownership before ordinary demand is
-  derived. Non-urgent standing demand may wait for a strictly better unlocked
-  provider within a bounded production horizon, but forecast income never funds
-  a command. Current-threat emergency defense is imported as exact survival
-  work, and admitted island-air work advances through the same transaction.
-  Accepted domain payloads keep their exact choices; compatible work may proceed
+  derived. Non-urgent standing demand may offer a capital-only wait for a
+  strictly better unlocked provider beside its affordable fallback. Both compete
+  with other work in shared allocation, and forecast income never funds a
+  command. Current-threat emergency defense is imported as exact survival work,
+  and admitted island-air work advances through the same transaction. Accepted
+  domain payloads keep their exact choices; compatible work may proceed
   together, while unmigrated planners and utility use only the residual
   capacity. Connected air-and-siege operations derive opportunity-scaled
   reconnaissance, suppression, direct strike, and current-visible

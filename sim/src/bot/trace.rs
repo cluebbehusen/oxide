@@ -846,7 +846,7 @@ pub enum ProposalKeyTrace {
         /// Current primary target footprint anchor.
         anchor: TilePos,
     },
-    /// One immediate standing-force purchase.
+    /// One standing-force purchase or capital-only bounded wait.
     StandingForce {
         /// Exact unit kind selected by the standing-force domain.
         kind: UnitKind,
