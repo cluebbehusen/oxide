@@ -27,7 +27,7 @@ from tools.production_sprite_sources.ground_base import (
 FERROUS = FACTIONS["ferrous"]
 CUPRIC = FACTIONS["cupric"]
 APPROVED_SOURCE_RGBA_SHA256 = (
-    "1b1e82c2b2291aceb5028c905d2acfed578809fab162dd2c171ca64c4c39c318"
+    "636200c22ed9904836b411eb9a7435a8344a492616bd61120ef9649eaa29d7b7"
 )
 _EXPORTED_SEQUENCE_INDICES = (0, 1, 2, 4, 5, 6, 7)
 _REVIEW_FRAME_INDICES = (0, 1, 2, 0, 3, 4, 5, 6)
@@ -277,7 +277,7 @@ def _muzzle(draw: ImageDraw.ImageDraw, x: int, y: int, state: str) -> None:
         return
     _polygon(
         draw,
-        [(x, y - 6), (x - 3, y - 1), (x, y), (x + 3, y - 1)],
+        [(x, y - 4), (x - 3, y - 1), (x, y), (x + 3, y - 1)],
         SCRAP_LIGHT,
         SCRAP_DARK,
         1,
@@ -367,13 +367,13 @@ def darter_sequence() -> GroundUnitSequence:
             _darter_needle(0, "ready"),
             170,
             "anticipation",
-            "shear_wings_close",
+            "forward_needle_arms",
         ),
         GroundUnitFrame(
             _darter_needle(0, "fire"),
             100,
             "attack",
-            "damage+shear_strike",
+            "damage+forward_needle_report",
             logical_damage=True,
             report_count=1,
             recoil_px=3,
@@ -382,7 +382,7 @@ def darter_sequence() -> GroundUnitSequence:
             _darter_needle(0, "recover"),
             170,
             "recovery",
-            "shear_wings_reopen",
+            "forward_needle_recovers",
             recoil_px=1,
         ),
         GroundUnitFrame(
@@ -394,7 +394,7 @@ def darter_sequence() -> GroundUnitSequence:
         title="Darter / Needle Strafe Skiff",
         mechanism="sequenced engine pods driving one narrow forward striker",
         mechanism_box=(8, 3, 56, 57),
-        attack_contract="one physical strike and one logical damage event",
+        attack_contract="one physical forward-needle report and one logical damage event",
         frames=frames,
     )
 

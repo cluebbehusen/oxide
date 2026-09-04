@@ -310,6 +310,18 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                             approved_frame.image.getchannel("A").tobytes(),
                         )
 
+    def test_darter_action_frames_keep_transparent_canvas_margin(self) -> None:
+        for faction in ("ferrous", "cupric"):
+            for suffix in finalized.UNIT_ACTIONS["darter"].suffixes:
+                image = self.registry[f"darter_{faction}{suffix}"]
+                bbox = image.getchannel("A").getbbox()
+                self.assertIsNotNone(bbox)
+                assert bbox is not None
+                self.assertGreater(bbox[0], 0)
+                self.assertGreater(bbox[1], 0)
+                self.assertLess(bbox[2], image.width)
+                self.assertLess(bbox[3], image.height)
+
     def test_promoted_airworks_scouts_match_the_approved_rgba_source(self) -> None:
         self.assertEqual(
             airworks_scouts_final.source_rgba_digest(),

@@ -156,9 +156,9 @@ UNIT_ACTIONS: dict[str, FrameSet] = {
     "darter": FrameSet(
         tuple(f"_action{i}" for i in range(1, 5)),
         (
-            "shear_wings_close",
-            "damage+shear_strike",
-            "shear_wings_reopen",
+            "forward_needle_arms",
+            "damage+forward_needle_report",
+            "forward_needle_recovers",
             "attack_settle",
         ),
         (170, 100, 170, 480),
