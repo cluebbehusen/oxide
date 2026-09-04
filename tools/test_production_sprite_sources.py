@@ -8,6 +8,8 @@ from PIL import Image, ImageChops
 
 from tools import gen_sprites as gen
 from tools.production_sprite_sources import (
+    air_final,
+    air_support_final,
     airworks_scouts_final,
     construction_final,
     core_unit_art_final,
@@ -242,6 +244,83 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                     self.registry[f"condor_{faction}{suffix}"].tobytes(),
                     tender_condor_final.render_condor(faction, state).tobytes(),
                 )
+
+    def test_promoted_air_support_art_matches_the_approved_rgba_source(self) -> None:
+        self.assertEqual(
+            air_support_final.source_rgba_digest(),
+            air_support_final.APPROVED_SOURCE_RGBA_SHA256,
+        )
+        builders = (
+            ("buzzard", air_support_final.buzzard_sequence),
+            ("darter", air_support_final.darter_sequence),
+            ("talon", air_support_final.talon_sequence),
+            ("wisp", air_support_final.wisp_sequence),
+        )
+        for faction in ("ferrous", "cupric"):
+            with finalized._faction_palette(faction):
+                for stem, builder in builders:
+                    sequence = builder()
+                    keys = (
+                        f"{stem}_{faction}",
+                        *(
+                            f"{stem}_{faction}{suffix}"
+                            for suffix in finalized.UNIT_MOVEMENT[stem].suffixes
+                        ),
+                        None,
+                        *(
+                            f"{stem}_{faction}{suffix}"
+                            for suffix in finalized.UNIT_ACTIONS[stem].suffixes
+                        ),
+                    )
+                    for key, frame in zip(keys, sequence.frames, strict=True):
+                        if key is not None:
+                            self.assertEqual(
+                                self.registry[key].tobytes(), frame.image.tobytes(), key
+                            )
+
+                fabricator = air_support_final.fabricator_frames()
+                keys = (
+                    f"fabricator_{faction}",
+                    *(
+                        f"fabricator_{faction}{suffix}"
+                        for suffix in finalized.BUILDING_WORK["fabricator"].suffixes
+                    ),
+                )
+                for key, frame in zip(keys, fabricator, strict=True):
+                    self.assertEqual(
+                        self.registry[key].tobytes(), frame.image.tobytes(), key
+                    )
+
+    def test_air_support_detail_passes_preserve_the_approved_silhouettes(self) -> None:
+        for faction in ("ferrous", "cupric"):
+            with finalized._faction_palette(faction):
+                for base_builder, approved_builder in (
+                    (air_final.buzzard_sequence, air_support_final.buzzard_sequence),
+                    (air_final.talon_sequence, air_support_final.talon_sequence),
+                    (air_final.wisp_sequence, air_support_final.wisp_sequence),
+                ):
+                    base = base_builder()
+                    approved = approved_builder()
+                    self.assertEqual(len(base.frames), len(approved.frames))
+                    for base_frame, approved_frame in zip(
+                        base.frames, approved.frames, strict=True
+                    ):
+                        self.assertEqual(
+                            base_frame.image.getchannel("A").tobytes(),
+                            approved_frame.image.getchannel("A").tobytes(),
+                        )
+
+    def test_darter_action_frames_keep_transparent_canvas_margin(self) -> None:
+        for faction in ("ferrous", "cupric"):
+            for suffix in finalized.UNIT_ACTIONS["darter"].suffixes:
+                image = self.registry[f"darter_{faction}{suffix}"]
+                bbox = image.getchannel("A").getbbox()
+                self.assertIsNotNone(bbox)
+                assert bbox is not None
+                self.assertGreater(bbox[0], 0)
+                self.assertGreater(bbox[1], 0)
+                self.assertLess(bbox[2], image.width)
+                self.assertLess(bbox[3], image.height)
 
     def test_promoted_airworks_scouts_match_the_approved_rgba_source(self) -> None:
         self.assertEqual(
@@ -1032,16 +1111,16 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         )
         self.assertEqual(actual, expected)
 
-    def test_buzzard_matches_the_approved_quad_fan_sequence(self) -> None:
+    def test_buzzard_matches_the_approved_armored_quad_fan_sequence(self) -> None:
         expected = (
-            "782c0994ca8601fe27e196a4328d8df3f8144ca5b13664cc96a462e596a5f973",
-            "a2b581226a2042792865fcc4740b7650ebcdba8d1b10f19beec21ad30d434f78",
-            "1230b5ca5f5a39a14216309b0cc994ba31fb2d2221d31da15265a89fe95f0005",
-            "782c0994ca8601fe27e196a4328d8df3f8144ca5b13664cc96a462e596a5f973",
-            "11f7861da155eafb98ff0feca6ad0be9496ae99f9d80a96b7e9b0a65fcdcd352",
-            "42e3e652114d3332058f87182b4745ea67e6cfd9e9cfdba0b377193bb5d6873f",
-            "8d2af0abdedc5c06f2822d6a4a8b523f1cae50d6926ba3100a0b880fd374eb0d",
-            "782c0994ca8601fe27e196a4328d8df3f8144ca5b13664cc96a462e596a5f973",
+            "1143a769ec064862af3d9fe9837b15434bd60326b45af2415fe267e3c80cb56d",
+            "d5d7eb5d4f8a152bdc5a7ddabe52aa8093f1c99333469d9d841a5838021ba971",
+            "018ba81c920b462f0a9f9f3fa009d6685c3886d8daf289d6e74155786c62b4d4",
+            "1143a769ec064862af3d9fe9837b15434bd60326b45af2415fe267e3c80cb56d",
+            "acc78432f812a96dea0e1551c251169d7f24f57174769e87e2a53162b09ed1b7",
+            "f945d232516998e8518ba3320ad4e8556ada1131a39ffd072ecf0e28940a9fd7",
+            "ed31b38adce84cd193df0e44fd047d95007cccf742b71c8b729c7f1dfea135b8",
+            "1143a769ec064862af3d9fe9837b15434bd60326b45af2415fe267e3c80cb56d",
         )
         sequence = finalized._unit_sequences()["buzzard"]()
         actual = tuple(

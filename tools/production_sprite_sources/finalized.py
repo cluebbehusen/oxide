@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw
 
 from tools import gen_sprites as gen
 from tools.production_sprite_sources import (
-    air_final,
+    air_support_final,
     airworks_scouts_final,
     core_unit_art_final,
     crucible_final,
@@ -156,9 +156,9 @@ UNIT_ACTIONS: dict[str, FrameSet] = {
     "darter": FrameSet(
         tuple(f"_action{i}" for i in range(1, 5)),
         (
-            "shear_wings_close",
-            "damage+shear_strike",
-            "shear_wings_reopen",
+            "forward_needle_arms",
+            "damage+forward_needle_report",
+            "forward_needle_recovers",
             "attack_settle",
         ),
         (170, 100, 170, 480),
@@ -355,10 +355,10 @@ def _unit_sequences() -> dict[str, SequenceBuilder]:
         "bombard": tier_one_combat_final.bombard_sequence,
         "flakhound": tier_one_combat_final.flakhound_sequence,
         "stinger": tier_one_combat_final.stinger_sequence,
-        "buzzard": air_final.buzzard_sequence,
-        "darter": air_final.darter_sequence,
-        "talon": air_final.talon_sequence,
-        "wisp": air_final.wisp_sequence,
+        "buzzard": air_support_final.buzzard_sequence,
+        "darter": air_support_final.darter_sequence,
+        "talon": air_support_final.talon_sequence,
+        "wisp": air_support_final.wisp_sequence,
     }
 
 
@@ -541,7 +541,7 @@ def _octagonal_repair_frame(source: Image.Image, faction: str) -> Image.Image:
 
 def _install_working_buildings(registry: Registry, out: Path, faction: str) -> None:
     with _faction_palette(faction):
-        fabricator = structures_base.fabricator_frames()
+        fabricator = air_support_final.fabricator_frames()
         _put(registry, out, f"fabricator_{faction}", fabricator[0].image)
         for suffix, frame in zip(
             BUILDING_WORK["fabricator"].suffixes, fabricator[1:], strict=True
