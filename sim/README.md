@@ -21,11 +21,15 @@ an ordinary command source rather than a separate ruleset.
   yardstick. It turns a fog-honest `Observation` plus immutable public-map
   briefing into persistent strategic plans, exact investment claims, utility
   intents, and finally ordinary player commands. One allocation session imports
-  retained work and compares a safe Foundry expansion with a minimum connected
-  offense package across shared scrap, builders, sites, units, and producer
-  timing. Current-threat emergency defense is imported as exact survival work,
-  and admitted island-air work advances through the same transaction. Accepted
-  domain payloads keep their exact choices; compatible work may proceed
+  retained work and compares Foundry expansion, connected offense, and ranked
+  route-local standing-force alternatives across shared scrap, builders, sites,
+  units, and producer timing. Connected minimum and marginal contexts account
+  for their exact live and paid queue ownership before ordinary demand is
+  derived. Non-urgent standing demand may wait for a strictly better unlocked
+  provider within a bounded production horizon, but forecast income never funds
+  a command. Current-threat emergency defense is imported as exact survival
+  work, and admitted island-air work advances through the same transaction.
+  Accepted domain payloads keep their exact choices; compatible work may proceed
   together, while unmigrated planners and utility use only the residual
   capacity. Connected air-and-siege operations derive opportunity-scaled
   reconnaissance, suppression, direct strike, and current-visible

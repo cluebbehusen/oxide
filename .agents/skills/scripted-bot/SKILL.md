@@ -62,9 +62,11 @@ immutable PublicMapBriefing + fog-honest Observation
   current-threat emergency-defense, and supported legacy-planner claims; then
   resolves the current cross-domain portfolio atomically. An admitted island
   operation advances once and contributes its exact same-think claims here. Its
-  first migrated slice compares at most one exact Foundry proposal and one
-  minimum connected offense proposal. Fresh team, lift, raid, and utility work
-  consume only the resulting residual.
+  current proposal set compares at most one exact Foundry proposal, one
+  connected-offense proposal, and a best-first group of mutually exclusive
+  standing-force alternatives. The allocator evaluates every zero-or-one choice
+  from each domain without a proposal-count or machine-word cutoff. Fresh team,
+  lift, raid, and utility work consume only the resulting residual.
 - `sim/src/bot/strategy.rs` owns air operations, `sim/src/bot/lift.rs` owns
   severed-ground transport operations, and `sim/src/bot/routing.rs` owns their
   fog-honest route projection and exact command-subset checks.
@@ -89,6 +91,15 @@ fabricating queued units.
 Unmigrated `UtilityPolicy` channels still consume a reduced-observation budget
 adapter. Treat that as explicit strangler debt: do not extend it, and remove
 each use as the owning domain moves into typed allocation.
+
+Standing-force claims may require an exact minimum current bank to remain for a
+still-unmigrated construction decision. Use the construction ladder's existing
+next-technology reserve only while an eligible worker exists and construction is
+not recovering; after the tree is complete, require the strategic-defense scorer
+to find an exact legal Turret site and builder. The floor is neither claimed
+capital nor forecast credit: it remains available to Utility after allocation
+and disappears when its non-scrap premises disappear. Do not replace it with a
+permanent reserve or a general budget haircut.
 
 Treat a current-threat emergency Turret or Flak Turret as a survival obligation
 when the opening core is deficient. Freeze the scorer-selected kind, site,
@@ -158,12 +169,12 @@ known resource exhaustion; do not impose a fixed count ceiling that a human
 player does not share. Preserve Overseer's documented legacy Foundry cap and
 policy when evolving these rules.
 
-For adaptive profiles, fill an ordinary unreserved ground core before optional
-specialties. HP-weight live Sentinel, Warden, and Breaker hulls; count queued
-and same-think orders exactly once; exclude exact persistent-operation
-reservations but not ordinary Executive armies. Protect difficulty floors of
-four, five, six, and eight Sentinel-equivalents for Scrapheap, Standard,
-Veteran, and Prime. Stance and personality must not alter those floors.
+For adaptive profiles, fill an ordinary unreserved ground core before voluntary
+investment. HP-weight live Sentinel, Warden, and Breaker hulls; count queued and
+same-think orders exactly once; exclude exact persistent-operation reservations
+but not ordinary Executive armies. Protect difficulty floors of four, five, six,
+and eight Sentinel-equivalents for Scrapheap, Standard, Veteran, and Prime.
+Stance and personality must not alter those floors.
 
 While below the floor, pause voluntary capital, upgrades, discretionary
 production, mobile support, paid repairs, and new strategic operations. Existing
@@ -186,15 +197,57 @@ enough. Keep the exact reserve in the bank while an unpaid founder travels;
 after payment, return it to shallow production before another voluntary project.
 Reapply the gate whenever projected core strength later falls.
 
-Keep one baseline Tender; each additional Tender up to the seeded support
-ceiling needs a distinct currently wounded ground combatant reachable over known
-terrain. Count live, queued, and same-think Tenders once, and release the
-specialist fund when that demand disappears. Fill shallow Foundry queues
-breadth-first and reserve a remaining shortfall without double-counting the
-ordinary fighting reserve. Generic production must not create partial bomber or
-ground-attack-air cohorts; a persistent air or lift operation owns those cohorts
-and its outstanding Airworks capacity. A shallow independently useful
-air-defense purchase is allowed only when no operation owns that capacity.
+After the opening core is projected, derive ordinary standing-force production
+as ranked, mutually exclusive, one-unit alternatives. Base demand on exact live,
+queued, same-think, and planner-owned inventory; current and remembered threats;
+paid construction and expansion security; reachable wounded combatants; useful
+ground objectives; completed technology; current producers; public terrain; and
+observed dynamic blockers. Identify each alternative by its unit kind and a
+canonical service point or footprint. Count inventory and eligible producers
+only when public terrain and current blockers let them serve that target, so a
+same-kind option on one disconnected front cannot erase an independently useful
+option on another. Preserve useful tier-one screens and counters, but let
+stronger unlocked providers substitute when their role, route, cost, and
+readiness are better. Personality ranks otherwise legal providers and domains;
+it never removes a role or provider.
+
+Each standing-force alternative must be affordable from current scrap and ready
+through one exact completed producer now. A non-urgent demand may wait instead
+of buying a cheap fallback only when completed recurring income can make a
+strictly better unlocked provider current-affordable within the exact bounded
+production horizon. Forecast remains evidence: it never creates a proposal or
+funds a command. Core recovery and current threats spend immediately, and
+waiting for one need must not suppress an affordable counter for another.
+Exclude exact units and paid queue work owned by persistent operations, retain
+the selected producer assignment through lowering, and select no more than one
+standing alternative per allocation pass. When a fresh connected operation is
+available, derive separate Standing proposal sets for its absence, minimum, and
+each cumulative marginal. Each selected context excludes that scale's exact live
+units and canonical paid `(producer, kind)` occurrences. Combine retained and
+same-think paid ownership by maximum multiset multiplicity, not addition, so one
+queued occurrence is neither double-owned nor made available twice. The decision
+trace records which context won. An idle factory is not by itself a reason to
+buy a unit.
+
+If a retained Connected revision loses its exact feasible producer schedule,
+remove its typed obligation and selected-only Standing contexts atomically.
+Enter bounded recovery while retaining surviving operation units, then rederive
+unconditional Standing proposals against the remaining exact paid ownership
+before allocation. Never let a failed revision leave contextual inventory or a
+paid queue occurrence stranded between the two domains.
+
+The temporary residual Foundry pass owns only demands not yet migrated to typed
+allocation: post-bootstrap Harvesters after completed renewable income exists,
+Excavators, and the existing bounded Scuttler roster. It spends only current
+scrap and producer capacity left by allocation, and must not originate ordinary
+combat, anti-air, siege, or Tender orders. Migrate those residual roles with
+their economy, reconnaissance, and support domains rather than growing this
+bridge.
+
+Persistent air and lift operations own partial bomber, ground-attack-air, and
+transport cohorts plus their outstanding Airworks capacity. Standing force may
+buy an independently useful air-defense provider only when that capacity is
+free. The profile-free Overseer retains its legacy production order.
 
 For a connected air-and-siege operation, derive a shared capability minimum and
 an opportunity-specific useful capability target in reconnaissance, suppression,

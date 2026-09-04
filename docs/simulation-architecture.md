@@ -38,11 +38,11 @@ Player-facing bot decision traces have the same one-way boundary. An opt-in
 coordinator while returning the same ordinary commands as `Brain::act`. The
 trace recorder is local to that call; traces are not controller memory,
 authoritative state, replay input, or replay metadata. Overseer and ticks on
-which no player-facing decision occurs produce no trace. Trace schema 3 reports
-current scrap separately from a bounded, normally one-minute forecast based only
-on completed income sources, together with current builder and producer
-capacity. Connected-package evidence also distinguishes direct strike capability
-from current-visible collateral that an attack-run bomber can actually reach.
+which no player-facing decision occurs produce no trace. The versioned trace
+schema reports current scrap separately from a bounded forecast based only on
+completed income sources, together with current builder and producer capacity.
+Proposal and allocation evidence records the coordinator's actual inputs and
+verdicts rather than reconstructing decisions after the fact.
 
 ## State construction and trust boundary
 
@@ -444,23 +444,26 @@ also enter as a survival obligation with its scorer-selected site and builder.
 The remaining opening reserve receives only the bank left after that defense.
 The session also adapts same-think decisions from active team-relief, lift,
 raid, and admitted island-air planners into explicit legacy claims. The current
-proposal set contains at most one safe, command-legal Foundry expansion and one
-minimum connected offense package. The allocator exhaustively evaluates their
-four possible subsets against current and deadline-scoped forecast scrap,
-builders, sites, units, and producer FIFO timing. Named urgency, confidence,
-value, time-to-impact, and safety bands decide first; personality resolves only
-a genuine semantic tie and never removes a domain from consideration.
+proposal set contains at most one safe, command-legal Foundry expansion, one
+connected offense package, and a best-first group of mutually exclusive
+standing-force alternatives. The allocator exhaustively evaluates every
+zero-or-one choice from each domain against current and deadline-scoped forecast
+scrap, builders, sites, units, and producer FIFO timing. This Cartesian search
+has neither a proposal-count cutoff nor a machine-word mask limit. Named
+urgency, confidence, value, time-to-impact, and safety bands decide first;
+personality resolves only a genuine semantic tie and never removes a domain from
+consideration.
 
 Accepted payloads retain the exact site, builder, objective, force membership,
-and producer assignments selected by their domain. Commitment does not rerun
-domain ranking. A connected package may add the largest feasible marginal
-extension only from the capacity left after its minimum and any compatible
-expansion. Any malformed input or failed exact commit freezes residual spending
-for that decision and restores speculative planner state; the decision trace
-records the allocator result or coordinator failure. Otherwise, still-unmigrated
-fresh team, lift, and raid work runs against the true residual bank, and future
-producer reservations prevent it or `UtilityPolicy` from occupying an accepted
-lane.
+unit kind, and producer assignments selected by their domain. Commitment does
+not rerun domain ranking. A connected package may add the largest feasible
+marginal extension only from the capacity left after its minimum and any
+compatible expansion or standing-force purchase. Any malformed input or failed
+exact commit freezes residual spending for that decision and restores
+speculative planner state; the decision trace records the allocator result or
+coordinator failure. Otherwise, still-unmigrated fresh team, lift, and raid work
+runs against the true residual bank, and future producer reservations prevent it
+or `UtilityPolicy` from occupying an accepted lane.
 
 Within the residual utility pass, a fresh `CommitmentLedger` imports upstream
 committed scrap, reserved units, strategic queue appends, persistent saving, and
@@ -482,14 +485,62 @@ their strength estimate expires. An army holding a live objective remains
 enlisted there but does not absorb the next generation of fighters, which forms
 a separate muster closer to home.
 
-Adaptive production first projects an ordinary core in Sentinel-equivalent
-ground strength. It HP-weights live Sentinel, Warden, and Breaker hulls, counts
-queued units and orders already planned during the same decision exactly once,
-and excludes exact persistent-operation reservations without excluding ordinary
-Executive armies or units merely held as a Team operation's home watch. It then
-fills shallow Foundry queues breadth-first before discretionary production can
-spend the remaining bank. Raiders, artillery, anti-air, support, and actual
-outbound persistent-operation reservations do not stand in for that line.
+Adaptive opening production first projects an ordinary core in
+Sentinel-equivalent ground strength. It HP-weights live Sentinel, Warden, and
+Breaker hulls, counts queued units and orders already planned during the same
+decision exactly once, and excludes exact persistent-operation reservations
+without excluding ordinary Executive armies or units merely held as a Team
+operation's home watch. It fills shallow Foundry queues breadth-first only until
+that survival prerequisite is projected. Raiders, artillery, anti-air, support,
+and actual outbound persistent-operation reservations do not stand in for the
+line.
+
+After the opening core is ready, the standing-force domain derives ranked,
+mutually exclusive, one-unit alternatives for independently useful ordinary
+production. Its demand accounts for current and remembered hostile capability,
+paid construction and expansion security, reachable wounded combatants, useful
+ground objectives, completed technology, public-terrain routes, exact live and
+queued inventory, same-think orders, and exact units or paid queue work already
+owned by persistent operations. Each alternative has a stable identity of unit
+kind plus a canonical service point or footprint. Inventory and producers count
+only when public terrain and observed dynamic blockers let them serve that
+target, preserving independent same-kind alternatives on disconnected fronts.
+The domain retains useful tier-one providers while allowing higher-tier line,
+siege, anti-air, and support units to substitute when their role, route, cost,
+and readiness fit better. Each alternative is current-funded, enqueue-now work
+through one completed producer; forecast income cannot make an unaffordable
+purchase legal. For a non-urgent need, completed recurring income may justify a
+bounded wait for a strictly better unlocked provider. Core recovery and current
+threats never wait, and accumulation for one need does not suppress an
+affordable response to another. The shared allocator may select at most one such
+alternative per cadence and preserves its exact producer through lowering.
+
+When a fresh Connected proposal exists, the session derives separate Standing
+proposal sets for Connected absence, its minimum, and every cumulative marginal.
+The selected context excludes its exact live units and canonical paid
+`(producer, kind)` occurrences before deriving ordinary demand. Retained and
+same-think paid ownership combine by maximum multiset multiplicity rather than
+addition, so the same queue occurrence is neither double-owned nor exposed as
+free. Context selection and its exact marginal depth are diagnostic trace state,
+not authoritative simulation state.
+
+If a retained Connected revision can no longer preserve its exact producer
+schedule, the session removes its typed obligation and selected-only Standing
+contexts together, enters bounded recovery while retaining surviving operation
+units, and rederives unconditional Standing proposals against the remaining paid
+ownership. This downgrade is one allocation preparation transition; no context
+derived from the failed revision reaches portfolio selection.
+
+A standing-force proposal may carry a minimum current bank that the allocator
+must leave for the still-residual construction ladder. While an eligible worker
+exists and opening construction is not recovering, this floor is the existing
+capital reserve for the next technology rung. After technology is complete, it
+becomes an actionable strategic Turret threshold only when the defense scorer
+finds an exact legal site and builder. It is not claimed capital or forecast
+credit: Utility may spend it after allocation, and the floor vanishes when its
+non-scrap premises disappear. This prevents repeatable unit production from
+permanently starving the next reachable investment without creating a permanent
+reserve.
 
 Before the difficulty floor is projected, the player-facing policy pauses new
 voluntary construction and upgrades, discretionary production, mobile support,
@@ -516,13 +567,15 @@ exact reserve as bank escrow through its walk; once it becomes a paid site, the
 reserve returns to shallow production before another voluntary project. Losing
 enough core strength reapplies the same gate.
 
-Generic production may buy a shallow defensive interceptor, but bomber and
-ground-attack-air cohorts belong to persistent operations; while an air or lift
-plan has outstanding factory work, that plan owns Airworks capacity. Support
-production keeps one baseline Tender and adds another, up to the seeded ceiling,
-for each distinct currently wounded ground combatant reachable from a Tender or
-Fabricator. Live, queued, and same-think Tenders count once. The profile-free
-Overseer retains its legacy order.
+The residual Foundry pass no longer originates player-facing ordinary combat,
+siege, anti-air, or Tender orders. During the strangler migration it retains
+only post-bootstrap Harvesters after completed renewable income exists,
+Excavators, and the existing bounded Scuttler roster. It uses only current scrap
+and producer lanes left after allocation, keeps queues shallow, and leaves those
+roles for the later economy, reconnaissance, and support migrations. Bomber,
+ground-attack-air, and transport cohorts remain owned by persistent operations;
+while an air or lift plan has outstanding factory work, that plan owns Airworks
+capacity. The profile-free Overseer retains its legacy production order.
 
 On connected ground, the air planner admits a force package only when current
 sight, the spendable current bank after prior reserves, completed recurring
