@@ -12,7 +12,9 @@ use super::allocation::{
     TimeToImpact, Urgency,
 };
 use super::observation::Observation;
-use super::resources::{PlanningProjectionError, ResourceSnapshot, SiteFootprint};
+use super::resources::{
+    PlanningProjectionError, ProducerLaneReservationError, ResourceSnapshot, SiteFootprint,
+};
 use super::strategy::force_package::{ForceFamily, ForcePackageRejection};
 use super::strategy::{
     AirOperation, AirOperationOutcome, AirRecoveryReason, ConnectedPackageDiagnostics,
@@ -1158,6 +1160,13 @@ impl From<ObligationClass> for ObligationClassTrace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ObligationKeyTrace {
+    /// One exact opening defense admitted before ordinary core recovery.
+    EmergencyDefense {
+        /// Defensive structure selected by the utility scorer.
+        building: BuildingKind,
+        /// Exact scorer-selected anchor.
+        anchor: TilePos,
+    },
     /// One protected opening- or recovery-core tranche.
     OpeningCore {
         /// Stable tranche sequence.
@@ -1204,6 +1213,10 @@ pub enum ObligationKeyTrace {
 impl From<ObligationKey> for ObligationKeyTrace {
     fn from(value: ObligationKey) -> Self {
         match value {
+            ObligationKey::EmergencyDefense { kind, anchor } => Self::EmergencyDefense {
+                building: kind,
+                anchor,
+            },
             ObligationKey::OpeningCore { sequence } => Self::OpeningCore { sequence },
             ObligationKey::PaidConstruction(building) => Self::PaidConstruction { building },
             ObligationKey::ObservedBuilderWork { builder } => Self::ObservedBuilderWork { builder },
@@ -1458,13 +1471,6 @@ pub enum AllocationConflictTrace {
         /// Canonical producer set supplied by the domain.
         eligible_producers: BoundedTraceEntries<BuildingId>,
     },
-    /// An imported production obligation did not retain one exact lane.
-    UnassignedObligationJob {
-        /// Exact obligation owner.
-        owner: ClaimOwnerTrace,
-        /// Requested unit kind.
-        kind: UnitKind,
-    },
     /// No lane ordering can preserve every claim and deadline.
     ProducerSchedule {
         /// Producers involved in the failed schedule.
@@ -1540,12 +1546,6 @@ impl From<&AllocationConflict> for AllocationConflictTrace {
                 kind: *kind,
                 eligible_producers: BoundedTraceEntries::from_vec(eligible_producers.clone()),
             },
-            AllocationConflict::UnassignedObligationJob { owner, kind } => {
-                Self::UnassignedObligationJob {
-                    owner: (*owner).into(),
-                    kind: *kind,
-                }
-            }
             AllocationConflict::ProducerSchedule { producers, owners } => Self::ProducerSchedule {
                 producers: BoundedTraceEntries::from_vec(producers.clone()),
                 owners: BoundedTraceEntries::from_vec(
@@ -1596,6 +1596,25 @@ pub enum AllocationErrorTrace {
         /// First failed claim.
         conflict: AllocationConflictTrace,
     },
+    /// The selected schedule named a producer absent from its resource basis.
+    ProducerReservationUnknownProducer {
+        /// Exact missing producer.
+        producer: BuildingId,
+    },
+    /// The selected current-tick append could no longer be replayed.
+    ProducerReservationAppendUnavailable {
+        /// Exact producer.
+        producer: BuildingId,
+        /// Unit whose append failed.
+        kind: UnitKind,
+    },
+    /// Replaying a selected current-tick append changed its FIFO timing.
+    ProducerReservationTimingMismatch {
+        /// Exact producer.
+        producer: BuildingId,
+        /// Unit whose timing changed.
+        kind: UnitKind,
+    },
 }
 
 impl From<AllocationError> for AllocationErrorTrace {
@@ -1619,6 +1638,17 @@ impl From<AllocationError> for AllocationErrorTrace {
             } => Self::ObligationConflict {
                 obligation: obligation.into(),
                 conflict: conflict.into(),
+            },
+            AllocationError::ProducerReservation(error) => match error {
+                ProducerLaneReservationError::UnknownProducer { producer } => {
+                    Self::ProducerReservationUnknownProducer { producer }
+                }
+                ProducerLaneReservationError::CurrentAppendUnavailable { producer, kind } => {
+                    Self::ProducerReservationAppendUnavailable { producer, kind }
+                }
+                ProducerLaneReservationError::CurrentTimingMismatch { producer, kind } => {
+                    Self::ProducerReservationTimingMismatch { producer, kind }
+                }
             },
         }
     }

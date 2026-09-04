@@ -16,6 +16,19 @@ pub(in crate::bot) struct FreshEmergencyDefense {
 }
 
 impl FreshEmergencyDefense {
+    #[cfg(test)]
+    pub(in crate::bot) const fn fixture(
+        kind: BuildingKind,
+        anchor: TilePos,
+        builder: UnitId,
+    ) -> Self {
+        Self {
+            kind,
+            anchor,
+            builder,
+        }
+    }
+
     pub(in crate::bot) const fn kind(&self) -> BuildingKind {
         self.kind
     }
@@ -1659,19 +1672,15 @@ impl UtilityPolicy {
         obs: &Observation,
         context: AdvancedConstructionContext<'_>,
         budget: &mut u32,
-        commitments: Option<&mut PolicyCommitments>,
         intents: &mut Vec<Intent>,
     ) -> bool {
         let AdvancedConstructionContext {
             home,
             player_facing,
             builders,
-            combat_core_exclusions,
             unit_contacts,
             building_contacts,
-            public_map,
             voluntary_scrap_guard,
-            fresh_foundry_admission,
         } = context;
         let have = |kind: BuildingKind| Self::projected_count(obs, kind, player_facing) > 0;
         let have_built =
@@ -1757,120 +1766,59 @@ impl UtilityPolicy {
         }
         // Expansion is an economic project with a local protection burden,
         // not a reward for reaching a particular base count.
-        if dials.expansion
-            && have_built(BuildingKind::Foundry)
-            && (!player_facing || fresh_foundry_admission == FreshFoundryAdmission::Legacy)
-        {
+        if dials.expansion && have_built(BuildingKind::Foundry) && !player_facing {
             let cost = BuildingKind::Foundry
                 .base_stats()
                 .construction
                 .map(|c| c.cost)
                 .unwrap_or(0);
-            if player_facing {
-                let available_builders: Vec<_> = builders
+            let foundries: Vec<_> = obs
+                .my_buildings
+                .iter()
+                .filter(|building| building.kind == BuildingKind::Foundry)
+                .map(|building| building.anchor)
+                .collect();
+            if foundries.len() < LEGACY_FOUNDRY_CAP
+                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
+                && (!dials.deep_tech || have(BuildingKind::Airworks))
+            {
+                let mut road_reach = None;
+                let frontier = obs
+                    .known_scrap
                     .iter()
-                    .copied()
-                    .filter(|builder| builder_is_free(obs, builder))
-                    .map(|builder| builder.id)
-                    .collect();
-                let resources = ResourceSnapshot::from_observation(obs);
-                let proposal = public_map.and_then(|public_map| {
-                    self.fresh_foundry_proposal(
-                        dials,
-                        obs,
-                        &resources,
-                        FreshFoundryProposalContext {
-                            home,
-                            available_builders: &available_builders,
-                            combat_core_exclusions,
-                            unit_contacts: unit_contacts.unwrap_or(&[]),
-                            building_contacts: building_contacts.unwrap_or(&[]),
-                            public_map,
-                            same_think_intents: intents,
-                            current_scrap: *budget,
-                            protected_reserve: voluntary_scrap_guard.amount(TECH_RESERVE),
-                        },
-                    )
-                });
-                if let Some(proposal) = proposal
-                    && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
+                    .filter(|(_, amount)| *amount > 0)
+                    .map(|(tile, _)| *tile)
+                    .chain(obs.known_frames.iter().copied().filter(|frame| {
+                        !obs.my_buildings
+                            .iter()
+                            .chain(obs.enemy_buildings.iter())
+                            .any(|building| building.anchor == *frame)
+                    }))
+                    .filter(|tile| {
+                        foundries
+                            .iter()
+                            .all(|f| f.chebyshev(*tile) > EXPANSION_RADIUS)
+                            && road_reach
+                                .get_or_insert_with(|| Self::known_road_reach(obs, home))
+                                .frame_reached(*tile)
+                    })
+                    .min_by_key(|tile| {
+                        let frontier = foundries
+                            .iter()
+                            .map(|f| f.chebyshev(*tile))
+                            .min()
+                            .unwrap_or(0);
+                        (frontier, tile.y, tile.x)
+                    });
+                if let Some(focus) = frontier
+                    && let Some(anchor) = self.placement_near(obs, BuildingKind::Foundry, focus)
                 {
-                    let proposal_plan = proposal.plan;
-                    let plan = if let Some(commitments) = commitments {
-                        let guard = voluntary_scrap_guard.amount(TECH_RESERVE);
-                        let Some(FoundryCommitmentOutcome::Build(commitment)) =
-                            commit_foundry_plan(commitments, budget, proposal_plan, guard, false)
-                        else {
-                            return false;
-                        };
-                        commitment.plan
-                    } else {
-                        *budget -= cost;
-                        proposal_plan
-                    };
-                    let before_harvest = intents
-                        .iter()
-                        .position(|intent| matches!(intent, Intent::AssignHarvest { .. }))
-                        .unwrap_or(intents.len());
-                    intents.insert(
-                        before_harvest,
-                        Intent::BuildWith {
-                            builder: plan.builder,
-                            kind: BuildingKind::Foundry,
-                            anchor: plan.anchor,
-                        },
-                    );
+                    *budget -= cost;
+                    intents.push(Intent::Build {
+                        kind: BuildingKind::Foundry,
+                        anchor,
+                    });
                     return true;
-                }
-            } else {
-                let foundries: Vec<_> = obs
-                    .my_buildings
-                    .iter()
-                    .filter(|building| building.kind == BuildingKind::Foundry)
-                    .map(|building| building.anchor)
-                    .collect();
-                if foundries.len() < LEGACY_FOUNDRY_CAP
-                    && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
-                    && (!dials.deep_tech || have(BuildingKind::Airworks))
-                {
-                    let mut road_reach = None;
-                    let frontier = obs
-                        .known_scrap
-                        .iter()
-                        .filter(|(_, amount)| *amount > 0)
-                        .map(|(tile, _)| *tile)
-                        .chain(obs.known_frames.iter().copied().filter(|frame| {
-                            !obs.my_buildings
-                                .iter()
-                                .chain(obs.enemy_buildings.iter())
-                                .any(|building| building.anchor == *frame)
-                        }))
-                        .filter(|tile| {
-                            foundries
-                                .iter()
-                                .all(|f| f.chebyshev(*tile) > EXPANSION_RADIUS)
-                                && road_reach
-                                    .get_or_insert_with(|| Self::known_road_reach(obs, home))
-                                    .frame_reached(*tile)
-                        })
-                        .min_by_key(|tile| {
-                            let frontier = foundries
-                                .iter()
-                                .map(|f| f.chebyshev(*tile))
-                                .min()
-                                .unwrap_or(0);
-                            (frontier, tile.y, tile.x)
-                        });
-                    if let Some(focus) = frontier
-                        && let Some(anchor) = self.placement_near(obs, BuildingKind::Foundry, focus)
-                    {
-                        *budget -= cost;
-                        intents.push(Intent::Build {
-                            kind: BuildingKind::Foundry,
-                            anchor,
-                        });
-                        return true;
-                    }
                 }
             }
         }
@@ -1928,7 +1876,7 @@ impl UtilityPolicy {
         budget: &mut u32,
         intents: &mut Vec<Intent>,
     ) {
-        self.construction_with_commitments(dials, obs, context, budget, None, intents);
+        self.residual_construction(dials, obs, context, budget, intents);
     }
 
     fn opening_construction_recovery(
@@ -2101,27 +2049,23 @@ impl UtilityPolicy {
         );
     }
 
-    pub(super) fn construction_with_commitments(
+    pub(super) fn residual_construction(
         &mut self,
         dials: &Dials,
         obs: &Observation,
         context: ConstructionContext<'_>,
         budget: &mut u32,
-        commitments: Option<&mut PolicyCommitments>,
         intents: &mut Vec<Intent>,
     ) {
         let ConstructionContext {
             home,
             claims,
-            combat_core_exclusions,
             unit_contacts,
             building_contacts,
             unavailable_builders,
-            public_map,
             scope,
             voluntary_scrap_guard,
-            fresh_emergency_defense_admission,
-            fresh_foundry_admission,
+            ..
         } = context;
         let ConstructionClaims {
             player_facing,
@@ -2139,42 +2083,7 @@ impl UtilityPolicy {
             return;
         }
 
-        if let ConstructionScope::OpeningCore {
-            ground_emergency,
-            air_emergency,
-        } = scope
-        {
-            let bootstrap_reserve = self.opening_bootstrap_reserve(dials, obs, context, intents);
-            if fresh_emergency_defense_admission == FreshEmergencyDefenseAdmission::Legacy {
-                for (allowed, kind) in [
-                    (ground_emergency, BuildingKind::Turret),
-                    (air_emergency, BuildingKind::FlakTurret),
-                ] {
-                    let cost = kind
-                        .base_stats()
-                        .construction
-                        .map_or(0, |construction| construction.cost);
-                    if allowed
-                        && Self::projected_count(obs, kind, true) == 0
-                        && *budget >= cost.saturating_add(bootstrap_reserve)
-                        && let Some(anchor) = public_map.and_then(|briefing| {
-                            self.emergency_defense_site(
-                                kind,
-                                obs,
-                                briefing,
-                                unit_contacts.unwrap_or(&[]),
-                                building_contacts.unwrap_or(&[]),
-                                &builders,
-                            )
-                        })
-                    {
-                        *budget -= cost;
-                        intents.push(Intent::Build { kind, anchor });
-                        return;
-                    }
-                }
-            }
-
+        if scope == ConstructionScope::OpeningCore {
             let extractor_cost = BuildingKind::Extractor
                 .base_stats()
                 .construction
@@ -2208,15 +2117,11 @@ impl UtilityPolicy {
                     home,
                     player_facing,
                     builders: &builders,
-                    combat_core_exclusions,
                     unit_contacts,
                     building_contacts,
-                    public_map,
                     voluntary_scrap_guard,
-                    fresh_foundry_admission,
                 },
                 budget,
-                commitments,
                 intents,
             )
         {
@@ -3043,23 +2948,33 @@ mod tests {
             TilePos::new(obs.map_width - 4, obs.map_height - 4),
             |_| '.',
         );
-        let mut budget = obs.scrap;
+        let available_builders: Vec<_> = policy
+            .construction_builders(obs, &[], &[])
+            .into_iter()
+            .map(|builder| builder.id)
+            .collect();
+        let resources = ResourceSnapshot::from_observation(obs);
         let mut intents = Vec::new();
-        policy.construction(
+        if let Some(proposal) = policy.fresh_foundry_proposal(
             dials,
             obs,
-            ConstructionContext::new(
-                HOME,
-                ConstructionClaims {
-                    player_facing: true,
-                    enlisted: &[],
-                    reserved: &[],
-                },
-            )
-            .with_public_map(Some(&public_map)),
-            &mut budget,
-            &mut intents,
-        );
+            &resources,
+            FreshFoundryProposalContext {
+                home: HOME,
+                available_builders: &available_builders,
+                combat_core_exclusions: &[],
+                unit_contacts: &[],
+                building_contacts: &[],
+                public_map: &public_map,
+                same_think_intents: &[],
+                current_scrap: obs.scrap,
+                protected_reserve: TECH_RESERVE,
+            },
+        ) {
+            policy
+                .commit_adjudicated_foundry(proposal, obs.tick, &mut intents)
+                .expect("the focused expansion fixture has no prior obligation");
+        }
         intents
     }
 
@@ -3822,6 +3737,73 @@ mod tests {
     }
 
     #[test]
+    fn fresh_foundry_proposal_searches_the_full_support_ring() {
+        let extractor = TilePos::new(30, 10);
+        let mut obs = observation();
+        obs.map_width = 48;
+        obs.visible = vec![true; 48 * 24];
+        obs.explored = vec![true; 48 * 24];
+        obs.known_scrap.clear();
+        obs.my_units.push(harvester(2, TilePos::new(28, 10), None));
+        obs.my_units.extend((0..3).map(|index| {
+            sentinel(
+                20 + index,
+                HOME.offset(i32::try_from(index).expect("small fixture index"), 4),
+            )
+        }));
+        for (id, kind, anchor) in [
+            (1, BuildingKind::Fabricator, TilePos::new(8, 3)),
+            (2, BuildingKind::Extractor, extractor),
+        ] {
+            obs.my_buildings
+                .push(building(id, PlayerId(0), kind, anchor));
+            obs.my_queues.push(Vec::new());
+        }
+        obs.known_frames.push(extractor);
+        for y in 0..obs.map_height {
+            for x in 0..obs.map_width {
+                let tile = TilePos::new(x, y);
+                let radius = tile.chebyshev(extractor);
+                if (2..=8).contains(&radius) && y != extractor.y {
+                    obs.known_rock.push(tile);
+                }
+            }
+        }
+        obs.known_rock.sort_unstable_by_key(|tile| (tile.y, tile.x));
+        obs.known_rock.dedup();
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(44, 20),
+            |_| '.',
+        );
+        let mut dials = expansion_dials();
+        dials.deep_tech = false;
+
+        let proposal = fresh_expansion_proposal(
+            &UtilityPolicy::new(),
+            &dials,
+            &obs,
+            &public_map,
+            &[UnitId(1), UnitId(2)],
+            0,
+        )
+        .expect("the complete support ring should contain a proposal");
+
+        assert_eq!(proposal.builder(), UnitId(2));
+        assert_eq!(
+            proposal.anchor().chebyshev(extractor),
+            crate::stats::EXTRACTOR_SUPPORT_RADIUS + 1,
+            "all closer anchors are obstructed, so proposal search must reach the legal edge"
+        );
+        assert!(UtilityPolicy::foundry_supports_extractor(
+            proposal.anchor(),
+            extractor
+        ));
+    }
+
+    #[test]
     fn forecast_capital_can_quote_a_foundry_but_only_save_the_exact_plan() {
         let mut obs = ready_developed_expansion_observation();
         obs.scrap = 0;
@@ -4496,7 +4478,7 @@ mod tests {
     }
 
     #[test]
-    fn adjudicated_fresh_foundry_does_not_reenter_residual_construction() {
+    fn residual_player_facing_construction_cannot_originate_a_foundry() {
         let obs = ready_developed_expansion_observation();
         let dials = expansion_dials();
         let public_map = array_briefing(
@@ -4506,7 +4488,7 @@ mod tests {
             TilePos::new(obs.map_width - 4, obs.map_height - 4),
             |_| '.',
         );
-        let run = |policy: &mut UtilityPolicy, player_facing, admission| {
+        let run = |policy: &mut UtilityPolicy, player_facing| {
             let mut budget = obs.scrap;
             let mut intents = Vec::new();
             policy.construction(
@@ -4520,42 +4502,34 @@ mod tests {
                         reserved: &[],
                     },
                 )
-                .with_public_map(Some(&public_map))
-                .with_fresh_foundry_admission(admission),
+                .with_public_map(Some(&public_map)),
                 &mut budget,
                 &mut intents,
             );
             intents
         };
 
-        assert!(matches!(
-            run(
-                &mut UtilityPolicy::new(),
-                true,
-                FreshFoundryAdmission::Legacy,
-            )
-            .as_slice(),
-            [Intent::BuildWith {
-                kind: BuildingKind::Foundry,
-                ..
-            }]
-        ));
         assert!(
-            run(
-                &mut UtilityPolicy::new(),
-                true,
-                FreshFoundryAdmission::Adjudicated,
-            )
-            .is_empty(),
-            "the residual player-facing selector must not rederive adjudicated work"
+            run(&mut UtilityPolicy::new(), true).is_empty(),
+            "player-facing Foundries must enter through the shared proposal path"
+        );
+        let residual =
+            UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &public_map);
+        assert!(
+            residual.iter().all(|intent| !matches!(
+                intent,
+                Intent::Build {
+                    kind: BuildingKind::Foundry,
+                    ..
+                } | Intent::BuildWith {
+                    kind: BuildingKind::Foundry,
+                    ..
+                }
+            )),
+            "the residual facade cannot originate a fresh Foundry: {residual:?}"
         );
         assert!(matches!(
-            run(
-                &mut UtilityPolicy::new(),
-                false,
-                FreshFoundryAdmission::Adjudicated,
-            )
-            .as_slice(),
+            run(&mut UtilityPolicy::new(), false).as_slice(),
             [Intent::Build {
                 kind: BuildingKind::Foundry,
                 ..
@@ -5014,28 +4988,34 @@ mod tests {
             unit: UnitId(1),
             node: frontier,
         }];
-        let mut budget = ready.scrap;
-        policy.construction(
-            &expansion_dials(),
-            &ready,
-            ConstructionContext::new(
-                HOME,
-                ConstructionClaims {
-                    player_facing: true,
-                    enlisted: &[],
-                    reserved: &[],
+        let public_map = array_briefing(
+            ready.map_width,
+            ready.map_height,
+            HOME,
+            TilePos::new(ready.map_width - 4, ready.map_height - 4),
+            |_| '.',
+        );
+        let proposal = policy
+            .fresh_foundry_proposal(
+                &expansion_dials(),
+                &ready,
+                &ResourceSnapshot::from_observation(&ready),
+                FreshFoundryProposalContext {
+                    home: HOME,
+                    available_builders: &[UnitId(1)],
+                    combat_core_exclusions: &[],
+                    unit_contacts: &[],
+                    building_contacts: &[],
+                    public_map: &public_map,
+                    same_think_intents: &ordered,
+                    current_scrap: ready.scrap,
+                    protected_reserve: TECH_RESERVE,
                 },
             )
-            .with_public_map(Some(&array_briefing(
-                ready.map_width,
-                ready.map_height,
-                HOME,
-                TilePos::new(ready.map_width - 4, ready.map_height - 4),
-                |_| '.',
-            ))),
-            &mut budget,
-            &mut ordered,
-        );
+            .expect("the exact safe expansion remains quotable after a harvest chore");
+        policy
+            .commit_adjudicated_foundry(proposal, ready.tick, &mut ordered)
+            .expect("the focused fixture has no prior expansion obligation");
         assert!(matches!(
             ordered.as_slice(),
             [
@@ -6205,7 +6185,7 @@ mod tests {
     }
 
     #[test]
-    fn adjudicated_emergency_mode_keeps_orphan_and_home_extractor_recovery() {
+    fn residual_opening_construction_keeps_orphan_and_home_extractor_recovery() {
         let mut dials = focused_dials();
         dials.extractors = true;
         dials.harvester_target = 1;
@@ -6224,8 +6204,7 @@ mod tests {
                 },
             )
             .with_public_map(Some(&public_map))
-            .with_fresh_emergency_defense_admission(FreshEmergencyDefenseAdmission::Adjudicated)
-            .during_opening_core(false, false)
+            .during_opening_core()
         };
 
         let mut unsafe_site = observation();

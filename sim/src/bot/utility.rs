@@ -289,53 +289,18 @@ impl Reserve {
 struct ConstructionContext<'a> {
     home: TilePos,
     claims: ConstructionClaims<'a>,
-    combat_core_exclusions: &'a [UnitId],
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
     unavailable_builders: &'a [UnitId],
     public_map: Option<&'a PublicMapBriefing>,
     scope: ConstructionScope,
     voluntary_scrap_guard: Reserve,
-    fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission,
-    fresh_foundry_admission: FreshFoundryAdmission,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConstructionScope {
     Full,
-    OpeningCore {
-        ground_emergency: bool,
-        air_emergency: bool,
-    },
-}
-
-/// Whether opening-core construction may choose a new emergency defense.
-///
-/// Cross-domain allocation freezes the exact kind, site, and builder before
-/// residual utility runs. Existing sites and deferred work still recover in
-/// either mode.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in crate::bot) enum FreshEmergencyDefenseAdmission {
-    /// Preserve the utility-owned emergency selection path.
-    #[default]
-    Legacy,
-    /// A shared caller already adjudicated fresh emergency construction.
-    Adjudicated,
-}
-
-/// Whether a fresh player-facing Foundry may still be chosen by the residual
-/// utility channels on this decision pass.
-///
-/// Cross-domain adjudication chooses or rejects the one exact fresh proposal
-/// before utility runs. Saved Foundry plans are prior obligations and continue
-/// in either mode.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in crate::bot) enum FreshFoundryAdmission {
-    /// Preserve the existing utility-domain admission path.
-    #[default]
-    Legacy,
-    /// A cross-domain caller has already adjudicated fresh Foundry investment.
-    Adjudicated,
+    OpeningCore,
 }
 
 impl<'a> ConstructionContext<'a> {
@@ -343,21 +308,13 @@ impl<'a> ConstructionContext<'a> {
         Self {
             home,
             claims,
-            combat_core_exclusions: claims.reserved,
             unit_contacts: None,
             building_contacts: None,
             unavailable_builders: &[],
             public_map: None,
             scope: ConstructionScope::Full,
             voluntary_scrap_guard: Reserve::Ordinary,
-            fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission::Legacy,
-            fresh_foundry_admission: FreshFoundryAdmission::Legacy,
         }
-    }
-
-    const fn with_combat_core_exclusions(mut self, exclusions: &'a [UnitId]) -> Self {
-        self.combat_core_exclusions = exclusions;
-        self
     }
 
     const fn with_intelligence(
@@ -380,29 +337,13 @@ impl<'a> ConstructionContext<'a> {
         self
     }
 
-    const fn during_opening_core(mut self, ground_emergency: bool, air_emergency: bool) -> Self {
-        self.scope = ConstructionScope::OpeningCore {
-            ground_emergency,
-            air_emergency,
-        };
+    const fn during_opening_core(mut self) -> Self {
+        self.scope = ConstructionScope::OpeningCore;
         self
     }
 
     const fn with_voluntary_scrap_guard(mut self, guard: Reserve) -> Self {
         self.voluntary_scrap_guard = guard;
-        self
-    }
-
-    const fn with_fresh_emergency_defense_admission(
-        mut self,
-        admission: FreshEmergencyDefenseAdmission,
-    ) -> Self {
-        self.fresh_emergency_defense_admission = admission;
-        self
-    }
-
-    const fn with_fresh_foundry_admission(mut self, admission: FreshFoundryAdmission) -> Self {
-        self.fresh_foundry_admission = admission;
         self
     }
 }
@@ -417,7 +358,6 @@ struct ProductionContext<'a> {
     building_contacts: Option<&'a [BuildingContact]>,
     public_map: Option<&'a PublicMapBriefing>,
     voluntary_scrap_guard: Reserve,
-    fresh_foundry_admission: FreshFoundryAdmission,
     producer_lane_reservations: &'a ProducerLaneReservations,
 }
 
@@ -436,7 +376,6 @@ impl<'a> ProductionContext<'a> {
             building_contacts: None,
             public_map: None,
             voluntary_scrap_guard: Reserve::Ordinary,
-            fresh_foundry_admission: FreshFoundryAdmission::Legacy,
             producer_lane_reservations: ProducerLaneReservations::empty(),
         }
     }
@@ -466,11 +405,6 @@ impl<'a> ProductionContext<'a> {
         self
     }
 
-    const fn with_fresh_foundry_admission(mut self, admission: FreshFoundryAdmission) -> Self {
-        self.fresh_foundry_admission = admission;
-        self
-    }
-
     const fn with_producer_lane_reservations(
         mut self,
         reservations: &'a ProducerLaneReservations,
@@ -484,12 +418,9 @@ struct AdvancedConstructionContext<'a> {
     home: TilePos,
     player_facing: bool,
     builders: &'a [&'a UnitObs],
-    combat_core_exclusions: &'a [UnitId],
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
-    public_map: Option<&'a PublicMapBriefing>,
     voluntary_scrap_guard: Reserve,
-    fresh_foundry_admission: FreshFoundryAdmission,
 }
 
 struct ExtractorClaimContext<'a> {
@@ -1023,8 +954,6 @@ struct ThinkContext<'a> {
     outstanding_air_production_ticks: Option<u64>,
     prior_scrap_commitment: u32,
     prelude: Vec<Intent>,
-    fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission,
-    fresh_foundry_admission: FreshFoundryAdmission,
     producer_lane_reservations: &'a ProducerLaneReservations,
     mode: PolicyMode<'a>,
 }
@@ -1284,8 +1213,6 @@ pub(super) struct StrategicUtilityContext<'a> {
     outstanding_air_production_ticks: Option<u64>,
     prior_scrap_commitment: u32,
     prelude: Vec<Intent>,
-    fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission,
-    fresh_foundry_admission: FreshFoundryAdmission,
     producer_lane_reservations: &'a ProducerLaneReservations,
 }
 
@@ -1306,8 +1233,6 @@ impl<'a> StrategicUtilityContext<'a> {
             outstanding_air_production_ticks: None,
             prior_scrap_commitment: 0,
             prelude,
-            fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission::Legacy,
-            fresh_foundry_admission: FreshFoundryAdmission::Legacy,
             producer_lane_reservations: ProducerLaneReservations::empty(),
         }
     }
@@ -1328,20 +1253,6 @@ impl<'a> StrategicUtilityContext<'a> {
 
     pub(super) const fn with_prior_scrap_commitment(mut self, amount: u32) -> Self {
         self.prior_scrap_commitment = amount;
-        self
-    }
-
-    /// Prevents the residual economy and construction channels from deriving a
-    /// second fresh Foundry after cross-domain allocation has made that choice.
-    pub(in crate::bot) const fn with_adjudicated_fresh_foundry(mut self) -> Self {
-        self.fresh_foundry_admission = FreshFoundryAdmission::Adjudicated;
-        self
-    }
-
-    /// Prevents opening-core utility from choosing a second fresh emergency
-    /// defense after shared allocation has made that choice.
-    pub(in crate::bot) const fn with_adjudicated_fresh_emergency_defense(mut self) -> Self {
-        self.fresh_emergency_defense_admission = FreshEmergencyDefenseAdmission::Adjudicated;
         self
     }
 
@@ -1631,7 +1542,7 @@ impl UtilityPolicy {
                     .saturating_add(production::planned_at(intents, building.id));
                 let prior_immediate = production::planned_kinds_at(intents, building.id);
                 (depth < 2
-                    && producer_lane_reservations.allows_immediate_append(
+                    && producer_lane_reservations.allows_raw_immediate_append(
                         building.id,
                         &prior_immediate,
                         UnitKind::Sentinel,
@@ -2244,8 +2155,6 @@ impl UtilityPolicy {
                 outstanding_air_production_ticks: None,
                 prior_scrap_commitment: 0,
                 prelude: Vec::new(),
-                fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission::Legacy,
-                fresh_foundry_admission: FreshFoundryAdmission::Legacy,
                 producer_lane_reservations: ProducerLaneReservations::empty(),
                 mode: PolicyMode {
                     player_facing: false,
@@ -2258,8 +2167,12 @@ impl UtilityPolicy {
         )
     }
 
-    /// One player-facing utility think without controller-level strategic
-    /// intelligence or higher-level planner intents.
+    /// One player-facing residual-utility think without controller-level
+    /// strategic intelligence or higher-level planner intents.
+    ///
+    /// Fresh Foundry and emergency-defense work must enter through the shared
+    /// proposal and allocation path. This facade exists for tests of the
+    /// remaining utility channels and cannot originate either investment.
     pub fn think_player_facing(
         &mut self,
         dials: &Dials,
@@ -2280,8 +2193,6 @@ impl UtilityPolicy {
                 outstanding_air_production_ticks: None,
                 prior_scrap_commitment: 0,
                 prelude: Vec::new(),
-                fresh_emergency_defense_admission: FreshEmergencyDefenseAdmission::Legacy,
-                fresh_foundry_admission: FreshFoundryAdmission::Legacy,
                 producer_lane_reservations: ProducerLaneReservations::empty(),
                 mode: PolicyMode {
                     player_facing: true,
@@ -2315,8 +2226,6 @@ impl UtilityPolicy {
                 outstanding_air_production_ticks: context.outstanding_air_production_ticks,
                 prior_scrap_commitment: context.prior_scrap_commitment,
                 prelude: context.prelude,
-                fresh_emergency_defense_admission: context.fresh_emergency_defense_admission,
-                fresh_foundry_admission: context.fresh_foundry_admission,
                 producer_lane_reservations: context.producer_lane_reservations,
                 mode: PolicyMode {
                     player_facing: true,
@@ -2343,8 +2252,6 @@ impl UtilityPolicy {
             outstanding_air_production_ticks,
             prior_scrap_commitment,
             prelude,
-            fresh_emergency_defense_admission,
-            fresh_foundry_admission,
             producer_lane_reservations,
             mode,
         } = context;
@@ -2578,22 +2485,18 @@ impl UtilityPolicy {
             Self::claim_non_preemptible_intent_units(intent, &mut unavailable_builders);
         }
         let construction_context = ConstructionContext::new(home_tile, construction_claims)
-            .with_combat_core_exclusions(combat_core_exclusions)
             .with_intelligence(mode.unit_contacts, mode.building_contacts)
             .with_public_map(mode.public_map)
-            .excluding_builders(&unavailable_builders)
-            .with_fresh_emergency_defense_admission(fresh_emergency_defense_admission)
-            .with_fresh_foundry_admission(fresh_foundry_admission);
+            .excluding_builders(&unavailable_builders);
         let manages_opening = player_facing && dials.minimum_core_equivalents > 0;
         let mut opening_core_deficient = false;
 
         if manages_opening {
-            self.construction_with_commitments(
+            self.residual_construction(
                 dials,
                 obs,
-                construction_context.during_opening_core(dials.turret_response, dials.aa_response),
+                construction_context.during_opening_core(),
                 &mut budget,
-                commitments.as_mut(),
                 &mut intents,
             );
             let status = self.opening_core_production(
@@ -2603,7 +2506,6 @@ impl UtilityPolicy {
                     .with_combat_core_exclusions(combat_core_exclusions)
                     .with_intelligence(mode.unit_contacts, mode.building_contacts)
                     .with_public_map(mode.public_map)
-                    .with_fresh_foundry_admission(fresh_foundry_admission)
                     .with_producer_lane_reservations(producer_lane_reservations),
                 &mut budget,
                 &mut intents,
@@ -2662,7 +2564,6 @@ impl UtilityPolicy {
                 .with_intelligence(mode.unit_contacts, mode.building_contacts)
                 .with_public_map(mode.public_map)
                 .with_voluntary_scrap_guard(Reserve::Exact(production_guard))
-                .with_fresh_foundry_admission(fresh_foundry_admission)
                 .with_producer_lane_reservations(producer_lane_reservations),
                 &mut budget,
                 commitments.as_mut(),
@@ -2670,13 +2571,12 @@ impl UtilityPolicy {
             );
 
             if !expansion_capital_promised && !Self::construction_channel_spent(&intents) {
-                self.construction_with_commitments(
+                self.residual_construction(
                     dials,
                     obs,
                     construction_context
                         .with_voluntary_scrap_guard(Reserve::Exact(production_guard)),
                     &mut budget,
-                    commitments.as_mut(),
                     &mut intents,
                 );
             }
@@ -2716,12 +2616,11 @@ impl UtilityPolicy {
             let mut planned_construction = Vec::new();
             if construction_precedes_discretionary {
                 let mut construction_budget = budget;
-                self.construction_with_commitments(
+                self.residual_construction(
                     dials,
                     obs,
                     construction_context,
                     &mut construction_budget,
-                    commitments.as_mut(),
                     &mut planned_construction,
                 );
                 budget = construction_budget;
@@ -2738,7 +2637,6 @@ impl UtilityPolicy {
                     .with_combat_core_exclusions(combat_core_exclusions)
                     .with_intelligence(mode.unit_contacts, mode.building_contacts)
                     .with_public_map(mode.public_map)
-                    .with_fresh_foundry_admission(fresh_foundry_admission)
                     .with_producer_lane_reservations(producer_lane_reservations),
                     &mut budget,
                     commitments.as_mut(),
@@ -2749,7 +2647,6 @@ impl UtilityPolicy {
                     dials,
                     obs,
                     ProductionContext::new(home_tile, construction_claims, None)
-                        .with_fresh_foundry_admission(fresh_foundry_admission)
                         .with_producer_lane_reservations(producer_lane_reservations),
                     &mut budget,
                     commitments.as_mut(),
@@ -2759,12 +2656,11 @@ impl UtilityPolicy {
             if construction_precedes_discretionary {
                 intents.extend(planned_construction);
             } else if !expansion_capital_promised && !Self::construction_channel_spent(&intents) {
-                self.construction_with_commitments(
+                self.residual_construction(
                     dials,
                     obs,
                     construction_context,
                     &mut budget,
-                    commitments.as_mut(),
                     &mut intents,
                 );
             }
@@ -4225,6 +4121,21 @@ mod tests {
         dials.expansion = false;
         dials.mines = false;
 
+        let residual = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+        assert!(
+            residual.iter().all(|intent| !matches!(
+                intent,
+                Intent::Build {
+                    kind: BuildingKind::Turret | BuildingKind::FlakTurret,
+                    ..
+                } | Intent::BuildWith {
+                    kind: BuildingKind::Turret | BuildingKind::FlakTurret,
+                    ..
+                }
+            )),
+            "the residual facade cannot originate current-threat emergency work: {residual:?}"
+        );
+
         let available = [UnitId(1), UnitId(2)];
         let mut policy = UtilityPolicy::new();
         let defense = policy
@@ -4252,8 +4163,7 @@ mod tests {
             &[],
             &[],
             StrategicUtilityContext::new(&[], &[], &[], &map, prelude)
-                .with_prior_scrap_commitment(cost)
-                .with_adjudicated_fresh_emergency_defense(),
+                .with_prior_scrap_commitment(cost),
         );
 
         let emergency_builds: Vec<_> = intents

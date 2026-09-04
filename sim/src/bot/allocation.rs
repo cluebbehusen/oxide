@@ -9,11 +9,12 @@ use core::cmp::{Ordering, Reverse};
 use std::collections::BTreeSet;
 
 use super::resources::{
-    PlanningProjectionError, ProducerLaneReservations, ProducerPlanningProjection,
-    ReservedProducerJob, ResourcePlanningProjection, ResourceSnapshot, SiteFootprint,
+    PlanningProjectionError, ProducerLaneReservationError, ProducerLaneReservations,
+    ProducerPlanningProjection, ReservedProducerJob, ResourcePlanningProjection, ResourceSnapshot,
+    SiteFootprint,
 };
 use crate::ids::{BuildingId, UnitId};
-use crate::stats::UnitKind;
+use crate::stats::{BuildingKind, UnitKind};
 use chassis::Tick;
 use chassis::grid::TilePos;
 
@@ -216,8 +217,10 @@ pub(crate) struct DeferrableCapitalClaim {
 /// reasonable plans cannot both consume the same lane. These are future,
 /// unpaid `Train` commands; work already present in the observed paid queue is
 /// represented by the resource projection and must not be claimed again. An
-/// imported obligation uses [`Self::fixed`] to retain the exact lane and timing
-/// it already owns.
+/// imported obligation uses [`Self::fixed`] for work whose exact lane and
+/// timing were already accepted. A persistent operation may instead retain an
+/// exact unpaid unit demand through [`Self::flexible`], leaving only the future
+/// producer assignment to this joint allocator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProducerJobClaim {
     kind: UnitKind,
@@ -707,13 +710,6 @@ pub(crate) enum AllocationConflict {
         /// Canonical preflighted producer set supplied by the domain.
         eligible_producers: Vec<BuildingId>,
     },
-    /// A prior obligation did not retain one exact producer assignment.
-    UnassignedObligationJob {
-        /// Exact obligation owner.
-        owner: ClaimOwner,
-        /// Exact requested kind.
-        kind: UnitKind,
-    },
     /// No ordering of fresh jobs can preserve every prior claim and deadline.
     ProducerSchedule {
         /// Producers participating in the impossible joint schedule.
@@ -778,6 +774,13 @@ impl LegacyChannel {
 /// Stable typed identity of one imported obligation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ObligationKey {
+    /// One exact opening defense selected before ordinary core recovery.
+    EmergencyDefense {
+        /// Defensive structure selected by the utility scorer.
+        kind: BuildingKind,
+        /// Exact scorer-selected anchor.
+        anchor: TilePos,
+    },
     /// One protected opening- or recovery-core tranche.
     OpeningCore { sequence: u16 },
     /// One already-paid construction site.
@@ -815,13 +818,31 @@ pub(crate) enum ObligationKey {
 impl ObligationKey {
     fn sort_key(self) -> (u8, i32, i32, u32) {
         match self {
-            Self::OpeningCore { sequence } => (0, 0, 0, u32::from(sequence)),
-            Self::PaidConstruction(building) => (1, 0, 0, building.0),
-            Self::ObservedBuilderWork { builder } => (2, 0, 0, builder.0),
-            Self::DeferredFoundation { builder, anchor } => (3, anchor.y, anchor.x, builder.0),
-            Self::SavedFoundry { anchor } => (4, anchor.y, anchor.x, 0),
-            Self::ConnectedOffense { objective, anchor } => (5, anchor.y, anchor.x, objective.0),
-            Self::Legacy { channel, sequence } => (6, channel.sort_key(), 0, sequence),
+            Self::EmergencyDefense { kind, anchor } => {
+                let kind_order = match kind {
+                    BuildingKind::Turret => 0,
+                    BuildingKind::FlakTurret => 1,
+                    BuildingKind::Foundry
+                    | BuildingKind::Fabricator
+                    | BuildingKind::Bastion
+                    | BuildingKind::Array
+                    | BuildingKind::Reclaimer
+                    | BuildingKind::RepairBay
+                    | BuildingKind::Extractor
+                    | BuildingKind::Airworks
+                    | BuildingKind::Crucible
+                    | BuildingKind::Barricade
+                    | BuildingKind::ScuttleCharge => 2,
+                };
+                (0, anchor.y, anchor.x, kind_order)
+            }
+            Self::OpeningCore { sequence } => (1, 0, 0, u32::from(sequence)),
+            Self::PaidConstruction(building) => (2, 0, 0, building.0),
+            Self::ObservedBuilderWork { builder } => (3, 0, 0, builder.0),
+            Self::DeferredFoundation { builder, anchor } => (4, anchor.y, anchor.x, builder.0),
+            Self::SavedFoundry { anchor } => (5, anchor.y, anchor.x, 0),
+            Self::ConnectedOffense { objective, anchor } => (6, anchor.y, anchor.x, objective.0),
+            Self::Legacy { channel, sequence } => (7, channel.sort_key(), 0, sequence),
         }
     }
 }
@@ -883,6 +904,11 @@ impl PartialOrd for ClaimOwner {
 }
 
 /// One mandatory resource owner imported before fresh proposals are compared.
+///
+/// Actors, sites, capital, and produced unit demand are exact. An already-paid
+/// or previously scheduled producer job retains its fixed lane and timing;
+/// unpaid future demand may remain flexible so the joint search can assign it
+/// alongside fresh work without inventing a call-order preference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ImportedObligation {
     /// Priority class of this already-accepted work.
@@ -923,6 +949,9 @@ pub(crate) enum AllocationError {
         /// Exact failed claim.
         conflict: AllocationConflict,
     },
+    /// The selected producer schedule could not be replayed against the exact
+    /// resource projection used to select it.
+    ProducerReservation(ProducerLaneReservationError),
 }
 
 /// Why one well-formed fresh proposal was not selected.
@@ -1036,7 +1065,7 @@ pub(crate) struct CapitalFundingAssignment {
 pub(crate) fn future_producer_lane_reservations(
     capacity: &AllocationCapacity,
     schedule: &[ScheduledProducerJob],
-) -> ProducerLaneReservations {
+) -> Result<ProducerLaneReservations, ProducerLaneReservationError> {
     ProducerLaneReservations::from_jobs(
         &capacity.resources,
         schedule.iter().map(|job| ReservedProducerJob {
@@ -1550,7 +1579,8 @@ impl FundingPriority {
             accepted_at,
             order: match key {
                 ObligationKey::SavedFoundry { .. } => 1,
-                ObligationKey::OpeningCore { .. }
+                ObligationKey::EmergencyDefense { .. }
+                | ObligationKey::OpeningCore { .. }
                 | ObligationKey::PaidConstruction(_)
                 | ObligationKey::ObservedBuilderWork { .. }
                 | ObligationKey::DeferredFoundation { .. }
@@ -1734,14 +1764,6 @@ impl ClaimState {
             .filter(|job| job.owner == owner)
             .count();
         for (offset, claim) in claims.producer_jobs.iter().enumerate() {
-            if matches!(owner, ClaimOwner::Obligation { .. })
-                && matches!(claim.access, ProducerJobAccess::Flexible(_))
-            {
-                return Err(AllocationConflict::UnassignedObligationJob {
-                    owner,
-                    kind: claim.kind,
-                });
-            }
             if claim.access.producers().is_empty() {
                 return Err(AllocationConflict::ProducerAccess {
                     kind: claim.kind,
@@ -2106,6 +2128,23 @@ impl ProductionPortfolioSearch<'_> {
             ) {
                 schedule.pop();
                 continue;
+            }
+            if self.funding_mode == JointFundingMode::PreferPriority {
+                let mut funded_prefix = schedule.clone();
+                if assign_joint_funding(
+                    self.capacity,
+                    self.current_capital,
+                    self.forecast_capital,
+                    self.deferrable_capital,
+                    self.jobs,
+                    &mut funded_prefix,
+                    self.funding_mode,
+                )
+                .is_none()
+                {
+                    schedule.pop();
+                    continue;
+                }
             }
             let prior_lane =
                 core::mem::replace(&mut producers[placement.lane_index], placement.lane_after);
@@ -4137,6 +4176,184 @@ mod tests {
     }
 
     #[test]
+    fn late_income_marginal_preserves_stronger_work_with_a_bounded_search() {
+        let observed_at = 19_776;
+        let cadence = 12;
+        let horizon = 24_984;
+        let fabricator = BuildingId(15);
+        let airworks = BuildingId(36);
+        let income = (0..44_u64)
+            .flat_map(|cycle| {
+                [
+                    (12, 8),
+                    (24, 9),
+                    (36, 2),
+                    (48, 6),
+                    (60, 2),
+                    (72, 6),
+                    (84, 11),
+                    (108, 8),
+                ]
+                .into_iter()
+                .map(move |(offset, amount)| ForecastAvailability {
+                    available_at: observed_at + cycle * 120 + offset,
+                    amount,
+                })
+            })
+            .filter(|income| income.available_at <= horizon)
+            .collect::<Vec<_>>();
+        assert_eq!(income.len(), 348);
+        let producer = |id, trainable| {
+            ProducerPlanningProjection::fixture(
+                id,
+                observed_at,
+                cadence,
+                observed_at,
+                vec![observed_at; QUEUE_CAP],
+                trainable,
+            )
+            .expect("the late-game producer fixture is canonical")
+        };
+        let basis = timed_capacity(
+            233,
+            observed_at,
+            horizon,
+            cadence,
+            income,
+            vec![
+                producer(fabricator, vec![UnitKind::Bombard]),
+                producer(airworks, vec![UnitKind::Darter]),
+            ],
+        );
+        let opening = ImportedObligation {
+            class: ObligationClass::Survival,
+            accepted_at: observed_at,
+            key: ObligationKey::OpeningCore { sequence: 0 },
+            claims: bundle(90, vec![], vec![], vec![], vec![], vec![]),
+        };
+        let saved_owner = ClaimOwner::Obligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: 19_584,
+            key: ObligationKey::SavedFoundry {
+                anchor: TilePos::new(42, 22),
+            },
+        };
+        let saved = ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: 19_584,
+            key: ObligationKey::SavedFoundry {
+                anchor: TilePos::new(42, 22),
+            },
+            claims: bundle(0, vec![], vec![1], vec![], vec![site(42, 22)], vec![])
+                .with_deferrable_capital(DeferrableCapitalClaim {
+                    through: horizon,
+                    amount: 300,
+                })
+                .expect("the saved Foundry has one flexible capital claim"),
+        };
+        let connected_key = ConnectedOffenseKey {
+            objective: BuildingId(90),
+            anchor: TilePos::new(40, 10),
+        };
+        let connected = with_jobs(
+            offense_accepted_at(0, vec![], ordinary_case(), observed_at),
+            vec![
+                ProducerJobClaim::flexible(UnitKind::Bombard, 19_884, 22_176, vec![fabricator]),
+                ProducerJobClaim::flexible(UnitKind::Darter, 20_100, 22_176, vec![airworks]),
+            ],
+        );
+        let mut result = allocate(
+            &basis,
+            vec![opening, saved],
+            vec![connected],
+            AllocationPersonality::default(),
+        )
+        .expect("the minimum package and stronger obligations fit");
+        let stronger_schedule = result.producer_schedule.clone();
+        let saved_before = result
+            .capital_assignments
+            .iter()
+            .copied()
+            .find(|assignment| assignment.owner == saved_owner)
+            .expect("the saved Foundry has an assigned funding split");
+        let marginal = bundle(
+            0,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            [20_340, 20_580, 20_808, 21_036]
+                .into_iter()
+                .map(|enqueue_not_before| {
+                    ProducerJobClaim::flexible(
+                        UnitKind::Darter,
+                        enqueue_not_before,
+                        22_176,
+                        vec![airworks],
+                    )
+                })
+                .collect(),
+        );
+
+        result
+            .try_extend_connected_offense(&basis, connected_key, &marginal)
+            .expect("the useful marginal fits after the stronger portfolio");
+
+        assert_eq!(&result.producer_schedule[..2], stronger_schedule);
+        assert_eq!(
+            result
+                .capital_assignments
+                .iter()
+                .copied()
+                .find(|assignment| assignment.owner == saved_owner),
+            Some(saved_before)
+        );
+        let schedule = result
+            .producer_schedule
+            .iter()
+            .map(|row| {
+                (
+                    row.producer,
+                    row.kind,
+                    row.enqueued_at,
+                    row.starts_at,
+                    row.ready_at,
+                    row.current_scrap,
+                    row.forecast_scrap,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            schedule,
+            vec![
+                (
+                    fabricator,
+                    UnitKind::Bombard,
+                    20_220,
+                    20_220,
+                    20_519,
+                    0,
+                    200
+                ),
+                (airworks, UnitKind::Darter, 20_460, 20_460, 20_609, 0, 100),
+                (airworks, UnitKind::Darter, 20_700, 20_700, 20_849, 0, 100),
+                (airworks, UnitKind::Darter, 20_928, 20_928, 21_077, 0, 100),
+                (airworks, UnitKind::Darter, 21_168, 21_168, 21_317, 0, 100),
+                (airworks, UnitKind::Darter, 21_384, 21_384, 21_533, 0, 100),
+            ]
+        );
+        assert_eq!(
+            (saved_before.current_scrap, saved_before.forecast_scrap),
+            (143, 157)
+        );
+        assert!(
+            result.production_search_states <= 7,
+            "the canonical successful path should visit at most one state per request: {}",
+            result.production_search_states
+        );
+    }
+
+    #[test]
     fn production_cost_and_nonproduction_capital_are_each_charged_once() {
         let producer = BuildingId(7);
         let proposal = |current_scrap| {
@@ -5314,6 +5531,73 @@ mod tests {
     }
 
     #[test]
+    fn every_semantic_band_reports_the_first_distinguishing_basis() {
+        let ordinary = ordinary_case();
+        let cases = [
+            (
+                OutrankingBasis::Confidence,
+                ProposalCase {
+                    confidence: Confidence::Current,
+                    ..ordinary
+                },
+                ProposalCase {
+                    confidence: Confidence::Prior,
+                    ..ordinary
+                },
+            ),
+            (
+                OutrankingBasis::StrategicValue,
+                ProposalCase {
+                    value: StrategicValue::Decisive,
+                    ..ordinary
+                },
+                ProposalCase {
+                    value: StrategicValue::Incremental,
+                    ..ordinary
+                },
+            ),
+            (
+                OutrankingBasis::TimeToImpact,
+                ProposalCase {
+                    time_to_impact: TimeToImpact::Immediate,
+                    ..ordinary
+                },
+                ProposalCase {
+                    time_to_impact: TimeToImpact::Patient,
+                    ..ordinary
+                },
+            ),
+            (
+                OutrankingBasis::Safety,
+                ProposalCase {
+                    safety: ExecutionSafety::Secure,
+                    ..ordinary
+                },
+                ProposalCase {
+                    safety: ExecutionSafety::Speculative,
+                    ..ordinary
+                },
+            ),
+        ];
+
+        for (expected, stronger, weaker) in cases {
+            let stronger = portfolio_rank(
+                1,
+                &[foundry(10, 0, Vec::new(), stronger)],
+                AllocationPersonality::default(),
+            );
+            let weaker = portfolio_rank(
+                1,
+                &[foundry(10, 0, Vec::new(), weaker)],
+                AllocationPersonality::default(),
+            );
+
+            assert!(stronger > weaker);
+            assert_eq!(outranking_basis(&stronger, &weaker), Some(expected));
+        }
+    }
+
+    #[test]
     fn personality_is_named_as_the_basis_only_after_semantic_bands_tie() {
         let proposals = [
             foundry(10, 100, vec![], ordinary_case()),
@@ -5637,5 +5921,63 @@ mod tests {
         };
         assert!(top_right < bottom_left);
         assert!(top_right.anchor > bottom_left.anchor);
+    }
+
+    #[test]
+    fn emergency_defenses_precede_core_recovery_with_ground_before_air() {
+        let tick = 120;
+        let mut owners = [
+            ClaimOwner::Obligation {
+                class: ObligationClass::Survival,
+                accepted_at: tick,
+                key: ObligationKey::OpeningCore { sequence: 0 },
+            },
+            ClaimOwner::Obligation {
+                class: ObligationClass::Survival,
+                accepted_at: tick,
+                key: ObligationKey::EmergencyDefense {
+                    kind: BuildingKind::FlakTurret,
+                    anchor: TilePos::new(5, 5),
+                },
+            },
+            ClaimOwner::Obligation {
+                class: ObligationClass::Survival,
+                accepted_at: tick,
+                key: ObligationKey::EmergencyDefense {
+                    kind: BuildingKind::Turret,
+                    anchor: TilePos::new(5, 5),
+                },
+            },
+        ];
+
+        owners.sort_unstable_by_key(|owner| FundingPriority::obligation(*owner));
+
+        assert!(matches!(
+            owners[0],
+            ClaimOwner::Obligation {
+                key: ObligationKey::EmergencyDefense {
+                    kind: BuildingKind::Turret,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            owners[1],
+            ClaimOwner::Obligation {
+                key: ObligationKey::EmergencyDefense {
+                    kind: BuildingKind::FlakTurret,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            owners[2],
+            ClaimOwner::Obligation {
+                key: ObligationKey::OpeningCore { .. },
+                ..
+            }
+        ));
     }
 }

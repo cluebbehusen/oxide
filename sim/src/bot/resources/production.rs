@@ -41,8 +41,10 @@ pub(crate) struct ProductionSchedule {
     /// New queue appends in deterministic selection order.
     pub(crate) appends: Vec<PlannedAppend>,
     /// Scheduled counts in caller priority order.
+    #[cfg(test)]
     pub(crate) satisfied: Vec<ProductionDemand>,
     /// Unscheduled counts in caller priority order.
+    #[cfg(test)]
     pub(crate) unmet: Vec<ProductionDemand>,
     /// Current scrap consumed by `appends`.
     pub(crate) spent: u32,
@@ -619,17 +621,18 @@ fn partial_horizon_assignment(
 }
 
 fn production_schedule(
-    requested: &[ProductionDemand],
-    scheduled: Vec<usize>,
-    remaining: Vec<usize>,
+    _requested: &[ProductionDemand],
+    _scheduled: Vec<usize>,
+    _remaining: Vec<usize>,
     appends: Vec<PlannedAppend>,
     spent: u32,
     deferred_scrap: u32,
     next_unfunded_cost: Option<u32>,
 ) -> ProductionSchedule {
-    let satisfied = requested
+    #[cfg(test)]
+    let satisfied = _requested
         .iter()
-        .zip(scheduled)
+        .zip(_scheduled)
         .filter_map(|(demand, count)| {
             (count > 0).then_some(ProductionDemand {
                 kind: demand.kind,
@@ -637,9 +640,10 @@ fn production_schedule(
             })
         })
         .collect();
-    let unmet = requested
+    #[cfg(test)]
+    let unmet = _requested
         .iter()
-        .zip(remaining)
+        .zip(_remaining)
         .filter_map(|(demand, count)| {
             (count > 0).then_some(ProductionDemand {
                 kind: demand.kind,
@@ -650,7 +654,9 @@ fn production_schedule(
 
     ProductionSchedule {
         appends,
+        #[cfg(test)]
         satisfied,
+        #[cfg(test)]
         unmet,
         spent,
         deferred_scrap,

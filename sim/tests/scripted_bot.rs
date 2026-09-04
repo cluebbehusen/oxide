@@ -1,9 +1,10 @@
 //! Player-facing scripted opponent contracts.
 
 use chassis::grid::TilePos;
+use oxide_sim::bot::trace::{ClaimOwnerTrace, ProposalDispositionTrace, ProposalKeyTrace};
 use oxide_sim::bot::{
     Brain, ConnectedForceStatus, ConnectedRecoveryReasonTrace, ConnectedRejectionReasonTrace,
-    Dials, Observation, PublicMapBriefing, TargetEvidenceTrace, seat_bots,
+    Dials, Observation, Orientation, PublicMapBriefing, TargetEvidenceTrace, seat_bots,
 };
 use oxide_sim::scenario::{
     BotConfig, BotDifficulty, BotStance, BuildingSpec, PlayerSpec, UnitSpec,
@@ -1114,6 +1115,252 @@ fn connected_package_waits_for_and_reuses_a_full_production_queue() {
 }
 
 #[test]
+fn connected_package_uses_only_a_producer_that_can_reach_its_staging_route() {
+    let mut scenario = connected_package_scenario(false);
+    scenario.name = "Connected package with one isolated producer".to_owned();
+    scenario.units.retain(|unit| unit.kind != UnitKind::Bombard);
+    scenario.units.push(UnitSpec {
+        player: 0,
+        kind: UnitKind::Sentinel,
+        x: 8,
+        y: 21,
+    });
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Fabricator,
+        x: 11,
+        y: 3,
+    });
+    let mut rows = scenario
+        .map
+        .iter()
+        .map(|row| row.chars().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    for row in [1, 6] {
+        for cell in &mut rows[row][1..=6] {
+            *cell = '^';
+        }
+    }
+    for row in &mut rows[2..6] {
+        row[1] = '^';
+        row[6] = '^';
+    }
+    scenario.map = rows
+        .into_iter()
+        .map(|row| row.into_iter().collect())
+        .collect();
+
+    let state = scenario
+        .build()
+        .expect("isolated-producer connected-package scenario builds");
+    let isolated = state
+        .buildings()
+        .iter()
+        .find(|building| {
+            building.player == PlayerId(0)
+                && building.kind == BuildingKind::Fabricator
+                && building.anchor == TilePos::new(3, 3)
+        })
+        .expect("fixture retains the enclosed Fabricator")
+        .id;
+    let reachable = state
+        .buildings()
+        .iter()
+        .find(|building| {
+            building.player == PlayerId(0)
+                && building.kind == BuildingKind::Fabricator
+                && building.anchor == TilePos::new(11, 3)
+        })
+        .expect("fixture adds the reachable Fabricator")
+        .id;
+
+    let mut legal_state = state.clone();
+    let legal_report = legal_state.tick(&[oxide_sim::PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Train {
+            building: isolated,
+            kind: UnitKind::Bombard,
+        },
+    }]);
+    assert!(
+        legal_report.events.iter().all(|event| !matches!(
+            event,
+            Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )),
+        "the enclosed Fabricator must be locally legal so this tests strategic route access"
+    );
+
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.expect("bot is configured"),
+        public_map(&scenario),
+    );
+    let decision = brain.act_traced(&state);
+    let trace = decision
+        .trace
+        .as_ref()
+        .expect("the admission think is traced");
+    assert_eq!(
+        trace.connected_force.status,
+        ConnectedForceStatus::Active,
+        "the reachable lane should keep the connected package admissible: {trace:#?}"
+    );
+    let suppression_commands = decision
+        .commands
+        .iter()
+        .filter_map(|command| match command.command {
+            Command::Train {
+                building,
+                kind: UnitKind::Bombard,
+            } => Some(building),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        suppression_commands,
+        vec![reachable],
+        "the package must not assign its suppression provider to the publicly isolated lane"
+    );
+
+    let mut accepted_state = state;
+    let report = accepted_state.tick(&decision.commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player: PlayerId(0),
+            ..
+        }
+    )));
+}
+
+#[test]
+fn shipped_brain_allocates_compatible_foundry_and_connected_offense_together() {
+    let foundry_cost = BuildingKind::Foundry
+        .base_stats()
+        .construction
+        .expect("Foundries are constructible")
+        .cost;
+    let scenario = foundry_connected_allocation_scenario(
+        foundry_cost
+            .saturating_add(UnitKind::Buzzard.stats().cost)
+            .saturating_add(UnitKind::Sentinel.stats().cost),
+    );
+    let mut state = scenario
+        .build()
+        .expect("the cross-domain allocation scenario builds");
+    let config = scenario.players[0].bot_config.expect("bot is configured");
+    let briefing = public_map(&scenario);
+    let home = briefing
+        .starting_foundries()
+        .iter()
+        .find(|start| start.player == PlayerId(0))
+        .expect("the configured seat has a public starting Foundry")
+        .anchor;
+    let orientation = Orientation::for_home(&Observation::fog_honest(&state, PlayerId(0)), home);
+    let mut brain = Brain::scripted(PlayerId(0), config, Arc::clone(&briefing));
+
+    let decision = brain.act_traced(&state);
+    let trace = decision
+        .trace
+        .as_ref()
+        .expect("the shared allocation decision is traced");
+    assert!(trace.allocation.error.is_none());
+    assert!(trace.allocation.coordinator_failure.is_none());
+
+    let mut foundry_anchor = None;
+    let mut connected_key = None;
+    for proposal in &trace.allocation.proposals.entries {
+        match proposal.key {
+            ProposalKeyTrace::FoundryExpansion { anchor } => {
+                assert_eq!(
+                    proposal.disposition,
+                    ProposalDispositionTrace::Accepted,
+                    "the compatible Foundry proposal must be selected: {:?}",
+                    trace.allocation.proposals
+                );
+                foundry_anchor = Some(anchor);
+            }
+            key @ ProposalKeyTrace::ConnectedOffenseMinimum { .. } => {
+                assert_eq!(
+                    proposal.disposition,
+                    ProposalDispositionTrace::Accepted,
+                    "the compatible connected proposal must be selected: {:?}",
+                    trace.allocation.proposals
+                );
+                connected_key = Some(key);
+            }
+        }
+    }
+    let foundry_anchor = foundry_anchor.expect("the unsupported Extractor proposes a Foundry");
+    let connected_key = connected_key.expect("the current target proposes connected offense");
+    let world_foundry_anchor =
+        orientation.anchor(foundry_anchor, BuildingKind::Foundry.base_stats().size);
+
+    assert!(
+        decision.commands.iter().any(|command| matches!(
+            command.command,
+            Command::Build {
+                kind: BuildingKind::Foundry,
+                anchor,
+                ..
+            } if anchor == world_foundry_anchor
+        )),
+        "the accepted Foundry must dispatch its exact build: commands={:?}, allocation={:?}",
+        decision.commands,
+        trace.allocation
+    );
+    let due_connected = trace
+        .allocation
+        .producer_schedule
+        .entries
+        .iter()
+        .filter(|job| {
+            job.enqueued_at == state.current_tick()
+                && matches!(
+                    job.owner,
+                    ClaimOwnerTrace::Proposal { key } if key == connected_key
+                )
+        })
+        .map(|job| (job.producer, job.kind))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        due_connected.len(),
+        1,
+        "the exact bank should fund one due connected provider: {due_connected:?}"
+    );
+    assert!(due_connected.iter().all(|(producer, kind)| {
+        decision.commands.iter().any(|command| {
+            matches!(
+                command.command,
+                Command::Train { building, kind: trained }
+                    if building == *producer && trained == *kind
+            )
+        })
+    }));
+
+    let report = state.tick(&decision.commands);
+    assert!(
+        report.events.iter().all(|event| !matches!(
+            event,
+            Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )),
+        "the authoritative State must accept both domains in one transaction: {:?}",
+        report.events
+    );
+    assert!(state.buildings().iter().any(|building| {
+        building.player == PlayerId(0)
+            && building.kind == BuildingKind::Foundry
+            && building.anchor == world_foundry_anchor
+    }));
+}
+
+#[test]
 fn connected_package_refills_one_lane_until_an_oversized_roster_freezes() {
     let scenario = oversized_connected_package_scenario();
     let strike_kind = Role::AirGround.unit_for(scenario.players[0].faction);
@@ -1535,6 +1782,10 @@ fn connected_package_assembly_keeps_one_deadline_and_aborts_when_no_longer_feasi
     let mut infeasible_at = None;
     let mut aborted_at = None;
     let mut observed_statuses = Vec::new();
+    let mut cancelled_provider = false;
+    let mut last_trace = None;
+    let mut last_provider_cancellation = None;
+    let mut recovery_predecessor = None;
 
     for _ in 0..3_000 {
         let mut decision = brain.act_traced(&state);
@@ -1555,21 +1806,20 @@ fn connected_package_assembly_keeps_one_deadline_and_aborts_when_no_longer_feasi
                     fixed_deadline = Some(package.preparation_deadline);
                 }
             }
-            if let Some(rejected) = &trace.connected_force.rejected_candidate
-                && matches!(
-                    rejected.reason,
-                    ConnectedRejectionReasonTrace::PreparationWindowTooShort {
-                        deadline,
-                        ..
-                    } if Some(deadline) == fixed_deadline
+            if trace.connected_force.status
+                == ConnectedForceStatus::Recovering(
+                    ConnectedRecoveryReasonTrace::PreparationInfeasible,
                 )
+                && infeasible_at.is_none()
             {
                 infeasible_at = Some(state.current_tick());
+                recovery_predecessor = Some((last_trace, last_provider_cancellation));
             }
             if trace.connected_force.status == ConnectedForceStatus::Aborted {
                 aborted_at = Some(state.current_tick());
                 break;
             }
+            last_trace = Some((state.current_tick(), trace.connected_force.status));
         }
 
         let cancellations: Vec<_> = decision
@@ -1583,6 +1833,10 @@ fn connected_package_assembly_keeps_one_deadline_and_aborts_when_no_longer_feasi
                 _ => None,
             })
             .collect();
+        cancelled_provider |= !cancellations.is_empty();
+        if !cancellations.is_empty() {
+            last_provider_cancellation = Some(state.current_tick());
+        }
         decision.commands.extend(cancellations);
         let report = state.tick(&decision.commands);
         assert!(report.events.iter().all(|event| {
@@ -1597,24 +1851,153 @@ fn connected_package_assembly_keeps_one_deadline_and_aborts_when_no_longer_feasi
     }
 
     let deadline = fixed_deadline.expect("the connected package was admitted");
+    assert!(
+        cancelled_provider,
+        "the fixture must cancel at least one accepted provider purchase"
+    );
     let infeasible_at = infeasible_at.expect(
-        "repeated cancellations eventually make the minimum package impossible inside its original window",
+        "cancelling an accepted provider makes the exact package infeasible inside its original window",
     );
     assert!(
         infeasible_at <= deadline,
         "the fixed window must close no later than its deadline: deadline={deadline}, observed={observed_statuses:?}"
     );
     assert!(
-        observed_statuses.contains(&(
-            infeasible_at,
-            ConnectedForceStatus::Recovering(ConnectedRecoveryReasonTrace::PreparationInfeasible)
-        )),
-        "an operation that can no longer finish its minimum package must begin recovery immediately: {observed_statuses:?}"
+        recovery_predecessor.is_some(),
+        "the first infeasible observation must retain its preceding causal evidence"
+    );
+    let (preceding_trace, cancellation_at) = recovery_predecessor.expect("checked above");
+    let (preceding_tick, preceding_status) =
+        preceding_trace.expect("recovery follows a traced active operation");
+    let cancellation_at =
+        cancellation_at.expect("recovery follows an externally cancelled provider purchase");
+    assert_eq!(
+        preceding_status,
+        ConnectedForceStatus::Active,
+        "the operation must be healthy immediately before the cancellation is observed"
+    );
+    assert_eq!(
+        preceding_tick, cancellation_at,
+        "the immediately preceding decision must be the one whose provider purchase was cancelled"
+    );
+    assert!(
+        cancellation_at < infeasible_at,
+        "recovery must be a response to authoritative cancellation, not a same-think prediction"
     );
     let aborted_at = aborted_at.expect("the infeasible operation reaches its terminal abort");
     assert!(
         aborted_at > infeasible_at && aborted_at <= infeasible_at.saturating_add(500),
         "recovery must release the infeasible cohort inside its bounded return window: {observed_statuses:?}"
+    );
+}
+
+#[test]
+fn connected_package_rejection_reports_its_fixed_preparation_deadline() {
+    let mut scenario = connected_package_scenario(true);
+    scenario.name = "Blocked connected-package production window".to_owned();
+    scenario.players[0].scrap = 10_000;
+    scenario.units.retain(|unit| unit.kind != UnitKind::Bombard);
+    scenario.units.push(UnitSpec {
+        player: 0,
+        kind: UnitKind::Sentinel,
+        x: 8,
+        y: 21,
+    });
+    let mut retained_crucible = false;
+    scenario.buildings.retain(|building| {
+        if building.player != 0 {
+            return true;
+        }
+        match building.kind {
+            BuildingKind::Fabricator => false,
+            BuildingKind::Crucible if retained_crucible => false,
+            BuildingKind::Crucible => {
+                retained_crucible = true;
+                true
+            }
+            _ => true,
+        }
+    });
+
+    let mut reference_state = scenario
+        .build()
+        .expect("reference connected-package scenario builds");
+    while reference_state.current_tick() < 24 {
+        reference_state.tick(&[]);
+    }
+    let mut reference_brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.expect("bot is configured"),
+        public_map(&scenario),
+    );
+    let reference = reference_brain.act_traced(&reference_state);
+    let fixed_deadline = reference
+        .trace
+        .as_ref()
+        .and_then(|trace| trace.connected_force.package.as_ref())
+        .expect("an open production lane admits the reference package")
+        .preparation_deadline;
+
+    let mut blocked_state = scenario
+        .build()
+        .expect("blocked connected-package scenario builds");
+    let crucible = blocked_state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Crucible)
+        .expect("fixture retains one Crucible")
+        .id;
+    let fill_queue: Vec<_> = (0..QUEUE_CAP)
+        .map(|_| oxide_sim::PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Train {
+                building: crucible,
+                kind: UnitKind::Breaker,
+            },
+        })
+        .collect();
+    let starting_scrap = blocked_state.player(PlayerId(0)).scrap;
+    let report = blocked_state.tick(&fill_queue);
+    assert!(
+        report.events.iter().all(|event| {
+            !matches!(
+                event,
+                Event::CommandRejected {
+                    player: PlayerId(0),
+                    ..
+                }
+            )
+        }),
+        "the blocking queue must be legal with {starting_scrap} scrap: {:?}",
+        report.events,
+    );
+    while blocked_state.current_tick() < 24 {
+        blocked_state.tick(&[]);
+    }
+
+    let mut blocked_brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.expect("bot is configured"),
+        public_map(&scenario),
+    );
+    let blocked = blocked_brain.act_traced(&blocked_state);
+    let trace = blocked
+        .trace
+        .expect("the blocked admission think is traced");
+    let rejected = trace
+        .connected_force
+        .rejected_candidate
+        .expect("the fixed production window rejects the connected package");
+    assert!(
+        matches!(
+            rejected.reason,
+            ConnectedRejectionReasonTrace::PreparationWindowTooShort {
+                observed_at: 24,
+                deadline,
+                ..
+            } if deadline == fixed_deadline
+        ),
+        "unexpected rejection for the fixed production window: {rejected:#?}"
     );
 }
 
@@ -2399,6 +2782,66 @@ fn connected_package_scenario(rich: bool) -> Scenario {
         x: 3 + index % 6,
         y: 20 + index / 6,
     }));
+    scenario
+}
+
+fn foundry_connected_allocation_scenario(scrap: u32) -> Scenario {
+    let mut scenario = connected_package_scenario(false);
+    scenario.name = "Shipped cross-domain allocation".to_owned();
+    scenario.seed = 1_616_305;
+    scenario.players[0].scrap = scrap;
+    scenario.players[0].bot = true;
+    scenario.players[0].bot_config = Some(BotConfig::scripted(
+        BotDifficulty::Prime,
+        BotStance::Aggressive,
+        u64::MAX,
+    ));
+    let frame = TilePos::new(18, 16);
+    let row = scenario
+        .map
+        .get_mut(frame.y as usize)
+        .expect("the fixture contains the expansion row");
+    let mut bytes = row.as_bytes().to_vec();
+    bytes[frame.x as usize] = b'E';
+    *row = String::from_utf8(bytes).expect("the fixture map remains ASCII");
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Extractor,
+        x: frame.x,
+        y: frame.y,
+    });
+    scenario.units.extend([
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Harvester,
+            x: 6,
+            y: 18,
+        },
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Harvester,
+            x: 7,
+            y: 18,
+        },
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Harvester,
+            x: 8,
+            y: 18,
+        },
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Condor,
+            x: 10,
+            y: 18,
+        },
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Condor,
+            x: 11,
+            y: 18,
+        },
+    ]);
     scenario
 }
 

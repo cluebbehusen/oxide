@@ -29,6 +29,7 @@ pub mod observation;
 pub mod orient;
 pub mod profile;
 pub mod raid;
+mod residual_coordination;
 mod resources;
 mod routing;
 pub mod strategy;

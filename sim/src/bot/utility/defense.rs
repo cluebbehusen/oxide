@@ -634,29 +634,6 @@ impl UtilityPolicy {
         .map(|placement| placement.anchor)
     }
 
-    pub(super) fn emergency_defense_site(
-        &self,
-        kind: BuildingKind,
-        obs: &Observation,
-        briefing: &PublicMapBriefing,
-        unit_contacts: &[UnitContact],
-        building_contacts: &[BuildingContact],
-        builders: &[&UnitObs],
-    ) -> Option<TilePos> {
-        if builders.is_empty() {
-            return None;
-        }
-        self.emergency_defense_placement(
-            kind,
-            obs,
-            briefing,
-            unit_contacts,
-            building_contacts,
-            builders,
-        )
-        .map(|placement| placement.anchor)
-    }
-
     pub(super) fn emergency_defense_placement(
         &self,
         kind: BuildingKind,
@@ -2410,7 +2387,9 @@ mod tests {
             .iter()
             .filter(|unit| unit.kind.stats().harvest.is_some())
             .collect();
-        policy.emergency_defense_site(kind, obs, briefing, units, buildings, &builders)
+        policy
+            .emergency_defense_placement(kind, obs, briefing, units, buildings, &builders)
+            .map(|placement| placement.anchor)
     }
 
     fn reveal(obs: &mut Observation, tile: TilePos) {

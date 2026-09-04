@@ -182,8 +182,13 @@ pub(super) struct ConnectedForcePackage {
 }
 
 const NORMALIZED_PROVIDER: u64 = 1_000;
+/// Buildings within this local Manhattan radius form one tactical objective.
+/// More distant value remains available to a later operation rather than
+/// silently enlarging the current force package.
 const TARGET_CLUSTER_RADIUS: u32 = 4;
-const MAX_TARGET_WEIGHT: u64 = 10;
+/// Converts strategic target value into additional strike work alongside the
+/// cluster's literal hit points. This is a scale divisor, not a value ceiling.
+const TARGET_VALUE_STRIKE_DIVISOR: u64 = 10;
 /// The existing connected strike phase's bounded window, expressed as 100-tick
 /// damage periods. This converts observed durability into useful firepower;
 /// it is not a roster ceiling.
@@ -685,6 +690,7 @@ pub(super) fn derive_connected_force_package(
 ///
 /// Connected admission uses this boundary after proving that every retained
 /// member is reachable by the operation's actual air and suppression tactics.
+#[cfg(test)]
 pub(super) fn derive_connected_force_package_for_cluster(
     profile: &ResolvedProfile,
     observation: &Observation,
@@ -715,6 +721,7 @@ pub(super) struct ConnectedForcePackageOptions {
 }
 
 impl ConnectedForcePackageOptions {
+    #[cfg(test)]
     pub(super) fn into_largest(self) -> ConnectedForcePackage {
         self.marginal.into_iter().last().unwrap_or(self.minimum)
     }
@@ -816,7 +823,7 @@ pub(super) fn derive_connected_force_package_options_for_cluster(
         strike: NORMALIZED_PROVIDER,
     };
     let effect_periods = TACTICAL_EFFECT_WINDOW / 100;
-    let strike_work = cluster_hp.saturating_add(target_value / MAX_TARGET_WEIGHT);
+    let strike_work = cluster_hp.saturating_add(target_value / TARGET_VALUE_STRIKE_DIVISOR);
     let suppression_work = air_defense.suppressible_hp.saturating_add(
         air_defense
             .suppressible_firepower

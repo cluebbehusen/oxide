@@ -20,6 +20,7 @@ use crate::bot::strategy::{
     ConnectedProducerTiming, FreshConnectedProposal, StrategicDecision,
 };
 use crate::bot::trace::AllocationTrace;
+use crate::bot::utility::FreshEmergencyDefense;
 use crate::ids::{BuildingId, UnitId};
 use crate::stats::BuildingKind;
 use chassis::Tick;
@@ -155,12 +156,20 @@ impl CrossDomainAllocation {
                 .expect("the allocator already accepted this domain's claim shape");
             trace.record_connected_marginal_rejected(key, &claims, &conflict);
         }
+        let producer_lane_reservations =
+            match future_producer_lane_reservations(&capacity, result.final_producer_schedule()) {
+                Ok(reservations) => reservations,
+                Err(error) => {
+                    let error = AllocationError::ProducerReservation(error);
+                    if let Some(trace) = trace.as_deref_mut() {
+                        trace.record_error(&error);
+                    }
+                    return Err(error);
+                }
+            };
         if let Some(trace) = trace {
             trace.record_result(&result);
         }
-
-        let producer_lane_reservations =
-            future_producer_lane_reservations(&capacity, result.final_producer_schedule());
         Ok(CrossDomainSettlement::new(
             current_scrap,
             obligations,
@@ -421,6 +430,33 @@ pub(crate) fn current_reserve_obligation(
     ))
 }
 
+/// Converts one exact same-think opening defense into a mandatory survival
+/// claim. The scorer-selected builder and footprint stay frozen through
+/// allocation and dispatch.
+pub(crate) fn fresh_emergency_defense_obligation(
+    accepted_at: Tick,
+    defense: FreshEmergencyDefense,
+) -> Result<ImportedObligation, ClaimBundleError> {
+    let site = SiteFootprint::new(defense.anchor(), defense.kind().base_stats().size)
+        .expect("building footprints are positive");
+    Ok(imported_obligation(
+        ObligationClass::Survival,
+        accepted_at,
+        ObligationKey::EmergencyDefense {
+            kind: defense.kind(),
+            anchor: defense.anchor(),
+        },
+        ClaimBundle::new(
+            defense.construction_cost(),
+            Vec::new(),
+            vec![defense.builder()],
+            Vec::new(),
+            vec![site],
+            Vec::new(),
+        )?,
+    ))
+}
+
 /// Clamps one prioritized current-bank reserve after every claim payable on
 /// this observation's command boundary, while retaining the owner's original
 /// acceptance tick for stable obligation ordering.
@@ -456,22 +492,63 @@ pub(crate) fn legacy_unit_obligation(
     ))
 }
 
+/// Exact evidence needed to import one unmigrated planner decision.
+pub(crate) struct LegacyDecisionRequest<'a> {
+    pub(crate) cadence: Tick,
+    pub(crate) accepted_at: Tick,
+    pub(crate) decision_tick: Tick,
+    pub(crate) channel: LegacyChannel,
+    pub(crate) sequence: u32,
+    pub(crate) decision: &'a StrategicDecision,
+    /// Earlier same-think producer commands, in their committed order.
+    /// These are projection context only; this obligation does not claim them.
+    pub(crate) prior_producer_intents: &'a [crate::bot::executive::Intent],
+    pub(crate) production_deadline: Tick,
+}
+
 /// Imports one unmigrated planner decision, including the exact immediate
 /// producer appends that account for part of its reported capital.
 pub(crate) fn legacy_decision_obligation(
     resources: &ResourceSnapshot,
-    cadence: Tick,
-    accepted_at: Tick,
-    decision_tick: Tick,
-    channel: LegacyChannel,
-    sequence: u32,
-    decision: &StrategicDecision,
-    production_deadline: Tick,
+    request: LegacyDecisionRequest<'_>,
 ) -> Result<ImportedObligation, CoordinatorInputError> {
+    let LegacyDecisionRequest {
+        cadence,
+        accepted_at,
+        decision_tick,
+        channel,
+        sequence,
+        decision,
+        prior_producer_intents,
+        production_deadline,
+    } = request;
     let mut producers = resources
         .planning_projection(production_deadline, cadence)?
         .producers()
         .to_vec();
+    for intent in prior_producer_intents {
+        let crate::bot::executive::Intent::TrainAt { building, kind } = intent else {
+            continue;
+        };
+        let Some(index) = producers
+            .binary_search_by_key(
+                building,
+                crate::bot::resources::ProducerPlanningProjection::producer,
+            )
+            .ok()
+        else {
+            return Err(CoordinatorInputError::ImmediateProducerUnavailable {
+                producer: *building,
+                kind: *kind,
+            });
+        };
+        if producers[index].append(*kind, decision_tick).is_none() {
+            return Err(CoordinatorInputError::ImmediateProducerUnavailable {
+                producer: *building,
+                kind: *kind,
+            });
+        }
+    }
     let mut jobs = Vec::new();
     for intent in &decision.intents {
         let crate::bot::executive::Intent::TrainAt { building, kind } = intent else {
@@ -772,24 +849,102 @@ pub(crate) fn connected_producer_assignments(
     let mut assignments = schedule
         .iter()
         .filter(|job| job.owner == owner)
-        .map(|job| {
-            ConnectedProducerAssignment::new(
-                identity,
-                job.request_ordinal,
-                job.producer,
-                job.kind,
-                ConnectedProducerTiming::new(
-                    job.enqueued_at,
-                    job.starts_at,
-                    job.ready_at,
-                    job.ready_before,
-                ),
-                ConnectedProducerFunding::new(job.current_scrap, job.forecast_scrap),
-            )
-        })
+        .map(|job| connected_producer_assignment(identity, job.request_ordinal, job))
         .collect::<Vec<_>>();
     assignments.sort_unstable_by_key(|assignment| assignment.request_ordinal());
     assignments
+}
+
+/// Reassembles an active revision's mandatory minimum and optional marginal
+/// jobs into the selected package's single ordinal space.
+pub(crate) fn active_connected_revision_producer_assignments(
+    proposal: &FreshConnectedProposal,
+    schedule: &[ScheduledProducerJob],
+) -> Vec<ConnectedProducerAssignment> {
+    debug_assert!(proposal.revises_active_operation());
+    let identity = proposal.identity();
+    let key = ObligationKey::ConnectedOffense {
+        objective: identity.objective(),
+        anchor: identity.anchor(),
+    };
+    let minimum_owner = ClaimOwner::Obligation {
+        class: ObligationClass::PersistentPlan,
+        accepted_at: proposal.accepted_at(),
+        key,
+    };
+    let marginal_owner = ClaimOwner::Proposal(ProposalKey::ConnectedOffenseMinimum(
+        super::ConnectedOffenseKey {
+            objective: identity.objective(),
+            anchor: identity.anchor(),
+        },
+    ));
+    let minimum_count = proposal.minimum_claims().provider_jobs().len();
+    let expected_count = proposal.selected_claims().provider_jobs().len();
+    let delta = proposal
+        .active_revision_provider_delta()
+        .expect("an active revision retains its bound producer schedule");
+    let minimum_order = delta.allocation_order(minimum_count);
+    let mut minimum = schedule
+        .iter()
+        .filter(|job| job.owner == minimum_owner)
+        .collect::<Vec<_>>();
+    minimum.sort_unstable_by_key(|job| job.request_ordinal);
+    let mut marginal = schedule
+        .iter()
+        .filter(|job| job.owner == marginal_owner)
+        .collect::<Vec<_>>();
+    marginal.sort_unstable_by_key(|job| job.request_ordinal);
+
+    let mut scheduled = minimum
+        .into_iter()
+        .map(|job| {
+            (
+                *minimum_order
+                    .get(job.request_ordinal)
+                    .expect("the retained minimum schedule belongs to the revision"),
+                job,
+            )
+        })
+        .chain(
+            marginal
+                .into_iter()
+                .map(|job| (minimum_count.saturating_add(job.request_ordinal), job)),
+        )
+        .collect::<Vec<_>>();
+    scheduled.sort_unstable_by_key(|(proposal_ordinal, _)| *proposal_ordinal);
+    let mut assignments = scheduled
+        .into_iter()
+        .map(|(proposal_ordinal, job)| {
+            let binding = delta
+                .jobs()
+                .get(proposal_ordinal)
+                .expect("the selected schedule belongs to the revision ladder");
+            connected_producer_assignment(identity, binding.binding_ordinal(), job)
+        })
+        .collect::<Vec<_>>();
+    assignments.sort_unstable_by_key(|assignment| assignment.request_ordinal());
+    debug_assert_eq!(assignments.len(), expected_count);
+    assignments
+}
+
+fn connected_producer_assignment(
+    identity: crate::bot::strategy::ConnectedOffenseIdentity,
+    request_ordinal: usize,
+    job: &ScheduledProducerJob,
+) -> ConnectedProducerAssignment {
+    ConnectedProducerAssignment::new(
+        identity,
+        request_ordinal,
+        job.producer,
+        job.kind,
+        ConnectedProducerTiming::new(
+            job.enqueued_at,
+            job.starts_at,
+            job.ready_at,
+            job.ready_before,
+        ),
+        ConnectedProducerFunding::new(job.current_scrap, job.forecast_scrap),
+    )
 }
 
 /// Extracts refreshed observation-relative funding for one active connected
@@ -1024,13 +1179,16 @@ mod tests {
         };
         let obligation = legacy_decision_obligation(
             &resources,
-            12,
-            24,
-            120,
-            LegacyChannel::Lift,
-            0,
-            &decision,
-            1_200,
+            LegacyDecisionRequest {
+                cadence: 12,
+                accepted_at: 24,
+                decision_tick: 120,
+                channel: LegacyChannel::Lift,
+                sequence: 0,
+                decision: &decision,
+                prior_producer_intents: &[],
+                production_deadline: 1_200,
+            },
         )
         .expect("the decision is a valid claim bundle");
 
@@ -1049,6 +1207,91 @@ mod tests {
             Some(120),
             "the planner's old priority must not backdate a current producer append"
         );
+    }
+
+    #[test]
+    fn later_legacy_training_replays_the_earlier_same_tick_fifo_prefix() {
+        let mut obs = observation();
+        obs.tick = 120;
+        obs.scrap = UnitKind::Skyhook
+            .stats()
+            .cost
+            .saturating_add(UnitKind::Kestrel.stats().cost);
+        obs.my_buildings.push(crate::bot::observation::BuildingObs {
+            id: BuildingId(9),
+            player: PlayerId(0),
+            kind: BuildingKind::Airworks,
+            anchor: TilePos::new(3, 3),
+            hp: BuildingKind::Airworks.base_stats().max_hp,
+            built: true,
+            seen: true,
+            tier: 0,
+        });
+        obs.my_queues.push(Vec::new());
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let first = StrategicDecision {
+            intents: vec![crate::bot::executive::Intent::TrainAt {
+                building: BuildingId(9),
+                kind: UnitKind::Skyhook,
+            }],
+            reservations: Vec::new(),
+            committed_scrap: UnitKind::Skyhook.stats().cost,
+        };
+        let second = StrategicDecision {
+            intents: vec![crate::bot::executive::Intent::TrainAt {
+                building: BuildingId(9),
+                kind: UnitKind::Kestrel,
+            }],
+            reservations: Vec::new(),
+            committed_scrap: UnitKind::Kestrel.stats().cost,
+        };
+        let first_obligation = legacy_decision_obligation(
+            &resources,
+            LegacyDecisionRequest {
+                cadence: 12,
+                accepted_at: 24,
+                decision_tick: obs.tick,
+                channel: LegacyChannel::Lift,
+                sequence: 0,
+                decision: &first,
+                prior_producer_intents: &[],
+                production_deadline: 1_200,
+            },
+        )
+        .expect("the older Airworks append is representable");
+        let second_obligation = legacy_decision_obligation(
+            &resources,
+            LegacyDecisionRequest {
+                cadence: 12,
+                accepted_at: 36,
+                decision_tick: obs.tick,
+                channel: LegacyChannel::StrategicAir,
+                sequence: 0,
+                decision: &second,
+                prior_producer_intents: &first.intents,
+                production_deadline: 1_200,
+            },
+        )
+        .expect("the later append can follow the exact older FIFO prefix");
+        let first_timing = first_obligation.claims.producer_jobs()[0]
+            .fixed_timing()
+            .expect("the older append has fixed timing");
+        let second_timing = second_obligation.claims.producer_jobs()[0]
+            .fixed_timing()
+            .expect("the later append has fixed timing");
+        assert_eq!(first_timing.0, BuildingId(9));
+        assert_eq!(second_timing.0, BuildingId(9));
+        assert_eq!(first_timing.1, obs.tick);
+        assert_eq!(second_timing.1, obs.tick);
+        assert_eq!(second_timing.2, first_timing.3.saturating_add(1));
+
+        let mut allocation = CrossDomainAllocation::new(&resources, 1_200, 12)
+            .expect("the shared producer projection is valid");
+        allocation.import(first_obligation);
+        allocation.import(second_obligation);
+        allocation
+            .resolve(AllocationPersonality::default(), None)
+            .expect("consecutive compatible appends must not conflict");
     }
 
     #[test]

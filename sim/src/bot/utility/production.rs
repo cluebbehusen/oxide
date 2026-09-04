@@ -214,7 +214,7 @@ impl UtilityPolicy {
                         continue;
                     };
                     let prior_immediate = planned_kinds_at(intents, producer.id);
-                    if !producer_lane_reservations.allows_immediate_append(
+                    if !producer_lane_reservations.allows_raw_immediate_append(
                         producer.id,
                         &prior_immediate,
                         candidate.kind,
@@ -335,7 +335,7 @@ pub(super) fn fill_combat_core_to_strength(
                 continue;
             }
             let prior_immediate = planned_kinds_at(intents, foundry.id);
-            if !producer_lane_reservations.allows_immediate_append(
+            if !producer_lane_reservations.allows_raw_immediate_append(
                 foundry.id,
                 &prior_immediate,
                 UnitKind::Sentinel,
@@ -800,6 +800,7 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(obs);
         let projection = resources.planning_projection(horizon, 12).unwrap();
         ProducerLaneReservations::from_jobs(&projection, jobs)
+            .expect("the test reservation schedule matches its resource projection")
     }
 
     fn resolved_dials(seed: u64) -> (ResolvedProfile, Dials) {
@@ -1035,6 +1036,107 @@ mod tests {
             [reserved_job(BuildingId(7), UnitKind::Harvester, 204)],
         );
         assert!(!timing_changing.allows_immediate_append(BuildingId(7), &[], UnitKind::Sentinel,));
+    }
+
+    #[test]
+    fn future_lane_baseline_includes_an_accepted_job_due_now() {
+        let mut obs = observation();
+        obs.tick = 192;
+        add_building(&mut obs, 7, BuildingKind::Foundry, Vec::new());
+
+        let due = reserved_job(BuildingId(7), UnitKind::Sentinel, obs.tick);
+        let future = ReservedProducerJob {
+            producer: BuildingId(7),
+            kind: UnitKind::Harvester,
+            enqueued_at: obs.tick + 12,
+            starts_at: due.ready_at + 1,
+            ready_at: due.ready_at + Tick::from(UnitKind::Harvester.stats().train_ticks),
+            ready_before: due.ready_at + Tick::from(UnitKind::Harvester.stats().train_ticks) + 1,
+        };
+        let reservations = reservations(&obs, [due, future]);
+
+        assert_eq!(reservations.jobs(), &[future]);
+        assert_eq!(reservations.baseline_count(), 1);
+        assert!(!reservations.allows_immediate_append(BuildingId(7), &[], UnitKind::Sentinel,));
+    }
+
+    #[test]
+    fn raw_prelude_does_not_replay_an_accepted_current_job() {
+        let mut obs = observation();
+        obs.tick = 192;
+        add_building(&mut obs, 7, BuildingKind::Foundry, Vec::new());
+
+        let due = reserved_job(BuildingId(7), UnitKind::Sentinel, obs.tick);
+        let future = ReservedProducerJob {
+            producer: BuildingId(7),
+            kind: UnitKind::Harvester,
+            enqueued_at: 444,
+            starts_at: 444,
+            ready_at: 444 + Tick::from(UnitKind::Harvester.stats().train_ticks) - 1,
+            ready_before: 444 + Tick::from(UnitKind::Harvester.stats().train_ticks),
+        };
+        let reservations = reservations(&obs, [due, future]);
+
+        assert!(reservations.allows_raw_immediate_append(
+            BuildingId(7),
+            &[UnitKind::Sentinel],
+            UnitKind::Harvester,
+        ));
+        assert!(!reservations.allows_raw_immediate_append(
+            BuildingId(7),
+            &[UnitKind::Harvester, UnitKind::Sentinel],
+            UnitKind::Harvester,
+        ));
+    }
+
+    #[test]
+    fn raw_and_projected_lane_views_share_an_exact_multi_job_current_prefix() {
+        let mut obs = observation();
+        obs.tick = 192;
+        let producer = BuildingId(7);
+        add_building(&mut obs, producer.0, BuildingKind::Foundry, Vec::new());
+
+        let first = reserved_job(producer, UnitKind::Sentinel, obs.tick);
+        let second = ReservedProducerJob {
+            producer,
+            kind: UnitKind::Harvester,
+            enqueued_at: obs.tick,
+            starts_at: first.ready_at + 1,
+            ready_at: first.ready_at + Tick::from(UnitKind::Harvester.stats().train_ticks),
+            ready_before: first.ready_at + Tick::from(UnitKind::Harvester.stats().train_ticks) + 1,
+        };
+        let future = reserved_job(producer, UnitKind::Harvester, obs.tick + 6_000);
+        let reservations = reservations(&obs, [first, second, future]);
+
+        assert_eq!(reservations.current_jobs(), &[first, second]);
+        assert_eq!(reservations.jobs(), &[future]);
+        assert!(reservations.allows_raw_immediate_append(
+            producer,
+            &[UnitKind::Sentinel, UnitKind::Harvester],
+            UnitKind::Sentinel,
+        ));
+        assert!(reservations.allows_raw_immediate_append(
+            producer,
+            &[UnitKind::Sentinel, UnitKind::Harvester, UnitKind::Sentinel,],
+            UnitKind::Harvester,
+        ));
+        assert!(!reservations.allows_raw_immediate_append(
+            producer,
+            &[UnitKind::Sentinel],
+            UnitKind::Harvester,
+        ));
+        assert!(!reservations.allows_raw_immediate_append(
+            producer,
+            &[UnitKind::Harvester, UnitKind::Sentinel],
+            UnitKind::Harvester,
+        ));
+
+        assert!(reservations.allows_immediate_append(producer, &[], UnitKind::Sentinel,));
+        assert!(reservations.allows_immediate_append(
+            producer,
+            &[UnitKind::Sentinel],
+            UnitKind::Harvester,
+        ));
     }
 
     #[test]
@@ -2596,15 +2698,25 @@ mod tests {
     }
 
     #[test]
-    fn legacy_mode_keeps_secondary_factories_out_of_the_old_policy() {
+    fn legacy_mode_waits_on_full_primary_lanes_instead_of_using_secondary_factories() {
         let mut obs = observation();
         for id in 0..5 {
             obs.my_units.push(unit(id, 0, UnitKind::Harvester));
         }
         add_building(&mut obs, 10, BuildingKind::Foundry, Vec::new());
-        add_building(&mut obs, 2, BuildingKind::Foundry, Vec::new());
+        add_building(
+            &mut obs,
+            2,
+            BuildingKind::Foundry,
+            vec![UnitKind::Sentinel; SHALLOW_QUEUE_DEPTH],
+        );
         add_building(&mut obs, 11, BuildingKind::Fabricator, Vec::new());
-        add_building(&mut obs, 3, BuildingKind::Fabricator, Vec::new());
+        add_building(
+            &mut obs,
+            3,
+            BuildingKind::Fabricator,
+            vec![UnitKind::Lancer; SHALLOW_QUEUE_DEPTH],
+        );
         let mut budget = obs.scrap;
         let mut intents = Vec::new();
         UtilityPolicy::new().production(
@@ -2620,10 +2732,46 @@ mod tests {
             &mut intents,
         );
         let trains = train_intents(&intents);
+        assert!(trains.is_empty(), "legacy production changed: {trains:?}");
+    }
+
+    #[test]
+    fn profile_free_fabricator_ladder_remains_closed_without_a_fabricator() {
+        let mut obs = observation();
+        obs.my_units.extend(
+            (0..5)
+                .map(|id| unit(id, 0, UnitKind::Harvester))
+                .chain((10..13).map(|id| unit(id, 0, UnitKind::Sentinel))),
+        );
+        add_building(&mut obs, 1, BuildingKind::Foundry, Vec::new());
+        add_building(&mut obs, 3, BuildingKind::Airworks, Vec::new());
+        obs.enemy_buildings.push(BuildingObs {
+            player: PlayerId(1),
+            ..building(90, BuildingKind::Foundry)
+        });
+        let mut budget = obs.scrap;
+        let mut intents = Vec::new();
+
+        UtilityPolicy::new().production(
+            &Dials::overseer(),
+            &obs,
+            TilePos::new(2, 2),
+            ConstructionClaims {
+                player_facing: false,
+                enlisted: &[],
+                reserved: &[],
+            },
+            &mut budget,
+            &mut intents,
+        );
+
+        let wing = Role::AirGround.unit_for(obs.faction);
+        let trains = train_intents(&intents);
         assert!(
             trains
                 .iter()
-                .all(|(id, _)| { *id != BuildingId(10) && *id != BuildingId(11) })
+                .all(|(_, kind)| *kind != UnitKind::Scuttler && *kind != wing),
+            "the frozen Fabricator ladder opened without its prerequisite: {trains:?}"
         );
     }
 

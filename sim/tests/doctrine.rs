@@ -2999,7 +2999,7 @@ fn expansion_capital_is_reserved_until_the_frontier_foundry_is_claimed() {
 }
 
 #[test]
-fn a_walking_foundry_founder_blocks_another_capital_commitment() {
+fn residual_policy_does_not_duplicate_a_walking_foundry_commitment() {
     let mut obs = obs_with_home();
     obs.my_buildings
         .push(building_obs(1, 0, BuildingKind::Fabricator, 6, 2));
@@ -3009,60 +3009,13 @@ fn a_walking_foundry_founder_blocks_another_capital_commitment() {
     obs.my_queues.push(Vec::new());
     obs.my_units = (0..4)
         .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
+        .chain((10..13).map(|id| unit_obs(id, 0, UnitKind::Sentinel, 5 + id as i32 - 10, 7)))
         .collect();
     obs.known_scrap.clear();
-    for y in 0..obs.map_height {
-        for x in obs.map_width / 2..obs.map_width {
-            let index = usize::try_from(y * obs.map_width + x).unwrap();
-            obs.visible[index] = false;
-        }
-    }
-    obs.scrap = 2_000;
-    let mut dials = Dials::full();
-    dials.deep_tech = false;
-    dials.expansion = true;
-    dials.scouting = false;
-    let mut policy = UtilityPolicy::new();
-
-    let first = player_think(&mut policy, &dials, &obs);
-    let (founder, promised) = first
-        .iter()
-        .find_map(|intent| match intent {
-            Intent::BuildWith {
-                builder,
-                kind: BuildingKind::Foundry,
-                anchor,
-            } => Some((*builder, *anchor)),
-            _ => None,
-        })
-        .expect("a rich seat with an unserved frontier commits one expansion");
-    let commands =
-        oxide_sim::bot::Executive::new().apply_with_reservations(PlayerId(0), &obs, &first, &[]);
-    assert!(
-        commands.iter().any(|command| matches!(
-            &command.command,
-            Command::Build {
-                units,
-                kind: BuildingKind::Foundry,
-                anchor,
-                defer: true,
-                ..
-            } if units == &[founder] && *anchor == promised
-        )),
-        "the unpaid claim must remain a deferred Foundry command: {commands:?}"
-    );
-
-    obs.tick = oxide_sim::bot::difficulty::STRATEGIC_ADMISSION_CADENCE;
-    obs.visible.fill(true);
-    let founder = obs
-        .my_units
-        .iter_mut()
-        .find(|unit| unit.id == founder)
-        .expect("the selected founder remains alive");
+    let promised = TilePos::new(16, 7);
+    let founder = &mut obs.my_units[0];
     founder.idle = false;
     founder.founding = Some((BuildingKind::Foundry, promised));
-    obs.my_units
-        .extend((10..13).map(|id| unit_obs(id, 0, UnitKind::Sentinel, 5 + id as i32 - 10, 7)));
     obs.enemy_buildings
         .push(building_obs(90, 1, BuildingKind::Foundry, 18, 8));
     obs.scrap = BuildingKind::Foundry
@@ -3071,6 +3024,12 @@ fn a_walking_foundry_founder_blocks_another_capital_commitment() {
         .expect("Foundries have a price")
         .cost
         + UnitKind::Sentinel.stats().cost;
+    let mut dials = Dials::full();
+    dials.deep_tech = false;
+    dials.expansion = true;
+    dials.scouting = false;
+    let mut policy = UtilityPolicy::new();
+
     let next = player_think(&mut policy, &dials, &obs);
     assert!(
         next.iter().all(|intent| !matches!(

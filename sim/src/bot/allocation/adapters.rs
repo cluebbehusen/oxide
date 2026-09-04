@@ -3,8 +3,8 @@
 use super::{
     AllocationConflict, AllocationPersonality, AllocationResult, ClaimBundle, ClaimBundleError,
     Confidence, ConnectedOffenseKey, DeferrableCapitalClaim, ExecutionSafety, FoundryExpansionKey,
-    InvestmentProposal, ProducerJobClaim, ProposalCase, ScheduledProducerJob, StrategicValue,
-    TimeToImpact, Urgency,
+    ImportedObligation, InvestmentProposal, ObligationClass, ObligationKey, ProducerJobClaim,
+    ProposalCase, ScheduledProducerJob, StrategicValue, TimeToImpact, Urgency,
 };
 use crate::bot::profile::ResolvedProfile;
 use crate::bot::strategy::{
@@ -77,6 +77,80 @@ pub(crate) fn connected_investment_proposal(
         claims,
         payload: proposal,
     })
+}
+
+/// Retains a re-derived active minimum as mandatory work at its original
+/// acceptance priority.
+pub(crate) fn active_connected_revision_obligation(
+    proposal: &FreshConnectedProposal,
+) -> Result<ImportedObligation, ClaimBundleError> {
+    debug_assert!(proposal.revises_active_operation());
+    let identity = proposal.identity();
+    let delta = proposal
+        .active_revision_provider_delta()
+        .expect("an active revision retains its bound producer schedule");
+    let minimum = proposal.minimum_claims();
+    let provider_jobs = delta
+        .allocation_order(minimum.provider_jobs().len())
+        .into_iter()
+        .map(|proposal_ordinal| {
+            let job = &delta.jobs()[proposal_ordinal];
+            if let Some(retained) = job.retained() {
+                let timing = retained.timing();
+                ProducerJobClaim::fixed(
+                    retained.producer(),
+                    retained.kind(),
+                    timing.enqueued_at(),
+                    timing.starts_at(),
+                    timing.ready_at(),
+                    timing.ready_before(),
+                )
+            } else {
+                let request = job.request();
+                ProducerJobClaim::flexible(
+                    request.kind(),
+                    request.enqueue_not_before(),
+                    request.ready_before(),
+                    request.eligible_producers().to_vec(),
+                )
+            }
+        })
+        .collect();
+    Ok(super::imported_obligation(
+        ObligationClass::PersistentPlan,
+        proposal.accepted_at(),
+        ObligationKey::ConnectedOffense {
+            objective: identity.objective(),
+            anchor: identity.anchor(),
+        },
+        ClaimBundle::new(
+            0,
+            Vec::new(),
+            Vec::new(),
+            minimum.units().to_vec(),
+            Vec::new(),
+            provider_jobs,
+        )?,
+    ))
+}
+
+/// Carries an active revision's opaque payload through portfolio selection.
+/// Its minimum is already mandatory; only marginal additions consume proposal
+/// capacity.
+pub(crate) fn active_connected_revision_investment_proposal(
+    proposal: FreshConnectedProposal,
+) -> DomainInvestmentProposal {
+    debug_assert!(proposal.revises_active_operation());
+    InvestmentProposal::ConnectedOffenseMinimum {
+        key: ConnectedOffenseKey {
+            objective: proposal.objective(),
+            anchor: proposal.anchor(),
+        },
+        case: proposal.case().into(),
+        accepted_at: proposal.accepted_at(),
+        claims: ClaimBundle::default(),
+        payload: proposal,
+    }
 }
 
 /// Converts one cumulative additions-only scale step without charging jobs twice.
@@ -633,6 +707,91 @@ mod tests {
         assert_eq!(result.final_producer_schedule().len(), 2);
         let mut payloads = result.into_domain_payloads();
         assert_eq!(payloads.take_connected(), Some(expected));
+    }
+
+    #[test]
+    fn active_revision_minimum_is_mandatory_while_foundry_and_marginal_remain_compatible() {
+        let minimum_kind = UnitKind::Moth;
+        let marginal_kind = UnitKind::Condor;
+        let builder = UnitId(4);
+        let revision = connected(
+            ConnectedOffenseClaims::fixture(
+                Vec::new(),
+                vec![crate::bot::strategy::ConnectedProviderJob::fixture(
+                    minimum_kind,
+                    NOW,
+                    DEADLINE,
+                    vec![BuildingId(8)],
+                )],
+            ),
+            vec![ConnectedOffenseClaims::fixture(
+                Vec::new(),
+                vec![crate::bot::strategy::ConnectedProviderJob::fixture(
+                    marginal_kind,
+                    NOW,
+                    DEADLINE,
+                    vec![BuildingId(9)],
+                )],
+            )],
+        )
+        .into_active_revision_fixture();
+        let marginal = revision.marginal_variants()[0].clone();
+        let obligation = active_connected_revision_obligation(&revision)
+            .expect("the revision minimum adapts as retained work");
+        let carrier = active_connected_revision_investment_proposal(revision);
+        let foundry = foundry_investment_proposal(foundry(builder, 50, 0))
+            .expect("the compatible Foundry adapts exactly");
+        let producers = [
+            (BuildingId(8), minimum_kind),
+            (BuildingId(9), marginal_kind),
+        ]
+        .into_iter()
+        .map(|(producer, kind)| {
+            ProducerPlanningProjection::fixture(producer, NOW, 12, NOW, vec![NOW], vec![kind])
+                .expect("the producer fixture is valid")
+        })
+        .collect::<Vec<_>>();
+        let resources = capacity(
+            50_u32
+                .saturating_add(minimum_kind.stats().cost)
+                .saturating_add(marginal_kind.stats().cost),
+            vec![builder],
+            vec![BuilderResource {
+                id: builder,
+                kind: UnitKind::Harvester,
+                obligation: None,
+            }],
+            producers,
+        );
+        let mut result = allocate(
+            &resources,
+            vec![obligation],
+            vec![foundry, carrier],
+            AllocationPersonality::default(),
+        )
+        .expect("mandatory revision and compatible Foundry fit together");
+        assert_eq!(result.accepted.len(), 2);
+        result
+            .try_accept_connected_marginal(&resources, &marginal)
+            .expect("the marginal uses residual capacity after the retained minimum");
+        let schedule = result.final_producer_schedule().to_vec();
+        let mut payloads = result.into_domain_payloads();
+        assert!(payloads.take_foundry().is_some());
+        let mut revision = payloads
+            .take_connected()
+            .expect("the zero-claim carrier cannot lose to the empty portfolio");
+        let assignments =
+            super::super::active_connected_revision_producer_assignments(&revision, &schedule);
+        assert_eq!(
+            assignments
+                .iter()
+                .map(|assignment| (assignment.request_ordinal(), assignment.kind()))
+                .collect::<Vec<_>>(),
+            vec![(0, minimum_kind), (1, marginal_kind)]
+        );
+        revision
+            .bind_producer_assignments(assignments)
+            .expect("the two allocation owners reassemble into one exact package");
     }
 
     #[test]
