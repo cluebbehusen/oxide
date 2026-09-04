@@ -3271,7 +3271,6 @@ fn an_underfunded_foundry_promise_escrows_every_player_facing_spend() {
 
     let mut dials = Dials::full();
     dials.adaptive_composition = true;
-    dials.discretionary_slots = 6;
     dials.expansion = true;
     dials.scouting = false;
     let mut policy = UtilityPolicy::new();

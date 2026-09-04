@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-04T00:02:44
+updated: 2026-09-04T12:45:06
 ---
 
 # Scripted Bot Strategic Reset
@@ -72,6 +72,10 @@ without arbitrary controller caps.
   and one-Moth cohort, while ordinary production fell back to repeated Sentinel
   and Lancer demand. PR 3 replaces the fixed operation cohort; PR 5 owns the
   ordinary-production fallback.
+- A repeated Paired Claims team probe exposed a pre-existing restoration retry
+  storm: bots repeatedly issue rejected Extractor builds against contested
+  frames hidden by fog. The selection and reissue path is unchanged from the
+  Action 5 base and belongs in a separate bug fix.
 
 ## Actions
 
@@ -239,18 +243,90 @@ without arbitrary controller caps.
   - Verified frozen Overseer state hashes unchanged; refreshed only the approved
     player-facing behavior rows; full workspace tests, Clippy, rustdoc,
     Markdown, skill validation, and unit and combined coverage gates passed.
-- [ ] 5. Replace default unit sinks with tech-aware standing-army and
+- [x] 5. Replace default unit sinks with tech-aware standing-army and
       ordinary-production demand.
   - Derive standing force from known counters, strategic plans, technology,
     capacity, and personality; remove Sentinel and Lancer as automatic fallbacks
     while retaining tier-one units as useful screens and counters.
-  - Boundary: migrate repeatable ordinary combat production and specialist
-    demand without rewriting persistent operation execution or changing unit
-    statistics.
   - Cover live, queued, reserved, and same-think capability accounting; current
     and remembered enemy counters; production bottlenecks; useful higher-tier
     substitution; home-defense floors; reinforcement; and avoidance of idle
     factories, hoarding, or partial strategic cohorts.
+  - Chose StandingForce as the third fresh allocator domain so ordinary
+    production competes with economic and connected-offense investment instead
+    of receiving call-order leftovers.
+  - Bound this slice to player-facing standing combat production. Preserve
+    frozen Overseer, persistent operation execution, opening survival recovery,
+    worker and technology policy, unit statistics, and strategic aircraft
+    ownership.
+  - Represent each cadence as ranked, mutually exclusive, current-funded
+    one-unit alternatives derived from current and remembered threats, completed
+    technology, exact live and paid queued inventory, planner ownership,
+    expansion and paid-site security, reachable wounded support demand, useful
+    ground objectives, public-terrain routing, and personality.
+  - Retire the player-facing adaptive ordinary-combat scheduler after
+    StandingForce ships. Preserve only post-bootstrap renewable Harvesters,
+    Excavators, and the existing bounded Scuttler roster in a narrow residual
+    Foundry pass until their owning domains migrate in Actions 7 and 8.
+  - Verify tier-one fallback, useful higher-tier substitution, counter memory,
+    exact operation ownership, grouped alternatives, current-only funding,
+    residual construction progress, residual worker and raider demand,
+    repeated-cadence factory use, command acceptance, and unchanged Overseer
+    hashes.
+  - Boundary: migrate repeatable ordinary line, siege, anti-air, and Tender
+    production without rewriting persistent operation execution or changing unit
+    statistics. Keep post-bootstrap Harvester, Excavator, and Scuttler demand in
+    the residual bridge for later domain migrations.
+  - Preserve the construction ladder's existing next-technology reserve while an
+    eligible worker exists and construction is not recovering; after the tree is
+    complete, preserve the exact legal strategic Turret threshold. The
+    current-only floor remains unclaimed for Utility, never spends forecast
+    income, and disappears when its non-scrap premises are unavailable.
+  - Fixed conditional operation ownership by deriving separate Standing
+    inventories for Connected absence, minimum, and every cumulative marginal.
+    Exact live units and paid producer occurrences now leave ordinary
+    availability only in the contexts where they are genuinely free.
+  - Preserved independent same-kind demand on disconnected fronts by keying
+    Standing alternatives to a canonical service point or footprint and
+    requiring inventory and producers to serve that target through public
+    terrain and current blockers.
+  - Made an infeasible active Connected revision downgrade atomically: release
+    its typed obligation and selected-only Standing contexts, retain surviving
+    units in bounded recovery, and rederive unconditional Standing against the
+    remaining exact paid work.
+  - Extend portfolio selection to every zero-or-one choice within Foundry,
+    connected offense, and StandingForce. Keep one shared allocation proposal
+    case, claim bundle, and trace model, with no proposal-count or machine-word
+    cutoff; consolidate the remaining producer schedulers during Action 10.
+  - Verified the full workspace, Clippy, rustdoc, Markdown, skills, and coverage
+    gates. Unit line coverage is 90.27% and combined line coverage is 91.72%;
+    StandingForce is 98.33% unit and 98.86% combined, frozen simulation and
+    Overseer hashes remain unchanged, and only the approved player-facing
+    fixture moved.
+  - Evaluated the shipped path on a controlled Overseer matrix, a paired rich
+    map, an eight-seat severed-ground map, and a repeated 2v2 team map. Standing
+    production stayed active, its training commands were accepted, available
+    higher tiers dominated late production, and the 2v2 command log repeated
+    byte for byte; Prime strength calibration remains later work.
+  - Closed three adversarial review gaps: delayed connected purchases stay
+    operation-owned until the observed queue occurrence leaves; active revisions
+    preserve only the current scrap guard left after mandatory work; and bounded
+    higher-tier waits now claim current and forecast capital inside shared
+    allocation while their affordable fallback remains selectable.
+  - Restore an acceptable coverage runtime without weakening behavioral or
+    coverage gates; keep the optimization behavior-neutral and retain the
+    long-match oracles in the normal cross-platform test matrix.
+  - Profiled the fresh 68-minute CI coverage run: three long-horizon behavior
+    and hash oracles consumed 53 minutes while contributing about 0.07
+    percentage points of line coverage.
+  - Changed the residual Turret reserve to use the exact strategic-placement
+    predicate but stop at the first valid site; actual defense construction
+    still ranks every valid site globally.
+  - Kept the long behavior and hash oracles in normal cross-platform tests,
+    excluded them only from LLVM instrumentation, and serialized combined
+    coverage. The complete instrumented scripted-bot suite fell from 174 to 54
+    seconds locally; combined coverage completed in 180 seconds at 91.64% and
+    unit coverage completed in 107 seconds at 90.29%.
 - [ ] 6. Migrate defensive spending to opportunity-scaled investment while
       preserving strategic placement.
   - Scale defense from exposed value, credible current threats, existing
@@ -317,5 +393,12 @@ without arbitrary controller caps.
   - One paired control cell had Standard defeat Prime in all four legs across
     Cinder Steppe and Terrace Ledger; retain this as difficulty-calibration
     evidence rather than tuning it inside the force-package slice.
+  - Finish the strangler exit rather than adding another coordination layer:
+    retire remaining test-only player-facing facades as their domains migrate,
+    replace the reduced-observation/raw-budget adapter, consolidate semantically
+    identical producer schedulers and proposal-band/trace mirrors, and split
+    oversized inline test modules. Preserve behavioral tripwires before deleting
+    legacy tests; do not invent a generic operation framework or perform
+    mechanical container rewrites without measured value.
 
 ## Open Questions

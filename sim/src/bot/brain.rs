@@ -574,13 +574,13 @@ impl Brain {
                 AllocationBudgetOutcome {
                     foundry_saving,
                     airworks_capacity,
-                    shallow_sentinel,
                     opening_bootstrap,
                     residual_scrap,
                     connected_spendable,
                     connected_forecast_hold,
                     utility_spendable: allocation_utility_spendable,
                     prior_operation_spendable,
+                    voluntary_scrap_guard,
                 },
         } = allocation_outcome;
         if let Some(recorder) = recorder.as_deref_mut() {
@@ -743,8 +743,8 @@ impl Brain {
                 foundry_saving,
                 deferred_construction: UtilityPolicy::deferred_construction_commitment(&oriented),
                 airworks_capacity,
-                shallow_sentinel,
                 opening_bootstrap,
+                voluntary_scrap_guard,
                 frozen: !allow_new_voluntary_operations || !allocation_ok,
                 prior_operation_spendable,
                 strategic_spendable: if accepted_connected
@@ -775,6 +775,7 @@ impl Brain {
         )
         .with_combat_core_exclusions(&strategic_core_exclusions)
         .with_prior_scrap_commitment(utility_prior_commitment)
+        .with_voluntary_scrap_guard(voluntary_scrap_guard)
         .with_producer_lane_reservations(&producer_lane_reservations);
         let utility_context = if air_active || lift_active {
             utility_context.with_outstanding_air_production_ticks(outstanding_air_production_ticks)
@@ -2355,7 +2356,21 @@ mod tests {
             }
         }
 
-        assert!(first_fabricator.iter().all(Option::is_some));
+        assert!(
+            first_fabricator.iter().all(Option::is_some),
+            "every rung should start a Fabricator within the opening window: first={first_fabricator:?}, scrap={:?}, buildings={:?}, queues={:?}",
+            [0, 1].map(|seat| state.player(PlayerId(seat)).scrap),
+            state
+                .buildings()
+                .iter()
+                .map(|building| (building.player, building.kind, building.built))
+                .collect::<Vec<_>>(),
+            state
+                .buildings()
+                .iter()
+                .map(|building| (building.id, building.queue.clone()))
+                .collect::<Vec<_>>(),
+        );
         assert!(core_at_fabricator.iter().all(Option::is_some));
     }
 
@@ -3203,13 +3218,18 @@ mod tests {
             "the lift may spend exactly the non-capacity remainder: {:?}",
             result.trace
         );
-        assert!(result.commands.iter().any(|command| matches!(
-            command.command,
-            Command::Build {
-                kind: BuildingKind::Airworks,
-                ..
-            }
-        )));
+        assert!(
+            result.commands.iter().any(|command| matches!(
+                command.command,
+                Command::Build {
+                    kind: BuildingKind::Airworks,
+                    ..
+                }
+            )),
+            "the active lift's capacity investment must lower beside the carrier: commands={:?}, trace={:?}",
+            result.commands,
+            result.trace
+        );
         let report = state.tick(&result.commands);
         assert!(report.events.iter().all(|event| !matches!(
             event,
@@ -3443,6 +3463,7 @@ mod tests {
             &oriented,
             home,
             Some(lift_airwork),
+            Some(0),
             &[],
         );
         assert!(capacity_fund > 0);
@@ -4670,9 +4691,9 @@ mod tests {
     }
 
     #[test]
-    fn strategic_air_spending_cannot_consume_the_shallow_sentinel_reserve() {
+    fn strategic_air_spending_cannot_consume_the_opening_bootstrap_reserve() {
         let mut scenario = independent_bomber_operation_scenario();
-        scenario.name = "brain shallow reinforcement reserve".into();
+        scenario.name = "brain opening bootstrap reserve".into();
         scenario.map[11].replace_range(20..=20, ".");
         scenario.players[0].scrap = 0;
         scenario.units.extend((0..4).map(|index| UnitSpec {
@@ -4729,73 +4750,6 @@ mod tests {
         );
         let mut bootstrap_brain = brain.clone();
         brain.exec = Executive::default();
-
-        let mut reinforcement_scenario = scenario.clone();
-        reinforcement_scenario.players[0].scrap = UnitKind::Sentinel.stats().cost;
-        let missing_scout = reinforcement_scenario
-            .units
-            .iter_mut()
-            .find(|unit| unit.player == 0 && unit.kind == UnitKind::Kestrel)
-            .expect("the operation has one scout to remove");
-        missing_scout.player = 1;
-        missing_scout.kind = UnitKind::Gnat;
-        let mut reinforcement_state = reinforcement_scenario
-            .build()
-            .expect("the missing-scout continuation builds");
-        while reinforcement_state.current_tick() <= scouting_state.current_tick()
-            || !super::super::difficulty::strategic_admission_tick(
-                reinforcement_state.current_tick(),
-            )
-        {
-            reinforcement_state.tick(&[]);
-        }
-        let mut document =
-            serde_json::to_value(&reinforcement_state).expect("the continuation state serializes");
-        document["players"][0]["scrap"] = serde_json::json!(UnitKind::Sentinel.stats().cost);
-        reinforcement_state =
-            serde_json::from_value(document).expect("the exact-bank continuation is valid");
-
-        let act = brain.act_traced(&reinforcement_state);
-        let trace = act.trace.expect("the reinforcement boundary is traced");
-        let budget = trace
-            .budget
-            .as_ref()
-            .expect("the reinforcement boundary records its scrap ledger");
-        assert_eq!(
-            budget.shallow_sentinel,
-            UnitKind::Sentinel.stats().cost,
-            "the nearby reachable enemy start should reserve one shallow Sentinel"
-        );
-        assert_eq!(
-            budget.strategic_spendable, 0,
-            "the exact reinforcement bank must remain unavailable to new operations"
-        );
-        let commands = act.commands;
-        assert!(
-            commands.iter().all(|command| !matches!(
-                command.command,
-                Command::Train {
-                    kind: UnitKind::Kestrel
-                        | UnitKind::Buzzard
-                        | UnitKind::Condor
-                        | UnitKind::Skyhook,
-                    ..
-                }
-            )),
-            "strategic air capital cannot consume the exact shallow reinforcement bank: {commands:?}; trace={trace:?}"
-        );
-        let report = reinforcement_state.tick(&commands);
-        assert!(report.events.iter().all(|event| !matches!(
-            event,
-            crate::event::Event::CommandRejected {
-                player: PlayerId(0),
-                ..
-            }
-        )));
-        assert!(
-            reinforcement_state.player(PlayerId(0)).scrap >= UnitKind::Sentinel.stats().cost,
-            "the exact shallow reinforcement bank remains spendable by ordinary production"
-        );
 
         let mut bootstrap_scenario = scenario;
         bootstrap_scenario.name = "brain strategic opening bootstrap reserve".into();
@@ -4978,6 +4932,17 @@ mod tests {
         document["players"][0]["scrap"] = serde_json::json!(saved - 1);
         let starved_state: State =
             serde_json::from_value(document.clone()).expect("the underfunded state remains valid");
+        let starved_observation = brain
+            .orientation
+            .expect("the policy frame remains latched")
+            .observe(&Observation::fog_honest(&starved_state, PlayerId(0)));
+        assert!(
+            starved_observation
+                .enemy_buildings
+                .iter()
+                .any(|building| building.kind == BuildingKind::Foundry),
+            "the connected opportunity must be in current sight"
+        );
         let mut direct_starved_brain = brain.clone();
         let direct_starved_commands = direct_starved_brain.act(&starved_state);
         let starved = brain.act_traced(&starved_state);
@@ -5008,23 +4973,19 @@ mod tests {
             starved_trace.connected_force.rejected_candidate.is_none(),
             "the connected domain produced a legal proposal for shared adjudication"
         );
-        let rejected = starved_trace
+        let connected_context = starved_trace
             .allocation
-            .proposals
-            .entries
-            .iter()
-            .find(|proposal| {
-                matches!(
-                    proposal.key,
-                    super::super::trace::ProposalKeyTrace::ConnectedOffenseMinimum { .. }
-                )
-            })
-            .expect("the allocator traces the connected opportunity");
-        assert!(matches!(
-            rejected.disposition,
-            super::super::trace::ProposalDispositionTrace::Infeasible { .. }
-                | super::super::trace::ProposalDispositionTrace::ConflictsWithSelected { .. }
-        ));
+            .connected_context
+            .expect("the allocator compared exact connected-presence contexts");
+        assert!(
+            connected_context.considered >= 2,
+            "the absent and minimum connected contexts must both reach shared adjudication"
+        );
+        assert_eq!(
+            connected_context.selected,
+            super::super::trace::ConnectedPortfolioSelectionTrace::Absent,
+            "the older Foundry obligation must make the later connected context lose"
+        );
         assert_eq!(
             starved_trace.channels.connected_air.effects.committed_scrap, 0,
             "connected air may see only bank beyond the frozen Foundry total"
@@ -5083,10 +5044,34 @@ mod tests {
         let funded_budget = funded_trace
             .budget
             .expect("the funded think records its scrap ledger");
+        let standing_current_scrap = funded_trace
+            .allocation
+            .producer_schedule
+            .entries
+            .iter()
+            .filter(|job| {
+                matches!(
+                    job.owner,
+                    super::super::trace::ClaimOwnerTrace::Proposal {
+                        key: super::super::trace::ProposalKeyTrace::StandingForce { .. },
+                    }
+                )
+            })
+            .map(|job| job.current_scrap)
+            .sum::<u32>();
         assert_eq!(funded_budget.foundry_saving, saved);
         assert_eq!(
-            funded_budget.strategic_spendable, operation_fund,
-            "the saved total already includes its protected opening reserve, so shared allocation must not deduct that reserve twice"
+            funded_budget.voluntary_scrap_guard,
+            UnitKind::Sentinel.stats().cost,
+            "a selected non-Sentinel standing-force alternative must leave the shallow screen available"
+        );
+        assert_eq!(
+            funded_budget
+                .strategic_spendable
+                .saturating_add(standing_current_scrap),
+            operation_fund.saturating_sub(funded_budget.voluntary_scrap_guard),
+            "the accepted Foundry owns only its construction capital; shared allocation may spend the independent excess on connected and standing forces after retaining the shallow screen exactly once: budget={funded_budget:?}, schedule={:?}",
+            funded_trace.allocation.producer_schedule,
         );
         assert!(
             funded_trace.channels.connected_air.effects.committed_scrap > 0,
@@ -5306,8 +5291,8 @@ mod tests {
             })
             .count();
         assert_eq!(
-            accepted_domains, 2,
-            "the staffed connected minimum and expansion are compatible"
+            accepted_domains, 3,
+            "the staffed connected minimum, expansion, and standing force are compatible"
         );
         let package = first_trace
             .connected_force
@@ -5487,7 +5472,15 @@ mod tests {
         let mut scenario = foundry_saving_air_competition_scenario(
             foundry_cost
                 .saturating_add(UnitKind::Buzzard.stats().cost)
-                .saturating_add(UnitKind::Sentinel.stats().cost),
+                .saturating_add(UnitKind::Sentinel.stats().cost)
+                .saturating_add(
+                    BuildingKind::Turret
+                        .base_stats()
+                        .construction
+                        .expect("Turrets are constructible")
+                        .cost,
+                )
+                .saturating_add(UnitKind::Harvester.stats().cost),
         );
         scenario.name = "simultaneous Foundry and connected offense dispatch".into();
         let scout = scenario
@@ -5535,20 +5528,52 @@ mod tests {
             "the accepted expansion must lower its exact build command: {:?}",
             act.commands
         );
-        assert!(
-            act.commands.iter().any(|command| matches!(
-                command.command,
-                Command::Train {
-                    kind: UnitKind::Buzzard,
-                    ..
-                }
-            )),
-            "the compatible connected package must lower its due provider command: {:?}",
-            act.commands
-        );
-        assert_eq!(trace.allocation.proposals.total, 2);
         assert!(trace.allocation.error.is_none());
         assert!(trace.allocation.coordinator_failure.is_none());
+        let accepted_keys = trace
+            .allocation
+            .proposals
+            .entries
+            .iter()
+            .filter(|proposal| {
+                proposal.disposition == super::super::trace::ProposalDispositionTrace::Accepted
+            })
+            .map(|proposal| proposal.key)
+            .collect::<Vec<_>>();
+        assert_eq!(accepted_keys.len(), 3);
+        assert!(accepted_keys.iter().any(|key| matches!(
+            key,
+            super::super::trace::ProposalKeyTrace::FoundryExpansion { .. }
+        )));
+        assert!(accepted_keys.iter().any(|key| matches!(
+            key,
+            super::super::trace::ProposalKeyTrace::ConnectedOffenseMinimum { .. }
+        )));
+        assert!(accepted_keys.iter().any(|key| matches!(
+            key,
+            super::super::trace::ProposalKeyTrace::StandingForce { .. }
+        )));
+        let connected_jobs = trace
+            .allocation
+            .producer_schedule
+            .entries
+            .iter()
+            .filter(|job| {
+                matches!(
+                    job.owner,
+                    super::super::trace::ClaimOwnerTrace::Proposal {
+                        key: super::super::trace::ProposalKeyTrace::ConnectedOffenseMinimum { .. },
+                    }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !connected_jobs.is_empty()
+                && connected_jobs
+                    .iter()
+                    .all(|job| job.enqueued_at > state.current_tick()),
+            "the accepted connected scale must retain its exact future producer schedule"
+        );
         let accepted_due = trace
             .allocation
             .producer_schedule
@@ -5579,7 +5604,7 @@ mod tests {
                     ..
                 }
             )),
-            "the authoritative State must accept both domains' commands in one transaction: {:?}",
+            "the authoritative State must accept all allocated commands in one transaction: {:?}",
             report.events
         );
     }
@@ -5594,7 +5619,7 @@ mod tests {
             UnitKind::Buzzard
                 .stats()
                 .cost
-                .saturating_add(UnitKind::Sentinel.stats().cost),
+                .saturating_add(UnitKind::Lancer.stats().cost),
         );
         scenario.name = "due connected provider survives same-tick recovery".into();
         scenario.buildings.push(BuildingSpec {
@@ -5651,7 +5676,6 @@ mod tests {
 
         let mut brain = foundry_competition_brain(&scenario);
         brain.dials.expansion = false;
-        brain.dials.discretionary_slots = 0;
         brain.mind_mut().lifts = None;
 
         let admission = brain.act_traced(&state);
@@ -6794,7 +6818,13 @@ mod tests {
             .construction
             .expect("Foundries are constructible")
             .cost;
-        let scenario = foundry_saving_air_competition_scenario(foundry_cost - 1);
+        let mut scenario = foundry_saving_air_competition_scenario(foundry_cost - 1);
+        scenario.buildings.extend((0..16).map(|index| BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Reclaimer,
+            x: 16 + (index % 8) * 4,
+            y: 2 + (index / 8) * 3,
+        }));
         let mut state = scenario
             .build()
             .expect("the Foundry-saving air competition scenario builds");
@@ -7149,8 +7179,25 @@ mod tests {
             .construction
             .expect("Foundries are constructible")
             .cost;
+        let shallow_guard = UnitKind::Sentinel.stats().cost;
 
-        let earlier_scenario = foundry_saving_lift_competition_scenario(foundry_cost - 1);
+        let mut earlier_scenario = foundry_saving_lift_competition_scenario(
+            foundry_cost.saturating_add(shallow_guard).saturating_sub(1),
+        );
+        let last_carrier = earlier_scenario
+            .units
+            .iter()
+            .rposition(|unit| unit.player == 0 && unit.kind == UnitKind::Skyhook)
+            .expect("the lift fixture begins with multiple carriers");
+        earlier_scenario.units.remove(last_carrier);
+        earlier_scenario
+            .buildings
+            .extend((0..4).map(|index| BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Reclaimer,
+                x: 2 + index * 3,
+                y: 6,
+            }));
         let mut earlier_state = earlier_scenario
             .build()
             .expect("the earlier-lift competition scenario builds");
@@ -7184,7 +7231,16 @@ mod tests {
         let saved = earlier_brain
             .policy
             .validated_foundry_saving(&accepted_oriented, true);
-        assert!(saved > earlier_state.player(PlayerId(0)).scrap);
+        assert!(
+            saved
+                > earlier_state
+                    .player(PlayerId(0))
+                    .scrap
+                    .saturating_sub(shallow_guard),
+            "the earlier lift fixture must leave the accepted Foundry underfunded after preserving the shallow screen: saved={saved}, scrap={}, guard={shallow_guard}, trace={:?}",
+            earlier_state.player(PlayerId(0)).scrap,
+            continued.trace,
+        );
         assert!(
             earlier_brain
                 .policy
@@ -7222,10 +7278,10 @@ mod tests {
                         job.owner,
                         super::super::trace::ClaimOwnerTrace::Obligation {
                             accepted_at,
-                            key: super::super::trace::ObligationKeyTrace::Legacy {
-                                channel: super::super::trace::LegacyChannelTrace::Lift,
-                                ..
-                            },
+                        key: super::super::trace::ObligationKeyTrace::Legacy {
+                            channel: super::super::trace::LegacyChannelTrace::Lift,
+                            sequence: 2,
+                        },
                             ..
                         } if accepted_at == lift_admitted_at
                     )
@@ -7257,13 +7313,35 @@ mod tests {
                 .saturating_add(lift_job.forecast_scrap),
             UnitKind::Skyhook.stats().cost
         );
-        assert!(continued.commands.iter().all(|command| !matches!(
-            command.command,
-            Command::Train {
-                building,
-                kind: UnitKind::Skyhook,
-            } if building == lift_job.producer
-        )));
+        let due_now = continued_trace
+            .allocation
+            .producer_schedule
+            .entries
+            .iter()
+            .filter(|job| {
+                job.producer == lift_job.producer
+                    && job.kind == UnitKind::Skyhook
+                    && job.enqueued_at == earlier_state.current_tick()
+            })
+            .count();
+        let issued_now = continued
+            .commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command.command,
+                    Command::Train {
+                        building,
+                        kind: UnitKind::Skyhook,
+                    } if building == lift_job.producer
+                )
+            })
+            .count();
+        assert_eq!(due_now, 1, "the older lift retains one due carrier");
+        assert_eq!(
+            issued_now, due_now,
+            "only producer work due on this observation may lower; the future carrier remains bound"
+        );
         let report = earlier_state.tick(&continued.commands);
         assert!(report.events.iter().all(|event| !matches!(
             event,

@@ -141,6 +141,16 @@ impl ProducerPlanningProjection {
         self.observed_at
     }
 
+    /// Number of paid queue entries present at the observation boundary.
+    pub(crate) fn observed_queue_depth(&self) -> usize {
+        QUEUE_CAP.saturating_sub(
+            self.slot_available_at
+                .iter()
+                .filter(|&&available_at| available_at <= self.observed_at)
+                .count(),
+        )
+    }
+
     /// First decision tick with a queue slot for this exact legal unit kind.
     pub(crate) fn earliest_enqueue_tick(&self, kind: UnitKind) -> Option<Tick> {
         self.trainable

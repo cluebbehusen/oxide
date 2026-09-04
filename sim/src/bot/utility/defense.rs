@@ -27,11 +27,18 @@ enum DefenseEvidenceScope {
     CurrentEmergency,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefenseSiteSearch {
+    Best,
+    Any,
+}
+
 #[derive(Clone, Copy)]
 struct DefenseEvidence<'a> {
     unit_contacts: &'a [UnitContact],
     building_contacts: &'a [BuildingContact],
     scope: DefenseEvidenceScope,
+    search: DefenseSiteSearch,
 }
 
 impl<'a> DefenseEvidence<'a> {
@@ -43,6 +50,19 @@ impl<'a> DefenseEvidence<'a> {
             unit_contacts,
             building_contacts,
             scope: DefenseEvidenceScope::Strategic,
+            search: DefenseSiteSearch::Best,
+        }
+    }
+
+    const fn strategic_existence(
+        unit_contacts: &'a [UnitContact],
+        building_contacts: &'a [BuildingContact],
+    ) -> Self {
+        Self {
+            unit_contacts,
+            building_contacts,
+            scope: DefenseEvidenceScope::Strategic,
+            search: DefenseSiteSearch::Any,
         }
     }
 
@@ -54,6 +74,7 @@ impl<'a> DefenseEvidence<'a> {
             unit_contacts,
             building_contacts,
             scope: DefenseEvidenceScope::CurrentEmergency,
+            search: DefenseSiteSearch::Best,
         }
     }
 }
@@ -634,6 +655,33 @@ impl UtilityPolicy {
         .map(|placement| placement.anchor)
     }
 
+    /// Answers the exact strategic placement predicate without ranking sites
+    /// whose location the caller will discard.
+    #[expect(clippy::too_many_arguments, reason = "mirrors strategic_defense_site")]
+    pub(super) fn strategic_defense_site_exists_grounded<'a>(
+        &self,
+        kind: BuildingKind,
+        obs: &'a Observation,
+        briefing: &'a PublicMapBriefing,
+        unit_contacts: &[UnitContact],
+        building_contacts: &[BuildingContact],
+        builders: &[&UnitObs],
+        grounding: &mut Option<DefenseGrounding<'a>>,
+    ) -> bool {
+        if DefenseProfile::for_kind(kind).is_none() || builders.is_empty() {
+            return false;
+        }
+        self.strategic_defense_site_with_evidence(
+            kind,
+            obs,
+            briefing,
+            builders,
+            DefenseEvidence::strategic_existence(unit_contacts, building_contacts),
+            grounding.get_or_insert_with(|| DefenseGrounding::new(self, obs, briefing)),
+        )
+        .is_some()
+    }
+
     pub(super) fn emergency_defense_placement(
         &self,
         kind: BuildingKind,
@@ -669,6 +717,7 @@ impl UtilityPolicy {
             unit_contacts,
             building_contacts,
             scope,
+            search,
         } = evidence;
         let profile = DefenseProfile::for_kind(kind)?;
         let DefenseGrounding {
@@ -735,90 +784,87 @@ impl UtilityPolicy {
         // against the same observation, and an unprepared ask re-derives
         // the egress layout comparison per anchor.
         self.prepare_ground_producer_egress(obs);
-        candidate_tiles
-            .into_iter()
-            .filter_map(|anchor| {
-                if !self.placement_valid_prepared(obs, kind, anchor) {
-                    return None;
-                }
-                let placement = profile.footprint(anchor);
-                let doorsteps = building_doorsteps(ground, anchor, placement.size);
-                let builder_routes: Vec<_> = builders
-                    .iter()
-                    .copied()
-                    .filter_map(|builder| {
-                        shortest_path_between(
-                            ground,
-                            &[builder.tile],
-                            &doorsteps,
-                            Some(placement),
-                            DefenseDomain::Ground,
-                        )
-                        .map(|(_, _, path)| (builder, path_cost(&path)))
-                    })
-                    .collect();
-                let mut safe_builders: Vec<_> =
-                    builder_routes.iter().map(|(builder, _)| *builder).collect();
-                let builder = self.safe_implicit_builder(
+        let mut candidates = candidate_tiles.into_iter().filter_map(|anchor| {
+            if !self.placement_valid_prepared(obs, kind, anchor) {
+                return None;
+            }
+            let placement = profile.footprint(anchor);
+            let doorsteps = building_doorsteps(ground, anchor, placement.size);
+            let mut ordered_builders = builders.to_vec();
+            ordered_builders
+                .sort_unstable_by_key(|builder| (builder.tile.manhattan(anchor), builder.id));
+            let (builder, builder_travel) = ordered_builders.into_iter().find_map(|builder| {
+                let (_, _, path) = shortest_path_between(
+                    ground,
+                    &[builder.tile],
+                    &doorsteps,
+                    Some(placement),
+                    DefenseDomain::Ground,
+                )?;
+                let mut candidate = [builder];
+                (self.safe_implicit_builder(
                     obs,
                     kind,
                     anchor,
-                    &mut safe_builders,
+                    &mut candidate,
                     &danger,
                     Some(briefing),
-                )?;
-                let resource_detour_limit = (profile.kind == BuildingKind::Barricade)
-                    .then_some(MAX_BARRICADE_RESOURCE_DETOUR_COST);
-                if !scrap_access_survives(ground, assets, placement, resource_detour_limit) {
-                    return None;
-                }
-                let candidate_approaches = operationally_supported_approaches(
-                    ground,
+                ) == Some(builder.id))
+                .then(|| (builder.id, path_cost(&path)))
+            })?;
+            let resource_detour_limit = (profile.kind == BuildingKind::Barricade)
+                .then_some(MAX_BARRICADE_RESOURCE_DETOUR_COST);
+            if !scrap_access_survives(ground, assets, placement, resource_detour_limit) {
+                return None;
+            }
+            let candidate_approaches = operationally_supported_approaches(
+                ground,
+                assets,
+                &approaches,
+                placement,
+                profile.domain,
+                (profile.kind == BuildingKind::Barricade).then_some(MAX_BARRICADE_DETOUR_COST),
+            )?;
+            let coverage = score_coverage(
+                &CoverageContext {
+                    obs,
+                    briefing,
                     assets,
-                    &approaches,
-                    placement,
-                    profile.domain,
-                    (profile.kind == BuildingKind::Barricade).then_some(MAX_BARRICADE_DETOUR_COST),
-                )?;
-                let coverage = score_coverage(
-                    &CoverageContext {
-                        obs,
-                        briefing,
-                        assets,
-                        approaches: &candidate_approaches,
-                        existing: &existing,
-                        planned: &planned,
-                    },
-                    profile,
+                    approaches: &candidate_approaches,
+                    existing: &existing,
+                    planned: &planned,
+                },
+                profile,
+                anchor,
+            );
+            if coverage.new == 0 && coverage.reinforced == 0 {
+                return None;
+            }
+            let threat_distance = origins
+                .iter()
+                .map(|origin| origin.anchor.manhattan(anchor))
+                .min()
+                .unwrap_or(i32::MAX);
+            Some((
+                Candidate {
                     anchor,
-                );
-                if coverage.new == 0 && coverage.reinforced == 0 {
-                    return None;
-                }
-                let builder_travel = builder_routes
-                    .iter()
-                    .find(|(unit, _)| unit.id == builder)
-                    .map_or(u32::MAX, |(_, cost)| *cost);
-                let threat_distance = origins
-                    .iter()
-                    .map(|origin| origin.anchor.manhattan(anchor))
-                    .min()
-                    .unwrap_or(i32::MAX);
-                Some((
-                    Candidate {
-                        anchor,
-                        builder_travel,
-                        coverage,
-                        threat_distance,
-                    },
-                    builder,
-                ))
-            })
-            .max_by_key(|(candidate, _)| candidate.key(profile))
-            .map(|(candidate, builder)| DefensePlacement {
-                anchor: candidate.anchor,
+                    builder_travel,
+                    coverage,
+                    threat_distance,
+                },
                 builder,
-            })
+            ))
+        });
+        let selected = match search {
+            DefenseSiteSearch::Best => {
+                candidates.max_by_key(|(candidate, _)| candidate.key(profile))
+            }
+            DefenseSiteSearch::Any => candidates.next(),
+        };
+        selected.map(|(candidate, builder)| DefensePlacement {
+            anchor: candidate.anchor,
+            builder,
+        })
     }
 }
 
@@ -1486,6 +1532,13 @@ fn operationally_supported_approaches(
         .enumerate()
         .filter_map(|(index, asset)| {
             let goals = asset.shape.approach_tiles(ground, DefenseDomain::Ground);
+            if !doorsteps.iter().any(|start| {
+                goals
+                    .iter()
+                    .any(|goal| start.chebyshev(*goal) <= DEFENSE_RADIUS)
+            }) {
+                return None;
+            }
             shortest_path_between(
                 ground,
                 &doorsteps,
@@ -2374,6 +2427,30 @@ mod tests {
         policy.strategic_defense_site(kind, obs, briefing, units, buildings, &builders)
     }
 
+    fn assert_existence_matches_ranked_search(
+        kind: BuildingKind,
+        obs: &Observation,
+        briefing: &PublicMapBriefing,
+        units: &[UnitContact],
+        buildings: &[BuildingContact],
+    ) {
+        let expected =
+            site_for(kind, &UtilityPolicy::new(), obs, briefing, units, buildings).is_some();
+        let policy = UtilityPolicy::new();
+        let builders: Vec<_> = obs
+            .my_units
+            .iter()
+            .filter(|unit| unit.kind.stats().harvest.is_some())
+            .collect();
+        let actual = policy.strategic_defense_site_exists_grounded(
+            kind, obs, briefing, units, buildings, &builders, &mut None,
+        );
+        assert_eq!(
+            actual, expected,
+            "existence and ranked selection disagreed for {kind:?}"
+        );
+    }
+
     fn emergency_site_for(
         kind: BuildingKind,
         policy: &UtilityPolicy,
@@ -2412,6 +2489,56 @@ mod tests {
             selected.manhattan(RIGHT_HOME) < LEFT_HOME.manhattan(RIGHT_HOME),
             "the site should intercept before the hostile approach reaches the Foundry"
         );
+    }
+
+    #[test]
+    fn existence_search_matches_ranked_selection_across_strategic_boundaries() {
+        let map = briefing();
+        let supported = [
+            BuildingKind::Turret,
+            BuildingKind::Bastion,
+            BuildingKind::FlakTurret,
+            BuildingKind::ScuttleCharge,
+            BuildingKind::Barricade,
+        ];
+        let baseline = observation(PlayerId(0), LEFT_HOME);
+        for kind in supported {
+            assert_existence_matches_ranked_search(kind, &baseline, &map, &[], &[]);
+        }
+        assert_existence_matches_ranked_search(BuildingKind::Foundry, &baseline, &map, &[], &[]);
+
+        let mut no_builder = baseline.clone();
+        no_builder.my_units.clear();
+        assert_existence_matches_ranked_search(BuildingKind::Turret, &no_builder, &map, &[], &[]);
+
+        let mut no_asset = baseline.clone();
+        no_asset.my_buildings.clear();
+        assert_existence_matches_ranked_search(BuildingKind::Turret, &no_asset, &map, &[], &[]);
+
+        let hostile = building(20, PlayerId(1), BuildingKind::Turret, TilePos::new(4, 5));
+        let mut current_threat = baseline.clone();
+        current_threat.enemy_buildings.push(hostile.clone());
+        for kind in supported {
+            assert_existence_matches_ranked_search(kind, &current_threat, &map, &[], &[]);
+        }
+
+        let remembered = remembered_building(&hostile, baseline.tick);
+        for kind in supported {
+            assert_existence_matches_ranked_search(
+                kind,
+                &baseline,
+                &map,
+                &[],
+                std::slice::from_ref(&remembered),
+            );
+        }
+
+        let divided_scenario = scenario_with(|tile| if tile.x == 20 { '#' } else { '.' });
+        let divided_map =
+            PublicMapBriefing::from_scenario(&divided_scenario).expect("divided briefing");
+        for kind in supported {
+            assert_existence_matches_ranked_search(kind, &baseline, &divided_map, &[], &[]);
+        }
     }
 
     #[test]

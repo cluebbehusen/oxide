@@ -1,12 +1,17 @@
 //! Utility-policy contracts: deterministic thinking and budget honesty.
 
 use chassis::grid::TilePos;
+use oxide_sim::bot::trace::{
+    ClaimOwnerTrace, ConfidenceTrace, ProposalDispositionTrace, ProposalKeyTrace,
+};
 use oxide_sim::bot::{
     Brain, BuildingObs, Dials, DifficultyTuning, Executive, Intent, Observation, PublicMapBriefing,
     UnitObs, UtilityPolicy,
 };
-use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec};
-use oxide_sim::stats::{BuildingKind, EXTRACTOR_SUPPORT_RADIUS};
+use oxide_sim::scenario::{
+    BotConfig, BotDifficulty, BotStance, BuildingSpec, PlayerSpec, UnitSpec,
+};
+use oxide_sim::stats::{BuildingKind, EXTRACTOR_SUPPORT_RADIUS, Role};
 use oxide_sim::{BuildingId, Command, Event, Faction, PlayerId, Scenario, UnitId, UnitKind};
 use std::sync::Arc;
 
@@ -207,6 +212,157 @@ fn block_support_anchors(obs: &mut Observation, extractor: TilePos, through_radi
     obs.known_rock.dedup();
 }
 
+fn post_floor_capital_scenario(scrap: u32) -> Scenario {
+    let mut scenario = Scenario::skirmish();
+    scenario.name = "standing force beside voluntary capital".into();
+    scenario.players[0].scrap = scrap;
+    scenario.players[0].bot = true;
+    scenario.players[0].bot_config = Some(BotConfig::scripted(
+        BotDifficulty::Standard,
+        BotStance::Balanced,
+        0x5eed_0a16,
+    ));
+    scenario.players[1].scrap = 0;
+    scenario.players[1].bot = false;
+    scenario.players[1].bot_config = None;
+    scenario.map = scenario
+        .map
+        .iter()
+        .map(|row| {
+            row.chars()
+                .map(|tile| match tile {
+                    'E' | 'S' | 's' => '.',
+                    other => other,
+                })
+                .collect()
+        })
+        .collect();
+    scenario.units = (0..7)
+        .map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Harvester,
+            x: 5 + index % 4,
+            y: 9 + index / 4,
+        })
+        .chain((0..5).map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 9 + index,
+            y: 12,
+        }))
+        .collect();
+    scenario.buildings = vec![
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 11,
+            y: 2,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Airworks,
+            x: 16,
+            y: 2,
+        },
+    ];
+    scenario.meta = None;
+    scenario
+}
+
+fn advance_to_post_floor_policy_tick(state: &mut oxide_sim::State) {
+    while state.current_tick() < 2_016 {
+        state.tick(&[]);
+    }
+}
+
+fn post_floor_capital_reserve() -> u32 {
+    let scenario = post_floor_capital_scenario(10_000);
+    let mut state = scenario
+        .build()
+        .expect("the capital-reserve reference fixture builds");
+    advance_to_post_floor_policy_tick(&mut state);
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0]
+            .bot_config
+            .expect("the bot is configured"),
+        Arc::new(PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds")),
+    );
+    let decision = brain.act_traced(&state);
+    decision
+        .trace
+        .expect("the reference decision is traced")
+        .allocation
+        .proposals
+        .entries
+        .into_iter()
+        .find_map(|proposal| {
+            matches!(
+                proposal.key,
+                ProposalKeyTrace::StandingForce {
+                    kind: UnitKind::Sentinel,
+                    ..
+                }
+            )
+            .then_some(proposal.claims.minimum_residual_scrap)
+        })
+        .filter(|reserve| *reserve > 0)
+        .expect("standing force protects the actionable capital reserve")
+}
+
+fn air_response_scenario(contact: Option<UnitKind>, spotter: bool) -> Scenario {
+    let mut scenario = post_floor_capital_scenario(10_000);
+    scenario.name = "armed-air evidence and response".into();
+    scenario.buildings.extend([
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Crucible,
+            x: 21,
+            y: 2,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Array,
+            x: 25,
+            y: 2,
+        },
+    ]);
+    let mut rows = scenario
+        .map
+        .iter()
+        .map(|row| row.chars().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    for row in &mut rows[2..4] {
+        for tile in &mut row[7..9] {
+            *tile = 's';
+        }
+    }
+    for row in &mut rows[1..23] {
+        row[20] = '#';
+    }
+    scenario.map = rows
+        .into_iter()
+        .map(|row| row.into_iter().collect())
+        .collect();
+    if spotter {
+        scenario.units.push(UnitSpec {
+            player: 0,
+            kind: UnitKind::Kestrel,
+            x: 17,
+            y: 12,
+        });
+    }
+    if let Some(kind) = contact {
+        scenario.units.push(UnitSpec {
+            player: 1,
+            kind,
+            x: 23,
+            y: 12,
+        });
+    }
+    scenario
+}
+
 #[test]
 fn identical_inputs_think_identical_intents() {
     let scenario = Scenario::skirmish();
@@ -242,88 +398,172 @@ fn a_think_never_plans_past_the_bank() {
 
 #[test]
 fn scouts_do_not_create_sticky_anti_air_demand_but_armed_flyers_do() {
-    let mut obs = construction_observation(1_000);
-    add_building(
-        &mut obs,
-        observed_building(100, BuildingKind::Foundry, TilePos::new(4, 10), true),
+    let me = PlayerId(0);
+    let aa_kind = Role::AntiAir.unit_for(Faction::Ferrous);
+    let enemy_tile = TilePos::new(23, 12);
+
+    let scout_scenario = air_response_scenario(Some(UnitKind::Gnat), true);
+    let scout_state = scout_scenario
+        .build()
+        .expect("the current-scout fixture builds");
+    let mut scout_brain = Brain::scripted(
+        me,
+        scout_scenario.players[0]
+            .bot_config
+            .expect("the bot is configured"),
+        Arc::new(PublicMapBriefing::from_scenario(&scout_scenario).expect("the briefing builds")),
     );
-    add_building(
-        &mut obs,
-        observed_building(101, BuildingKind::Fabricator, TilePos::new(10, 10), true),
-    );
-    obs.known_scrap.push((TilePos::new(7, 8), 500));
-    let mut policy = UtilityPolicy::new();
-    let mut dials = standard_dials_without_opening_core_floor();
-    dials.deep_tech = false;
-    dials.radar = false;
-    dials.mines = false;
-    dials.expansion = false;
-    dials.extractors = false;
-    dials.turret_response = false;
-    dials.upgrades = false;
-    let aa_kind = oxide_sim::stats::Role::AntiAir.unit_for(obs.faction);
-    let has_aa_response = |intents: &[Intent]| {
-        intents.iter().any(|intent| {
-            matches!(intent, Intent::TrainAt { kind, .. } if *kind == aa_kind)
-                || matches!(
-                    intent,
-                    Intent::Build {
-                        kind: BuildingKind::FlakTurret,
-                        ..
-                    }
-                )
-        })
-    };
-
-    for scout in [UnitKind::Gnat, UnitKind::Kestrel] {
-        obs.enemy_units = vec![UnitObs {
-            player: PlayerId(1),
-            ..observed_unit(200, scout, TilePos::new(18, 10))
-        }];
-        let current = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
-        assert!(
-            !has_aa_response(&current),
-            "an unarmed {scout:?} must not divert the economy into AA: {current:?}"
-        );
-
-        obs.tick += 24;
-        obs.enemy_units.clear();
-        let remembered = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
-        assert!(
-            !has_aa_response(&remembered),
-            "seeing {scout:?} must not leave sticky hostile-air evidence: {remembered:?}"
-        );
-        obs.tick += 24;
-    }
-
-    obs.enemy_units = vec![UnitObs {
-        player: PlayerId(1),
-        ..observed_unit(201, UnitKind::Condor, TilePos::new(18, 10))
-    }];
-    let current = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    let current_scout_obs = Observation::fog_honest(&scout_state, me);
     assert!(
-        current
+        current_scout_obs
+            .enemy_units
             .iter()
-            .any(|intent| matches!(intent, Intent::TrainAt { kind, .. } if *kind == aa_kind)),
-        "an armed flyer should request a dedicated AA unit: {current:?}"
+            .any(|unit| unit.kind == UnitKind::Gnat && unit.tile == enemy_tile)
+    );
+    let current_scout = scout_brain.act_traced(&scout_state);
+    assert!(
+        current_scout
+            .trace
+            .as_ref()
+            .expect("the scout decision is traced")
+            .allocation
+            .proposals
+            .entries
+            .iter()
+            .all(|proposal| !matches!(
+                proposal.key,
+                ProposalKeyTrace::StandingForce { kind, .. } if kind == aa_kind
+            ))
+    );
+    assert!(current_scout.commands.iter().all(|command| !matches!(
+        command.command,
+        Command::Build {
+            kind: BuildingKind::FlakTurret,
+            ..
+        }
+    )));
+
+    let hidden_scout_scenario = air_response_scenario(None, false);
+    let mut hidden_scout_state = hidden_scout_scenario
+        .build()
+        .expect("the hidden-scout control builds");
+    while hidden_scout_state.current_tick() < 24 {
+        hidden_scout_state.tick(&[]);
+    }
+    assert!(!Observation::fog_honest(&hidden_scout_state, me).visible(enemy_tile));
+    let remembered_scout = scout_brain.act_traced(&hidden_scout_state);
+    assert!(
+        remembered_scout
+            .trace
+            .as_ref()
+            .expect("the remembered-scout decision is traced")
+            .allocation
+            .proposals
+            .entries
+            .iter()
+            .all(|proposal| !matches!(
+                proposal.key,
+                ProposalKeyTrace::StandingForce { kind, .. } if kind == aa_kind
+            ))
+    );
+    assert!(remembered_scout.commands.iter().all(|command| !matches!(
+        command.command,
+        Command::Build {
+            kind: BuildingKind::FlakTurret,
+            ..
+        }
+    )));
+
+    let armed_scenario = air_response_scenario(Some(UnitKind::Moth), true);
+    let mut armed_state = armed_scenario
+        .build()
+        .expect("the current-armed-air fixture builds");
+    let mut armed_brain = Brain::scripted(
+        me,
+        armed_scenario.players[0]
+            .bot_config
+            .expect("the bot is configured"),
+        Arc::new(PublicMapBriefing::from_scenario(&armed_scenario).expect("the briefing builds")),
     );
     assert!(
-        current.iter().any(|intent| matches!(
-            intent,
-            Intent::Build {
+        Observation::fog_honest(&armed_state, me)
+            .enemy_units
+            .iter()
+            .any(|unit| unit.kind == UnitKind::Moth && unit.tile == enemy_tile)
+    );
+    let current_armed = armed_brain.act_traced(&armed_state);
+    let current_trace = current_armed
+        .trace
+        .as_ref()
+        .expect("the armed-air decision is traced");
+    let standing_aa = current_trace
+        .allocation
+        .proposals
+        .entries
+        .iter()
+        .find(|proposal| {
+            matches!(proposal.key, ProposalKeyTrace::StandingForce { kind, .. } if kind == aa_kind)
+                && proposal.disposition == ProposalDispositionTrace::Accepted
+        })
+        .expect("current armed air should admit mobile anti-air through shared allocation");
+    assert_eq!(standing_aa.case.confidence, ConfidenceTrace::Current);
+    let aa_job = current_trace
+        .allocation
+        .producer_schedule
+        .entries
+        .iter()
+        .find(|job| {
+            matches!(
+                job.owner,
+                ClaimOwnerTrace::Proposal { key } if key == standing_aa.key
+            )
+        })
+        .expect("the accepted anti-air proposal owns a producer job");
+    assert!(current_armed.commands.iter().any(|command| matches!(
+        command.command,
+        Command::Train { building, kind }
+            if building == aa_job.producer && kind == aa_kind
+    )));
+    assert!(
+        current_armed.commands.iter().any(|command| matches!(
+            command.command,
+            Command::Build {
                 kind: BuildingKind::FlakTurret,
                 ..
             }
         )),
-        "an armed flyer should raise static AA over known salvage: {current:?}"
+        "current armed air should also trigger static anti-air: {:?}",
+        current_armed.commands
     );
+    let report = armed_state.tick(&current_armed.commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected { player, .. } if *player == me
+    )));
 
-    obs.tick += 24;
-    obs.enemy_units.clear();
-    let remembered = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    let hidden_armed_scenario = air_response_scenario(None, false);
+    let mut hidden_armed_state = hidden_armed_scenario
+        .build()
+        .expect("the hidden-armed-air fixture builds");
+    while hidden_armed_state.current_tick() < 24 {
+        hidden_armed_state.tick(&[]);
+    }
+    assert!(!Observation::fog_honest(&hidden_armed_state, me).visible(enemy_tile));
+    let remembered_armed = armed_brain.act_traced(&hidden_armed_state);
+    let remembered_trace = remembered_armed
+        .trace
+        .as_ref()
+        .expect("the remembered-air decision is traced");
     assert!(
-        has_aa_response(&remembered),
-        "an armed flyer should leave bounded sticky AA evidence: {remembered:?}"
+        remembered_trace
+            .allocation
+            .proposals
+            .entries
+            .iter()
+            .any(|proposal| {
+                matches!(proposal.key, ProposalKeyTrace::StandingForce { kind, .. } if kind == aa_kind)
+                    && proposal.case.confidence == ConfidenceTrace::Supported
+            })
     );
 }
 
@@ -940,181 +1180,220 @@ fn reaching_the_core_floor_after_cancelling_an_unsafe_site_does_not_cancel_twice
 }
 
 #[test]
-fn capital_guard_accepts_a_shallow_sentinel_an_exact_remainder_or_no_ground_objective() {
-    let home = TilePos::new(2, 10);
-    let mut obs = construction_observation(0);
-    obs.my_units.extend([
-        observed_unit(23, UnitKind::Sentinel, TilePos::new(10, 14)),
-        observed_unit(24, UnitKind::Sentinel, TilePos::new(11, 14)),
-    ]);
-    obs.my_units.sort_unstable_by_key(|unit| unit.id);
-    for (id, kind, anchor) in [
-        (0, BuildingKind::Foundry, home),
-        (1, BuildingKind::Fabricator, TilePos::new(7, 3)),
-        (2, BuildingKind::Airworks, TilePos::new(12, 3)),
-    ] {
-        add_building(&mut obs, observed_building(id, kind, anchor, true));
-    }
-    obs.my_queues[0] = vec![UnitKind::Harvester, UnitKind::Harvester];
-    obs.my_queues[1] = vec![UnitKind::Lancer, UnitKind::Lancer];
-    obs.my_queues[2] = vec![UnitKind::Kestrel, UnitKind::Kestrel];
-    let mut hostile = observed_building(50, BuildingKind::Foundry, TilePos::new(40, 10), true);
-    hostile.player = PlayerId(1);
-    obs.enemy_buildings.push(hostile);
-
-    let mut dials = standard_dials();
-    dials.turret_response = false;
-    dials.aa_response = false;
-    dials.radar = false;
-    dials.reclaimers = false;
-    dials.extractors = false;
-    dials.upgrades = false;
-    dials.expansion = false;
-    dials.mines = false;
-    dials.barricade_cap = 0;
+fn shipped_standing_force_preserves_the_residual_capital_floor() {
     let crucible_cost = BuildingKind::Crucible
         .base_stats()
         .construction
         .expect("Crucibles have a construction price")
         .cost;
     let sentinel_cost = UnitKind::Sentinel.stats().cost;
-    let plans_crucible = |world: &Observation| {
-        player_facing_intents(&dials, world).iter().any(|intent| {
-            matches!(
-                intent,
-                Intent::Build {
-                    kind: BuildingKind::Crucible,
-                    ..
-                }
-            )
-        })
-    };
-
-    obs.scrap = crucible_cost + sentinel_cost - 1;
-    assert!(!plans_crucible(&obs));
-    obs.scrap += 1;
-    assert!(plans_crucible(&obs));
-
-    obs.scrap = crucible_cost;
-    obs.my_queues[0][1] = UnitKind::Sentinel;
-    assert!(plans_crucible(&obs));
-
-    obs.my_queues[0][1] = UnitKind::Harvester;
-    obs.enemy_buildings.clear();
-    assert!(plans_crucible(&obs));
-}
-
-#[test]
-fn post_floor_capital_keeps_the_foundry_actively_reinforcing() {
-    let home = TilePos::new(2, 10);
-    let mut obs = construction_observation(0);
-    obs.my_units.extend([
-        observed_unit(23, UnitKind::Sentinel, TilePos::new(10, 14)),
-        observed_unit(24, UnitKind::Sentinel, TilePos::new(11, 14)),
-    ]);
-    obs.my_units.sort_unstable_by_key(|unit| unit.id);
-    for (id, kind, anchor) in [
-        (0, BuildingKind::Foundry, home),
-        (1, BuildingKind::Fabricator, TilePos::new(7, 3)),
-        (2, BuildingKind::Airworks, TilePos::new(12, 3)),
-    ] {
-        add_building(&mut obs, observed_building(id, kind, anchor, true));
-    }
-    let mut hostile = observed_building(50, BuildingKind::Foundry, TilePos::new(40, 10), true);
-    hostile.player = PlayerId(1);
-    obs.enemy_buildings.push(hostile);
-
-    let mut dials = standard_dials();
-    dials.turret_response = false;
-    dials.aa_response = false;
-    dials.radar = false;
-    dials.reclaimers = false;
-    dials.extractors = false;
-    dials.upgrades = false;
-    dials.expansion = false;
-    dials.mines = false;
-    dials.barricade_cap = 0;
-    let crucible_cost = BuildingKind::Crucible
-        .base_stats()
-        .construction
-        .expect("Crucibles have a construction price")
-        .cost;
-    let sentinel_cost = UnitKind::Sentinel.stats().cost;
-
-    obs.scrap = crucible_cost + sentinel_cost;
-    let funded = player_facing_intents(&dials, &obs);
-    let reinforcement = funded
-        .iter()
-        .position(|intent| {
-            matches!(
-                intent,
-                Intent::TrainAt {
-                    building: BuildingId(0),
-                    kind: UnitKind::Sentinel,
-                }
-            )
-        })
-        .expect("an empty Foundry receives the ring-fenced reinforcement");
-    let capital = funded
-        .iter()
-        .position(|intent| {
-            matches!(
-                intent,
-                Intent::Build {
-                    kind: BuildingKind::Crucible,
-                    ..
-                }
-            )
-        })
-        .expect("the remaining exact capital fund stays spendable");
-    assert!(
-        reinforcement < capital,
-        "production must precede capital: {funded:?}"
+    let capital_reserve = post_floor_capital_reserve();
+    assert!(capital_reserve >= crucible_cost);
+    let scenario = post_floor_capital_scenario(crucible_cost + sentinel_cost - 1);
+    let mut state = scenario.build().expect("the capital-guard fixture builds");
+    advance_to_post_floor_policy_tick(&mut state);
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0]
+            .bot_config
+            .expect("the bot is configured"),
+        Arc::new(PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds")),
     );
 
-    obs.scrap = crucible_cost;
-    let short = player_facing_intents(&dials, &obs);
+    let decision = brain.act_traced(&state);
+    let trace = decision.trace.as_ref().expect("the decision is traced");
+    assert!(trace.allocation.error.is_none());
+    assert!(trace.allocation.coordinator_failure.is_none());
+    assert_eq!(
+        trace
+            .budget
+            .as_ref()
+            .expect("the full policy path records its budget")
+            .voluntary_scrap_guard,
+        sentinel_cost,
+    );
     assert!(
-        short.iter().all(|intent| !matches!(
-            intent,
-            Intent::TrainAt {
+        trace
+            .allocation
+            .proposals
+            .entries
+            .iter()
+            .filter(|proposal| matches!(proposal.key, ProposalKeyTrace::StandingForce { .. }))
+            .all(|proposal| proposal.disposition != ProposalDispositionTrace::Accepted)
+    );
+    assert!(
+        trace
+            .allocation
+            .producer_schedule
+            .entries
+            .iter()
+            .all(|job| !matches!(
+                job.owner,
+                ClaimOwnerTrace::Proposal {
+                    key: ProposalKeyTrace::StandingForce { .. }
+                }
+            ))
+    );
+    assert!(
+        decision.commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Train {
                 kind: UnitKind::Sentinel,
                 ..
-            } | Intent::Build {
-                kind: BuildingKind::Crucible,
-                ..
-            } | Intent::BuildWith {
+            } | Command::Build {
                 kind: BuildingKind::Crucible,
                 ..
             }
         )),
-        "the partial combined fund must accumulate instead of starving either purchase: {short:?}"
+        "one scrap short of the combined guard and capital fund must accumulate: {:?}",
+        decision.commands
+    );
+}
+
+#[test]
+fn shipped_brain_spends_capital_only_when_the_exact_shallow_remainder_survives() {
+    let crucible_cost = BuildingKind::Crucible
+        .base_stats()
+        .construction
+        .expect("Crucibles have a construction price")
+        .cost;
+    let sentinel_cost = UnitKind::Sentinel.stats().cost;
+    let scenario = post_floor_capital_scenario(crucible_cost + sentinel_cost);
+    let mut state = scenario
+        .build()
+        .expect("the exact shallow-remainder fixture builds");
+    advance_to_post_floor_policy_tick(&mut state);
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0]
+            .bot_config
+            .expect("the bot is configured"),
+        Arc::new(PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds")),
     );
 
-    obs.scrap = crucible_cost;
-    obs.my_queues[0] = vec![UnitKind::Harvester, UnitKind::Sentinel];
-    let already_shallow = player_facing_intents(&dials, &obs);
+    let decision = brain.act_traced(&state);
     assert_eq!(
-        already_shallow
-            .iter()
-            .filter(|intent| matches!(
-                intent,
-                Intent::TrainAt {
-                    kind: UnitKind::Sentinel,
-                    ..
-                }
-            ))
-            .count(),
-        0,
-        "an existing shallow order must not be duplicated: {already_shallow:?}"
+        decision
+            .trace
+            .as_ref()
+            .and_then(|trace| trace.budget.as_ref())
+            .expect("the full policy path records its budget")
+            .voluntary_scrap_guard,
+        sentinel_cost,
     );
-    assert!(already_shallow.iter().any(|intent| matches!(
-        intent,
-        Intent::Build {
+    assert!(decision.commands.iter().any(|command| matches!(
+        command.command,
+        Command::Build {
             kind: BuildingKind::Crucible,
             ..
         }
     )));
+    assert!(decision.commands.iter().all(|command| !matches!(
+        command.command,
+        Command::Train {
+            kind: UnitKind::Sentinel,
+            ..
+        }
+    )));
+
+    let report = state.tick(&decision.commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player: PlayerId(0),
+            ..
+        }
+    )));
+    assert_eq!(state.player(PlayerId(0)).scrap, sentinel_cost);
+}
+
+#[test]
+fn shipped_brain_spends_exact_surplus_on_standing_force_and_capital() {
+    let crucible_cost = BuildingKind::Crucible
+        .base_stats()
+        .construction
+        .expect("Crucibles have a construction price")
+        .cost;
+    let sentinel_cost = UnitKind::Sentinel.stats().cost;
+    let capital_reserve = post_floor_capital_reserve();
+    let scenario = post_floor_capital_scenario(capital_reserve + sentinel_cost);
+    let mut state = scenario
+        .build()
+        .expect("the exact capital-and-reinforcement fixture builds");
+    advance_to_post_floor_policy_tick(&mut state);
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0]
+            .bot_config
+            .expect("the bot is configured"),
+        Arc::new(PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds")),
+    );
+
+    let decision = brain.act_traced(&state);
+    let trace = decision.trace.as_ref().expect("the decision is traced");
+    assert_eq!(
+        trace
+            .budget
+            .as_ref()
+            .expect("the full policy path records its budget")
+            .voluntary_scrap_guard,
+        0,
+        "the exact shallow Sentinel append discharges the shared guard",
+    );
+    let standing = trace
+        .allocation
+        .proposals
+        .entries
+        .iter()
+        .find(|proposal| {
+            matches!(proposal.key, ProposalKeyTrace::StandingForce { .. })
+                && proposal.disposition == ProposalDispositionTrace::Accepted
+        })
+        .expect("the exact surplus admits a standing-force purchase");
+    assert_eq!(standing.claims.minimum_residual_scrap, capital_reserve);
+    let job = trace
+        .allocation
+        .producer_schedule
+        .entries
+        .iter()
+        .find(|job| {
+            matches!(
+                job.owner,
+                ClaimOwnerTrace::Proposal { key } if key == standing.key
+            )
+        })
+        .expect("the accepted standing proposal owns an exact producer job");
+    assert_eq!(job.enqueued_at, state.current_tick());
+    assert_eq!(job.current_scrap, job.kind.stats().cost);
+    assert_eq!(job.forecast_scrap, 0);
+    assert!(decision.commands.iter().any(|command| matches!(
+        command.command,
+        Command::Train { building, kind }
+            if building == job.producer && kind == job.kind
+    )));
+    assert!(decision.commands.iter().any(|command| matches!(
+        command.command,
+        Command::Build {
+            kind: BuildingKind::Crucible,
+            ..
+        }
+    )));
+
+    let report = state.tick(&decision.commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player: PlayerId(0),
+            ..
+        }
+    )));
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        capital_reserve - crucible_cost
+    );
+    assert!(state.buildings().iter().any(|building| {
+        building.player == PlayerId(0) && building.kind == BuildingKind::Crucible
+    }));
 }
 
 #[test]

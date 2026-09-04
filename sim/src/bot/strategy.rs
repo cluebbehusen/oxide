@@ -18,11 +18,12 @@ use super::observation::{Observation, UnitObs};
 use super::orient::Orientation;
 use super::profile::{ResolvedProfile, Specialty};
 use super::resources::{
-    ProducerEgress, ProducerLaneReservations, ProductionAccess, ProductionDemand, ResourceSnapshot,
-    count_paid_queued_ready_with_access, plan_production_with_access,
+    ProducerEgress, ProducerLaneReservations, ProductionAccess, ProductionDemand,
+    ReservedProducerJob, ResourceSnapshot, count_paid_queued_ready_with_access,
+    paid_queued_ready_producers_with_access, plan_production_with_access,
     production_demands_fit_horizon_with_access,
 };
-use super::routing::{self, RouteProjection};
+use super::routing::{self, RouteProjection, production_spawn_doorstep};
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::scenario::BotStance;
 use crate::stats::{BuildingKind, Domain, QUEUE_CAP, Role, UnitKind, WeaponStats};
@@ -30,7 +31,7 @@ use chassis::Tick;
 use chassis::fx::{Fx, HALF, Vec2Fx};
 use chassis::grid::TilePos;
 use core::cmp::Reverse;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 pub(super) mod force_package;
 
@@ -300,9 +301,17 @@ struct AirPlan {
     observed_fighters: usize,
     connected_scope_anchor: Option<TilePos>,
     connected_package: Option<ConnectedForcePackage>,
-    /// Provider request ordinals whose exact allocator-owned TrainAt command
-    /// was emitted by a successful allocation pass.
-    issued_connected_providers: Vec<usize>,
+    /// Exact allocator-owned provider jobs whose `TrainAt` command was
+    /// emitted by a successful allocation pass.
+    issued_connected_provider_assignments: Vec<ConnectedProducerAssignment>,
+    /// Issued assignment ordinals proven to have left operation-owned queue
+    /// inventory. This monotonic set prevents completed history from claiming
+    /// a later ordinary job of the same kind.
+    released_connected_provider_ordinals: Vec<usize>,
+    /// Issued jobs observed behind a completed ground unit that could not
+    /// leave its producer. Their accepted ready ticks are no longer proof that
+    /// the matching queue occurrence completed.
+    delayed_connected_provider_ordinals: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,7 +338,9 @@ impl AirPlan {
             observed_fighters: 0,
             connected_scope_anchor: Some(scope_anchor),
             connected_package: Some(package),
-            issued_connected_providers: Vec::new(),
+            issued_connected_provider_assignments: Vec::new(),
+            released_connected_provider_ordinals: Vec::new(),
+            delayed_connected_provider_ordinals: Vec::new(),
         }
     }
 
@@ -348,7 +359,9 @@ impl AirPlan {
             observed_fighters: 0,
             connected_scope_anchor: None,
             connected_package: None,
-            issued_connected_providers: Vec::new(),
+            issued_connected_provider_assignments: Vec::new(),
+            released_connected_provider_ordinals: Vec::new(),
+            delayed_connected_provider_ordinals: Vec::new(),
         }
     }
 
@@ -447,7 +460,9 @@ impl AirPlan {
             observed_fighters: fighters,
             connected_scope_anchor: None,
             connected_package: None,
-            issued_connected_providers: Vec::new(),
+            issued_connected_provider_assignments: Vec::new(),
+            released_connected_provider_ordinals: Vec::new(),
+            delayed_connected_provider_ordinals: Vec::new(),
         }
     }
 
@@ -693,8 +708,62 @@ fn connected_proposal_claims(
     );
     ConnectedOffenseClaims {
         units: reservations(&active.op, &active.plan, obs),
+        paid_providers: connected_paid_provider_claims(active, package, resources, obs),
         provider_jobs,
     }
+}
+
+fn connected_paid_provider_claims(
+    active: &ActiveAirOperation,
+    package: &ConnectedForcePackage,
+    resources: &ConnectedProductionResources,
+    obs: &Observation,
+) -> Vec<ConnectedPaidProvider> {
+    let mut needed = BTreeMap::<UnitKind, usize>::new();
+    for demand in &package.provider_priority {
+        let count = needed.entry(demand.kind).or_default();
+        *count = count.saturating_add(demand.count);
+    }
+    for id in active
+        .op
+        .scout
+        .into_iter()
+        .chain(active.op.artillery.iter().copied())
+        .chain(active.op.strike_aircraft.iter().copied())
+    {
+        if let Some(member) = unit(obs, id)
+            && let Some(count) = needed.get_mut(&member.kind)
+        {
+            *count = count.saturating_sub(1);
+        }
+    }
+    for provider in &package.funded_providers {
+        if let Some(count) = needed.get_mut(&provider.kind) {
+            *count = count.saturating_sub(1);
+        }
+    }
+
+    let mut paid = Vec::new();
+    for (kind, count) in needed {
+        let producers = paid_queued_ready_producers_with_access(
+            &resources.snapshot,
+            kind,
+            package.preparation_deadline,
+            &resources.access,
+        );
+        debug_assert!(
+            producers.len() >= count,
+            "a derived connected package must retain every paid provider it used"
+        );
+        paid.extend(
+            producers
+                .into_iter()
+                .take(count)
+                .map(|producer| ConnectedPaidProvider { producer, kind }),
+        );
+    }
+    paid.sort_unstable();
+    paid
 }
 
 fn eligible_connected_producers(
@@ -729,6 +798,7 @@ fn claim_additions(
         .iter()
         .all(|unit| scaled.units.binary_search(unit).is_ok())
         || !scaled.provider_jobs.starts_with(&minimum.provider_jobs)
+        || !multiset_contains(&scaled.paid_providers, &minimum.paid_providers)
     {
         return None;
     }
@@ -739,8 +809,31 @@ fn claim_additions(
             .copied()
             .filter(|unit| minimum.units.binary_search(unit).is_err())
             .collect(),
+        paid_providers: multiset_difference(&scaled.paid_providers, &minimum.paid_providers),
         provider_jobs: scaled.provider_jobs[minimum.provider_jobs.len()..].to_vec(),
     })
+}
+
+fn multiset_contains<T: Ord + Copy>(superset: &[T], subset: &[T]) -> bool {
+    multiset_difference(subset, superset).is_empty()
+}
+
+fn multiset_difference<T: Ord + Copy>(left: &[T], right: &[T]) -> Vec<T> {
+    let mut right_counts = BTreeMap::<T, usize>::new();
+    for &item in right {
+        let count = right_counts.entry(item).or_default();
+        *count = count.saturating_add(1);
+    }
+    left.iter()
+        .copied()
+        .filter(|item| {
+            let Some(count) = right_counts.get_mut(item).filter(|count| **count > 0) else {
+                return true;
+            };
+            *count -= 1;
+            false
+        })
+        .collect()
 }
 
 /// A phase of the coordinated air playbook.
@@ -1202,13 +1295,36 @@ impl ConnectedProviderJob {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(in crate::bot) struct ConnectedOffenseClaims {
     units: Vec<UnitId>,
+    paid_providers: Vec<ConnectedPaidProvider>,
     provider_jobs: Vec<ConnectedProviderJob>,
+}
+
+/// One exact already-paid queue occurrence used by a connected package.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::bot) struct ConnectedPaidProvider {
+    producer: BuildingId,
+    kind: UnitKind,
+}
+
+impl ConnectedPaidProvider {
+    pub(in crate::bot) const fn producer(self) -> BuildingId {
+        self.producer
+    }
+
+    pub(in crate::bot) const fn kind(self) -> UnitKind {
+        self.kind
+    }
 }
 
 impl ConnectedOffenseClaims {
     /// Exact live providers reserved by this package.
     pub(in crate::bot) fn units(&self) -> &[UnitId] {
         &self.units
+    }
+
+    /// Exact paid queue occurrences that satisfy this package's demand.
+    pub(in crate::bot) fn paid_providers(&self) -> &[ConnectedPaidProvider] {
+        &self.paid_providers
     }
 
     /// Exact unpaid production requests retained by this package.
@@ -1225,6 +1341,7 @@ impl ConnectedOffenseClaims {
         units.dedup();
         Self {
             units,
+            paid_providers: Vec::new(),
             provider_jobs,
         }
     }
@@ -1487,7 +1604,7 @@ impl FreshConnectedProposal {
         Some(reconcile_connected_revision_provider_jobs(
             self.identity(),
             assignments,
-            &active.plan.issued_connected_providers,
+            &active.plan.issued_connected_provider_assignments,
             &variant_jobs,
         ))
     }
@@ -1745,6 +1862,10 @@ impl FreshConnectedProposal {
             cumulative.units.sort_unstable();
             cumulative.units.dedup();
             cumulative
+                .paid_providers
+                .extend(additions.paid_providers.iter().copied());
+            cumulative.paid_providers.sort_unstable();
+            cumulative
                 .provider_jobs
                 .extend(additions.provider_jobs.iter().cloned());
             variants.push(ConnectedProposalVariant {
@@ -1838,7 +1959,7 @@ impl FreshConnectedProposal {
 fn reconcile_connected_revision_provider_jobs(
     identity: ConnectedOffenseIdentity,
     assignments: &[ConnectedProducerAssignment],
-    issued: &[usize],
+    issued: &[ConnectedProducerAssignment],
     variant_jobs: &[&[ConnectedProviderJob]],
 ) -> ConnectedRevisionProviderDelta {
     let largest = variant_jobs
@@ -1850,12 +1971,17 @@ fn reconcile_connected_revision_provider_jobs(
     let mut outstanding = assignments
         .iter()
         .copied()
-        .filter(|assignment| issued.binary_search(&assignment.request_ordinal).is_err())
+        .filter(|assignment| {
+            issued
+                .binary_search_by_key(&assignment.request_ordinal, |issued| issued.request_ordinal)
+                .is_err()
+        })
         .collect::<Vec<_>>();
     outstanding.sort_unstable_by_key(|assignment| assignment.request_ordinal);
     let mut next_binding_ordinal = assignments
         .iter()
         .map(|assignment| assignment.request_ordinal)
+        .chain(issued.iter().map(|assignment| assignment.request_ordinal))
         .max()
         .map_or(0, |ordinal| {
             ordinal
@@ -2258,7 +2384,6 @@ fn derive_connected_proposal_with_resources(
         plan.admitted_at = prior_admitted_at;
         if let ConnectedProposalOrigin::Active { active } = &origin {
             plan.connected_scope_anchor = active.plan.connected_scope_anchor;
-            plan.issued_connected_providers = active.plan.issued_connected_providers.clone();
         }
         let mut op = connected_proposal_operation(&origin, target, obs.tick);
         let package = plan
@@ -2740,6 +2865,40 @@ impl StrategicPlanner {
         proposal: FreshConnectedProposal,
     ) -> Result<(), ConnectedProposalCommitError> {
         let revises_active = proposal.revises_active_operation();
+        let identity = proposal.identity();
+        let issued_connected_provider_assignments = match &proposal.origin {
+            ConnectedProposalOrigin::Active { active } => Some(
+                active
+                    .plan
+                    .issued_connected_provider_assignments
+                    .iter()
+                    .copied()
+                    .map(|mut assignment| {
+                        assignment.owner = identity;
+                        assignment
+                    })
+                    .collect(),
+            ),
+            ConnectedProposalOrigin::Idle { .. } | ConnectedProposalOrigin::Remembered { .. } => {
+                None
+            }
+        };
+        let released_connected_provider_ordinals = match &proposal.origin {
+            ConnectedProposalOrigin::Active { active } => {
+                Some(active.plan.released_connected_provider_ordinals.clone())
+            }
+            ConnectedProposalOrigin::Idle { .. } | ConnectedProposalOrigin::Remembered { .. } => {
+                None
+            }
+        };
+        let delayed_connected_provider_ordinals = match &proposal.origin {
+            ConnectedProposalOrigin::Active { active } => {
+                Some(active.plan.delayed_connected_provider_ordinals.clone())
+            }
+            ConnectedProposalOrigin::Idle { .. } | ConnectedProposalOrigin::Remembered { .. } => {
+                None
+            }
+        };
         if !revises_active
             && self
                 .air
@@ -2758,11 +2917,20 @@ impl StrategicPlanner {
         if !origin_matches {
             return Err(ConnectedProposalCommitError::StalePlanner);
         }
-        let selected = proposal
+        let mut selected = proposal
             .variants
             .into_iter()
             .nth(proposal.selected_variant)
             .expect("a selected proposal variant came from its retained ladder");
+        if let Some(issued) = issued_connected_provider_assignments {
+            selected.active.plan.issued_connected_provider_assignments = issued;
+        }
+        if let Some(released) = released_connected_provider_ordinals {
+            selected.active.plan.released_connected_provider_ordinals = released;
+        }
+        if let Some(delayed) = delayed_connected_provider_ordinals {
+            selected.active.plan.delayed_connected_provider_ordinals = delayed;
+        }
         if selected
             .active
             .plan
@@ -2807,6 +2975,99 @@ impl StrategicPlanner {
             units: reservations(&active.op, &active.plan, obs),
             provider_jobs,
         })
+    }
+
+    /// Allocator-owned provider purchases that still occupy an observed
+    /// producer queue and remain necessary to complete the active package.
+    ///
+    /// The endpoints are inclusive because a command issued on
+    /// `enqueued_at` has not executed when that tick's observation is built,
+    /// and production finishing on `ready_at` leaves the queue during the
+    /// later production phase of that same tick. A ground job that remains at
+    /// or behind a blocked front item stays owned after its predicted ready
+    /// tick; completed history and later ordinary work do not.
+    pub(in crate::bot) fn issued_connected_production_assignments(
+        &mut self,
+        obs: &Observation,
+    ) -> Vec<ConnectedProducerAssignment> {
+        let Some(active) = self.air.as_mut().filter(|active| {
+            active.op.assault_admitted
+                && matches!(
+                    active.op.phase,
+                    AirOperationPhase::Recon | AirOperationPhase::Assemble
+                )
+        }) else {
+            return Vec::new();
+        };
+        let mut missing = connected_provider_shortfall(active, obs);
+        let mut queued = observed_queue_multiplicity(obs);
+        let mut retained = Vec::new();
+        let mut released = Vec::new();
+        for &assignment in &active.plan.issued_connected_provider_assignments {
+            if active
+                .plan
+                .released_connected_provider_ordinals
+                .binary_search(&assignment.request_ordinal)
+                .is_ok()
+                || assignment.timing.enqueued_at > obs.tick
+            {
+                continue;
+            }
+            let Some(needed) = missing
+                .get_mut(&assignment.kind)
+                .filter(|needed| **needed > 0)
+            else {
+                released.push(assignment.request_ordinal);
+                continue;
+            };
+            let queued_count = queued
+                .get_mut(&(assignment.producer, assignment.kind))
+                .filter(|count| **count > 0);
+            let command_boundary = assignment.timing.enqueued_at == obs.tick;
+            let queue_blocked = producer_queue_is_blocked(obs, assignment.producer);
+            if queued_count.is_some()
+                && obs.tick >= assignment.timing.ready_at
+                && queue_blocked
+                && let Err(index) = active
+                    .plan
+                    .delayed_connected_provider_ordinals
+                    .binary_search(&assignment.request_ordinal)
+            {
+                active
+                    .plan
+                    .delayed_connected_provider_ordinals
+                    .insert(index, assignment.request_ordinal);
+            }
+            let delayed = active
+                .plan
+                .delayed_connected_provider_ordinals
+                .binary_search(&assignment.request_ordinal)
+                .is_ok();
+            let still_owned = (command_boundary || queued_count.is_some())
+                && (obs.tick <= assignment.timing.ready_at || queue_blocked || delayed);
+            if !still_owned {
+                released.push(assignment.request_ordinal);
+                continue;
+            }
+            *needed -= 1;
+            if let Some(count) = queued_count {
+                *count -= 1;
+            }
+            retained.push(assignment);
+        }
+        for ordinal in released {
+            if let Err(index) = active
+                .plan
+                .released_connected_provider_ordinals
+                .binary_search(&ordinal)
+            {
+                active
+                    .plan
+                    .released_connected_provider_ordinals
+                    .insert(index, ordinal);
+            }
+        }
+        retained
     }
 
     /// Cancels a connected purchase that became due during emergency economy
@@ -2891,14 +3152,12 @@ impl StrategicPlanner {
         else {
             return;
         };
-        active
-            .plan
-            .issued_connected_providers
-            .extend(assignments.iter().filter_map(|assignment| {
-                (assignment.timing.enqueued_at == observed_at).then_some(assignment.request_ordinal)
-            }));
-        active.plan.issued_connected_providers.sort_unstable();
-        active.plan.issued_connected_providers.dedup();
+        let issued = assignments
+            .iter()
+            .copied()
+            .filter(|assignment| assignment.timing.enqueued_at == observed_at)
+            .collect::<Vec<_>>();
+        record_issued_connected_providers(&mut active.plan, &issued);
     }
 
     /// Refreshes only the observation-relative funding split of an active
@@ -4371,6 +4630,9 @@ fn rebase_adjudicated_connected_target(
             assignment.owner = identity;
         }
     }
+    for assignment in &mut plan.issued_connected_provider_assignments {
+        assignment.owner = identity;
+    }
 }
 
 fn prosecutable_cluster_air_defense_target(
@@ -5033,18 +5295,23 @@ fn connected_production_access<'a>(
         for kind in candidates {
             let accessible = match kind.stats().domain {
                 Domain::Ground if is_artillery(kind) => staging.is_some_and(|staging| {
-                    production_spawn_doorstep(obs, producer, route.public_map, route.orientation)
-                        .is_some_and(|spawn| {
-                            ground_routes.ground_command_reaches(spawn, staging)
-                                && suppression_targets_reachable(
-                                    &mut ground_routes,
-                                    obs,
-                                    SuppressionOrigin { tile: spawn, kind },
-                                    &targets.suppression_targets,
-                                    route.intel,
-                                    route.public_map,
-                                )
-                        })
+                    production_spawn_doorstep(
+                        obs,
+                        producer,
+                        route.public_map,
+                        Some(route.orientation),
+                    )
+                    .is_some_and(|spawn| {
+                        ground_routes.ground_command_reaches(spawn, staging)
+                            && suppression_targets_reachable(
+                                &mut ground_routes,
+                                obs,
+                                SuppressionOrigin { tile: spawn, kind },
+                                &targets.suppression_targets,
+                                route.intel,
+                                route.public_map,
+                            )
+                    })
                 }),
                 Domain::Air
                     if kind == Role::Scout.unit_for(obs.faction)
@@ -5229,7 +5496,7 @@ fn connected_suppression_origins<'a>(
         })
         .collect();
     origins.extend(obs.my_buildings.iter().flat_map(|producer| {
-        let spawn = production_spawn_doorstep(obs, producer, public_map, orientation);
+        let spawn = production_spawn_doorstep(obs, producer, public_map, Some(orientation));
         completed_producer_trainable_kinds(obs, producer)
             .into_iter()
             .filter(|kind| is_artillery(*kind))
@@ -5296,9 +5563,9 @@ fn suppression_targets_reachable(
     public_map: Option<&PublicMapBriefing>,
 ) -> bool {
     targets.iter().all(|target| {
-        suppression_firing_stands(routes, obs, origin, *target, intel, public_map)
-            .next()
-            .is_some()
+        legal_suppression_stands(obs, origin, *target, intel, public_map)
+            .into_iter()
+            .any(|stand| routes.ground_command_reaches(origin.tile, stand))
     })
 }
 
@@ -5383,12 +5650,24 @@ fn suppression_firing_stands(
     intel: &StrategicIntelligence,
     public_map: Option<&PublicMapBriefing>,
 ) -> impl Iterator<Item = TilePos> {
+    let mut stands = legal_suppression_stands(obs, origin, target, intel, public_map);
+    stands.retain(|stand| routes.ground_command_reaches(origin.tile, *stand));
+    stands.into_iter()
+}
+
+fn legal_suppression_stands(
+    obs: &Observation,
+    origin: SuppressionOrigin,
+    target: Target,
+    intel: &StrategicIntelligence,
+    public_map: Option<&PublicMapBriefing>,
+) -> Vec<TilePos> {
     let mut stands = Vec::new();
     let Some(weapon) = suppression_weapon(origin.kind) else {
-        return stands.into_iter();
+        return stands;
     };
     let Some(geometry) = suppression_target_geometry(intel, target) else {
-        return stands.into_iter();
+        return stands;
     };
     let (near, far) = geometry.tile_bounds();
     let radius = weapon.range.ceil().to_num::<i32>();
@@ -5396,7 +5675,6 @@ fn suppression_firing_stands(
         for x in near.x.saturating_sub(radius)..=far.x.saturating_add(radius) {
             let stand = TilePos::new(x, y);
             if !public_ground_open(obs, stand, public_map)
-                || !routes.ground_command_reaches(origin.tile, stand)
                 || !suppression_shot_is_legal(obs, public_map, weapon, stand, geometry)
             {
                 continue;
@@ -5405,7 +5683,7 @@ fn suppression_firing_stands(
         }
     }
     stands.sort_unstable_by_key(|stand| (stand.chebyshev(origin.tile), stand.y, stand.x));
-    stands.into_iter()
+    stands
 }
 
 fn suppression_shot_is_legal(
@@ -5476,24 +5754,6 @@ fn current_target_contacts_at_anchors<'a>(
                 && building_value(contact.kind) > 0
         })
         .collect()
-}
-
-fn production_spawn_doorstep(
-    obs: &Observation,
-    producer: &super::observation::BuildingObs,
-    public_map: Option<&PublicMapBriefing>,
-    orientation: Orientation,
-) -> Option<TilePos> {
-    let size = producer.kind.tier_stats(producer.tier).size;
-    let world_anchor = orientation.anchor(producer.anchor, size);
-    let map_size = (obs.map_width, obs.map_height);
-    crate::tick::rect_adjacent_tiles(world_anchor, size)
-        .map(|world_tile| (world_tile, orientation.tile(world_tile)))
-        .filter(|(_, oriented_tile)| public_ground_open(obs, *oriented_tile, public_map))
-        .min_by_key(|(world_tile, _)| {
-            crate::tick::spawn_doorstep_key(map_size, world_anchor, size, *world_tile)
-        })
-        .map(|(_, oriented_tile)| oriented_tile)
 }
 
 fn available<'a>(
@@ -5621,6 +5881,63 @@ fn reservations(op: &AirOperation, plan: &AirPlan, obs: &Observation) -> Vec<Uni
     ids
 }
 
+fn connected_provider_shortfall(
+    active: &ActiveAirOperation,
+    obs: &Observation,
+) -> BTreeMap<UnitKind, usize> {
+    let Some(package) = active.plan.connected_package.as_ref() else {
+        return BTreeMap::new();
+    };
+    let mut missing = BTreeMap::new();
+    for demand in package
+        .recon
+        .iter()
+        .chain(&package.suppression)
+        .chain(&package.strike)
+    {
+        let count = missing.entry(demand.kind).or_insert(0usize);
+        *count = count.saturating_add(demand.count);
+    }
+    for id in reservations(&active.op, &active.plan, obs) {
+        let Some(member) = unit(obs, id) else {
+            continue;
+        };
+        if let Some(count) = missing.get_mut(&member.kind) {
+            *count = count.saturating_sub(1);
+        }
+    }
+    missing
+}
+
+fn observed_queue_multiplicity(obs: &Observation) -> BTreeMap<(BuildingId, UnitKind), usize> {
+    let mut queued = BTreeMap::new();
+    for (producer, queue) in obs.my_buildings.iter().zip(&obs.my_queues) {
+        for &kind in queue {
+            let count = queued.entry((producer.id, kind)).or_insert(0usize);
+            *count = count.saturating_add(1);
+        }
+    }
+    queued
+}
+
+fn producer_queue_is_blocked(obs: &Observation, producer: BuildingId) -> bool {
+    let Some(index) = obs
+        .my_buildings
+        .iter()
+        .position(|building| building.id == producer)
+    else {
+        return false;
+    };
+    let Some(&front) = obs.my_queues.get(index).and_then(|queue| queue.first()) else {
+        return false;
+    };
+    front.stats().domain == Domain::Ground
+        && obs
+            .my_queue_progress
+            .get(index)
+            .is_some_and(|progress| *progress >= front.stats().train_ticks)
+}
+
 fn release_unroutable(
     op: &mut AirOperation,
     plan: &mut AirPlan,
@@ -5732,18 +6049,18 @@ fn schedule_missing_members(
                     total.saturating_add(assignment.funding.current_scrap)
                 }),
             );
-            for assignment in remaining {
-                if assignment.timing.enqueued_at <= obs.tick {
-                    out.intents.push(Intent::TrainAt {
-                        building: assignment.producer,
-                        kind: assignment.kind,
-                    });
-                    plan.issued_connected_providers
-                        .push(assignment.request_ordinal);
-                }
+            let issued = remaining
+                .iter()
+                .copied()
+                .filter(|assignment| assignment.timing.enqueued_at <= obs.tick)
+                .collect::<Vec<_>>();
+            for assignment in &issued {
+                out.intents.push(Intent::TrainAt {
+                    building: assignment.producer,
+                    kind: assignment.kind,
+                });
             }
-            plan.issued_connected_providers.sort_unstable();
-            plan.issued_connected_providers.dedup();
+            record_issued_connected_providers(plan, &issued);
             return;
         }
         let connected_resources = context
@@ -5842,13 +6159,28 @@ fn connected_package_is_feasible(
     if package.producer_assignments.is_some() {
         let assignments = remaining_bound_provider_assignments(plan);
         if !assignments.is_empty() {
-            return bound_provider_schedule_is_executable(
-                &assignments,
-                &resources.snapshot,
-                package.preparation_deadline,
-                context.tuning.cadence,
-                context.obs.tick,
-            );
+            let accepted_shared_schedule = assignments.iter().all(|assignment| {
+                let timing = assignment.timing;
+                context
+                    .production
+                    .lane_reservations
+                    .contains_exact_job(ReservedProducerJob {
+                        producer: assignment.producer,
+                        kind: assignment.kind,
+                        enqueued_at: timing.enqueued_at,
+                        starts_at: timing.starts_at,
+                        ready_at: timing.ready_at,
+                        ready_before: timing.ready_before,
+                    })
+            });
+            return accepted_shared_schedule
+                || bound_provider_schedule_is_executable(
+                    &assignments,
+                    &resources.snapshot,
+                    package.preparation_deadline,
+                    context.tuning.cadence,
+                    context.obs.tick,
+                );
         }
     }
     let outstanding = missing_package_demands(
@@ -5944,12 +6276,32 @@ fn remaining_bound_provider_assignments(plan: &AirPlan) -> Vec<ConnectedProducer
     assignments
         .iter()
         .filter(|assignment| {
-            plan.issued_connected_providers
-                .binary_search(&assignment.request_ordinal)
+            plan.issued_connected_provider_assignments
+                .binary_search_by_key(&assignment.request_ordinal, |issued| issued.request_ordinal)
                 .is_err()
         })
         .copied()
         .collect()
+}
+
+fn record_issued_connected_providers(
+    plan: &mut AirPlan,
+    assignments: &[ConnectedProducerAssignment],
+) {
+    for &assignment in assignments {
+        match plan
+            .issued_connected_provider_assignments
+            .binary_search_by_key(&assignment.request_ordinal, |issued| issued.request_ordinal)
+        {
+            Ok(index) => debug_assert_eq!(
+                plan.issued_connected_provider_assignments[index],
+                assignment
+            ),
+            Err(index) => plan
+                .issued_connected_provider_assignments
+                .insert(index, assignment),
+        }
+    }
 }
 
 fn bound_provider_schedule_is_executable(
@@ -6861,6 +7213,10 @@ fn recover(op: &mut AirOperation, reason: AirRecoveryReason, now: Tick) {
 mod tests {
     use super::super::observation::BuildingObs;
     use super::super::profile::{PersonalityTraits, Specialty};
+    use super::super::standing_force::{
+        StandingForceContext, StandingForceReason, StandingProductionCommitment,
+        derive_standing_force_proposals,
+    };
     use super::*;
     use crate::map::Terrain;
     use crate::scenario::{BotConfig, BotDifficulty};
@@ -7618,8 +7974,12 @@ mod tests {
         ];
         let variants = [minimum.as_slice(), middle.as_slice(), largest.as_slice()];
 
-        let delta =
-            reconcile_connected_revision_provider_jobs(new_identity, &assignments, &[5], &variants);
+        let delta = reconcile_connected_revision_provider_jobs(
+            new_identity,
+            &assignments,
+            &assignments[1..2],
+            &variants,
+        );
 
         assert_eq!(delta.required_variant_index(), 2);
         assert!(delta.pruned().is_empty());
@@ -7646,6 +8006,379 @@ mod tests {
                 .iter()
                 .filter_map(|job| job.retained())
                 .all(|assignment| assignment.owner == new_identity)
+        );
+    }
+
+    #[test]
+    fn issued_connected_production_preserves_multiplicity_and_exact_tick_lifetime() {
+        let observed_at = 120;
+        let mut observation = developed_connected_obs(observed_at);
+        observation
+            .my_units
+            .retain(|unit| unit.kind == UnitKind::Sentinel);
+        observation.my_queue_progress = vec![0; observation.my_buildings.len()];
+        let mut plan = connected_test_plan(&observation);
+        plan.connected_package
+            .as_mut()
+            .expect("the connected fixture carries a package")
+            .suppression[0]
+            .count = 2;
+        let deadline = plan
+            .connected_package
+            .as_ref()
+            .expect("the connected fixture carries a package")
+            .preparation_deadline;
+        let producer = BuildingId(12);
+        let kind = UnitKind::Bombard;
+        let train_ticks = Tick::from(kind.stats().train_ticks);
+        let first_ready = observed_at.saturating_add(train_ticks).saturating_sub(1);
+        let second_starts = first_ready.saturating_add(1);
+        let second_ready = second_starts.saturating_add(train_ticks).saturating_sub(1);
+        assert!(second_ready < deadline);
+        let owner = ConnectedOffenseIdentity::new(BuildingId(80), TARGET);
+        let assignments = vec![
+            ConnectedProducerAssignment::new(
+                owner,
+                0,
+                producer,
+                kind,
+                ConnectedProducerTiming::new(observed_at, observed_at, first_ready, deadline),
+                ConnectedProducerFunding::new(kind.stats().cost, 0),
+            ),
+            ConnectedProducerAssignment::new(
+                owner,
+                1,
+                producer,
+                kind,
+                ConnectedProducerTiming::new(observed_at, second_starts, second_ready, deadline),
+                ConnectedProducerFunding::new(kind.stats().cost, 0),
+            ),
+        ];
+        plan.connected_package
+            .as_mut()
+            .expect("the connected fixture carries a package")
+            .producer_assignments = Some(assignments.clone());
+        let mut op = operation(AirOperationPhase::Recon, observed_at);
+        op.scout = None;
+        op.artillery.clear();
+        op.strike_aircraft.clear();
+        let mut planner = StrategicPlanner {
+            air: Some(ActiveAirOperation { op, plan }),
+            standby: AirStandby::default(),
+            cooldown_until: 0,
+            terminal_outcome: None,
+        };
+
+        assert!(
+            planner
+                .issued_connected_production_assignments(&observation)
+                .is_empty(),
+            "bound jobs are not paid ownership until their commands commit"
+        );
+        planner.mark_current_connected_providers_issued(observed_at);
+        assert_eq!(
+            planner.issued_connected_production_assignments(&observation),
+            assignments,
+            "two same-kind jobs on one producer retain queue multiplicity"
+        );
+
+        observation.my_queues[2] = vec![kind, kind];
+        observation.tick = first_ready;
+        observation.my_queue_progress[2] = kind.stats().train_ticks.saturating_sub(1);
+        assert_eq!(
+            planner.issued_connected_production_assignments(&observation),
+            assignments,
+            "the first job still occupies the pre-production observation on its ready tick"
+        );
+
+        observation.tick = first_ready + 1;
+        observation.my_queues[2] = vec![kind];
+        observation.my_queue_progress[2] = 0;
+        assert_eq!(
+            planner.issued_connected_production_assignments(&observation),
+            assignments[1..],
+            "the completed front job cannot hide a later ordinary queue item"
+        );
+
+        observation.tick = second_ready;
+        observation.my_queue_progress[2] = kind.stats().train_ticks.saturating_sub(1);
+        assert_eq!(
+            planner.issued_connected_production_assignments(&observation),
+            assignments[1..],
+            "the last job remains owned through its ready-tick observation"
+        );
+
+        observation.tick = second_ready + 1;
+        observation.my_queues[2].clear();
+        observation.my_queue_progress[2] = 0;
+        assert!(
+            planner
+                .issued_connected_production_assignments(&observation)
+                .is_empty(),
+            "completed assignment history is not current queue ownership"
+        );
+
+        planner
+            .air
+            .as_mut()
+            .expect("the operation remains active")
+            .op
+            .phase = AirOperationPhase::SuppressAa;
+        assert!(
+            planner
+                .issued_connected_production_assignments(&observation)
+                .is_empty(),
+            "a tactically committed operation no longer owns preparatory queues"
+        );
+    }
+
+    #[test]
+    fn blocked_operation_production_remains_owned_without_hiding_later_ordinary_work() {
+        let issued_at = 120;
+        let mut observation = developed_connected_obs(issued_at);
+        observation
+            .my_units
+            .retain(|unit| unit.kind == UnitKind::Sentinel);
+        observation.scrap = 400;
+        observation.enemy_buildings = vec![building(
+            90,
+            1,
+            BuildingKind::Turret,
+            TilePos::new(22, 9),
+            true,
+        )];
+        observation.my_queue_progress = vec![0; observation.my_buildings.len()];
+
+        let mut plan = connected_test_plan(&observation);
+        let deadline = plan
+            .connected_package
+            .as_ref()
+            .expect("the connected fixture carries a package")
+            .preparation_deadline;
+        let kind = UnitKind::Bombard;
+        let ready_at = issued_at
+            .saturating_add(Tick::from(kind.stats().train_ticks))
+            .saturating_sub(1);
+        let assignment = ConnectedProducerAssignment::new(
+            ConnectedOffenseIdentity::new(BuildingId(80), TARGET),
+            0,
+            BuildingId(12),
+            kind,
+            ConnectedProducerTiming::new(issued_at, issued_at, ready_at, deadline),
+            ConnectedProducerFunding::new(kind.stats().cost, 0),
+        );
+        plan.connected_package
+            .as_mut()
+            .expect("the connected fixture carries a package")
+            .producer_assignments = Some(vec![assignment]);
+        let mut op = operation(AirOperationPhase::Recon, issued_at);
+        op.scout = None;
+        op.artillery.clear();
+        op.strike_aircraft.clear();
+        let mut planner = StrategicPlanner {
+            air: Some(ActiveAirOperation { op, plan }),
+            standby: AirStandby::default(),
+            cooldown_until: 0,
+            terminal_outcome: None,
+        };
+        planner.mark_current_connected_providers_issued(issued_at);
+
+        observation.tick = ready_at + 1;
+        observation.my_queues[2] = vec![kind];
+        observation.my_queue_progress[2] = kind.stats().train_ticks;
+        let owned = planner.issued_connected_production_assignments(&observation);
+        assert_eq!(owned, vec![assignment]);
+        let commitments = owned
+            .iter()
+            .map(|assignment| {
+                StandingProductionCommitment::paid(assignment.producer(), assignment.kind())
+            })
+            .collect::<Vec<_>>();
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(&observation);
+        let profile = profile();
+        let tuning = DifficultyTuning::for_level(profile.difficulty);
+        let resources = ResourceSnapshot::from_observation(&observation);
+        let blocked_proposals = derive_standing_force_proposals(
+            &observation,
+            &intelligence,
+            &profile,
+            tuning,
+            &resources,
+            StandingForceContext::new(&[], &commitments),
+        );
+        assert!(
+            blocked_proposals
+                .iter()
+                .any(|proposal| proposal.reason() == StandingForceReason::SiegePressure),
+            "a blocked operation-owned Bombard cannot satisfy ordinary siege demand"
+        );
+
+        observation.tick += 1;
+        observation.my_queue_progress[2] = 1;
+        assert_eq!(
+            planner.issued_connected_production_assignments(&observation),
+            vec![assignment],
+            "clearing the egress cannot release a delayed paid job while it still occupies the queue"
+        );
+
+        observation.tick += 1;
+        observation.my_queues[2] = vec![kind; 8];
+        observation.my_queue_progress[2] = 0;
+        observation
+            .my_units
+            .push(own(90, kind, TilePos::new(10, 10)));
+        planner
+            .air
+            .as_mut()
+            .expect("the operation remains active")
+            .op
+            .artillery = vec![UnitId(90)];
+        let owned = planner.issued_connected_production_assignments(&observation);
+        assert!(
+            owned.is_empty(),
+            "fulfilled assignment history cannot claim a later progressing ordinary Bombard"
+        );
+        observation.tick = observation
+            .tick
+            .saturating_add(Tick::from(kind.stats().train_ticks));
+        observation.my_queue_progress[2] = kind.stats().train_ticks;
+        assert!(
+            planner
+                .issued_connected_production_assignments(&observation)
+                .is_empty(),
+            "released history cannot resurrect when the ordinary Bombard later blocks"
+        );
+        intelligence.update(&observation);
+        let resources = ResourceSnapshot::from_observation(&observation);
+        let ordinary_proposals = derive_standing_force_proposals(
+            &observation,
+            &intelligence,
+            &profile,
+            tuning,
+            &resources,
+            StandingForceContext::new(&[UnitId(90)], &[]),
+        );
+        assert!(
+            ordinary_proposals
+                .iter()
+                .all(|proposal| proposal.reason() != StandingForceReason::SiegePressure),
+            "the later ordinary Bombard must satisfy standing siege demand"
+        );
+    }
+
+    #[test]
+    fn active_revision_retains_issued_provider_ownership_through_ready_tick() {
+        let identity = ConnectedOffenseIdentity::new(BuildingId(80), TARGET);
+        let issued = revision_assignment(identity, 0, 10, UnitKind::Bombard);
+        let retained = revision_assignment(identity, 1, 11, UnitKind::Buzzard);
+        let mut proposal = FreshConnectedProposal::fixture(FreshConnectedProposalFixture {
+            objective: identity.objective(),
+            anchor: identity.anchor(),
+            deadline: 2_400,
+            case: ConnectedOpportunityCase::fixture(
+                ConnectedUrgency::Pressing,
+                ConnectedConfidence::Current,
+                ConnectedStrategicValue::Decisive,
+                ConnectedTimeToImpact::Near,
+                ConnectedExecutionSafety::Managed,
+            ),
+            minimum_claims: ConnectedOffenseClaims::fixture(
+                Vec::new(),
+                vec![revision_job(UnitKind::Buzzard)],
+            ),
+            marginal_additions: Vec::new(),
+            protected_current_scrap: 0,
+            protected_forecast_scrap: 0,
+        })
+        .into_active_revision_fixture();
+        let ConnectedProposalOrigin::Active { active } = &mut proposal.origin else {
+            unreachable!("the fixture creates an active revision")
+        };
+        active
+            .plan
+            .connected_package
+            .as_mut()
+            .expect("the active origin retains its connected package")
+            .producer_assignments = Some(vec![issued, retained]);
+        active
+            .plan
+            .connected_package
+            .as_mut()
+            .expect("the active origin retains its connected package")
+            .suppression = vec![ProviderDemand {
+            kind: issued.kind,
+            count: 1,
+        }];
+        active.plan.issued_connected_provider_assignments = vec![issued];
+
+        let mut planner = StrategicPlanner {
+            air: Some(active.clone()),
+            standby: AirStandby::default(),
+            cooldown_until: 0,
+            terminal_outcome: None,
+        };
+        proposal
+            .bind_producer_assignments(vec![retained])
+            .expect("the revision binds only its still-unpaid provider");
+        planner
+            .commit_connected_proposal(proposal)
+            .expect("the active revision commits against its exact origin");
+        planner
+            .air
+            .as_mut()
+            .expect("the revision remains active")
+            .plan
+            .connected_package
+            .as_mut()
+            .expect("the revision retains its connected package")
+            .suppression = vec![ProviderDemand {
+            kind: issued.kind,
+            count: 1,
+        }];
+
+        assert_eq!(
+            planner
+                .air
+                .as_ref()
+                .and_then(|active| active.plan.connected_package.as_ref())
+                .and_then(|package| package.producer_assignments.as_deref()),
+            Some(&[retained][..]),
+            "the rebound unpaid schedule intentionally omits the already-paid job"
+        );
+        let mut observation = developed_connected_obs(issued.timing.enqueued_at);
+        observation
+            .my_units
+            .retain(|unit| unit.kind == UnitKind::Sentinel);
+        observation.my_queue_progress = vec![0; observation.my_buildings.len()];
+        observation.tick = issued.timing.enqueued_at.saturating_sub(1);
+        assert!(
+            planner
+                .issued_connected_production_assignments(&observation)
+                .is_empty(),
+            "revision cannot claim queue ownership before the command boundary"
+        );
+        observation.tick = issued.timing.enqueued_at;
+        assert_eq!(
+            planner.issued_connected_production_assignments(&observation),
+            vec![issued],
+            "revision must retain exact ownership on the command-tick observation"
+        );
+        observation.tick = issued.timing.ready_at;
+        observation.my_queues[0] = vec![issued.kind];
+        observation.my_queue_progress[0] = issued.kind.stats().train_ticks.saturating_sub(1);
+        assert_eq!(
+            planner.issued_connected_production_assignments(&observation),
+            vec![issued],
+            "revision must retain ownership through the pre-production ready-tick observation"
+        );
+        observation.tick = issued.timing.ready_at + 1;
+        observation.my_queue_progress[0] = 0;
+        assert!(
+            planner
+                .issued_connected_production_assignments(&observation)
+                .is_empty(),
+            "the completed provider cannot hide later ordinary same-kind production"
         );
     }
 
@@ -11178,6 +11911,51 @@ mod tests {
     }
 
     #[test]
+    fn connected_claims_retain_only_the_paid_queue_occurrences_the_package_uses() {
+        let mut battle = production_hungry_connected_obs(120, 10_000);
+        let fabricator = battle
+            .my_buildings
+            .iter()
+            .position(|building| building.id == BuildingId(10))
+            .expect("the fixture has one Fabricator");
+        battle.my_queues[fabricator] = vec![UnitKind::Bombard, UnitKind::Bombard];
+        let intelligence = knowledge(&battle);
+        let resources = ResourceSnapshot::from_observation(&battle);
+
+        let proposal = StrategicPlanner::new()
+            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &battle,
+                &resources,
+                &intelligence,
+                HOME,
+                coordination(None),
+            ))
+            .expect("the paid Bombard makes the minimum feasible")
+            .expect("the current objective produces a connected proposal");
+
+        assert_eq!(
+            proposal
+                .minimum_claims()
+                .paid_providers()
+                .iter()
+                .map(|provider| (provider.producer(), provider.kind()))
+                .collect::<Vec<_>>(),
+            vec![(BuildingId(10), UnitKind::Bombard)],
+            "the minimum uses one paid Bombard, leaving the second queue occurrence ordinary"
+        );
+        assert!(
+            proposal
+                .minimum_claims()
+                .provider_jobs()
+                .iter()
+                .all(|job| job.kind() != UnitKind::Bombard),
+            "already-paid work cannot appear again as an unpaid provider claim"
+        );
+    }
+
+    #[test]
     fn protected_current_scrap_monotonically_reduces_connected_scaling() {
         let mut rich = production_hungry_connected_obs(120, 10_000);
         rich.enemy_buildings.extend([
@@ -11844,7 +12622,7 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(&observation);
         let producer = &observation.my_buildings[0];
         let spawn =
-            production_spawn_doorstep(&observation, producer, Some(&public_map), orientation)
+            production_spawn_doorstep(&observation, producer, Some(&public_map), Some(orientation))
                 .expect("the Fabricator has an open south-east doorstep");
         let staging =
             connected_artillery_staging_goal(&observation, home, target, Some(&public_map))
@@ -13208,8 +13986,9 @@ mod tests {
             .iter()
             .find(|building| building.id == BuildingId(10))
             .expect("orientation preserves the producer");
-        let actual = production_spawn_doorstep(&oriented, oriented_producer, None, orientation)
-            .expect("the oriented producer has an open doorstep");
+        let actual =
+            production_spawn_doorstep(&oriented, oriented_producer, None, Some(orientation))
+                .expect("the oriented producer has an open doorstep");
 
         assert_eq!(orientation.tile(actual), expected);
     }
@@ -13263,8 +14042,9 @@ mod tests {
             .iter()
             .find(|building| building.id == BuildingId(10))
             .expect("orientation preserves the producer");
-        let actual = production_spawn_doorstep(&oriented, oriented_producer, None, orientation)
-            .expect("the oriented producer has an open doorstep");
+        let actual =
+            production_spawn_doorstep(&oriented, oriented_producer, None, Some(orientation))
+                .expect("the oriented producer has an open doorstep");
 
         assert_eq!(
             orientation.tile(actual),

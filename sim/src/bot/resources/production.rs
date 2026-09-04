@@ -951,18 +951,32 @@ pub(crate) fn count_paid_queued_ready_with_access(
     deadline: Tick,
     access: &ProductionAccess,
 ) -> usize {
+    paid_queued_ready_producers_with_access(resources, kind, deadline, access).len()
+}
+
+/// Exact producers whose already-paid queue contributes `kind` before an
+/// operation deadline.
+///
+/// Repeated producer ids preserve queue multiplicity. Producers follow the
+/// snapshot's canonical id order, and matching occurrences retain queue order.
+pub(crate) fn paid_queued_ready_producers_with_access(
+    resources: &ResourceSnapshot,
+    kind: UnitKind,
+    deadline: Tick,
+    access: &ProductionAccess,
+) -> Vec<BuildingId> {
     resources
         .producers()
         .iter()
-        .map(|lane| {
+        .flat_map(|lane| {
             if !access.allows_paid(lane.producer, kind)
                 || !egress_is_credible_for(kind, lane.ground_egress)
             {
-                return 0;
+                return Vec::new();
             }
 
             let mut preceding_ticks = 0_u64;
-            let mut count = 0_usize;
+            let mut producers = Vec::new();
             for (index, queued) in lane.queued.iter().enumerate() {
                 let train_ticks = queued.stats().train_ticks;
                 let item_ticks = if index == 0 {
@@ -988,12 +1002,12 @@ pub(crate) fn count_paid_queued_ready_with_access(
                     break;
                 }
                 if *queued == kind {
-                    count = count.saturating_add(1);
+                    producers.push(lane.producer);
                 }
             }
-            count
+            producers
         })
-        .fold(0_usize, usize::saturating_add)
+        .collect()
 }
 
 fn egress_is_credible_for(kind: UnitKind, egress: ProducerEgress) -> bool {
@@ -1898,6 +1912,16 @@ mod tests {
         assert_eq!(
             count_paid_queued_ready(&resources, UnitKind::Bombard, second_bombard_ready + 1,),
             2
+        );
+        assert_eq!(
+            paid_queued_ready_producers_with_access(
+                &resources,
+                UnitKind::Bombard,
+                second_bombard_ready + 1,
+                &ProductionAccess::Unrestricted,
+            ),
+            vec![BuildingId(4), BuildingId(4)],
+            "the exact ownership surface preserves same-producer multiplicity"
         );
         assert_eq!(
             count_paid_queued_ready(&resources, UnitKind::Avalanche, Tick::MAX),

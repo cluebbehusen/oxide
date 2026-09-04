@@ -428,6 +428,40 @@ impl LiftPlanner {
         })
     }
 
+    /// Allocator-owned carrier purchases that should still occupy an observed
+    /// Airworks queue at this pre-command tick.
+    ///
+    /// The endpoints are inclusive because a command issued on
+    /// `enqueued_at` has not executed when that tick's observation is built,
+    /// and production finishing on `ready_at` leaves the queue during the
+    /// later production phase of that same tick.
+    pub(in crate::bot) fn issued_production_assignments(
+        &self,
+        observed_at: Tick,
+    ) -> Vec<LiftProducerAssignment> {
+        let Some(operation) = self
+            .operation
+            .as_ref()
+            .filter(|operation| operation.phase == LiftPhase::Provision)
+        else {
+            return Vec::new();
+        };
+
+        operation
+            .producer_assignments
+            .iter()
+            .filter(|assignment| {
+                operation
+                    .issued_producers
+                    .binary_search(&assignment.request_ordinal)
+                    .is_ok()
+                    && assignment.timing.enqueued_at <= observed_at
+                    && observed_at <= assignment.timing.ready_at
+            })
+            .copied()
+            .collect()
+    }
+
     /// Next stable assignment ordinal for newly accepted carrier work.
     pub(in crate::bot) fn next_producer_request_ordinal(&self) -> Option<usize> {
         self.operation
@@ -5913,6 +5947,85 @@ mod tests {
             "the exact ordinal releases once with set semantics"
         );
         assert_eq!(planner.operation().unwrap().issued_producers, vec![0]);
+    }
+
+    #[test]
+    fn issued_lift_production_preserves_multiplicity_and_exact_tick_lifetime() {
+        let (obs, mut planner, producer) = lift_with_unpaid_carrier();
+        let operation = planner.operation().expect("the Lift is active");
+        let deadline = operation.deadline;
+        let accepted_at = operation.started_at;
+        let enqueued_at = obs.tick + 12;
+        let train_ticks = Tick::from(UnitKind::Skyhook.stats().train_ticks);
+        let first_ready = enqueued_at.saturating_add(train_ticks).saturating_sub(1);
+        let second_starts = first_ready.saturating_add(1);
+        let second_ready = second_starts.saturating_add(train_ticks).saturating_sub(1);
+        assert!(second_ready < deadline);
+        let assignments = vec![
+            LiftProducerAssignment::new(
+                0,
+                producer,
+                UnitKind::Skyhook,
+                LiftProducerTiming::new(enqueued_at, enqueued_at, first_ready, deadline),
+                LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+            ),
+            LiftProducerAssignment::new(
+                1,
+                producer,
+                UnitKind::Skyhook,
+                LiftProducerTiming::new(enqueued_at, second_starts, second_ready, deadline),
+                LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+            ),
+        ];
+        planner
+            .bind_producer_assignments(accepted_at, deadline, assignments.clone())
+            .expect("two exact carrier assignments bind to the active Lift");
+
+        assert!(
+            planner
+                .issued_production_assignments(enqueued_at)
+                .is_empty(),
+            "bound jobs are not paid ownership until their commands commit"
+        );
+        planner.mark_producers_issued(&[1, 0, 1]);
+        assert_eq!(
+            planner.issued_production_assignments(enqueued_at),
+            assignments,
+            "two same-kind jobs on one Airworks retain queue multiplicity"
+        );
+        assert_eq!(
+            planner.issued_production_assignments(first_ready),
+            assignments,
+            "the first carrier still occupies the pre-production observation on its ready tick"
+        );
+        assert_eq!(
+            planner.issued_production_assignments(first_ready + 1),
+            assignments[1..],
+            "the completed front carrier cannot hide a later ordinary queue item"
+        );
+        assert_eq!(
+            planner.issued_production_assignments(second_ready),
+            assignments[1..],
+            "the last carrier remains owned through its ready-tick observation"
+        );
+        assert!(
+            planner
+                .issued_production_assignments(second_ready + 1)
+                .is_empty(),
+            "completed assignment history is not current queue ownership"
+        );
+
+        planner
+            .operation
+            .as_mut()
+            .expect("the Lift is active")
+            .phase = LiftPhase::Boarding;
+        assert!(
+            planner
+                .issued_production_assignments(enqueued_at)
+                .is_empty(),
+            "boarding releases preparatory queue ownership"
+        );
     }
 
     #[test]

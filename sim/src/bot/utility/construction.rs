@@ -61,6 +61,17 @@ pub(in crate::bot) struct FreshEmergencyDefenseContext<'a> {
     pub(in crate::bot) current_scrap: u32,
 }
 
+/// Inputs for the exact current-capital threshold that unmigrated
+/// construction needs the shared allocator to leave available.
+#[derive(Clone, Copy)]
+pub(in crate::bot) struct ResidualInvestmentReserveContext<'a> {
+    pub(in crate::bot) home: TilePos,
+    pub(in crate::bot) available_builders: &'a [UnitId],
+    pub(in crate::bot) unit_contacts: &'a [UnitContact],
+    pub(in crate::bot) building_contacts: &'a [BuildingContact],
+    pub(in crate::bot) public_map: &'a PublicMapBriefing,
+}
+
 /// One economically worthwhile, command-feasible player-facing expansion.
 ///
 /// Both the production reserve and construction channels consume this exact
@@ -247,6 +258,48 @@ pub(in crate::bot) struct FreshFoundryProposalContext<'a> {
     pub(in crate::bot) protected_reserve: u32,
 }
 
+/// Current expansion result supplied to shared strategic allocation.
+///
+/// A worthwhile site that still needs mobile protection is not a malformed
+/// Foundry proposal. It is evidence for standing-force production, while the
+/// exact site remains revisable until that protection exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::bot) enum FreshFoundryInvestment {
+    /// The exact site and builder are secure enough to compete for capital.
+    Ready(FreshFoundryProposal),
+    /// The best current opportunity needs this total ordinary-core strength.
+    NeedsProtection {
+        anchor: TilePos,
+        target_strength: u64,
+    },
+}
+
+impl FreshFoundryInvestment {
+    pub(in crate::bot) const fn preparation_need(&self) -> Option<(TilePos, u64)> {
+        match self {
+            Self::Ready(_) => None,
+            Self::NeedsProtection {
+                anchor,
+                target_strength,
+            } => Some((*anchor, *target_strength)),
+        }
+    }
+}
+
+/// Current execution state of a previously admitted Foundry plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::bot) enum SavedFoundryReadiness {
+    /// The retained site remains secure and command-feasible.
+    Ready,
+    /// The retained opportunity remains worthwhile but needs mobile cover.
+    NeedsProtection {
+        anchor: TilePos,
+        target_strength: u64,
+    },
+    /// Current execution evidence cannot safely dispatch the retained plan.
+    Blocked,
+}
+
 /// What an accepted exact proposal should do at the domain commitment boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::bot) enum AdjudicatedFoundryCommit {
@@ -379,6 +432,7 @@ pub(in crate::bot) struct ValidatedFoundryObligation {
     builder: UnitId,
     current_construction_capital: u32,
     forecast_construction_capital: u32,
+    planning_scrap: u32,
     protected_reserve: u32,
     forecast_deadline: Tick,
     blocked: bool,
@@ -405,6 +459,10 @@ impl ValidatedFoundryObligation {
         self.forecast_construction_capital
     }
 
+    pub(in crate::bot) const fn planning_scrap(self) -> u32 {
+        self.planning_scrap
+    }
+
     pub(in crate::bot) const fn protected_reserve(self) -> u32 {
         self.protected_reserve
     }
@@ -415,6 +473,11 @@ impl ValidatedFoundryObligation {
 
     pub(in crate::bot) const fn blocked(self) -> bool {
         self.blocked
+    }
+
+    pub(in crate::bot) const fn blocked_by_execution(mut self) -> Self {
+        self.blocked = true;
+        self
     }
 
     pub(in crate::bot) fn ready_to_build(self) -> bool {
@@ -727,6 +790,7 @@ impl UtilityPolicy {
         let available_construction_capital = planning_scrap
             .saturating_sub(basis.protected_reserve)
             .min(foundry_cost);
+        let protected_reserve_funded = current_before_protected_reserve >= basis.protected_reserve;
         FoundryFundingRevalidation {
             planning_scrap,
             current_construction_capital,
@@ -734,7 +798,7 @@ impl UtilityPolicy {
                 .saturating_sub(current_construction_capital),
             protected_reserve: basis.protected_reserve,
             deadline: basis.deadline,
-            viable: available_construction_capital == foundry_cost,
+            viable: protected_reserve_funded && available_construction_capital == foundry_cost,
         }
     }
 
@@ -776,6 +840,7 @@ impl UtilityPolicy {
             builder: saving.plan.builder,
             current_construction_capital: funding.current_construction_capital,
             forecast_construction_capital: funding.forecast_construction_capital,
+            planning_scrap: funding.planning_scrap,
             protected_reserve: funding.protected_reserve,
             forecast_deadline: funding.deadline,
             blocked: saving.blocked_since.is_some(),
@@ -812,7 +877,7 @@ impl UtilityPolicy {
         true
     }
 
-    pub(super) fn retain_blocked_foundry_saving(&mut self, now: u64) -> bool {
+    pub(in crate::bot) fn retain_blocked_foundry_saving(&mut self, now: u64) -> bool {
         let Some(saving) = self.foundry_saving.as_mut() else {
             return false;
         };
@@ -823,6 +888,13 @@ impl UtilityPolicy {
         } else {
             true
         }
+    }
+
+    /// Releases a retained plan before its capital is imported into the shared
+    /// allocator. The expansion can be reconsidered after mobile protection
+    /// changes, without retaining a stale site or builder.
+    pub(in crate::bot) fn release_saved_foundry_for_preparation(&mut self) {
+        self.foundry_saving = None;
     }
 
     pub(super) fn release_foundry_saving(
@@ -1437,13 +1509,13 @@ impl UtilityPolicy {
     ///
     /// The caller owns cross-domain arbitration. This selector therefore does
     /// not create a saving commitment or otherwise mutate durable policy state.
-    pub(in crate::bot) fn fresh_foundry_proposal(
+    pub(in crate::bot) fn fresh_foundry_investment(
         &self,
         dials: &Dials,
         obs: &Observation,
         resources: &ResourceSnapshot,
         context: FreshFoundryProposalContext<'_>,
-    ) -> Option<FreshFoundryProposal> {
+    ) -> Option<FreshFoundryInvestment> {
         let has_built = |kind| {
             obs.my_buildings
                 .iter()
@@ -1462,11 +1534,15 @@ impl UtilityPolicy {
             .construction
             .expect("Foundries are constructible")
             .cost;
+        let total_reserve = context.protected_reserve;
+        if context.current_scrap < total_reserve {
+            return None;
+        }
         let economy = expansion_economy(
             dials,
             obs,
             context.current_scrap,
-            Reserve::Exact(context.protected_reserve),
+            Reserve::Exact(total_reserve),
         );
         let forecast_deadline = obs.tick.saturating_add(economy.horizon_ticks());
         let planning_scrap =
@@ -1477,13 +1553,13 @@ impl UtilityPolicy {
                     forecast_deadline,
                     dials.cadence,
                 ));
-        let required_scrap = construction_capital.saturating_add(context.protected_reserve);
+        let required_scrap = construction_capital.saturating_add(total_reserve);
         if planning_scrap < required_scrap {
             return None;
         }
         let current_construction_capital = context
             .current_scrap
-            .saturating_sub(context.protected_reserve)
+            .saturating_sub(total_reserve)
             .min(construction_capital);
         let forecast_construction_capital =
             construction_capital.saturating_sub(current_construction_capital);
@@ -1521,52 +1597,136 @@ impl UtilityPolicy {
                 public_map: context.public_map,
                 combat_core_exclusions: context.combat_core_exclusions,
                 spendable_scrap: planning_scrap,
-                voluntary_scrap_guard: Reserve::Exact(context.protected_reserve),
+                voluntary_scrap_guard: Reserve::Exact(total_reserve),
                 required_anchor: None,
             },
             economy,
             context.same_think_intents,
         )?;
-        (assessment.disposition == expansion::ExpansionDisposition::Build).then(|| {
-            let opportunity = assessment.plan.opportunity;
-            let known_ground_pressure = obs.enemy_units.iter().any(|unit| {
-                unit.kind.stats().domain == Domain::Ground
-                    && (unit.kind.stats().can_target(Domain::Ground)
-                        || unit.kind.stats().demolition)
-            }) || context.unit_contacts.iter().any(|contact| {
-                contact.kind.stats().domain == Domain::Ground
-                    && contact.confidence_at(obs.tick) > 0
-                    && (contact.kind.stats().can_target(Domain::Ground)
-                        || contact.kind.stats().demolition)
-            }) || context.building_contacts.iter().any(|contact| {
-                contact.built
-                    && contact.confidence_at(obs.tick) > 0
-                    && contact
-                        .kind
-                        .base_stats()
-                        .weapons
-                        .iter()
-                        .any(|weapon| weapon.targets.ground)
-            });
-            let case = foundry_opportunity_case(FoundryCaseEvidence {
-                foundry_cost: construction_capital,
-                projected_return: opportunity.projected_return,
-                current_scrap_credit: opportunity.current_scrap_credit,
-                recurring_gain_per_minute: opportunity.recurring_gain_per_minute,
-                forecast_construction_capital,
-                known_ground_pressure,
-            });
-            FreshFoundryProposal {
-                plan: assessment.plan,
-                current_construction_capital,
-                forecast_construction_capital,
-                protected_reserve: context.protected_reserve,
-                planning_scrap,
-                forecast_deadline,
-                decision_cadence: dials.cadence,
-                case,
+        match assessment.disposition {
+            expansion::ExpansionDisposition::Reject => return None,
+            expansion::ExpansionDisposition::Prepare { .. } => {
+                return Some(FreshFoundryInvestment::NeedsProtection {
+                    anchor: assessment.plan.anchor,
+                    target_strength: assessment.preparation_target_strength,
+                });
             }
-        })
+            expansion::ExpansionDisposition::Build => {}
+        }
+
+        let opportunity = assessment.plan.opportunity;
+        let known_ground_pressure = obs.enemy_units.iter().any(|unit| {
+            unit.kind.stats().domain == Domain::Ground
+                && (unit.kind.stats().can_target(Domain::Ground) || unit.kind.stats().demolition)
+        }) || context.unit_contacts.iter().any(|contact| {
+            contact.kind.stats().domain == Domain::Ground
+                && contact.confidence_at(obs.tick) > 0
+                && (contact.kind.stats().can_target(Domain::Ground)
+                    || contact.kind.stats().demolition)
+        }) || context.building_contacts.iter().any(|contact| {
+            contact.built
+                && contact.confidence_at(obs.tick) > 0
+                && contact
+                    .kind
+                    .base_stats()
+                    .weapons
+                    .iter()
+                    .any(|weapon| weapon.targets.ground)
+        });
+        let case = foundry_opportunity_case(FoundryCaseEvidence {
+            foundry_cost: construction_capital,
+            projected_return: opportunity.projected_return,
+            current_scrap_credit: opportunity.current_scrap_credit,
+            recurring_gain_per_minute: opportunity.recurring_gain_per_minute,
+            forecast_construction_capital,
+            known_ground_pressure,
+        });
+        Some(FreshFoundryInvestment::Ready(FreshFoundryProposal {
+            plan: assessment.plan,
+            current_construction_capital,
+            forecast_construction_capital,
+            protected_reserve: context.protected_reserve,
+            planning_scrap,
+            forecast_deadline,
+            decision_cadence: dials.cadence,
+            case,
+        }))
+    }
+
+    /// Rechecks the exact retained Foundry against current security and route
+    /// evidence before the allocator imports or dispatches its capital.
+    pub(in crate::bot) fn saved_foundry_readiness(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        obligation: ValidatedFoundryObligation,
+        context: FreshFoundryProposalContext<'_>,
+    ) -> SavedFoundryReadiness {
+        let Some(saving) = self.foundry_saving.as_ref() else {
+            return SavedFoundryReadiness::Blocked;
+        };
+        let (_, pending_foundries) = Self::projected_foundries(obs);
+        if pending_foundries != 0 {
+            return SavedFoundryReadiness::Blocked;
+        }
+        let builders = obs
+            .my_units
+            .iter()
+            .filter(|builder| builder.id == obligation.builder())
+            .filter(|builder| context.available_builders.contains(&builder.id))
+            .filter(|builder| builder_is_free(obs, builder))
+            .filter(|builder| self.scout != Some(builder.id))
+            .collect::<Vec<_>>();
+        let danger = self.harvest_danger_projection(
+            obs,
+            Some(context.unit_contacts),
+            Some(context.building_contacts),
+        );
+        self.prepare_ground_producer_egress(obs);
+        if self.legal_foundry_builder_prepared(
+            obs,
+            context.public_map,
+            saving.plan.anchor,
+            &builders,
+            &danger,
+        ) != Some(saving.plan.builder)
+        {
+            return SavedFoundryReadiness::Blocked;
+        }
+
+        let hostile_starts = self.uncleared_hostile_starts(context.public_map, obs.me);
+        let assessment_context = expansion::ExpansionAssessmentContext {
+            obs,
+            public_map: context.public_map,
+            unit_contacts: context.unit_contacts,
+            uncleared_hostile_starts: &hostile_starts,
+            combat_core_exclusions: context.combat_core_exclusions,
+            same_think_intents: context.same_think_intents,
+            minimum_core_equivalents: dials.minimum_core_equivalents,
+            own_strength_scale: dials.own_strength_scale,
+            economy: expansion_economy(
+                dials,
+                obs,
+                obligation.planning_scrap(),
+                Reserve::Exact(obligation.protected_reserve()),
+            ),
+        };
+        let assessment = expansion::assess_retained_foundry(
+            saving.plan.opportunity,
+            saving.plan.builder,
+            &assessment_context,
+            &mut self.expansion_routing_cache.borrow_mut(),
+        );
+        match assessment.disposition {
+            expansion::ExpansionDisposition::Build => SavedFoundryReadiness::Ready,
+            expansion::ExpansionDisposition::Prepare { .. } => {
+                SavedFoundryReadiness::NeedsProtection {
+                    anchor: saving.plan.anchor,
+                    target_strength: assessment.preparation_target_strength,
+                }
+            }
+            expansion::ExpansionDisposition::Reject => SavedFoundryReadiness::Blocked,
+        }
     }
 
     /// Freezes and optionally dispatches the exact proposal selected by the
@@ -2049,6 +2209,80 @@ impl UtilityPolicy {
         );
     }
 
+    /// Current bank the still-residual construction ladder must be able to
+    /// reach before voluntary standing production spends again.
+    ///
+    /// This is not owned capital: the allocator leaves it for Utility, and
+    /// only Standing proposals carry the constraint. Tech uses the existing
+    /// ladder reserve. Once that tree is complete, a Turret threshold exists
+    /// only while the same scored site and free-builder checks used by the
+    /// construction rung can produce a legal command.
+    pub(in crate::bot) fn residual_investment_reserve(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        context: ResidualInvestmentReserveContext<'_>,
+    ) -> u32 {
+        let ResidualInvestmentReserveContext {
+            home,
+            available_builders,
+            unit_contacts,
+            building_contacts,
+            public_map,
+        } = context;
+        let builders = self
+            .construction_builders(obs, &[], &[])
+            .into_iter()
+            .filter(|builder| available_builders.contains(&builder.id))
+            .collect::<Vec<_>>();
+        if builders.is_empty()
+            || self
+                .opening_construction_recovery(obs, true, &builders)
+                .is_some()
+        {
+            return 0;
+        }
+
+        let construction = ConstructionContext::new(
+            home,
+            ConstructionClaims {
+                player_facing: true,
+                enlisted: &[],
+                reserved: &[],
+            },
+        )
+        .with_intelligence(Some(unit_contacts), Some(building_contacts))
+        .with_public_map(Some(public_map));
+        let tech = self.capital_reserve(dials, obs, construction);
+        if tech > 0 {
+            return tech;
+        }
+
+        let public_enemy_start = !self.uncleared_hostile_starts(public_map, obs.me).is_empty();
+        let turret_limit = self.turret_response_limit(dials, obs, home, public_enemy_start);
+        let turrets = Self::projected_count(obs, BuildingKind::Turret, true);
+        if !dials.turret_response
+            || turrets >= turret_limit
+            || !self.strategic_defense_site_exists_grounded(
+                BuildingKind::Turret,
+                obs,
+                public_map,
+                unit_contacts,
+                building_contacts,
+                &builders,
+                &mut None,
+            )
+        {
+            return 0;
+        }
+
+        BuildingKind::Turret
+            .base_stats()
+            .construction
+            .map_or(0, |construction| construction.cost)
+            .saturating_add(UnitKind::Harvester.stats().cost)
+    }
+
     pub(super) fn residual_construction(
         &mut self,
         dials: &Dials,
@@ -2235,16 +2469,7 @@ impl UtilityPolicy {
             .count();
         let public_enemy_start = public_map
             .is_some_and(|briefing| !self.uncleared_hostile_starts(briefing, obs.me).is_empty());
-        let proactive_turret_cap = usize::from(
-            dials.adaptive_composition
-                && dials.turret_cap > 0
-                && (Self::enemy_site(obs, home).is_some() || public_enemy_start),
-        );
-        let turret_limit = if self.raided {
-            dials.turret_cap
-        } else {
-            proactive_turret_cap
-        };
+        let turret_limit = self.turret_response_limit(dials, obs, home, public_enemy_start);
         if dials.turret_response && turret_limit > 0 {
             let turret_cost = BuildingKind::Turret
                 .base_stats()
@@ -2431,6 +2656,24 @@ impl UtilityPolicy {
             }
         }
         false
+    }
+
+    fn turret_response_limit(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        home: TilePos,
+        public_enemy_start: bool,
+    ) -> usize {
+        if self.raided {
+            dials.turret_cap
+        } else {
+            usize::from(
+                dials.adaptive_composition
+                    && dials.turret_cap > 0
+                    && (Self::enemy_site(obs, home).is_some() || public_enemy_start),
+            )
+        }
     }
 
     /// The developed-base rungs: Array, Repair Bay, Bastion, and
@@ -2940,7 +3183,7 @@ mod tests {
         policy: &mut UtilityPolicy,
         dials: &Dials,
         obs: &Observation,
-    ) -> Vec<Intent> {
+    ) -> (Option<FreshFoundryInvestment>, Vec<Intent>) {
         let public_map = array_briefing(
             obs.map_width,
             obs.map_height,
@@ -2955,7 +3198,7 @@ mod tests {
             .collect();
         let resources = ResourceSnapshot::from_observation(obs);
         let mut intents = Vec::new();
-        if let Some(proposal) = policy.fresh_foundry_proposal(
+        let investment = policy.fresh_foundry_investment(
             dials,
             obs,
             &resources,
@@ -2970,12 +3213,16 @@ mod tests {
                 current_scrap: obs.scrap,
                 protected_reserve: TECH_RESERVE,
             },
-        ) {
-            policy
-                .commit_adjudicated_foundry(proposal, obs.tick, &mut intents)
-                .expect("the focused expansion fixture has no prior obligation");
+        );
+        match investment.as_ref() {
+            Some(FreshFoundryInvestment::Ready(proposal)) => {
+                policy
+                    .commit_adjudicated_foundry(proposal.clone(), obs.tick, &mut intents)
+                    .expect("the focused expansion fixture has no prior obligation");
+            }
+            Some(FreshFoundryInvestment::NeedsProtection { .. }) | None => {}
         }
-        intents
+        (investment, intents)
     }
 
     fn construction_briefing() -> PublicMapBriefing {
@@ -3549,6 +3796,26 @@ mod tests {
         intents
     }
 
+    fn residual_investment_reserve_for(
+        policy: &UtilityPolicy,
+        dials: &Dials,
+        obs: &Observation,
+        public_map: &PublicMapBriefing,
+        available_builders: &[UnitId],
+    ) -> u32 {
+        policy.residual_investment_reserve(
+            dials,
+            obs,
+            ResidualInvestmentReserveContext {
+                home: HOME,
+                available_builders,
+                unit_contacts: &[],
+                building_contacts: &[],
+                public_map,
+            },
+        )
+    }
+
     fn profile_free_construction_intents_with_public_map(
         policy: &mut UtilityPolicy,
         dials: &Dials,
@@ -3644,16 +3911,16 @@ mod tests {
         dials
     }
 
-    fn fresh_expansion_proposal(
+    fn fresh_expansion_investment(
         policy: &UtilityPolicy,
         dials: &Dials,
         obs: &Observation,
         public_map: &PublicMapBriefing,
         available_builders: &[UnitId],
         protected_reserve: u32,
-    ) -> Option<FreshFoundryProposal> {
+    ) -> Option<FreshFoundryInvestment> {
         let resources = ResourceSnapshot::from_observation(obs);
-        policy.fresh_foundry_proposal(
+        policy.fresh_foundry_investment(
             dials,
             obs,
             &resources,
@@ -3669,6 +3936,22 @@ mod tests {
                 protected_reserve,
             },
         )
+    }
+
+    fn expect_ready_foundry(
+        investment: Option<FreshFoundryInvestment>,
+        expectation: &str,
+    ) -> FreshFoundryProposal {
+        match investment {
+            Some(FreshFoundryInvestment::Ready(proposal)) => proposal,
+            Some(FreshFoundryInvestment::NeedsProtection {
+                anchor,
+                target_strength,
+            }) => panic!(
+                "{expectation}; instead {anchor:?} needed ordinary-core strength {target_strength}"
+            ),
+            None => panic!("{expectation}; no investment was derived"),
+        }
     }
 
     fn foundry_planning_basis(
@@ -3689,7 +3972,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_foundry_proposal_is_repeatable_without_admitting_work() {
+    fn fresh_foundry_investment_is_repeatable_without_admitting_work() {
         let obs = ready_developed_expansion_observation();
         let dials = expansion_dials();
         let public_map = array_briefing(
@@ -3700,10 +3983,14 @@ mod tests {
             |_| '.',
         );
         let policy = UtilityPolicy::new();
-        let first = fresh_expansion_proposal(&policy, &dials, &obs, &public_map, &[UnitId(1)], 73)
-            .expect("the rich visible frontier has a buildable proposal");
-        let second = fresh_expansion_proposal(&policy, &dials, &obs, &public_map, &[UnitId(1)], 73)
-            .expect("repeated proposal remains available before adjudication");
+        let first = expect_ready_foundry(
+            fresh_expansion_investment(&policy, &dials, &obs, &public_map, &[UnitId(1)], 73),
+            "the rich visible frontier should have a buildable proposal",
+        );
+        let second = expect_ready_foundry(
+            fresh_expansion_investment(&policy, &dials, &obs, &public_map, &[UnitId(1)], 73),
+            "the repeated investment should remain ready before adjudication",
+        );
 
         assert_eq!(second, first);
         assert_eq!(first.builder(), UnitId(1));
@@ -3737,7 +4024,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_foundry_proposal_searches_the_full_support_ring() {
+    fn fresh_foundry_investment_searches_the_full_support_ring() {
         let extractor = TilePos::new(30, 10);
         let mut obs = observation();
         obs.map_width = 48;
@@ -3781,15 +4068,17 @@ mod tests {
         let mut dials = expansion_dials();
         dials.deep_tech = false;
 
-        let proposal = fresh_expansion_proposal(
-            &UtilityPolicy::new(),
-            &dials,
-            &obs,
-            &public_map,
-            &[UnitId(1), UnitId(2)],
-            0,
-        )
-        .expect("the complete support ring should contain a proposal");
+        let proposal = expect_ready_foundry(
+            fresh_expansion_investment(
+                &UtilityPolicy::new(),
+                &dials,
+                &obs,
+                &public_map,
+                &[UnitId(1), UnitId(2)],
+                0,
+            ),
+            "the complete support ring should contain a ready investment",
+        );
 
         assert_eq!(proposal.builder(), UnitId(2));
         assert_eq!(
@@ -3831,8 +4120,8 @@ mod tests {
             .cost;
         let mut policy = UtilityPolicy::new();
         let resources = ResourceSnapshot::from_observation(&obs);
-        let proposal = policy
-            .fresh_foundry_proposal(
+        let proposal = expect_ready_foundry(
+            policy.fresh_foundry_investment(
                 &dials,
                 &obs,
                 &resources,
@@ -3847,8 +4136,9 @@ mod tests {
                     current_scrap: obs.scrap,
                     protected_reserve: 0,
                 },
-            )
-            .expect("near-horizon capital may make a safe expansion worth quoting");
+            ),
+            "near-horizon capital should make the safe expansion ready for allocation",
+        );
         assert_eq!(proposal.construction_capital(), foundry_cost);
         assert_eq!(proposal.current_construction_capital(), 0);
         assert_eq!(proposal.forecast_construction_capital(), foundry_cost);
@@ -3906,8 +4196,8 @@ mod tests {
         );
         let resources = ResourceSnapshot::from_observation(&obs);
         let mut policy = UtilityPolicy::new();
-        let proposal = policy
-            .fresh_foundry_proposal(
+        let proposal = expect_ready_foundry(
+            policy.fresh_foundry_investment(
                 &dials,
                 &obs,
                 &resources,
@@ -3922,8 +4212,9 @@ mod tests {
                     current_scrap: 0,
                     protected_reserve: 0,
                 },
-            )
-            .expect("the completed sources fund an exact saved expansion");
+            ),
+            "the completed sources should expose an exact ready expansion",
+        );
         assert_eq!(
             proposal.adjudicated_commit(),
             AdjudicatedFoundryCommit::Save
@@ -3995,8 +4286,8 @@ mod tests {
         );
         let resources = ResourceSnapshot::from_observation(&obs);
         let mut policy = UtilityPolicy::new();
-        let proposal = policy
-            .fresh_foundry_proposal(
+        let proposal = expect_ready_foundry(
+            policy.fresh_foundry_investment(
                 &dials,
                 &obs,
                 &resources,
@@ -4011,8 +4302,9 @@ mod tests {
                     current_scrap: 0,
                     protected_reserve: 0,
                 },
-            )
-            .expect("the completed sources support one saved Foundry");
+            ),
+            "the completed sources should expose one ready Foundry investment",
+        );
         let exact_anchor = proposal.anchor();
         let exact_builder = proposal.builder();
         policy
@@ -4087,8 +4379,8 @@ mod tests {
             .saturating_sub(1);
         let mut policy = UtilityPolicy::new();
         let resources = ResourceSnapshot::from_observation(&obs);
-        let proposal = policy
-            .fresh_foundry_proposal(
+        let proposal = expect_ready_foundry(
+            policy.fresh_foundry_investment(
                 &dials,
                 &obs,
                 &resources,
@@ -4103,8 +4395,9 @@ mod tests {
                     current_scrap: obs.scrap,
                     protected_reserve,
                 },
-            )
-            .expect("one forecast scrap completes the otherwise current-funded proposal");
+            ),
+            "one forecast scrap should complete the otherwise current-funded investment",
+        );
 
         assert_eq!(proposal.current_construction_capital(), foundry_cost - 1);
         assert_eq!(proposal.forecast_construction_capital(), 1);
@@ -4126,7 +4419,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_foundry_proposal_rejects_when_completed_source_forecast_is_short() {
+    fn fresh_foundry_investment_rejects_when_completed_source_forecast_is_short() {
         let mut obs = ready_developed_expansion_observation();
         obs.scrap = 0;
         let dials = expansion_dials();
@@ -4149,7 +4442,7 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(&obs);
         assert!(
             UtilityPolicy::new()
-                .fresh_foundry_proposal(
+                .fresh_foundry_investment(
                     &dials,
                     &obs,
                     &resources,
@@ -4224,7 +4517,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_foundry_proposal_requires_its_completed_fabricator_prerequisite() {
+    fn fresh_foundry_investment_requires_its_completed_fabricator_prerequisite() {
         let mut obs = ready_developed_expansion_observation();
         let fabricator = obs
             .my_buildings
@@ -4242,7 +4535,7 @@ mod tests {
         );
 
         assert!(
-            fresh_expansion_proposal(
+            fresh_expansion_investment(
                 &UtilityPolicy::new(),
                 &dials,
                 &obs,
@@ -4256,7 +4549,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_foundry_proposal_excludes_a_candidate_that_still_needs_preparation() {
+    fn fresh_foundry_investment_preserves_a_candidate_that_still_needs_preparation() {
         let obs = developed_expansion_observation();
         let dials = expansion_dials();
         let public_map = array_briefing(
@@ -4298,10 +4591,13 @@ mod tests {
             expansion::ExpansionDisposition::Prepare { .. }
         ));
 
-        assert!(
-            fresh_expansion_proposal(&policy, &dials, &obs, &public_map, &[UnitId(1)], 0,)
-                .is_none(),
-            "cross-domain allocation receives only security-ready Foundry proposals"
+        assert_eq!(
+            fresh_expansion_investment(&policy, &dials, &obs, &public_map, &[UnitId(1)], 0),
+            Some(FreshFoundryInvestment::NeedsProtection {
+                anchor: assessment.plan.anchor,
+                target_strength: assessment.preparation_target_strength,
+            }),
+            "cross-domain allocation must retain the exact preparation demand"
         );
     }
 
@@ -4317,9 +4613,10 @@ mod tests {
             |_| '.',
         );
         let mut policy = UtilityPolicy::new();
-        let proposal =
-            fresh_expansion_proposal(&policy, &dials, &obs, &public_map, &[UnitId(1)], 41)
-                .expect("the rich visible frontier has a buildable proposal");
+        let proposal = expect_ready_foundry(
+            fresh_expansion_investment(&policy, &dials, &obs, &public_map, &[UnitId(1)], 41),
+            "the rich visible frontier should have a buildable proposal",
+        );
         let expected = (
             proposal.anchor(),
             proposal.builder(),
@@ -4377,6 +4674,78 @@ mod tests {
     }
 
     #[test]
+    fn retained_foundry_readiness_does_not_rediscover_its_frozen_opportunity() {
+        let obs = ready_developed_expansion_observation();
+        let dials = expansion_dials();
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+        let mut policy = UtilityPolicy::new();
+        let proposal = expect_ready_foundry(
+            fresh_expansion_investment(&policy, &dials, &obs, &public_map, &[UnitId(1)], 0),
+            "the visible resource frontier should admit an exact Foundry plan",
+        );
+        let retained_anchor = proposal.anchor();
+        let retained_builder = proposal.builder();
+        policy
+            .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
+            .expect("there is no prior Foundry obligation");
+
+        let mut changed = obs.clone();
+        changed.tick = changed.tick.saturating_add(dials.cadence);
+        changed.known_scrap.clear();
+        assert!(
+            fresh_expansion_investment(
+                &UtilityPolicy::new(),
+                &dials,
+                &changed,
+                &public_map,
+                &[retained_builder],
+                0,
+            )
+            .is_none(),
+            "the changed economy must no longer originate a fresh expansion"
+        );
+        let resources = ResourceSnapshot::from_observation(&changed);
+        let obligation = policy
+            .validated_foundry_obligation(&changed, &resources, true, changed.scrap)
+            .expect("the accepted exact plan remains structurally valid");
+
+        assert_eq!(
+            policy.saved_foundry_readiness(
+                &dials,
+                &changed,
+                obligation,
+                FreshFoundryProposalContext {
+                    home: HOME,
+                    available_builders: &[retained_builder],
+                    combat_core_exclusions: &[],
+                    unit_contacts: &[],
+                    building_contacts: &[],
+                    public_map: &public_map,
+                    same_think_intents: &[],
+                    current_scrap: obligation.planning_scrap(),
+                    protected_reserve: obligation.protected_reserve(),
+                },
+            ),
+            SavedFoundryReadiness::Ready,
+            "current route and security evidence should validate the frozen plan without reranking economics"
+        );
+        let saving = policy
+            .foundry_saving
+            .as_ref()
+            .expect("the exact retained plan survives readiness validation");
+        assert_eq!(
+            (saving.plan.anchor, saving.plan.builder),
+            (retained_anchor, retained_builder)
+        );
+    }
+
+    #[test]
     fn viable_revalidation_clears_a_transient_foundry_block_immediately() {
         let obs = ready_developed_expansion_observation();
         let dials = expansion_dials();
@@ -4388,9 +4757,10 @@ mod tests {
             |_| '.',
         );
         let mut policy = UtilityPolicy::new();
-        let proposal =
-            fresh_expansion_proposal(&policy, &dials, &obs, &public_map, &[UnitId(1)], 0)
-                .expect("the current bank supports a safe exact Foundry plan");
+        let proposal = expect_ready_foundry(
+            fresh_expansion_investment(&policy, &dials, &obs, &public_map, &[UnitId(1)], 0),
+            "the current bank should support a safe exact Foundry plan",
+        );
         policy
             .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
             .expect("there is no prior Foundry obligation");
@@ -4418,7 +4788,8 @@ mod tests {
     #[test]
     fn adjudicated_foundry_save_is_exact_and_cannot_replace_an_obligation() {
         let mut obs = ready_developed_expansion_observation();
-        obs.scrap = 0;
+        let protected_reserve = 29;
+        obs.scrap = protected_reserve;
         for (id, anchor) in [
             (100, TilePos::new(4, 24)),
             (101, TilePos::new(8, 24)),
@@ -4438,8 +4809,8 @@ mod tests {
         );
         let mut policy = UtilityPolicy::new();
         let resources = ResourceSnapshot::from_observation(&obs);
-        let proposal = policy
-            .fresh_foundry_proposal(
+        let proposal = expect_ready_foundry(
+            policy.fresh_foundry_investment(
                 &dials,
                 &obs,
                 &resources,
@@ -4451,15 +4822,26 @@ mod tests {
                     building_contacts: &[],
                     public_map: &public_map,
                     same_think_intents: &[],
-                    current_scrap: 0,
-                    protected_reserve: 29,
+                    current_scrap: obs.scrap,
+                    protected_reserve,
                 },
-            )
-            .expect("forecast capital supports the exact rich frontier");
+            ),
+            "forecast capital should support the exact rich frontier",
+        );
         assert_eq!(
             proposal.adjudicated_commit(),
             AdjudicatedFoundryCommit::Save
         );
+        assert_eq!(proposal.current_construction_capital(), 0);
+        assert_eq!(
+            proposal.forecast_construction_capital(),
+            BuildingKind::Foundry
+                .base_stats()
+                .construction
+                .expect("Foundries are constructible")
+                .cost
+        );
+        assert_eq!(proposal.protected_reserve(), protected_reserve);
         let expected = proposal.clone();
         let mut intents = Vec::new();
         policy
@@ -4475,6 +4857,72 @@ mod tests {
         );
         assert_eq!(policy.foundry_saving, before);
         assert!(rejected_intents.is_empty());
+    }
+
+    #[test]
+    fn saved_foundry_forecast_cannot_replace_its_current_protected_reserve() {
+        let mut obs = ready_developed_expansion_observation();
+        let protected_reserve = 29;
+        obs.scrap = protected_reserve;
+        for (id, anchor) in [
+            (100, TilePos::new(4, 24)),
+            (101, TilePos::new(8, 24)),
+            (102, TilePos::new(12, 24)),
+        ] {
+            obs.my_buildings
+                .push(building(id, PlayerId(0), BuildingKind::Reclaimer, anchor));
+            obs.my_queues.push(Vec::new());
+        }
+        let dials = expansion_dials();
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let proposal = expect_ready_foundry(
+            UtilityPolicy::new().fresh_foundry_investment(
+                &dials,
+                &obs,
+                &resources,
+                FreshFoundryProposalContext {
+                    home: HOME,
+                    available_builders: &[UnitId(1)],
+                    combat_core_exclusions: &[],
+                    unit_contacts: &[],
+                    building_contacts: &[],
+                    public_map: &public_map,
+                    same_think_intents: &[],
+                    current_scrap: obs.scrap,
+                    protected_reserve,
+                },
+            ),
+            "completed-source income should fund only the Foundry construction capital",
+        );
+        let mut policy = UtilityPolicy::new();
+        policy
+            .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
+            .expect("there is no prior expansion obligation");
+
+        let mut reserve_lost = obs;
+        reserve_lost.tick = reserve_lost.tick.saturating_add(dials.cadence);
+        reserve_lost.scrap = protected_reserve - 1;
+        let resources = ResourceSnapshot::from_observation(&reserve_lost);
+        let obligation = policy
+            .validated_foundry_obligation(&reserve_lost, &resources, true, reserve_lost.scrap)
+            .expect("the exact plan remains during bounded recovery");
+
+        assert!(obligation.blocked());
+        assert_eq!(obligation.current_construction_capital(), 0);
+        assert_eq!(
+            policy
+                .foundry_saving
+                .as_ref()
+                .and_then(|saving| saving.blocked_since),
+            Some(reserve_lost.tick)
+        );
     }
 
     #[test]
@@ -4890,8 +5338,9 @@ mod tests {
     fn first_forward_expansion_needs_only_its_candidate_local_screen() {
         let mut obs = developed_expansion_observation();
         obs.my_units.push(sentinel(100, TilePos::new(8, 16)));
-        let intents =
+        let (investment, intents) =
             expansion_construction_intents(&mut UtilityPolicy::new(), &expansion_dials(), &obs);
+        assert!(matches!(investment, Some(FreshFoundryInvestment::Ready(_))));
         let anchor = assert_build_kind(&intents, BuildingKind::Foundry);
         assert!(
             anchor.chebyshev(TilePos::new(32, 12)) < anchor.chebyshev(TilePos::new(62, 12)),
@@ -4972,8 +5421,9 @@ mod tests {
             );
         }
 
-        let intents =
+        let (investment, intents) =
             expansion_construction_intents(&mut UtilityPolicy::new(), &expansion_dials(), &ready);
+        assert!(matches!(investment, Some(FreshFoundryInvestment::Ready(_))));
         assert!(matches!(
             intents.as_slice(),
             [Intent::BuildWith {
@@ -4995,8 +5445,8 @@ mod tests {
             TilePos::new(ready.map_width - 4, ready.map_height - 4),
             |_| '.',
         );
-        let proposal = policy
-            .fresh_foundry_proposal(
+        let proposal = expect_ready_foundry(
+            policy.fresh_foundry_investment(
                 &expansion_dials(),
                 &ready,
                 &ResourceSnapshot::from_observation(&ready),
@@ -5011,8 +5461,9 @@ mod tests {
                     current_scrap: ready.scrap,
                     protected_reserve: TECH_RESERVE,
                 },
-            )
-            .expect("the exact safe expansion remains quotable after a harvest chore");
+            ),
+            "the exact safe expansion should remain ready after a harvest chore",
+        );
         policy
             .commit_adjudicated_foundry(proposal, ready.tick, &mut ordered)
             .expect("the focused fixture has no prior expansion obligation");
@@ -5144,7 +5595,9 @@ mod tests {
             )
         }));
 
-        let intents = expansion_construction_intents(&mut UtilityPolicy::new(), &dials, &obs);
+        let (investment, intents) =
+            expansion_construction_intents(&mut UtilityPolicy::new(), &dials, &obs);
+        assert!(matches!(investment, Some(FreshFoundryInvestment::Ready(_))));
         let [
             Intent::BuildWith {
                 builder,
@@ -5185,14 +5638,20 @@ mod tests {
         impatient.expansion_greed = 0;
         assert!(impatient.expansion && patient.expansion);
 
-        assert!(
-            expansion_construction_intents(&mut UtilityPolicy::new(), &impatient, &obs).is_empty(),
+        let (impatient_investment, impatient_intents) =
+            expansion_construction_intents(&mut UtilityPolicy::new(), &impatient, &obs);
+        assert_eq!(
+            impatient_investment, None,
             "the short horizon must reject one remote Extractor's slow payback"
         );
-        let anchor = assert_build_kind(
-            &expansion_construction_intents(&mut UtilityPolicy::new(), &patient, &obs),
-            BuildingKind::Foundry,
-        );
+        assert!(impatient_intents.is_empty());
+        let (patient_investment, patient_intents) =
+            expansion_construction_intents(&mut UtilityPolicy::new(), &patient, &obs);
+        assert!(matches!(
+            patient_investment,
+            Some(FreshFoundryInvestment::Ready(_))
+        ));
+        let anchor = assert_build_kind(&patient_intents, BuildingKind::Foundry);
         assert!(UtilityPolicy::foundry_supports_extractor(anchor, extractor));
     }
 
@@ -5212,7 +5671,9 @@ mod tests {
         obs.my_units.push(sentinel(100, TilePos::new(45, 16)));
         let dials = expansion_dials();
 
-        let intents = expansion_construction_intents(&mut UtilityPolicy::new(), &dials, &obs);
+        let (investment, intents) =
+            expansion_construction_intents(&mut UtilityPolicy::new(), &dials, &obs);
+        assert!(matches!(investment, Some(FreshFoundryInvestment::Ready(_))));
         let fifth_anchor = assert_build_kind(&intents, BuildingKind::Foundry);
         assert!(
             fifth_anchor.chebyshev(TilePos::new(62, 12)) < EXPANSION_RADIUS,
@@ -5775,6 +6236,92 @@ mod tests {
                 "cap {cap} must allow exactly one proactive turret before a raid"
             );
         }
+    }
+
+    #[test]
+    fn residual_investment_reserve_tracks_the_next_technology_threshold() {
+        let public_map = construction_briefing();
+        let mut dials = focused_dials();
+        dials.tech = true;
+        let mut obs = observation();
+        let policy = UtilityPolicy::new();
+        let expected = BuildingKind::Fabricator
+            .base_stats()
+            .construction
+            .expect("Fabricators are constructible")
+            .cost
+            .saturating_add(TECH_RESERVE);
+
+        assert_eq!(
+            residual_investment_reserve_for(&policy, &dials, &obs, &public_map, &[UnitId(1)],),
+            expected,
+            "Standing must leave the existing first-tech threshold reachable"
+        );
+
+        obs.my_buildings.push(building(
+            2,
+            PlayerId(0),
+            BuildingKind::Fabricator,
+            HOME.offset(5, -5),
+        ));
+        obs.my_queues.push(Vec::new());
+        assert_eq!(
+            residual_investment_reserve_for(&policy, &dials, &obs, &public_map, &[UnitId(1)],),
+            0,
+            "a completed selected tech tree must release the temporary floor"
+        );
+    }
+
+    #[test]
+    fn residual_investment_reserve_exists_only_for_an_actionable_turret() {
+        let public_map = construction_briefing();
+        let mut dials = focused_dials();
+        dials.turret_response = true;
+        dials.adaptive_composition = true;
+        dials.turret_cap = 4;
+        let mut obs = observation();
+        obs.enemy_buildings.push(building(
+            20,
+            PlayerId(1),
+            BuildingKind::Foundry,
+            TilePos::new(32, 10),
+        ));
+        let policy = UtilityPolicy::new();
+        let expected = BuildingKind::Turret
+            .base_stats()
+            .construction
+            .expect("Turrets are constructible")
+            .cost
+            .saturating_add(UnitKind::Harvester.stats().cost);
+
+        assert_eq!(
+            residual_investment_reserve_for(&policy, &dials, &obs, &public_map, &[UnitId(1)],),
+            expected,
+            "the first legal public-approach Turret must remain affordable"
+        );
+        assert_eq!(
+            residual_investment_reserve_for(&policy, &dials, &obs, &public_map, &[]),
+            0,
+            "a Turret with no free builder must not create a permanent hoard"
+        );
+
+        let anchor = policy
+            .strategic_defense_site(
+                BuildingKind::Turret,
+                &obs,
+                &public_map,
+                &[],
+                &[],
+                &policy.construction_builders(&obs, &[], &[]),
+            )
+            .expect("the control fixture has a legal strategic Turret site");
+        obs.my_buildings
+            .push(building(21, PlayerId(0), BuildingKind::Turret, anchor));
+        assert_eq!(
+            residual_investment_reserve_for(&policy, &dials, &obs, &public_map, &[UnitId(1)],),
+            0,
+            "the bounded pre-contact Turret releases its floor once projected"
+        );
     }
 
     #[test]

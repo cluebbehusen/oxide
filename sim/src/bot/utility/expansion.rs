@@ -1359,6 +1359,34 @@ pub(super) fn quote_foundry_expansions_cached(
     quotes
 }
 
+/// Rechecks current protection for one already-admitted expansion without
+/// rediscovering or repricing its frozen economic opportunity.
+pub(super) fn assess_retained_foundry(
+    opportunity: FoundryOpportunity,
+    builder: UnitId,
+    context: &ExpansionAssessmentContext<'_>,
+    routing_cache: &mut ExpansionRoutingCache,
+) -> FoundryExpansionAssessment {
+    let world = ExpansionSecurityWorld::observe(context, routing_cache);
+    let (security, missing_security_scrap, preparation_target_strength) =
+        security_for_anchor(opportunity.anchor, context, &world);
+    let disposition = expansion_disposition(
+        opportunity,
+        &security,
+        missing_security_scrap,
+        context.economy.greed,
+        context.economy.foundry_cost,
+    );
+    FoundryExpansionQuote {
+        opportunity,
+        security,
+        disposition,
+        missing_security_scrap,
+        preparation_target_strength,
+    }
+    .bind(builder)
+}
+
 /// Test adapter that binds prebuilt plans after candidate-local security
 /// reprices their economic order.
 #[cfg(test)]
