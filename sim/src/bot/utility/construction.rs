@@ -2263,17 +2263,15 @@ impl UtilityPolicy {
         let turrets = Self::projected_count(obs, BuildingKind::Turret, true);
         if !dials.turret_response
             || turrets >= turret_limit
-            || self
-                .strategic_defense_site_grounded(
-                    BuildingKind::Turret,
-                    obs,
-                    public_map,
-                    unit_contacts,
-                    building_contacts,
-                    &builders,
-                    &mut None,
-                )
-                .is_none()
+            || !self.strategic_defense_site_exists_grounded(
+                BuildingKind::Turret,
+                obs,
+                public_map,
+                unit_contacts,
+                building_contacts,
+                &builders,
+                &mut None,
+            )
         {
             return 0;
         }
