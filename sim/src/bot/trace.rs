@@ -5,11 +5,11 @@
 
 use super::allocation::{
     AllocationConflict, AllocationError, AllocationResult, CapitalFundingAssignment, ClaimBundle,
-    ClaimBundleError, ClaimOwner, Confidence, ConnectedOffenseKey, CoordinatorInputError,
-    ExecutionSafety, ImportedObligation, InvestmentProposal, LegacyChannel, ObligationClass,
-    ObligationKey, OutrankingBasis, ProducerJobClaim, ProposalCase, ProposalDecision,
-    ProposalDisposition, ProposalKey, ProposalRejection, ScheduledProducerJob, StrategicValue,
-    TimeToImpact, Urgency,
+    ClaimBundleError, ClaimOwner, Confidence, ConnectedOffenseKey, ConnectedPortfolioContext,
+    CoordinatorInputError, ExecutionSafety, ImportedObligation, InvestmentProposal, LegacyChannel,
+    ObligationClass, ObligationKey, OutrankingBasis, ProducerJobClaim, ProposalCase,
+    ProposalDecision, ProposalDisposition, ProposalKey, ProposalRejection, ScheduledProducerJob,
+    StandingForceKey, StandingForceServiceKey, StrategicValue, TimeToImpact, Urgency,
 };
 use super::observation::Observation;
 use super::resources::{
@@ -31,7 +31,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// Schema version for serialized decision traces.
-pub const DECISION_TRACE_VERSION: u32 = 5;
+pub const DECISION_TRACE_VERSION: u32 = 7;
 
 const RESOURCE_FORECAST_TICKS: Tick = crate::TICKS_PER_SECOND as Tick * 60;
 const ALLOCATION_TRACE_ENTRY_LIMIT: usize = 32;
@@ -536,10 +536,11 @@ pub struct ScrapBudgetTrace {
     pub deferred_construction: u32,
     /// Capital held for an additional Airworks.
     pub airworks_capacity: u32,
-    /// Capital held for one shallow Sentinel.
-    pub shallow_sentinel: u32,
     /// Capital held for the authored home Extractor opening.
     pub opening_bootstrap: u32,
+    /// Current scrap preserved for a shallow ground screen unless its exact
+    /// producer append was allocated inside the protected queue horizon.
+    pub voluntary_scrap_guard: u32,
     /// Whether the unmet opening core closed voluntary spending.
     pub frozen: bool,
     /// Scrap exposed to an operation that predates the saved Foundry plan.
@@ -571,13 +572,39 @@ pub struct AllocationTrace {
     pub coordinator_failure: Option<AllocationCoordinatorFailureTrace>,
     /// Optional connected-offense scale step considered after its minimum won.
     pub connected_marginal: Option<ConnectedMarginalTrace>,
+    /// Exact connected state used to derive the proposals in this trace.
+    pub connected_context: Option<ConnectedPortfolioContextTrace>,
+}
+
+/// Contextual alternatives evaluated around the selected connected-operation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ConnectedPortfolioContextTrace {
+    /// Number of exact absent/minimum/marginal contexts evaluated.
+    pub considered: u32,
+    /// Connected state whose dependent proposals appear in this trace.
+    pub selected: ConnectedPortfolioSelectionTrace,
+}
+
+/// Selected connected state for one contextual allocation pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ConnectedPortfolioSelectionTrace {
+    /// No fresh connected operation was selected.
+    Absent,
+    /// The connected minimum and an exact cumulative marginal depth were selected.
+    Selected {
+        /// Stable selected opportunity.
+        key: ProposalKeyTrace,
+        /// Zero for the minimum, one or more for a marginal scale.
+        marginal_depth: usize,
+    },
 }
 
 impl AllocationTrace {
     /// Captures allocator inputs before their exact domain payloads move into selection.
-    pub(super) fn from_inputs<FoundryPayload, OffensePayload>(
+    pub(super) fn from_inputs<Payload>(
         obligations: &[ImportedObligation],
-        proposals: &[InvestmentProposal<FoundryPayload, OffensePayload>],
+        proposals: &[InvestmentProposal<Payload>],
     ) -> Self {
         let mut obligations = obligations.iter().collect::<Vec<_>>();
         obligations.sort_unstable_by_key(|obligation| obligation.owner());
@@ -601,10 +628,7 @@ impl AllocationTrace {
     }
 
     /// Applies final proposal dispositions and the selected lane schedule.
-    pub(super) fn record_result<FoundryPayload, OffensePayload>(
-        &mut self,
-        result: &AllocationResult<FoundryPayload, OffensePayload>,
-    ) {
+    pub(super) fn record_result<Payload>(&mut self, result: &AllocationResult<Payload>) {
         self.record_decisions(&result.decisions);
         for accepted in &result.accepted {
             if let Some(proposal) = self
@@ -626,6 +650,28 @@ impl AllocationTrace {
                 .map(CapitalFundingAssignmentTrace::from)
                 .collect(),
         );
+    }
+
+    /// Records the exact conditional state whose proposal set was selected.
+    pub(super) fn record_connected_portfolio_context(
+        &mut self,
+        considered: u32,
+        selected: ConnectedPortfolioContext,
+    ) {
+        let selected = match selected {
+            ConnectedPortfolioContext::Absent => ConnectedPortfolioSelectionTrace::Absent,
+            ConnectedPortfolioContext::Selected {
+                key,
+                marginal_depth,
+            } => ConnectedPortfolioSelectionTrace::Selected {
+                key: key.into(),
+                marginal_depth,
+            },
+        };
+        self.connected_context = Some(ConnectedPortfolioContextTrace {
+            considered,
+            selected,
+        });
     }
 
     fn record_decisions(&mut self, decisions: &[ProposalDecision]) {
@@ -772,10 +818,8 @@ pub struct AllocationProposalTrace {
     pub disposition: ProposalDispositionTrace,
 }
 
-impl<FoundryPayload, OffensePayload> From<&InvestmentProposal<FoundryPayload, OffensePayload>>
-    for AllocationProposalTrace
-{
-    fn from(proposal: &InvestmentProposal<FoundryPayload, OffensePayload>) -> Self {
+impl<Payload> From<&InvestmentProposal<Payload>> for AllocationProposalTrace {
+    fn from(proposal: &InvestmentProposal<Payload>) -> Self {
         Self {
             key: proposal.key().into(),
             case: proposal.case().into(),
@@ -802,6 +846,46 @@ pub enum ProposalKeyTrace {
         /// Current primary target footprint anchor.
         anchor: TilePos,
     },
+    /// One immediate standing-force purchase.
+    StandingForce {
+        /// Exact unit kind selected by the standing-force domain.
+        kind: UnitKind,
+        /// Canonical route-local demand served by this purchase.
+        service: StandingForceServiceKeyTrace,
+    },
+}
+
+/// Public diagnostic form of a standing-force service target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StandingForceServiceKeyTrace {
+    /// A mobile contact or ordinary movement destination.
+    Point {
+        /// Exact target tile.
+        tile: TilePos,
+    },
+    /// A building or planned building approached through its footprint edge.
+    Footprint {
+        /// Top-left footprint anchor.
+        anchor: TilePos,
+        /// Footprint width in tiles.
+        width: i32,
+        /// Footprint height in tiles.
+        height: i32,
+    },
+}
+
+impl From<StandingForceServiceKey> for StandingForceServiceKeyTrace {
+    fn from(service: StandingForceServiceKey) -> Self {
+        match service {
+            StandingForceServiceKey::Point(tile) => Self::Point { tile },
+            StandingForceServiceKey::Footprint { anchor, size } => Self::Footprint {
+                anchor,
+                width: size.0,
+                height: size.1,
+            },
+        }
+    }
 }
 
 impl From<ProposalKey> for ProposalKeyTrace {
@@ -812,6 +896,10 @@ impl From<ProposalKey> for ProposalKeyTrace {
                 objective: key.objective,
                 anchor: key.anchor,
             },
+            ProposalKey::StandingForce(key) => Self::StandingForce {
+                kind: key.kind,
+                service: key.service.into(),
+            },
         }
     }
 }
@@ -819,6 +907,12 @@ impl From<ProposalKey> for ProposalKeyTrace {
 impl From<ConnectedOffenseKey> for ProposalKeyTrace {
     fn from(key: ConnectedOffenseKey) -> Self {
         ProposalKey::ConnectedOffenseMinimum(key).into()
+    }
+}
+
+impl From<StandingForceKey> for ProposalKeyTrace {
+    fn from(key: StandingForceKey) -> Self {
+        ProposalKey::StandingForce(key).into()
     }
 }
 
@@ -964,6 +1058,8 @@ impl From<ExecutionSafety> for ExecutionSafetyTrace {
 pub struct AllocationClaimsTrace {
     /// Non-production capital required from the current bank.
     pub current_scrap: u32,
+    /// Current bank that must survive selection for residual policy work.
+    pub minimum_residual_scrap: u32,
     /// Total non-production capital reserved from future completed-source income.
     pub forecast_scrap_total: u128,
     /// Flexible non-production capital awaiting an allocator-owned split.
@@ -998,6 +1094,7 @@ impl From<&ClaimBundle> for AllocationClaimsTrace {
             .sum::<u128>();
         Self {
             current_scrap: claims.current_scrap(),
+            minimum_residual_scrap: claims.minimum_residual_scrap(),
             forecast_scrap_total,
             deferrable_capital: claims.deferrable_capital().map(|claim| ForecastClaimTrace {
                 through: claim.through,
@@ -1076,8 +1173,12 @@ pub struct ProducerJobClaimTrace {
     pub cost: u32,
     /// First decision tick on which the request may enter a queue.
     pub enqueue_not_before: Tick,
+    /// Last decision tick on which the request may enter a queue.
+    pub enqueue_not_after: Tick,
     /// Observation deadline, strictly after readiness.
     pub ready_before: Tick,
+    /// Whether this request must spend the currently observed bank.
+    pub requires_current_funding: bool,
     /// Fresh flexible lanes or the exact retained obligation lane.
     pub access: ProducerJobAccessTrace,
 }
@@ -1103,7 +1204,9 @@ impl From<&ProducerJobClaim> for ProducerJobClaimTrace {
             kind: job.kind(),
             cost: job.kind().stats().cost,
             enqueue_not_before: job.enqueue_not_before(),
+            enqueue_not_after: job.enqueue_not_after(),
             ready_before: job.ready_before(),
+            requires_current_funding: job.requires_current_funding(),
             access,
         }
     }
@@ -1374,6 +1477,8 @@ pub enum OutrankingBasisTrace {
     Safety,
     /// Positive personality emphasis broke a semantic tie.
     Personality,
+    /// Cross-domain rank tied and one domain preferred this exact alternative.
+    DomainPreference,
     /// Lower claimed capital broke every higher-order tie.
     LowerCapital,
     /// Canonical structural identity broke the final tie.
@@ -1389,6 +1494,7 @@ impl From<OutrankingBasis> for OutrankingBasisTrace {
             OutrankingBasis::TimeToImpact => Self::TimeToImpact,
             OutrankingBasis::Safety => Self::Safety,
             OutrankingBasis::Personality => Self::Personality,
+            OutrankingBasis::DomainPreference => Self::DomainPreference,
             OutrankingBasis::LowerCapital => Self::LowerCapital,
             OutrankingBasis::StructuralKey => Self::StructuralKey,
         }
@@ -1471,6 +1577,15 @@ pub enum AllocationConflictTrace {
         /// Canonical producer set supplied by the domain.
         eligible_producers: BoundedTraceEntries<BuildingId>,
     },
+    /// A stateless current-funded request was not anchored to this observation.
+    ImmediateProducerTiming {
+        /// Earliest enqueue tick supplied by the domain.
+        enqueue_not_before: Tick,
+        /// Latest enqueue tick supplied by the domain.
+        enqueue_not_after: Tick,
+        /// Current allocation tick.
+        observed_at: Tick,
+    },
     /// No lane ordering can preserve every claim and deadline.
     ProducerSchedule {
         /// Producers involved in the failed schedule.
@@ -1546,6 +1661,15 @@ impl From<&AllocationConflict> for AllocationConflictTrace {
                 kind: *kind,
                 eligible_producers: BoundedTraceEntries::from_vec(eligible_producers.clone()),
             },
+            AllocationConflict::ImmediateProducerTiming {
+                enqueue_not_before,
+                enqueue_not_after,
+                observed_at,
+            } => Self::ImmediateProducerTiming {
+                enqueue_not_before: *enqueue_not_before,
+                enqueue_not_after: *enqueue_not_after,
+                observed_at: *observed_at,
+            },
             AllocationConflict::ProducerSchedule { producers, owners } => Self::ProducerSchedule {
                 producers: BoundedTraceEntries::from_vec(producers.clone()),
                 owners: BoundedTraceEntries::from_vec(
@@ -1569,19 +1693,9 @@ impl From<&AllocationConflict> for AllocationConflictTrace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum AllocationErrorTrace {
-    /// More than the two currently migrated domains submitted proposals.
-    TooManyProposals {
-        /// Submitted proposal count.
-        count: u32,
-    },
     /// One structural proposal identity was repeated.
     DuplicateProposalKey {
         /// Repeated identity.
-        key: ProposalKeyTrace,
-    },
-    /// One migrated domain submitted more than one proposal.
-    DuplicateProposalDomain {
-        /// Second identity from that domain.
         key: ProposalKeyTrace,
     },
     /// One imported obligation identity was repeated.
@@ -1620,14 +1734,8 @@ pub enum AllocationErrorTrace {
 impl From<AllocationError> for AllocationErrorTrace {
     fn from(value: AllocationError) -> Self {
         match value {
-            AllocationError::TooManyProposals(count) => Self::TooManyProposals {
-                count: bounded_count(count),
-            },
             AllocationError::DuplicateProposalKey(key) => {
                 Self::DuplicateProposalKey { key: key.into() }
-            }
-            AllocationError::DuplicateProposalDomain(key) => {
-                Self::DuplicateProposalDomain { key: key.into() }
             }
             AllocationError::DuplicateObligation(owner) => Self::DuplicateObligation {
                 owner: owner.into(),
@@ -1666,6 +1774,8 @@ pub enum AllocationCoordinatorStageTrace {
     FoundryProposalAdaptation,
     /// The selected connected-operation candidate could not be adapted into shared claims.
     ConnectedProposalAdaptation,
+    /// The selected standing-force candidate could not be adapted into shared claims.
+    StandingForceProposalAdaptation,
     /// A retained saved Foundry could not emit its exact build command.
     SavedFoundryDispatch,
     /// An active connected operation could not retain its accepted producer schedule.
@@ -2868,11 +2978,13 @@ mod tests {
                 vec![BuildingId(8), BuildingId(3), BuildingId(8)],
             )],
         )
-        .unwrap();
+        .unwrap()
+        .with_minimum_residual_scrap(150);
 
         let trace = AllocationClaimsTrace::from(&claims);
 
         assert_eq!(trace.current_scrap, 77);
+        assert_eq!(trace.minimum_residual_scrap, 150);
         assert_eq!(trace.forecast_scrap_total, 18);
         assert_eq!(
             trace.producer_job_scrap_total,
@@ -2919,13 +3031,69 @@ mod tests {
                 kind: UnitKind::Sentinel,
                 cost: UnitKind::Sentinel.stats().cost,
                 enqueue_not_before: 12,
+                enqueue_not_after: 129,
                 ready_before: 130,
+                requires_current_funding: false,
                 access: ProducerJobAccessTrace::Flexible {
                     eligible_producers: BoundedTraceEntries::from_vec(vec![
                         BuildingId(3),
                         BuildingId(8),
                     ]),
                 },
+            }
+        );
+    }
+
+    #[test]
+    fn standing_force_trace_preserves_domain_and_enqueue_now_contract() {
+        let kind = UnitKind::Warden;
+        let service = StandingForceServiceKey::footprint(TilePos::new(8, 3), (2, 3));
+        assert_eq!(
+            ProposalKeyTrace::from(StandingForceKey { kind, service }),
+            ProposalKeyTrace::StandingForce {
+                kind,
+                service: StandingForceServiceKeyTrace::Footprint {
+                    anchor: TilePos::new(8, 3),
+                    width: 2,
+                    height: 3,
+                },
+            }
+        );
+
+        let claim = ProducerJobClaim::immediate(
+            kind,
+            120,
+            480,
+            vec![BuildingId(8), BuildingId(3), BuildingId(8)],
+        );
+        assert_eq!(
+            ProducerJobClaimTrace::from(&claim),
+            ProducerJobClaimTrace {
+                kind,
+                cost: kind.stats().cost,
+                enqueue_not_before: 120,
+                enqueue_not_after: 120,
+                ready_before: 480,
+                requires_current_funding: true,
+                access: ProducerJobAccessTrace::Flexible {
+                    eligible_producers: BoundedTraceEntries::from_vec(vec![
+                        BuildingId(3),
+                        BuildingId(8),
+                    ]),
+                },
+            }
+        );
+
+        assert_eq!(
+            AllocationConflictTrace::from(AllocationConflict::ImmediateProducerTiming {
+                enqueue_not_before: 121,
+                enqueue_not_after: 121,
+                observed_at: 120,
+            }),
+            AllocationConflictTrace::ImmediateProducerTiming {
+                enqueue_not_before: 121,
+                enqueue_not_after: 121,
+                observed_at: 120,
             }
         );
     }
@@ -3306,7 +3474,7 @@ mod tests {
                 claims: ClaimBundle::default(),
             })
             .collect::<Vec<_>>();
-        let allocation = AllocationTrace::from_inputs::<(), ()>(&obligations, &[]);
+        let allocation = AllocationTrace::from_inputs::<()>(&obligations, &[]);
 
         assert_eq!(
             allocation.obligations.entries.len(),
@@ -3456,6 +3624,18 @@ mod tests {
                 basis: OutrankingBasisTrace::Personality,
             }
         );
+        assert_eq!(
+            ProposalDispositionTrace::from(ProposalDisposition::Rejected(
+                ProposalRejection::Outranked {
+                    selected: vec![expansion],
+                    basis: OutrankingBasis::DomainPreference,
+                },
+            )),
+            ProposalDispositionTrace::Outranked {
+                selected: BoundedTraceEntries::from_vec(vec![expansion.into()]),
+                basis: OutrankingBasisTrace::DomainPreference,
+            }
+        );
     }
 
     #[test]
@@ -3566,6 +3746,7 @@ mod tests {
 
     #[test]
     fn serialized_trace_has_a_fixed_schema() {
+        assert_eq!(DECISION_TRACE_VERSION, 7);
         let mut trace = DecisionTrace::from_observation(&Observation::default());
         trace.gates.opening_core = Some(CoreGateTrace {
             projected_strength: 1,
@@ -3584,8 +3765,8 @@ mod tests {
             foundry_saving: 2,
             deferred_construction: 3,
             airworks_capacity: 4,
-            shallow_sentinel: 5,
-            opening_bootstrap: 6,
+            opening_bootstrap: 5,
+            voluntary_scrap_guard: 6,
             frozen: false,
             prior_operation_spendable: 7,
             strategic_spendable: 8,
@@ -3631,7 +3812,9 @@ mod tests {
                         kind: UnitKind::Sentinel,
                         cost: UnitKind::Sentinel.stats().cost,
                         enqueue_not_before: 10,
+                        enqueue_not_after: 119,
                         ready_before: 120,
+                        requires_current_funding: false,
                         access: ProducerJobAccessTrace::Flexible {
                             eligible_producers: BoundedTraceEntries::from_vec(vec![BuildingId(3)]),
                         },
@@ -3655,6 +3838,7 @@ mod tests {
             capital_assignments: BoundedTraceEntries::default(),
             error: None,
             coordinator_failure: None,
+            connected_context: None,
             connected_marginal: Some(ConnectedMarginalTrace {
                 key: ProposalKeyTrace::ConnectedOffenseMinimum {
                     objective: BuildingId(9),
@@ -3762,7 +3946,10 @@ mod tests {
             panic!("a decision trace serializes as an object");
         };
 
-        assert_eq!(trace.get("version"), Some(&Value::from(5)));
+        assert_eq!(
+            trace.get("version"),
+            Some(&Value::from(DECISION_TRACE_VERSION))
+        );
 
         assert_eq!(
             trace.keys().map(String::as_str).collect::<BTreeSet<_>>(),
@@ -3799,8 +3986,9 @@ mod tests {
                 .map(String::as_str)
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
-                "connected_marginal",
                 "capital_assignments",
+                "connected_context",
+                "connected_marginal",
                 "coordinator_failure",
                 "error",
                 "obligations",
@@ -3855,6 +4043,7 @@ mod tests {
                 "deferrable_capital",
                 "forecast_scrap",
                 "forecast_scrap_total",
+                "minimum_residual_scrap",
                 "producer_jobs",
                 "producer_job_scrap_total",
                 "sites",
@@ -3877,9 +4066,11 @@ mod tests {
             BTreeSet::from([
                 "access",
                 "cost",
+                "enqueue_not_after",
                 "enqueue_not_before",
                 "kind",
                 "ready_before",
+                "requires_current_funding",
             ])
         );
 
@@ -3926,10 +4117,10 @@ mod tests {
                     "opening_bootstrap",
                     "prior_operation_spendable",
                     "prospective_carrier",
-                    "shallow_sentinel",
                     "strategic_committed",
                     "strategic_spendable",
                     "utility_spendable",
+                    "voluntary_scrap_guard",
                 ]),
             ),
             (

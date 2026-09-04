@@ -3,7 +3,7 @@
 //! Domain planners submit already-legal, exact proposals. This module owns only
 //! cross-domain compatibility and selection: it imports prior obligations,
 //! proves that shared claims fit together, and returns the original payloads of
-//! the best compatible portfolio without asking either domain to plan twice.
+//! the best compatible portfolio without asking a domain to plan twice.
 
 use core::cmp::{Ordering, Reverse};
 use std::collections::BTreeSet;
@@ -56,6 +56,93 @@ pub(crate) struct ConnectedOffenseKey {
     pub(crate) anchor: TilePos,
 }
 
+/// Exact connected-operation state against which dependent proposals were derived.
+///
+/// The connected minimum retains its semantic rank exactly once. `marginal_depth`
+/// selects cumulative production and live-unit claims only after stronger
+/// portfolio criteria have selected a compatible context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ConnectedPortfolioContext {
+    /// No fresh connected operation is selected in this portfolio.
+    Absent,
+    /// The connected minimum plus this many cumulative marginal steps is selected.
+    Selected {
+        /// Stable connected opportunity shared by every scale.
+        key: ConnectedOffenseKey,
+        /// Zero for the minimum, one or more for a cumulative marginal variant.
+        marginal_depth: usize,
+    },
+}
+
+impl ConnectedPortfolioContext {
+    pub(crate) const fn marginal_depth(self) -> usize {
+        match self {
+            Self::Absent => 0,
+            Self::Selected { marginal_depth, .. } => marginal_depth,
+        }
+    }
+}
+
+/// Stable service location for one repeatable standing-force purchase.
+///
+/// This is a real demand target rather than a route-component index. Component
+/// indices depend on discovery order, while a point or footprint remains stable
+/// across equivalent derivations and can be ordered canonically in row-major
+/// map order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StandingForceServiceKey {
+    /// A mobile contact or ordinary movement destination.
+    Point(TilePos),
+    /// A building or planned building whose reachable doorstep is the goal.
+    Footprint {
+        /// Top-left footprint anchor.
+        anchor: TilePos,
+        /// Positive footprint width and height.
+        size: (i32, i32),
+    },
+}
+
+impl StandingForceServiceKey {
+    pub(crate) const fn point(tile: TilePos) -> Self {
+        Self::Point(tile)
+    }
+
+    pub(crate) const fn footprint(anchor: TilePos, size: (i32, i32)) -> Self {
+        Self::Footprint { anchor, size }
+    }
+}
+
+impl Ord for StandingForceServiceKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        standing_force_service_key(*self).cmp(&standing_force_service_key(*other))
+    }
+}
+
+impl PartialOrd for StandingForceServiceKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Stable identity of one repeatable standing-force purchase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct StandingForceKey {
+    /// Exact unit kind selected to answer the current standing-force demand.
+    pub(crate) kind: UnitKind,
+    /// Canonical target whose route component this unit can serve.
+    pub(crate) service: StandingForceServiceKey,
+}
+
+#[cfg(test)]
+impl StandingForceKey {
+    const fn fixture(kind: UnitKind) -> Self {
+        Self {
+            kind,
+            service: StandingForceServiceKey::point(TilePos::new(0, 0)),
+        }
+    }
+}
+
 impl Ord for ConnectedOffenseKey {
     fn cmp(&self, other: &Self) -> Ordering {
         (tile_key(self.anchor), self.objective).cmp(&(tile_key(other.anchor), other.objective))
@@ -75,18 +162,24 @@ pub(crate) enum ProposalKey {
     FoundryExpansion(FoundryExpansionKey),
     /// One minimum viable connected operation.
     ConnectedOffenseMinimum(ConnectedOffenseKey),
+    /// One immediate standing-force purchase.
+    StandingForce(StandingForceKey),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ProposalDomain {
+    FoundryExpansion,
+    ConnectedOffenseMinimum,
+    StandingForce,
 }
 
 impl ProposalKey {
-    fn same_domain(self, other: Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::FoundryExpansion(_), Self::FoundryExpansion(_))
-                | (
-                    Self::ConnectedOffenseMinimum(_),
-                    Self::ConnectedOffenseMinimum(_)
-                )
-        )
+    const fn domain(self) -> ProposalDomain {
+        match self {
+            Self::FoundryExpansion(_) => ProposalDomain::FoundryExpansion,
+            Self::ConnectedOffenseMinimum(_) => ProposalDomain::ConnectedOffenseMinimum,
+            Self::StandingForce(_) => ProposalDomain::StandingForce,
+        }
     }
 }
 
@@ -165,9 +258,9 @@ pub(crate) struct ProposalCase {
     pub(crate) safety: ExecutionSafety,
 }
 
-/// Positive personality emphasis for the two migrated domains.
+/// Positive personality emphasis for the migrated domains.
 ///
-/// Preferences add to a fixed base weight, so no seed can remove either domain
+/// Preferences add to a fixed base weight, so no seed can remove any domain
 /// from consideration. They are consulted only after every semantic band ties.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct AllocationPersonality {
@@ -175,15 +268,17 @@ pub(crate) struct AllocationPersonality {
     pub(crate) economy: u16,
     /// Air- and siege-derived emphasis on connected offense.
     pub(crate) offense: u16,
+    /// Support-, fortification-, and guile-derived emphasis on standing force.
+    pub(crate) standing_force: u16,
 }
 
 impl AllocationPersonality {
-    fn weight(self, proposal: ProposalKey) -> u128 {
-        let preference = match proposal {
+    fn preference(self, proposal: ProposalKey) -> u16 {
+        match proposal {
             ProposalKey::FoundryExpansion(_) => self.economy,
             ProposalKey::ConnectedOffenseMinimum(_) => self.offense,
-        };
-        BASE_PERSONALITY_WEIGHT + u128::from(preference)
+            ProposalKey::StandingForce(_) => self.standing_force,
+        }
     }
 }
 
@@ -225,8 +320,19 @@ pub(crate) struct DeferrableCapitalClaim {
 pub(crate) struct ProducerJobClaim {
     kind: UnitKind,
     enqueue_not_before: Tick,
+    enqueue_not_after: Tick,
     ready_before: Tick,
+    funding: ProducerJobFunding,
     access: ProducerJobAccess,
+}
+
+/// Whether one production request may wait for completed-source income.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProducerJobFunding {
+    /// The persistent request may use current bank or later completed income.
+    CurrentOrForecast,
+    /// The stateless request must enqueue and spend observed bank this think.
+    CurrentOnly,
 }
 
 /// Whether allocation may choose a lane or must preserve an accepted one.
@@ -268,7 +374,28 @@ impl ProducerJobClaim {
         Self {
             kind,
             enqueue_not_before,
+            enqueue_not_after: ready_before.saturating_sub(1),
             ready_before,
+            funding: ProducerJobFunding::CurrentOrForecast,
+            access: ProducerJobAccess::Flexible(eligible_producers),
+        }
+    }
+
+    /// Creates a stateless request that must enter a queue and spend current bank now.
+    pub(crate) fn immediate(
+        kind: UnitKind,
+        observed_at: Tick,
+        ready_before: Tick,
+        mut eligible_producers: Vec<BuildingId>,
+    ) -> Self {
+        eligible_producers.sort_unstable();
+        eligible_producers.dedup();
+        Self {
+            kind,
+            enqueue_not_before: observed_at,
+            enqueue_not_after: observed_at,
+            ready_before,
+            funding: ProducerJobFunding::CurrentOnly,
             access: ProducerJobAccess::Flexible(eligible_producers),
         }
     }
@@ -289,7 +416,9 @@ impl ProducerJobClaim {
         Self {
             kind,
             enqueue_not_before: enqueued_at,
+            enqueue_not_after: enqueued_at,
             ready_before,
+            funding: ProducerJobFunding::CurrentOrForecast,
             access: ProducerJobAccess::Fixed(FixedProducerJob {
                 producer,
                 enqueued_at,
@@ -309,6 +438,11 @@ impl ProducerJobClaim {
         self.enqueue_not_before
     }
 
+    /// Last decision tick on which the request may enter a queue.
+    pub(crate) const fn enqueue_not_after(&self) -> Tick {
+        self.enqueue_not_after
+    }
+
     /// Observation deadline, strictly after the unit must be ready.
     pub(crate) const fn ready_before(&self) -> Tick {
         self.ready_before
@@ -317,6 +451,23 @@ impl ProducerJobClaim {
     /// Canonical producers that passed the owning domain's preflight.
     pub(crate) fn eligible_producers(&self) -> &[BuildingId] {
         self.access.producers()
+    }
+
+    /// Whether this request must spend the currently observed bank.
+    pub(crate) const fn requires_current_funding(&self) -> bool {
+        matches!(self.funding, ProducerJobFunding::CurrentOnly)
+    }
+
+    /// Whether this request has already committed to spending the observed bank.
+    ///
+    /// A flexible persistent request may still move to a later income boundary.
+    /// A retained fixed append due on this observation cannot: it has crossed
+    /// the same command boundary as a stateless immediate request.
+    fn requires_observed_current(&self, observed_at: Tick) -> bool {
+        self.requires_current_funding()
+            || self
+                .fixed_assignment()
+                .is_some_and(|fixed| fixed.enqueued_at == observed_at)
     }
 
     /// Exact producer retained by an imported obligation, when applicable.
@@ -406,12 +557,15 @@ pub(crate) enum ClaimBundleError {
 /// Every shared resource required by one exact proposal or prior obligation.
 ///
 /// `current_scrap` and `forecast_scrap` describe non-production capital such as
-/// construction or a protected reserve. Every producer job is charged exactly
-/// once from [`UnitKind`] by the joint scheduler and must not be duplicated in
-/// either capital field.
+/// construction or a protected reserve. `minimum_residual_scrap` is different:
+/// it constrains compatible current spending but remains unclaimed for the
+/// residual policy. Every producer job is charged exactly once from
+/// [`UnitKind`] by the joint scheduler and must not be duplicated in a capital
+/// field.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ClaimBundle {
     current_scrap: u32,
+    minimum_residual_scrap: u32,
     forecast_scrap: Vec<ForecastClaim>,
     deferrable_capital: Option<DeferrableCapitalClaim>,
     builders: Vec<UnitId>,
@@ -474,6 +628,7 @@ impl ClaimBundle {
 
         Ok(Self {
             current_scrap,
+            minimum_residual_scrap: 0,
             forecast_scrap: canonical_forecast,
             deferrable_capital: None,
             builders,
@@ -504,6 +659,21 @@ impl ClaimBundle {
     /// Non-production capital required from the current bank.
     pub(crate) const fn current_scrap(&self) -> u32 {
         self.current_scrap
+    }
+
+    /// Current bank that must remain unclaimed if this bundle is selected.
+    ///
+    /// This is a compatibility constraint rather than owned capital. Multiple
+    /// selected bundles share the strongest floor, and the surviving bank
+    /// remains available to the residual policy that requested it.
+    pub(crate) const fn minimum_residual_scrap(&self) -> u32 {
+        self.minimum_residual_scrap
+    }
+
+    /// Requires a current-bank remainder without claiming or spending it.
+    pub(crate) const fn with_minimum_residual_scrap(mut self, amount: u32) -> Self {
+        self.minimum_residual_scrap = amount;
+        self
     }
 
     /// Canonical future non-production capital claims.
@@ -587,69 +757,159 @@ impl ClaimBundle {
     }
 }
 
-/// A proposal and the exact domain token to commit if it wins allocation.
+/// A proposal and its opaque exact domain token to commit if it wins allocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum InvestmentProposal<FoundryPayload, OffensePayload> {
-    /// One safe, legal Foundry candidate.
-    FoundryExpansion {
-        /// Stable opportunity identity.
-        key: FoundryExpansionKey,
-        /// Named evidence and consequence bands.
-        case: ProposalCase,
-        /// Exact shared-resource claims.
-        claims: ClaimBundle,
-        /// Exact domain plan, retained without recomputation.
-        payload: FoundryPayload,
-    },
-    /// One minimum viable connected operation.
-    ConnectedOffenseMinimum {
-        /// Stable opportunity identity.
-        key: ConnectedOffenseKey,
-        /// Named evidence and consequence bands.
-        case: ProposalCase,
-        /// Original admission tick, retained when reconnaissance promotes to
-        /// an assault proposal on a later allocation pass.
-        accepted_at: Tick,
-        /// Exact shared-resource claims.
-        claims: ClaimBundle,
-        /// Exact domain plan, retained without recomputation.
-        payload: OffensePayload,
-    },
+pub(crate) struct InvestmentProposal<Payload> {
+    key: ProposalKey,
+    case: ProposalCase,
+    personality_preference: Option<u16>,
+    domain_preference: usize,
+    accepted_at: Option<Tick>,
+    voluntary_scrap_guard: u32,
+    voluntary_scrap_guard_satisfaction_depth: Option<usize>,
+    claims: ClaimBundle,
+    payload: Payload,
 }
 
-impl<FoundryPayload, OffensePayload> InvestmentProposal<FoundryPayload, OffensePayload> {
+impl<Payload> InvestmentProposal<Payload> {
+    /// Creates a proposal with no lifecycle before this allocation pass.
+    pub(in crate::bot::allocation) const fn fresh(
+        key: ProposalKey,
+        case: ProposalCase,
+        claims: ClaimBundle,
+        payload: Payload,
+    ) -> Self {
+        Self {
+            key,
+            case,
+            personality_preference: None,
+            domain_preference: 0,
+            accepted_at: None,
+            voluntary_scrap_guard: 0,
+            voluntary_scrap_guard_satisfaction_depth: None,
+            claims,
+            payload,
+        }
+    }
+
+    /// Creates a proposal retaining an earlier domain admission tick.
+    pub(in crate::bot::allocation) const fn retained(
+        key: ProposalKey,
+        case: ProposalCase,
+        accepted_at: Tick,
+        claims: ClaimBundle,
+        payload: Payload,
+    ) -> Self {
+        Self {
+            key,
+            case,
+            personality_preference: None,
+            domain_preference: 0,
+            accepted_at: Some(accepted_at),
+            voluntary_scrap_guard: 0,
+            voluntary_scrap_guard_satisfaction_depth: None,
+            claims,
+            payload,
+        }
+    }
+
     /// Stable structural identity.
     pub(crate) const fn key(&self) -> ProposalKey {
-        match self {
-            Self::FoundryExpansion { key, .. } => ProposalKey::FoundryExpansion(*key),
-            Self::ConnectedOffenseMinimum { key, .. } => ProposalKey::ConnectedOffenseMinimum(*key),
-        }
+        self.key
     }
 
     /// Named comparison case supplied by the owning domain.
     pub(crate) const fn case(&self) -> ProposalCase {
-        match self {
-            Self::FoundryExpansion { case, .. } | Self::ConnectedOffenseMinimum { case, .. } => {
-                *case
-            }
-        }
+        self.case
+    }
+
+    /// Zero-based preference among mutually exclusive choices from one domain.
+    pub(crate) const fn domain_preference(&self) -> usize {
+        self.domain_preference
+    }
+
+    /// Positive proposal-specific emphasis, when the domain resolved one.
+    #[cfg(test)]
+    pub(crate) const fn personality_preference(&self) -> Option<u16> {
+        self.personality_preference
+    }
+
+    /// Retains personality's influence on execution inside the funded domain.
+    pub(in crate::bot::allocation) const fn with_personality_preference(
+        mut self,
+        personality_preference: u16,
+    ) -> Self {
+        self.personality_preference = Some(personality_preference);
+        self
+    }
+
+    /// Retains the owning domain's deterministic best-first alternative order.
+    pub(in crate::bot::allocation) const fn with_domain_preference(
+        mut self,
+        domain_preference: usize,
+    ) -> Self {
+        self.domain_preference = domain_preference;
+        self
+    }
+
+    /// Protects one shared current-only remainder while this fresh voluntary
+    /// investment is selected without its satisfying alternative.
+    pub(in crate::bot::allocation) const fn with_voluntary_scrap_guard(
+        mut self,
+        amount: u32,
+    ) -> Self {
+        self.voluntary_scrap_guard = amount;
+        self
+    }
+
+    /// Marks this exact proposal as satisfying the shared current-only
+    /// remainder only when its allocated producer append enters this queue
+    /// prefix.
+    pub(in crate::bot::allocation) const fn satisfies_voluntary_scrap_guard_within(
+        mut self,
+        queue_depth: usize,
+    ) -> Self {
+        self.voluntary_scrap_guard_satisfaction_depth = Some(queue_depth);
+        self
+    }
+
+    fn personality_weight(&self, personality: AllocationPersonality) -> u128 {
+        let preference = self
+            .personality_preference
+            .unwrap_or_else(|| personality.preference(self.key));
+        BASE_PERSONALITY_WEIGHT + u128::from(preference)
     }
 
     /// Shared resources required by this proposal.
     pub(crate) const fn claims(&self) -> &ClaimBundle {
-        match self {
-            Self::FoundryExpansion { claims, .. }
-            | Self::ConnectedOffenseMinimum { claims, .. } => claims,
-        }
+        &self.claims
+    }
+
+    /// Mutable shared claims for focused allocation fixtures.
+    #[cfg(test)]
+    pub(in crate::bot::allocation) const fn claims_mut(&mut self) -> &mut ClaimBundle {
+        &mut self.claims
+    }
+
+    /// Opaque domain payload retained without recomputation.
+    pub(in crate::bot::allocation) const fn payload(&self) -> &Payload {
+        &self.payload
+    }
+
+    /// Mutable domain payload for adapter-owned scale selection.
+    pub(in crate::bot::allocation) const fn payload_mut(&mut self) -> &mut Payload {
+        &mut self.payload
+    }
+
+    /// Splits an accepted proposal at the adapter-owned commit boundary.
+    pub(in crate::bot::allocation) fn into_parts(self) -> (ProposalKey, ClaimBundle, Payload) {
+        (self.key, self.claims, self.payload)
     }
 
     /// Original domain admission, or this allocation tick for a genuinely
     /// fresh proposal that has no earlier lifecycle.
     fn accepted_at(&self, observed_at: Tick) -> Tick {
-        match self {
-            Self::FoundryExpansion { .. } => observed_at,
-            Self::ConnectedOffenseMinimum { accepted_at, .. } => *accepted_at,
-        }
+        self.accepted_at.unwrap_or(observed_at)
     }
 }
 
@@ -709,6 +969,15 @@ pub(crate) enum AllocationConflict {
         kind: UnitKind,
         /// Canonical preflighted producer set supplied by the domain.
         eligible_producers: Vec<BuildingId>,
+    },
+    /// A current-funded stateless request was not anchored to this observation.
+    ImmediateProducerTiming {
+        /// Earliest enqueue tick supplied by the domain.
+        enqueue_not_before: Tick,
+        /// Latest enqueue tick supplied by the domain.
+        enqueue_not_after: Tick,
+        /// Current decision tick against which the request was allocated.
+        observed_at: Tick,
     },
     /// No ordering of fresh jobs can preserve every prior claim and deadline.
     ProducerSchedule {
@@ -934,12 +1203,8 @@ impl ImportedObligation {
 /// Invalid allocator input that cannot be resolved by portfolio selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AllocationError {
-    /// This migration stage accepts at most one proposal from each of two domains.
-    TooManyProposals(usize),
     /// The same structural opportunity was submitted more than once.
     DuplicateProposalKey(ProposalKey),
-    /// More than one candidate was submitted for one currently migrated domain.
-    DuplicateProposalDomain(ProposalKey),
     /// The same prior obligation was imported more than once.
     DuplicateObligation(ClaimOwner),
     /// Mandatory prior work conflicts with the resource basis or another obligation.
@@ -990,6 +1255,8 @@ pub(crate) enum OutrankingBasis {
     Safety,
     /// Semantic bands tied and positive personality emphasis broke the tie.
     Personality,
+    /// Cross-domain rank tied and one domain preferred this exact alternative.
+    DomainPreference,
     /// Higher ranks tied and the selected portfolio claimed less capital.
     LowerCapital,
     /// Every other component tied and canonical structural identity broke the tie.
@@ -1081,15 +1348,18 @@ pub(crate) fn future_producer_lane_reservations(
 
 /// Selected exact payloads plus the evidence needed to explain the allocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AllocationResult<FoundryPayload, OffensePayload> {
+pub(crate) struct AllocationResult<Payload> {
     /// Accepted payloads in canonical proposal-key order.
-    pub(crate) accepted: Vec<InvestmentProposal<FoundryPayload, OffensePayload>>,
+    pub(crate) accepted: Vec<InvestmentProposal<Payload>>,
     /// One disposition for every submitted proposal in canonical key order.
     pub(crate) decisions: Vec<ProposalDecision>,
     /// Final lane order including imported obligations and accepted proposals.
     pub(crate) producer_schedule: Vec<ScheduledProducerJob>,
     /// Final funding splits for allocator-owned non-production capital.
     pub(crate) capital_assignments: Vec<CapitalFundingAssignment>,
+    /// Whether exact producer binding funded the proposal that discharges the
+    /// shared current-only remainder.
+    voluntary_scrap_guard_satisfied: bool,
     selected_state: ClaimState,
     /// Unique joint producer states explored for the selected portfolio.
     #[cfg(test)]
@@ -1099,7 +1369,7 @@ pub(crate) struct AllocationResult<FoundryPayload, OffensePayload> {
     pub(crate) production_search_memo_hits: usize,
 }
 
-impl<FoundryPayload, OffensePayload> AllocationResult<FoundryPayload, OffensePayload> {
+impl<Payload> AllocationResult<Payload> {
     /// Atomically adds one exact marginal package to the selected offense.
     ///
     /// Failure leaves both the accepted claims and returned producer schedule
@@ -1131,6 +1401,7 @@ impl<FoundryPayload, OffensePayload> AllocationResult<FoundryPayload, OffensePay
         self.selected_state = extended;
         self.producer_schedule = resolved.producer_schedule;
         self.capital_assignments = resolved.capital_assignments;
+        self.voluntary_scrap_guard_satisfied = resolved.voluntary_scrap_guard_satisfied;
         bind_accepted_capital(&mut self.accepted, &self.capital_assignments);
         #[cfg(test)]
         {
@@ -1143,27 +1414,50 @@ impl<FoundryPayload, OffensePayload> AllocationResult<FoundryPayload, OffensePay
     }
 }
 
-/// Selects the exact best compatible subset of the two current proposal domains.
+/// Selects the exact best compatible subset of the current proposal domains.
 ///
-/// All four masks are evaluated when both domains submit a candidate. Named
+/// Every zero-or-one choice within each submitted domain is evaluated. Named
 /// semantic bands win first, then personality at a deliberate near-tie, lower
 /// claimed capital, and finally the smaller structural-key vector.
-pub(crate) fn allocate<FoundryPayload, OffensePayload>(
+pub(crate) fn allocate<Payload>(
+    capacity: &AllocationCapacity,
+    obligations: Vec<ImportedObligation>,
+    proposals: Vec<InvestmentProposal<Payload>>,
+    personality: AllocationPersonality,
+) -> Result<AllocationResult<Payload>, AllocationError> {
+    Ok(
+        allocate_with_required(capacity, obligations, proposals, personality, None)?
+            .expect("the unconstrained empty portfolio always preserves valid obligations"),
+    )
+}
+
+pub(super) fn allocate_requiring<Payload>(
+    capacity: &AllocationCapacity,
+    obligations: Vec<ImportedObligation>,
+    proposals: Vec<InvestmentProposal<Payload>>,
+    personality: AllocationPersonality,
+    required: ProposalKey,
+) -> Result<Option<AllocationResult<Payload>>, AllocationError> {
+    allocate_with_required(
+        capacity,
+        obligations,
+        proposals,
+        personality,
+        Some(required),
+    )
+}
+
+fn allocate_with_required<Payload>(
     capacity: &AllocationCapacity,
     mut obligations: Vec<ImportedObligation>,
-    mut proposals: Vec<InvestmentProposal<FoundryPayload, OffensePayload>>,
+    mut proposals: Vec<InvestmentProposal<Payload>>,
     personality: AllocationPersonality,
-) -> Result<AllocationResult<FoundryPayload, OffensePayload>, AllocationError> {
-    if proposals.len() > 2 {
-        return Err(AllocationError::TooManyProposals(proposals.len()));
-    }
+    required: Option<ProposalKey>,
+) -> Result<Option<AllocationResult<Payload>>, AllocationError> {
     proposals.sort_by_key(InvestmentProposal::key);
     for pair in proposals.windows(2) {
         if pair[0].key() == pair[1].key() {
             return Err(AllocationError::DuplicateProposalKey(pair[0].key()));
-        }
-        if pair[0].key().same_domain(pair[1].key()) {
-            return Err(AllocationError::DuplicateProposalDomain(pair[1].key()));
         }
     }
     obligations.sort_by_key(ImportedObligation::owner);
@@ -1191,8 +1485,10 @@ pub(crate) fn allocate<FoundryPayload, OffensePayload>(
 
     let individual_conflicts: Vec<_> = proposals
         .iter()
-        .map(|proposal| {
+        .enumerate()
+        .map(|(index, proposal)| {
             let mut state = mandatory.clone();
+            state.voluntary_scrap_guard = portfolio_voluntary_scrap_guard(&[index], &proposals);
             state
                 .try_apply_with_priority(
                     capacity,
@@ -1204,13 +1500,25 @@ pub(crate) fn allocate<FoundryPayload, OffensePayload>(
         })
         .collect();
 
-    let mask_count = 1_u8 << proposals.len();
-    let mut best: Option<(u8, PortfolioRank, ClaimState)> = None;
-    for mask in 0..mask_count {
+    let required_index = required.and_then(|required| {
+        proposals
+            .iter()
+            .position(|proposal| proposal.key() == required)
+    });
+    if required.is_some() && required_index.is_none() {
+        return Ok(None);
+    }
+    let mut best: Option<(Vec<usize>, PortfolioRank, ClaimState)> = None;
+    let mut best_with_proposal = vec![None; proposals.len()];
+    for_each_portfolio(&proposals, |selected| {
+        if required_index.is_some_and(|required| !selected.contains(&required)) {
+            return;
+        }
         let mut state = mandatory.clone();
+        state.voluntary_scrap_guard = portfolio_voluntary_scrap_guard(selected, &proposals);
         let mut feasible = true;
         for (index, funding_priority) in proposal_funding_order(
-            mask,
+            selected,
             &proposals,
             personality,
             capacity.resources.observed_at(),
@@ -1230,36 +1538,85 @@ pub(crate) fn allocate<FoundryPayload, OffensePayload>(
             }
         }
         if !feasible {
-            continue;
+            return;
         }
-        let rank = portfolio_rank(mask, &proposals, personality);
+        let rank = portfolio_rank(selected, &proposals, personality);
+        for &index in selected {
+            let candidate = &mut best_with_proposal[index];
+            if candidate
+                .as_ref()
+                .is_none_or(|current| rank.cmp(current).is_gt())
+            {
+                *candidate = Some(rank.clone());
+            }
+        }
         if best
             .as_ref()
             .is_none_or(|(_, current, _)| rank.cmp(current).is_gt())
         {
-            best = Some((mask, rank, state));
+            best = Some((selected.to_vec(), rank, state));
         }
-    }
+    });
 
-    let (selected_mask, _, selected_state) =
-        best.expect("the empty portfolio always preserves valid obligations");
-    let selected_keys: Vec<_> = proposals
+    let Some((selected_indices, selected_rank, selected_state)) = best else {
+        return Ok(None);
+    };
+    let mut selected_keys: Vec<_> = selected_indices
         .iter()
-        .enumerate()
-        .filter(|(index, _)| selected_mask & (1 << index) != 0)
-        .map(|(_, proposal)| proposal.key())
+        .map(|&index| proposals[index].key())
         .collect();
+    selected_keys.sort_unstable();
 
     let decisions = proposals
         .iter()
         .enumerate()
         .map(|(index, proposal)| {
-            let disposition = if selected_mask & (1 << index) != 0 {
+            let disposition = if selected_indices.contains(&index) {
                 ProposalDisposition::Accepted
             } else if let Some(conflict) = &individual_conflicts[index] {
                 ProposalDisposition::Rejected(ProposalRejection::Infeasible(conflict.clone()))
+            } else if selected_indices
+                .iter()
+                .any(|&selected| proposals[selected].key().domain() == proposal.key().domain())
+            {
+                match best_with_proposal[index].as_ref() {
+                    Some(rejected_rank) => {
+                        let basis = outranking_basis(&selected_rank, rejected_rank)
+                            .expect("an unselected domain alternative has a weaker rank");
+                        ProposalDisposition::Rejected(ProposalRejection::Outranked {
+                            selected: selected_keys.clone(),
+                            basis,
+                        })
+                    }
+                    None => {
+                        let retained = selected_indices
+                            .iter()
+                            .copied()
+                            .filter(|&selected| {
+                                proposals[selected].key().domain() != proposal.key().domain()
+                            })
+                            .chain(core::iter::once(index))
+                            .collect::<Vec<_>>();
+                        let conflict = portfolio_conflict(
+                            capacity,
+                            &mandatory,
+                            &retained,
+                            &proposals,
+                            personality,
+                        )
+                        .expect("a constrained alternative without a portfolio must conflict");
+                        ProposalDisposition::Rejected(ProposalRejection::ConflictsWithSelected {
+                            selected: selected_keys.clone(),
+                            conflict,
+                        })
+                    }
+                }
             } else {
                 let mut combined = selected_state.clone();
+                let mut combined_indices = selected_indices.clone();
+                combined_indices.push(index);
+                combined.voluntary_scrap_guard =
+                    portfolio_voluntary_scrap_guard(&combined_indices, &proposals);
                 match combined.try_apply_with_priority(
                     capacity,
                     ClaimOwner::Proposal(proposal.key()),
@@ -1267,9 +1624,10 @@ pub(crate) fn allocate<FoundryPayload, OffensePayload>(
                     proposal_funding_priority(proposal, u8::MAX, capacity.resources.observed_at()),
                 ) {
                     Ok(_) => {
-                        let selected_rank = portfolio_rank(selected_mask, &proposals, personality);
-                        let rejected_rank = portfolio_rank(1 << index, &proposals, personality);
-                        let basis = outranking_basis(&selected_rank, &rejected_rank)
+                        let rejected_rank = best_with_proposal[index]
+                            .as_ref()
+                            .expect("an individually feasible proposal has a portfolio");
+                        let basis = outranking_basis(&selected_rank, rejected_rank)
                             .expect("an outranked proposal has a strictly weaker rank");
                         ProposalDisposition::Rejected(ProposalRejection::Outranked {
                             selected: selected_keys.clone(),
@@ -1287,7 +1645,7 @@ pub(crate) fn allocate<FoundryPayload, OffensePayload>(
             ProposalDecision {
                 key: proposal.key(),
                 case: proposal.case(),
-                personality_weight: personality.weight(proposal.key()),
+                personality_weight: proposal.personality_weight(personality),
                 disposition,
             }
         })
@@ -1301,54 +1659,175 @@ pub(crate) fn allocate<FoundryPayload, OffensePayload>(
     let mut accepted: Vec<_> = proposals
         .into_iter()
         .enumerate()
-        .filter(|(index, _)| selected_mask & (1 << index) != 0)
+        .filter(|(index, _)| selected_indices.contains(index))
         .map(|(_, proposal)| proposal)
         .collect();
     bind_accepted_capital(&mut accepted, &resolved.capital_assignments);
 
-    Ok(AllocationResult {
+    Ok(Some(AllocationResult {
         accepted,
         decisions,
         producer_schedule: resolved.producer_schedule,
         capital_assignments: resolved.capital_assignments,
+        voluntary_scrap_guard_satisfied: resolved.voluntary_scrap_guard_satisfied,
         selected_state,
         #[cfg(test)]
         production_search_states: resolved.search_states,
         #[cfg(test)]
         production_search_memo_hits: resolved.memo_hits,
-    })
+    }))
 }
 
-fn bind_accepted_capital<FoundryPayload, OffensePayload>(
-    accepted: &mut [InvestmentProposal<FoundryPayload, OffensePayload>],
+fn portfolio_conflict<Payload>(
+    capacity: &AllocationCapacity,
+    mandatory: &ClaimState,
+    selected: &[usize],
+    proposals: &[InvestmentProposal<Payload>],
+    personality: AllocationPersonality,
+) -> Option<AllocationConflict> {
+    let mut state = mandatory.clone();
+    state.voluntary_scrap_guard = portfolio_voluntary_scrap_guard(selected, proposals);
+    for (index, funding_priority) in proposal_funding_order(
+        selected,
+        proposals,
+        personality,
+        capacity.resources.observed_at(),
+    ) {
+        let proposal = &proposals[index];
+        if let Err(conflict) = state.try_apply_with_priority(
+            capacity,
+            ClaimOwner::Proposal(proposal.key()),
+            proposal.claims(),
+            funding_priority,
+        ) {
+            return Some(conflict);
+        }
+    }
+    None
+}
+
+fn portfolio_voluntary_scrap_guard<Payload>(
+    selected: &[usize],
+    proposals: &[InvestmentProposal<Payload>],
+) -> PortfolioVoluntaryScrapGuard {
+    let amount = selected
+        .iter()
+        .map(|&index| proposals[index].voluntary_scrap_guard)
+        .max()
+        .unwrap_or(0);
+    let satisfier = selected.iter().find_map(|&index| {
+        proposals[index]
+            .voluntary_scrap_guard_satisfaction_depth
+            .map(|queue_depth| VoluntaryScrapGuardSatisfier {
+                owner: ClaimOwner::Proposal(proposals[index].key()),
+                queue_depth,
+            })
+    });
+    PortfolioVoluntaryScrapGuard { amount, satisfier }
+}
+
+fn schedule_satisfies_voluntary_scrap_guard(
+    capacity: &AllocationCapacity,
+    schedule: &[ScheduledProducerJob],
+    satisfier: VoluntaryScrapGuardSatisfier,
+) -> bool {
+    schedule
+        .iter()
+        .filter(|job| {
+            job.owner == satisfier.owner && job.enqueued_at == capacity.resources.observed_at()
+        })
+        .any(|candidate| {
+            let Some(producer) = capacity.resources.producer(candidate.producer) else {
+                return false;
+            };
+            let prior_same_tick = schedule
+                .iter()
+                .filter(|job| {
+                    job.producer == candidate.producer
+                        && job.enqueued_at == candidate.enqueued_at
+                        && job.starts_at < candidate.starts_at
+                })
+                .count();
+            producer
+                .observed_queue_depth()
+                .saturating_add(prior_same_tick)
+                < satisfier.queue_depth
+        })
+}
+
+/// Visits every exact portfolio while structurally enforcing zero or one
+/// proposal from each domain. Streaming the Cartesian choices avoids both a
+/// numeric proposal limit and a bit-mask width limit.
+fn for_each_portfolio<Payload>(
+    proposals: &[InvestmentProposal<Payload>],
+    mut visit: impl FnMut(&[usize]),
+) {
+    let mut groups: Vec<(ProposalDomain, Vec<usize>)> = Vec::new();
+    for (index, proposal) in proposals.iter().enumerate() {
+        let domain = proposal.key().domain();
+        if let Some((_, alternatives)) = groups
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == domain)
+        {
+            alternatives.push(index);
+        } else {
+            groups.push((domain, vec![index]));
+        }
+    }
+
+    fn visit_choices(
+        groups: &[(ProposalDomain, Vec<usize>)],
+        group_index: usize,
+        selected: &mut Vec<usize>,
+        visit: &mut impl FnMut(&[usize]),
+    ) {
+        let Some((_, alternatives)) = groups.get(group_index) else {
+            visit(selected);
+            return;
+        };
+
+        visit_choices(groups, group_index + 1, selected, visit);
+        for &index in alternatives {
+            selected.push(index);
+            visit_choices(groups, group_index + 1, selected, visit);
+            selected.pop();
+        }
+    }
+
+    visit_choices(
+        &groups,
+        0,
+        &mut Vec::with_capacity(groups.len()),
+        &mut visit,
+    );
+}
+
+fn bind_accepted_capital<Payload>(
+    accepted: &mut [InvestmentProposal<Payload>],
     assignments: &[CapitalFundingAssignment],
 ) {
     for proposal in accepted {
         let owner = ClaimOwner::Proposal(proposal.key());
-        let claims = match proposal {
-            InvestmentProposal::FoundryExpansion { claims, .. } => claims,
-            InvestmentProposal::ConnectedOffenseMinimum { .. } => continue,
-        };
         if let Some(assignment) = assignments
             .iter()
             .copied()
             .find(|assignment| assignment.owner == owner)
         {
-            claims.bind_deferrable_capital(assignment);
+            proposal.claims.bind_deferrable_capital(assignment);
         }
     }
 }
 
-fn proposal_funding_order<FoundryPayload, OffensePayload>(
-    mask: u8,
-    proposals: &[InvestmentProposal<FoundryPayload, OffensePayload>],
+fn proposal_funding_order<Payload>(
+    selected: &[usize],
+    proposals: &[InvestmentProposal<Payload>],
     personality: AllocationPersonality,
     observed_at: Tick,
 ) -> Vec<(usize, FundingPriority)> {
     let mut retained = Vec::new();
     let mut fresh = Vec::new();
     for (index, proposal) in proposals.iter().enumerate() {
-        if mask & (1 << index) == 0 {
+        if !selected.contains(&index) {
             continue;
         }
         if proposal.accepted_at(observed_at) < observed_at {
@@ -1364,8 +1843,8 @@ fn proposal_funding_order<FoundryPayload, OffensePayload>(
         )
     });
     fresh.sort_unstable_by(|&left, &right| {
-        let left_rank = portfolio_rank(1 << left, proposals, personality);
-        let right_rank = portfolio_rank(1 << right, proposals, personality);
+        let left_rank = portfolio_rank(&[left], proposals, personality);
+        let right_rank = portfolio_rank(&[right], proposals, personality);
         right_rank
             .cmp(&left_rank)
             .then_with(|| proposals[left].key().cmp(&proposals[right].key()))
@@ -1392,8 +1871,8 @@ fn proposal_funding_order<FoundryPayload, OffensePayload>(
         .collect()
 }
 
-fn proposal_funding_priority<FoundryPayload, OffensePayload>(
-    proposal: &InvestmentProposal<FoundryPayload, OffensePayload>,
+fn proposal_funding_priority<Payload>(
+    proposal: &InvestmentProposal<Payload>,
     semantic_order: u8,
     observed_at: Tick,
 ) -> FundingPriority {
@@ -1407,16 +1886,25 @@ fn proposal_funding_priority<FoundryPayload, OffensePayload>(
 }
 
 type BandHistogram = [u8; 3];
-type PortfolioRank = (
+pub(super) type PortfolioRank = (
     BandHistogram,
     BandHistogram,
     BandHistogram,
     BandHistogram,
     BandHistogram,
     u128,
+    Reverse<usize>,
     Reverse<u128>,
     Reverse<Vec<ProposalKey>>,
 );
+
+pub(super) fn accepted_portfolio_rank<Payload>(
+    result: &AllocationResult<Payload>,
+    personality: AllocationPersonality,
+) -> PortfolioRank {
+    let selected = (0..result.accepted.len()).collect::<Vec<_>>();
+    portfolio_rank(&selected, &result.accepted, personality)
+}
 
 fn outranking_basis(winner: &PortfolioRank, loser: &PortfolioRank) -> Option<OutrankingBasis> {
     if winner.0 != loser.0 {
@@ -1432,17 +1920,19 @@ fn outranking_basis(winner: &PortfolioRank, loser: &PortfolioRank) -> Option<Out
     } else if winner.5 != loser.5 {
         Some(OutrankingBasis::Personality)
     } else if winner.6 != loser.6 {
-        Some(OutrankingBasis::LowerCapital)
+        Some(OutrankingBasis::DomainPreference)
     } else if winner.7 != loser.7 {
+        Some(OutrankingBasis::LowerCapital)
+    } else if winner.8 != loser.8 {
         Some(OutrankingBasis::StructuralKey)
     } else {
         None
     }
 }
 
-fn portfolio_rank<FoundryPayload, OffensePayload>(
-    mask: u8,
-    proposals: &[InvestmentProposal<FoundryPayload, OffensePayload>],
+fn portfolio_rank<Payload>(
+    selected: &[usize],
+    proposals: &[InvestmentProposal<Payload>],
     personality: AllocationPersonality,
 ) -> PortfolioRank {
     let mut urgency = [0_u8; 3];
@@ -1451,25 +1941,27 @@ fn portfolio_rank<FoundryPayload, OffensePayload>(
     let mut time_to_impact = [0_u8; 3];
     let mut safety = [0_u8; 3];
     let mut personality_weight = 0_u128;
+    let mut domain_preference = 0_usize;
     let mut capital = 0_u128;
     let mut keys = Vec::new();
-    for (index, proposal) in proposals.iter().enumerate() {
-        if mask & (1 << index) != 0 {
-            let case = proposal.case();
-            add_band(&mut urgency, urgency_index(case.urgency));
-            add_band(&mut confidence, confidence_index(case.confidence));
-            add_band(&mut value, value_index(case.value));
-            add_band(
-                &mut time_to_impact,
-                time_to_impact_index(case.time_to_impact),
-            );
-            add_band(&mut safety, safety_index(case.safety));
-            personality_weight =
-                personality_weight.saturating_add(personality.weight(proposal.key()));
-            capital = capital.saturating_add(proposal.claims().claimed_capital());
-            keys.push(proposal.key());
-        }
+    for &index in selected {
+        let proposal = &proposals[index];
+        let case = proposal.case();
+        add_band(&mut urgency, urgency_index(case.urgency));
+        add_band(&mut confidence, confidence_index(case.confidence));
+        add_band(&mut value, value_index(case.value));
+        add_band(
+            &mut time_to_impact,
+            time_to_impact_index(case.time_to_impact),
+        );
+        add_band(&mut safety, safety_index(case.safety));
+        personality_weight =
+            personality_weight.saturating_add(proposal.personality_weight(personality));
+        domain_preference = domain_preference.saturating_add(proposal.domain_preference());
+        capital = capital.saturating_add(proposal.claims().claimed_capital());
+        keys.push(proposal.key());
     }
+    keys.sort_unstable();
     (
         urgency,
         confidence,
@@ -1477,6 +1969,7 @@ fn portfolio_rank<FoundryPayload, OffensePayload>(
         time_to_impact,
         safety,
         personality_weight,
+        Reverse(domain_preference),
         Reverse(capital),
         Reverse(keys),
     )
@@ -1639,6 +2132,8 @@ struct OwnedDeferrableCapital {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct ClaimState {
     current_scrap: u64,
+    minimum_residual_scrap: u32,
+    voluntary_scrap_guard: PortfolioVoluntaryScrapGuard,
     forecast_scrap: Vec<ForecastClaim>,
     actors: Vec<OwnedActor>,
     sites: Vec<OwnedSite>,
@@ -1649,11 +2144,49 @@ struct ClaimState {
 struct ResolvedClaimState {
     producer_schedule: Vec<ScheduledProducerJob>,
     capital_assignments: Vec<CapitalFundingAssignment>,
+    voluntary_scrap_guard_satisfied: bool,
     search_states: usize,
     memo_hits: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct PortfolioVoluntaryScrapGuard {
+    amount: u32,
+    satisfier: Option<VoluntaryScrapGuardSatisfier>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VoluntaryScrapGuardSatisfier {
+    owner: ClaimOwner,
+    queue_depth: usize,
+}
+
 impl ClaimState {
+    const fn effective_minimum_residual_scrap(&self) -> u32 {
+        let voluntary_scrap_guard = if self.voluntary_scrap_guard.satisfier.is_some() {
+            0
+        } else {
+            self.voluntary_scrap_guard.amount
+        };
+        if voluntary_scrap_guard > self.minimum_residual_scrap {
+            voluntary_scrap_guard
+        } else {
+            self.minimum_residual_scrap
+        }
+    }
+
+    fn voluntary_scrap_guard_satisfied(
+        &self,
+        capacity: &AllocationCapacity,
+        schedule: &[ScheduledProducerJob],
+    ) -> bool {
+        self.voluntary_scrap_guard
+            .satisfier
+            .is_some_and(|satisfier| {
+                schedule_satisfies_voluntary_scrap_guard(capacity, schedule, satisfier)
+            })
+    }
+
     #[cfg(test)]
     fn try_apply(
         &mut self,
@@ -1700,7 +2233,12 @@ impl ClaimState {
                 .current_scrap
                 .saturating_add(u64::from(claims.current_scrap));
         }
-        let requested = self.current_scrap;
+        self.minimum_residual_scrap = self
+            .minimum_residual_scrap
+            .max(claims.minimum_residual_scrap);
+        let requested = self
+            .current_scrap
+            .saturating_add(u64::from(self.effective_minimum_residual_scrap()));
         if requested > u64::from(capacity.resources.current_scrap()) {
             return Err(AllocationConflict::CurrentScrap {
                 requested,
@@ -1764,6 +2302,17 @@ impl ClaimState {
             .filter(|job| job.owner == owner)
             .count();
         for (offset, claim) in claims.producer_jobs.iter().enumerate() {
+            let observed_at = capacity.resources.observed_at();
+            if claim.requires_current_funding()
+                && (claim.enqueue_not_before != observed_at
+                    || claim.enqueue_not_after != observed_at)
+            {
+                return Err(AllocationConflict::ImmediateProducerTiming {
+                    enqueue_not_before: claim.enqueue_not_before,
+                    enqueue_not_after: claim.enqueue_not_after,
+                    observed_at,
+                });
+            }
             if claim.access.producers().is_empty() {
                 return Err(AllocationConflict::ProducerAccess {
                     kind: claim.kind,
@@ -1878,12 +2427,27 @@ impl ClaimState {
         let mut producers = capacity.resources.producers().to_vec();
         let mut schedule = Vec::with_capacity(self.producer_jobs.len());
         let mut capital_assignments = Vec::with_capacity(self.deferrable_capital.len());
+        let minimum_residual_scrap = self.effective_minimum_residual_scrap();
         let mut search = ProductionPortfolioSearch {
             capacity,
             jobs: &self.producer_jobs,
             current_capital: self.current_scrap,
+            minimum_residual_scrap,
+            guarded_minimum_residual_scrap: self
+                .minimum_residual_scrap
+                .max(self.voluntary_scrap_guard.amount),
+            voluntary_scrap_guard: self.voluntary_scrap_guard,
             forecast_capital: &self.forecast_scrap,
             deferrable_capital: &self.deferrable_capital,
+            earliest_enqueue_dominates: current_bank_covers_all_claims(
+                capacity,
+                self.current_scrap,
+                self.minimum_residual_scrap
+                    .max(self.voluntary_scrap_guard.amount),
+                &self.forecast_scrap,
+                &self.deferrable_capital,
+                &self.producer_jobs,
+            ),
             failed: BTreeSet::new(),
             explored_states: 0,
             memo_hits: 0,
@@ -1907,9 +2471,12 @@ impl ClaimState {
             )
         });
         capital_assignments.sort_unstable();
+        let voluntary_scrap_guard_satisfied =
+            self.voluntary_scrap_guard_satisfied(capacity, &schedule);
         Some(ResolvedClaimState {
             producer_schedule: schedule,
             capital_assignments,
+            voluntary_scrap_guard_satisfied,
             search_states: search.explored_states,
             memo_hits: search.memo_hits,
         })
@@ -1919,6 +2486,24 @@ impl ClaimState {
         &self,
         capacity: &AllocationCapacity,
     ) -> Result<(), AllocationConflict> {
+        let observed_at = capacity.resources.observed_at();
+        let minimum_residual_scrap = self.effective_minimum_residual_scrap();
+        let current_only_requested = u128::from(self.current_scrap)
+            + u128::from(minimum_residual_scrap)
+            + self
+                .producer_jobs
+                .iter()
+                .filter(|job| job.claim.requires_observed_current(observed_at))
+                .map(|job| u128::from(job.claim.kind.stats().cost))
+                .sum::<u128>();
+        if current_only_requested > u128::from(capacity.resources.current_scrap()) {
+            return Err(AllocationConflict::ProductionFunding {
+                through: observed_at,
+                requested: current_only_requested,
+                available: u128::from(capacity.resources.current_scrap()),
+            });
+        }
+
         let mut deadlines: Vec<_> = self
             .forecast_scrap
             .iter()
@@ -1934,6 +2519,7 @@ impl ClaimState {
             let Some(latest_start) = job.claim.ready_before.checked_sub(duration) else {
                 return Err(producer_schedule_conflict(&self.producer_jobs));
             };
+            let latest_start = latest_start.min(job.claim.enqueue_not_after);
             if job.claim.enqueue_not_before > latest_start {
                 return Err(producer_schedule_conflict(&self.producer_jobs));
             }
@@ -1947,6 +2533,7 @@ impl ClaimState {
         deadlines.dedup();
         for through in deadlines {
             let requested = u128::from(self.current_scrap)
+                + u128::from(minimum_residual_scrap)
                 + self
                     .forecast_scrap
                     .iter()
@@ -1968,10 +2555,10 @@ impl ClaimState {
                             .ready_before
                             .checked_sub(duration)
                             .is_some_and(|latest_start| {
-                                job.claim
-                                    .fixed_assignment()
-                                    .map_or(latest_start, |fixed| fixed.enqueued_at)
-                                    <= through
+                                job.claim.fixed_assignment().map_or(
+                                    latest_start.min(job.claim.enqueue_not_after),
+                                    |fixed| fixed.enqueued_at,
+                                ) <= through
                             })
                     })
                     .map(|job| u128::from(job.claim.kind.stats().cost))
@@ -1996,14 +2583,19 @@ struct ProductionSearchState {
     producers: Vec<ProducerPlanningProjection>,
     cash_spend: Vec<(Tick, u128)>,
     owner_enqueue_floors: Vec<(ClaimOwner, Tick)>,
+    voluntary_scrap_guard_satisfied: bool,
 }
 
 struct ProductionPortfolioSearch<'a> {
     capacity: &'a AllocationCapacity,
     jobs: &'a [OwnedProducerJob],
     current_capital: u64,
+    minimum_residual_scrap: u32,
+    guarded_minimum_residual_scrap: u32,
+    voluntary_scrap_guard: PortfolioVoluntaryScrapGuard,
     forecast_capital: &'a [ForecastClaim],
     deferrable_capital: &'a [OwnedDeferrableCapital],
+    earliest_enqueue_dominates: bool,
     failed: BTreeSet<ProductionSearchState>,
     explored_states: usize,
     memo_hits: usize,
@@ -2020,12 +2612,27 @@ impl ProductionPortfolioSearch<'_> {
     ) -> bool {
         if remaining.iter().all(|remaining| !remaining) {
             let mut funded = schedule.clone();
+            let minimum_residual_scrap =
+                if self
+                    .voluntary_scrap_guard
+                    .satisfier
+                    .is_some_and(|satisfier| {
+                        schedule_satisfies_voluntary_scrap_guard(self.capacity, &funded, satisfier)
+                    })
+                {
+                    self.minimum_residual_scrap
+                } else {
+                    self.guarded_minimum_residual_scrap
+                };
             if let Some(assignments) = assign_joint_funding(
-                self.capacity,
-                self.current_capital,
-                self.forecast_capital,
-                self.deferrable_capital,
-                self.jobs,
+                JointFundingBasis {
+                    capacity: self.capacity,
+                    current_capital: self.current_capital,
+                    minimum_residual_scrap,
+                    forecast_capital: self.forecast_capital,
+                    deferrable_capital: self.deferrable_capital,
+                    jobs: self.jobs,
+                },
                 &mut funded,
                 self.funding_mode,
             ) {
@@ -2040,13 +2647,17 @@ impl ProductionPortfolioSearch<'_> {
             producers: producers.to_vec(),
             cash_spend: cash_spend_timeline(schedule),
             owner_enqueue_floors: owner_enqueue_floors(schedule),
+            voluntary_scrap_guard_satisfied: self.voluntary_scrap_guard.satisfier.is_some_and(
+                |satisfier| {
+                    schedule_satisfies_voluntary_scrap_guard(self.capacity, schedule, satisfier)
+                },
+            ),
         };
         if self.failed.contains(&state) {
             self.memo_hits = self.memo_hits.saturating_add(1);
             return false;
         }
         self.explored_states = self.explored_states.saturating_add(1);
-
         let mut placements = Vec::new();
         for (job_index, is_remaining) in remaining.iter().copied().enumerate() {
             if !is_remaining || !self.is_frontier(job_index, remaining) {
@@ -2070,7 +2681,12 @@ impl ProductionPortfolioSearch<'_> {
                 let earliest = slot_tick
                     .max(job.claim.enqueue_not_before)
                     .max(owner_enqueue);
-                for enqueued_at in candidate_enqueue_ticks(self.capacity, earliest, job) {
+                for enqueued_at in candidate_enqueue_ticks(
+                    self.capacity,
+                    earliest,
+                    job,
+                    self.earliest_enqueue_dominates,
+                ) {
                     let mut lane_after = lane.clone();
                     let Some(projected) = lane_after.append(job.claim.kind, enqueued_at) else {
                         continue;
@@ -2122,6 +2738,7 @@ impl ProductionPortfolioSearch<'_> {
             if !combined_cash_timeline_fits(
                 self.capacity,
                 self.current_capital,
+                self.minimum_residual_scrap,
                 self.forecast_capital,
                 self.deferrable_capital,
                 schedule,
@@ -2132,11 +2749,14 @@ impl ProductionPortfolioSearch<'_> {
             if self.funding_mode == JointFundingMode::PreferPriority {
                 let mut funded_prefix = schedule.clone();
                 if assign_joint_funding(
-                    self.capacity,
-                    self.current_capital,
-                    self.forecast_capital,
-                    self.deferrable_capital,
-                    self.jobs,
+                    JointFundingBasis {
+                        capacity: self.capacity,
+                        current_capital: self.current_capital,
+                        minimum_residual_scrap: self.minimum_residual_scrap,
+                        forecast_capital: self.forecast_capital,
+                        deferrable_capital: self.deferrable_capital,
+                        jobs: self.jobs,
+                    },
                     &mut funded_prefix,
                     self.funding_mode,
                 )
@@ -2231,9 +2851,11 @@ fn candidate_enqueue_ticks(
     capacity: &AllocationCapacity,
     earliest: Tick,
     job: &OwnedProducerJob,
+    earliest_enqueue_dominates: bool,
 ) -> Vec<Tick> {
     if let Some(fixed) = job.claim.fixed_assignment() {
         return (fixed.enqueued_at >= earliest
+            && fixed.enqueued_at <= job.claim.enqueue_not_after
             && fixed.enqueued_at <= capacity.resources.horizon()
             && fixed.enqueued_at < job.claim.ready_before)
             .then_some(fixed.enqueued_at)
@@ -2246,11 +2868,15 @@ fn candidate_enqueue_ticks(
     let latest = capacity
         .resources
         .horizon()
+        .min(job.claim.enqueue_not_after)
         .min(job.claim.ready_before.saturating_sub(1));
     if earliest > latest {
         return Vec::new();
     }
     let mut ticks = vec![earliest];
+    if earliest_enqueue_dominates {
+        return ticks;
+    }
     ticks.extend(
         capacity
             .resources
@@ -2260,6 +2886,36 @@ fn candidate_enqueue_ticks(
             .filter(|&tick| tick > earliest && tick <= latest),
     );
     ticks
+}
+
+fn current_bank_covers_all_claims(
+    capacity: &AllocationCapacity,
+    current_capital: u64,
+    minimum_residual_scrap: u32,
+    forecast_capital: &[ForecastClaim],
+    deferrable_capital: &[OwnedDeferrableCapital],
+    jobs: &[OwnedProducerJob],
+) -> bool {
+    let requested = u128::from(current_capital)
+        .saturating_add(u128::from(minimum_residual_scrap))
+        .saturating_add(
+            forecast_capital
+                .iter()
+                .map(|claim| u128::from(claim.amount))
+                .sum::<u128>(),
+        )
+        .saturating_add(
+            deferrable_capital
+                .iter()
+                .map(|capital| u128::from(capital.claim.amount))
+                .sum::<u128>(),
+        )
+        .saturating_add(
+            jobs.iter()
+                .map(|job| u128::from(job.claim.kind.stats().cost))
+                .sum::<u128>(),
+        );
+    requested <= u128::from(capacity.resources.current_scrap())
 }
 
 fn committed_producer(job: &OwnedProducerJob) -> Option<BuildingId> {
@@ -2272,6 +2928,7 @@ fn committed_producer(job: &OwnedProducerJob) -> Option<BuildingId> {
 fn combined_cash_timeline_fits(
     capacity: &AllocationCapacity,
     current_capital: u64,
+    minimum_residual_scrap: u32,
     forecast_capital: &[ForecastClaim],
     deferrable_capital: &[OwnedDeferrableCapital],
     schedule: &[ScheduledProducerJob],
@@ -2290,6 +2947,7 @@ fn combined_cash_timeline_fits(
     events.dedup();
     events.into_iter().all(|through| {
         let requested = u128::from(current_capital)
+            + u128::from(minimum_residual_scrap)
             + forecast_capital
                 .iter()
                 .filter(|claim| claim.through <= through)
@@ -2312,14 +2970,18 @@ fn combined_cash_timeline_fits(
 }
 
 fn assign_joint_funding(
-    capacity: &AllocationCapacity,
-    current_capital: u64,
-    forecast_capital: &[ForecastClaim],
-    deferrable_capital: &[OwnedDeferrableCapital],
-    jobs: &[OwnedProducerJob],
+    basis: JointFundingBasis<'_>,
     schedule: &mut [ScheduledProducerJob],
     mode: JointFundingMode,
 ) -> Option<Vec<CapitalFundingAssignment>> {
+    let JointFundingBasis {
+        capacity,
+        current_capital,
+        minimum_residual_scrap,
+        forecast_capital,
+        deferrable_capital,
+        jobs,
+    } = basis;
     // (priority, type, stable index, deadline, amount). Lower-priority work is
     // assigned forecast before higher-priority work only when the preferred
     // current-first split cannot preserve the entire compatible portfolio.
@@ -2328,56 +2990,82 @@ fn assign_joint_funding(
         let claim = jobs
             .iter()
             .find(|job| job.owner == row.owner && job.ordinal == row.request_ordinal)?;
-        funding_order.push((
-            claim.funding_priority,
-            FundingTarget::Production(index),
-            row.enqueued_at,
-            row.kind.stats().cost,
-        ));
+        funding_order.push(FundingRequest {
+            priority: claim.funding_priority,
+            target: FundingTarget::Production(index),
+            through: row.enqueued_at,
+            amount: row.kind.stats().cost,
+            current_only: claim
+                .claim
+                .requires_observed_current(capacity.resources.observed_at()),
+        });
     }
     for (index, capital) in deferrable_capital.iter().enumerate() {
-        funding_order.push((
-            capital.funding_priority,
-            FundingTarget::Capital(index),
-            capital.claim.through,
-            capital.claim.amount,
-        ));
+        funding_order.push(FundingRequest {
+            priority: capital.funding_priority,
+            target: FundingTarget::Capital(index),
+            through: capital.claim.through,
+            amount: capital.claim.amount,
+            current_only: false,
+        });
     }
     funding_order.sort_unstable();
     let mut funding = JointFundingState::new(
         capacity,
         current_capital,
+        minimum_residual_scrap,
         forecast_capital,
         deferrable_capital,
         jobs,
         schedule,
     )?;
+    let (current_only, flexible): (Vec<_>, Vec<_>) = funding_order
+        .into_iter()
+        .partition(|request| request.current_only);
+    funding.assign_current_only(&current_only)?;
     match mode {
-        JointFundingMode::PreferPriority => funding.assign_preferred(&funding_order)?,
+        JointFundingMode::PreferPriority => funding.assign_preferred(&flexible)?,
         JointFundingMode::PreserveCompatiblePortfolio => {
-            let fresh_start = funding_order.partition_point(|request| request.0.tier < 2);
-            let marginal_start = funding_order.partition_point(|request| request.0.tier <= 2);
-            funding.assign_preferred(&funding_order[..fresh_start])?;
+            let fresh_start = flexible.partition_point(|request| request.priority.tier < 2);
+            let marginal_start = flexible.partition_point(|request| request.priority.tier <= 2);
+            funding.assign_preferred(&flexible[..fresh_start])?;
 
             let before_fresh = funding.clone();
             if funding
-                .assign_preferred(&funding_order[fresh_start..marginal_start])
+                .assign_preferred(&flexible[fresh_start..marginal_start])
                 .is_none()
             {
                 funding = before_fresh;
-                funding.assign_deadline_compatible(&funding_order[fresh_start..marginal_start])?;
+                funding.assign_deadline_compatible(&flexible[fresh_start..marginal_start])?;
             }
 
             // Marginals and future lower bands may consume only what the
             // selected minimum portfolio left behind. They cannot reopen a
             // stronger tier's funding split merely to make themselves fit.
-            funding.assign_preferred(&funding_order[marginal_start..])?;
+            funding.assign_preferred(&flexible[marginal_start..])?;
         }
     }
     Some(funding.finish(schedule))
 }
 
-type FundingRequest = (FundingPriority, FundingTarget, Tick, u32);
+#[derive(Clone, Copy)]
+struct JointFundingBasis<'a> {
+    capacity: &'a AllocationCapacity,
+    current_capital: u64,
+    minimum_residual_scrap: u32,
+    forecast_capital: &'a [ForecastClaim],
+    deferrable_capital: &'a [OwnedDeferrableCapital],
+    jobs: &'a [OwnedProducerJob],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct FundingRequest {
+    priority: FundingPriority,
+    target: FundingTarget,
+    through: Tick,
+    amount: u32,
+    current_only: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum FundingTarget {
@@ -2415,6 +3103,7 @@ impl<'a> JointFundingState<'a> {
     fn new(
         capacity: &'a AllocationCapacity,
         current_capital: u64,
+        minimum_residual_scrap: u32,
         forecast_capital: &'a [ForecastClaim],
         deferrable_capital: &'a [OwnedDeferrableCapital],
         jobs: &'a [OwnedProducerJob],
@@ -2439,7 +3128,8 @@ impl<'a> JointFundingState<'a> {
             jobs,
             schedule: schedule.to_vec(),
             current_remaining: u128::from(capacity.resources.current_scrap())
-                .checked_sub(current_capital.into())?,
+                .checked_sub(u128::from(current_capital))?
+                .checked_sub(u128::from(minimum_residual_scrap))?,
             assigned_forecast: Vec::new(),
             capital_assignments: Vec::with_capacity(deferrable_capital.len()),
             deadlines,
@@ -2447,17 +3137,17 @@ impl<'a> JointFundingState<'a> {
     }
 
     fn assign_preferred(&mut self, requests: &[FundingRequest]) -> Option<()> {
-        for &(_, target, through, amount) in requests {
-            let amount = u128::from(amount);
+        for &request in requests {
+            let amount = u128::from(request.amount);
             let from_current = amount.min(self.current_remaining);
             let from_forecast = amount - from_current;
-            if from_forecast > self.forecast_available_through(through)? {
+            if from_forecast > self.forecast_available_through(request.through)? {
                 return None;
             }
             self.record(
-                target,
+                request.target,
                 FundingSplit {
-                    through,
+                    through: request.through,
                     current: from_current,
                     forecast: from_forecast,
                 },
@@ -2466,14 +3156,32 @@ impl<'a> JointFundingState<'a> {
         Some(())
     }
 
+    fn assign_current_only(&mut self, requests: &[FundingRequest]) -> Option<()> {
+        for &request in requests {
+            let amount = u128::from(request.amount);
+            if amount > self.current_remaining {
+                return None;
+            }
+            self.record(
+                request.target,
+                FundingSplit {
+                    through: request.through,
+                    current: amount,
+                    forecast: 0,
+                },
+            )?;
+        }
+        Some(())
+    }
+
     fn assign_deadline_compatible(&mut self, requests: &[FundingRequest]) -> Option<()> {
-        for &(_, target, through, amount) in requests.iter().rev() {
-            let amount = u128::from(amount);
+        for &request in requests.iter().rev() {
+            let amount = u128::from(request.amount);
             let forecast_slack = self
                 .deadlines
                 .iter()
                 .copied()
-                .filter(|&deadline| deadline >= through)
+                .filter(|&deadline| deadline >= request.through)
                 .map(|deadline| self.forecast_available_through(deadline))
                 .collect::<Option<Vec<_>>>()?
                 .into_iter()
@@ -2482,9 +3190,9 @@ impl<'a> JointFundingState<'a> {
             let from_forecast = amount.min(forecast_slack);
             let from_current = amount - from_forecast;
             self.record(
-                target,
+                request.target,
                 FundingSplit {
-                    through,
+                    through: request.through,
                     current: from_current,
                     forecast: from_forecast,
                 },
@@ -2545,6 +3253,18 @@ impl<'a> JointFundingState<'a> {
                 {
                     return None;
                 }
+                if claim
+                    .claim
+                    .requires_observed_current(self.capacity.resources.observed_at())
+                    && from_forecast > 0
+                {
+                    return None;
+                }
+                if row.enqueued_at < claim.claim.enqueue_not_before
+                    || row.enqueued_at > claim.claim.enqueue_not_after
+                {
+                    return None;
+                }
                 row.current_scrap = from_current;
                 row.forecast_scrap = from_forecast;
             }
@@ -2580,6 +3300,15 @@ fn first_duplicate<T: Copy + PartialEq>(values: &[T]) -> Option<T> {
 
 fn tile_key(tile: TilePos) -> (i32, i32) {
     (tile.y, tile.x)
+}
+
+fn standing_force_service_key(service: StandingForceServiceKey) -> ((i32, i32), u8, i32, i32) {
+    match service {
+        StandingForceServiceKey::Point(tile) => (tile_key(tile), 0, 0, 0),
+        StandingForceServiceKey::Footprint { anchor, size } => {
+            (tile_key(anchor), 1, size.1, size.0)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2676,6 +3405,25 @@ mod tests {
         .expect("the fixture producer is canonical")
     }
 
+    fn timed_producer_fixture(
+        producer: BuildingId,
+        observed_at: Tick,
+        cadence: Tick,
+        production_available_at: Tick,
+        slot_available_at: Vec<Tick>,
+        trainable: Vec<UnitKind>,
+    ) -> ProducerPlanningProjection {
+        ProducerPlanningProjection::fixture(
+            producer,
+            observed_at,
+            cadence,
+            production_available_at,
+            slot_available_at,
+            trainable,
+        )
+        .expect("the timed producer fixture is canonical")
+    }
+
     fn timed_capacity(
         current_scrap: u32,
         observed_at: Tick,
@@ -2719,13 +3467,13 @@ mod tests {
         current_scrap: u32,
         forecast_scrap: Vec<ForecastClaim>,
         case: ProposalCase,
-    ) -> InvestmentProposal<&'static str, &'static str> {
-        InvestmentProposal::FoundryExpansion {
-            key: FoundryExpansionKey {
+    ) -> InvestmentProposal<&'static str> {
+        InvestmentProposal::fresh(
+            ProposalKey::FoundryExpansion(FoundryExpansionKey {
                 anchor: TilePos::new(x, 10),
-            },
+            }),
             case,
-            claims: bundle(
+            bundle(
                 current_scrap,
                 forecast_scrap,
                 vec![1],
@@ -2733,8 +3481,8 @@ mod tests {
                 vec![site(x, 10)],
                 vec![],
             ),
-            payload: "exact foundry token",
-        }
+            "exact foundry token",
+        )
     }
 
     fn deferrable_foundry(
@@ -2742,33 +3490,33 @@ mod tests {
         amount: u32,
         through: Tick,
         case: ProposalCase,
-    ) -> InvestmentProposal<&'static str, &'static str> {
+    ) -> InvestmentProposal<&'static str> {
         let claims = bundle(0, vec![], vec![1], vec![], vec![site(x, 10)], vec![])
             .with_deferrable_capital(DeferrableCapitalClaim { through, amount })
             .expect("the fixture has one unassigned capital claim");
-        InvestmentProposal::FoundryExpansion {
-            key: FoundryExpansionKey {
+        InvestmentProposal::fresh(
+            ProposalKey::FoundryExpansion(FoundryExpansionKey {
                 anchor: TilePos::new(x, 10),
-            },
+            }),
             case,
             claims,
-            payload: "exact flexible foundry token",
-        }
+            "exact flexible foundry token",
+        )
     }
 
     fn offense(
         current_scrap: u32,
         forecast_scrap: Vec<ForecastClaim>,
         case: ProposalCase,
-    ) -> InvestmentProposal<&'static str, &'static str> {
-        InvestmentProposal::ConnectedOffenseMinimum {
-            key: ConnectedOffenseKey {
+    ) -> InvestmentProposal<&'static str> {
+        InvestmentProposal::retained(
+            ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
                 objective: BuildingId(90),
                 anchor: TilePos::new(40, 10),
-            },
+            }),
             case,
-            accepted_at: 0,
-            claims: bundle(
+            0,
+            bundle(
                 current_scrap,
                 forecast_scrap,
                 vec![],
@@ -2776,8 +3524,8 @@ mod tests {
                 vec![],
                 vec![],
             ),
-            payload: "exact offense token",
-        }
+            "exact offense token",
+        )
     }
 
     fn offense_accepted_at(
@@ -2785,22 +3533,26 @@ mod tests {
         forecast_scrap: Vec<ForecastClaim>,
         case: ProposalCase,
         accepted_at: Tick,
-    ) -> InvestmentProposal<&'static str, &'static str> {
+    ) -> InvestmentProposal<&'static str> {
         let mut proposal = offense(current_scrap, forecast_scrap, case);
-        let InvestmentProposal::ConnectedOffenseMinimum {
-            accepted_at: proposal_accepted_at,
-            ..
-        } = &mut proposal
-        else {
-            unreachable!()
-        };
-        *proposal_accepted_at = accepted_at;
+        proposal.accepted_at = Some(accepted_at);
         proposal
     }
 
-    fn accepted_keys<FoundryPayload, OffensePayload>(
-        result: &AllocationResult<FoundryPayload, OffensePayload>,
-    ) -> Vec<ProposalKey> {
+    fn standing(
+        kind: UnitKind,
+        current_scrap: u32,
+        case: ProposalCase,
+    ) -> InvestmentProposal<&'static str> {
+        InvestmentProposal::fresh(
+            ProposalKey::StandingForce(StandingForceKey::fixture(kind)),
+            case,
+            bundle(current_scrap, vec![], vec![], vec![], vec![], vec![]),
+            "exact standing-force token",
+        )
+    }
+
+    fn accepted_keys<Payload>(result: &AllocationResult<Payload>) -> Vec<ProposalKey> {
         result
             .accepted
             .iter()
@@ -2809,19 +3561,196 @@ mod tests {
     }
 
     fn with_jobs(
-        mut proposal: InvestmentProposal<&'static str, &'static str>,
+        mut proposal: InvestmentProposal<&'static str>,
         jobs: Vec<ProducerJobClaim>,
-    ) -> InvestmentProposal<&'static str, &'static str> {
-        let claims = match &mut proposal {
-            InvestmentProposal::FoundryExpansion { claims, .. }
-            | InvestmentProposal::ConnectedOffenseMinimum { claims, .. } => claims,
-        };
-        claims.producer_jobs = jobs;
+    ) -> InvestmentProposal<&'static str> {
+        proposal.claims_mut().producer_jobs = jobs;
         proposal
     }
 
     #[test]
-    fn two_proposals_examine_the_exact_four_mask_oracle() {
+    fn shallow_screen_guard_is_discharged_only_by_the_exact_sentinel_alternative() {
+        const CONNECTED_COST: u32 = 200;
+        const SHALLOW_SENTINEL_COST: u32 = 90;
+        const PRODUCER: BuildingId = BuildingId(7);
+        let sentinel_job =
+            || ProducerJobClaim::immediate(UnitKind::Sentinel, 0, 1_000, vec![PRODUCER]);
+        let proposals = || {
+            vec![
+                offense(CONNECTED_COST, vec![], ordinary_case())
+                    .with_voluntary_scrap_guard(SHALLOW_SENTINEL_COST),
+                with_jobs(
+                    standing(UnitKind::Sentinel, 0, ordinary_case()),
+                    vec![sentinel_job()],
+                )
+                .satisfies_voluntary_scrap_guard_within(2),
+            ]
+        };
+        let shallow_producer = || producer_fixture(PRODUCER, 0, vec![UnitKind::Sentinel]);
+
+        let short = allocate(
+            &capacity(
+                CONNECTED_COST + SHALLOW_SENTINEL_COST - 1,
+                0,
+                vec![],
+                vec![shallow_producer()],
+            ),
+            vec![],
+            proposals(),
+            AllocationPersonality::default(),
+        )
+        .expect("the guarded short-bank portfolio is valid");
+        assert_eq!(
+            accepted_keys(&short),
+            vec![ProposalKey::StandingForce(StandingForceKey::fixture(
+                UnitKind::Sentinel,
+            ))]
+        );
+
+        let exact = allocate(
+            &capacity(
+                CONNECTED_COST + SHALLOW_SENTINEL_COST,
+                0,
+                vec![],
+                vec![shallow_producer()],
+            ),
+            vec![],
+            proposals(),
+            AllocationPersonality::default(),
+        )
+        .expect("the exact connected-and-screen portfolio is valid");
+        assert_eq!(
+            accepted_keys(&exact),
+            vec![
+                ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
+                    objective: BuildingId(90),
+                    anchor: TilePos::new(40, 10),
+                }),
+                ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Sentinel)),
+            ]
+        );
+        assert!(exact.voluntary_scrap_guard_satisfied);
+
+        let non_sentinel = allocate(
+            &capacity(
+                CONNECTED_COST + SHALLOW_SENTINEL_COST - 1,
+                0,
+                vec![],
+                vec![],
+            ),
+            vec![],
+            vec![
+                standing(UnitKind::Warden, CONNECTED_COST, ordinary_case())
+                    .with_voluntary_scrap_guard(SHALLOW_SENTINEL_COST),
+            ],
+            AllocationPersonality::default(),
+        )
+        .expect("the guarded non-Sentinel alternative is valid");
+        assert!(non_sentinel.accepted.is_empty());
+
+        let deep_producer = timed_producer_fixture(
+            PRODUCER,
+            0,
+            1,
+            200,
+            vec![0, 0, 0, 100, 200],
+            vec![UnitKind::Sentinel],
+        );
+        let deep_short = allocate(
+            &capacity(
+                CONNECTED_COST + SHALLOW_SENTINEL_COST,
+                0,
+                vec![],
+                vec![deep_producer.clone()],
+            ),
+            vec![],
+            proposals(),
+            AllocationPersonality::default(),
+        )
+        .expect("a deep queue keeps each individually affordable alternative valid");
+        assert_ne!(accepted_keys(&deep_short).len(), 2);
+
+        let deep_funded = allocate(
+            &capacity(
+                CONNECTED_COST + SHALLOW_SENTINEL_COST * 2,
+                0,
+                vec![],
+                vec![deep_producer],
+            ),
+            vec![],
+            proposals(),
+            AllocationPersonality::default(),
+        )
+        .expect("the deep Sentinel can coexist only when a second shallow-screen cost survives");
+        assert_eq!(accepted_keys(&deep_funded).len(), 2);
+        assert!(!deep_funded.voluntary_scrap_guard_satisfied);
+    }
+
+    #[test]
+    fn typed_voluntary_capital_preserves_or_discharges_the_shallow_screen_guard() {
+        const FOUNDRY_COST: u32 = 400;
+        const SHALLOW_SENTINEL_COST: u32 = 90;
+        const PRODUCER: BuildingId = BuildingId(7);
+        let proposals = || {
+            vec![
+                deferrable_foundry(10, FOUNDRY_COST, 100, ordinary_case())
+                    .with_voluntary_scrap_guard(SHALLOW_SENTINEL_COST),
+                with_jobs(
+                    standing(UnitKind::Sentinel, 0, ordinary_case()),
+                    vec![ProducerJobClaim::immediate(
+                        UnitKind::Sentinel,
+                        0,
+                        1_000,
+                        vec![PRODUCER],
+                    )],
+                )
+                .satisfies_voluntary_scrap_guard_within(2),
+            ]
+        };
+        let capacity = |scrap| {
+            capacity(
+                scrap,
+                1_000,
+                vec![],
+                vec![producer_fixture(PRODUCER, 0, vec![UnitKind::Sentinel])],
+            )
+        };
+
+        let short = allocate(
+            &capacity(FOUNDRY_COST + SHALLOW_SENTINEL_COST - 1),
+            vec![],
+            proposals(),
+            AllocationPersonality::default(),
+        )
+        .expect("the one-scrap-short typed-capital portfolio is valid");
+        assert_eq!(
+            accepted_keys(&short),
+            vec![ProposalKey::StandingForce(StandingForceKey::fixture(
+                UnitKind::Sentinel,
+            ))]
+        );
+
+        let exact = allocate(
+            &capacity(FOUNDRY_COST + SHALLOW_SENTINEL_COST),
+            vec![],
+            proposals(),
+            AllocationPersonality::default(),
+        )
+        .expect("the exact typed-capital and shallow-screen portfolio is valid");
+        assert_eq!(accepted_keys(&exact).len(), 2);
+        assert!(exact.voluntary_scrap_guard_satisfied);
+        assert_eq!(
+            exact
+                .capital_assignments
+                .iter()
+                .map(|assignment| assignment.current_scrap)
+                .sum::<u32>(),
+            FOUNDRY_COST,
+        );
+    }
+
+    #[test]
+    fn two_domains_examine_all_four_exact_portfolios() {
         let result = allocate(
             &capacity(100, 0, vec![], vec![]),
             vec![],
@@ -2864,7 +3793,7 @@ mod tests {
     }
 
     #[test]
-    fn allocation_matches_an_independent_four_mask_oracle() {
+    fn allocation_matches_an_independent_grouped_alternative_oracle() {
         #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
         struct OracleRank {
             urgency: [u8; 3],
@@ -2873,6 +3802,7 @@ mod tests {
             time_to_impact: [u8; 3],
             safety: [u8; 3],
             personality: u128,
+            domain_preference: usize,
             capital: u128,
             keys: Vec<ProposalKey>,
         }
@@ -2917,6 +3847,7 @@ mod tests {
                 left.time_to_impact,
                 left.safety,
                 left.personality,
+                Reverse(left.domain_preference),
                 Reverse(left.capital),
                 Reverse(&left.keys),
             ) > (
@@ -2926,6 +3857,7 @@ mod tests {
                 right.time_to_impact,
                 right.safety,
                 right.personality,
+                Reverse(right.domain_preference),
                 Reverse(right.capital),
                 Reverse(&right.keys),
             )
@@ -2952,10 +3884,17 @@ mod tests {
             AllocationPersonality {
                 economy: 40,
                 offense: 0,
+                standing_force: 0,
             },
             AllocationPersonality {
                 economy: 0,
                 offense: 40,
+                standing_force: 0,
+            },
+            AllocationPersonality {
+                economy: 0,
+                offense: 0,
+                standing_force: 40,
             },
         ];
         let economy_key = FoundryExpansionKey {
@@ -2965,76 +3904,140 @@ mod tests {
             objective: BuildingId(90),
             anchor: TilePos::new(40, 10),
         };
+        let expensive_standing_key = StandingForceKey::fixture(UnitKind::Warden);
+        let alternative_standing_key = StandingForceKey::fixture(UnitKind::Sentinel);
 
-        for bank in 0..=4 {
-            for economy_cost in 0..=4 {
-                for offense_cost in 0..=4 {
-                    for &economy_case in &cases {
-                        for &offense_case in &cases {
-                            for &personality in &personalities {
-                                let proposals = vec![
-                                    foundry(10, economy_cost, vec![], economy_case),
-                                    offense(offense_cost, vec![], offense_case),
-                                ];
-                                let result = allocate(
-                                    &capacity(bank, 0, vec![], vec![]),
-                                    vec![],
-                                    proposals,
-                                    personality,
-                                )
-                                .expect("the exhaustive fixture contains two valid domains");
+        for bank in 0..=3 {
+            for economy_cost in 0..=3 {
+                for offense_cost in 0..=3 {
+                    for standing_cost in 0..=3 {
+                        for &economy_case in &cases {
+                            for &offense_case in &cases {
+                                for &standing_case in &cases {
+                                    for &personality in &personalities {
+                                        let proposals = vec![
+                                            foundry(10, economy_cost, vec![], economy_case),
+                                            offense(offense_cost, vec![], offense_case),
+                                            standing(
+                                                UnitKind::Warden,
+                                                standing_cost,
+                                                standing_case,
+                                            )
+                                            .with_domain_preference(0),
+                                            standing(
+                                                UnitKind::Sentinel,
+                                                3 - standing_cost,
+                                                standing_case,
+                                            )
+                                            .with_domain_preference(1),
+                                        ];
+                                        let result = allocate(
+                                            &capacity(bank, 0, vec![], vec![]),
+                                            vec![],
+                                            proposals,
+                                            personality,
+                                        )
+                                        .expect(
+                                            "the exhaustive fixture contains valid grouped alternatives",
+                                        );
 
-                                let mut best: Option<(u8, OracleRank)> = None;
-                                for mask in 0_u8..4 {
-                                    let capital = u128::from(
-                                        (mask & 1 != 0) as u32 * economy_cost
-                                            + (mask & 2 != 0) as u32 * offense_cost,
-                                    );
-                                    if capital > u128::from(bank) {
-                                        continue;
-                                    }
-                                    let mut rank = OracleRank {
-                                        urgency: [0; 3],
-                                        confidence: [0; 3],
-                                        value: [0; 3],
-                                        time_to_impact: [0; 3],
-                                        safety: [0; 3],
-                                        personality: 0,
-                                        capital,
-                                        keys: Vec::new(),
-                                    };
-                                    if mask & 1 != 0 {
-                                        add_case(&mut rank, economy_case);
-                                        rank.personality += BASE_PERSONALITY_WEIGHT
-                                            + u128::from(personality.economy);
-                                        rank.keys.push(ProposalKey::FoundryExpansion(economy_key));
-                                    }
-                                    if mask & 2 != 0 {
-                                        add_case(&mut rank, offense_case);
-                                        rank.personality += BASE_PERSONALITY_WEIGHT
-                                            + u128::from(personality.offense);
-                                        rank.keys.push(ProposalKey::ConnectedOffenseMinimum(
-                                            offense_key,
-                                        ));
-                                    }
-                                    if best
-                                        .as_ref()
-                                        .is_none_or(|(_, current)| better(&rank, current))
-                                    {
-                                        best = Some((mask, rank));
+                                        let mut best: Option<(usize, OracleRank)> = None;
+                                        for mask in 0_usize..16 {
+                                            if mask & 0b1100 == 0b1100 {
+                                                continue;
+                                            }
+                                            let capital = u128::from(
+                                                (mask & 1 != 0) as u32 * economy_cost
+                                                    + (mask & 2 != 0) as u32 * offense_cost
+                                                    + (mask & 4 != 0) as u32 * standing_cost
+                                                    + (mask & 8 != 0) as u32 * (3 - standing_cost),
+                                            );
+                                            if capital > u128::from(bank) {
+                                                continue;
+                                            }
+                                            let mut rank = OracleRank {
+                                                urgency: [0; 3],
+                                                confidence: [0; 3],
+                                                value: [0; 3],
+                                                time_to_impact: [0; 3],
+                                                safety: [0; 3],
+                                                personality: 0,
+                                                domain_preference: 0,
+                                                capital,
+                                                keys: Vec::new(),
+                                            };
+                                            if mask & 1 != 0 {
+                                                add_case(&mut rank, economy_case);
+                                                rank.personality += BASE_PERSONALITY_WEIGHT
+                                                    + u128::from(personality.economy);
+                                                rank.keys.push(ProposalKey::FoundryExpansion(
+                                                    economy_key,
+                                                ));
+                                            }
+                                            if mask & 2 != 0 {
+                                                add_case(&mut rank, offense_case);
+                                                rank.personality += BASE_PERSONALITY_WEIGHT
+                                                    + u128::from(personality.offense);
+                                                rank.keys.push(
+                                                    ProposalKey::ConnectedOffenseMinimum(
+                                                        offense_key,
+                                                    ),
+                                                );
+                                            }
+                                            if mask & 4 != 0 {
+                                                add_case(&mut rank, standing_case);
+                                                rank.personality += BASE_PERSONALITY_WEIGHT
+                                                    + u128::from(personality.standing_force);
+                                                rank.keys.push(ProposalKey::StandingForce(
+                                                    expensive_standing_key,
+                                                ));
+                                            }
+                                            if mask & 8 != 0 {
+                                                add_case(&mut rank, standing_case);
+                                                rank.personality += BASE_PERSONALITY_WEIGHT
+                                                    + u128::from(personality.standing_force);
+                                                rank.domain_preference += 1;
+                                                rank.keys.push(ProposalKey::StandingForce(
+                                                    alternative_standing_key,
+                                                ));
+                                            }
+                                            rank.keys.sort_unstable();
+                                            if best
+                                                .as_ref()
+                                                .is_none_or(|(_, current)| better(&rank, current))
+                                            {
+                                                best = Some((mask, rank));
+                                            }
+                                        }
+
+                                        let actual_mask = result.accepted.iter().fold(
+                                            0_usize,
+                                            |mask, proposal| {
+                                                mask | match proposal.key() {
+                                                    ProposalKey::FoundryExpansion(_) => 1,
+                                                    ProposalKey::ConnectedOffenseMinimum(_) => 2,
+                                                    ProposalKey::StandingForce(key)
+                                                        if key == expensive_standing_key =>
+                                                    {
+                                                        4
+                                                    }
+                                                    ProposalKey::StandingForce(key)
+                                                        if key == alternative_standing_key =>
+                                                    {
+                                                        8
+                                                    }
+                                                    ProposalKey::StandingForce(_) => {
+                                                        unreachable!("the fixture has two kinds")
+                                                    }
+                                                }
+                                            },
+                                        );
+                                        assert_eq!(
+                                            actual_mask,
+                                            best.expect("mask zero is feasible").0
+                                        );
                                     }
                                 }
-
-                                let actual_mask =
-                                    result.accepted.iter().fold(0_u8, |mask, item| {
-                                        mask | match item {
-                                            InvestmentProposal::FoundryExpansion { .. } => 1,
-                                            InvestmentProposal::ConnectedOffenseMinimum {
-                                                ..
-                                            } => 2,
-                                        }
-                                    });
-                                assert_eq!(actual_mask, best.expect("mask zero is feasible").0);
                             }
                         }
                     }
@@ -3145,15 +4148,9 @@ mod tests {
     #[test]
     fn compatible_exact_claims_admit_both_payloads() {
         let mut expansion = foundry(10, 70, vec![], ordinary_case());
-        let InvestmentProposal::FoundryExpansion { payload, .. } = &mut expansion else {
-            unreachable!()
-        };
-        *payload = "keep this exact builder and site";
+        *expansion.payload_mut() = "keep this exact builder and site";
         let mut attack = offense(60, vec![], ordinary_case());
-        let InvestmentProposal::ConnectedOffenseMinimum { payload, .. } = &mut attack else {
-            unreachable!()
-        };
-        *payload = "keep this exact package";
+        *attack.payload_mut() = "keep this exact package";
 
         let result = allocate(
             &capacity(130, 0, vec![], vec![]),
@@ -3171,15 +4168,55 @@ mod tests {
                 .all(|decision| decision.disposition == ProposalDisposition::Accepted)
         );
         assert!(matches!(
-            &result.accepted[0],
-            InvestmentProposal::FoundryExpansion { payload, .. }
-                if *payload == "keep this exact builder and site"
+            (result.accepted[0].key(), result.accepted[0].payload()),
+            (
+                ProposalKey::FoundryExpansion(_),
+                &"keep this exact builder and site"
+            )
         ));
         assert!(matches!(
-            &result.accepted[1],
-            InvestmentProposal::ConnectedOffenseMinimum { payload, .. }
-                if *payload == "keep this exact package"
+            (result.accepted[1].key(), result.accepted[1].payload()),
+            (
+                ProposalKey::ConnectedOffenseMinimum(_),
+                &"keep this exact package"
+            )
         ));
+    }
+
+    #[test]
+    fn compatible_exact_claims_admit_all_three_payloads() {
+        let result = allocate(
+            &capacity(120, 0, vec![], vec![]),
+            vec![],
+            vec![
+                foundry(10, 40, vec![], ordinary_case()),
+                offense(50, vec![], ordinary_case()),
+                standing(UnitKind::Warden, 30, ordinary_case()),
+            ],
+            AllocationPersonality::default(),
+        )
+        .expect("three compatible domains fit one exact portfolio");
+
+        assert_eq!(result.accepted.len(), 3);
+        assert!(
+            result
+                .decisions
+                .iter()
+                .all(|decision| decision.disposition == ProposalDisposition::Accepted)
+        );
+        assert_eq!(
+            accepted_keys(&result),
+            vec![
+                ProposalKey::FoundryExpansion(FoundryExpansionKey {
+                    anchor: TilePos::new(10, 10),
+                }),
+                ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
+                    objective: BuildingId(90),
+                    anchor: TilePos::new(40, 10),
+                }),
+                ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Warden)),
+            ]
+        );
     }
 
     #[test]
@@ -3278,6 +4315,137 @@ mod tests {
     }
 
     #[test]
+    fn distinct_standing_force_choices_are_ranked_as_domain_alternatives() {
+        let basis = capacity(100, 0, vec![], vec![]);
+        let first = standing(UnitKind::Sentinel, 50, ordinary_case());
+        let second = standing(UnitKind::Warden, 50, ordinary_case());
+
+        let forward = allocate(
+            &basis,
+            vec![],
+            vec![first.clone(), second.clone()],
+            AllocationPersonality::default(),
+        );
+        let reverse = allocate(
+            &basis,
+            vec![],
+            vec![second, first],
+            AllocationPersonality::default(),
+        );
+
+        assert_eq!(forward, reverse);
+        let result = forward.expect("distinct keys are valid alternatives");
+        assert_eq!(
+            accepted_keys(&result),
+            vec![ProposalKey::StandingForce(StandingForceKey::fixture(
+                UnitKind::Sentinel,
+            ))]
+        );
+        assert!(result.decisions.iter().any(|decision| {
+            decision.key == ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Warden))
+                && matches!(
+                    decision.disposition,
+                    ProposalDisposition::Rejected(ProposalRejection::Outranked {
+                        basis: OutrankingBasis::StructuralKey,
+                        ..
+                    })
+                )
+        }));
+    }
+
+    #[test]
+    fn cheaper_domain_alternative_can_complete_the_best_cross_domain_portfolio() {
+        let result = allocate(
+            &capacity(100, 0, vec![], vec![]),
+            vec![],
+            vec![
+                standing(UnitKind::Warden, 60, ordinary_case()),
+                foundry(10, 60, vec![], ordinary_case()),
+                standing(UnitKind::Sentinel, 40, ordinary_case()),
+            ],
+            AllocationPersonality::default(),
+        )
+        .expect("the cheaper alternative remains available to allocation");
+
+        assert_eq!(
+            accepted_keys(&result),
+            vec![
+                ProposalKey::FoundryExpansion(FoundryExpansionKey {
+                    anchor: TilePos::new(10, 10),
+                }),
+                ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Sentinel)),
+            ]
+        );
+        let expensive = result
+            .decisions
+            .iter()
+            .find(|decision| {
+                decision.key
+                    == ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Warden))
+            })
+            .expect("every submitted alternative receives a disposition");
+        assert!(matches!(
+            expensive.disposition,
+            ProposalDisposition::Rejected(ProposalRejection::Outranked { .. })
+        ));
+    }
+
+    #[test]
+    fn domain_preference_precedes_generic_lower_capital_tie_breaking() {
+        let preferred = standing(UnitKind::Warden, 60, ordinary_case()).with_domain_preference(0);
+        let fallback = standing(UnitKind::Sentinel, 40, ordinary_case()).with_domain_preference(1);
+
+        let result = allocate(
+            &capacity(100, 0, vec![], vec![]),
+            vec![],
+            vec![fallback, preferred],
+            AllocationPersonality::default(),
+        )
+        .expect("both domain alternatives are independently affordable");
+
+        assert_eq!(
+            accepted_keys(&result),
+            vec![ProposalKey::StandingForce(StandingForceKey::fixture(
+                UnitKind::Warden,
+            ))]
+        );
+        assert!(result.decisions.iter().any(|decision| {
+            decision.key
+                == ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Sentinel))
+                && matches!(
+                    decision.disposition,
+                    ProposalDisposition::Rejected(ProposalRejection::Outranked {
+                        basis: OutrankingBasis::DomainPreference,
+                        ..
+                    })
+                )
+        }));
+    }
+
+    #[test]
+    fn same_domain_alternatives_have_no_machine_word_count_limit() {
+        let alternatives: Vec<_> = (0..80)
+            .map(|offset| foundry(10 + offset, 0, vec![], ordinary_case()))
+            .collect();
+
+        let result = allocate(
+            &capacity(0, 0, vec![], vec![]),
+            vec![],
+            alternatives,
+            AllocationPersonality::default(),
+        )
+        .expect("domain alternatives are not encoded as one bit per proposal");
+
+        assert_eq!(result.decisions.len(), 80);
+        assert_eq!(
+            accepted_keys(&result),
+            vec![ProposalKey::FoundryExpansion(FoundryExpansionKey {
+                anchor: TilePos::new(10, 10),
+            })]
+        );
+    }
+
+    #[test]
     fn lowest_semantic_case_remains_a_positive_selectable_proposal() {
         let proposal = offense(
             0,
@@ -3340,10 +4508,7 @@ mod tests {
             ),
         };
         let mut expansion = foundry(10, 0, vec![], ordinary_case());
-        let InvestmentProposal::FoundryExpansion { claims, .. } = &mut expansion else {
-            unreachable!()
-        };
-        *claims = bundle(
+        *expansion.claims_mut() = bundle(
             0,
             vec![],
             vec![1],
@@ -3357,10 +4522,7 @@ mod tests {
             )],
         );
         let mut attack = offense(0, vec![], ordinary_case());
-        let InvestmentProposal::ConnectedOffenseMinimum { claims, .. } = &mut attack else {
-            unreachable!()
-        };
-        *claims = bundle(
+        *attack.claims_mut() = bundle(
             0,
             vec![],
             vec![],
@@ -3393,6 +4555,62 @@ mod tests {
     }
 
     #[test]
+    fn standing_force_competes_for_the_exact_shared_producer_lane() {
+        let producer = BuildingId(7);
+        let kind = UnitKind::Sentinel;
+        let deadline = Tick::from(kind.stats().train_ticks);
+        let basis = capacity(
+            kind.stats().cost.saturating_mul(2),
+            0,
+            vec![],
+            vec![producer_fixture(producer, 0, vec![kind])],
+        );
+        let connected = with_jobs(
+            offense(0, vec![], ordinary_case()),
+            vec![ProducerJobClaim::flexible(
+                kind,
+                0,
+                deadline,
+                vec![producer],
+            )],
+        );
+        let standing = with_jobs(
+            standing(kind, 0, ordinary_case()),
+            vec![ProducerJobClaim::immediate(
+                kind,
+                0,
+                deadline,
+                vec![producer],
+            )],
+        );
+
+        let result = allocate(
+            &basis,
+            vec![],
+            vec![connected, standing],
+            AllocationPersonality {
+                economy: 0,
+                offense: 0,
+                standing_force: 1,
+            },
+        )
+        .expect("a mutually exclusive lane is a proposal decision");
+
+        assert_eq!(result.accepted.len(), 1);
+        assert!(matches!(
+            result.accepted[0].key(),
+            ProposalKey::StandingForce(_)
+        ));
+        assert!(result.decisions.iter().any(|decision| matches!(
+            decision.disposition,
+            ProposalDisposition::Rejected(ProposalRejection::ConflictsWithSelected {
+                conflict: AllocationConflict::ProducerSchedule { .. },
+                ..
+            })
+        )));
+    }
+
+    #[test]
     fn fresh_lane_jobs_interleave_exactly_when_deadlines_require_it() {
         let producer = BuildingId(7);
         let basis = capacity(
@@ -3406,10 +4624,7 @@ mod tests {
             )],
         );
         let mut expansion = foundry(10, 0, vec![], ordinary_case());
-        let InvestmentProposal::FoundryExpansion { claims, .. } = &mut expansion else {
-            unreachable!()
-        };
-        *claims = bundle(
+        *expansion.claims_mut() = bundle(
             0,
             vec![],
             vec![1],
@@ -3421,10 +4636,7 @@ mod tests {
             ],
         );
         let mut attack = offense(0, vec![], ordinary_case());
-        let InvestmentProposal::ConnectedOffenseMinimum { claims, .. } = &mut attack else {
-            unreachable!()
-        };
-        *claims = bundle(
+        *attack.claims_mut() = bundle(
             0,
             vec![],
             vec![],
@@ -3487,10 +4699,7 @@ mod tests {
             ],
         );
         let mut expansion = foundry(10, 0, vec![], ordinary_case());
-        let InvestmentProposal::FoundryExpansion { claims, .. } = &mut expansion else {
-            unreachable!()
-        };
-        *claims = bundle(
+        *expansion.claims_mut() = bundle(
             0,
             vec![],
             vec![1],
@@ -3504,10 +4713,7 @@ mod tests {
             )],
         );
         let mut attack = offense(0, vec![], ordinary_case());
-        let InvestmentProposal::ConnectedOffenseMinimum { claims, .. } = &mut attack else {
-            unreachable!()
-        };
-        *claims = bundle(
+        *attack.claims_mut() = bundle(
             0,
             vec![],
             vec![],
@@ -4358,10 +5564,7 @@ mod tests {
         let producer = BuildingId(7);
         let proposal = |current_scrap| {
             let mut proposal = offense(0, vec![], ordinary_case());
-            let InvestmentProposal::ConnectedOffenseMinimum { claims, .. } = &mut proposal else {
-                unreachable!()
-            };
-            *claims = bundle(
+            *proposal.claims_mut() = bundle(
                 40,
                 vec![ForecastClaim {
                     through: 20,
@@ -4400,16 +5603,20 @@ mod tests {
         assert_eq!(exact.producer_schedule[0].forecast_scrap, 0);
 
         let short = proposal(129).expect("insufficient funding is a traced proposal rejection");
-        assert!(matches!(
-            short.decisions[0].disposition,
-            ProposalDisposition::Rejected(ProposalRejection::Infeasible(
-                AllocationConflict::ProductionFunding {
-                    requested: 160,
-                    available: 159,
-                    ..
-                }
-            ))
-        ));
+        assert!(
+            matches!(
+                short.decisions[0].disposition,
+                ProposalDisposition::Rejected(ProposalRejection::Infeasible(
+                    AllocationConflict::ProductionFunding {
+                        requested: 160,
+                        available: 159,
+                        ..
+                    }
+                ))
+            ),
+            "unexpected rejection: {:?}",
+            short.decisions[0]
+        );
     }
 
     #[test]
@@ -4443,7 +5650,7 @@ mod tests {
             ),
         };
 
-        let result: AllocationResult<(), ()> = allocate(
+        let result: AllocationResult<()> = allocate(
             &capacity(
                 kind.stats().cost,
                 ready_at + 2,
@@ -4511,7 +5718,7 @@ mod tests {
             .expect("the later producer fixture is valid")
         };
 
-        let forecast_funded: AllocationResult<(), ()> = allocate(
+        let forecast_funded: AllocationResult<()> = allocate(
             &capacity(
                 0,
                 ready_at + 2,
@@ -4529,7 +5736,7 @@ mod tests {
         assert_eq!(forecast_funded.producer_schedule[0].current_scrap, 0);
         assert_eq!(forecast_funded.producer_schedule[0].forecast_scrap, cost);
 
-        let current_funded: AllocationResult<(), ()> = allocate(
+        let current_funded: AllocationResult<()> = allocate(
             &timed_capacity(cost, 12, ready_at + 2, 1, vec![], vec![later_lane()]),
             vec![obligation.clone()],
             vec![],
@@ -4544,7 +5751,7 @@ mod tests {
         assert_eq!(scheduled.forecast_scrap, 0);
 
         assert!(matches!(
-            allocate::<(), ()>(
+            allocate::<()>(
                 &timed_capacity(
                     cost - 1,
                     12,
@@ -4567,6 +5774,175 @@ mod tests {
             }) if through == enqueued_at
                 && requested == u128::from(cost)
                 && available == u128::from(cost - 1)
+        ));
+    }
+
+    #[test]
+    fn due_now_fixed_obligation_keeps_current_ahead_of_future_priority() {
+        const OBSERVED_AT: Tick = 120;
+        const CADENCE: Tick = 12;
+        const HORIZON: Tick = 2_520;
+        const CURRENT_REMAINDER: u32 = 49;
+        let producer = BuildingId(7);
+        let kind = UnitKind::Skyhook;
+        let cost = kind.stats().cost;
+        let ready_at = OBSERVED_AT + Tick::from(kind.stats().train_ticks) - 1;
+        let due = ImportedObligation {
+            class: ObligationClass::Legacy,
+            accepted_at: 0,
+            key: ObligationKey::Legacy {
+                channel: LegacyChannel::Lift,
+                sequence: 1,
+            },
+            claims: bundle(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::fixed(
+                    producer,
+                    kind,
+                    OBSERVED_AT,
+                    OBSERVED_AT,
+                    ready_at,
+                    HORIZON,
+                )],
+            ),
+        };
+        let due_owner = due.owner();
+        let future = ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: 0,
+            key: ObligationKey::Legacy {
+                channel: LegacyChannel::Lift,
+                sequence: 2,
+            },
+            claims: bundle(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::flexible(
+                    kind,
+                    OBSERVED_AT + CADENCE,
+                    HORIZON,
+                    vec![producer],
+                )],
+            ),
+        };
+        let future_owner = future.owner();
+        let forecast_at = OBSERVED_AT + 756;
+        let result: AllocationResult<()> = allocate(
+            &timed_capacity(
+                cost + CURRENT_REMAINDER,
+                OBSERVED_AT,
+                HORIZON,
+                CADENCE,
+                vec![ForecastAvailability {
+                    available_at: forecast_at,
+                    amount: cost - CURRENT_REMAINDER,
+                }],
+                vec![timed_producer_fixture(
+                    producer,
+                    OBSERVED_AT,
+                    CADENCE,
+                    OBSERVED_AT,
+                    vec![OBSERVED_AT; QUEUE_CAP],
+                    vec![kind],
+                )],
+            ),
+            vec![due, future],
+            vec![],
+            AllocationPersonality::default(),
+        )
+        .expect("the due append keeps current funding while the future append waits for income");
+
+        let due_job = result
+            .producer_schedule
+            .iter()
+            .find(|job| job.owner == due_owner)
+            .expect("the due obligation remains scheduled");
+        assert_eq!(due_job.enqueued_at, OBSERVED_AT);
+        assert_eq!((due_job.current_scrap, due_job.forecast_scrap), (cost, 0));
+        let future_job = result
+            .producer_schedule
+            .iter()
+            .find(|job| job.owner == future_owner)
+            .expect("the future obligation remains scheduled");
+        assert_eq!(future_job.enqueued_at, forecast_at);
+        assert_eq!(
+            (future_job.current_scrap, future_job.forecast_scrap),
+            (CURRENT_REMAINDER, cost - CURRENT_REMAINDER)
+        );
+    }
+
+    #[test]
+    fn fixed_due_now_obligation_never_uses_forecast_labeled_credit() {
+        const OBSERVED_AT: Tick = 120;
+        const CADENCE: Tick = 12;
+        const HORIZON: Tick = 1_200;
+        let producer = BuildingId(7);
+        let kind = UnitKind::Skyhook;
+        let cost = kind.stats().cost;
+        let ready_at = OBSERVED_AT + Tick::from(kind.stats().train_ticks) - 1;
+        let due = ImportedObligation {
+            class: ObligationClass::Legacy,
+            accepted_at: 0,
+            key: ObligationKey::Legacy {
+                channel: LegacyChannel::Lift,
+                sequence: 1,
+            },
+            claims: bundle(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::fixed(
+                    producer,
+                    kind,
+                    OBSERVED_AT,
+                    OBSERVED_AT,
+                    ready_at,
+                    HORIZON,
+                )],
+            ),
+        };
+
+        assert!(matches!(
+            allocate::<()>(
+                &timed_capacity(
+                    cost - 1,
+                    OBSERVED_AT,
+                    HORIZON,
+                    CADENCE,
+                    vec![ForecastAvailability {
+                        available_at: OBSERVED_AT,
+                        amount: 1,
+                    }],
+                    vec![timed_producer_fixture(
+                        producer,
+                        OBSERVED_AT,
+                        CADENCE,
+                        OBSERVED_AT,
+                        vec![OBSERVED_AT; QUEUE_CAP],
+                        vec![kind],
+                    )],
+                ),
+                vec![due],
+                vec![],
+                AllocationPersonality::default(),
+            ),
+            Err(AllocationError::ObligationConflict {
+                conflict: AllocationConflict::ProductionFunding {
+                    through: OBSERVED_AT,
+                    requested,
+                    available,
+                },
+                ..
+            }) if requested == u128::from(cost) && available == u128::from(cost - 1)
         ));
     }
 
@@ -4817,6 +6193,9 @@ mod tests {
                                         ClaimOwner::Proposal(
                                             ProposalKey::ConnectedOffenseMinimum(_),
                                         ) => 1,
+                                        ClaimOwner::Proposal(ProposalKey::StandingForce(_)) => {
+                                            unreachable!("the oracle submits no standing proposal")
+                                        }
                                         ClaimOwner::Obligation { .. } => {
                                             unreachable!("the oracle submits no obligations")
                                         }
@@ -4860,6 +6239,140 @@ mod tests {
             result.production_search_states <= 19,
             "the canonical successful path should visit at most one state per request: {}",
             result.production_search_states
+        );
+    }
+
+    #[test]
+    fn current_funded_shared_lane_conflict_does_not_branch_over_income_ticks() {
+        const OBSERVED_AT: Tick = 24;
+        const CADENCE: Tick = 12;
+        const DEADLINE: Tick = 2_424;
+        let crucible = BuildingId(6);
+        let airworks = [BuildingId(3), BuildingId(5)];
+        let offense =
+            ClaimOwner::Proposal(ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
+                objective: BuildingId(90),
+                anchor: TilePos::new(40, 10),
+            }));
+        let standing = ClaimOwner::Proposal(ProposalKey::StandingForce(StandingForceKey::fixture(
+            UnitKind::Breaker,
+        )));
+        let mut jobs = vec![OwnedProducerJob {
+            claim: ProducerJobClaim::flexible(
+                UnitKind::Avalanche,
+                OBSERVED_AT,
+                DEADLINE,
+                vec![crucible],
+            ),
+            owner: offense,
+            ordinal: 0,
+            funding_priority: FundingPriority::fresh_proposal(offense, 0),
+        }];
+        jobs.extend((1..=7).map(|ordinal| OwnedProducerJob {
+            claim: ProducerJobClaim::flexible(
+                UnitKind::Buzzard,
+                OBSERVED_AT,
+                DEADLINE,
+                airworks.to_vec(),
+            ),
+            owner: offense,
+            ordinal,
+            funding_priority: FundingPriority::fresh_proposal(offense, 0),
+        }));
+        jobs.push(OwnedProducerJob {
+            claim: ProducerJobClaim::flexible(
+                UnitKind::Avalanche,
+                OBSERVED_AT,
+                DEADLINE,
+                vec![crucible],
+            ),
+            owner: offense,
+            ordinal: 8,
+            funding_priority: FundingPriority::fresh_proposal(offense, 0),
+        });
+        jobs.push(OwnedProducerJob {
+            claim: ProducerJobClaim::immediate(
+                UnitKind::Breaker,
+                OBSERVED_AT,
+                DEADLINE,
+                vec![crucible],
+            ),
+            owner: standing,
+            ordinal: 0,
+            funding_priority: FundingPriority::fresh_proposal(standing, 1),
+        });
+        let income = (OBSERVED_AT + CADENCE..=DEADLINE)
+            .step_by(usize::try_from(CADENCE).expect("cadence fits usize"))
+            .map(|available_at| ForecastAvailability {
+                available_at,
+                amount: 1,
+            })
+            .collect();
+        let basis = timed_capacity(
+            10_000,
+            OBSERVED_AT,
+            DEADLINE,
+            CADENCE,
+            income,
+            vec![
+                timed_producer_fixture(
+                    airworks[0],
+                    OBSERVED_AT,
+                    CADENCE,
+                    OBSERVED_AT,
+                    vec![OBSERVED_AT; QUEUE_CAP],
+                    vec![UnitKind::Buzzard],
+                ),
+                timed_producer_fixture(
+                    airworks[1],
+                    OBSERVED_AT,
+                    CADENCE,
+                    OBSERVED_AT,
+                    vec![OBSERVED_AT; QUEUE_CAP],
+                    vec![UnitKind::Buzzard],
+                ),
+                timed_producer_fixture(
+                    crucible,
+                    OBSERVED_AT,
+                    CADENCE,
+                    OBSERVED_AT,
+                    vec![OBSERVED_AT; QUEUE_CAP],
+                    vec![UnitKind::Breaker, UnitKind::Avalanche],
+                ),
+            ],
+        );
+        let earliest_enqueue_dominates =
+            current_bank_covers_all_claims(&basis, 0, 0, &[], &[], &jobs);
+        assert!(earliest_enqueue_dominates);
+
+        let mut producer_state = basis.resources.producers().to_vec();
+        let mut remaining = vec![true; jobs.len()];
+        let mut search = ProductionPortfolioSearch {
+            capacity: &basis,
+            jobs: &jobs,
+            current_capital: 0,
+            minimum_residual_scrap: 0,
+            guarded_minimum_residual_scrap: 0,
+            voluntary_scrap_guard: PortfolioVoluntaryScrapGuard::default(),
+            forecast_capital: &[],
+            deferrable_capital: &[],
+            earliest_enqueue_dominates,
+            failed: BTreeSet::new(),
+            explored_states: 0,
+            memo_hits: 0,
+            funding_mode: JointFundingMode::PreferPriority,
+        };
+
+        assert!(!search.find(
+            &mut producer_state,
+            &mut remaining,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        ));
+        assert!(
+            search.explored_states <= 1_000,
+            "a current-funded lane conflict should not branch over irrelevant income ticks: {}",
+            search.explored_states
         );
     }
 
@@ -4908,8 +6421,12 @@ mod tests {
             capacity: &basis,
             jobs: &jobs,
             current_capital: 0,
+            minimum_residual_scrap: 0,
+            guarded_minimum_residual_scrap: 0,
+            voluntary_scrap_guard: PortfolioVoluntaryScrapGuard::default(),
             forecast_capital: &[],
             deferrable_capital: &[],
+            earliest_enqueue_dominates: true,
             failed: BTreeSet::new(),
             explored_states: 0,
             memo_hits: 0,
@@ -4960,10 +6477,7 @@ mod tests {
             ),
         };
         let mut attack = offense(0, vec![], ordinary_case());
-        let InvestmentProposal::ConnectedOffenseMinimum { claims, .. } = &mut attack else {
-            unreachable!()
-        };
-        *claims = bundle(
+        *attack.claims_mut() = bundle(
             0,
             vec![],
             vec![],
@@ -5184,14 +6698,14 @@ mod tests {
             )],
         );
 
-        let forward = allocate::<(), ()>(
+        let forward = allocate::<()>(
             &basis,
             vec![older.clone(), newer.clone()],
             vec![],
             AllocationPersonality::default(),
         )
         .expect("chronological obligations fit the retained lane");
-        let reverse = allocate::<(), ()>(
+        let reverse = allocate::<()>(
             &basis,
             vec![newer, older],
             vec![],
@@ -5252,10 +6766,7 @@ mod tests {
             vec![],
             vec![{
                 let mut attack = offense(0, vec![], ordinary_case());
-                let InvestmentProposal::ConnectedOffenseMinimum { claims, .. } = &mut attack else {
-                    unreachable!()
-                };
-                *claims = bundle(
+                *attack.claims_mut() = bundle(
                     0,
                     vec![],
                     vec![],
@@ -5357,17 +6868,17 @@ mod tests {
                 )],
             )
         };
-        let proposal = |claims| -> InvestmentProposal<&'static str, &'static str> {
-            InvestmentProposal::ConnectedOffenseMinimum {
-                key: ConnectedOffenseKey {
+        let proposal = |claims| -> InvestmentProposal<&'static str> {
+            InvestmentProposal::retained(
+                ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
                     objective: BuildingId(90),
                     anchor: TilePos::new(40, 10),
-                },
-                case: ordinary_case(),
-                accepted_at: 0,
+                }),
+                ordinary_case(),
+                0,
                 claims,
-                payload: "attack",
-            }
+                "attack",
+            )
         };
 
         let exact = allocate(
@@ -5439,11 +6950,431 @@ mod tests {
     }
 
     #[test]
+    fn immediate_job_enqueues_now_and_never_uses_forecast_credit() {
+        const OBSERVED_AT: Tick = 120;
+        const CADENCE: Tick = 12;
+        const HORIZON: Tick = 1_200;
+        let producer = BuildingId(7);
+        let cost = UnitKind::Sentinel.stats().cost;
+        let producer_basis = || {
+            vec![timed_producer_fixture(
+                producer,
+                OBSERVED_AT,
+                CADENCE,
+                OBSERVED_AT,
+                vec![OBSERVED_AT; QUEUE_CAP],
+                vec![UnitKind::Sentinel],
+            )]
+        };
+        let proposal = |job| with_jobs(standing(UnitKind::Sentinel, 0, ordinary_case()), vec![job]);
+
+        let current_funded = allocate(
+            &timed_capacity(
+                cost,
+                OBSERVED_AT,
+                HORIZON,
+                CADENCE,
+                vec![],
+                producer_basis(),
+            ),
+            vec![],
+            vec![proposal(ProducerJobClaim::immediate(
+                UnitKind::Sentinel,
+                OBSERVED_AT,
+                HORIZON,
+                vec![producer],
+            ))],
+            AllocationPersonality::default(),
+        )
+        .expect("current bank can fund the immediate standing-force request");
+        assert_eq!(current_funded.accepted.len(), 1);
+        assert_eq!(current_funded.producer_schedule.len(), 1);
+        assert_eq!(current_funded.producer_schedule[0].enqueued_at, OBSERVED_AT);
+        assert_eq!(current_funded.producer_schedule[0].current_scrap, cost);
+        assert_eq!(current_funded.producer_schedule[0].forecast_scrap, 0);
+
+        for requested_at in [OBSERVED_AT - 1, OBSERVED_AT + 1] {
+            let mistimed = allocate(
+                &timed_capacity(
+                    cost,
+                    OBSERVED_AT,
+                    HORIZON,
+                    CADENCE,
+                    vec![],
+                    producer_basis(),
+                ),
+                vec![],
+                vec![proposal(ProducerJobClaim::immediate(
+                    UnitKind::Sentinel,
+                    requested_at,
+                    HORIZON,
+                    vec![producer],
+                ))],
+                AllocationPersonality::default(),
+            )
+            .expect("a mistimed stateless request is a proposal-local rejection");
+            assert!(mistimed.accepted.is_empty());
+            assert!(matches!(
+                mistimed.decisions[0].disposition,
+                ProposalDisposition::Rejected(ProposalRejection::Infeasible(
+                    AllocationConflict::ImmediateProducerTiming {
+                        enqueue_not_before,
+                        enqueue_not_after,
+                        observed_at: OBSERVED_AT,
+                    }
+                )) if enqueue_not_before == requested_at && enqueue_not_after == requested_at
+            ));
+        }
+
+        let compatible_portfolio = allocate(
+            &timed_capacity(
+                cost.saturating_add(50),
+                OBSERVED_AT,
+                HORIZON,
+                CADENCE,
+                vec![ForecastAvailability {
+                    available_at: OBSERVED_AT + CADENCE,
+                    amount: 50,
+                }],
+                producer_basis(),
+            ),
+            vec![],
+            vec![
+                deferrable_foundry(10, 100, HORIZON, ordinary_case()),
+                offense(0, vec![], ordinary_case()),
+                proposal(ProducerJobClaim::immediate(
+                    UnitKind::Sentinel,
+                    OBSERVED_AT,
+                    HORIZON,
+                    vec![producer],
+                )),
+            ],
+            AllocationPersonality::default(),
+        )
+        .expect("flexible capital can use forecast while immediate work keeps current bank");
+        assert_eq!(compatible_portfolio.accepted.len(), 3);
+        assert_eq!(
+            compatible_portfolio.producer_schedule[0].current_scrap,
+            cost
+        );
+        assert_eq!(compatible_portfolio.producer_schedule[0].forecast_scrap, 0);
+        let foundry_owner =
+            ClaimOwner::Proposal(ProposalKey::FoundryExpansion(FoundryExpansionKey {
+                anchor: TilePos::new(10, 10),
+            }));
+        assert_eq!(
+            compatible_portfolio
+                .capital_assignments
+                .iter()
+                .find(|assignment| assignment.owner == foundry_owner)
+                .map(|assignment| (assignment.current_scrap, assignment.forecast_scrap)),
+            Some((50, 50))
+        );
+
+        let later_income = ForecastAvailability {
+            available_at: OBSERVED_AT + CADENCE,
+            amount: cost,
+        };
+        let delayed = allocate(
+            &timed_capacity(
+                0,
+                OBSERVED_AT,
+                HORIZON,
+                CADENCE,
+                vec![later_income],
+                producer_basis(),
+            ),
+            vec![],
+            vec![proposal(ProducerJobClaim::flexible(
+                UnitKind::Sentinel,
+                OBSERVED_AT,
+                HORIZON,
+                vec![producer],
+            ))],
+            AllocationPersonality::default(),
+        )
+        .expect("a persistent request may wait for completed-source income");
+        assert_eq!(
+            delayed.producer_schedule[0].enqueued_at,
+            OBSERVED_AT + CADENCE
+        );
+        assert_eq!(delayed.producer_schedule[0].forecast_scrap, cost);
+
+        let immediate_without_current = allocate(
+            &timed_capacity(
+                0,
+                OBSERVED_AT,
+                HORIZON,
+                CADENCE,
+                vec![later_income],
+                producer_basis(),
+            ),
+            vec![],
+            vec![proposal(ProducerJobClaim::immediate(
+                UnitKind::Sentinel,
+                OBSERVED_AT,
+                HORIZON,
+                vec![producer],
+            ))],
+            AllocationPersonality::default(),
+        )
+        .expect("an unfunded fresh request is a traceable proposal rejection");
+        assert!(immediate_without_current.accepted.is_empty());
+        assert!(matches!(
+            immediate_without_current.decisions[0].disposition,
+            ProposalDisposition::Rejected(ProposalRejection::Infeasible(
+                AllocationConflict::ProductionFunding {
+                    through: OBSERVED_AT,
+                    requested,
+                    available: 0,
+                }
+            )) if requested == u128::from(cost)
+        ));
+
+        let apparent_same_tick_income = allocate(
+            &timed_capacity(
+                0,
+                OBSERVED_AT,
+                HORIZON,
+                CADENCE,
+                vec![ForecastAvailability {
+                    available_at: OBSERVED_AT,
+                    amount: cost,
+                }],
+                producer_basis(),
+            ),
+            vec![],
+            vec![proposal(ProducerJobClaim::immediate(
+                UnitKind::Sentinel,
+                OBSERVED_AT,
+                HORIZON,
+                vec![producer],
+            ))],
+            AllocationPersonality::default(),
+        )
+        .expect("forecast-labeled income never satisfies a current-only request");
+        assert!(apparent_same_tick_income.accepted.is_empty());
+        assert!(matches!(
+            apparent_same_tick_income.decisions[0].disposition,
+            ProposalDisposition::Rejected(ProposalRejection::Infeasible(
+                AllocationConflict::ProductionFunding {
+                    through: OBSERVED_AT,
+                    requested,
+                    available: 0,
+                }
+            )) if requested == u128::from(cost)
+        ));
+    }
+
+    #[test]
+    fn minimum_residual_scrap_is_current_only_and_remains_unclaimed() {
+        const OBSERVED_AT: Tick = 120;
+        const CADENCE: Tick = 12;
+        const HORIZON: Tick = 1_200;
+        const RESIDUAL_FLOOR: u32 = 150;
+        let producer = BuildingId(7);
+        let kind = UnitKind::Sentinel;
+        let cost = kind.stats().cost;
+        let proposal = || {
+            let mut proposal = with_jobs(
+                standing(kind, 0, ordinary_case()),
+                vec![ProducerJobClaim::immediate(
+                    kind,
+                    OBSERVED_AT,
+                    HORIZON,
+                    vec![producer],
+                )],
+            );
+            proposal.claims_mut().minimum_residual_scrap = RESIDUAL_FLOOR;
+            proposal
+        };
+        let capacity = |current_scrap, forecast_income| {
+            timed_capacity(
+                current_scrap,
+                OBSERVED_AT,
+                HORIZON,
+                CADENCE,
+                forecast_income,
+                vec![timed_producer_fixture(
+                    producer,
+                    OBSERVED_AT,
+                    CADENCE,
+                    OBSERVED_AT,
+                    vec![OBSERVED_AT; QUEUE_CAP],
+                    vec![kind],
+                )],
+            )
+        };
+
+        let short = allocate(
+            &capacity(
+                cost.saturating_add(RESIDUAL_FLOOR).saturating_sub(1),
+                vec![ForecastAvailability {
+                    available_at: OBSERVED_AT,
+                    amount: 1_000,
+                }],
+            ),
+            vec![],
+            vec![proposal()],
+            AllocationPersonality::default(),
+        )
+        .expect("an unfunded floor is a proposal-local rejection");
+        assert!(short.accepted.is_empty());
+        match &short.decisions[0].disposition {
+            ProposalDisposition::Rejected(ProposalRejection::Infeasible(
+                AllocationConflict::ProductionFunding {
+                    through,
+                    requested,
+                    available,
+                },
+            )) => {
+                assert_eq!(*through, OBSERVED_AT);
+                assert_eq!(*requested, u128::from(cost.saturating_add(RESIDUAL_FLOOR)));
+                assert_eq!(
+                    *available,
+                    u128::from(cost.saturating_add(RESIDUAL_FLOOR) - 1)
+                );
+            }
+            other => panic!("unexpected rejection: {other:?}"),
+        }
+
+        let exact = allocate(
+            &capacity(cost.saturating_add(RESIDUAL_FLOOR), vec![]),
+            vec![],
+            vec![proposal()],
+            AllocationPersonality::default(),
+        )
+        .expect("current bank covers the purchase beside the residual floor");
+        assert_eq!(exact.accepted.len(), 1);
+        assert_eq!(exact.selected_state.minimum_residual_scrap, RESIDUAL_FLOOR);
+        assert_eq!(exact.selected_state.current_scrap, 0);
+        assert_eq!(exact.producer_schedule[0].current_scrap, cost);
+        assert_eq!(exact.producer_schedule[0].forecast_scrap, 0);
+        assert_eq!(
+            exact.accepted[0].claims().claimed_capital(),
+            u128::from(cost),
+            "the residual floor constrains compatibility without becoming owned capital"
+        );
+    }
+
+    #[test]
+    fn immediate_standing_work_respects_mandatory_lane_and_funding_ownership() {
+        const OBSERVED_AT: Tick = 120;
+        const CADENCE: Tick = 12;
+        const HORIZON: Tick = 1_200;
+        let producer = BuildingId(7);
+        let kind = UnitKind::Sentinel;
+        let cost = kind.stats().cost;
+        let capacity = |forecast_income| {
+            timed_capacity(
+                cost,
+                OBSERVED_AT,
+                HORIZON,
+                CADENCE,
+                forecast_income,
+                vec![timed_producer_fixture(
+                    producer,
+                    OBSERVED_AT,
+                    CADENCE,
+                    OBSERVED_AT,
+                    vec![OBSERVED_AT; QUEUE_CAP],
+                    vec![kind],
+                )],
+            )
+        };
+        let obligation = |job| ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: OBSERVED_AT - CADENCE,
+            key: ObligationKey::ConnectedOffense {
+                objective: BuildingId(90),
+                anchor: TilePos::new(40, 10),
+            },
+            claims: bundle(0, vec![], vec![], vec![], vec![], vec![job]),
+        };
+        let standing = || {
+            with_jobs(
+                standing(kind, 0, ordinary_case()),
+                vec![ProducerJobClaim::immediate(
+                    kind,
+                    OBSERVED_AT,
+                    HORIZON,
+                    vec![producer],
+                )],
+            )
+        };
+
+        let due_now = allocate(
+            &capacity(vec![]),
+            vec![obligation(ProducerJobClaim::flexible(
+                kind,
+                OBSERVED_AT,
+                OBSERVED_AT + Tick::from(kind.stats().train_ticks),
+                vec![producer],
+            ))],
+            vec![standing()],
+            AllocationPersonality::default(),
+        )
+        .expect("mandatory due-now work remains feasible without the fresh purchase");
+        assert!(due_now.accepted.is_empty());
+        assert_eq!(due_now.producer_schedule.len(), 1);
+        assert!(matches!(
+            due_now.producer_schedule[0].owner,
+            ClaimOwner::Obligation { .. }
+        ));
+        assert!(matches!(
+            due_now.decisions[0].disposition,
+            ProposalDisposition::Rejected(ProposalRejection::Infeasible(
+                AllocationConflict::ProductionFunding {
+                    through: OBSERVED_AT,
+                    requested,
+                    available,
+                }
+            )) if requested == u128::from(cost) * 2 && available == u128::from(cost)
+        ));
+
+        let future = allocate(
+            &capacity(vec![ForecastAvailability {
+                available_at: OBSERVED_AT + CADENCE,
+                amount: cost,
+            }]),
+            vec![obligation(ProducerJobClaim::flexible(
+                kind,
+                OBSERVED_AT + CADENCE,
+                HORIZON,
+                vec![producer],
+            ))],
+            vec![standing()],
+            AllocationPersonality::default(),
+        )
+        .expect("later income can preserve retained work beside the current-funded purchase");
+        assert_eq!(future.accepted.len(), 1);
+        assert_eq!(future.producer_schedule.len(), 2);
+        let immediate = future
+            .producer_schedule
+            .iter()
+            .find(|job| matches!(job.owner, ClaimOwner::Proposal(_)))
+            .expect("the selected standing purchase has a scheduled job");
+        assert_eq!(immediate.enqueued_at, OBSERVED_AT);
+        assert_eq!(
+            (immediate.current_scrap, immediate.forecast_scrap),
+            (cost, 0)
+        );
+        let retained = future
+            .producer_schedule
+            .iter()
+            .find(|job| matches!(job.owner, ClaimOwner::Obligation { .. }))
+            .expect("the retained job remains scheduled");
+        assert_eq!(retained.enqueued_at, OBSERVED_AT + CADENCE);
+        assert_eq!((retained.current_scrap, retained.forecast_scrap), (0, cost));
+    }
+
+    #[test]
     fn personality_flips_marginal_choice_but_not_domain_access() {
         let proposals = || {
             vec![
                 foundry(10, 100, vec![], ordinary_case()),
                 offense(100, vec![], ordinary_case()),
+                standing(UnitKind::Warden, 100, ordinary_case()),
             ]
         };
         let basis = capacity(100, 0, vec![], vec![]);
@@ -5454,6 +7385,7 @@ mod tests {
             AllocationPersonality {
                 economy: 50,
                 offense: 0,
+                standing_force: 0,
             },
         )
         .expect("economic personality allocation");
@@ -5464,20 +7396,36 @@ mod tests {
             AllocationPersonality {
                 economy: 0,
                 offense: 50,
+                standing_force: 0,
             },
         )
         .expect("offensive personality allocation");
+        let protective = allocate(
+            &basis,
+            vec![],
+            proposals(),
+            AllocationPersonality {
+                economy: 0,
+                offense: 0,
+                standing_force: 50,
+            },
+        )
+        .expect("standing-force personality allocation");
 
         assert!(matches!(
-            economic.accepted[0],
-            InvestmentProposal::FoundryExpansion { .. }
+            economic.accepted[0].key(),
+            ProposalKey::FoundryExpansion(_)
         ));
         assert!(matches!(
-            aggressive.accepted[0],
-            InvestmentProposal::ConnectedOffenseMinimum { .. }
+            aggressive.accepted[0].key(),
+            ProposalKey::ConnectedOffenseMinimum(_)
         ));
-        for result in [&economic, &aggressive] {
-            assert_eq!(result.decisions.len(), 2);
+        assert!(matches!(
+            protective.accepted[0].key(),
+            ProposalKey::StandingForce(_)
+        ));
+        for result in [&economic, &aggressive, &protective] {
+            assert_eq!(result.decisions.len(), 3);
             assert!(
                 result
                     .decisions
@@ -5504,15 +7452,16 @@ mod tests {
             safety: ExecutionSafety::Speculative,
         };
         let pressing_rank = portfolio_rank(
-            1,
+            &[0],
             &[foundry(10, 0, vec![], pressing)],
             AllocationPersonality {
                 economy: 0,
                 offense: u16::MAX,
+                standing_force: 0,
             },
         );
         let developmental_rank = portfolio_rank(
-            3,
+            &[0, 1],
             &[
                 foundry(10, 0, vec![], developmental),
                 offense(0, vec![], developmental),
@@ -5520,6 +7469,7 @@ mod tests {
             AllocationPersonality {
                 economy: u16::MAX,
                 offense: u16::MAX,
+                standing_force: u16::MAX,
             },
         );
 
@@ -5582,12 +7532,12 @@ mod tests {
 
         for (expected, stronger, weaker) in cases {
             let stronger = portfolio_rank(
-                1,
+                &[0],
                 &[foundry(10, 0, Vec::new(), stronger)],
                 AllocationPersonality::default(),
             );
             let weaker = portfolio_rank(
-                1,
+                &[0],
                 &[foundry(10, 0, Vec::new(), weaker)],
                 AllocationPersonality::default(),
             );
@@ -5606,9 +7556,10 @@ mod tests {
         let personality = AllocationPersonality {
             economy: 40,
             offense: 10,
+            standing_force: 0,
         };
-        let expansion = portfolio_rank(1, &proposals, personality);
-        let offense = portfolio_rank(2, &proposals, personality);
+        let expansion = portfolio_rank(&[0], &proposals, personality);
+        let offense = portfolio_rank(&[1], &proposals, personality);
 
         assert!(expansion > offense);
         assert_eq!(
@@ -5631,8 +7582,8 @@ mod tests {
         )
         .expect("capital tie-break");
         assert!(matches!(
-            cheaper_offense.accepted[0],
-            InvestmentProposal::ConnectedOffenseMinimum { .. }
+            cheaper_offense.accepted[0].key(),
+            ProposalKey::ConnectedOffenseMinimum(_)
         ));
 
         let structural = allocate(
@@ -5646,16 +7597,16 @@ mod tests {
         )
         .expect("structural tie-break");
         assert!(matches!(
-            structural.accepted[0],
-            InvestmentProposal::FoundryExpansion { .. }
+            structural.accepted[0].key(),
+            ProposalKey::FoundryExpansion(_)
         ));
 
         let capital_proposals = [
             foundry(10, 100, vec![], ordinary_case()),
             offense(90, vec![], ordinary_case()),
         ];
-        let expensive = portfolio_rank(1, &capital_proposals, AllocationPersonality::default());
-        let cheap = portfolio_rank(2, &capital_proposals, AllocationPersonality::default());
+        let expensive = portfolio_rank(&[0], &capital_proposals, AllocationPersonality::default());
+        let cheap = portfolio_rank(&[1], &capital_proposals, AllocationPersonality::default());
         assert_eq!(
             outranking_basis(&cheap, &expensive),
             Some(OutrankingBasis::LowerCapital)
@@ -5665,8 +7616,16 @@ mod tests {
             foundry(10, 100, vec![], ordinary_case()),
             offense(100, vec![], ordinary_case()),
         ];
-        let canonical = portfolio_rank(1, &structural_proposals, AllocationPersonality::default());
-        let later = portfolio_rank(2, &structural_proposals, AllocationPersonality::default());
+        let canonical = portfolio_rank(
+            &[0],
+            &structural_proposals,
+            AllocationPersonality::default(),
+        );
+        let later = portfolio_rank(
+            &[1],
+            &structural_proposals,
+            AllocationPersonality::default(),
+        );
         assert_eq!(
             outranking_basis(&canonical, &later),
             Some(OutrankingBasis::StructuralKey)

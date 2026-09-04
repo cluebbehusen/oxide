@@ -51,7 +51,8 @@ pub(in crate::bot) use construction::AdjudicatedFoundryCommit;
 pub(in crate::bot) use construction::{
     FoundryConfidence, FoundryExecutionSafety, FoundryOpportunityCase, FoundryStrategicValue,
     FoundryTimeToImpact, FoundryUrgency, FreshEmergencyDefense, FreshEmergencyDefenseContext,
-    FreshFoundryProposal, FreshFoundryProposalContext, ValidatedFoundryObligation,
+    FreshFoundryInvestment, FreshFoundryProposal, FreshFoundryProposalContext,
+    ResidualInvestmentReserveContext, SavedFoundryReadiness, ValidatedFoundryObligation,
 };
 pub(in crate::bot) use production::{CombatCoreStatus, combat_core_status};
 
@@ -76,7 +77,7 @@ const TECH_RESERVE: u32 = 70;
 /// A production queue this shallow accepts another order; deeper queues
 /// hoard scrap in trains that cannot be redirected. The strategic air
 /// and lift planners keep their own equal constants for their queues.
-const SHALLOW_QUEUE_DEPTH: usize = 2;
+pub(in crate::bot) const SHALLOW_QUEUE_DEPTH: usize = 2;
 /// Most flak turrets the policy will pay for against an air threat.
 const FLAK_CAP: usize = 2;
 /// Most Reclaimers the policy will run at once.
@@ -519,8 +520,6 @@ pub struct Dials {
     pub expansion_greed: u8,
     /// Use the player-facing multi-factory composition scheduler.
     pub adaptive_composition: bool,
-    /// Most discretionary production candidates serviced per think.
-    pub discretionary_slots: usize,
     /// Fixed difficulty estimate scale for own ground strength, in
     /// ten-thousandths. Easier rungs are deliberately conservative;
     /// personality never changes this value.
@@ -628,7 +627,6 @@ impl Dials {
             barricade_cap: 0,
             expansion_greed: 50,
             adaptive_composition: false,
-            discretionary_slots: 1,
             own_strength_scale: 10_000,
             enemy_strength_scale: 10_000,
             opponent_force_memory: 0,
@@ -673,7 +671,6 @@ impl Dials {
             barricade_cap: 0,
             expansion_greed: 50,
             adaptive_composition: false,
-            discretionary_slots: 1,
             own_strength_scale: 10_000,
             enemy_strength_scale: 10_000,
             opponent_force_memory: 0,
@@ -721,7 +718,6 @@ impl Dials {
             barricade_cap: 0,
             expansion_greed: 50,
             adaptive_composition: false,
-            discretionary_slots: 1,
             own_strength_scale: 10_000,
             enemy_strength_scale: 10_000,
             opponent_force_memory: 0,
@@ -792,7 +788,6 @@ impl Dials {
                 + usize::from(traits.fortification >= 90),
             expansion_greed: traits.greed,
             adaptive_composition: true,
-            discretionary_slots: tuning.production_slots,
             own_strength_scale: tuning
                 .underestimate_own(10_000)
                 .try_into()
@@ -953,6 +948,7 @@ struct ThinkContext<'a> {
     combat_core_exclusions: &'a [UnitId],
     outstanding_air_production_ticks: Option<u64>,
     prior_scrap_commitment: u32,
+    voluntary_scrap_guard: Option<u32>,
     prelude: Vec<Intent>,
     producer_lane_reservations: &'a ProducerLaneReservations,
     mode: PolicyMode<'a>,
@@ -1212,6 +1208,7 @@ pub(super) struct StrategicUtilityContext<'a> {
     public_map: &'a PublicMapBriefing,
     outstanding_air_production_ticks: Option<u64>,
     prior_scrap_commitment: u32,
+    voluntary_scrap_guard: Option<u32>,
     prelude: Vec<Intent>,
     producer_lane_reservations: &'a ProducerLaneReservations,
 }
@@ -1232,6 +1229,7 @@ impl<'a> StrategicUtilityContext<'a> {
             public_map,
             outstanding_air_production_ticks: None,
             prior_scrap_commitment: 0,
+            voluntary_scrap_guard: None,
             prelude,
             producer_lane_reservations: ProducerLaneReservations::empty(),
         }
@@ -1253,6 +1251,13 @@ impl<'a> StrategicUtilityContext<'a> {
 
     pub(super) const fn with_prior_scrap_commitment(mut self, amount: u32) -> Self {
         self.prior_scrap_commitment = amount;
+        self
+    }
+
+    /// Carries the allocator's unsatisfied shallow-screen remainder into
+    /// residual voluntary spending without transferring ownership of it.
+    pub(super) const fn with_voluntary_scrap_guard(mut self, amount: u32) -> Self {
+        self.voluntary_scrap_guard = Some(amount);
         self
     }
 
@@ -1430,9 +1435,6 @@ impl UtilityPolicy {
                     .my_queues
                     .get(queue_index)
                     .map_or(&[][..], Vec::as_slice);
-                // Production can finish the front item before a deferred
-                // founder pays later in the same tick. Only a Sentinel behind
-                // that item is guaranteed to remain queued across the phase.
                 if queue
                     .iter()
                     .skip(1)
@@ -1456,6 +1458,23 @@ impl UtilityPolicy {
             })
     }
 
+    pub(in crate::bot) fn shallow_sentinel_capital_reserve(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        home: TilePos,
+        public_map: &PublicMapBriefing,
+        intents: &[Intent],
+    ) -> u32 {
+        if dials.minimum_core_equivalents == 0
+            || !self.has_honest_ground_objective(dials, obs, home, Some(public_map))
+            || Self::shallow_sentinel_reinforcement(obs, intents)
+        {
+            return 0;
+        }
+        UnitKind::Sentinel.stats().cost
+    }
+
     fn unpaid_deferred_construction(obs: &Observation, intents: &[Intent]) -> bool {
         intents.iter().any(|intent| match intent {
             Intent::Build { kind, anchor } | Intent::BuildWith { kind, anchor, .. } => {
@@ -1472,22 +1491,6 @@ impl UtilityPolicy {
             }
             _ => false,
         })
-    }
-
-    pub(super) fn shallow_sentinel_capital_reserve(
-        &self,
-        dials: &Dials,
-        obs: &Observation,
-        home: TilePos,
-        public_map: &PublicMapBriefing,
-    ) -> u32 {
-        if dials.minimum_core_equivalents == 0
-            || !self.has_honest_ground_objective(dials, obs, home, Some(public_map))
-            || Self::shallow_sentinel_reinforcement(obs, &[])
-        {
-            return 0;
-        }
-        UnitKind::Sentinel.stats().cost
     }
 
     pub(super) fn strategic_opening_bootstrap_reserve(
@@ -1514,64 +1517,6 @@ impl UtilityPolicy {
             .with_public_map(Some(public_map)),
             &[],
         )
-    }
-
-    fn maintain_shallow_sentinel_reinforcement(
-        obs: &Observation,
-        producer_lane_reservations: &ProducerLaneReservations,
-        budget: &mut u32,
-        intents: &mut Vec<Intent>,
-    ) -> bool {
-        if Self::shallow_sentinel_reinforcement(obs, intents) {
-            return true;
-        }
-        let sentinel_cost = UnitKind::Sentinel.stats().cost;
-        if *budget < sentinel_cost {
-            return false;
-        }
-        let producer = obs
-            .my_buildings
-            .iter()
-            .enumerate()
-            .filter(|(_, building)| building.built && building.kind == BuildingKind::Foundry)
-            .filter_map(|(queue_index, building)| {
-                let depth = obs
-                    .my_queues
-                    .get(queue_index)
-                    .map_or(2, Vec::len)
-                    .saturating_add(production::planned_at(intents, building.id));
-                let prior_immediate = production::planned_kinds_at(intents, building.id);
-                (depth < 2
-                    && producer_lane_reservations.allows_raw_immediate_append(
-                        building.id,
-                        &prior_immediate,
-                        UnitKind::Sentinel,
-                    ))
-                .then_some((depth, building.id))
-            })
-            .min();
-        let Some((_, building)) = producer else {
-            return false;
-        };
-
-        *budget -= sentinel_cost;
-        let before_capital = intents
-            .iter()
-            .position(|intent| {
-                matches!(
-                    intent,
-                    Intent::Build { .. } | Intent::BuildWith { .. } | Intent::Upgrade { .. }
-                )
-            })
-            .unwrap_or(intents.len());
-        intents.insert(
-            before_capital,
-            Intent::TrainAt {
-                building,
-                kind: UnitKind::Sentinel,
-            },
-        );
-        true
     }
 
     fn construction_channel_spent(intents: &[Intent]) -> bool {
@@ -2154,6 +2099,7 @@ impl UtilityPolicy {
                 combat_core_exclusions: &[],
                 outstanding_air_production_ticks: None,
                 prior_scrap_commitment: 0,
+                voluntary_scrap_guard: None,
                 prelude: Vec::new(),
                 producer_lane_reservations: ProducerLaneReservations::empty(),
                 mode: PolicyMode {
@@ -2192,6 +2138,7 @@ impl UtilityPolicy {
                 combat_core_exclusions: reserved,
                 outstanding_air_production_ticks: None,
                 prior_scrap_commitment: 0,
+                voluntary_scrap_guard: None,
                 prelude: Vec::new(),
                 producer_lane_reservations: ProducerLaneReservations::empty(),
                 mode: PolicyMode {
@@ -2225,6 +2172,7 @@ impl UtilityPolicy {
                 combat_core_exclusions: context.combat_core_exclusions,
                 outstanding_air_production_ticks: context.outstanding_air_production_ticks,
                 prior_scrap_commitment: context.prior_scrap_commitment,
+                voluntary_scrap_guard: context.voluntary_scrap_guard,
                 prelude: context.prelude,
                 producer_lane_reservations: context.producer_lane_reservations,
                 mode: PolicyMode {
@@ -2251,22 +2199,13 @@ impl UtilityPolicy {
             combat_core_exclusions,
             outstanding_air_production_ticks,
             prior_scrap_commitment,
+            voluntary_scrap_guard,
             prelude,
             producer_lane_reservations,
             mode,
         } = context;
         let strategic_reserved = reserved;
         let player_facing = mode.player_facing;
-        let strategic_capital_advanced = player_facing
-            && prelude.iter().any(|intent| {
-                matches!(
-                    intent,
-                    Intent::TrainAt { .. }
-                        | Intent::Build { .. }
-                        | Intent::BuildWith { .. }
-                        | Intent::Upgrade { .. }
-                )
-            });
         let strategic_production = strategic_production_claims(&prelude);
         let mut intents = prelude;
         let Some(home) = obs
@@ -2524,32 +2463,13 @@ impl UtilityPolicy {
             0
         };
         let opening_bootstrap_active = opening_bootstrap_reserve > 0;
-        let paid_site_needs_shallow_reinforcement = has_ground_objective
-            && construction_commitment == 0
-            && !Self::unpaid_deferred_construction(obs, &intents)
-            && obs
-                .my_buildings
-                .iter()
-                .any(|building| !building.built && building.tier == 0);
-        if manages_opening
-            && !opening_core_deficient
-            && !opening_bootstrap_active
-            && paid_site_needs_shallow_reinforcement
-        {
-            Self::maintain_shallow_sentinel_reinforcement(
-                obs,
-                producer_lane_reservations,
-                &mut budget,
-                &mut intents,
-            );
-        }
-        let shallow_capital_guard =
+        let shallow_capital_guard = voluntary_scrap_guard.unwrap_or_else(|| {
             if has_ground_objective && !Self::shallow_sentinel_reinforcement(obs, &intents) {
                 UnitKind::Sentinel.stats().cost
             } else {
                 0
-            };
-
+            }
+        });
         if manages_opening && !opening_core_deficient && !opening_bootstrap_active {
             let production_guard = shallow_capital_guard.max(opening_bootstrap_reserve);
             expansion_capital_promised = self.production_with_commitments(
@@ -2576,24 +2496,6 @@ impl UtilityPolicy {
                     obs,
                     construction_context
                         .with_voluntary_scrap_guard(Reserve::Exact(production_guard)),
-                    &mut budget,
-                    &mut intents,
-                );
-            }
-            let capital_advanced = strategic_capital_advanced
-                || construction_commitment > 0
-                || intents.iter().any(|intent| {
-                    matches!(
-                        intent,
-                        Intent::Build { .. } | Intent::BuildWith { .. } | Intent::Upgrade { .. }
-                    )
-                });
-            let unpaid_deferred_capital =
-                construction_commitment > 0 || Self::unpaid_deferred_construction(obs, &intents);
-            if has_ground_objective && capital_advanced && !unpaid_deferred_capital {
-                Self::maintain_shallow_sentinel_reinforcement(
-                    obs,
-                    producer_lane_reservations,
                     &mut budget,
                     &mut intents,
                 );
@@ -3387,6 +3289,7 @@ mod tests {
     use crate::bot::{PersonalityTraits, Specialty};
     use crate::ids::{BuildingId, PlayerId, UnitId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec, UnitSpec};
+    use crate::stats::Role;
     use crate::{Command, PlayerCommand, Scenario};
 
     fn obs_with(units: Vec<UnitObs>) -> Observation {
@@ -3503,7 +3406,7 @@ mod tests {
     }
 
     #[test]
-    fn shallow_reinforcement_escape_requires_proven_static_disconnection() {
+    fn standing_force_escape_requires_proven_static_disconnection() {
         let home = TilePos::new(2, 10);
         let enemy_start = TilePos::new(29, 10);
         let mut obs = obs_with(Vec::new());
@@ -3924,49 +3827,47 @@ mod tests {
     }
 
     #[test]
-    fn deferred_retention_uses_the_bank_after_strategic_commitments() {
-        let home = TilePos::new(3, 3);
-        let claim = (BuildingKind::Fabricator, TilePos::new(9, 3));
-        let mut units: Vec<_> = (0..8)
-            .map(|id| {
-                fighter(
-                    id,
-                    PlayerId(0),
-                    TilePos::new(5 + i32::try_from(id).expect("small fixture id"), 8),
-                )
-            })
-            .collect();
-        units.push(UnitObs {
-            tile: TilePos::new(6, 4),
-            ..harvester(20, Some(claim))
-        });
-        units.extend((21..24).map(|id| harvester(id, None)));
-        let mut obs = obs_with(units);
-        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
-        obs.my_queues = vec![Vec::new()];
-        let mut enemy = standing_building(30, BuildingKind::Foundry, TilePos::new(24, 12));
-        enemy.player = PlayerId(1);
-        obs.enemy_buildings.push(enemy);
-        let capital_cost = BuildingKind::Fabricator
-            .base_stats()
-            .construction
-            .expect("Fabricators have a construction price")
-            .cost;
-        let sentinel_cost = UnitKind::Sentinel.stats().cost;
-        obs.scrap = capital_cost + sentinel_cost;
-        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201)
-            .resolve_profile();
-        let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
+    fn player_facing_residual_does_not_originate_standing_force_orders() {
+        let (obs, dials) = standing_force_residual_fixture();
         let map = public_map(&obs);
-        let context = StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new())
-            .with_prior_scrap_commitment(1);
+
+        let intents = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+
+        assert!(
+            intents.iter().all(|intent| !matches!(
+                intent,
+                Intent::TrainAt { kind, .. }
+                    if kind.stats().can_fight() && kind.role() != Role::Scuttler
+            )),
+            "the residual policy must leave Standing-owned combat production to shared allocation: {intents:?}"
+        );
+    }
+
+    #[test]
+    fn player_facing_residual_retains_one_allocated_standing_order_without_duplication() {
+        let (obs, dials) = standing_force_residual_fixture();
+        let map = public_map(&obs);
+        let accepted = Intent::TrainAt {
+            building: BuildingId(11),
+            kind: UnitKind::Lancer,
+        };
+        let context = StrategicUtilityContext::new(&[], &[], &[], &map, vec![accepted.clone()])
+            .with_prior_scrap_commitment(UnitKind::Lancer.stats().cost);
 
         let intents = UtilityPolicy::new().think_with_intelligence(&dials, &obs, &[], &[], context);
+        let combat_orders: Vec<_> = intents
+            .iter()
+            .filter(|intent| {
+                matches!(
+                    intent,
+                    Intent::TrainAt { kind, .. }
+                        if kind.stats().can_fight() && kind.role() != Role::Scuttler
+                )
+            })
+            .cloned()
+            .collect();
 
-        assert!(intents.iter().any(|intent| matches!(
-            intent,
-            Intent::StopUnits { units } if units == &[UnitId(20)]
-        )));
+        assert_eq!(combat_orders, [accepted]);
     }
 
     #[test]
@@ -4002,7 +3903,7 @@ mod tests {
     }
 
     #[test]
-    fn strategic_scrap_cannot_unlock_mobile_support() {
+    fn typed_capital_ownership_blocks_residual_paid_sustain() {
         let home = TilePos::new(3, 3);
         let tender = UnitObs {
             id: UnitId(1),
@@ -4036,19 +3937,35 @@ mod tests {
             repairing: false,
             grounded: false,
         };
-        let mut obs = obs_with(vec![tender, patient]);
-        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
-        obs.my_queues = vec![Vec::new()];
-        obs.scrap = UnitKind::Sentinel.stats().cost;
+        let builder = harvester(3, None);
+        let mut obs = obs_with(vec![tender, patient, builder]);
+        obs.my_buildings = vec![
+            standing_building(10, BuildingKind::Foundry, home),
+            standing_building(11, BuildingKind::Fabricator, home.offset(5, 0)),
+        ];
+        obs.my_queues = vec![Vec::new(), Vec::new()];
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries have a construction price")
+            .cost;
+        obs.scrap = foundry_cost;
         let map = public_map(&obs);
         let mut dials = Dials::full();
         dials.adaptive_composition = true;
-        dials.discretionary_slots = 0;
         dials.harvester_target = 0;
         dials.army_size = 0;
         dials.tech = false;
+        dials.deep_tech = false;
         dials.scouting = false;
         dials.salvage = false;
+        dials.radar = false;
+        dials.reclaimers = false;
+        dials.extractors = false;
+        dials.upgrades = false;
+        dials.expansion = false;
+        dials.mines = false;
+        dials.support_target = 1;
 
         let available = UtilityPolicy::new().think_with_intelligence(
             &dials,
@@ -4063,39 +3980,27 @@ mod tests {
                 if welders == &[UnitId(1)] && *target == UnitId(2)
         )));
 
+        let accepted = Intent::BuildWith {
+            builder: UnitId(3),
+            kind: BuildingKind::Foundry,
+            anchor: TilePos::new(16, 3),
+        };
         let held = UtilityPolicy::new().think_with_intelligence(
             &dials,
             &obs,
             &[],
             &[],
-            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new())
-                .with_prior_scrap_commitment(1),
+            StrategicUtilityContext::new(&[], &[], &[], &map, vec![accepted.clone()])
+                .with_prior_scrap_commitment(foundry_cost),
         );
         assert!(
             held.iter()
                 .all(|intent| !matches!(intent, Intent::RepairUnits { .. }))
         );
-
-        dials.army_size = 2;
-        let spent_earlier_this_think = UtilityPolicy::new().think_with_intelligence(
-            &dials,
-            &obs,
-            &[],
-            &[],
-            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new()),
-        );
-        assert!(spent_earlier_this_think.iter().any(|intent| matches!(
-            intent,
-            Intent::TrainAt {
-                kind: UnitKind::Sentinel,
-                ..
-            }
-        )));
-        assert!(
-            spent_earlier_this_think
-                .iter()
-                .all(|intent| !matches!(intent, Intent::RepairUnits { .. })),
-            "mobile support cannot reuse scrap already committed to ordinary production"
+        assert_eq!(
+            held.iter().filter(|intent| *intent == &accepted).count(),
+            1,
+            "residual utility must preserve the accepted capital plan exactly once: {held:?}"
         );
     }
 
@@ -4267,312 +4172,6 @@ mod tests {
     }
 
     #[test]
-    fn a_travelling_capital_claim_requires_a_shallow_bank_after_reinforcement_finishes() {
-        let home = TilePos::new(3, 3);
-        let claim = (BuildingKind::Fabricator, TilePos::new(9, 3));
-        let mut units: Vec<_> = (0..8)
-            .map(|id| {
-                fighter(
-                    id,
-                    PlayerId(0),
-                    TilePos::new(5 + i32::try_from(id).expect("small fixture id"), 8),
-                )
-            })
-            .collect();
-        units.push(UnitObs {
-            tile: TilePos::new(6, 4),
-            ..harvester(20, Some(claim))
-        });
-        units.extend((21..24).map(|id| UnitObs {
-            tile: TilePos::new(6 + i32::try_from(id - 20).expect("small fixture id"), 5),
-            ..harvester(id, None)
-        }));
-        let mut obs = obs_with(units);
-        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
-        obs.my_queues = vec![Vec::new()];
-        let mut enemy = standing_building(30, BuildingKind::Foundry, TilePos::new(24, 12));
-        enemy.player = PlayerId(1);
-        obs.enemy_buildings.push(enemy);
-        let capital_cost = BuildingKind::Fabricator
-            .base_stats()
-            .construction
-            .expect("Fabricators have a construction price")
-            .cost;
-        let sentinel_cost = UnitKind::Sentinel.stats().cost;
-        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201)
-            .resolve_profile();
-        let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
-        let map = public_map(&obs);
-
-        obs.scrap = capital_cost;
-        let paused = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
-        assert!(paused.iter().any(|intent| matches!(
-            intent,
-            Intent::StopUnits { units } if units == &[UnitId(20)]
-        )));
-        assert!(paused.iter().all(|intent| !matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Fabricator,
-                ..
-            } | Intent::BuildWith {
-                kind: BuildingKind::Fabricator,
-                ..
-            }
-        )));
-
-        obs.scrap = capital_cost + sentinel_cost;
-        let retained = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
-        assert!(retained.iter().all(
-            |intent| !matches!(intent, Intent::StopUnits { units } if units == &[UnitId(20)])
-        ));
-        assert!(
-            retained.iter().all(|intent| !matches!(
-                intent,
-                Intent::TrainAt { .. }
-                    | Intent::Build { .. }
-                    | Intent::BuildWith { .. }
-                    | Intent::Upgrade { .. }
-            )),
-            "the exact surviving reserve stays banked until the deferred capital pays: {retained:?}"
-        );
-    }
-
-    #[test]
-    fn a_paid_site_turns_its_shallow_bank_into_reinforcement_before_more_capital() {
-        let home = TilePos::new(3, 3);
-        let mut units: Vec<_> = (0..8)
-            .map(|id| {
-                fighter(
-                    id,
-                    PlayerId(0),
-                    TilePos::new(5 + i32::try_from(id).expect("small fixture id"), 8),
-                )
-            })
-            .collect();
-        units.extend((20..24).map(|id| harvester(id, None)));
-        let builder = units
-            .iter_mut()
-            .find(|unit| unit.id == UnitId(20))
-            .expect("the paid site has a builder");
-        builder.idle = false;
-        builder.site = Some(BuildingId(13));
-        units.sort_unstable_by_key(|unit| unit.id);
-
-        let mut paid_site = standing_building(13, BuildingKind::Turret, TilePos::new(9, 3));
-        paid_site.built = false;
-        paid_site.hp /= 2;
-        let mut obs = obs_with(units);
-        obs.my_buildings = vec![
-            standing_building(10, BuildingKind::Foundry, home),
-            standing_building(11, BuildingKind::Fabricator, TilePos::new(4, 3)),
-            standing_building(12, BuildingKind::Airworks, TilePos::new(6, 3)),
-            paid_site,
-        ];
-        obs.my_queues = vec![
-            vec![UnitKind::Harvester],
-            vec![UnitKind::Lancer, UnitKind::Lancer],
-            vec![UnitKind::Kestrel, UnitKind::Kestrel],
-            Vec::new(),
-        ];
-        let mut enemy = standing_building(30, BuildingKind::Foundry, TilePos::new(24, 12));
-        enemy.player = PlayerId(1);
-        obs.enemy_buildings.push(enemy);
-        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201)
-            .resolve_profile();
-        let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
-        let map = public_map(&obs);
-
-        obs.scrap = UnitKind::Sentinel.stats().cost;
-        let exact = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
-        assert!(exact.contains(&Intent::TrainAt {
-            building: BuildingId(10),
-            kind: UnitKind::Sentinel,
-        }));
-        assert!(exact.iter().all(|intent| !matches!(
-            intent,
-            Intent::Build { .. } | Intent::BuildWith { .. } | Intent::Upgrade { .. }
-        )));
-
-        obs.scrap = 10_000;
-        let wealthy = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
-        let reinforcement = wealthy
-            .iter()
-            .position(|intent| {
-                matches!(
-                    intent,
-                    Intent::TrainAt {
-                        building: BuildingId(10),
-                        kind: UnitKind::Sentinel,
-                    }
-                )
-            })
-            .expect("the paid site must consume the shallow bank");
-        let next_capital = wealthy
-            .iter()
-            .position(|intent| {
-                matches!(
-                    intent,
-                    Intent::Build { .. } | Intent::BuildWith { .. } | Intent::Upgrade { .. }
-                )
-            })
-            .expect("the wealthy fixture can afford another capital project");
-        assert!(reinforcement < next_capital, "{wealthy:?}");
-    }
-
-    #[test]
-    fn shallow_reinforcement_must_survive_the_next_production_phase() {
-        let home = TilePos::new(3, 3);
-        let second = TilePos::new(18, 3);
-        let mut obs = obs_with(Vec::new());
-        obs.my_buildings = vec![
-            standing_building(10, BuildingKind::Foundry, home),
-            standing_building(11, BuildingKind::Foundry, second),
-        ];
-        obs.my_queues = vec![vec![UnitKind::Sentinel], vec![UnitKind::Sentinel]];
-
-        assert!(
-            !UtilityPolicy::shallow_sentinel_reinforcement(&obs, &[]),
-            "each Foundry may finish its lone front item in the same production phase"
-        );
-
-        obs.my_queues[0] = vec![UnitKind::Harvester, UnitKind::Sentinel];
-        assert!(UtilityPolicy::shallow_sentinel_reinforcement(&obs, &[]));
-
-        obs.my_queues[0] = vec![UnitKind::Sentinel, UnitKind::Harvester];
-        obs.my_queues[1].clear();
-        let planned = [Intent::TrainAt {
-            building: BuildingId(11),
-            kind: UnitKind::Sentinel,
-        }];
-        assert!(
-            UtilityPolicy::shallow_sentinel_reinforcement(&obs, &planned),
-            "a same-think enqueue starts at zero progress and survives this tick"
-        );
-
-        let full = [Intent::TrainAt {
-            building: BuildingId(10),
-            kind: UnitKind::Sentinel,
-        }];
-        assert!(
-            !UtilityPolicy::shallow_sentinel_reinforcement(&obs, &full),
-            "a planned Sentinel outside a full two-slot queue is not accepted evidence"
-        );
-    }
-
-    #[test]
-    fn a_front_slot_sentinel_cannot_cover_same_tick_deferred_capital() {
-        let home = TilePos::new(2, 8);
-        let enemy = TilePos::new(35, 8);
-        let claim = TilePos::new(10, 8);
-        let founder_tile = claim.offset(-1, 1);
-        let mut map = vec![".".repeat(40); 20];
-        map[home.y as usize].replace_range(home.x as usize..home.x as usize + 1, "1");
-        map[enemy.y as usize].replace_range(enemy.x as usize..enemy.x as usize + 1, "2");
-        let mut units = vec![UnitSpec {
-            player: 0,
-            kind: UnitKind::Harvester,
-            x: founder_tile.x,
-            y: founder_tile.y,
-        }];
-        units.extend((0..3).map(|offset| UnitSpec {
-            player: 0,
-            kind: UnitKind::Harvester,
-            x: 7 + offset,
-            y: 13,
-        }));
-        units.extend((0..8).map(|offset| UnitSpec {
-            player: 0,
-            kind: UnitKind::Sentinel,
-            x: 7 + offset,
-            y: 16,
-        }));
-        let scenario = Scenario {
-            name: "shallow reinforcement production race".into(),
-            seed: 0,
-            map,
-            players: vec![
-                PlayerSpec {
-                    name: "home".into(),
-                    faction: crate::Faction::Ferrous,
-                    team: None,
-                    scrap: 0,
-                    bot: false,
-                    bot_config: None,
-                },
-                PlayerSpec {
-                    name: "enemy".into(),
-                    faction: crate::Faction::Cupric,
-                    team: None,
-                    scrap: 0,
-                    bot: false,
-                    bot_config: None,
-                },
-            ],
-            units,
-            buildings: Vec::new(),
-            meta: None,
-        };
-        let public_map = PublicMapBriefing::from_scenario(&scenario).unwrap();
-        let mut state = scenario.build().unwrap();
-        let me = PlayerId(0);
-        let founder = state
-            .units()
-            .iter()
-            .find(|unit| unit.player == me && unit.tile() == founder_tile)
-            .expect("the deferred founder exists")
-            .id;
-        state.unit_mut(founder).unwrap().order = crate::state::Order::Found {
-            kind: BuildingKind::Fabricator,
-            anchor: claim,
-        };
-        let foundry = state
-            .buildings()
-            .iter()
-            .find(|building| building.player == me && building.kind == BuildingKind::Foundry)
-            .expect("the home Foundry exists")
-            .id;
-        let foundry_state = state.building_mut(foundry).unwrap();
-        foundry_state.queue.push_back(UnitKind::Sentinel);
-        foundry_state.progress = UnitKind::Sentinel.stats().train_ticks - 1;
-        let capital_cost = BuildingKind::Fabricator
-            .base_stats()
-            .construction
-            .expect("Fabricators have a construction price")
-            .cost;
-        state.player_mut(me).scrap = capital_cost;
-        let mut brain = crate::bot::Brain::scripted(
-            me,
-            BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201),
-            std::sync::Arc::new(public_map),
-        );
-
-        let commands = brain.act(&state);
-
-        assert!(commands.iter().any(|command| matches!(
-            &command.command,
-            Command::Stop { units } if units == &[founder]
-        )));
-        state.tick(&commands);
-        assert!(
-            state
-                .buildings()
-                .iter()
-                .all(|building| building.kind != BuildingKind::Fabricator
-                    || building.anchor != claim),
-            "the deferred capital must not pay after the only observed shallow Sentinel leaves its queue"
-        );
-        assert!(
-            state.player(me).scrap >= UnitKind::Sentinel.stats().cost,
-            "the post-production state must retain an affordable shallow reinforcement"
-        );
-        assert!(!matches!(
-            state.unit(founder).map(|unit| unit.order),
-            Some(crate::state::Order::Found { .. })
-        ));
-    }
-
-    #[test]
     fn ready_core_bootstrap_precedes_scouting_and_other_discretionary_spending() {
         let home = TilePos::new(2, 8);
         let frame = home.offset(6, 0);
@@ -4642,125 +4241,6 @@ mod tests {
         assert_eq!(
             spent, obs.scrap,
             "only the two bootstrap obligations spend: {intents:?}"
-        );
-    }
-
-    #[test]
-    fn shallow_capital_guard_stops_paid_worker_repair() {
-        let home = TilePos::new(2, 8);
-        let mut units: Vec<_> = (1..=4).map(|id| harvester(id, None)).collect();
-        units[0].repairing = true;
-        units.extend((20..28).map(|id| {
-            fighter(
-                id,
-                PlayerId(0),
-                home.offset(i32::try_from(id - 20).expect("small fixture id"), 5),
-            )
-        }));
-        let mut obs = obs_with(units);
-        obs.scrap = UnitKind::Sentinel.stats().cost;
-        let mut foundry = standing_building(10, BuildingKind::Foundry, home);
-        foundry.hp /= 2;
-        obs.my_buildings = vec![foundry];
-        obs.my_queues = vec![vec![UnitKind::Harvester, UnitKind::Harvester]];
-        let mut enemy = standing_building(90, BuildingKind::Foundry, TilePos::new(25, 8));
-        enemy.player = PlayerId(1);
-        obs.enemy_buildings.push(enemy);
-        let map = corridor_briefing(home, TilePos::new(29, 10), '.');
-        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201)
-            .resolve_profile();
-        let mut dials =
-            Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
-        dials.extractors = false;
-
-        let intents = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
-
-        assert!(intents.iter().any(|intent| matches!(
-            intent,
-            Intent::StopUnits { units } if units == &[UnitId(1)]
-        )));
-        assert!(
-            intents.iter().all(|intent| !matches!(
-                intent,
-                Intent::Repair { .. } | Intent::RepairUnits { .. }
-            ))
-        );
-    }
-
-    #[test]
-    fn shallow_capital_guard_stops_active_tenders_and_refuses_new_welds() {
-        let home = TilePos::new(2, 8);
-        let mut units: Vec<_> = (1..=4).map(|id| harvester(id, None)).collect();
-        units.extend((20..28).map(|id| {
-            fighter(
-                id,
-                PlayerId(0),
-                home.offset(i32::try_from(id - 20).expect("small fixture id"), 5),
-            )
-        }));
-        let tender = |id, tile, idle, repairing| UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind: UnitKind::Tender,
-            tile,
-            hp: UnitKind::Tender.stats().max_hp,
-            idle,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing,
-            grounded: false,
-        };
-        units.push(tender(30, home.offset(5, 1), false, true));
-        units.push(tender(31, home.offset(6, 1), true, false));
-        units.push(UnitObs {
-            id: UnitId(32),
-            player: PlayerId(0),
-            kind: UnitKind::Bombard,
-            tile: home.offset(7, 1),
-            hp: UnitKind::Bombard.stats().max_hp / 4,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        });
-        units.sort_unstable_by_key(|unit| unit.id);
-        let mut obs = obs_with(units);
-        obs.scrap = UnitKind::Sentinel.stats().cost;
-        obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
-        obs.my_queues = vec![vec![UnitKind::Harvester, UnitKind::Harvester]];
-        let mut enemy = standing_building(90, BuildingKind::Foundry, TilePos::new(25, 8));
-        enemy.player = PlayerId(1);
-        obs.enemy_buildings.push(enemy);
-        let map = corridor_briefing(home, TilePos::new(29, 10), '.');
-        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 20_042)
-            .resolve_profile();
-        let mut dials =
-            Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
-        dials.extractors = false;
-
-        let intents = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
-
-        let stops: Vec<_> = intents
-            .iter()
-            .filter_map(|intent| match intent {
-                Intent::StopUnits { units } => Some(units.clone()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(stops, [vec![UnitId(30)]]);
-        assert!(
-            intents
-                .iter()
-                .all(|intent| !matches!(intent, Intent::RepairUnits { .. }))
         );
     }
 
@@ -4852,6 +4332,54 @@ mod tests {
             seen: true,
             tier: 0,
         }
+    }
+
+    fn standing_force_residual_fixture() -> (Observation, Dials) {
+        let home = TilePos::new(3, 3);
+        let mut units: Vec<_> = (0..8)
+            .map(|id| {
+                fighter(
+                    id,
+                    PlayerId(0),
+                    TilePos::new(5 + i32::try_from(id).expect("small fixture id"), 8),
+                )
+            })
+            .collect();
+        units.extend((20..24).map(|id| harvester(id, None)));
+        let mut obs = obs_with(units);
+        obs.my_buildings = vec![
+            standing_building(10, BuildingKind::Foundry, home),
+            standing_building(11, BuildingKind::Fabricator, home.offset(5, 0)),
+            standing_building(12, BuildingKind::Airworks, home.offset(0, 5)),
+            standing_building(13, BuildingKind::Crucible, home.offset(10, 0)),
+        ];
+        obs.my_queues = vec![Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        let mut enemy = standing_building(30, BuildingKind::Foundry, TilePos::new(24, 12));
+        enemy.player = PlayerId(1);
+        obs.enemy_buildings.push(enemy);
+        obs.scrap = 10_000;
+
+        let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 1_616_201)
+            .resolve_profile();
+        let mut dials =
+            Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
+        dials.harvester_target = 0;
+        dials.tech = false;
+        dials.turret_response = false;
+        dials.scouting = false;
+        dials.aa_response = false;
+        dials.radar = false;
+        dials.reclaimers = false;
+        dials.repair = false;
+        dials.air_harass = false;
+        dials.salvage = false;
+        dials.deep_tech = false;
+        dials.extractors = false;
+        dials.upgrades = false;
+        dials.expansion = false;
+        dials.ferry = false;
+        dials.mines = false;
+        (obs, dials)
     }
 
     fn has_supported_restoration(policy: &UtilityPolicy, obs: &Observation, home: TilePos) -> bool {
@@ -7345,7 +6873,6 @@ mod tests {
         let mut scrapheap = dials[0].clone();
         let prime = &dials[3];
         assert!(scrapheap.cadence > prime.cadence);
-        assert!(scrapheap.discretionary_slots < prime.discretionary_slots);
         assert!(scrapheap.own_strength_scale < prime.own_strength_scale);
         assert_eq!(scrapheap.enemy_strength_scale, prime.enemy_strength_scale);
         assert!(scrapheap.opponent_force_memory < prime.opponent_force_memory);
@@ -7354,7 +6881,6 @@ mod tests {
         assert!(!scrapheap.coordinated_defense_focus);
         assert!(prime.coordinated_defense_focus);
         scrapheap.cadence = prime.cadence;
-        scrapheap.discretionary_slots = prime.discretionary_slots;
         scrapheap.own_strength_scale = prime.own_strength_scale;
         scrapheap.enemy_strength_scale = prime.enemy_strength_scale;
         scrapheap.opponent_force_memory = prime.opponent_force_memory;

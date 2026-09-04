@@ -7,9 +7,10 @@
 
 use super::{
     AllocationCapacity, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
-    ClaimOwner, ConnectedMarginalError, DeferrableCapitalClaim, DomainAllocationResult,
-    DomainInvestmentProposal, ForecastClaim, ImportedObligation, LegacyChannel, ObligationClass,
-    ObligationKey, ProducerJobClaim, ProposalKey, ScheduledProducerJob, allocate,
+    ClaimOwner, ConnectedMarginalError, ConnectedPortfolioContext, DeferrableCapitalClaim,
+    DomainAllocationResult, DomainInvestmentProposal, ForecastClaim, ImportedObligation,
+    LegacyChannel, ObligationClass, ObligationKey, ProducerJobClaim, ProposalKey,
+    ScheduledProducerJob, accepted_portfolio_rank, allocate, allocate_requiring,
     future_producer_lane_reservations,
 };
 use crate::bot::observation::Observation;
@@ -57,6 +58,13 @@ pub(crate) struct CrossDomainAllocation {
     current_scrap: u32,
     obligations: Vec<ImportedObligation>,
     proposals: Vec<DomainInvestmentProposal>,
+    contextual_proposals: Vec<ContextualProposalSet>,
+}
+
+#[derive(Debug, Clone)]
+struct ContextualProposalSet {
+    context: ConnectedPortfolioContext,
+    proposals: Vec<DomainInvestmentProposal>,
 }
 
 impl CrossDomainAllocation {
@@ -71,6 +79,7 @@ impl CrossDomainAllocation {
             current_scrap: resources.current_scrap().amount(),
             obligations: Vec::new(),
             proposals: Vec::new(),
+            contextual_proposals: Vec::new(),
         })
     }
 
@@ -79,10 +88,24 @@ impl CrossDomainAllocation {
         self.obligations.push(obligation);
     }
 
-    /// Offers one already-ranked domain payload. This migration admits at most
-    /// one payload per supported domain; the allocator validates that invariant.
+    /// Offers one already-ranked domain payload. A domain may provide ordered,
+    /// mutually exclusive alternatives; portfolio selection accepts at most
+    /// one of them.
     pub(crate) fn offer(&mut self, proposal: DomainInvestmentProposal) {
         self.proposals.push(proposal);
+    }
+
+    /// Registers every proposal derived against one exact connected state.
+    ///
+    /// Register empty proposal sets too: the absence of standing-force demand
+    /// is itself contextual evidence that must compete with other states.
+    pub(crate) fn offer_context(
+        &mut self,
+        context: ConnectedPortfolioContext,
+        proposals: Vec<DomainInvestmentProposal>,
+    ) {
+        self.contextual_proposals
+            .push(ContextualProposalSet { context, proposals });
     }
 
     /// Selects the best compatible portfolio, then tries cumulative connected
@@ -97,64 +120,64 @@ impl CrossDomainAllocation {
             current_scrap,
             obligations,
             proposals,
+            contextual_proposals,
         } = self;
         let mut trace = trace;
+        let (mut result, considered_proposals, selected_context, considered_contexts) =
+            if contextual_proposals.is_empty() {
+                let result = match allocate(
+                    &capacity,
+                    obligations.clone(),
+                    proposals.clone(),
+                    personality,
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        if let Some(trace) = trace.as_deref_mut() {
+                            *trace = AllocationTrace::from_inputs(&obligations, &proposals);
+                            trace.record_error(&error);
+                        }
+                        return Err(error);
+                    }
+                };
+                (result, proposals, None, 0)
+            } else {
+                select_contextual_portfolio(
+                    &capacity,
+                    &obligations,
+                    &proposals,
+                    contextual_proposals,
+                    personality,
+                )?
+            };
         if let Some(trace) = trace.as_deref_mut() {
-            *trace = AllocationTrace::from_inputs(&obligations, &proposals);
-        }
-        let mut result = match allocate(&capacity, obligations.clone(), proposals, personality) {
-            Ok(result) => result,
-            Err(error) => {
-                if let Some(trace) = trace.as_deref_mut() {
-                    trace.record_error(&error);
-                }
-                return Err(error);
-            }
-        };
-        let connected_key = result.accepted_connected_key();
-        let marginal_variants = result
-            .connected_marginal_variants()
-            .unwrap_or_default()
-            .to_vec();
-        let mut largest_rejection = None;
-        let mut accepted_marginal = false;
-        for marginal in marginal_variants.iter().rev() {
-            match result.try_accept_connected_marginal(&capacity, marginal) {
-                Ok(claims) => {
-                    accepted_marginal = true;
-                    if let (Some(trace), Some(key)) = (trace.as_deref_mut(), connected_key) {
-                        trace.record_connected_marginal_accepted(
-                            key,
-                            &claims,
-                            result.final_producer_schedule(),
-                        );
-                    }
-                    break;
-                }
-                Err(ConnectedMarginalError::Conflict(conflict)) => {
-                    if largest_rejection.is_none() {
-                        largest_rejection = Some((marginal, conflict));
-                    }
-                }
-                Err(
-                    ConnectedMarginalError::NoAcceptedConnectedProposal
-                    | ConnectedMarginalError::StaleVariant
-                    | ConnectedMarginalError::MalformedClaims(_),
-                ) => {
-                    debug_assert!(false, "a retained domain marginal must remain well formed");
-                    break;
-                }
+            *trace = AllocationTrace::from_inputs(&obligations, &considered_proposals);
+            if let Some(context) = selected_context {
+                trace.record_connected_portfolio_context(considered_contexts, context);
             }
         }
-        if let (false, Some(trace), Some(key), Some((marginal, conflict))) = (
-            accepted_marginal,
-            trace.as_deref_mut(),
-            connected_key,
-            largest_rejection,
-        ) {
-            let claims = super::connected_marginal_claims(marginal)
-                .expect("the allocator already accepted this domain's claim shape");
-            trace.record_connected_marginal_rejected(key, &claims, &conflict);
+        if selected_context.is_none() {
+            extend_connected_greedily(&capacity, &mut result, trace.as_deref_mut());
+        } else if let Some(ConnectedPortfolioContext::Selected {
+            key,
+            marginal_depth,
+        }) = selected_context
+            && marginal_depth > 0
+        {
+            let marginal = result
+                .connected_marginal_variants()
+                .and_then(|variants| variants.get(marginal_depth - 1))
+                .cloned()
+                .expect("the selected context retains its exact marginal variant");
+            let claims = super::connected_marginal_claims(&marginal)
+                .expect("the selected context was already proven well formed");
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.record_connected_marginal_accepted(
+                    key,
+                    &claims,
+                    result.final_producer_schedule(),
+                );
+            }
         }
         let producer_lane_reservations =
             match future_producer_lane_reservations(&capacity, result.final_producer_schedule()) {
@@ -176,6 +199,170 @@ impl CrossDomainAllocation {
             result,
             producer_lane_reservations,
         ))
+    }
+}
+
+fn select_contextual_portfolio(
+    capacity: &AllocationCapacity,
+    obligations: &[ImportedObligation],
+    base_proposals: &[DomainInvestmentProposal],
+    mut contextual: Vec<ContextualProposalSet>,
+    personality: AllocationPersonality,
+) -> Result<
+    (
+        DomainAllocationResult,
+        Vec<DomainInvestmentProposal>,
+        Option<ConnectedPortfolioContext>,
+        u32,
+    ),
+    AllocationError,
+> {
+    contextual.sort_by_key(|set| set.context);
+    for pair in contextual.windows(2) {
+        assert_ne!(
+            pair[0].context, pair[1].context,
+            "each connected context must be registered exactly once"
+        );
+    }
+    let considered_contexts = u32::try_from(contextual.len()).unwrap_or(u32::MAX);
+    let mut best: Option<(
+        super::PortfolioRank,
+        usize,
+        DomainAllocationResult,
+        Vec<DomainInvestmentProposal>,
+        ConnectedPortfolioContext,
+    )> = None;
+    for set in contextual {
+        let mut proposals = base_proposals.to_vec();
+        match set.context {
+            ConnectedPortfolioContext::Absent => proposals.retain(|proposal| {
+                !matches!(proposal.key(), ProposalKey::ConnectedOffenseMinimum(_))
+            }),
+            ConnectedPortfolioContext::Selected { key, .. } => proposals.retain(|proposal| {
+                !matches!(proposal.key(), ProposalKey::ConnectedOffenseMinimum(other) if other != key)
+            }),
+        }
+        proposals.extend(set.proposals);
+        let required = match set.context {
+            ConnectedPortfolioContext::Absent => None,
+            ConnectedPortfolioContext::Selected { key, .. } => {
+                Some(ProposalKey::ConnectedOffenseMinimum(key))
+            }
+        };
+        let result = match required {
+            Some(required) => allocate_requiring(
+                capacity,
+                obligations.to_vec(),
+                proposals.clone(),
+                personality,
+                required,
+            )?,
+            None => Some(allocate(
+                capacity,
+                obligations.to_vec(),
+                proposals.clone(),
+                personality,
+            )?),
+        };
+        let Some(mut result) = result else {
+            continue;
+        };
+        match set.context {
+            ConnectedPortfolioContext::Absent => {
+                debug_assert!(result.accepted_connected_key().is_none());
+            }
+            ConnectedPortfolioContext::Selected {
+                key,
+                marginal_depth,
+            } => {
+                if result.accepted_connected_key() != Some(key) {
+                    continue;
+                }
+                if marginal_depth > 0 {
+                    let Some(marginal) = result
+                        .connected_marginal_variants()
+                        .and_then(|variants| variants.get(marginal_depth - 1))
+                        .cloned()
+                    else {
+                        continue;
+                    };
+                    match result.try_accept_connected_marginal(capacity, &marginal) {
+                        Ok(_) => {}
+                        Err(ConnectedMarginalError::Conflict(_)) => continue,
+                        Err(
+                            ConnectedMarginalError::NoAcceptedConnectedProposal
+                            | ConnectedMarginalError::StaleVariant
+                            | ConnectedMarginalError::MalformedClaims(_),
+                        ) => {
+                            debug_assert!(false, "a registered context must name a retained scale");
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        let rank = accepted_portfolio_rank(&result, personality);
+        let scale = set.context.marginal_depth();
+        let replace = best
+            .as_ref()
+            .is_none_or(|(best_rank, best_scale, _, _, _)| {
+                (rank.clone(), scale) > (best_rank.clone(), *best_scale)
+            });
+        if replace {
+            best = Some((rank, scale, result, proposals, set.context));
+        }
+    }
+    let (_, _, result, proposals, context) =
+        best.expect("registered contexts include one exact feasible portfolio state");
+    Ok((result, proposals, Some(context), considered_contexts))
+}
+
+fn extend_connected_greedily(
+    capacity: &AllocationCapacity,
+    result: &mut DomainAllocationResult,
+    mut trace: Option<&mut AllocationTrace>,
+) {
+    let connected_key = result.accepted_connected_key();
+    let marginal_variants = result
+        .connected_marginal_variants()
+        .unwrap_or_default()
+        .to_vec();
+    let mut largest_rejection = None;
+    let mut accepted_marginal = false;
+    for marginal in marginal_variants.iter().rev() {
+        match result.try_accept_connected_marginal(capacity, marginal) {
+            Ok(claims) => {
+                accepted_marginal = true;
+                if let (Some(trace), Some(key)) = (trace.as_deref_mut(), connected_key) {
+                    trace.record_connected_marginal_accepted(
+                        key,
+                        &claims,
+                        result.final_producer_schedule(),
+                    );
+                }
+                break;
+            }
+            Err(ConnectedMarginalError::Conflict(conflict)) => {
+                if largest_rejection.is_none() {
+                    largest_rejection = Some((marginal, conflict));
+                }
+            }
+            Err(
+                ConnectedMarginalError::NoAcceptedConnectedProposal
+                | ConnectedMarginalError::StaleVariant
+                | ConnectedMarginalError::MalformedClaims(_),
+            ) => {
+                debug_assert!(false, "a retained domain marginal must remain well formed");
+                break;
+            }
+        }
+    }
+    if let (false, Some(trace), Some(key), Some((marginal, conflict))) =
+        (accepted_marginal, trace, connected_key, largest_rejection)
+    {
+        let claims = super::connected_marginal_claims(marginal)
+            .expect("the allocator already accepted this domain's claim shape");
+        trace.record_connected_marginal_rejected(key, &claims, &conflict);
     }
 }
 
@@ -233,6 +420,12 @@ impl CrossDomainSettlement {
     /// binds its exact lanes.
     pub(crate) fn producer_schedule(&self) -> &[ScheduledProducerJob] {
         self.result.final_producer_schedule()
+    }
+
+    /// Whether exact lane binding funded the proposal that discharges the
+    /// shared current-only remainder.
+    pub(crate) const fn voluntary_scrap_guard_satisfied(&self) -> bool {
+        self.result.voluntary_scrap_guard_satisfied()
     }
 
     /// Final observation-relative split for one flexible capital owner.
@@ -771,20 +964,23 @@ fn builder_obligation_key(
 pub(crate) fn saved_foundry_obligation(
     obligation: crate::bot::utility::ValidatedFoundryObligation,
 ) -> Result<ImportedObligation, ClaimBundleError> {
-    let claims = ClaimBundle::new(
-        0,
+    let current_capital = obligation.current_construction_capital();
+    let forecast_capital = obligation.forecast_construction_capital();
+    let ready_to_build = obligation.ready_to_build();
+    let mut claims = ClaimBundle::new(
+        if ready_to_build { current_capital } else { 0 },
         Vec::new(),
         vec![obligation.builder()],
         Vec::new(),
         vec![obligation.site()],
         Vec::new(),
-    )?
-    .with_deferrable_capital(DeferrableCapitalClaim {
-        through: obligation.forecast_deadline(),
-        amount: obligation
-            .current_construction_capital()
-            .saturating_add(obligation.forecast_construction_capital()),
-    })?;
+    )?;
+    if !ready_to_build {
+        claims = claims.with_deferrable_capital(DeferrableCapitalClaim {
+            through: obligation.forecast_deadline(),
+            amount: current_capital.saturating_add(forecast_capital),
+        })?;
+    }
     Ok(imported_obligation(
         ObligationClass::PersistentPlan,
         obligation.accepted_at(),
@@ -991,18 +1187,26 @@ pub(crate) fn active_connected_producer_assignments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::allocation::{connected_investment_proposal, foundry_investment_proposal};
+    use crate::bot::allocation::{
+        ConnectedOffenseKey, ProposalCase, StandingForceKey, connected_investment_proposal,
+        foundry_investment_proposal, standing_force_investment_proposals,
+    };
     use crate::bot::observation::UnitObs;
+    use crate::bot::profile::Specialty;
     use crate::bot::resources::{
-        ProducerPlanningProjection, ResourcePlanningFixture, ResourcePlanningProjection,
-        ResourceSnapshot,
+        BuilderResource, ProducerPlanningProjection, ResourcePlanningFixture,
+        ResourcePlanningProjection, ResourceSnapshot,
+    };
+    use crate::bot::standing_force::{
+        StandingForceFixture, StandingForceProposal, StandingForceReason,
     };
     use crate::bot::strategy::{
         ConnectedConfidence, ConnectedExecutionSafety, ConnectedOffenseClaims,
-        ConnectedOpportunityCase, ConnectedStrategicValue, ConnectedTimeToImpact, ConnectedUrgency,
-        FreshConnectedProposal, FreshConnectedProposalFixture, StrategicDecision,
+        ConnectedOpportunityCase, ConnectedProviderJob, ConnectedStrategicValue,
+        ConnectedTimeToImpact, ConnectedUrgency, FreshConnectedProposal,
+        FreshConnectedProposalFixture, StrategicDecision,
     };
-    use crate::bot::trace::ConnectedMarginalDispositionTrace;
+    use crate::bot::trace::{ConnectedMarginalDispositionTrace, ConnectedPortfolioSelectionTrace};
     use crate::bot::utility::{
         FoundryConfidence, FoundryExecutionSafety, FoundryOpportunityCase, FoundryStrategicValue,
         FoundryTimeToImpact, FoundryUrgency, FreshFoundryProposal,
@@ -1078,6 +1282,69 @@ mod tests {
         )
     }
 
+    fn contextual_capacity(
+        current_scrap: u32,
+        units: Vec<UnitId>,
+        builders: Vec<UnitId>,
+        producers: Vec<(BuildingId, Vec<UnitKind>)>,
+    ) -> AllocationCapacity {
+        AllocationCapacity::fixture(
+            ResourcePlanningProjection::fixture(ResourcePlanningFixture {
+                current_scrap,
+                observed_at: 120,
+                horizon: 1_200,
+                cadence: 12,
+                forecast_income: Vec::new(),
+                units,
+                builders: builders
+                    .into_iter()
+                    .map(|id| BuilderResource {
+                        id,
+                        kind: UnitKind::Harvester,
+                        obligation: None,
+                    })
+                    .collect(),
+                producers: producers
+                    .into_iter()
+                    .map(|(id, trainable)| {
+                        ProducerPlanningProjection::fixture(
+                            id,
+                            120,
+                            12,
+                            120,
+                            vec![120; crate::stats::QUEUE_CAP],
+                            trainable,
+                        )
+                        .expect("the contextual producer fixture is valid")
+                    })
+                    .collect(),
+            })
+            .expect("the contextual resource fixture is valid"),
+        )
+    }
+
+    fn standing_proposal(
+        kind: UnitKind,
+        producer: BuildingId,
+        case: ProposalCase,
+    ) -> DomainInvestmentProposal {
+        standing_force_investment_proposals(vec![StandingForceProposal::fixture(
+            StandingForceFixture {
+                observed_at: 120,
+                ready_before: 1_200,
+                kind,
+                reason: StandingForceReason::SiegePressure,
+                specialty: Specialty::Siege,
+                personality_emphasis: 100,
+                case,
+                eligible_producers: vec![producer],
+            },
+        )])
+        .expect("the contextual Standing proposal is valid")
+        .pop()
+        .expect("the fixture creates one Standing proposal")
+    }
+
     #[test]
     fn settlement_trace_records_the_final_foundry_funding_split_once() {
         let cost = BuildingKind::Foundry
@@ -1125,6 +1392,7 @@ mod tests {
                 foundry_investment_proposal(proposal)
                     .expect("the Foundry proposal has valid exact claims"),
             ],
+            contextual_proposals: Vec::new(),
         };
         let mut trace = AllocationTrace::default();
 
@@ -1518,6 +1786,7 @@ mod tests {
                 connected_investment_proposal(proposal)
                     .expect("the connected proposal has valid claims"),
             ],
+            contextual_proposals: Vec::new(),
         };
         let mut trace = AllocationTrace::default();
 
@@ -1534,6 +1803,358 @@ mod tests {
                 .map(|marginal| &marginal.disposition),
             Some(ConnectedMarginalDispositionTrace::Accepted)
         ));
+    }
+
+    #[test]
+    fn contextual_selection_never_pairs_connected_with_absent_inventory() {
+        let objective = BuildingId(90);
+        let anchor = TilePos::new(12, 8);
+        let connected_key = ConnectedOffenseKey { objective, anchor };
+        let bombard = UnitId(3);
+        let airworks = BuildingId(10);
+        let foundry = BuildingId(11);
+        let crucible = BuildingId(12);
+        let connected = FreshConnectedProposal::fixture(FreshConnectedProposalFixture {
+            objective,
+            anchor,
+            deadline: 1_200,
+            case: connected_case(),
+            minimum_claims: ConnectedOffenseClaims::fixture(
+                vec![bombard],
+                vec![ConnectedProviderJob::fixture(
+                    UnitKind::Buzzard,
+                    120,
+                    1_200,
+                    vec![airworks],
+                )],
+            ),
+            marginal_additions: Vec::new(),
+            protected_current_scrap: 0,
+            protected_forecast_scrap: 0,
+        });
+        let common_case = ProposalCase::from(connected_case());
+        let mut allocation = CrossDomainAllocation {
+            capacity: contextual_capacity(
+                300,
+                vec![bombard],
+                Vec::new(),
+                vec![
+                    (airworks, vec![UnitKind::Buzzard]),
+                    (foundry, vec![UnitKind::Sentinel]),
+                    (crucible, vec![UnitKind::Lancer]),
+                ],
+            ),
+            current_scrap: 300,
+            obligations: Vec::new(),
+            proposals: vec![
+                connected_investment_proposal(connected)
+                    .expect("the connected minimum has valid exact claims")
+                    .with_voluntary_scrap_guard(UnitKind::Sentinel.stats().cost),
+            ],
+            contextual_proposals: Vec::new(),
+        };
+        allocation.offer_context(
+            ConnectedPortfolioContext::Absent,
+            vec![
+                standing_proposal(UnitKind::Sentinel, foundry, common_case)
+                    .with_voluntary_scrap_guard(UnitKind::Sentinel.stats().cost),
+            ],
+        );
+        allocation.offer_context(
+            ConnectedPortfolioContext::Selected {
+                key: connected_key,
+                marginal_depth: 0,
+            },
+            vec![
+                standing_proposal(UnitKind::Lancer, crucible, common_case)
+                    .with_voluntary_scrap_guard(UnitKind::Sentinel.stats().cost),
+            ],
+        );
+        let mut trace = AllocationTrace::default();
+
+        let settlement = allocation
+            .resolve(AllocationPersonality::default(), Some(&mut trace))
+            .expect("the exact connected-only context remains feasible");
+
+        assert_eq!(
+            settlement
+                .producer_schedule()
+                .iter()
+                .map(|job| (job.owner, job.producer, job.kind))
+                .collect::<Vec<_>>(),
+            vec![(
+                ClaimOwner::Proposal(ProposalKey::StandingForce(StandingForceKey::fixture(
+                    UnitKind::Sentinel,
+                ))),
+                foundry,
+                UnitKind::Sentinel,
+            )]
+        );
+        let mut payloads = settlement.into_payloads();
+        assert!(payloads.take_connected().is_none());
+        assert_eq!(
+            payloads
+                .take_standing_force()
+                .map(|proposal| proposal.key_kind()),
+            Some(UnitKind::Sentinel)
+        );
+        assert!(matches!(
+            trace
+                .connected_context
+                .as_ref()
+                .map(|context| &context.selected),
+            Some(ConnectedPortfolioSelectionTrace::Absent)
+        ));
+        assert_eq!(
+            trace
+                .connected_context
+                .as_ref()
+                .map(|context| context.considered),
+            Some(2)
+        );
+        assert!(
+            trace.proposals.entries.iter().any(|proposal| proposal.key
+                == ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Sentinel))
+                    .into()),
+            "trace proposals must come from the selected inventory context"
+        );
+        assert!(
+            trace.proposals.entries.iter().all(|proposal| proposal.key
+                != ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Lancer)).into()),
+            "the selected-operation context's Standing choice must not be cloned into the absent trace"
+        );
+    }
+
+    #[test]
+    fn contextual_scale_binds_the_exact_deepest_producer_schedule() {
+        let objective = BuildingId(90);
+        let anchor = TilePos::new(12, 8);
+        let connected_key = ConnectedOffenseKey { objective, anchor };
+        let airworks = BuildingId(10);
+        let crucible = BuildingId(12);
+        let connected = FreshConnectedProposal::fixture(FreshConnectedProposalFixture {
+            objective,
+            anchor,
+            deadline: 1_200,
+            case: connected_case(),
+            minimum_claims: ConnectedOffenseClaims::fixture(
+                Vec::new(),
+                vec![ConnectedProviderJob::fixture(
+                    UnitKind::Buzzard,
+                    120,
+                    1_200,
+                    vec![airworks],
+                )],
+            ),
+            marginal_additions: vec![ConnectedOffenseClaims::fixture(
+                Vec::new(),
+                vec![ConnectedProviderJob::fixture(
+                    UnitKind::Moth,
+                    120,
+                    1_200,
+                    vec![airworks],
+                )],
+            )],
+            protected_current_scrap: 0,
+            protected_forecast_scrap: 0,
+        });
+        let expected_marginal = connected.marginal_variants()[0].clone();
+        let common_case = ProposalCase::from(connected_case());
+        let mut allocation = CrossDomainAllocation {
+            capacity: contextual_capacity(
+                900,
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    (airworks, vec![UnitKind::Buzzard, UnitKind::Moth]),
+                    (crucible, vec![UnitKind::Lancer]),
+                ],
+            ),
+            current_scrap: 900,
+            obligations: Vec::new(),
+            proposals: vec![
+                connected_investment_proposal(connected.clone())
+                    .expect("the connected ladder has valid exact claims"),
+            ],
+            contextual_proposals: Vec::new(),
+        };
+        let standing = || standing_proposal(UnitKind::Lancer, crucible, common_case);
+        allocation.offer_context(ConnectedPortfolioContext::Absent, vec![standing()]);
+        allocation.offer_context(
+            ConnectedPortfolioContext::Selected {
+                key: connected_key,
+                marginal_depth: 0,
+            },
+            vec![standing()],
+        );
+        allocation.offer_context(
+            ConnectedPortfolioContext::Selected {
+                key: connected_key,
+                marginal_depth: 1,
+            },
+            vec![standing()],
+        );
+        let mut trace = AllocationTrace::default();
+
+        let settlement = allocation
+            .resolve(AllocationPersonality::default(), Some(&mut trace))
+            .expect("the deepest exact context fits current cash and both lanes");
+
+        assert_eq!(
+            settlement
+                .producer_schedule()
+                .iter()
+                .map(|job| (job.owner, job.producer, job.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    ClaimOwner::Proposal(ProposalKey::ConnectedOffenseMinimum(connected_key)),
+                    airworks,
+                    UnitKind::Buzzard,
+                ),
+                (
+                    ClaimOwner::Proposal(ProposalKey::StandingForce(StandingForceKey::fixture(
+                        UnitKind::Lancer,
+                    ))),
+                    crucible,
+                    UnitKind::Lancer,
+                ),
+                (
+                    ClaimOwner::Proposal(ProposalKey::ConnectedOffenseMinimum(connected_key)),
+                    airworks,
+                    UnitKind::Moth,
+                ),
+            ]
+        );
+        let mut expected = connected;
+        assert!(expected.select_marginal(&expected_marginal));
+        let mut payloads = settlement.into_payloads();
+        assert_eq!(payloads.take_connected(), Some(expected));
+        assert_eq!(
+            payloads
+                .take_standing_force()
+                .map(|proposal| proposal.key_kind()),
+            Some(UnitKind::Lancer)
+        );
+        assert!(matches!(
+            trace
+                .connected_context
+                .as_ref()
+                .map(|context| &context.selected),
+            Some(ConnectedPortfolioSelectionTrace::Selected {
+                key: _,
+                marginal_depth: 1,
+            })
+        ));
+        assert!(matches!(
+            trace
+                .connected_marginal
+                .as_ref()
+                .map(|marginal| &marginal.disposition),
+            Some(ConnectedMarginalDispositionTrace::Accepted)
+        ));
+    }
+
+    #[test]
+    fn contextual_search_preserves_foundry_versus_connected_ordering() {
+        let objective = BuildingId(90);
+        let anchor = TilePos::new(12, 8);
+        let connected_key = ConnectedOffenseKey { objective, anchor };
+        let builder = UnitId(3);
+        let producer = BuildingId(9);
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+        let foundry = FreshFoundryProposal::fixture(
+            TilePos::new(8, 9),
+            builder,
+            foundry_cost,
+            0,
+            23,
+            1_200,
+            foundry_case(),
+        );
+        let connected = FreshConnectedProposal::fixture(FreshConnectedProposalFixture {
+            objective,
+            anchor,
+            deadline: 1_200,
+            case: connected_case(),
+            minimum_claims: ConnectedOffenseClaims::fixture(
+                Vec::new(),
+                vec![ConnectedProviderJob::fixture(
+                    UnitKind::Sentinel,
+                    120,
+                    1_200,
+                    vec![producer],
+                )],
+            ),
+            marginal_additions: Vec::new(),
+            protected_current_scrap: 0,
+            protected_forecast_scrap: 0,
+        });
+        let capacity = contextual_capacity(
+            foundry_cost,
+            vec![builder],
+            vec![builder],
+            vec![(producer, vec![UnitKind::Sentinel])],
+        );
+        let proposals = || {
+            vec![
+                foundry_investment_proposal(foundry.clone())
+                    .expect("the Foundry fixture has valid exact claims"),
+                connected_investment_proposal(connected.clone())
+                    .expect("the connected fixture has valid exact claims"),
+            ]
+        };
+        let control = CrossDomainAllocation {
+            capacity: capacity.clone(),
+            current_scrap: foundry_cost,
+            obligations: Vec::new(),
+            proposals: proposals(),
+            contextual_proposals: Vec::new(),
+        }
+        .resolve(AllocationPersonality::default(), None)
+        .expect("the ordinary portfolio resolves");
+        let mut contextual = CrossDomainAllocation {
+            capacity,
+            current_scrap: foundry_cost,
+            obligations: Vec::new(),
+            proposals: proposals(),
+            contextual_proposals: Vec::new(),
+        };
+        contextual.offer_context(ConnectedPortfolioContext::Absent, Vec::new());
+        contextual.offer_context(
+            ConnectedPortfolioContext::Selected {
+                key: connected_key,
+                marginal_depth: 0,
+            },
+            Vec::new(),
+        );
+        let contextual = contextual
+            .resolve(AllocationPersonality::default(), None)
+            .expect("the contextual portfolio resolves");
+
+        let accepted_keys = |settlement: &CrossDomainSettlement| {
+            settlement
+                .result
+                .accepted
+                .iter()
+                .map(DomainInvestmentProposal::key)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(accepted_keys(&contextual), accepted_keys(&control));
+        assert_eq!(
+            contextual.producer_schedule(),
+            control.producer_schedule(),
+            "introducing equivalent conditional inventory must not change exact lane ownership"
+        );
+        assert_eq!(
+            accepted_keys(&control),
+            vec![ProposalKey::ConnectedOffenseMinimum(connected_key)],
+            "the fixture must exercise the existing Foundry-versus-offense ordering"
+        );
     }
 
     #[test]
@@ -1672,6 +2293,7 @@ mod tests {
                 connected_investment_proposal(connected)
                     .expect("the connected proposal has valid exact claims"),
             ],
+            contextual_proposals: Vec::new(),
         };
 
         let settlement = allocation
@@ -1755,6 +2377,7 @@ mod tests {
                 connected_investment_proposal(proposal.clone())
                     .expect("the connected package has valid claims"),
             ],
+            contextual_proposals: Vec::new(),
         };
         let settlement = allocation
             .resolve(AllocationPersonality::default(), None)
@@ -1857,6 +2480,7 @@ mod tests {
             current_scrap: bank,
             obligations,
             proposals: Vec::new(),
+            contextual_proposals: Vec::new(),
         }
         .resolve(AllocationPersonality::default(), None)
         .expect("current survival and forecast-funded future production are jointly feasible");

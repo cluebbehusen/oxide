@@ -46,10 +46,6 @@ pub struct DifficultyTuning {
     pub reaction_delay: u64,
     /// Discretionary candidates considered during one think.
     pub attention_slots: usize,
-    /// Discretionary production candidates serviced during one think.
-    /// Competent rungs share this budget so strategic attention cannot
-    /// redeal a seeded composition through a different queue lifecycle.
-    pub production_slots: usize,
     /// Ordinary ground strength established before voluntary capital spending,
     /// measured in full-health Sentinel equivalents.
     pub minimum_core_equivalents: u32,
@@ -83,7 +79,6 @@ impl DifficultyTuning {
                 cadence: 24,
                 reaction_delay: 100,
                 attention_slots: 2,
-                production_slots: 2,
                 minimum_core_equivalents: 4,
                 tactical_memory: 240,
                 opponent_force_memory: 1_800,
@@ -96,7 +91,6 @@ impl DifficultyTuning {
                 cadence: 12,
                 reaction_delay: 40,
                 attention_slots: 3,
-                production_slots: 4,
                 minimum_core_equivalents: 5,
                 tactical_memory: 420,
                 opponent_force_memory: 3_600,
@@ -109,7 +103,6 @@ impl DifficultyTuning {
                 cadence: 12,
                 reaction_delay: 16,
                 attention_slots: 4,
-                production_slots: 4,
                 minimum_core_equivalents: 6,
                 tactical_memory: 540,
                 opponent_force_memory: 8_400,
@@ -122,7 +115,6 @@ impl DifficultyTuning {
                 cadence: 12,
                 reaction_delay: 0,
                 attention_slots: 4,
-                production_slots: 4,
                 minimum_core_equivalents: 8,
                 tactical_memory: 600,
                 opponent_force_memory: 12_000,
@@ -160,7 +152,6 @@ mod tests {
             assert!(lower.cadence >= higher.cadence);
             assert!(lower.reaction_delay >= higher.reaction_delay);
             assert!(lower.attention_slots <= higher.attention_slots);
-            assert!(lower.production_slots <= higher.production_slots);
             assert!(lower.minimum_core_equivalents <= higher.minimum_core_equivalents);
             assert!(lower.tactical_memory <= higher.tactical_memory);
             assert!(lower.opponent_force_memory <= higher.opponent_force_memory);
@@ -183,12 +174,6 @@ mod tests {
             BotDifficulty::ALL.map(|difficulty| DifficultyTuning::for_level(difficulty).cadence),
             [24, 12, 12, 12],
             "only Scrapheap should trade controller cadence for difficulty"
-        );
-        assert_eq!(
-            BotDifficulty::ALL
-                .map(|difficulty| DifficultyTuning::for_level(difficulty).production_slots),
-            [2, 4, 4, 4],
-            "competent rungs must execute one shared production identity"
         );
         assert_eq!(
             BotDifficulty::ALL

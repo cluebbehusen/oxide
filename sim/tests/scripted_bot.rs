@@ -1,7 +1,10 @@
 //! Player-facing scripted opponent contracts.
 
 use chassis::grid::TilePos;
-use oxide_sim::bot::trace::{ClaimOwnerTrace, ProposalDispositionTrace, ProposalKeyTrace};
+use oxide_sim::bot::trace::{
+    ClaimOwnerTrace, ObligationKeyTrace, ProducerJobAccessTrace, ProposalDispositionTrace,
+    ProposalKeyTrace,
+};
 use oxide_sim::bot::{
     Brain, ConnectedForceStatus, ConnectedRecoveryReasonTrace, ConnectedRejectionReasonTrace,
     Dials, Observation, Orientation, PublicMapBriefing, TargetEvidenceTrace, seat_bots,
@@ -1237,16 +1240,23 @@ fn connected_package_uses_only_a_producer_that_can_reach_its_staging_route() {
 }
 
 #[test]
-fn shipped_brain_allocates_compatible_foundry_and_connected_offense_together() {
+fn shipped_brain_allocates_compatible_foundry_connected_and_standing_work() {
     let foundry_cost = BuildingKind::Foundry
         .base_stats()
         .construction
         .expect("Foundries are constructible")
         .cost;
+    let residual_investment = BuildingKind::Turret
+        .base_stats()
+        .construction
+        .expect("Turrets are constructible")
+        .cost
+        .saturating_add(UnitKind::Harvester.stats().cost);
     let scenario = foundry_connected_allocation_scenario(
         foundry_cost
             .saturating_add(UnitKind::Buzzard.stats().cost)
-            .saturating_add(UnitKind::Sentinel.stats().cost),
+            .saturating_add(UnitKind::Sentinel.stats().cost)
+            .saturating_add(residual_investment),
     );
     let mut state = scenario
         .build()
@@ -1272,6 +1282,7 @@ fn shipped_brain_allocates_compatible_foundry_and_connected_offense_together() {
 
     let mut foundry_anchor = None;
     let mut connected_key = None;
+    let mut standing_key = None;
     for proposal in &trace.allocation.proposals.entries {
         match proposal.key {
             ProposalKeyTrace::FoundryExpansion { anchor } => {
@@ -1292,10 +1303,20 @@ fn shipped_brain_allocates_compatible_foundry_and_connected_offense_together() {
                 );
                 connected_key = Some(key);
             }
+            key @ ProposalKeyTrace::StandingForce { .. } => {
+                if proposal.disposition == ProposalDispositionTrace::Accepted {
+                    assert!(
+                        standing_key.replace(key).is_none(),
+                        "only one alternative from the standing-force domain may win: {:?}",
+                        trace.allocation.proposals
+                    );
+                }
+            }
         }
     }
     let foundry_anchor = foundry_anchor.expect("the unsupported Extractor proposes a Foundry");
     let connected_key = connected_key.expect("the current target proposes connected offense");
+    let standing_key = standing_key.expect("the residual current bank funds standing force");
     let world_foundry_anchor =
         orientation.anchor(foundry_anchor, BuildingKind::Foundry.base_stats().size);
 
@@ -1312,34 +1333,71 @@ fn shipped_brain_allocates_compatible_foundry_and_connected_offense_together() {
         decision.commands,
         trace.allocation
     );
-    let due_connected = trace
+    let scheduled_connected = trace
         .allocation
         .producer_schedule
         .entries
         .iter()
         .filter(|job| {
-            job.enqueued_at == state.current_tick()
-                && matches!(
-                    job.owner,
-                    ClaimOwnerTrace::Proposal { key } if key == connected_key
-                )
-        })
-        .map(|job| (job.producer, job.kind))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        due_connected.len(),
-        1,
-        "the exact bank should fund one due connected provider: {due_connected:?}"
-    );
-    assert!(due_connected.iter().all(|(producer, kind)| {
-        decision.commands.iter().any(|command| {
             matches!(
-                command.command,
-                Command::Train { building, kind: trained }
-                    if building == *producer && trained == *kind
+                job.owner,
+                ClaimOwnerTrace::Proposal { key } if key == connected_key
             )
         })
-    }));
+        .collect::<Vec<_>>();
+    assert!(
+        !scheduled_connected.is_empty(),
+        "the accepted connected operation should retain its exact future producer work"
+    );
+    let standing_jobs = trace
+        .allocation
+        .producer_schedule
+        .entries
+        .iter()
+        .filter(|job| {
+            matches!(
+                job.owner,
+                ClaimOwnerTrace::Proposal { key } if key == standing_key
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        standing_jobs.len(),
+        1,
+        "one accepted standing-force alternative should own one immediate lane job"
+    );
+    let standing_job = standing_jobs[0];
+    assert_eq!(standing_job.enqueued_at, state.current_tick());
+    assert_eq!(standing_job.current_scrap, standing_job.kind.stats().cost);
+    assert_eq!(standing_job.forecast_scrap, 0);
+    assert!(matches!(
+        standing_key,
+        ProposalKeyTrace::StandingForce { kind, .. } if kind == standing_job.kind
+    ));
+    let standing_proposal = trace
+        .allocation
+        .proposals
+        .entries
+        .iter()
+        .find(|proposal| proposal.key == standing_key)
+        .expect("the standing proposal remains visible in the exact trace");
+    assert_eq!(
+        standing_proposal.claims.minimum_residual_scrap,
+        residual_investment
+    );
+    assert_eq!(
+        decision
+            .commands
+            .iter()
+            .filter(|command| matches!(
+                command.command,
+                Command::Train { building, kind }
+                    if building == standing_job.producer && kind == standing_job.kind
+            ))
+            .count(),
+        1,
+        "the exact accepted standing-force job must lower to one ordinary Train command"
+    );
 
     let report = state.tick(&decision.commands);
     assert!(
@@ -1358,6 +1416,1103 @@ fn shipped_brain_allocates_compatible_foundry_and_connected_offense_together() {
             && building.kind == BuildingKind::Foundry
             && building.anchor == world_foundry_anchor
     }));
+}
+
+#[test]
+fn completed_income_forecast_cannot_fund_an_immediate_standing_purchase() {
+    let mut scenario = connected_package_scenario(false);
+    scenario.name = "Forecast-only standing-force fixture".to_owned();
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Crucible,
+        x: 11,
+        y: 3,
+    });
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Turret,
+        x: 13,
+        y: 9,
+    });
+    scenario.buildings.extend(
+        [(15, 3), (18, 3), (21, 3), (15, 6)].map(|(x, y)| BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Reclaimer,
+            x,
+            y,
+        }),
+    );
+    scenario.units.extend((0..3).map(|index| UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 6 + index,
+        y: 18,
+    }));
+
+    let reclaimer_credit = u32::try_from(
+        scenario
+            .buildings
+            .iter()
+            .filter(|building| building.player == 0 && building.kind == BuildingKind::Reclaimer)
+            .count(),
+    )
+    .expect("the fixture has a small Reclaimer count");
+    let queued_shallow_cost = UnitKind::Sentinel.stats().cost.saturating_mul(2);
+    let prepare_state = |uncommitted_scrap: u32| {
+        let mut prepared = scenario.clone();
+        prepared.players[0].scrap = queued_shallow_cost.saturating_add(uncommitted_scrap);
+        let mut state = prepared.build().expect("forecast control fixture builds");
+        let foundry = state
+            .buildings()
+            .iter()
+            .find(|building| {
+                building.player == PlayerId(0) && building.kind == BuildingKind::Foundry
+            })
+            .expect("the fixture has a completed Foundry")
+            .id;
+        let report = state.tick(&[
+            oxide_sim::PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Train {
+                    building: foundry,
+                    kind: UnitKind::Sentinel,
+                },
+            },
+            oxide_sim::PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Train {
+                    building: foundry,
+                    kind: UnitKind::Sentinel,
+                },
+            },
+        ]);
+        assert!(
+            report.events.iter().all(|event| !matches!(
+                event,
+                Event::CommandRejected {
+                    player: PlayerId(0),
+                    ..
+                }
+            )),
+            "the exact prepaid shallow queue must be accepted: {:?}",
+            report.events
+        );
+        while state.current_tick() < 24 {
+            state.tick(&[]);
+        }
+        assert_eq!(
+            Observation::fog_honest(&state, PlayerId(0)).scrap,
+            uncommitted_scrap.saturating_add(reclaimer_credit)
+        );
+        state
+    };
+
+    let mut forecast_state = prepare_state(0);
+    let mut forecast_brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.expect("bot is configured"),
+        public_map(&scenario),
+    );
+    let forecast_decision = forecast_brain.act_traced(&forecast_state);
+    let forecast_trace = forecast_decision
+        .trace
+        .as_ref()
+        .expect("the forecast-only decision is traced");
+    assert_eq!(forecast_trace.resources.current_scrap, reclaimer_credit);
+    assert!(
+        forecast_trace.resources.forecast_scrap >= UnitKind::Sentinel.stats().cost,
+        "completed recurring sources should make at least one ordinary unit affordable later"
+    );
+    let forecast_connected = forecast_trace
+        .allocation
+        .proposals
+        .entries
+        .iter()
+        .find(|proposal| {
+            matches!(
+                proposal.key,
+                ProposalKeyTrace::ConnectedOffenseMinimum { .. }
+            ) && proposal.disposition == ProposalDispositionTrace::Accepted
+        })
+        .expect("the exact shallow guard lets forecast-funded connected work remain feasible");
+    assert_eq!(
+        forecast_connected.claims.minimum_residual_scrap, 0,
+        "the paid second queue slot already satisfies the shallow guard"
+    );
+    let future_connected_jobs = forecast_trace
+        .allocation
+        .producer_schedule
+        .entries
+        .iter()
+        .filter(|job| {
+            matches!(
+                job.owner,
+                ClaimOwnerTrace::Proposal {
+                    key: ProposalKeyTrace::ConnectedOffenseMinimum { .. }
+                }
+            ) && job.enqueued_at > forecast_state.current_tick()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !future_connected_jobs.is_empty()
+            && future_connected_jobs
+                .iter()
+                .all(|job| job.forecast_scrap > 0),
+        "the fixture must prove forecast income remains useful for deadline-bound future work: {future_connected_jobs:?}"
+    );
+    assert_eq!(
+        future_connected_jobs
+            .iter()
+            .map(|job| job.current_scrap)
+            .sum::<u32>(),
+        forecast_trace.resources.current_scrap,
+        "the small live bank may part-fund future work but cannot make an immediate unit affordable"
+    );
+    assert!(
+        forecast_trace
+            .allocation
+            .proposals
+            .entries
+            .iter()
+            .all(|proposal| !matches!(proposal.key, ProposalKeyTrace::StandingForce { .. })),
+        "forecast income must not make an immediate standing-force purchase legally affordable"
+    );
+    assert!(
+        forecast_trace
+            .allocation
+            .producer_schedule
+            .entries
+            .iter()
+            .all(|job| !matches!(
+                job.owner,
+                ClaimOwnerTrace::Proposal {
+                    key: ProposalKeyTrace::StandingForce { .. }
+                }
+            ))
+    );
+    assert!(
+        forecast_decision
+            .commands
+            .iter()
+            .all(|command| !matches!(command.command, Command::Train { .. })),
+        "forecast income must never lower into a command that spends absent current scrap"
+    );
+    let report = forecast_state.tick(&forecast_decision.commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player: PlayerId(0),
+            ..
+        }
+    )));
+
+    let mut current_state = prepare_state(UnitKind::Lancer.stats().cost);
+    let mut current_brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.expect("bot is configured"),
+        public_map(&scenario),
+    );
+    let current_decision = current_brain.act_traced(&current_state);
+    let current_trace = current_decision
+        .trace
+        .as_ref()
+        .expect("the current-funded control decision is traced");
+    let accepted_standing = current_trace
+        .allocation
+        .proposals
+        .entries
+        .iter()
+        .find(|proposal| {
+            proposal.disposition == ProposalDispositionTrace::Accepted
+                && matches!(proposal.key, ProposalKeyTrace::StandingForce { .. })
+        })
+        .expect("current scrap should expose the standing-force control demand");
+    assert_eq!(
+        accepted_standing.claims.minimum_residual_scrap, 0,
+        "completed tech, an existing Turret, and the shallow queue leave no unrelated investment floor"
+    );
+    let standing_job = current_trace
+        .allocation
+        .producer_schedule
+        .entries
+        .iter()
+        .find(|job| {
+            matches!(
+                job.owner,
+                ClaimOwnerTrace::Proposal { key } if key == accepted_standing.key
+            )
+        })
+        .expect("the accepted standing-force control owns a producer job");
+    assert_eq!(standing_job.enqueued_at, current_state.current_tick());
+    assert_eq!(standing_job.current_scrap, standing_job.kind.stats().cost);
+    assert_eq!(standing_job.forecast_scrap, 0);
+    assert!(current_decision.commands.iter().any(|command| matches!(
+        command.command,
+        Command::Train { building, kind }
+            if building == standing_job.producer && kind == standing_job.kind
+    )));
+    let report = current_state.tick(&current_decision.commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player: PlayerId(0),
+            ..
+        }
+    )));
+}
+
+#[test]
+fn public_hostile_start_routes_standing_force_through_a_reachable_producer() {
+    let mut scenario = Scenario::skirmish();
+    scenario.name = "Public-start standing routing fixture".to_owned();
+    let builder_commitment = BuildingKind::Barricade
+        .base_stats()
+        .construction
+        .expect("Barricades are constructible")
+        .cost;
+    scenario.players[0].scrap = UnitKind::Sentinel
+        .stats()
+        .cost
+        .saturating_add(builder_commitment);
+    scenario.players[0].bot = true;
+    scenario.players[0].bot_config = Some(BotConfig::scripted(
+        BotDifficulty::Prime,
+        BotStance::Balanced,
+        17,
+    ));
+    scenario.players[1].scrap = 0;
+    scenario.players[1].bot = false;
+    scenario.players[1].bot_config = None;
+    scenario.units.retain(|unit| unit.player == 0);
+    scenario.units.extend((0..7).map(|index| UnitSpec {
+        player: 0,
+        kind: UnitKind::Sentinel,
+        x: 5 + index % 4,
+        y: 8 + index / 4,
+    }));
+    scenario.units.push(UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 8,
+        y: 5,
+    });
+    let mut rows = scenario
+        .map
+        .iter()
+        .map(|row| row.chars().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    rows[4][8] = '.';
+    rows[9][15] = '.';
+    rows[6][10..=16].fill('^');
+    rows[12][10..=16].fill('^');
+    for row in &mut rows[6..=12] {
+        row[10] = '^';
+        row[16] = '^';
+    }
+    scenario.map = rows
+        .into_iter()
+        .map(|row| row.into_iter().collect())
+        .collect();
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Foundry,
+        x: 12,
+        y: 8,
+    });
+    let briefing = public_map(&scenario);
+    let mut state = scenario.build().expect("routing fixture builds");
+    let home_anchor = briefing
+        .starting_foundries()
+        .iter()
+        .find(|start| start.player == PlayerId(0))
+        .expect("the fixture has the bot's public starting Foundry")
+        .anchor;
+    let home = state
+        .buildings()
+        .iter()
+        .find(|building| {
+            building.player == PlayerId(0)
+                && building.kind == BuildingKind::Foundry
+                && building.anchor == home_anchor
+        })
+        .expect("the public starting Foundry exists")
+        .id;
+    let isolated = state
+        .buildings()
+        .iter()
+        .find(|building| {
+            building.player == PlayerId(0)
+                && building.kind == BuildingKind::Foundry
+                && building.anchor == TilePos::new(12, 8)
+        })
+        .expect("the terrain-enclosed Foundry exists")
+        .id;
+    let mut local_legality = state.clone();
+    let report = local_legality.tick(&[oxide_sim::PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Train {
+            building: isolated,
+            kind: UnitKind::Sentinel,
+        },
+    }]);
+    assert!(
+        report.events.iter().all(|event| !matches!(
+            event,
+            Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )),
+        "the enclosed producer is locally legal; only strategic reachability should exclude it"
+    );
+    let builders = state
+        .units()
+        .iter()
+        .filter(|unit| unit.kind == UnitKind::Harvester)
+        .map(|unit| unit.id)
+        .collect::<Vec<_>>();
+    assert_eq!(builders.len(), 4, "the fixture retains its worker floor");
+    let report = state.tick(&[oxide_sim::PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Build {
+            units: builders,
+            kind: BuildingKind::Barricade,
+            anchor: TilePos::new(8, 4),
+            queue: false,
+            defer: false,
+        },
+    }]);
+    assert!(
+        report.events.iter().all(|event| !matches!(
+            event,
+            Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )),
+        "the authoritative builder commitment must be accepted: {:?}",
+        report.events
+    );
+    assert_eq!(
+        Observation::fog_honest(&state, PlayerId(0)).scrap,
+        UnitKind::Sentinel.stats().cost
+    );
+
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.expect("bot is configured"),
+        briefing,
+    );
+    while !state.current_tick().is_multiple_of(brain.dials().cadence) {
+        state.tick(&[]);
+    }
+    let decision = brain.act_traced(&state);
+    let trace = decision
+        .trace
+        .as_ref()
+        .expect("the public-prior decision is traced");
+    assert_eq!(trace.evidence.current_enemy_units, 0);
+    assert_eq!(trace.evidence.current_enemy_buildings, 0);
+    assert_eq!(trace.evidence.remembered_enemy_buildings, 0);
+    assert_eq!(trace.evidence.radar_blips, 0);
+    let standing = trace
+        .allocation
+        .proposals
+        .entries
+        .iter()
+        .find(|proposal| {
+            matches!(proposal.key, ProposalKeyTrace::StandingForce { .. })
+                && proposal.disposition == ProposalDispositionTrace::Accepted
+        })
+        .expect("the uncleared public hostile start should justify force projection");
+    assert_eq!(standing.claims.producer_jobs.total, 1);
+    let job_claim = standing
+        .claims
+        .producer_jobs
+        .entries
+        .first()
+        .expect("standing force claims one immediate producer job");
+    match &job_claim.access {
+        ProducerJobAccessTrace::Flexible { eligible_producers } => {
+            assert_eq!(eligible_producers.entries, vec![home]);
+            assert_eq!(eligible_producers.total, 1);
+        }
+        ProducerJobAccessTrace::Fixed { .. } => {
+            panic!("fresh standing force must retain flexible routed producer access")
+        }
+    }
+    let scheduled = trace
+        .allocation
+        .producer_schedule
+        .entries
+        .iter()
+        .find(|job| {
+            matches!(
+                job.owner,
+                ClaimOwnerTrace::Proposal { key } if key == standing.key
+            )
+        })
+        .expect("the accepted standing force owns one exact producer job");
+    assert_eq!(scheduled.producer, home);
+    assert_ne!(scheduled.producer, isolated);
+    assert!(decision.commands.iter().any(|command| matches!(
+        command.command,
+        Command::Train { building, kind }
+            if building == home && kind == scheduled.kind
+    )));
+    let report = state.tick(&decision.commands);
+    assert!(
+        report.events.iter().all(|event| !matches!(
+            event,
+            Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )),
+        "the authoritative State must accept the routed Train command: {:?}",
+        report.events
+    );
+}
+
+#[test]
+fn active_connected_paid_queue_work_leaves_only_independent_standing_capacity() {
+    let mut scenario = connected_package_scenario(true);
+    scenario.name = "Active connected paid-queue ownership".to_owned();
+    scenario.players[0].bot_config = Some(BotConfig::scripted(
+        BotDifficulty::Prime,
+        BotStance::Aggressive,
+        5,
+    ));
+    let mut state = scenario.build().expect("paid-queue probe builds");
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.expect("bot is configured"),
+        public_map(&scenario),
+    );
+    let admission = brain.act_traced(&state);
+    let admission_trace = admission.trace.as_ref().expect("admission is traced");
+    assert_eq!(
+        admission_trace.connected_force.status,
+        ConnectedForceStatus::Active
+    );
+    let connected_key = admission_trace
+        .allocation
+        .proposals
+        .entries
+        .iter()
+        .find_map(|proposal| {
+            (proposal.disposition == ProposalDispositionTrace::Accepted)
+                .then_some(proposal.key)
+                .filter(|key| matches!(key, ProposalKeyTrace::ConnectedOffenseMinimum { .. }))
+        })
+        .expect("the visible rich cluster admits one connected operation");
+    let connected_jobs = admission_trace
+        .allocation
+        .producer_schedule
+        .entries
+        .iter()
+        .filter(|job| {
+            matches!(
+                job.owner,
+                ClaimOwnerTrace::Proposal { key } if key == connected_key
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        admission_trace.allocation.producer_schedule.omitted, 0,
+        "the fixture needs the complete exact producer schedule"
+    );
+    assert!(
+        connected_jobs
+            .iter()
+            .any(|job| job.kind == UnitKind::Bombard),
+        "the connected package must own paid ground-suppression production"
+    );
+    assert!(
+        connected_jobs
+            .iter()
+            .any(|job| job.kind == UnitKind::Buzzard),
+        "the connected package must own paid strike production"
+    );
+    assert!(connected_jobs.iter().all(|job| {
+        job.enqueued_at == state.current_tick()
+            && job.current_scrap == job.kind.stats().cost
+            && job.forecast_scrap == 0
+            && job.enqueued_at <= job.starts_at
+            && job.starts_at <= job.ready_at
+            && job.ready_at < job.ready_before
+    }));
+    let mut connected_lane_counts = BTreeMap::new();
+    for job in &connected_jobs {
+        *connected_lane_counts
+            .entry((job.producer, job.kind))
+            .or_insert(0_usize) += 1;
+    }
+    for (&(producer, kind), &scheduled_count) in &connected_lane_counts {
+        assert_eq!(
+            admission
+                .commands
+                .iter()
+                .filter(|command| matches!(
+                    command.command,
+                    Command::Train { building, kind: trained }
+                        if building == producer && trained == kind
+                ))
+                .count(),
+            scheduled_count,
+            "every operation-owned lane job must lower exactly once"
+        );
+    }
+    let report = state.tick(&admission.commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player: PlayerId(0),
+            ..
+        }
+    )));
+
+    let earliest_ready = connected_jobs
+        .iter()
+        .map(|job| job.ready_at)
+        .min()
+        .expect("the connected package owns paid queue work");
+    let observation_tick = earliest_ready / brain.dials().cadence * brain.dials().cadence;
+    assert!(
+        observation_tick > 0 && observation_tick < earliest_ready,
+        "the fixture observes every paid job inside its inclusive enqueue-to-ready lifetime"
+    );
+    while state.current_tick() < observation_tick {
+        state.tick(&[]);
+    }
+    assert!(connected_jobs.iter().all(|job| {
+        job.enqueued_at <= state.current_tick() && state.current_tick() <= job.ready_at
+    }));
+    for (&(producer, kind), &scheduled_count) in &connected_lane_counts {
+        assert_eq!(
+            state
+                .building(producer)
+                .expect("every scheduled producer remains alive")
+                .queue
+                .iter()
+                .filter(|queued| **queued == kind)
+                .count(),
+            scheduled_count,
+            "operation-owned queue inventory must survive through its inclusive ready tick"
+        );
+    }
+
+    let continued = brain.act_traced(&state);
+    let continued_trace = continued
+        .trace
+        .as_ref()
+        .expect("the in-flight queue decision is traced");
+    assert_eq!(
+        continued_trace.connected_force.status,
+        ConnectedForceStatus::Active
+    );
+    let (objective, anchor) = match connected_key {
+        ProposalKeyTrace::ConnectedOffenseMinimum { objective, anchor } => (objective, anchor),
+        _ => unreachable!("the filtered proposal key is connected offense"),
+    };
+    assert!(
+        continued_trace
+            .allocation
+            .obligations
+            .entries
+            .iter()
+            .any(|obligation| matches!(
+                obligation.key,
+                ObligationKeyTrace::ConnectedOffense {
+                    objective: retained_objective,
+                    anchor: retained_anchor,
+                } if retained_objective == objective && retained_anchor == anchor
+            ))
+    );
+    let accepted_standing = continued_trace
+        .allocation
+        .proposals
+        .entries
+        .iter()
+        .find_map(|proposal| {
+            (proposal.disposition == ProposalDispositionTrace::Accepted)
+                .then_some(proposal.key)
+                .filter(|key| matches!(key, ProposalKeyTrace::StandingForce { .. }))
+        })
+        .expect("wealth left after the paid operation funds independent standing force");
+    assert!(matches!(
+        accepted_standing,
+        ProposalKeyTrace::StandingForce {
+            kind: UnitKind::Avalanche,
+            ..
+        }
+    ));
+    let standing_job = continued_trace
+        .allocation
+        .producer_schedule
+        .entries
+        .iter()
+        .find(|job| {
+            matches!(
+                job.owner,
+                ClaimOwnerTrace::Proposal { key } if key == accepted_standing
+            )
+        })
+        .expect("the accepted standing alternative owns one exact lane");
+    let operation_producers = connected_jobs
+        .iter()
+        .map(|job| job.producer)
+        .collect::<BTreeSet<_>>();
+    assert!(
+        !operation_producers.contains(&standing_job.producer),
+        "standing production may use only producer capacity independent of the paid operation"
+    );
+    assert!(
+        state
+            .building(standing_job.producer)
+            .is_some_and(|producer| producer.queue.is_empty()),
+        "the independent standing lane starts unoccupied"
+    );
+    assert_eq!(standing_job.enqueued_at, state.current_tick());
+    assert_eq!(standing_job.current_scrap, standing_job.kind.stats().cost);
+    assert_eq!(standing_job.forecast_scrap, 0);
+    assert_eq!(
+        continued
+            .commands
+            .iter()
+            .filter(|command| matches!(
+                command.command,
+                Command::Train { building, kind }
+                    if building == standing_job.producer && kind == standing_job.kind
+            ))
+            .count(),
+        1
+    );
+    assert!(continued.commands.iter().all(|command| {
+        !connected_jobs.iter().any(|job| {
+            matches!(
+                command.command,
+                Command::Train { building, kind }
+                    if building == job.producer && kind == job.kind
+            )
+        })
+    }));
+
+    let report = state.tick(&continued.commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player: PlayerId(0),
+            ..
+        }
+    )));
+}
+
+#[test]
+fn full_tech_standing_production_replaces_the_tier_one_fallback_across_cadences() {
+    let scenario = full_tech_standing_scenario();
+    let mut state = scenario.build().expect("full-tech standing fixture builds");
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.expect("bot is configured"),
+        public_map(&scenario),
+    );
+    let mut prior_ready_at = None;
+
+    for cadence in 0..2 {
+        let decision = brain.act_traced(&state);
+        let trace = decision.trace.as_ref().expect("the cadence is traced");
+        assert_eq!(trace.connected_force.status, ConnectedForceStatus::Idle);
+        assert_eq!(trace.evidence.current_enemy_units, 0);
+        assert_eq!(trace.evidence.current_enemy_buildings, 0);
+        let accepted = trace
+            .allocation
+            .proposals
+            .entries
+            .iter()
+            .filter(|proposal| {
+                proposal.disposition == ProposalDispositionTrace::Accepted
+                    && matches!(proposal.key, ProposalKeyTrace::StandingForce { .. })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            accepted.len(),
+            1,
+            "cadence {cadence} should choose exactly one standing alternative"
+        );
+        assert!(matches!(
+            accepted[0].key,
+            ProposalKeyTrace::StandingForce {
+                kind: UnitKind::Avalanche,
+                ..
+            }
+        ));
+        assert!(trace.allocation.proposals.entries.iter().any(|proposal| {
+            matches!(
+                proposal.key,
+                ProposalKeyTrace::StandingForce {
+                    kind: UnitKind::Sentinel | UnitKind::Lancer,
+                    ..
+                }
+            ) && proposal.disposition != ProposalDispositionTrace::Accepted
+        }));
+        let scheduled = trace
+            .allocation
+            .producer_schedule
+            .entries
+            .iter()
+            .find(|job| {
+                matches!(
+                    job.owner,
+                    ClaimOwnerTrace::Proposal { key } if key == accepted[0].key
+                )
+            })
+            .expect("the selected higher-tier alternative owns one lane");
+        assert_eq!(scheduled.enqueued_at, state.current_tick());
+        assert_eq!(scheduled.current_scrap, UnitKind::Avalanche.stats().cost);
+        assert_eq!(scheduled.forecast_scrap, 0);
+        if let Some(previous_ready_at) = prior_ready_at {
+            assert_eq!(
+                scheduled.starts_at,
+                previous_ready_at + 1,
+                "the second cadence must account for the first paid queue entry"
+            );
+        }
+        prior_ready_at = Some(scheduled.ready_at);
+        assert_eq!(
+            decision
+                .commands
+                .iter()
+                .filter(|command| matches!(
+                    command.command,
+                    Command::Train {
+                        building,
+                        kind: UnitKind::Avalanche,
+                    } if building == scheduled.producer
+                ))
+                .count(),
+            1
+        );
+        assert!(decision.commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Sentinel | UnitKind::Lancer,
+                ..
+            }
+        )));
+        let report = state.tick(&decision.commands);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )));
+        if cadence == 0 {
+            while !state.current_tick().is_multiple_of(brain.dials().cadence) {
+                state.tick(&[]);
+            }
+        }
+    }
+}
+
+#[test]
+fn standing_force_preserves_and_dispatches_an_exact_legal_turret_threshold() {
+    let turret_cost = BuildingKind::Turret
+        .base_stats()
+        .construction
+        .expect("Turrets are constructible")
+        .cost;
+    let residual_threshold = turret_cost.saturating_add(UnitKind::Harvester.stats().cost);
+    let standing_cost = UnitKind::Sentinel.stats().cost;
+    let scenario = mature_standing_force_scenario(
+        residual_threshold.saturating_add(standing_cost),
+        false,
+        false,
+    );
+    let mut state = scenario.build().expect("the exact Turret fixture builds");
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.expect("bot is configured"),
+        public_map(&scenario),
+    );
+
+    let decision = brain.act_traced(&state);
+    let trace = decision.trace.as_ref().expect("the decision is traced");
+    let standing = trace
+        .allocation
+        .proposals
+        .entries
+        .iter()
+        .find(|proposal| {
+            proposal.disposition == ProposalDispositionTrace::Accepted
+                && matches!(
+                    proposal.key,
+                    ProposalKeyTrace::StandingForce {
+                        kind: UnitKind::Sentinel,
+                        ..
+                    }
+                )
+        })
+        .expect("the exact surplus admits one independently useful screen");
+    assert_eq!(standing.claims.minimum_residual_scrap, residual_threshold);
+    assert_eq!(
+        decision
+            .commands
+            .iter()
+            .filter(|command| matches!(
+                command.command,
+                Command::Train {
+                    kind: UnitKind::Sentinel,
+                    ..
+                }
+            ))
+            .count(),
+        1,
+    );
+    assert_eq!(
+        decision
+            .commands
+            .iter()
+            .filter(|command| matches!(
+                command.command,
+                Command::Build {
+                    kind: BuildingKind::Turret,
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "the current-only floor must remain available to the exact scored Turret rung: {:?}",
+        decision.commands
+    );
+
+    let report = state.tick(&decision.commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player: PlayerId(0),
+            ..
+        }
+    )));
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        UnitKind::Harvester.stats().cost
+    );
+    assert!(state.buildings().iter().any(|building| {
+        building.player == PlayerId(0) && building.kind == BuildingKind::Turret && !building.built
+    }));
+}
+
+#[test]
+fn completed_income_accumulates_into_the_better_shipped_standing_provider() {
+    let control =
+        mature_standing_accumulation_scenario(UnitKind::Sentinel.stats().cost, false, false);
+    let (mut control_state, mut control_brain) = prepared_mature_standing_force(&control);
+    let cheap = control_brain.act_traced(&control_state);
+    assert_eq!(
+        cheap
+            .commands
+            .iter()
+            .filter(|command| matches!(
+                command.command,
+                Command::Train {
+                    kind: UnitKind::Sentinel,
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "without bounded completed income, the shipped policy buys the useful fallback: {:?}",
+        cheap.commands,
+    );
+    let report = control_state.tick(&cheap.commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player: PlayerId(0),
+            ..
+        }
+    )));
+
+    let scenario =
+        mature_standing_accumulation_scenario(UnitKind::Sentinel.stats().cost, true, false);
+    let (mut state, mut brain) = prepared_mature_standing_force(&scenario);
+    let held = brain.act_traced(&state);
+    assert!(held.commands.iter().all(|command| !matches!(
+        command.command,
+        Command::Train {
+            kind: UnitKind::Sentinel,
+            ..
+        }
+    )));
+    assert!(
+        held.trace
+            .as_ref()
+            .expect("the held decision is traced")
+            .allocation
+            .proposals
+            .entries
+            .iter()
+            .all(|proposal| !matches!(proposal.key, ProposalKeyTrace::StandingForce { .. }))
+    );
+
+    let started_at = state.current_tick();
+    let mut warden_orders = 0_usize;
+    while state.current_tick() < started_at.saturating_add(1_440) {
+        let decision = if state.current_tick() == started_at {
+            held.clone()
+        } else {
+            brain.act_traced(&state)
+        };
+        assert!(decision.commands.iter().all(|command| !matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )));
+        warden_orders = warden_orders.saturating_add(
+            decision
+                .commands
+                .iter()
+                .filter(|command| {
+                    matches!(
+                        command.command,
+                        Command::Train {
+                            kind: UnitKind::Warden,
+                            ..
+                        }
+                    )
+                })
+                .count(),
+        );
+        let report = state.tick(&decision.commands);
+        assert!(report.events.iter().all(|event| !matches!(
+            event,
+            Event::CommandRejected {
+                player: PlayerId(0),
+                ..
+            }
+        )));
+        if warden_orders > 0 {
+            break;
+        }
+    }
+
+    assert_eq!(
+        warden_orders,
+        1,
+        "completed income never funded the selected Warden: tick={}, bank={}, result={:?}, profile={:?}, queues={:?}",
+        state.current_tick(),
+        state.player(PlayerId(0)).scrap,
+        state.result(),
+        brain.profile(),
+        state
+            .buildings()
+            .iter()
+            .filter(|building| building.player == PlayerId(0) && !building.queue.is_empty())
+            .map(|building| (building.kind, building.queue.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        state.current_tick() > started_at,
+        "the higher-tier purchase must follow real authoritative income"
+    );
+    assert_eq!(
+        state
+            .buildings()
+            .iter()
+            .filter(|building| building.player == PlayerId(0))
+            .flat_map(|building| building.queue.iter())
+            .filter(|kind| **kind == UnitKind::Warden)
+            .count(),
+        1,
+        "the accumulated current bank must enqueue the better provider exactly once"
+    );
+}
+
+#[test]
+fn current_air_pressure_spends_while_developmental_ground_force_is_accumulating() {
+    let control =
+        mature_standing_accumulation_scenario(UnitKind::Flakhound.stats().cost, true, false);
+    let (control_state, mut control_brain) = prepared_mature_standing_force(&control);
+    let held = control_brain.act_traced(&control_state);
+    assert!(
+        held.commands
+            .iter()
+            .all(|command| !matches!(command.command, Command::Train { .. }))
+    );
+
+    let scenario =
+        mature_standing_accumulation_scenario(UnitKind::Flakhound.stats().cost, true, true);
+    let (mut state, mut brain) = prepared_mature_standing_force(&scenario);
+    let observation = Observation::fog_honest(&state, PlayerId(0));
+    assert!(
+        observation
+            .enemy_units
+            .iter()
+            .any(|unit| unit.kind == UnitKind::Moth)
+    );
+
+    let decision = brain.act_traced(&state);
+    let trace = decision
+        .trace
+        .as_ref()
+        .expect("the counter decision is traced");
+    let counter = trace
+        .allocation
+        .proposals
+        .entries
+        .iter()
+        .find(|proposal| {
+            proposal.disposition == ProposalDispositionTrace::Accepted
+                && matches!(
+                    proposal.key,
+                    ProposalKeyTrace::StandingForce {
+                        kind: UnitKind::Flakhound,
+                        ..
+                    }
+                )
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "current air pressure must remain eligible beside the held ground need: {:?}",
+                trace.allocation.proposals.entries
+            )
+        });
+    assert_eq!(counter.claims.minimum_residual_scrap, 0);
+    assert_eq!(
+        decision
+            .commands
+            .iter()
+            .filter(|command| matches!(
+                command.command,
+                Command::Train {
+                    kind: UnitKind::Flakhound,
+                    ..
+                }
+            ))
+            .count(),
+        1,
+    );
+    assert!(decision.commands.iter().all(|command| !matches!(
+        command.command,
+        Command::Train {
+            kind: UnitKind::Sentinel,
+            ..
+        }
+    )));
+
+    let report = state.tick(&decision.commands);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player: PlayerId(0),
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -2796,6 +3951,12 @@ fn foundry_connected_allocation_scenario(scrap: u32) -> Scenario {
         BotStance::Aggressive,
         u64::MAX,
     ));
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Crucible,
+        x: 11,
+        y: 3,
+    });
     let frame = TilePos::new(18, 16);
     let row = scenario
         .map
@@ -2843,6 +4004,266 @@ fn foundry_connected_allocation_scenario(scrap: u32) -> Scenario {
         },
     ]);
     scenario
+}
+
+fn full_tech_standing_scenario() -> Scenario {
+    let mut scenario = Scenario::skirmish();
+    scenario.name = "Full-tech standing-force fixture".to_owned();
+    scenario.seed = 0x0A17_0004;
+    scenario.map = open_air_operation_map();
+    scenario.meta = None;
+    scenario.players[0].scrap = 4_000;
+    scenario.players[0].bot = true;
+    scenario.players[0].bot_config = Some(BotConfig::scripted(
+        BotDifficulty::Prime,
+        BotStance::Aggressive,
+        5,
+    ));
+    scenario.players[1].scrap = 0;
+    scenario.players[1].bot = false;
+    scenario.players[1].bot_config = None;
+    scenario.buildings = vec![
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 3,
+            y: 3,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Airworks,
+            x: 7,
+            y: 3,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Crucible,
+            x: 11,
+            y: 3,
+        },
+    ];
+    scenario.units = (0..4)
+        .map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Harvester,
+            x: 8 + index,
+            y: 18,
+        })
+        .chain((0..11).map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 3 + index % 6,
+            y: 20 + index / 6,
+        }))
+        .collect();
+    scenario
+}
+
+fn mature_standing_force_scenario(
+    scrap: u32,
+    recurring_income: bool,
+    current_air_threat: bool,
+) -> Scenario {
+    let mut rows = vec![vec!['.'; 80]; 24];
+    rows.first_mut().expect("map has a north edge").fill('#');
+    rows.last_mut().expect("map has a south edge").fill('#');
+    for row in &mut rows {
+        row[0] = '#';
+        row[79] = '#';
+    }
+    rows[17][3] = '1';
+    rows[17][74] = '2';
+    let extractor_frames = [
+        TilePos::new(3, 8),
+        TilePos::new(6, 8),
+        TilePos::new(9, 8),
+        TilePos::new(3, 11),
+        TilePos::new(6, 11),
+        TilePos::new(9, 11),
+        TilePos::new(3, 14),
+        TilePos::new(6, 14),
+        TilePos::new(9, 14),
+    ];
+    if recurring_income {
+        for frame in extractor_frames {
+            rows[frame.y as usize][frame.x as usize] = 'E';
+        }
+    }
+
+    let mut scenario = Scenario::skirmish();
+    scenario.name = "Mature standing-force integration fixture".to_owned();
+    scenario.seed = 0x0A17_0005 + u64::from(recurring_income) + u64::from(current_air_threat) * 2;
+    scenario.map = rows
+        .into_iter()
+        .map(|row| row.into_iter().collect())
+        .collect();
+    scenario.meta = None;
+    scenario.players[0].scrap = scrap;
+    scenario.players[0].bot = true;
+    scenario.players[0].bot_config = Some(BotConfig::scripted(
+        BotDifficulty::Prime,
+        BotStance::Turtle,
+        0,
+    ));
+    scenario.players[1].scrap = 0;
+    scenario.players[1].bot = false;
+    scenario.players[1].bot_config = None;
+    scenario.buildings = vec![
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 3,
+            y: 3,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Airworks,
+            x: 7,
+            y: 3,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Crucible,
+            x: 11,
+            y: 3,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Crucible,
+            x: 15,
+            y: 3,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Array,
+            x: 20,
+            y: 3,
+        },
+    ];
+    if recurring_income {
+        scenario
+            .buildings
+            .extend(extractor_frames.map(|frame| BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Extractor,
+                x: frame.x,
+                y: frame.y,
+            }));
+    }
+
+    scenario.units = (0..6)
+        .map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Harvester,
+            x: 3 + index,
+            y: 20,
+        })
+        .chain((0..11).map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 16 + index,
+            y: 20,
+        }))
+        .chain((0..2).map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Scuttler,
+            x: 10 + index,
+            y: 21,
+        }))
+        .chain((0..2).map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Excavator,
+            x: 12 + index,
+            y: 21,
+        }))
+        .collect();
+    if current_air_threat {
+        scenario.units.push(UnitSpec {
+            player: 1,
+            kind: UnitKind::Moth,
+            x: 11,
+            y: 19,
+        });
+    }
+    scenario
+}
+
+fn mature_standing_accumulation_scenario(
+    scrap: u32,
+    recurring_income: bool,
+    current_air_threat: bool,
+) -> Scenario {
+    let mut scenario = mature_standing_force_scenario(scrap, recurring_income, current_air_threat);
+    scenario.units.extend((0..4).map(|index| UnitSpec {
+        player: 0,
+        kind: UnitKind::Lancer,
+        x: 28 + index,
+        y: 20,
+    }));
+    scenario.units.push(UnitSpec {
+        player: 0,
+        kind: UnitKind::Bombard,
+        x: 34,
+        y: 20,
+    });
+    scenario.units.extend((0..5).map(|index| UnitSpec {
+        player: 0,
+        kind: UnitKind::Buzzard,
+        x: 35 + index,
+        y: 20,
+    }));
+    scenario.units.push(UnitSpec {
+        player: 0,
+        kind: UnitKind::Kestrel,
+        x: 70,
+        y: 17,
+    });
+    scenario
+}
+
+fn prepared_mature_standing_force(scenario: &Scenario) -> (oxide_sim::State, Brain) {
+    let mut state = scenario
+        .build()
+        .expect("the mature standing-force fixture builds");
+    let builders = state
+        .units()
+        .iter()
+        .filter(|unit| {
+            unit.player == PlayerId(0)
+                && matches!(unit.kind, UnitKind::Harvester | UnitKind::Excavator)
+        })
+        .map(|unit| unit.id)
+        .collect::<Vec<_>>();
+    let report = state.tick(&[oxide_sim::PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Patrol {
+            units: builders.clone(),
+            waypoints: vec![TilePos::new(4, 19), TilePos::new(9, 19)],
+        },
+    }]);
+    assert!(report.events.iter().all(|event| !matches!(
+        event,
+        Event::CommandRejected {
+            player: PlayerId(0),
+            ..
+        }
+    )));
+    let brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.expect("bot is configured"),
+        public_map(scenario),
+    );
+    while !state.current_tick().is_multiple_of(brain.dials().cadence) {
+        state.tick(&[]);
+    }
+    let observation = Observation::fog_honest(&state, PlayerId(0));
+    assert_eq!(observation.scrap, scenario.players[0].scrap);
+    assert!(
+        builders
+            .iter()
+            .all(|unit| observation.my_queued_units.contains(unit))
+    );
+    (state, brain)
 }
 
 fn oversized_connected_package_scenario() -> Scenario {

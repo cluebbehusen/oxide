@@ -786,7 +786,7 @@ impl UtilityPolicy {
             home,
             claims,
             combat_core_exclusions,
-            outstanding_air_production_ticks,
+            outstanding_air_production_ticks: _,
             unit_contacts,
             building_contacts,
             public_map,
@@ -949,50 +949,18 @@ impl UtilityPolicy {
             self.player_facing_foundry_assessment(dials, obs, context, intents)
         });
 
-        let expansion_assessment = match expansion_assessment {
-            Some(assessment)
-                if matches!(
-                    assessment.disposition,
-                    expansion::ExpansionDisposition::Prepare { .. }
-                ) =>
-            {
-                if saved_foundry.is_some() {
-                    self.release_foundry_saving(commitments.as_deref_mut(), budget);
-                }
-                let selected_anchor = assessment.plan.anchor;
-                let guard = voluntary_scrap_guard.amount(0);
-                let status = super::production::fill_combat_core_to_strength(
-                    obs,
-                    combat_core_exclusions,
-                    assessment.preparation_target_strength,
-                    guard,
-                    producer_lane_reservations,
-                    budget,
-                    intents,
-                );
-                if !status.ready {
-                    return true;
-                }
-
-                let reassessed = expansion_context.and_then(|context| {
-                    self.player_facing_foundry_assessment(
-                        dials,
-                        obs,
-                        FoundryAssessmentContext {
-                            spendable_scrap: *budget,
-                            required_anchor: Some(selected_anchor),
-                            ..context
-                        },
-                        intents,
-                    )
-                });
-                let Some(reassessed) = reassessed else {
-                    return true;
-                };
-                Some(reassessed)
-            }
-            assessment => assessment,
-        };
+        if expansion_assessment.as_ref().is_some_and(|assessment| {
+            matches!(
+                assessment.disposition,
+                expansion::ExpansionDisposition::Prepare { .. }
+            )
+        }) {
+            // Expansion protection belongs to the shared allocation session.
+            // This residual path may release a stale saved plan, but it must
+            // not buy combat units outside that transaction.
+            self.release_foundry_saving(commitments.as_deref_mut(), budget);
+            return true;
+        }
         if expansion_assessment.is_none() && saved_foundry.is_some() {
             if self.retain_blocked_foundry_saving(obs.tick) {
                 return true;
@@ -1240,46 +1208,29 @@ impl UtilityPolicy {
             });
         }
 
-        if !dials.tech {
-            if dials.adaptive_composition {
-                self.adaptive_production(
-                    dials,
-                    obs,
-                    super::production::AdaptiveProductionContext::new(
-                        combat_core_exclusions,
-                        outstanding_air_production_ticks.is_none(),
-                        capital,
-                    )
-                    .with_repeatable_ground(allow_repeatable_ground)
-                    .with_producer_lane_reservations(producer_lane_reservations),
-                    budget,
-                    intents,
-                );
-            }
-            return false;
-        }
-        self.fabricator_drip(
-            dials,
-            obs,
-            producer_context,
-            ProductionGuards {
-                voluntary: voluntary_guard,
-                capital,
-            },
-            budget,
-            intents,
-        );
-        if dials.adaptive_composition {
-            self.adaptive_production(
+        if player_facing {
+            super::production::fill_residual_foundry_roles(
                 dials,
                 obs,
-                super::production::AdaptiveProductionContext::new(
-                    combat_core_exclusions,
-                    outstanding_air_production_ticks.is_none(),
+                capital,
+                producer_lane_reservations,
+                budget,
+                intents,
+            );
+        }
+
+        if !dials.tech {
+            return false;
+        }
+        if !dials.adaptive_composition {
+            self.fabricator_drip(
+                dials,
+                obs,
+                producer_context,
+                ProductionGuards {
+                    voluntary: voluntary_guard,
                     capital,
-                )
-                .with_repeatable_ground(allow_repeatable_ground)
-                .with_producer_lane_reservations(producer_lane_reservations),
+                },
                 budget,
                 intents,
             );
@@ -1396,12 +1347,15 @@ impl UtilityPolicy {
     /// the planners' private observation before they schedule units; Utility
     /// still sees the authoritative bank and spends the held fund through the
     /// exact same eligibility boundary as [`Self::airworks_capacity_site`].
+    /// `voluntary_scrap_guard` replaces the legacy technology reserve when the
+    /// shared allocator has already derived an exact post-opening floor.
     pub(in crate::bot) fn airworks_capacity_commitment(
         &self,
         dials: &Dials,
         obs: &Observation,
         home: TilePos,
         outstanding_air_production_ticks: Option<u64>,
+        voluntary_scrap_guard: Option<u32>,
         unavailable_builders: &[UnitId],
     ) -> u32 {
         let claims = ConstructionClaims {
@@ -1412,7 +1366,9 @@ impl UtilityPolicy {
         self.airworks_capacity_site(dials, obs, home, claims, outstanding_air_production_ticks)
             .and_then(|_| BuildingKind::Airworks.base_stats().construction)
             .map_or(0, |construction| {
-                construction.cost.saturating_add(TECH_RESERVE)
+                construction
+                    .cost
+                    .saturating_add(voluntary_scrap_guard.unwrap_or(TECH_RESERVE))
             })
     }
 
@@ -1427,7 +1383,7 @@ impl UtilityPolicy {
     /// construction channel can ever afford to climb. Zero once the
     /// dials' tree is fully raised (a standing site counts: its cost is
     /// already spent).
-    fn capital_reserve(
+    pub(super) fn capital_reserve(
         &self,
         dials: &Dials,
         obs: &Observation,
@@ -1502,6 +1458,7 @@ mod tests {
     use crate::ids::{BuildingId, PlayerId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec, Scenario};
     use crate::state::Faction;
+    use crate::stats::Role;
 
     fn observation() -> Observation {
         let harvester = UnitObs {
@@ -1773,6 +1730,16 @@ mod tests {
         });
     }
 
+    fn train_intents(intents: &[Intent]) -> Vec<(BuildingId, UnitKind)> {
+        intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::TrainAt { building, kind } => Some((*building, *kind)),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn add_enemy_building(
         obs: &mut Observation,
         id: u32,
@@ -1886,6 +1853,22 @@ mod tests {
         intents: Vec<Intent>,
     }
 
+    fn expect_ready_foundry(
+        investment: Option<FreshFoundryInvestment>,
+        expectation: &str,
+    ) -> FreshFoundryProposal {
+        match investment {
+            Some(FreshFoundryInvestment::Ready(proposal)) => proposal,
+            Some(FreshFoundryInvestment::NeedsProtection {
+                anchor,
+                target_strength,
+            }) => panic!(
+                "{expectation}; instead {anchor:?} needed ordinary-core strength {target_strength}"
+            ),
+            None => panic!("{expectation}; no investment was derived"),
+        }
+    }
+
     fn player_expansion_assessment(
         policy: &UtilityPolicy,
         dials: &Dials,
@@ -1946,8 +1929,8 @@ mod tests {
             .map(|builder| builder.id)
             .collect();
         let resources = ResourceSnapshot::from_observation(obs);
-        let proposal = policy
-            .fresh_foundry_proposal(
+        let proposal = expect_ready_foundry(
+            policy.fresh_foundry_investment(
                 dials,
                 obs,
                 &resources,
@@ -1962,8 +1945,9 @@ mod tests {
                     current_scrap,
                     protected_reserve,
                 },
-            )
-            .expect("the focused fixture exposes one exact fresh Foundry proposal");
+            ),
+            "the focused fixture should expose one exact ready Foundry investment",
+        );
         policy
             .commit_adjudicated_foundry(proposal, obs.tick, &mut intents)
             .expect("the focused fixture has no prior expansion obligation");
@@ -2066,7 +2050,7 @@ mod tests {
     }
 
     #[test]
-    fn foundry_drip_obeys_the_deployment_contract() {
+    fn overseer_foundry_drip_keeps_its_route_agnostic_legacy_ordering() {
         let home = TilePos::new(1, 1);
         let mut obs = observation();
         for id in 4..8 {
@@ -2095,8 +2079,7 @@ mod tests {
         }
         add_unit(&mut obs, 40, UnitKind::Excavator, TilePos::new(6, 8));
         obs.scrap = 10_000;
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = true;
+        let dials = Dials::overseer();
         let train = |world: &Observation| {
             let mut budget = world.scrap;
             let mut intents = Vec::new();
@@ -2105,7 +2088,7 @@ mod tests {
                 world,
                 home,
                 ConstructionClaims {
-                    player_facing: true,
+                    player_facing: false,
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -2128,8 +2111,8 @@ mod tests {
 
         assert_eq!(
             train(&obs),
-            0,
-            "a complete worker roster and no deployable enemy must leave the recurring Foundry drip idle"
+            1,
+            "the frozen Overseer keeps its historical repeatable Foundry order"
         );
         add_enemy_building(
             &mut obs,
@@ -2142,13 +2125,13 @@ mod tests {
         obs.enemy_buildings.clear();
         assert_eq!(
             train(&obs),
-            0,
-            "removing the last actionable objective closes the recurring stream on the next admitted think"
+            1,
+            "player-facing deployment evidence must not leak into the frozen Overseer policy"
         );
     }
 
     #[test]
-    fn adaptive_core_production_remains_available_without_the_tech_channel() {
+    fn player_facing_residual_production_does_not_duplicate_standing_combat_demand() {
         let mut obs = observation();
         for id in 4..=6 {
             obs.my_units.push(UnitObs {
@@ -2164,8 +2147,9 @@ mod tests {
         dials.tech = false;
         dials.adaptive_composition = true;
         dials.harvester_target = 4;
+        dials.raider_target = 1;
         dials.army_size = 2;
-        dials.discretionary_slots = 0;
+        add_unit(&mut obs, 7, UnitKind::Scuttler, TilePos::new(7, 4));
         let mut budget = obs.scrap;
         let mut intents = Vec::new();
 
@@ -2182,20 +2166,253 @@ mod tests {
             &mut intents,
         );
 
-        assert_eq!(budget, 0);
+        assert_eq!(budget, obs.scrap);
+        assert!(
+            intents.iter().all(|intent| !matches!(
+                intent,
+                Intent::TrainAt { kind, .. } if kind.stats().can_fight()
+            )),
+            "standing combat purchases belong to the shared allocation session: {intents:?}"
+        );
+    }
+
+    #[test]
+    fn player_facing_production_reopens_worker_growth_after_renewable_income() {
+        let mut obs = observation();
+        for id in 4..=6 {
+            add_unit(
+                &mut obs,
+                id,
+                UnitKind::Harvester,
+                TilePos::new(id as i32, 4),
+            );
+        }
+        add_unit(&mut obs, 7, UnitKind::Scuttler, TilePos::new(7, 4));
+        let mut dials = Dials::full();
+        dials.tech = false;
+        dials.adaptive_composition = true;
+        dials.harvester_target = 5;
+        dials.raider_target = 1;
+        let decide = |current: &Observation| {
+            let mut budget = UnitKind::Harvester.stats().cost;
+            let mut intents = Vec::new();
+            UtilityPolicy::new().production(
+                &dials,
+                current,
+                TilePos::new(1, 1),
+                ConstructionClaims {
+                    player_facing: true,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+                &mut budget,
+                &mut intents,
+            );
+            (budget, intents)
+        };
+
+        assert_eq!(decide(&obs), (UnitKind::Harvester.stats().cost, Vec::new()));
+
+        add_building(
+            &mut obs,
+            8,
+            BuildingKind::Extractor,
+            TilePos::new(4, 6),
+            true,
+        );
         assert_eq!(
-            intents,
-            vec![
-                Intent::TrainAt {
+            decide(&obs),
+            (
+                0,
+                vec![Intent::TrainAt {
                     building: BuildingId(0),
-                    kind: UnitKind::Sentinel,
-                },
-                Intent::TrainAt {
-                    building: BuildingId(0),
-                    kind: UnitKind::Sentinel,
-                },
-            ],
-            "disabling the tech channel must not disable the player-facing defensive core"
+                    kind: UnitKind::Harvester,
+                }]
+            )
+        );
+    }
+
+    #[test]
+    fn profile_free_policy_waits_on_full_primary_producer_lanes() {
+        let mut obs = observation();
+        obs.my_units.clear();
+        obs.my_buildings.clear();
+        obs.my_queues.clear();
+        obs.scrap = 20_000;
+        for id in 0..5 {
+            add_unit(
+                &mut obs,
+                id,
+                UnitKind::Harvester,
+                TilePos::new(id as i32, 4),
+            );
+        }
+        add_building(
+            &mut obs,
+            10,
+            BuildingKind::Foundry,
+            TilePos::new(10, 1),
+            true,
+        );
+        add_building(&mut obs, 2, BuildingKind::Foundry, TilePos::new(2, 1), true);
+        obs.my_queues[1] = vec![UnitKind::Sentinel; SHALLOW_QUEUE_DEPTH];
+        add_building(
+            &mut obs,
+            11,
+            BuildingKind::Fabricator,
+            TilePos::new(11, 5),
+            true,
+        );
+        add_building(
+            &mut obs,
+            3,
+            BuildingKind::Fabricator,
+            TilePos::new(3, 5),
+            true,
+        );
+        obs.my_queues[3] = vec![UnitKind::Lancer; SHALLOW_QUEUE_DEPTH];
+        let mut budget = obs.scrap;
+        let mut intents = Vec::new();
+
+        UtilityPolicy::new().production(
+            &Dials::overseer(),
+            &obs,
+            TilePos::new(2, 2),
+            ConstructionClaims {
+                player_facing: false,
+                enlisted: &[],
+                reserved: &[],
+            },
+            &mut budget,
+            &mut intents,
+        );
+
+        assert!(
+            train_intents(&intents).is_empty(),
+            "the frozen policy must not fall through to higher-id producers: {intents:?}"
+        );
+    }
+
+    #[test]
+    fn profile_free_fabricator_ladder_stays_closed_without_its_prerequisite() {
+        let mut obs = observation();
+        obs.my_units.clear();
+        obs.my_buildings.clear();
+        obs.my_queues.clear();
+        obs.scrap = 20_000;
+        for id in 0..5 {
+            add_unit(
+                &mut obs,
+                id,
+                UnitKind::Harvester,
+                TilePos::new(id as i32, 4),
+            );
+        }
+        for id in 10..13 {
+            add_unit(&mut obs, id, UnitKind::Sentinel, TilePos::new(id as i32, 6));
+        }
+        add_building(&mut obs, 1, BuildingKind::Foundry, TilePos::new(1, 1), true);
+        add_building(
+            &mut obs,
+            3,
+            BuildingKind::Airworks,
+            TilePos::new(3, 1),
+            true,
+        );
+        add_enemy_building(
+            &mut obs,
+            90,
+            BuildingKind::Foundry,
+            TilePos::new(12, 5),
+            true,
+        );
+        let mut budget = obs.scrap;
+        let mut intents = Vec::new();
+
+        UtilityPolicy::new().production(
+            &Dials::overseer(),
+            &obs,
+            TilePos::new(2, 2),
+            ConstructionClaims {
+                player_facing: false,
+                enlisted: &[],
+                reserved: &[],
+            },
+            &mut budget,
+            &mut intents,
+        );
+
+        let wing = Role::AirGround.unit_for(obs.faction);
+        let trains = train_intents(&intents);
+        assert!(
+            trains
+                .iter()
+                .all(|(_, kind)| *kind != UnitKind::Scuttler && *kind != wing),
+            "the frozen Fabricator ladder opened without its prerequisite: {trains:?}"
+        );
+    }
+
+    #[test]
+    fn profile_free_policy_retains_its_legacy_air_production() {
+        let mut obs = observation();
+        obs.my_units.clear();
+        obs.my_buildings.clear();
+        obs.my_queues.clear();
+        obs.scrap = 20_000;
+        for id in 0..5 {
+            add_unit(
+                &mut obs,
+                id,
+                UnitKind::Harvester,
+                TilePos::new(id as i32, 4),
+            );
+        }
+        for id in 10..13 {
+            add_unit(&mut obs, id, UnitKind::Sentinel, TilePos::new(id as i32, 6));
+        }
+        for (id, kind, anchor) in [
+            (1, BuildingKind::Foundry, TilePos::new(1, 1)),
+            (2, BuildingKind::Fabricator, TilePos::new(4, 1)),
+            (3, BuildingKind::Airworks, TilePos::new(1, 5)),
+            (4, BuildingKind::Crucible, TilePos::new(4, 5)),
+        ] {
+            add_building(&mut obs, id, kind, anchor, true);
+        }
+        add_enemy_building(
+            &mut obs,
+            90,
+            BuildingKind::Foundry,
+            TilePos::new(12, 5),
+            true,
+        );
+        let mut budget = obs.scrap;
+        let mut intents = Vec::new();
+
+        UtilityPolicy::new().production(
+            &Dials::overseer(),
+            &obs,
+            TilePos::new(2, 2),
+            ConstructionClaims {
+                player_facing: false,
+                enlisted: &[],
+                reserved: &[],
+            },
+            &mut budget,
+            &mut intents,
+        );
+
+        let air: Vec<_> = train_intents(&intents)
+            .into_iter()
+            .filter(|(building, _)| *building == BuildingId(3))
+            .map(|(_, kind)| kind.role())
+            .collect();
+        assert!(
+            air.contains(&Role::Bomber),
+            "legacy bomber drip changed: {air:?}"
+        );
+        assert!(
+            air.contains(&Role::AirGround),
+            "legacy harassment wing changed: {air:?}"
         );
     }
 
@@ -2427,12 +2644,10 @@ mod tests {
     }
 
     #[test]
-    fn voluntary_guard_survives_scout_and_current_air_response_priorities() {
+    fn voluntary_guard_survives_scout_priority() {
         let guard = UnitKind::Sentinel.stats().cost;
         let scout = crate::stats::Role::Scout.unit_for(Faction::Ferrous);
         let scout_cost = scout.stats().cost;
-        let aa = crate::stats::Role::AntiAir.unit_for(Faction::Ferrous);
-        let aa_cost = aa.stats().cost;
         let mut dials = Dials::balanced();
         dials.adaptive_composition = true;
 
@@ -2472,48 +2687,6 @@ mod tests {
         assert!(funded_scout.iter().any(|intent| matches!(
             intent,
             Intent::TrainAt { kind, .. } if *kind == scout
-        )));
-
-        let aa_decision = |scrap| {
-            let mut obs = completed_tree();
-            obs.scrap = scrap;
-            add_unit(&mut obs, 90, UnitKind::Condor, TilePos::new(7, 7));
-            let enemy = obs.my_units.pop().expect("the air contact was appended");
-            obs.enemy_units.push(UnitObs {
-                player: PlayerId(1),
-                ..enemy
-            });
-            let mut budget = scrap;
-            let mut intents = Vec::new();
-            UtilityPolicy::new().production_with_air_demand(
-                &dials,
-                &obs,
-                ProductionContext::new(
-                    TilePos::new(1, 1),
-                    ConstructionClaims {
-                        player_facing: true,
-                        enlisted: &[],
-                        reserved: &[],
-                    },
-                    None,
-                )
-                .with_voluntary_scrap_guard(Reserve::Exact(guard)),
-                &mut budget,
-                &mut intents,
-            );
-            (budget, intents)
-        };
-        let (guarded_budget, guarded_aa) = aa_decision(aa_cost + guard - 1);
-        assert_eq!(guarded_budget, aa_cost + guard - 1);
-        assert!(guarded_aa.iter().all(|intent| !matches!(
-            intent,
-            Intent::TrainAt { kind, .. } if *kind == aa
-        )));
-        let (funded_budget, funded_aa) = aa_decision(aa_cost + guard);
-        assert_eq!(funded_budget, guard);
-        assert!(funded_aa.iter().any(|intent| matches!(
-            intent,
-            Intent::TrainAt { kind, .. } if *kind == aa
         )));
     }
 
@@ -2750,7 +2923,6 @@ mod tests {
         dials.air_harass = false;
         dials.ferry = false;
         dials.mines = false;
-        dials.discretionary_slots = 0;
 
         let public_map = expansion_briefing(&obs, home, TilePos::new(44, 20));
         (home, extractor, obs, dials, public_map)
@@ -3148,7 +3320,7 @@ mod tests {
     }
 
     #[test]
-    fn unfinished_security_is_not_a_fresh_foundry_proposal() {
+    fn unfinished_security_becomes_a_fresh_foundry_preparation_need() {
         let home = TilePos::new(1, 1);
         let frontier = TilePos::new(30, 18);
         let mut obs = completed_tree();
@@ -3223,26 +3395,28 @@ mod tests {
             .into_iter()
             .map(|builder| builder.id)
             .collect();
-        assert!(
-            policy
-                .fresh_foundry_proposal(
-                    &dials,
-                    &obs,
-                    &ResourceSnapshot::from_observation(&obs),
-                    FreshFoundryProposalContext {
-                        home,
-                        available_builders: &available_builders,
-                        combat_core_exclusions: &[],
-                        unit_contacts: &[],
-                        building_contacts: &[],
-                        public_map: &public_map,
-                        same_think_intents: &[],
-                        current_scrap: obs.scrap,
-                        protected_reserve: TECH_RESERVE,
-                    },
-                )
-                .is_none(),
-            "shared allocation may admit only a currently secure exact Foundry plan"
+        assert_eq!(
+            policy.fresh_foundry_investment(
+                &dials,
+                &obs,
+                &ResourceSnapshot::from_observation(&obs),
+                FreshFoundryProposalContext {
+                    home,
+                    available_builders: &available_builders,
+                    combat_core_exclusions: &[],
+                    unit_contacts: &[],
+                    building_contacts: &[],
+                    public_map: &public_map,
+                    same_think_intents: &[],
+                    current_scrap: obs.scrap,
+                    protected_reserve: TECH_RESERVE,
+                },
+            ),
+            Some(FreshFoundryInvestment::NeedsProtection {
+                anchor: assessment.plan.anchor,
+                target_strength: assessment.preparation_target_strength,
+            }),
+            "shared allocation must retain the exact missing protection demand"
         );
     }
 
@@ -3382,15 +3556,14 @@ mod tests {
             &mut budget,
             &mut intents,
         );
-        assert_eq!(
-            intents,
-            vec![Intent::TrainAt {
-                building: BuildingId(0),
-                kind: UnitKind::Sentinel,
-            }],
-            "released capital should buy the one fighter still missing from the ordinary core"
+        assert!(
+            intents.iter().all(|intent| !matches!(
+                intent,
+                Intent::TrainAt { kind, .. } if kind.stats().can_fight()
+            )),
+            "released capital must wait for the shared standing-force allocator: {intents:?}"
         );
-        assert_eq!(budget, 0);
+        assert_eq!(budget, threatened.scrap);
     }
 
     #[test]
@@ -3747,8 +3920,8 @@ mod tests {
             .map(|builder| builder.id)
             .collect();
         let resources = ResourceSnapshot::from_observation(&fixture.obs);
-        let proposal = policy
-            .fresh_foundry_proposal(
+        let proposal = expect_ready_foundry(
+            policy.fresh_foundry_investment(
                 &fixture.dials,
                 &fixture.obs,
                 &resources,
@@ -3763,8 +3936,9 @@ mod tests {
                     current_scrap: fixture.obs.scrap,
                     protected_reserve: 0,
                 },
-            )
-            .expect("the project is a quotable exact Foundry proposal");
+            ),
+            "the project should expose a ready exact Foundry investment",
+        );
         let mut intents = Vec::new();
         policy
             .commit_adjudicated_foundry(proposal, fixture.obs.tick, &mut intents)
@@ -4280,8 +4454,8 @@ mod tests {
             .map(|builder| builder.id)
             .collect();
         let resources = ResourceSnapshot::from_observation(&observation);
-        let proposal = policy
-            .fresh_foundry_proposal(
+        let proposal = expect_ready_foundry(
+            policy.fresh_foundry_investment(
                 &fixture.dials,
                 &observation,
                 &resources,
@@ -4296,8 +4470,9 @@ mod tests {
                     current_scrap: observation.scrap,
                     protected_reserve: 0,
                 },
-            )
-            .expect("bounded future income makes the exact safe proposal quotable");
+            ),
+            "bounded future income should make the exact safe investment ready",
+        );
         let mut intents = Vec::new();
         policy
             .commit_adjudicated_foundry(proposal, observation.tick, &mut intents)
@@ -4342,6 +4517,14 @@ mod tests {
         let fixture = saved_foundry_fixture();
         let mut accepted_observation = fixture.obs.clone();
         accepted_observation.scrap = 0;
+        let extractor = accepted_observation
+            .my_buildings
+            .iter()
+            .position(|building| building.id == BuildingId(11))
+            .expect("the fixture has its remote Extractor");
+        accepted_observation.my_buildings.remove(extractor);
+        accepted_observation.my_queues.remove(extractor);
+        accepted_observation.known_scrap = vec![(TilePos::new(30, 16), 800)];
         let foundry_cost = BuildingKind::Foundry
             .base_stats()
             .construction
@@ -4360,35 +4543,26 @@ mod tests {
             .forecast()
             .income_through(deadline)
             .amount();
-        let protected_reserve = non_reclaimer_forecast
-            .saturating_sub(foundry_cost)
-            .saturating_add(1);
-        let required_scrap = foundry_cost.saturating_add(protected_reserve);
+        let protected_reserve = 0;
+        let required_scrap = foundry_cost;
         assert!(
             non_reclaimer_forecast < required_scrap,
             "the control economy must fall just short of the frozen quote"
         );
-        for (id, anchor) in [
-            (100, TilePos::new(2, 18)),
-            (101, TilePos::new(6, 18)),
-            (102, TilePos::new(10, 18)),
-            (103, TilePos::new(14, 18)),
-        ] {
-            add_building(
-                &mut accepted_observation,
-                id,
-                BuildingKind::Reclaimer,
-                anchor,
-                true,
-            );
-        }
+        add_building(
+            &mut accepted_observation,
+            100,
+            BuildingKind::Reclaimer,
+            TilePos::new(2, 18),
+            true,
+        );
         assert!(
             ResourceSnapshot::from_observation(&accepted_observation)
                 .forecast()
                 .income_through(deadline)
                 .amount()
                 >= required_scrap,
-            "the added completed sources must honestly cover the accepted quote"
+            "the added completed source must honestly cover the accepted quote"
         );
         let available_builders: Vec<_> = UtilityPolicy::new()
             .construction_builders(&accepted_observation, &[], &[])
@@ -4396,8 +4570,8 @@ mod tests {
             .map(|builder| builder.id)
             .collect();
         let resources = ResourceSnapshot::from_observation(&accepted_observation);
-        let proposal = UtilityPolicy::new()
-            .fresh_foundry_proposal(
+        let proposal = expect_ready_foundry(
+            UtilityPolicy::new().fresh_foundry_investment(
                 &fixture.dials,
                 &accepted_observation,
                 &resources,
@@ -4412,8 +4586,9 @@ mod tests {
                     current_scrap: 0,
                     protected_reserve,
                 },
-            )
-            .expect("the completed-source forecast supports one exact expansion");
+            ),
+            "the completed-source forecast should support one ready exact expansion",
+        );
         assert_eq!(proposal.forecast_deadline(), deadline);
         assert_eq!(
             proposal.adjudicated_commit(),
@@ -4563,8 +4738,8 @@ mod tests {
             .map(|builder| builder.id)
             .collect();
         let resources = ResourceSnapshot::from_observation(&fixture.obs);
-        let proposal = policy
-            .fresh_foundry_proposal(
+        let proposal = expect_ready_foundry(
+            policy.fresh_foundry_investment(
                 &fixture.dials,
                 &fixture.obs,
                 &resources,
@@ -4579,8 +4754,9 @@ mod tests {
                     current_scrap: fixture.obs.scrap,
                     protected_reserve: 0,
                 },
-            )
-            .expect("the current bank supports the exact expansion");
+            ),
+            "the current bank should support the exact ready expansion",
+        );
         assert_eq!(
             proposal.adjudicated_commit(),
             AdjudicatedFoundryCommit::Build
@@ -4811,12 +4987,9 @@ mod tests {
         );
 
         assert!(promised);
-        assert!(intents.iter().any(|intent| matches!(
+        assert!(intents.iter().all(|intent| !matches!(
             intent,
-            Intent::TrainAt {
-                kind: UnitKind::Sentinel,
-                ..
-            }
+            Intent::TrainAt { kind, .. } if kind.stats().can_fight()
         )));
         assert!(intents.iter().all(|intent| !matches!(
             intent,
@@ -4825,20 +4998,8 @@ mod tests {
                 ..
             }
         )));
-        let reaccepted = policy
-            .foundry_saving
-            .as_ref()
-            .expect("projected protection may reaccept the same exact plan");
-        assert_eq!(
-            (reaccepted.plan.anchor, reaccepted.plan.builder),
-            (saving.plan.anchor, saving.plan.builder),
-            "projected protection may reaccept the same exact plan after spending the safety fund"
-        );
-        assert_eq!(
-            reaccepted.accepted_at, underprotected.tick,
-            "yielding the fund for required preparation creates a new commitment order"
-        );
-        assert_eq!(budget, 0);
+        assert_eq!(policy.foundry_saving, None);
+        assert_eq!(budget, underprotected.scrap);
     }
 
     #[test]
@@ -5583,6 +5744,7 @@ mod tests {
             &obs,
             TilePos::new(1, 1),
             Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS + 1),
+            None,
             &[],
         );
         let expected = BuildingKind::Airworks
@@ -5597,6 +5759,45 @@ mod tests {
         assert_eq!((expected - 1).saturating_sub(commitment), 0);
         assert_eq!(expected.saturating_sub(commitment), 0);
         assert_eq!((expected + 1).saturating_sub(commitment), 1);
+    }
+
+    #[test]
+    fn capacity_commitment_uses_the_shared_exact_residual_guard() {
+        let obs = completed_tree();
+        let demand = Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS + 1);
+        let policy = UtilityPolicy::new();
+        let home = TilePos::new(1, 1);
+        let cost = BuildingKind::Airworks
+            .base_stats()
+            .construction
+            .expect("Airworks has construction stats")
+            .cost;
+        let shallow_guard = UnitKind::Sentinel.stats().cost;
+
+        assert_eq!(
+            policy.airworks_capacity_commitment(
+                &Dials::balanced(),
+                &obs,
+                home,
+                demand,
+                Some(shallow_guard),
+                &[],
+            ),
+            cost + shallow_guard,
+            "capacity and execution must protect the same shallow-screen remainder"
+        );
+        assert_eq!(
+            policy.airworks_capacity_commitment(
+                &Dials::balanced(),
+                &obs,
+                home,
+                demand,
+                Some(0),
+                &[],
+            ),
+            cost,
+            "an exact zero guard must not silently restore the legacy technology reserve"
+        );
     }
 
     #[test]
@@ -5624,6 +5825,7 @@ mod tests {
                 &obs,
                 home,
                 demand,
+                None,
                 &harvesters[..harvesters.len() - 1],
             ),
             commitment,
@@ -5635,6 +5837,7 @@ mod tests {
                 &obs,
                 home,
                 demand,
+                None,
                 &harvesters,
             ),
             0,
@@ -5644,7 +5847,7 @@ mod tests {
         obs.my_units[0].idle = false;
         obs.my_units[0].founding = Some((BuildingKind::Airworks, TilePos::new(10, 3)));
         assert_eq!(
-            policy.airworks_capacity_commitment(&Dials::balanced(), &obs, home, demand, &[],),
+            policy.airworks_capacity_commitment(&Dials::balanced(), &obs, home, demand, None, &[],),
             0,
             "a deferred Airworks already satisfies the projected-capacity boundary"
         );

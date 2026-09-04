@@ -472,6 +472,14 @@ impl ProducerLaneReservations {
             .max()
     }
 
+    /// Whether the shared allocation retained this exact accepted lane row.
+    pub(crate) fn contains_exact_job(&self, job: ReservedProducerJob) -> bool {
+        self.current_jobs
+            .iter()
+            .chain(&self.jobs)
+            .any(|reserved| *reserved == job)
+    }
+
     /// Exact future jobs retained by the overlay.
     #[cfg(test)]
     pub(crate) fn jobs(&self) -> &[ReservedProducerJob] {
@@ -482,12 +490,6 @@ impl ProducerLaneReservations {
     #[cfg(test)]
     pub(crate) fn current_jobs(&self) -> &[ReservedProducerJob] {
         &self.current_jobs
-    }
-
-    /// Number of projected producer bases retained for future jobs.
-    #[cfg(test)]
-    pub(crate) fn baseline_count(&self) -> usize {
-        self.baselines.len()
     }
 }
 
@@ -1133,5 +1135,34 @@ mod current_reserve_tests {
                 kind: UnitKind::Sentinel,
             })
         );
+    }
+
+    #[test]
+    fn producer_reservations_recognize_only_exact_current_and_future_jobs() {
+        let resources = producer_projection();
+        let train_ticks = Tick::from(UnitKind::Sentinel.stats().train_ticks);
+        let current = reserved_job(
+            BuildingId(7),
+            UnitKind::Sentinel,
+            0,
+            0,
+            train_ticks.saturating_sub(1),
+        );
+        let future = reserved_job(
+            BuildingId(7),
+            UnitKind::Sentinel,
+            train_ticks,
+            train_ticks,
+            train_ticks.saturating_mul(2).saturating_sub(1),
+        );
+        let reservations = ProducerLaneReservations::from_jobs(&resources, [current, future])
+            .expect("the exact two-job lane is valid");
+
+        assert!(reservations.contains_exact_job(current));
+        assert!(reservations.contains_exact_job(future));
+        assert!(!reservations.contains_exact_job(ReservedProducerJob {
+            ready_at: future.ready_at.saturating_sub(1),
+            ..future
+        }));
     }
 }

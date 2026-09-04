@@ -713,6 +713,35 @@ pub(super) fn ground_open(obs: &Observation, tile: TilePos) -> bool {
         && !known_building_covers(obs, tile)
 }
 
+/// The exact open doorstep where authoritative production places a new unit.
+///
+/// Producers are represented in policy coordinates, but the authoritative
+/// doorstep tie-break runs in the world's command frame. The selected tile is
+/// transformed back before route projection consults the oriented observation.
+pub(super) fn production_spawn_doorstep(
+    obs: &Observation,
+    producer: &BuildingObs,
+    public_map: Option<&PublicMapBriefing>,
+    orientation: Option<Orientation>,
+) -> Option<TilePos> {
+    let size = producer.kind.tier_stats(producer.tier).size;
+    let world_anchor = orientation.map_or(producer.anchor, |orientation| {
+        orientation.anchor(producer.anchor, size)
+    });
+    let map_size = (obs.map_width, obs.map_height);
+    crate::tick::rect_adjacent_tiles(world_anchor, size)
+        .map(|world_tile| (world_tile, command_frame_tile(world_tile, orientation)))
+        .filter(|(_, policy_tile)| {
+            ground_open(obs, *policy_tile)
+                && public_map
+                    .is_none_or(|map| public_terrain_open(map, Domain::Ground, *policy_tile))
+        })
+        .min_by_key(|(world_tile, _)| {
+            crate::tick::spawn_doorstep_key(map_size, world_anchor, size, *world_tile)
+        })
+        .map(|(_, policy_tile)| policy_tile)
+}
+
 /// The projected ground goals assigned by Move or AttackMove.
 pub(super) fn ground_command_goals(
     obs: &Observation,

@@ -4,9 +4,10 @@ use super::{
     AllocationConflict, AllocationPersonality, AllocationResult, ClaimBundle, ClaimBundleError,
     Confidence, ConnectedOffenseKey, DeferrableCapitalClaim, ExecutionSafety, FoundryExpansionKey,
     ImportedObligation, InvestmentProposal, ObligationClass, ObligationKey, ProducerJobClaim,
-    ProposalCase, ScheduledProducerJob, StrategicValue, TimeToImpact, Urgency,
+    ProposalCase, ProposalKey, ScheduledProducerJob, StrategicValue, TimeToImpact, Urgency,
 };
 use crate::bot::profile::ResolvedProfile;
+use crate::bot::standing_force::StandingForceProposal;
 use crate::bot::strategy::{
     ConnectedConfidence, ConnectedExecutionSafety, ConnectedMarginalVariant,
     ConnectedOffenseClaims, ConnectedOpportunityCase, ConnectedStrategicValue,
@@ -18,13 +19,22 @@ use crate::bot::utility::{
 };
 use crate::stats::BuildingKind;
 
-/// The two exact payload types compared during the first allocation migration.
-pub(crate) type DomainInvestmentProposal =
-    InvestmentProposal<FreshFoundryProposal, FreshConnectedProposal>;
+/// Exact domain token carried opaquely through shared allocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DomainPayload {
+    /// Frozen safe Foundry expansion.
+    Foundry(FreshFoundryProposal),
+    /// Frozen connected-operation package.
+    Connected(Box<FreshConnectedProposal>),
+    /// One independently useful standing-force purchase.
+    StandingForce(StandingForceProposal),
+}
 
-/// Allocation output retaining the exact expansion and connected-operation plans.
-pub(crate) type DomainAllocationResult =
-    AllocationResult<FreshFoundryProposal, FreshConnectedProposal>;
+/// Exact domain payloads compared during cross-domain allocation.
+pub(crate) type DomainInvestmentProposal = InvestmentProposal<DomainPayload>;
+
+/// Allocation output retaining the exact selected domain plans.
+pub(crate) type DomainAllocationResult = AllocationResult<DomainPayload>;
 
 impl AllocationPersonality {
     /// Resolves positive cross-domain emphasis without granting or removing work.
@@ -32,6 +42,10 @@ impl AllocationPersonality {
         Self {
             economy: profile.traits.greed as u16,
             offense: (profile.traits.air as u16 + profile.traits.siege as u16) / 2,
+            standing_force: (profile.traits.support as u16
+                + profile.traits.fortification as u16
+                + profile.traits.guile as u16)
+                / 3,
         }
     }
 }
@@ -52,14 +66,14 @@ pub(crate) fn foundry_investment_proposal(
         through: proposal.forecast_deadline(),
         amount: proposal.construction_capital(),
     })?;
-    Ok(InvestmentProposal::FoundryExpansion {
-        key: FoundryExpansionKey {
+    Ok(InvestmentProposal::fresh(
+        ProposalKey::FoundryExpansion(FoundryExpansionKey {
             anchor: proposal.anchor(),
-        },
-        case: proposal.case().into(),
+        }),
+        proposal.case().into(),
         claims,
-        payload: proposal,
-    })
+        DomainPayload::Foundry(proposal),
+    ))
 }
 
 /// Retains one connected domain's exact minimum and ordered producer choices.
@@ -67,16 +81,51 @@ pub(crate) fn connected_investment_proposal(
     proposal: FreshConnectedProposal,
 ) -> Result<DomainInvestmentProposal, ClaimBundleError> {
     let claims = connected_claim_bundle(proposal.minimum_claims())?;
-    Ok(InvestmentProposal::ConnectedOffenseMinimum {
-        key: ConnectedOffenseKey {
+    Ok(InvestmentProposal::retained(
+        ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
             objective: proposal.objective(),
             anchor: proposal.anchor(),
-        },
-        case: proposal.case().into(),
-        accepted_at: proposal.accepted_at(),
+        }),
+        proposal.case().into(),
+        proposal.accepted_at(),
         claims,
-        payload: proposal,
-    })
+        DomainPayload::Connected(Box::new(proposal)),
+    ))
+}
+
+/// Retains one independently useful standing-force purchase as enqueue-now work.
+pub(crate) fn standing_force_investment_proposal(
+    proposal: StandingForceProposal,
+) -> Result<DomainInvestmentProposal, ClaimBundleError> {
+    let personality_preference = u16::from(proposal.personality_emphasis());
+    let job = ProducerJobClaim::immediate(
+        proposal.key_kind(),
+        proposal.observed_at(),
+        proposal.ready_before(),
+        proposal.eligible_producers().to_vec(),
+    );
+    Ok(InvestmentProposal::fresh(
+        ProposalKey::StandingForce(proposal.key()),
+        proposal.case(),
+        ClaimBundle::new(0, Vec::new(), Vec::new(), Vec::new(), Vec::new(), vec![job])?
+            .with_minimum_residual_scrap(proposal.minimum_residual_scrap()),
+        DomainPayload::StandingForce(proposal),
+    )
+    .with_personality_preference(personality_preference))
+}
+
+/// Retains the standing-force domain's deterministic best-first alternatives.
+pub(crate) fn standing_force_investment_proposals(
+    proposals: Vec<StandingForceProposal>,
+) -> Result<Vec<DomainInvestmentProposal>, ClaimBundleError> {
+    proposals
+        .into_iter()
+        .enumerate()
+        .map(|(preference, proposal)| {
+            standing_force_investment_proposal(proposal)
+                .map(|proposal| proposal.with_domain_preference(preference))
+        })
+        .collect()
 }
 
 /// Retains a re-derived active minimum as mandatory work at its original
@@ -141,16 +190,16 @@ pub(crate) fn active_connected_revision_investment_proposal(
     proposal: FreshConnectedProposal,
 ) -> DomainInvestmentProposal {
     debug_assert!(proposal.revises_active_operation());
-    InvestmentProposal::ConnectedOffenseMinimum {
-        key: ConnectedOffenseKey {
+    InvestmentProposal::retained(
+        ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
             objective: proposal.objective(),
             anchor: proposal.anchor(),
-        },
-        case: proposal.case().into(),
-        accepted_at: proposal.accepted_at(),
-        claims: ClaimBundle::default(),
-        payload: proposal,
-    }
+        }),
+        proposal.case().into(),
+        proposal.accepted_at(),
+        ClaimBundle::default(),
+        DomainPayload::Connected(Box::new(proposal)),
+    )
 }
 
 /// Converts one cumulative additions-only scale step without charging jobs twice.
@@ -258,6 +307,7 @@ impl From<ConnectedOpportunityCase> for ProposalCase {
 pub(crate) struct AcceptedDomainPayloads {
     foundry: Option<FreshFoundryProposal>,
     connected: Option<FreshConnectedProposal>,
+    standing_force: Option<StandingForceProposal>,
 }
 
 impl AcceptedDomainPayloads {
@@ -269,6 +319,11 @@ impl AcceptedDomainPayloads {
     /// Selected connected-operation payload, if the offensive proposal won.
     pub(crate) fn take_connected(&mut self) -> Option<FreshConnectedProposal> {
         self.connected.take()
+    }
+
+    /// Selected standing-force purchase, if it won allocation.
+    pub(crate) fn take_standing_force(&mut self) -> Option<StandingForceProposal> {
+        self.standing_force.take()
     }
 }
 
@@ -288,19 +343,23 @@ pub(crate) enum ConnectedMarginalError {
 impl DomainAllocationResult {
     /// Exact connected opportunity key retained by selection, if any.
     pub(crate) fn accepted_connected_key(&self) -> Option<ConnectedOffenseKey> {
-        self.accepted.iter().find_map(|proposal| match proposal {
-            InvestmentProposal::ConnectedOffenseMinimum { key, .. } => Some(*key),
-            InvestmentProposal::FoundryExpansion { .. } => None,
+        self.accepted.iter().find_map(|proposal| {
+            validate_payload_key(proposal);
+            match proposal.key() {
+                ProposalKey::ConnectedOffenseMinimum(key) => Some(key),
+                ProposalKey::FoundryExpansion(_) | ProposalKey::StandingForce(_) => None,
+            }
         })
     }
 
     /// Retained cumulative scale choices, still owned by the domain payload.
     pub(crate) fn connected_marginal_variants(&self) -> Option<&[ConnectedMarginalVariant]> {
-        self.accepted.iter().find_map(|proposal| match proposal {
-            InvestmentProposal::ConnectedOffenseMinimum { payload, .. } => {
-                Some(payload.marginal_variants())
+        self.accepted.iter().find_map(|proposal| {
+            validate_payload_key(proposal);
+            match proposal.payload() {
+                DomainPayload::Connected(payload) => Some(payload.marginal_variants()),
+                DomainPayload::Foundry(_) | DomainPayload::StandingForce(_) => None,
             }
-            InvestmentProposal::FoundryExpansion { .. } => None,
         })
     }
 
@@ -313,11 +372,17 @@ impl DomainAllocationResult {
         let (key, belongs) = self
             .accepted
             .iter()
-            .find_map(|proposal| match proposal {
-                InvestmentProposal::ConnectedOffenseMinimum { key, payload, .. } => {
-                    Some((*key, payload.marginal_variants().contains(marginal)))
+            .find_map(|proposal| {
+                validate_payload_key(proposal);
+                match (proposal.key(), proposal.payload()) {
+                    (
+                        ProposalKey::ConnectedOffenseMinimum(key),
+                        DomainPayload::Connected(payload),
+                    ) => Some((key, payload.marginal_variants().contains(marginal))),
+                    (ProposalKey::FoundryExpansion(_), DomainPayload::Foundry(_))
+                    | (ProposalKey::StandingForce(_), DomainPayload::StandingForce(_)) => None,
+                    _ => unreachable!("payload validation is exhaustive above"),
                 }
-                InvestmentProposal::FoundryExpansion { .. } => None,
             })
             .ok_or(ConnectedMarginalError::NoAcceptedConnectedProposal)?;
         if !belongs {
@@ -330,9 +395,9 @@ impl DomainAllocationResult {
         let selected = self
             .accepted
             .iter_mut()
-            .find_map(|proposal| match proposal {
-                InvestmentProposal::ConnectedOffenseMinimum { payload, .. } => Some(payload),
-                InvestmentProposal::FoundryExpansion { .. } => None,
+            .find_map(|proposal| match proposal.payload_mut() {
+                DomainPayload::Connected(payload) => Some(payload),
+                DomainPayload::Foundry(_) | DomainPayload::StandingForce(_) => None,
             });
         assert!(
             selected.is_some_and(|payload| payload.select_marginal(marginal)),
@@ -345,12 +410,9 @@ impl DomainAllocationResult {
     pub(crate) fn into_domain_payloads(self) -> AcceptedDomainPayloads {
         let mut payloads = AcceptedDomainPayloads::default();
         for proposal in self.accepted {
-            match proposal {
-                InvestmentProposal::FoundryExpansion {
-                    claims,
-                    mut payload,
-                    ..
-                } => {
+            let (key, claims, payload) = proposal.into_parts();
+            match (key, payload) {
+                (ProposalKey::FoundryExpansion(_), DomainPayload::Foundry(mut payload)) => {
                     debug_assert!(payloads.foundry.is_none());
                     assert!(
                         payload.rebind_funding(
@@ -365,10 +427,15 @@ impl DomainAllocationResult {
                     );
                     payloads.foundry = Some(payload);
                 }
-                InvestmentProposal::ConnectedOffenseMinimum { payload, .. } => {
+                (ProposalKey::ConnectedOffenseMinimum(_), DomainPayload::Connected(payload)) => {
                     debug_assert!(payloads.connected.is_none());
-                    payloads.connected = Some(payload);
+                    payloads.connected = Some(*payload);
                 }
+                (ProposalKey::StandingForce(_), DomainPayload::StandingForce(payload)) => {
+                    debug_assert!(payloads.standing_force.is_none());
+                    payloads.standing_force = Some(payload);
+                }
+                _ => panic!("an accepted allocation payload must match its proposal domain"),
             }
         }
         payloads
@@ -378,6 +445,30 @@ impl DomainAllocationResult {
     pub(crate) fn final_producer_schedule(&self) -> &[ScheduledProducerJob] {
         &self.producer_schedule
     }
+
+    /// Whether exact lane binding funded the proposal that discharges the
+    /// shared current-only remainder.
+    pub(crate) const fn voluntary_scrap_guard_satisfied(&self) -> bool {
+        self.voluntary_scrap_guard_satisfied
+    }
+}
+
+fn validate_payload_key(proposal: &DomainInvestmentProposal) {
+    assert!(
+        matches!(
+            (proposal.key(), proposal.payload()),
+            (ProposalKey::FoundryExpansion(_), DomainPayload::Foundry(_))
+                | (
+                    ProposalKey::ConnectedOffenseMinimum(_),
+                    DomainPayload::Connected(_)
+                )
+                | (
+                    ProposalKey::StandingForce(_),
+                    DomainPayload::StandingForce(_)
+                )
+        ),
+        "an allocation payload must match its proposal domain"
+    );
 }
 
 #[cfg(test)]
@@ -385,12 +476,15 @@ mod tests {
     use super::*;
     use crate::bot::allocation::{
         AllocationCapacity, ImportedObligation, ObligationClass, ObligationKey, ProposalKey,
-        allocate,
+        StandingForceKey, allocate,
     };
     use crate::bot::profile::{PersonalityTraits, Specialty};
     use crate::bot::resources::{
         BuilderResource, ProducerPlanningProjection, ResourcePlanningFixture,
         ResourcePlanningProjection,
+    };
+    use crate::bot::standing_force::{
+        StandingForceFixture, StandingForceProposal, StandingForceReason,
     };
     use crate::bot::strategy::FreshConnectedProposalFixture;
     use crate::ids::{BuildingId, UnitId};
@@ -503,14 +597,172 @@ mod tests {
         assert_eq!(proposal.claims().sites(), &[proposal_site(&original)]);
         assert!(proposal.claims().producer_jobs().is_empty());
 
-        match proposal {
-            InvestmentProposal::FoundryExpansion { payload, .. } => {
-                assert_eq!(payload, original);
-            }
-            InvestmentProposal::ConnectedOffenseMinimum { .. } => {
-                panic!("the Foundry adapter returned the wrong domain variant");
+        match proposal.payload() {
+            DomainPayload::Foundry(payload) => assert_eq!(payload, &original),
+            DomainPayload::Connected(_) | DomainPayload::StandingForce(_) => {
+                panic!("the Foundry adapter returned the wrong domain payload");
             }
         }
+    }
+
+    #[test]
+    fn standing_force_adapter_preserves_immediate_current_only_request_and_payload() {
+        let case = ProposalCase {
+            urgency: Urgency::Pressing,
+            confidence: Confidence::Current,
+            value: StrategicValue::Material,
+            time_to_impact: TimeToImpact::Immediate,
+            safety: ExecutionSafety::Secure,
+        };
+        let original = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: NOW,
+            ready_before: DEADLINE,
+            kind: UnitKind::Warden,
+            reason: StandingForceReason::GroundPressure,
+            specialty: Specialty::Support,
+            personality_emphasis: 67,
+            case,
+            eligible_producers: vec![BuildingId(9), BuildingId(3), BuildingId(9)],
+        })
+        .with_minimum_residual_scrap(150);
+        let proposal = standing_force_investment_proposal(original.clone())
+            .expect("one immediate producer request is a valid claim bundle");
+
+        assert_eq!(
+            proposal.key(),
+            ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Warden))
+        );
+        assert_eq!(proposal.case(), case);
+        assert_eq!(proposal.personality_preference(), Some(67));
+        assert_eq!(proposal.claims().current_scrap(), 0);
+        assert_eq!(proposal.claims().minimum_residual_scrap(), 150);
+        assert!(proposal.claims().forecast_scrap().is_empty());
+        assert!(proposal.claims().builders().is_empty());
+        assert!(proposal.claims().units().is_empty());
+        assert!(proposal.claims().sites().is_empty());
+        let [job] = proposal.claims().producer_jobs() else {
+            panic!("the adapter must retain exactly one immediate producer request")
+        };
+        assert_eq!(job.kind(), UnitKind::Warden);
+        assert_eq!(job.enqueue_not_before(), NOW);
+        assert_eq!(job.enqueue_not_after(), NOW);
+        assert_eq!(job.ready_before(), DEADLINE);
+        assert!(job.requires_current_funding());
+        assert_eq!(job.eligible_producers(), &[BuildingId(3), BuildingId(9)]);
+
+        match proposal.payload() {
+            DomainPayload::StandingForce(payload) => assert_eq!(payload, &original),
+            DomainPayload::Foundry(_) | DomainPayload::Connected(_) => {
+                panic!("the standing-force adapter returned the wrong domain payload");
+            }
+        }
+    }
+
+    #[test]
+    fn standing_force_adapter_retains_the_domains_best_first_alternative_order() {
+        let case = ProposalCase {
+            urgency: Urgency::Timely,
+            confidence: Confidence::Supported,
+            value: StrategicValue::Material,
+            time_to_impact: TimeToImpact::Near,
+            safety: ExecutionSafety::Managed,
+        };
+        let preferred = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: NOW,
+            ready_before: DEADLINE,
+            kind: UnitKind::Warden,
+            reason: StandingForceReason::GroundPressure,
+            specialty: Specialty::Support,
+            personality_emphasis: 73,
+            case,
+            eligible_producers: vec![BuildingId(3)],
+        });
+        let fallback = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: NOW,
+            ready_before: DEADLINE,
+            kind: UnitKind::Sentinel,
+            reason: StandingForceReason::GroundPressure,
+            specialty: Specialty::Fortification,
+            personality_emphasis: 61,
+            case,
+            eligible_producers: vec![BuildingId(3)],
+        });
+
+        let proposals = standing_force_investment_proposals(vec![preferred, fallback])
+            .expect("each alternative adapts to one immediate claim");
+
+        assert_eq!(
+            proposals
+                .iter()
+                .map(|proposal| (proposal.key(), proposal.domain_preference()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Warden)),
+                    0,
+                ),
+                (
+                    ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Sentinel)),
+                    1,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn air_standing_emphasis_competes_with_economy_as_proposal_specific_personality() {
+        let kind = UnitKind::Warden;
+        let producer = BuildingId(3);
+        let standing = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: NOW,
+            ready_before: DEADLINE,
+            kind,
+            reason: StandingForceReason::AirDefense,
+            specialty: Specialty::Air,
+            personality_emphasis: 90,
+            case: foundry_case().into(),
+            eligible_producers: vec![producer],
+        });
+        let standing = standing_force_investment_proposal(standing)
+            .expect("the immediate standing request adapts");
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+        let foundry = foundry_investment_proposal(foundry(UnitId(1), foundry_cost, 0))
+            .expect("the exact Foundry request adapts");
+        let producer =
+            ProducerPlanningProjection::fixture(producer, NOW, 12, NOW, vec![NOW], vec![kind])
+                .expect("the producer fixture is valid");
+        let result = allocate(
+            &capacity(
+                foundry_cost.max(kind.stats().cost),
+                vec![UnitId(1)],
+                vec![BuilderResource {
+                    id: UnitId(1),
+                    kind: UnitKind::Harvester,
+                    obligation: None,
+                }],
+                vec![producer],
+            ),
+            Vec::new(),
+            vec![foundry, standing],
+            AllocationPersonality {
+                economy: 80,
+                offense: 0,
+                standing_force: 0,
+            },
+        )
+        .expect("both proposals are independently valid");
+
+        assert_eq!(result.accepted.len(), 1);
+        assert!(matches!(
+            result.accepted[0].key(),
+            ProposalKey::StandingForce(_)
+        ));
+        assert_eq!(result.decisions[0].personality_weight, 180);
+        assert_eq!(result.decisions[1].personality_weight, 190);
     }
 
     #[test]
@@ -843,14 +1095,16 @@ mod tests {
         assert!(matches!(
             choose(AllocationPersonality {
                 economy: 90,
-                offense: 10
+                offense: 10,
+                standing_force: 0,
             }),
             ProposalKey::FoundryExpansion(_)
         ));
         assert!(matches!(
             choose(AllocationPersonality {
                 economy: 10,
-                offense: 90
+                offense: 90,
+                standing_force: 0,
             }),
             ProposalKey::ConnectedOffenseMinimum(_)
         ));
@@ -877,7 +1131,8 @@ mod tests {
             AllocationPersonality::from_profile(&profile),
             AllocationPersonality {
                 economy: 73,
-                offense: 60
+                offense: 60,
+                standing_force: 50,
             }
         );
     }
