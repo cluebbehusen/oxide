@@ -16,6 +16,7 @@ from tools.production_sprite_sources import (
     excavator_final,
     extractor_reclaimer_final,
     finalized,
+    flak_array_final,
     heavy_structures,
     moth_warden_final,
     shrike_sylph_final,
@@ -735,6 +736,51 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                         ),
                         f"{mount_stem}_{faction}{suffix}",
                     )
+
+    def test_promoted_flak_and_deep_array_match_approved_sources(self) -> None:
+        self.assertEqual(
+            flak_array_final.flak_source_visible_digest(),
+            flak_array_final.FLAK_APPROVED_VISIBLE_RGBA_SHA256,
+        )
+        self.assertEqual(
+            flak_array_final.deep_array_source_visible_digest(),
+            flak_array_final.DEEP_ARRAY_APPROVED_VISIBLE_RGBA_SHA256,
+        )
+        for faction in gen.FACTIONS:
+            for tier, (base_stem, mount_stem) in enumerate(
+                (("flak_turret", "flak_mount"), ("flak_turret_t1", "flak_mount_t1"))
+            ):
+                for phase in range(9):
+                    suffix = "" if phase == 0 else f"_action{phase}"
+                    frame = self.registry[f"{base_stem}_{faction}"].copy()
+                    frame.alpha_composite(
+                        self.registry[f"{mount_stem}_{faction}{suffix}"]
+                    )
+                    self.assertEqual(
+                        flak_array_final._visible_rgba_bytes(frame),
+                        flak_array_final._visible_rgba_bytes(
+                            flak_array_final.flak_frame(faction, tier, phase)
+                        ),
+                        f"{mount_stem}_{faction}{suffix}",
+                    )
+                    self.assertTrue(
+                        flak_array_final.factions_share_silhouette("flak", tier, phase)
+                    )
+
+            for phase in range(7):
+                suffix = "" if phase == 0 else f"_work{phase}"
+                self.assertEqual(
+                    flak_array_final._visible_rgba_bytes(
+                        self.registry[f"array_t1_{faction}{suffix}"]
+                    ),
+                    flak_array_final._visible_rgba_bytes(
+                        flak_array_final.deep_array_frame(faction, phase)
+                    ),
+                    f"array_t1_{faction}{suffix}",
+                )
+                self.assertTrue(
+                    flak_array_final.factions_share_silhouette("array", 1, phase)
+                )
 
     def test_harvester_preserves_every_cargo_motion_and_bite_combination(self) -> None:
         for faction in gen.FACTIONS:

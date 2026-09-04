@@ -33,11 +33,13 @@ pub struct Sprites {
     turret_barrel_t1: [Rect; 3],
     turret_barrel_t2: [Rect; 3],
     flak_mount: [Rect; 3],
+    flak_mount_t1: [Rect; 3],
     bastion_mount: [Rect; 3],
     turret_barrel_action: [[Rect; 3]; 4],
     turret_barrel_t1_action: [[Rect; 3]; 4],
     turret_barrel_t2_action: [[Rect; 3]; 4],
     flak_mount_action: [[Rect; 3]; 8],
+    flak_mount_t1_action: [[Rect; 3]; 8],
     bastion_mount_action: [[Rect; 3]; 9],
     rock_skirt: Rect,
     decals: [Rect; 4],
@@ -72,6 +74,7 @@ pub struct Sprites {
     foundry_work: [[Rect; 3]; 4],
     fabricator_work: [[Rect; 3]; 4],
     array_work: [[Rect; 3]; 6],
+    array_t1_work: [[Rect; 3]; 6],
     reclaimer_work: [[Rect; 3]; 3],
     extractor_work: [[Rect; 3]; 3],
     airworks_work: [[Rect; 3]; 4],
@@ -355,6 +358,7 @@ const TURRET_BARREL_STEM: &str = "turret_barrel";
 const TURRET_BARREL_T1_STEM: &str = "turret_barrel_t1";
 const TURRET_BARREL_T2_STEM: &str = "turret_barrel_t2";
 const FLAK_MOUNT_STEM: &str = "flak_mount";
+const FLAK_MOUNT_T1_STEM: &str = "flak_mount_t1";
 const BASTION_MOUNT_STEM: &str = "bastion_mount";
 
 /// The Harvester's dig frames hang off its own stem.
@@ -696,7 +700,11 @@ fn atlas_keys() -> Vec<String> {
     for suffix in WORK_SUFFIXES_3 {
         keys.extend(variant_keys("reclaimer_t1", suffix));
     }
+    for suffix in WORK_SUFFIXES_6 {
+        keys.extend(variant_keys("array_t1", suffix));
+    }
     keys.extend(variant_keys(FLAK_MOUNT_STEM, ""));
+    keys.extend(variant_keys(FLAK_MOUNT_T1_STEM, ""));
     keys.extend(variant_keys(BASTION_MOUNT_STEM, ""));
     for stem in [
         TURRET_BARREL_STEM,
@@ -709,6 +717,7 @@ fn atlas_keys() -> Vec<String> {
     }
     for suffix in ACTION_SUFFIXES_8 {
         keys.extend(variant_keys(FLAK_MOUNT_STEM, suffix));
+        keys.extend(variant_keys(FLAK_MOUNT_T1_STEM, suffix));
     }
     for suffix in ACTION_SUFFIXES_9 {
         keys.extend(variant_keys(BASTION_MOUNT_STEM, suffix));
@@ -858,6 +867,7 @@ impl Sprites {
             turret_barrel_t1: variant_row(&rects, TURRET_BARREL_T1_STEM, "")?,
             turret_barrel_t2: variant_row(&rects, TURRET_BARREL_T2_STEM, "")?,
             flak_mount: variant_row(&rects, FLAK_MOUNT_STEM, "")?,
+            flak_mount_t1: variant_row(&rects, FLAK_MOUNT_T1_STEM, "")?,
             bastion_mount: variant_row(&rects, BASTION_MOUNT_STEM, "")?,
             turret_barrel_action: variant_rows(&rects, TURRET_BARREL_STEM, ACTION_SUFFIXES_4)?,
             turret_barrel_t1_action: variant_rows(
@@ -871,6 +881,7 @@ impl Sprites {
                 ACTION_SUFFIXES_4,
             )?,
             flak_mount_action: variant_rows(&rects, FLAK_MOUNT_STEM, ACTION_SUFFIXES_8)?,
+            flak_mount_t1_action: variant_rows(&rects, FLAK_MOUNT_T1_STEM, ACTION_SUFFIXES_8)?,
             bastion_mount_action: variant_rows(&rects, BASTION_MOUNT_STEM, ACTION_SUFFIXES_9)?,
             rock_skirt,
             decals: pick(&rects, DECAL_KEYS)?,
@@ -902,6 +913,7 @@ impl Sprites {
             foundry_work: variant_rows(&rects, "foundry", WORK_SUFFIXES_4)?,
             fabricator_work: variant_rows(&rects, "fabricator", WORK_SUFFIXES_4)?,
             array_work: variant_rows(&rects, "array", WORK_SUFFIXES_6)?,
+            array_t1_work: variant_rows(&rects, "array_t1", WORK_SUFFIXES_6)?,
             reclaimer_work: variant_rows(&rects, "reclaimer", WORK_SUFFIXES_3)?,
             extractor_work: variant_rows(&rects, "extractor", WORK_SUFFIXES_3)?,
             airworks_work: variant_rows(&rects, "airworks", WORK_SUFFIXES_4)?,
@@ -1053,6 +1065,7 @@ impl Sprites {
     ) -> Option<Rect> {
         let row = match kind {
             BuildingKind::Turret => self.turret_mount_row(tier),
+            BuildingKind::FlakTurret if tier == 1 => &self.flak_mount_t1,
             BuildingKind::FlakTurret => &self.flak_mount,
             BuildingKind::Bastion => &self.bastion_mount,
             _ => return None,
@@ -1064,6 +1077,7 @@ impl Sprites {
     pub fn defense_mount_accent(&self, kind: BuildingKind, tier: u8) -> Option<Rect> {
         let row = match kind {
             BuildingKind::Turret => self.turret_mount_row(tier),
+            BuildingKind::FlakTurret if tier == 1 => &self.flak_mount_t1,
             BuildingKind::FlakTurret => &self.flak_mount,
             BuildingKind::Bastion => &self.bastion_mount,
             _ => return None,
@@ -1083,6 +1097,7 @@ impl Sprites {
                 2 => self.turret_barrel_t2_action.get(frame),
                 _ => self.turret_barrel_action.get(frame),
             },
+            BuildingKind::FlakTurret if tier == 1 => self.flak_mount_t1_action.get(frame),
             BuildingKind::FlakTurret => self.flak_mount_action.get(frame),
             BuildingKind::Bastion => self.bastion_mount_action.get(frame),
             _ => None,
@@ -1286,6 +1301,7 @@ impl Sprites {
     fn building_work_row(&self, kind: BuildingKind, tier: u8, frame: usize) -> Option<&[Rect; 3]> {
         let rows: &[[Rect; 3]] = match (kind, tier) {
             (BuildingKind::Reclaimer, 1) => &self.reclaimer_t1_work,
+            (BuildingKind::Array, 1) => &self.array_t1_work,
             (_, tier) if tier != 0 => return None,
             (BuildingKind::Foundry, 0) => &self.foundry_work,
             (BuildingKind::Fabricator, 0) => &self.fabricator_work,
@@ -1864,6 +1880,7 @@ mod tests {
             TURRET_BARREL_T1_STEM,
             TURRET_BARREL_T2_STEM,
             FLAK_MOUNT_STEM,
+            FLAK_MOUNT_T1_STEM,
             BASTION_MOUNT_STEM,
         ] {
             for key in variant_keys(stem, "") {
@@ -1894,6 +1911,11 @@ mod tests {
             (
                 building_stem(BuildingKind::FlakTurret),
                 FLAK_MOUNT_STEM,
+                ACTION_SUFFIXES_8.as_slice(),
+            ),
+            (
+                "flak_turret_t1",
+                FLAK_MOUNT_T1_STEM,
                 ACTION_SUFFIXES_8.as_slice(),
             ),
             (
@@ -2060,6 +2082,13 @@ mod tests {
                 sprite_image(&format!("reclaimer_t1_ferrous{suffix}")).bytes != refinery.bytes;
         }
         assert!(changed, "reclaimer_t1 needs at least one visible work pose");
+        let deep_array = sprite_image("array_t1_ferrous");
+        let mut changed = false;
+        for suffix in WORK_SUFFIXES_6 {
+            assert_animation_variant("array_t1", suffix);
+            changed |= sprite_image(&format!("array_t1_ferrous{suffix}")).bytes != deep_array.bytes;
+        }
+        assert!(changed, "array_t1 needs at least one visible work pose");
         for kind in ALL_BUILDING_KINDS {
             let stem = building_stem(kind);
             let base = sprite_image(&format!("{stem}_ferrous"));
@@ -2116,6 +2145,7 @@ mod tests {
             (TURRET_BARREL_T1_STEM, ACTION_SUFFIXES_4.as_slice()),
             (TURRET_BARREL_T2_STEM, ACTION_SUFFIXES_4.as_slice()),
             (FLAK_MOUNT_STEM, ACTION_SUFFIXES_8.as_slice()),
+            (FLAK_MOUNT_T1_STEM, ACTION_SUFFIXES_8.as_slice()),
             (BASTION_MOUNT_STEM, ACTION_SUFFIXES_9.as_slice()),
             ("bastion", ACTION_SUFFIXES_9.as_slice()),
         ] {
@@ -2132,6 +2162,7 @@ mod tests {
             TURRET_BARREL_T1_STEM,
             TURRET_BARREL_T2_STEM,
             FLAK_MOUNT_STEM,
+            FLAK_MOUNT_T1_STEM,
             BASTION_MOUNT_STEM,
         ] {
             let ferrous = sprite_image(&format!("{stem}_ferrous"));
@@ -2169,15 +2200,27 @@ mod tests {
     #[test]
     fn specialist_defense_mounts_keep_their_heavy_silhouettes() {
         let flak = sprite_image("flak_mount_ferrous");
-        let (width, height) = opaque_span(&flak);
+        let upgraded_flak = sprite_image("flak_mount_t1_ferrous");
+        let (base_width, base_height) = opaque_span(&flak);
+        let (upgrade_width, upgrade_height) = opaque_span(&upgraded_flak);
         assert!(
-            width * 4 >= usize::from(flak.width) * 3,
-            "the Flak mount must stay broad enough to read as a quad battery"
+            base_width * 2 >= usize::from(flak.width),
+            "the base Flak mount must keep two distinct barrel banks"
         );
         assert!(
-            height * 6 >= usize::from(flak.height) * 5,
-            "the Flak mount must keep visible barrels and rear magazines"
+            upgrade_width * 4 >= usize::from(upgraded_flak.width) * 3,
+            "the upgraded Flak mount must read as a broad six-barrel battery"
         );
+        assert!(
+            upgrade_width >= base_width + usize::from(flak.width / 8),
+            "the upgraded Flak mount must gain visible lateral presence"
+        );
+        for height in [base_height, upgrade_height] {
+            assert!(
+                height * 4 >= usize::from(flak.height) * 3,
+                "both Flak tiers must keep visibly elevated barrels"
+            );
+        }
 
         let bastion = sprite_image("bastion_mount_ferrous");
         let (width, height) = opaque_span(&bastion);
