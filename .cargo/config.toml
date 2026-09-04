@@ -1,3 +1,3 @@
 [alias]
 cov-unit = "llvm-cov --workspace --lib --bins --locked --fail-under-lines 83.5"
-cov-combined = "llvm-cov --workspace --tests --locked --fail-under-lines 86.0 -- --skip every_shipped_scenario_stays_valid_and_live"
+cov-combined = "llvm-cov --workspace --tests --locked --fail-under-lines 86.0 -- --test-threads=1 --skip every_shipped_scenario_stays_valid_and_live --skip shipped_scenarios_match_hash_fixtures --skip scripted_controller_matches_hash_fixtures --skip balanced_mirror_plays_a_complete_decisive_match --skip dense_connected_target_trains_and_freezes_the_selected_bomber_roster"

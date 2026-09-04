@@ -115,10 +115,12 @@ cargo cov-combined
 Do not weaken a gate to pass it. Fix the implementation or discuss why the
 contract is wrong.
 
-The combined coverage gate skips the exhaustive shipped-map soak because LLVM
-instrumentation turns that already-required normal test from seconds into tens
-of minutes. `cargo test --workspace --locked` still runs the complete soak; the
-coverage job measures the rest of the unit and integration surface.
+The combined coverage gate skips the exhaustive shipped-map soak and the
+long-horizon deterministic behavior oracles because LLVM instrumentation turns
+those already-required normal tests into tens of minutes while adding almost no
+line coverage. `cargo test --workspace --locked` still runs them on every CI
+platform; the coverage job measures the rest of the unit and integration
+surface.
 
 Repeated builds, tests, and coverage runs accumulate incremental, profile, and
 instrumented artifacts under `target/`; this can consume tens of gigabytes over

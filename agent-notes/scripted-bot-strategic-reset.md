@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-04T10:34:04
+updated: 2026-09-04T12:45:06
 ---
 
 # Scripted Bot Strategic Reset
@@ -313,11 +313,20 @@ without arbitrary controller caps.
     preserve only the current scrap guard left after mandatory work; and bounded
     higher-tier waits now claim current and forecast capital inside shared
     allocation while their affordable fallback remains selectable.
-  - Investigated the coverage regression with per-binary timing and live process
-    samples. Eager firing-stand and defense-placement route searches made the
-    scripted-bot binary take 1,617 seconds under LLVM instrumentation; exact
-    early exits and geometric pruning reduced the same full binary to 373
-    seconds, near the previous slice's 334-second baseline.
+  - Restore an acceptable coverage runtime without weakening behavioral or
+    coverage gates; keep the optimization behavior-neutral and retain the
+    long-match oracles in the normal cross-platform test matrix.
+  - Profiled the fresh 68-minute CI coverage run: three long-horizon behavior
+    and hash oracles consumed 53 minutes while contributing about 0.07
+    percentage points of line coverage.
+  - Changed the residual Turret reserve to use the exact strategic-placement
+    predicate but stop at the first valid site; actual defense construction
+    still ranks every valid site globally.
+  - Kept the long behavior and hash oracles in normal cross-platform tests,
+    excluded them only from LLVM instrumentation, and serialized combined
+    coverage. The complete instrumented scripted-bot suite fell from 174 to 54
+    seconds locally; combined coverage completed in 180 seconds at 91.64% and
+    unit coverage completed in 107 seconds at 90.29%.
 - [ ] 6. Migrate defensive spending to opportunity-scaled investment while
       preserving strategic placement.
   - Scale defense from exposed value, credible current threats, existing
