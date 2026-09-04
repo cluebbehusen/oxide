@@ -17,6 +17,7 @@ from tools.production_sprite_sources import (
     environment_final,
     excavator_final,
     extractor_reclaimer_final,
+    field_structures_final,
     finalized,
     flak_array_final,
     heavy_structures,
@@ -87,6 +88,18 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         self.assertNotIn("from tools import batch", production_sources)
         self.assertNotIn("gen._review", production_sources)
         self.assertNotIn("gen.REVIEW_ROUTE", production_sources)
+
+    def test_promoted_field_structures_match_the_approved_rgba_source(self) -> None:
+        self.assertEqual(
+            field_structures_final.barricade_source_rgba_digest(),
+            field_structures_final.BARRICADE_SOURCE_RGBA_SHA256,
+        )
+        self.assertEqual(
+            field_structures_final.scuttle_charge_source_rgba_digest(),
+            field_structures_final.SCUTTLE_CHARGE_SOURCE_RGBA_SHA256,
+        )
+        for key, image in field_structures_final.source_frames():
+            self.assertEqual(self.registry[key].tobytes(), image.tobytes(), key)
 
     def test_construction_bank_covers_every_building(self) -> None:
         self.assertEqual(
