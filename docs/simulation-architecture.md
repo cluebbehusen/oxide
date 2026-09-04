@@ -439,14 +439,17 @@ boundary, but it never becomes current credit.
 Before considering fresh work, the session imports exact obligations for
 already-paid or retained construction, protected opening work, standing and
 planner-owned units, saved Foundry expansion, and active connected operations.
-It also adapts same-think decisions from active team-relief, lift, and raid
-planners into explicit legacy claims. The current proposal set contains at most
-one safe, command-legal Foundry expansion and one minimum connected offense
-package. The allocator exhaustively evaluates their four possible subsets
-against current and deadline-scoped forecast scrap, builders, sites, units, and
-producer FIFO timing. Named urgency, confidence, value, time-to-impact, and
-safety bands decide first; personality resolves only a genuine semantic tie and
-never removes a domain from consideration.
+When the opening core is deficient, one current-threat emergency defense may
+also enter as a survival obligation with its scorer-selected site and builder.
+The remaining opening reserve receives only the bank left after that defense.
+The session also adapts same-think decisions from active team-relief, lift,
+raid, and admitted island-air planners into explicit legacy claims. The current
+proposal set contains at most one safe, command-legal Foundry expansion and one
+minimum connected offense package. The allocator exhaustively evaluates their
+four possible subsets against current and deadline-scoped forecast scrap,
+builders, sites, units, and producer FIFO timing. Named urgency, confidence,
+value, time-to-impact, and safety bands decide first; personality resolves only
+a genuine semantic tie and never removes a domain from consideration.
 
 Accepted payloads retain the exact site, builder, objective, force membership,
 and producer assignments selected by their domain. Commitment does not rerun
@@ -670,7 +673,9 @@ The pre-core emergency path is deliberately narrower than that full scorer. It
 uses only a current visible armed ground threat for a Turret or a current
 visible ground-attack aircraft for Flak, places only the matching defense, and
 cannot inherit threat authority from pure air-to-air aircraft, memory, public
-starts, radar blips, or raid history.
+starts, radar blips, or raid history. Shared allocation freezes its exact site,
+builder, footprint, and current construction cost before ordinary opening-core
+recovery and suppresses a second utility ranking pass.
 
 Arrays use a separate player-facing sensor-site scorer because information
 coverage is not weapon coverage. Candidate sites extend up to the Array's radar

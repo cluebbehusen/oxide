@@ -23,8 +23,10 @@ an ordinary command source rather than a separate ruleset.
   intents, and finally ordinary player commands. One allocation session imports
   retained work and compares a safe Foundry expansion with a minimum connected
   offense package across shared scrap, builders, sites, units, and producer
-  timing. Accepted domain payloads keep their exact choices; compatible work may
-  proceed together, while unmigrated planners and utility use only the residual
+  timing. Current-threat emergency defense is imported as exact survival work,
+  and admitted island-air work advances through the same transaction. Accepted
+  domain payloads keep their exact choices; compatible work may proceed
+  together, while unmigrated planners and utility use only the residual
   capacity. Connected air-and-siege operations derive opportunity-scaled
   reconnaissance, suppression, direct strike, and current-visible
   non-suppression bombing value, then freeze exact members at commitment. Their
