@@ -22,6 +22,7 @@ from tools.production_sprite_sources import (
     shrike_sylph_final,
     skyhook_sapper_crucible_final,
     tender_condor_final,
+    tier_one_combat_final,
     turret_family,
 )
 
@@ -276,6 +277,55 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         )
         for key, image in core_unit_art_final.source_frames():
             self.assertEqual(self.registry[key].tobytes(), image.tobytes(), key)
+
+    def test_promoted_tier_one_combat_art_matches_the_approved_source(self) -> None:
+        self.assertEqual(
+            tier_one_combat_final.source_rgba_digest(),
+            tier_one_combat_final.APPROVED_SOURCE_RGBA_SHA256,
+        )
+        builders = (
+            ("lancer", tier_one_combat_final.lancer_sequence),
+            ("bombard", tier_one_combat_final.bombard_sequence),
+            ("flakhound", tier_one_combat_final.flakhound_sequence),
+            ("stinger", tier_one_combat_final.stinger_sequence),
+        )
+        for faction in ("ferrous", "cupric"):
+            with finalized._faction_palette(faction):
+                for stem, builder in builders:
+                    sequence = builder()
+                    keys = (
+                        f"{stem}_{faction}",
+                        *(
+                            f"{stem}_{faction}{suffix}"
+                            for suffix in finalized.UNIT_MOVEMENT[stem].suffixes
+                        ),
+                        None,
+                        *(
+                            f"{stem}_{faction}{suffix}"
+                            for suffix in finalized.UNIT_ACTIONS[stem].suffixes
+                        ),
+                    )
+                    for key, frame in zip(keys, sequence.frames, strict=True):
+                        if key is not None:
+                            self.assertEqual(
+                                self.registry[key].tobytes(), frame.image.tobytes(), key
+                            )
+
+    def test_tier_one_combat_art_preserves_motion_and_attack_contracts(self) -> None:
+        for builder in (
+            tier_one_combat_final.lancer_sequence,
+            tier_one_combat_final.bombard_sequence,
+            tier_one_combat_final.flakhound_sequence,
+            tier_one_combat_final.stinger_sequence,
+        ):
+            sequence = builder()
+            idle, move1, move2 = (frame.image for frame in sequence.frames[:3])
+            self.assertEqual(idle.size, (64, 64))
+            self.assertNotEqual(idle.tobytes(), move1.tobytes())
+            self.assertNotEqual(move1.tobytes(), move2.tobytes())
+            damage_frames = [frame for frame in sequence.frames if frame.logical_damage]
+            self.assertEqual(len(damage_frames), 1)
+            self.assertGreaterEqual(damage_frames[0].report_count, 1)
 
     def test_promoted_extractor_reclaimer_family_matches_approved_source(self) -> None:
         self.assertEqual(
@@ -1077,23 +1127,38 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 self.assertGreater(centers[3], centers[4])
 
     def test_flakhound_ready_and_reload_frames_have_physical_charge_cells(self) -> None:
-        centers = [(24 + index * 6, 53) for index in range(4)]
+        centers = [(23 + index * 6, 52) for index in range(4)]
         expected = {
-            "": 4,
+            "": 0,
             "_action1": 0,
             "_action2": 1,
             "_action3": 2,
             "_action4": 3,
             "_action5": 4,
             "_action6": 4,
-            "_action7": 2,
-            "_action8": 0,
+            "_action7": 4,
+            "_action8": 2,
             "_action9": 0,
         }
         for faction in gen.FACTIONS:
+            palette = gen.FACTIONS[faction]
             for suffix, count in expected.items():
                 image = self.registry[f"flakhound_{faction}{suffix}"]
-                lit = sum(image.getpixel(center)[0] > 200 for center in centers)
+                lit = sum(
+                    sum(
+                        (channel - target) ** 2
+                        for channel, target in zip(
+                            image.getpixel(center)[:3], palette["light"], strict=True
+                        )
+                    )
+                    < sum(
+                        (channel - target) ** 2
+                        for channel, target in zip(
+                            image.getpixel(center)[:3], palette["dark"], strict=True
+                        )
+                    )
+                    for center in centers
+                )
                 with self.subTest(faction=faction, suffix=suffix):
                     self.assertEqual(lit, count)
 
