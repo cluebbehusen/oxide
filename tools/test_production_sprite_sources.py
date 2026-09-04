@@ -1129,15 +1129,17 @@ class ProductionSpriteSourceTests(unittest.TestCase):
     def test_flakhound_ready_and_reload_frames_have_physical_charge_cells(self) -> None:
         centers = [(23 + index * 6, 52) for index in range(4)]
         expected = {
-            "": 0,
+            "": 4,
+            "_tread1": 4,
+            "_tread2": 4,
             "_action1": 0,
             "_action2": 1,
             "_action3": 2,
             "_action4": 3,
             "_action5": 4,
             "_action6": 4,
-            "_action7": 4,
-            "_action8": 2,
+            "_action7": 2,
+            "_action8": 0,
             "_action9": 0,
         }
         for faction in gen.FACTIONS:
@@ -1161,6 +1163,23 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 )
                 with self.subTest(faction=faction, suffix=suffix):
                     self.assertEqual(lit, count)
+
+    def test_bombard_report_and_deployed_spades_stay_inside_one_sprite(self) -> None:
+        for faction in gen.FACTIONS:
+            for suffix in ("_action3", "_action4", "_action5"):
+                image = self.registry[f"bombard_{faction}{suffix}"]
+                left, _, right, _ = image.getbbox()
+                with self.subTest(faction=faction, suffix=suffix):
+                    self.assertGreater(left, 0)
+                    self.assertLess(right, image.width)
+
+            report = self.registry[f"bombard_{faction}_action4"]
+            for y in range(8, 18):
+                with self.subTest(faction=faction, report_row=y):
+                    self.assertGreaterEqual(
+                        max(report.getpixel((x, y))[3] for x in range(24, 41)),
+                        128,
+                    )
 
 
 if __name__ == "__main__":

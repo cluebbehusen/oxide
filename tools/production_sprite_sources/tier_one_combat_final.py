@@ -1,8 +1,8 @@
 """Approved production frames for Lancer, Bombard, Flakhound, and Stinger.
 
-The renderers preserve the selected review candidates byte-for-byte while the
-sequence builders retain the established movement, attack, report, and damage
-metadata used by the shell.
+The renderers retain the selected review designs and their corrected mechanical
+states, while the sequence builders preserve the established movement, attack,
+report, and damage metadata used by the shell.
 """
 
 from __future__ import annotations
@@ -29,9 +29,9 @@ FERROUS = gen.FACTIONS["ferrous"]
 CUPRIC = gen.FACTIONS["cupric"]
 BLACK = (10, 10, 14)
 
-# Semantic RGBA digest of approved review candidates 528, 533, 538, and 540.
+# Semantic RGBA digest of the promoted 528, 533, 538, and 540 production frames.
 APPROVED_SOURCE_RGBA_SHA256 = (
-    "4ab2e2bd9e3fcb0ed95229dd2bb44d57d1f48834da6c2d3ef04cd0f7f9868117"
+    "e4f08820a4e8ac3c0b53ea0b64c07858e863976a37bfb895f018b168085b601b"
 )
 
 
@@ -300,9 +300,9 @@ def _bombard_sprite(
         _shell(draw, 32, 34)
     elif stage >= 3 and recoil == 0:
         draw.rectangle(_box((30, 31, 34, 38)), fill=_rgba(gen.SCRAP_DARK))
-    for arm, _, foot in (
-        ((20, 48), (13, 60), (4, 60)),
-        ((44, 48), (51, 60), (60, 60)),
+    for arm, foot in (
+        ((20, 48), (10, 60)),
+        ((44, 48), (54, 60)),
     ):
         if spades:
             draw.line(_points((arm, foot)), fill=_rgba(gen.IRON_LIGHT), width=_s(3))
@@ -310,16 +310,16 @@ def _bombard_sprite(
             draw.polygon(
                 _points(
                     (
-                        (fx - 5, fy - 3),
-                        (fx + 5, fy - 3),
-                        (fx + 7, fy + 1),
-                        (fx - 7, fy + 1),
+                        (fx - 4, fy - 3),
+                        (fx + 4, fy - 3),
+                        (fx + 5, fy + 1),
+                        (fx - 5, fy + 1),
                     )
                 ),
                 fill=_rgba(gen.IRON_DARK),
             )
     if report:
-        _muzzle_flash(draw, 32, 0, width=8)
+        _muzzle_flash(draw, 32, recoil, width=8)
     return _finish(image)
 
 
@@ -511,14 +511,14 @@ def bombard_sequence() -> ground_base.GroundUnitSequence:
 
 def flakhound_sequence() -> ground_base.GroundUnitSequence:
     images = (
-        _flakhound_sprite(),
-        _flakhound_sprite(tread_phase=1),
-        _flakhound_sprite(tread_phase=2),
-        _flakhound_sprite(),
+        _flakhound_sprite(charge=4),
+        _flakhound_sprite(tread_phase=1, charge=4),
+        _flakhound_sprite(tread_phase=2, charge=4),
+        _flakhound_sprite(charge=4),
         *(_flakhound_sprite(charge=charge) for charge in range(5)),
         _flakhound_sprite(charge=4, report_side="left"),
-        _flakhound_sprite(charge=4, report_side="right"),
-        _flakhound_sprite(charge=2, recover=True),
+        _flakhound_sprite(charge=2, report_side="right"),
+        _flakhound_sprite(recover=True),
         _flakhound_sprite(),
     )
     return _with_images(
