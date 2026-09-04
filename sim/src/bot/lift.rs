@@ -4,6 +4,9 @@ use super::difficulty::strategic_admission_tick;
 use super::executive::{Intent, unit_strength};
 use super::intelligence::{BuildingContact, ContactEvidence};
 use super::observation::{BuildingObs, Observation, UnitObs};
+use super::resources::ProducerLaneReservations;
+#[cfg(test)]
+use super::resources::ResourceSnapshot;
 use super::routing::{self, RouteProjection};
 use super::strategy::StrategicDecision;
 use super::utility::combat_core_status;
@@ -133,6 +136,172 @@ pub struct LiftOperation {
     pub manifests: Vec<LiftManifest>,
     /// Whether the boarding barrier released this wave toward the objective.
     pub launched: bool,
+    /// Exact allocator-owned carrier jobs not yet replaced by observed queues
+    /// or completed carriers. Funding may be refreshed, but their producer and
+    /// timing remain immutable until dispatch or bounded recovery.
+    pub(in crate::bot) producer_assignments: Vec<LiftProducerAssignment>,
+    /// Assignment ordinals whose exact `TrainAt` command was retained for
+    /// lowering on its accepted command boundary.
+    pub(in crate::bot) issued_producers: Vec<usize>,
+}
+
+/// Immutable FIFO timing for one allocator-owned carrier purchase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::bot) struct LiftProducerTiming {
+    enqueued_at: Tick,
+    starts_at: Tick,
+    ready_at: Tick,
+    ready_before: Tick,
+}
+
+impl LiftProducerTiming {
+    pub(in crate::bot) const fn new(
+        enqueued_at: Tick,
+        starts_at: Tick,
+        ready_at: Tick,
+        ready_before: Tick,
+    ) -> Self {
+        Self {
+            enqueued_at,
+            starts_at,
+            ready_at,
+            ready_before,
+        }
+    }
+
+    pub(in crate::bot) const fn enqueued_at(self) -> Tick {
+        self.enqueued_at
+    }
+
+    pub(in crate::bot) const fn starts_at(self) -> Tick {
+        self.starts_at
+    }
+
+    pub(in crate::bot) const fn ready_at(self) -> Tick {
+        self.ready_at
+    }
+
+    pub(in crate::bot) const fn ready_before(self) -> Tick {
+        self.ready_before
+    }
+}
+
+/// Observation-relative current and forecast funding for one carrier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::bot) struct LiftProducerFunding {
+    current_scrap: u32,
+    forecast_scrap: u32,
+}
+
+impl LiftProducerFunding {
+    pub(in crate::bot) const fn new(current_scrap: u32, forecast_scrap: u32) -> Self {
+        Self {
+            current_scrap,
+            forecast_scrap,
+        }
+    }
+
+    pub(in crate::bot) const fn current_scrap(self) -> u32 {
+        self.current_scrap
+    }
+
+    pub(in crate::bot) const fn forecast_scrap(self) -> u32 {
+        self.forecast_scrap
+    }
+}
+
+/// One exact allocator-selected future carrier job owned by a Lift operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::bot) struct LiftProducerAssignment {
+    request_ordinal: usize,
+    producer: BuildingId,
+    kind: UnitKind,
+    timing: LiftProducerTiming,
+    funding: LiftProducerFunding,
+}
+
+impl LiftProducerAssignment {
+    pub(in crate::bot) const fn new(
+        request_ordinal: usize,
+        producer: BuildingId,
+        kind: UnitKind,
+        timing: LiftProducerTiming,
+        funding: LiftProducerFunding,
+    ) -> Self {
+        Self {
+            request_ordinal,
+            producer,
+            kind,
+            timing,
+            funding,
+        }
+    }
+
+    pub(in crate::bot) const fn request_ordinal(self) -> usize {
+        self.request_ordinal
+    }
+
+    pub(in crate::bot) const fn producer(self) -> BuildingId {
+        self.producer
+    }
+
+    pub(in crate::bot) const fn kind(self) -> UnitKind {
+        self.kind
+    }
+
+    pub(in crate::bot) const fn timing(self) -> LiftProducerTiming {
+        self.timing
+    }
+
+    pub(in crate::bot) const fn funding(self) -> LiftProducerFunding {
+        self.funding
+    }
+}
+
+/// Exact unpaid producer work retained by an active Lift.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::bot) struct ActiveLiftProductionObligation {
+    accepted_at: Tick,
+    deadline: Tick,
+    producer_jobs: Vec<LiftProducerAssignment>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::bot) enum LiftProducerBindingError {
+    StaleOperation,
+    ExistingUnpaidAssignments,
+    RequestOrdinal { expected: usize, actual: usize },
+    Kind { request_ordinal: usize },
+    Timing { request_ordinal: usize },
+    Funding { request_ordinal: usize },
+    JobCount { expected: usize, actual: usize },
+    Producer { request_ordinal: usize },
+}
+
+impl ActiveLiftProductionObligation {
+    pub(in crate::bot) const fn accepted_at(&self) -> Tick {
+        self.accepted_at
+    }
+
+    pub(in crate::bot) fn producer_jobs(&self) -> &[LiftProducerAssignment] {
+        &self.producer_jobs
+    }
+
+    #[cfg(test)]
+    pub(in crate::bot) fn producer_schedule_is_executable(
+        &self,
+        resources: &ResourceSnapshot,
+        cadence: Tick,
+        observed_at: Tick,
+    ) -> bool {
+        bound_lift_schedule_is_executable(
+            &self.producer_jobs,
+            resources,
+            self.deadline,
+            cadence,
+            observed_at,
+        )
+    }
 }
 
 /// Sorted, deduplicated unit ids. Readers binary-search the slice, so
@@ -211,6 +380,9 @@ pub struct LiftPlanner {
 #[derive(Clone, Copy)]
 pub(super) struct LiftAdmission<'a> {
     pub(super) allow_new_commitments: bool,
+    /// Current bank this planner may commit after higher-priority shared
+    /// obligations, without altering the truthful observation.
+    pub(super) spendable_scrap: u32,
     pub(super) core_reservations: &'a [UnitId],
     pub(super) minimum_core_equivalents: u64,
 }
@@ -224,6 +396,217 @@ impl LiftPlanner {
     /// Active operation for replay diagnostics.
     pub fn operation(&self) -> Option<&LiftOperation> {
         self.operation.as_ref()
+    }
+
+    /// Exact unpaid carrier work retained from an earlier successful shared
+    /// allocation pass.
+    pub(in crate::bot) fn active_production_obligation(
+        &self,
+    ) -> Option<ActiveLiftProductionObligation> {
+        let operation = self
+            .operation
+            .as_ref()
+            .filter(|operation| operation.phase == LiftPhase::Provision)?;
+        let producer_jobs = operation
+            .producer_assignments
+            .iter()
+            .filter(|assignment| {
+                operation
+                    .issued_producers
+                    .binary_search(&assignment.request_ordinal)
+                    .is_err()
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        if producer_jobs.is_empty() {
+            return None;
+        }
+        Some(ActiveLiftProductionObligation {
+            accepted_at: operation.started_at,
+            deadline: operation.deadline,
+            producer_jobs,
+        })
+    }
+
+    /// Next stable assignment ordinal for newly accepted carrier work.
+    pub(in crate::bot) fn next_producer_request_ordinal(&self) -> Option<usize> {
+        self.operation
+            .as_ref()
+            .filter(|operation| operation.phase == LiftPhase::Provision)
+            .map(|operation| operation.producer_assignments.len())
+    }
+
+    /// Retains a successful allocator schedule without changing its lane,
+    /// timing, deadline, or current-versus-forecast funding split.
+    pub(in crate::bot) fn bind_producer_assignments(
+        &mut self,
+        accepted_at: Tick,
+        deadline: Tick,
+        assignments: Vec<LiftProducerAssignment>,
+    ) -> Result<(), LiftProducerBindingError> {
+        let Some(operation) = self.operation.as_mut().filter(|operation| {
+            operation.phase == LiftPhase::Provision
+                && operation.started_at == accepted_at
+                && operation.deadline == deadline
+        }) else {
+            return Err(LiftProducerBindingError::StaleOperation);
+        };
+        if operation.producer_assignments.iter().any(|assignment| {
+            operation
+                .issued_producers
+                .binary_search(&assignment.request_ordinal)
+                .is_err()
+        }) {
+            return Err(LiftProducerBindingError::ExistingUnpaidAssignments);
+        }
+        let first_ordinal = operation.producer_assignments.len();
+        for (offset, assignment) in assignments.iter().enumerate() {
+            let expected = first_ordinal.saturating_add(offset);
+            if assignment.request_ordinal != expected {
+                return Err(LiftProducerBindingError::RequestOrdinal {
+                    expected,
+                    actual: assignment.request_ordinal,
+                });
+            }
+            if assignment.kind != UnitKind::Skyhook {
+                return Err(LiftProducerBindingError::Kind {
+                    request_ordinal: assignment.request_ordinal,
+                });
+            }
+            let timing = assignment.timing;
+            let expected_ready = timing
+                .starts_at
+                .checked_add(Tick::from(assignment.kind.stats().train_ticks))
+                .and_then(|tick| tick.checked_sub(1));
+            if timing.starts_at < timing.enqueued_at
+                || expected_ready != Some(timing.ready_at)
+                || timing.ready_at >= timing.ready_before
+                || timing.ready_before != deadline
+            {
+                return Err(LiftProducerBindingError::Timing {
+                    request_ordinal: assignment.request_ordinal,
+                });
+            }
+            if assignment
+                .funding
+                .current_scrap
+                .checked_add(assignment.funding.forecast_scrap)
+                != Some(assignment.kind.stats().cost)
+            {
+                return Err(LiftProducerBindingError::Funding {
+                    request_ordinal: assignment.request_ordinal,
+                });
+            }
+        }
+        operation.producer_assignments.extend(assignments);
+        Ok(())
+    }
+
+    /// Refreshes only the funding split of still-unpaid immutable assignments.
+    pub(in crate::bot) fn refresh_active_production_funding(
+        &mut self,
+        obligation: &ActiveLiftProductionObligation,
+        assignments: &[LiftProducerAssignment],
+    ) -> Result<(), LiftProducerBindingError> {
+        let Some(operation) = self.operation.as_ref() else {
+            return Err(LiftProducerBindingError::StaleOperation);
+        };
+        if operation.phase != LiftPhase::Provision
+            || operation.started_at != obligation.accepted_at
+            || operation.deadline != obligation.deadline
+        {
+            return Err(LiftProducerBindingError::StaleOperation);
+        }
+        if assignments.len() != obligation.producer_jobs.len() {
+            return Err(LiftProducerBindingError::JobCount {
+                expected: obligation.producer_jobs.len(),
+                actual: assignments.len(),
+            });
+        }
+        for (expected, assignment) in obligation.producer_jobs.iter().zip(assignments) {
+            let ordinal = expected.request_ordinal;
+            if operation
+                .producer_assignments
+                .iter()
+                .find(|candidate| candidate.request_ordinal == ordinal)
+                != Some(expected)
+            {
+                return Err(LiftProducerBindingError::StaleOperation);
+            }
+            if assignment.request_ordinal != ordinal {
+                return Err(LiftProducerBindingError::RequestOrdinal {
+                    expected: ordinal,
+                    actual: assignment.request_ordinal,
+                });
+            }
+            if assignment.kind != expected.kind {
+                return Err(LiftProducerBindingError::Kind {
+                    request_ordinal: ordinal,
+                });
+            }
+            if assignment.producer != expected.producer {
+                return Err(LiftProducerBindingError::Producer {
+                    request_ordinal: ordinal,
+                });
+            }
+            if assignment.timing != expected.timing {
+                return Err(LiftProducerBindingError::Timing {
+                    request_ordinal: ordinal,
+                });
+            }
+            if assignment
+                .funding
+                .current_scrap
+                .checked_add(assignment.funding.forecast_scrap)
+                != Some(assignment.kind.stats().cost)
+            {
+                return Err(LiftProducerBindingError::Funding {
+                    request_ordinal: ordinal,
+                });
+            }
+        }
+        let operation = self
+            .operation
+            .as_mut()
+            .expect("the validated Lift operation remains active");
+        for assignment in assignments {
+            operation
+                .producer_assignments
+                .iter_mut()
+                .find(|candidate| candidate.request_ordinal == assignment.request_ordinal)
+                .expect("the validated Lift assignment remains bound")
+                .funding = assignment.funding;
+        }
+        Ok(())
+    }
+
+    /// Records only exact allocator-owned commands retained for lowering.
+    pub(in crate::bot) fn mark_producers_issued(&mut self, ordinals: &[usize]) {
+        let Some(operation) = self.operation.as_mut() else {
+            return;
+        };
+        operation
+            .issued_producers
+            .extend(ordinals.iter().copied().filter(|ordinal| {
+                operation
+                    .producer_assignments
+                    .iter()
+                    .any(|assignment| assignment.request_ordinal == *ordinal)
+            }));
+        operation.issued_producers.sort_unstable();
+        operation.issued_producers.dedup();
+    }
+
+    /// Converts a destroyed producer or missed immutable enqueue boundary into
+    /// the Lift's existing bounded return-home recovery.
+    pub(in crate::bot) fn recover_invalid_production(&mut self, observed_at: Tick) {
+        if let Some(operation) = self
+            .operation
+            .as_mut()
+            .filter(|operation| operation.phase == LiftPhase::Provision)
+        {
+            enter(operation, LiftPhase::Recover, observed_at);
+        }
     }
 
     /// Capital held for the first carrier while a remembered objective is
@@ -305,6 +688,7 @@ impl LiftPlanner {
             support,
             LiftAdmission {
                 allow_new_commitments: true,
+                spendable_scrap: obs.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },
@@ -319,8 +703,28 @@ impl LiftPlanner {
         support: LiftAirSupport,
         admission: LiftAdmission<'_>,
     ) -> StrategicDecision {
+        self.think_with_admission_and_producer_lanes(
+            obs,
+            home,
+            unavailable,
+            support,
+            admission,
+            ProducerLaneReservations::empty(),
+        )
+    }
+
+    pub(super) fn think_with_admission_and_producer_lanes(
+        &mut self,
+        obs: &Observation,
+        home: TilePos,
+        unavailable: &[UnitId],
+        support: LiftAirSupport,
+        admission: LiftAdmission<'_>,
+        producer_lane_reservations: &ProducerLaneReservations,
+    ) -> StrategicDecision {
         let LiftAdmission {
             allow_new_commitments,
+            spendable_scrap,
             core_reservations,
             minimum_core_equivalents,
         } = admission;
@@ -348,10 +752,15 @@ impl LiftPlanner {
                 .filter(|member| can_defend_ground(member))
                 .map(|member| u32::from(member.kind.stats().transport_size))
                 .sum();
-            let built_airworks = obs
-                .my_buildings
-                .iter()
-                .any(|building| building.built && building.kind == BuildingKind::Airworks);
+            let built_airworks = obs.my_buildings.iter().any(|building| {
+                building.built
+                    && building.kind == BuildingKind::Airworks
+                    && producer_lane_reservations.allows_immediate_append(
+                        building.id,
+                        &[],
+                        UnitKind::Skyhook,
+                    )
+            });
             let enough_existing_carriers =
                 available_carriers(obs, &unavailable).len() >= plan.desired_carriers;
             let planned_drops =
@@ -378,6 +787,8 @@ impl LiftPlanner {
                     planned_drops,
                     manifests: Vec::new(),
                     launched: false,
+                    producer_assignments: Vec::new(),
+                    issued_producers: Vec::new(),
                 });
             }
         }
@@ -457,9 +868,25 @@ impl LiftPlanner {
         match operation.phase {
             LiftPhase::Provision => {
                 if allow_new_commitments {
-                    provision(&operation, obs, &unavailable, &mut decision);
+                    provision(
+                        &operation,
+                        obs,
+                        &unavailable,
+                        producer_lane_reservations,
+                        spendable_scrap,
+                        &mut decision,
+                    );
                 }
-                if assign_manifests(&mut operation, obs, home, &unavailable) {
+                let has_unissued_production =
+                    operation.producer_assignments.iter().any(|assignment| {
+                        operation
+                            .issued_producers
+                            .binary_search(&assignment.request_ordinal)
+                            .is_err()
+                    });
+                if !has_unissued_production
+                    && assign_manifests(&mut operation, obs, home, &unavailable)
+                {
                     enter(&mut operation, LiftPhase::Boarding, obs.tick);
                     operation.deadline = operation
                         .deadline
@@ -1136,6 +1563,8 @@ fn provision(
     operation: &LiftOperation,
     obs: &Observation,
     unavailable: &[UnitId],
+    producer_lane_reservations: &ProducerLaneReservations,
+    spendable_scrap: u32,
     decision: &mut StrategicDecision,
 ) {
     let live = available_carriers(obs, unavailable).len();
@@ -1144,7 +1573,22 @@ fn provision(
         .iter()
         .flatten()
         .filter(|kind| **kind == UnitKind::Skyhook)
-        .count();
+        .count()
+        .saturating_add(producer_lane_reservations.current_kind_count(UnitKind::Skyhook))
+        .saturating_add(
+            operation
+                .producer_assignments
+                .iter()
+                .filter(|assignment| {
+                    assignment.kind == UnitKind::Skyhook
+                        && assignment.timing.enqueued_at > obs.tick
+                        && operation
+                            .issued_producers
+                            .binary_search(&assignment.request_ordinal)
+                            .is_err()
+                })
+                .count(),
+        );
     let mut missing = operation
         .desired_carriers
         .saturating_sub(live.saturating_add(queued));
@@ -1159,7 +1603,7 @@ fn provision(
         return;
     }
 
-    let mut bank = obs.scrap;
+    let mut bank = obs.scrap.min(spendable_scrap);
     let mut added = vec![0usize; obs.my_buildings.len()];
     while missing > 0 {
         let producer = obs
@@ -1167,14 +1611,32 @@ fn provision(
             .iter()
             .enumerate()
             .filter(|(index, building)| {
+                let prior_immediate = vec![UnitKind::Skyhook; added[*index]];
                 building.built
                     && building.kind == BuildingKind::Airworks
+                    && producer_lane_reservations.allows_immediate_append(
+                        building.id,
+                        &prior_immediate,
+                        UnitKind::Skyhook,
+                    )
                     && obs.my_queues.get(*index).is_some_and(|queue| {
-                        queue.len().saturating_add(added[*index]) < SHALLOW_QUEUE_DEPTH
+                        queue
+                            .len()
+                            .saturating_add(
+                                producer_lane_reservations.current_job_count(building.id),
+                            )
+                            .saturating_add(added[*index])
+                            < SHALLOW_QUEUE_DEPTH
                     })
             })
             .min_by_key(|(index, building)| {
-                (obs.my_queues[*index].len() + added[*index], building.id)
+                (
+                    obs.my_queues[*index]
+                        .len()
+                        .saturating_add(producer_lane_reservations.current_job_count(building.id))
+                        .saturating_add(added[*index]),
+                    building.id,
+                )
             })
             .map(|(index, building)| (index, building.id));
         let cost = UnitKind::Skyhook.stats().cost;
@@ -1195,6 +1657,47 @@ fn provision(
             kind: UnitKind::Skyhook,
         });
     }
+}
+
+#[cfg(test)]
+fn bound_lift_schedule_is_executable(
+    assignments: &[LiftProducerAssignment],
+    resources: &ResourceSnapshot,
+    deadline: Tick,
+    cadence: Tick,
+    observed_at: Tick,
+) -> bool {
+    if assignments
+        .iter()
+        .any(|assignment| assignment.timing.enqueued_at < observed_at)
+    {
+        return false;
+    }
+    let Ok(projection) = resources.planning_projection(deadline, cadence) else {
+        return false;
+    };
+    let mut producers = projection.producers().to_vec();
+    for assignment in assignments {
+        let Some(index) = producers
+            .binary_search_by_key(&assignment.producer, |producer| producer.producer())
+            .ok()
+        else {
+            return false;
+        };
+        let Some(projected) =
+            producers[index].append(assignment.kind, assignment.timing.enqueued_at)
+        else {
+            return false;
+        };
+        if projected.starts_at != assignment.timing.starts_at
+            || projected.ready_at != assignment.timing.ready_at
+            || assignment.timing.ready_before != deadline
+            || projected.ready_at >= deadline
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn available_carriers<'a>(obs: &'a Observation, unavailable: &[UnitId]) -> Vec<&'a UnitObs> {
@@ -1961,6 +2464,7 @@ mod tests {
     use super::*;
     use crate::bot::intelligence::{BuildingContact, ContactEvidence};
     use crate::bot::observation::BuildingObs;
+    use crate::bot::resources::ReservedProducerJob;
     use crate::scenario::BotDifficulty;
 
     const HOME: TilePos = TilePos::new(5, 15);
@@ -2102,6 +2606,7 @@ mod tests {
         add_airworks(&mut obs, 200, Vec::new());
         let admission = LiftAdmission {
             allow_new_commitments: true,
+            spendable_scrap: obs.scrap,
             core_reservations: &[],
             minimum_core_equivalents: 8,
         };
@@ -2559,6 +3064,62 @@ mod tests {
     }
 
     #[test]
+    fn provisioning_preserves_a_future_lane_and_uses_an_unrelated_airworks() {
+        let mut obs = island_obs();
+        add_fighters(&mut obs, 20);
+        add_airworks(&mut obs, 10, Vec::new());
+        add_airworks(&mut obs, 11, Vec::new());
+        obs.scrap = 1_000;
+        let kind = UnitKind::Skyhook;
+        let ready_at = 12 + Tick::from(kind.stats().train_ticks) - 1;
+        let resources = crate::bot::resources::ResourceSnapshot::from_observation(&obs);
+        let projection = resources.planning_projection(ready_at + 1, 12).unwrap();
+        let reservations = ProducerLaneReservations::from_jobs(
+            &projection,
+            [ReservedProducerJob {
+                producer: BuildingId(10),
+                kind,
+                enqueued_at: 12,
+                starts_at: 12,
+                ready_at,
+                ready_before: ready_at + 1,
+            }],
+        )
+        .expect("the accepted test schedule matches its resource projection");
+        let before = obs.my_queues.clone();
+
+        let mut planner = LiftPlanner::new();
+        let decision = planner.think_with_admission_and_producer_lanes(
+            &obs,
+            HOME,
+            &[],
+            LiftAirSupport::Independent,
+            LiftAdmission {
+                allow_new_commitments: true,
+                spendable_scrap: obs.scrap,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+            &reservations,
+        );
+        let orders: Vec<_> = decision
+            .intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::TrainAt {
+                    building,
+                    kind: UnitKind::Skyhook,
+                } => Some(*building),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(orders, [BuildingId(11), BuildingId(11)]);
+        assert_eq!(obs.my_queues, before);
+        assert!(obs.my_queues.iter().flatten().all(|queued| *queued != kind));
+    }
+
+    #[test]
     fn provisioning_counts_live_and_queued_carriers_before_buying_more() {
         let mut obs = island_obs();
         add_fighters(&mut obs, 20);
@@ -2588,6 +3149,69 @@ mod tests {
             2
         );
         assert_eq!(decision.committed_scrap, 500);
+    }
+
+    #[test]
+    fn provisioning_counts_allocator_appends_due_on_the_current_tick() {
+        let mut obs = island_obs();
+        add_fighters(&mut obs, 20);
+        add_airworks(&mut obs, 10, Vec::new());
+        obs.scrap = 1_000;
+        let kind = UnitKind::Skyhook;
+        let train_ticks = Tick::from(kind.stats().train_ticks);
+        let first_ready = obs.tick.saturating_add(train_ticks).saturating_sub(1);
+        let second_ready = first_ready.saturating_add(train_ticks);
+        let resources = crate::bot::resources::ResourceSnapshot::from_observation(&obs);
+        let projection = resources
+            .planning_projection(second_ready.saturating_add(1), 12)
+            .expect("the empty Airworks lane is projectable");
+        let reservations = ProducerLaneReservations::from_jobs(
+            &projection,
+            [
+                ReservedProducerJob {
+                    producer: BuildingId(10),
+                    kind,
+                    enqueued_at: obs.tick,
+                    starts_at: obs.tick,
+                    ready_at: first_ready,
+                    ready_before: first_ready.saturating_add(1),
+                },
+                ReservedProducerJob {
+                    producer: BuildingId(10),
+                    kind,
+                    enqueued_at: obs.tick,
+                    starts_at: first_ready.saturating_add(1),
+                    ready_at: second_ready,
+                    ready_before: second_ready.saturating_add(1),
+                },
+            ],
+        )
+        .expect("the accepted current prefix matches the empty lane");
+
+        let mut planner = LiftPlanner::new();
+        let decision = planner.think_with_admission_and_producer_lanes(
+            &obs,
+            HOME,
+            &[],
+            LiftAirSupport::Independent,
+            LiftAdmission {
+                allow_new_commitments: true,
+                spendable_scrap: obs.scrap,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+            &reservations,
+        );
+
+        assert_eq!(planner.operation().unwrap().desired_carriers, 4);
+        assert!(decision.intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::TrainAt {
+                kind: UnitKind::Skyhook,
+                ..
+            }
+        )));
+        assert_eq!(decision.committed_scrap, kind.stats().cost);
     }
 
     #[test]
@@ -2692,6 +3316,7 @@ mod tests {
                 LiftAirSupport::Independent,
                 LiftAdmission {
                     allow_new_commitments: false,
+                    spendable_scrap: obs.scrap,
                     core_reservations: &[],
                     minimum_core_equivalents: 0,
                 },
@@ -2709,6 +3334,7 @@ mod tests {
             LiftAirSupport::Independent,
             LiftAdmission {
                 allow_new_commitments: true,
+                spendable_scrap: obs.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },
@@ -2727,6 +3353,7 @@ mod tests {
             LiftAirSupport::Independent,
             LiftAdmission {
                 allow_new_commitments: false,
+                spendable_scrap: obs.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },
@@ -2756,6 +3383,7 @@ mod tests {
             LiftAirSupport::Independent,
             LiftAdmission {
                 allow_new_commitments: false,
+                spendable_scrap: obs.scrap,
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },
@@ -3095,6 +3723,8 @@ mod tests {
                 planned_drops: planned_drop_slots(&obs, HOME, TARGET, 2),
                 manifests: Vec::new(),
                 launched: false,
+                producer_assignments: Vec::new(),
+                issued_producers: Vec::new(),
             }),
             support_latched: false,
             support_released: false,
@@ -3142,6 +3772,8 @@ mod tests {
                 planned_drops: planned_drop_slots(&obs, HOME, TARGET, 2),
                 manifests: Vec::new(),
                 launched: false,
+                producer_assignments: Vec::new(),
+                issued_producers: Vec::new(),
             }),
             support_latched: false,
             support_released: false,
@@ -4071,6 +4703,8 @@ mod tests {
                     closed: false,
                 }],
                 launched: true,
+                producer_assignments: Vec::new(),
+                issued_producers: Vec::new(),
             }),
             support_latched: false,
             support_released: false,
@@ -4134,6 +4768,8 @@ mod tests {
                     closed: false,
                 }],
                 launched: true,
+                producer_assignments: Vec::new(),
+                issued_producers: Vec::new(),
             }),
             support_latched: false,
             support_released: false,
@@ -5202,6 +5838,210 @@ mod tests {
         assert_eq!(first, second);
     }
 
+    #[test]
+    fn accepted_carrier_assignment_retains_identity_and_refreshes_only_funding() {
+        let (obs, mut planner, producer) = lift_with_unpaid_carrier();
+        let operation = planner.operation().expect("the Lift is active");
+        let deadline = operation.deadline;
+        let accepted_at = operation.started_at;
+        let timing = lift_test_timing(obs.tick + 12, deadline);
+        let cost = UnitKind::Skyhook.stats().cost;
+        let accepted = LiftProducerAssignment::new(
+            0,
+            producer,
+            UnitKind::Skyhook,
+            timing,
+            LiftProducerFunding::new(0, cost),
+        );
+
+        planner
+            .bind_producer_assignments(accepted_at, deadline, vec![accepted])
+            .expect("the exact future carrier binds");
+        let obligation = planner
+            .active_production_obligation()
+            .expect("the unpaid carrier remains mandatory");
+        assert_eq!(obligation.producer_jobs(), &[accepted]);
+
+        let refreshed = LiftProducerAssignment::new(
+            0,
+            producer,
+            UnitKind::Skyhook,
+            timing,
+            LiftProducerFunding::new(cost, 0),
+        );
+        planner
+            .refresh_active_production_funding(&obligation, &[refreshed])
+            .expect("current income may replace forecast funding");
+        assert_eq!(
+            planner
+                .active_production_obligation()
+                .expect("the refreshed carrier remains unpaid")
+                .producer_jobs(),
+            &[refreshed],
+            "refreshing funding cannot change the ordinal, producer, kind, or FIFO timing"
+        );
+    }
+
+    #[test]
+    fn only_the_exact_retained_carrier_ordinal_can_be_marked_issued() {
+        let (obs, mut planner, producer) = lift_with_unpaid_carrier();
+        let operation = planner.operation().expect("the Lift is active");
+        let deadline = operation.deadline;
+        let accepted_at = operation.started_at;
+        planner
+            .bind_producer_assignments(
+                accepted_at,
+                deadline,
+                vec![LiftProducerAssignment::new(
+                    0,
+                    producer,
+                    UnitKind::Skyhook,
+                    lift_test_timing(obs.tick + 12, deadline),
+                    LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+                )],
+            )
+            .expect("the exact future carrier binds");
+
+        planner.mark_producers_issued(&[1]);
+        assert!(
+            planner.active_production_obligation().is_some(),
+            "an unrelated ordinal cannot release retained work"
+        );
+        planner.mark_producers_issued(&[0, 0]);
+        assert!(
+            planner.active_production_obligation().is_none(),
+            "the exact ordinal releases once with set semantics"
+        );
+        assert_eq!(planner.operation().unwrap().issued_producers, vec![0]);
+    }
+
+    #[test]
+    fn an_extra_live_carrier_cannot_abandon_retained_production() {
+        let (mut obs, mut planner, producer) = lift_with_unpaid_carrier();
+        let operation = planner.operation().expect("the Lift is active");
+        let deadline = operation.deadline;
+        let accepted_at = operation.started_at;
+        let timing = lift_test_timing(obs.tick + 12, deadline);
+        let assignment = LiftProducerAssignment::new(
+            0,
+            producer,
+            UnitKind::Skyhook,
+            timing,
+            LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+        );
+        planner
+            .bind_producer_assignments(accepted_at, deadline, vec![assignment])
+            .expect("the exact future carrier binds");
+        let desired_carriers = planner.operation().unwrap().desired_carriers;
+        obs.my_units.extend((0..desired_carriers).map(|index| {
+            own(
+                900 + u32::try_from(index).unwrap(),
+                UnitKind::Skyhook,
+                HOME.offset(i32::try_from(index).unwrap(), 0),
+            )
+        }));
+        obs.my_units.sort_unstable_by_key(|unit| unit.id);
+
+        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+
+        assert_eq!(planner.operation().unwrap().phase, LiftPhase::Provision);
+        assert_eq!(
+            planner
+                .active_production_obligation()
+                .expect("live incidental capacity cannot release accepted producer work")
+                .producer_jobs(),
+            &[assignment]
+        );
+    }
+
+    #[test]
+    fn destroyed_producer_invalidates_the_bound_schedule() {
+        let (obs, mut planner, producer) = lift_with_unpaid_carrier();
+        let operation = planner.operation().expect("the Lift is active");
+        let deadline = operation.deadline;
+        let accepted_at = operation.started_at;
+        let assignment = LiftProducerAssignment::new(
+            0,
+            producer,
+            UnitKind::Skyhook,
+            lift_test_timing(obs.tick + 12, deadline),
+            LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+        );
+        planner
+            .bind_producer_assignments(accepted_at, deadline, vec![assignment])
+            .expect("the exact future carrier binds");
+
+        let obligation = planner.active_production_obligation().unwrap();
+        let mut without_producer = obs.clone();
+        let index = without_producer
+            .my_buildings
+            .iter()
+            .position(|building| building.id == producer)
+            .unwrap();
+        without_producer.my_buildings.remove(index);
+        without_producer.my_queues.remove(index);
+        assert!(!obligation.producer_schedule_is_executable(
+            &ResourceSnapshot::from_observation(&without_producer),
+            12,
+            without_producer.tick,
+        ));
+    }
+
+    #[test]
+    fn missed_enqueue_boundary_enters_bounded_recovery() {
+        let (obs, mut planner, producer) = lift_with_unpaid_carrier();
+        let operation = planner.operation().expect("the Lift is active");
+        let deadline = operation.deadline;
+        let accepted_at = operation.started_at;
+        let timing = lift_test_timing(obs.tick + 12, deadline);
+        planner
+            .bind_producer_assignments(
+                accepted_at,
+                deadline,
+                vec![LiftProducerAssignment::new(
+                    0,
+                    producer,
+                    UnitKind::Skyhook,
+                    timing,
+                    LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+                )],
+            )
+            .expect("the exact future carrier binds");
+        let obligation = planner.active_production_obligation().unwrap();
+        let mut late = obs;
+        late.tick = timing.enqueued_at() + 1;
+        assert!(!obligation.producer_schedule_is_executable(
+            &ResourceSnapshot::from_observation(&late),
+            12,
+            late.tick,
+        ));
+        planner.recover_invalid_production(late.tick);
+        assert_eq!(planner.operation().unwrap().phase, LiftPhase::Recover);
+        planner.think(&late, HOME, &[], LiftAirSupport::Independent);
+        assert!(planner.operation().is_none());
+        assert!(planner.retry_not_before > late.tick);
+    }
+
+    fn lift_with_unpaid_carrier() -> (Observation, LiftPlanner, BuildingId) {
+        let mut obs = island_obs();
+        add_fighters(&mut obs, 3);
+        let producer = BuildingId(200);
+        add_airworks(&mut obs, producer.0, Vec::new());
+        let mut planner = LiftPlanner::new();
+        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        assert_eq!(planner.operation().unwrap().phase, LiftPhase::Provision);
+        (obs, planner, producer)
+    }
+
+    fn lift_test_timing(enqueued_at: Tick, ready_before: Tick) -> LiftProducerTiming {
+        LiftProducerTiming::new(
+            enqueued_at,
+            enqueued_at,
+            enqueued_at + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
+            ready_before,
+        )
+    }
+
     fn island_obs() -> Observation {
         let mut obs = Observation {
             tick: 0,
@@ -5337,6 +6177,8 @@ mod tests {
                     closed: false,
                 }],
                 launched: true,
+                producer_assignments: Vec::new(),
+                issued_producers: Vec::new(),
             }),
             support_latched: false,
             support_released: false,
@@ -5383,6 +6225,8 @@ mod tests {
                     closed: false,
                 }],
                 launched: true,
+                producer_assignments: Vec::new(),
+                issued_producers: Vec::new(),
             }),
             support_latched: false,
             support_released: false,

@@ -338,6 +338,14 @@ impl Candidate {
     }
 }
 
+/// Exact defense placement whose worker has already passed the same public-
+/// terrain and current-danger route checks used to rank the site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DefensePlacement {
+    pub(super) anchor: TilePos,
+    pub(super) builder: UnitId,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PlannedDefense {
     profile: DefenseProfile,
@@ -623,9 +631,10 @@ impl UtilityPolicy {
             DefenseEvidence::strategic(unit_contacts, building_contacts),
             grounding.get_or_insert_with(|| DefenseGrounding::new(self, obs, briefing)),
         )
+        .map(|placement| placement.anchor)
     }
 
-    pub(super) fn emergency_defense_site(
+    pub(super) fn emergency_defense_placement(
         &self,
         kind: BuildingKind,
         obs: &Observation,
@@ -633,7 +642,7 @@ impl UtilityPolicy {
         unit_contacts: &[UnitContact],
         building_contacts: &[BuildingContact],
         builders: &[&UnitObs],
-    ) -> Option<TilePos> {
+    ) -> Option<DefensePlacement> {
         if builders.is_empty() {
             return None;
         }
@@ -655,7 +664,7 @@ impl UtilityPolicy {
         builders: &[&UnitObs],
         evidence: DefenseEvidence<'_>,
         grounding: &DefenseGrounding<'_>,
-    ) -> Option<TilePos> {
+    ) -> Option<DefensePlacement> {
         let DefenseEvidence {
             unit_contacts,
             building_contacts,
@@ -795,15 +804,21 @@ impl UtilityPolicy {
                     .map(|origin| origin.anchor.manhattan(anchor))
                     .min()
                     .unwrap_or(i32::MAX);
-                Some(Candidate {
-                    anchor,
-                    builder_travel,
-                    coverage,
-                    threat_distance,
-                })
+                Some((
+                    Candidate {
+                        anchor,
+                        builder_travel,
+                        coverage,
+                        threat_distance,
+                    },
+                    builder,
+                ))
             })
-            .max_by_key(|candidate| candidate.key(profile))
-            .map(|candidate| candidate.anchor)
+            .max_by_key(|(candidate, _)| candidate.key(profile))
+            .map(|(candidate, builder)| DefensePlacement {
+                anchor: candidate.anchor,
+                builder,
+            })
     }
 }
 
@@ -2372,7 +2387,9 @@ mod tests {
             .iter()
             .filter(|unit| unit.kind.stats().harvest.is_some())
             .collect();
-        policy.emergency_defense_site(kind, obs, briefing, units, buildings, &builders)
+        policy
+            .emergency_defense_placement(kind, obs, briefing, units, buildings, &builders)
+            .map(|placement| placement.anchor)
     }
 
     fn reveal(obs: &mut Observation, tile: TilePos) {

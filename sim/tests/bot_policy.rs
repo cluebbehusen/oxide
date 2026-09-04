@@ -2,12 +2,13 @@
 
 use chassis::grid::TilePos;
 use oxide_sim::bot::{
-    BuildingObs, Dials, DifficultyTuning, Executive, Intent, Observation, PublicMapBriefing,
+    Brain, BuildingObs, Dials, DifficultyTuning, Executive, Intent, Observation, PublicMapBriefing,
     UnitObs, UtilityPolicy,
 };
 use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec};
 use oxide_sim::stats::{BuildingKind, EXTRACTOR_SUPPORT_RADIUS};
 use oxide_sim::{BuildingId, Command, Event, Faction, PlayerId, Scenario, UnitId, UnitKind};
+use std::sync::Arc;
 
 fn standard_dials() -> Dials {
     let profile = BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 0x5eed_0a16)
@@ -154,6 +155,17 @@ fn planned_cost(intent: &Intent) -> u32 {
     }
 }
 
+fn command_cost(command: &Command) -> u32 {
+    match command {
+        Command::Train { kind, .. } => kind.stats().cost,
+        Command::Build { kind, .. } => kind
+            .base_stats()
+            .construction
+            .map_or(0, |construction| construction.cost),
+        _ => 0,
+    }
+}
+
 fn plans_build(intents: &[Intent], kind: BuildingKind, anchor: TilePos) -> bool {
     intents.iter().any(|intent| {
         matches!(
@@ -179,16 +191,6 @@ fn exact_builder_for(intents: &[Intent], kind: BuildingKind, anchor: TilePos) ->
         } if *planned_kind == kind && *planned_anchor == anchor => Some(*builder),
         _ => None,
     })
-}
-
-fn footprint_distance(first: (TilePos, (i32, i32)), second: (TilePos, (i32, i32))) -> i32 {
-    let axis = |a: i32, a_len: i32, b: i32, b_len: i32| {
-        let a_far = a + a_len - 1;
-        let b_far = b + b_len - 1;
-        (a - b_far).max(b - a_far).max(0)
-    };
-    axis(first.0.x, first.1.0, second.0.x, second.1.0)
-        .max(axis(first.0.y, first.1.1, second.0.y, second.1.1))
 }
 
 fn block_support_anchors(obs: &mut Observation, extractor: TilePos, through_radius: i32) {
@@ -529,12 +531,15 @@ fn assert_current_emergency_defense_preserves_opening_escrow(
     intruder.kind = threat_kind;
     (intruder.x, intruder.y) = (intruder_tile.x, intruder_tile.y);
 
-    let briefing = PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds");
+    let briefing =
+        Arc::new(PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds"));
     let mut state = scenario.build().expect("the threatened opening builds");
     let me = PlayerId(seat);
-    let dials = standard_dials();
-    let mut policy = UtilityPolicy::new();
-    let mut executive = Executive::new();
+    let mut brain = Brain::scripted(
+        me,
+        BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 0x5eed_0a16),
+        briefing,
+    );
 
     let observation = Observation::fog_honest(&state, me);
     assert!(
@@ -544,43 +549,44 @@ fn assert_current_emergency_defense_preserves_opening_escrow(
             .any(|unit| unit.kind == threat_kind && observation.visible(unit.tile)),
         "the {threat_kind:?} must be current visible evidence for the emergency exception"
     );
-    let intents = policy.think_player_facing(&dials, &observation, &[], &[], &[], &briefing);
+    let commands = brain.act(&state);
     assert_eq!(
-        intents
+        commands
             .iter()
-            .filter(|intent| matches!(
-                intent,
-                Intent::Build { kind, .. } | Intent::BuildWith { kind, .. }
-                    if *kind == defense_kind
+            .filter(|command| matches!(
+                command.command,
+                Command::Build { kind, .. } if kind == defense_kind
             ))
             .count(),
         1,
-        "the visible opening {threat_kind:?} should admit exactly one emergency {defense_kind:?}: {intents:?}"
+        "the visible opening {threat_kind:?} should admit exactly one emergency {defense_kind:?}: {commands:?}"
     );
     assert!(
-        intents.iter().all(|intent| match intent {
-            Intent::Build { kind, .. } | Intent::BuildWith { kind, .. } => {
-                *kind == defense_kind
+        commands.iter().all(|command| match command.command {
+            Command::Build { kind, .. } => {
+                kind == defense_kind || kind == BuildingKind::Extractor
             }
-            Intent::Upgrade { .. } => false,
+            Command::UpgradeBuilding { .. } => false,
             _ => true,
         }),
-        "the current emergency exception must not admit other below-floor capital: {intents:?}"
+        "the current emergency exception must not admit capital beyond itself and the protected home Extractor: {commands:?}"
     );
-    assert!(intents.iter().any(|intent| matches!(
-        intent,
-        Intent::TrainAt {
+    assert!(commands.iter().any(|command| matches!(
+        command.command,
+        Command::Train {
             kind: UnitKind::Harvester,
             ..
         }
     )));
     assert_eq!(
-        intents.iter().map(planned_cost).sum::<u32>(),
-        observation.scrap - extractor_cost,
-        "the emergency and fourth worker may spend only the bank above the home Extractor fund: {intents:?}"
+        commands
+            .iter()
+            .map(|command| command_cost(&command.command))
+            .sum::<u32>(),
+        observation.scrap,
+        "the emergency, fourth worker, and protected home Extractor should spend the exact opening bank: {commands:?}"
     );
 
-    let commands = executive.apply_with_reservations(me, &observation, &intents, &[]);
     let report = state.tick(&commands);
     assert!(report.events.iter().all(|event| !matches!(
         event,
@@ -591,15 +597,22 @@ fn assert_current_emergency_defense_preserves_opening_escrow(
     )));
     assert_eq!(
         state.player(me).scrap,
-        defense_cost + extractor_cost,
-        "the worker is paid immediately while both construction promises remain in the bank"
+        0,
+        "the integrated allocator can dispatch both protected construction promises immediately"
     );
 
     let mut defense_anchor = commands.iter().find_map(|command| match command.command {
         Command::Build { kind, anchor, .. } if kind == defense_kind => Some(anchor),
         _ => None,
     });
-    let mut extractor_anchor = None;
+    let mut extractor_anchor = commands.iter().find_map(|command| match command.command {
+        Command::Build {
+            kind: BuildingKind::Extractor,
+            anchor,
+            ..
+        } => Some(anchor),
+        _ => None,
+    });
     let mut defense_site = None;
     let mut extractor_site = None;
     let mut defense_advanced = false;
@@ -615,9 +628,7 @@ fn assert_current_emergency_defense_preserves_opening_escrow(
                     "emergency defense must preserve the home Extractor fund until its site is paid"
                 );
             }
-            let intents =
-                policy.think_player_facing(&dials, &observation, &[], &[], &[], &briefing);
-            executive.apply_with_reservations(me, &observation, &intents, &[])
+            brain.act(&state)
         } else {
             Vec::new()
         };
@@ -1253,7 +1264,7 @@ fn player_facing_restoration_requires_a_clean_bounded_sweep_after_worker_damage(
 }
 
 #[test]
-fn remote_own_extractor_focuses_a_supporting_foundry_before_airworks() {
+fn residual_policy_cannot_originate_a_remote_extractor_foundry() {
     let home = TilePos::new(2, 10);
     let extractor = TilePos::new(28, 10);
     let mut obs = construction_observation(1_000);
@@ -1295,88 +1306,18 @@ fn remote_own_extractor_focuses_a_supporting_foundry_before_airworks() {
         observed_building(1, BuildingKind::Fabricator, TilePos::new(5, 3), true),
     );
     let intents = player_facing_intents(&dials, &obs);
-    let (builder, anchor) = intents
-        .iter()
-        .find_map(|intent| match intent {
-            Intent::BuildWith {
-                builder,
-                kind: BuildingKind::Foundry,
-                anchor,
-            } => Some((*builder, *anchor)),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("remote Extractor should focus a Foundry, got {intents:?}"));
-    assert_eq!(
-        builder,
-        UnitId(2),
-        "the support claim must retain the nearest route-capable worker through lowering"
-    );
     assert!(
-        !intents.iter().any(|intent| matches!(
+        intents.iter().all(|intent| !matches!(
             intent,
             Intent::Build {
-                kind: BuildingKind::Airworks,
+                kind: BuildingKind::Foundry,
+                ..
+            } | Intent::BuildWith {
+                kind: BuildingKind::Foundry,
                 ..
             }
         )),
-        "consolidating a restored claim must precede the old Airworks rung"
-    );
-    assert!(
-        footprint_distance(
-            (anchor, BuildingKind::Foundry.base_stats().size),
-            (extractor, BuildingKind::Extractor.base_stats().size),
-        ) <= EXTRACTOR_SUPPORT_RADIUS,
-        "the expansion at {anchor:?} must actually support the Extractor at {extractor:?}"
-    );
-    assert!(
-        anchor.chebyshev(extractor) < home.chebyshev(extractor),
-        "the support Foundry must materially shorten the remote Extractor's logistics"
-    );
-}
-
-#[test]
-fn extractor_support_search_reaches_the_full_legal_edge() {
-    let home = TilePos::new(2, 10);
-    let extractor = TilePos::new(28, 10);
-    let mut obs = construction_observation(1_000);
-    for (id, kind, anchor) in [
-        (0, BuildingKind::Foundry, home),
-        (1, BuildingKind::Fabricator, TilePos::new(5, 3)),
-        (2, BuildingKind::Extractor, extractor),
-    ] {
-        add_building(&mut obs, observed_building(id, kind, anchor, true));
-    }
-    obs.known_frames.push(extractor);
-    block_support_anchors(&mut obs, extractor, 8);
-    let dials = standard_dials_without_opening_core_floor();
-
-    let intents = player_facing_intents(&dials, &obs);
-    let (builder, anchor) = intents
-        .iter()
-        .find_map(|intent| match intent {
-            Intent::BuildWith {
-                builder,
-                kind: BuildingKind::Foundry,
-                anchor,
-            } => Some((*builder, *anchor)),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("the complete support ring should contain a site: {intents:?}"));
-    assert_eq!(
-        builder,
-        UnitId(2),
-        "the edge claim must preserve its proven route-capable worker"
-    );
-    assert_eq!(
-        anchor.chebyshev(extractor),
-        EXTRACTOR_SUPPORT_RADIUS + 1,
-        "all closer anchors were obstructed, so the legal edge must be searched"
-    );
-    assert!(
-        footprint_distance(
-            (anchor, BuildingKind::Foundry.base_stats().size),
-            (extractor, BuildingKind::Extractor.base_stats().size),
-        ) <= EXTRACTOR_SUPPORT_RADIUS
+        "the residual facade must leave a fresh Foundry to shared proposal allocation: {intents:?}"
     );
 }
 

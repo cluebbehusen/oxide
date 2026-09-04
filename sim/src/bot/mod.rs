@@ -18,6 +18,7 @@
 //! the configurable player-facing opponent. [`Brain::overseer`] remains a
 //! separate QA yardstick.
 
+mod allocation;
 pub mod brain;
 pub mod briefing;
 pub mod difficulty;
@@ -28,6 +29,7 @@ pub mod observation;
 pub mod orient;
 pub mod profile;
 pub mod raid;
+mod residual_coordination;
 mod resources;
 mod routing;
 pub mod strategy;

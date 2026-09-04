@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-02T23:11:47
+updated: 2026-09-04T00:02:44
 ---
 
 # Scripted Bot Strategic Reset
@@ -159,9 +159,6 @@ without arbitrary controller caps.
     current target value, operational AA, completed production, available
     funding, technology, existing forces, and personality; revisions stop at
     exact-ID commitment and cannot extend the deadline.
-  - Added an exact deterministic producer scheduler with no policy count cutoff;
-    independent brute-force oracles matched 215,000 generated queue,
-    eligibility, release-order, and lane-allocation cases.
   - Aligned reconnaissance, target-cluster liveness, artillery firing stands,
     group spreading, producer egress, and attack routes with public terrain and
     the authoritative command geometry; an infeasible preferred target now
@@ -171,12 +168,18 @@ without arbitrary controller caps.
     units, scaled suppression through Bombards and Avalanche against observed
     AA, substituted Buzzards and Condors at higher opportunity, and reproduced
     the same command and terminal hashes under an identical seed.
-- [ ] 4. Admit compatible investments through a deterministic cross-domain
+  - Closed adversarial review gaps: remembered frozen targets remain inside AA
+    clearance until their full footprints are re-scouted, and admission now
+    proves a distinct reachable firing stand for every suppression provider
+    rather than extrapolating from one artillery piece.
+  - Revalidated active hidden-target preparation against the latest spendable
+    bank and surviving completed-income forecast, so a destroyed income source
+    releases an infeasible package instead of holding resources until timeout.
+  - Added an exact deterministic producer scheduler with no policy count cutoff;
+    independent brute-force oracles matched 43,702 count-portfolio and
+    lane-allocation cases.
+- [x] 4. Admit compatible investments through a deterministic cross-domain
       allocator.
-  - Introduce exhaustive economy, offense, defense, technology, reconnaissance,
-    and support proposals; select a compatible deterministic portfolio,
-    beginning with a real comparison among expansion, offense, and protected
-    ordinary production.
   - Boundary: compare structured proposals and claims while leaving each domain
     responsible for its own target, placement, composition, phases, and micro;
     adapt unmigrated work through explicit legacy obligations.
@@ -184,6 +187,58 @@ without arbitrary controller caps.
     mutually exclusive scrap, builders, factories and units, stable tie-breaks,
     personality weighting without zeroing a domain, and traceable approval or
     rejection.
+  - First slice: compare exactly two fresh proposals, one currently safe and
+    command-legal Foundry expansion and one connected-operation minimum. Treat
+    saved Foundry plans, active operations, paid work, opening recovery,
+    bootstrap work, emergency survival, and the shallow Sentinel as obligations;
+    leave other fresh unmigrated channels on residual resources.
+  - Select among the four possible proposal subsets with no search cutoff. Apply
+    current and forecast scrap, exact builders, sites, units, and shared
+    producer timing as one atomic claim bundle so higher-order conflicts cannot
+    double-spend a forecast or factory lane.
+  - Store exact proposal payloads and commit only the accepted site, builder,
+    target, minimum package, and production evidence without rerunning domain
+    ranking. Scale connected marginal capability only from resources left after
+    the accepted minimum and expansion.
+  - Verify an independent four-mask oracle, atomic rollback, current and
+    forecast conflicts, compatible concurrency, producer hyperedges, persistent
+    obligations, deterministic lowering and tie-breaks, a real personality
+    near-tie, and a composed state-accepted expansion-plus-offense case.
+  - Implemented the pure two-domain allocator with exhaustive four-mask
+    selection, named semantic bands, exact current and deadline-scoped forecast
+    capital, actor and site ownership, producer FIFO scheduling, atomic
+    rollback, deterministic ties, and additions-only connected scaling.
+  - Rejected a producer abstraction that conflated command enqueue and payment
+    with production start; allocation must retain decision-tick admission, FIFO
+    start, slot reopening, strict readiness, and post-income spendability.
+  - Completed cross-decision producer commitments for connected offense and
+    lifts: retained jobs preserve exact identity, funding, lane, timing, and
+    deadline; jointly validate shared capacity; emit due commands once; and
+    enter bounded recovery when the accepted promise becomes impossible.
+  - Brought admitted island-air work and current-threat emergency defense into
+    the same transaction, then extracted post-allocation residual coordination
+    so rollback has one explicit owner.
+  - Fixed adversarial seam failures found by composed tests: chronological
+    replay of retained lane work, same-tick offense versus saved-Foundry
+    priority, stale tactical latches after roster growth, rollback after lost
+    forecast backing, and absent planner-owned units reaching the live Utility
+    ledger.
+  - Removed the test-only legacy connected controller and unreachable
+    player-facing Foundry and emergency-defense rungs. Shipped Brain-to-State,
+    route-restricted production, exact rollback, and every allocation outranking
+    basis now have direct coverage.
+  - Deferred the reduced-observation and raw-budget adapter for unmigrated
+    Utility channels, scheduler consolidation, trace and band-type
+    consolidation, and physical test-module splits to the later domain
+    migrations or final cleanup; do not extend those seams in the meantime.
+  - Evaluated paired Prime personalities, controlled Prime-versus-Overseer
+    matches, The Scattering to 60,000 ticks, and Skyhook Anchorage to 60,000
+    ticks. No allocator stall loop or dead economy surfaced; duel outcomes
+    remained map-end-confounded, while rich and island matches sustained
+    expansion, high-tier production, and concurrent operations.
+  - Verified frozen Overseer state hashes unchanged; refreshed only the approved
+    player-facing behavior rows; full workspace tests, Clippy, rustdoc,
+    Markdown, skill validation, and unit and combined coverage gates passed.
 - [ ] 5. Replace default unit sinks with tech-aware standing-army and
       ordinary-production demand.
   - Derive standing force from known counters, strategic plans, technology,

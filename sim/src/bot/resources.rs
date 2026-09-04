@@ -11,9 +11,11 @@ use chassis::Tick;
 use chassis::grid::TilePos;
 
 mod ledger;
+mod planning;
 mod production;
 
 pub(crate) use ledger::*;
+pub(crate) use planning::*;
 pub(crate) use production::*;
 
 /// Scrap present in the player's bank at the observation boundary.
@@ -96,7 +98,6 @@ pub(crate) struct ResourceForecast {
 
 impl ResourceForecast {
     /// The observation tick from which this forecast starts.
-    #[cfg(test)]
     pub(crate) const fn observed_at(&self) -> Tick {
         self.observed_at
     }
@@ -231,6 +232,265 @@ pub(crate) struct ProducerSlot {
     pub(crate) queue_index: u8,
 }
 
+/// One accepted future append whose exact FIFO position belongs to a planning
+/// domain rather than to residual same-think production.
+///
+/// This is reservation evidence, not observed inventory. Consumers use it to
+/// keep the named producer free until the accepted append is due; they must not
+/// insert `kind` into an observed queue or count it as an already-paid unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ReservedProducerJob {
+    /// Exact producer whose FIFO timing was accepted.
+    pub(crate) producer: BuildingId,
+    /// Exact unit kind retained from the accepted request.
+    pub(crate) kind: UnitKind,
+    /// Decision tick on which the append is due.
+    pub(crate) enqueued_at: Tick,
+    /// First production-phase tick occupied by the job.
+    pub(crate) starts_at: Tick,
+    /// Tick on which production completes.
+    pub(crate) ready_at: Tick,
+    /// Fixed strict readiness deadline used during allocation.
+    pub(crate) ready_before: Tick,
+}
+
+/// Why an accepted producer schedule could not be overlaid on the resource
+/// projection from which it was allocated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProducerLaneReservationError {
+    /// The schedule named a producer absent from the projection.
+    UnknownProducer {
+        /// Exact missing producer.
+        producer: BuildingId,
+    },
+    /// A current-tick append was no longer legal on its accepted producer.
+    CurrentAppendUnavailable {
+        /// Exact producer.
+        producer: BuildingId,
+        /// Unit whose append failed.
+        kind: UnitKind,
+    },
+    /// Replaying a current-tick append changed its accepted FIFO timing.
+    CurrentTimingMismatch {
+        /// Exact producer.
+        producer: BuildingId,
+        /// Unit whose timing changed.
+        kind: UnitKind,
+    },
+}
+
+/// Accepted future producer work overlaid on an otherwise truthful
+/// [`Observation`].
+///
+/// Residual planners issue only immediate queue appends. On a producer with
+/// future work, they may use only the queue prefix that leaves every accepted
+/// append's enqueue, start, and ready tick unchanged. Unrelated producers
+/// remain available, and observed queues remain the sole source of paid
+/// inventory.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ProducerLaneReservations {
+    baselines: Vec<ProducerPlanningProjection>,
+    current_jobs: Vec<ReservedProducerJob>,
+    jobs: Vec<ReservedProducerJob>,
+}
+
+impl ProducerLaneReservations {
+    /// Shared empty overlay for callers outside cross-domain allocation.
+    pub(crate) fn empty() -> &'static Self {
+        static EMPTY: ProducerLaneReservations = ProducerLaneReservations {
+            baselines: Vec::new(),
+            current_jobs: Vec::new(),
+            jobs: Vec::new(),
+        };
+        &EMPTY
+    }
+
+    /// Retains only jobs whose append is still in the future at this
+    /// observation, in canonical producer/timing order.
+    pub(crate) fn from_jobs(
+        resources: &ResourcePlanningProjection,
+        jobs: impl IntoIterator<Item = ReservedProducerJob>,
+    ) -> Result<Self, ProducerLaneReservationError> {
+        let observed_at = resources.observed_at();
+        let mut scheduled: Vec<_> = jobs
+            .into_iter()
+            .filter(|job| job.enqueued_at >= observed_at)
+            .collect();
+        scheduled.sort_unstable_by_key(|job| {
+            (
+                job.producer,
+                job.enqueued_at,
+                job.starts_at,
+                job.ready_at,
+                job.kind,
+                job.ready_before,
+            )
+        });
+        let jobs = scheduled
+            .iter()
+            .copied()
+            .filter(|job| job.enqueued_at > observed_at)
+            .collect::<Vec<_>>();
+        let mut producers: Vec<_> = scheduled.iter().map(|job| job.producer).collect();
+        producers.sort_unstable();
+        producers.dedup();
+        let current_jobs = scheduled
+            .iter()
+            .copied()
+            .filter(|job| job.enqueued_at == observed_at)
+            .collect::<Vec<_>>();
+        let baselines = producers
+            .into_iter()
+            .map(|producer| {
+                let mut baseline = resources
+                    .producer(producer)
+                    .cloned()
+                    .ok_or(ProducerLaneReservationError::UnknownProducer { producer })?;
+                for due in scheduled
+                    .iter()
+                    .filter(|job| job.producer == producer && job.enqueued_at == observed_at)
+                {
+                    let projected = baseline.append(due.kind, observed_at).ok_or(
+                        ProducerLaneReservationError::CurrentAppendUnavailable {
+                            producer,
+                            kind: due.kind,
+                        },
+                    )?;
+                    if (projected.starts_at, projected.ready_at) != (due.starts_at, due.ready_at) {
+                        return Err(ProducerLaneReservationError::CurrentTimingMismatch {
+                            producer,
+                            kind: due.kind,
+                        });
+                    }
+                }
+                Ok(baseline)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            baselines,
+            current_jobs,
+            jobs,
+        })
+    }
+
+    /// Whether this exact producer carries accepted work on or after this tick.
+    pub(crate) fn reserves(&self, producer: BuildingId) -> bool {
+        self.baselines
+            .binary_search_by_key(&producer, ProducerPlanningProjection::producer)
+            .is_ok()
+    }
+
+    /// Whether one append against an already-projected observation preserves
+    /// every accepted future append on the same exact producer.
+    ///
+    /// `prior_immediate` contains only commands added after the accepted
+    /// current-tick schedule represented by this baseline.
+    pub(crate) fn allows_immediate_append(
+        &self,
+        producer: BuildingId,
+        prior_immediate: &[UnitKind],
+        kind: UnitKind,
+    ) -> bool {
+        if !self.reserves(producer) {
+            return true;
+        }
+        let index = self
+            .baselines
+            .binary_search_by_key(&producer, ProducerPlanningProjection::producer)
+            .expect("a reserved producer retains its baseline projection");
+        let mut lane = self.baselines[index].clone();
+        let observed_at = lane.observed_at();
+        for &planned in prior_immediate {
+            if lane.append(planned, observed_at).is_none() {
+                return false;
+            }
+        }
+        if lane.append(kind, observed_at).is_none() {
+            return false;
+        }
+        self.jobs
+            .iter()
+            .filter(|job| job.producer == producer)
+            .all(|job| {
+                lane.append(job.kind, job.enqueued_at)
+                    .is_some_and(|projected| {
+                        projected.starts_at == job.starts_at && projected.ready_at == job.ready_at
+                    })
+            })
+    }
+
+    /// Whether one append against the raw observation preserves every accepted
+    /// future append on the same exact producer.
+    ///
+    /// The exact accepted current-tick prefix is already represented by the
+    /// baseline. Callers pass all staged producer commands, including that
+    /// prefix; only later residual commands are replayed.
+    pub(crate) fn allows_raw_immediate_append(
+        &self,
+        producer: BuildingId,
+        prior_immediate: &[UnitKind],
+        kind: UnitKind,
+    ) -> bool {
+        if !self.reserves(producer) {
+            return true;
+        }
+        let represented_current = self
+            .current_jobs
+            .iter()
+            .filter(|job| job.producer == producer)
+            .map(|job| job.kind)
+            .collect::<Vec<_>>();
+        let Some(residual) = prior_immediate.strip_prefix(represented_current.as_slice()) else {
+            return false;
+        };
+        self.allows_immediate_append(producer, residual, kind)
+    }
+
+    /// Accepted appends due on this decision tick for one exact producer.
+    pub(crate) fn current_job_count(&self, producer: BuildingId) -> usize {
+        self.current_jobs
+            .iter()
+            .filter(|job| job.producer == producer)
+            .count()
+    }
+
+    /// Accepted appends due on this decision tick for one exact unit kind.
+    pub(crate) fn current_kind_count(&self, kind: UnitKind) -> usize {
+        self.current_jobs
+            .iter()
+            .filter(|job| job.kind == kind)
+            .count()
+    }
+
+    /// Latest completion tick already promised on one exact producer.
+    pub(crate) fn latest_ready_at(&self, producer: BuildingId) -> Option<Tick> {
+        self.current_jobs
+            .iter()
+            .chain(&self.jobs)
+            .filter(|job| job.producer == producer)
+            .map(|job| job.ready_at)
+            .max()
+    }
+
+    /// Exact future jobs retained by the overlay.
+    #[cfg(test)]
+    pub(crate) fn jobs(&self) -> &[ReservedProducerJob] {
+        &self.jobs
+    }
+
+    /// Accepted current-tick appends in their exact producer schedule.
+    #[cfg(test)]
+    pub(crate) fn current_jobs(&self) -> &[ReservedProducerJob] {
+        &self.current_jobs
+    }
+
+    /// Number of projected producer bases retained for future jobs.
+    #[cfg(test)]
+    pub(crate) fn baseline_count(&self) -> usize {
+        self.baselines.len()
+    }
+}
+
 /// What the current observation proves about a producer's spawn egress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProducerEgress {
@@ -325,6 +585,41 @@ impl ProducerLane {
     /// and the exact slots returned by [`Self::open_slots`].
     pub(crate) fn horizon_timing(&self, planned: &[UnitKind]) -> Option<ProductionTiming> {
         self.sequence_timing(planned)
+    }
+
+    /// Number of paid queued units of `kind` conservatively ready before an
+    /// operation deadline.
+    pub(crate) fn queued_kind_ready_before(&self, kind: UnitKind, ready_before: Tick) -> usize {
+        let mut elapsed = 0_u64;
+        let mut ready = 0_usize;
+        for (index, queued) in self.queued.iter().copied().enumerate() {
+            let ticks = if index == 0 {
+                self.front_progress.map_or_else(
+                    || Tick::from(queued.stats().train_ticks),
+                    |progress| {
+                        Tick::from(queued.stats().train_ticks.saturating_sub(progress).max(1))
+                    },
+                )
+            } else {
+                Tick::from(queued.stats().train_ticks)
+            };
+            let Some(next_elapsed) = elapsed.checked_add(ticks) else {
+                break;
+            };
+            elapsed = next_elapsed;
+            let Some(ready_at) = self
+                .observed_at
+                .checked_add(elapsed)
+                .and_then(|tick| tick.checked_sub(1))
+            else {
+                break;
+            };
+            if ready_at >= ready_before {
+                break;
+            }
+            ready += usize::from(queued == kind);
+        }
+        ready
     }
 
     fn sequence_timing(&self, planned: &[UnitKind]) -> Option<ProductionTiming> {
@@ -472,13 +767,24 @@ impl ResourceSnapshot {
         self.current_scrap
     }
 
+    /// Returns the same observed resources after protecting a named share of
+    /// the current bank from a planning domain.
+    ///
+    /// Forecast income and exact actor capacity remain tied to the original
+    /// observation. A reserve larger than the bank leaves zero spendable
+    /// current scrap; it can never manufacture planning capital.
+    pub(crate) fn after_current_reserve(&self, reserve: u32) -> Self {
+        let mut available = self.clone();
+        available.current_scrap = CurrentScrap(self.current_scrap.0.saturating_sub(reserve));
+        available
+    }
+
     /// Conservative forecast from completed income sources.
     pub(crate) const fn forecast(&self) -> &ResourceForecast {
         &self.forecast
     }
 
     /// Own units in id order.
-    #[cfg(test)]
     pub(crate) fn units(&self) -> &[UnitResource] {
         &self.units
     }
@@ -687,4 +993,145 @@ fn foundry_supports_extractor(foundry: TilePos, extractor: TilePos) -> bool {
         extractor.y,
         extractor_size.1,
     )) <= crate::stats::EXTRACTOR_SUPPORT_RADIUS
+}
+
+#[cfg(test)]
+mod current_reserve_tests {
+    use super::*;
+
+    fn snapshot_with_current_scrap(current_scrap: u32) -> ResourceSnapshot {
+        ResourceSnapshot {
+            current_scrap: CurrentScrap(current_scrap),
+            forecast: ResourceForecast {
+                observed_at: 40,
+                income: vec![RecurringIncomeStream {
+                    source: BuildingId(7),
+                    kind: RecurringIncomeKind::Foundry,
+                    amount: 1,
+                    period: 20,
+                    first_payment_tick: 59,
+                }],
+            },
+            units: vec![UnitResource {
+                id: UnitId(3),
+                kind: UnitKind::Harvester,
+            }],
+            builders: Vec::new(),
+            producers: Vec::new(),
+            producer_slots: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn current_reserve_changes_only_the_planning_bank() {
+        let original = snapshot_with_current_scrap(90);
+        let available = original.after_current_reserve(35);
+
+        assert_eq!(original.current_scrap().amount(), 90);
+        assert_eq!(available.current_scrap().amount(), 55);
+        assert_eq!(available.forecast, original.forecast);
+        assert_eq!(available.units, original.units);
+        assert_eq!(available.builders, original.builders);
+        assert_eq!(available.producers, original.producers);
+        assert_eq!(available.producer_slots, original.producer_slots);
+    }
+
+    #[test]
+    fn current_reserve_saturates_without_increasing_the_bank() {
+        let original = snapshot_with_current_scrap(12);
+
+        assert_eq!(
+            original.after_current_reserve(0).current_scrap().amount(),
+            12
+        );
+        assert_eq!(
+            original.after_current_reserve(50).current_scrap().amount(),
+            0
+        );
+    }
+
+    fn producer_projection() -> ResourcePlanningProjection {
+        ResourcePlanningProjection::fixture(ResourcePlanningFixture {
+            current_scrap: 500,
+            observed_at: 0,
+            horizon: 1_000,
+            cadence: 1,
+            forecast_income: Vec::new(),
+            units: Vec::new(),
+            builders: Vec::new(),
+            producers: vec![
+                ProducerPlanningProjection::fixture(
+                    BuildingId(7),
+                    0,
+                    1,
+                    0,
+                    vec![0; QUEUE_CAP],
+                    vec![UnitKind::Sentinel],
+                )
+                .expect("the producer fixture is valid"),
+            ],
+        })
+        .expect("the resource fixture is valid")
+    }
+
+    fn reserved_job(
+        producer: BuildingId,
+        kind: UnitKind,
+        enqueued_at: Tick,
+        starts_at: Tick,
+        ready_at: Tick,
+    ) -> ReservedProducerJob {
+        ReservedProducerJob {
+            producer,
+            kind,
+            enqueued_at,
+            starts_at,
+            ready_at,
+            ready_before: ready_at.saturating_add(1),
+        }
+    }
+
+    #[test]
+    fn producer_reservations_reject_an_unknown_accepted_lane_without_panicking() {
+        let resources = producer_projection();
+        let result = ProducerLaneReservations::from_jobs(
+            &resources,
+            [reserved_job(
+                BuildingId(99),
+                UnitKind::Sentinel,
+                0,
+                0,
+                Tick::from(UnitKind::Sentinel.stats().train_ticks).saturating_sub(1),
+            )],
+        );
+
+        assert_eq!(
+            result,
+            Err(ProducerLaneReservationError::UnknownProducer {
+                producer: BuildingId(99),
+            })
+        );
+    }
+
+    #[test]
+    fn producer_reservations_reject_changed_current_timing_without_panicking() {
+        let resources = producer_projection();
+        let train_ticks = Tick::from(UnitKind::Sentinel.stats().train_ticks);
+        let due_now = reserved_job(BuildingId(7), UnitKind::Sentinel, 0, 0, train_ticks);
+        let future = reserved_job(
+            BuildingId(7),
+            UnitKind::Sentinel,
+            train_ticks.saturating_add(1),
+            train_ticks.saturating_add(1),
+            train_ticks.saturating_mul(2),
+        );
+
+        assert_eq!(
+            ProducerLaneReservations::from_jobs(&resources, [due_now, future]),
+            Err(ProducerLaneReservationError::CurrentTimingMismatch {
+                producer: BuildingId(7),
+                kind: UnitKind::Sentinel,
+            })
+        );
+    }
 }

@@ -41,7 +41,9 @@ The maintained path is:
 ```text
 immutable PublicMapBriefing + fog-honest Observation
   -> oriented public priors + StrategicIntelligence
-  -> persistent playbooks + UtilityPolicy Intent
+  -> persistent playbooks + exact domain proposals and obligations
+  -> AllocationSession shared portfolio and residual capacity
+  -> committed planner intents + UtilityPolicy Intent
   -> Executive
   -> PlayerCommand[]
 ```
@@ -55,6 +57,14 @@ immutable PublicMapBriefing + fog-honest Observation
 - `StrategicPlanner`, `LiftPlanner`, `RaidPlanner`, and `TeamReliefPlanner`
   retain phased operations across decisions, reserve exact units, and budget
   committed scrap.
+- `AllocationSession` builds one resource snapshot; imports retained
+  construction, opening, unit, saved-Foundry, connected-operation, exact
+  current-threat emergency-defense, and supported legacy-planner claims; then
+  resolves the current cross-domain portfolio atomically. An admitted island
+  operation advances once and contributes its exact same-think claims here. Its
+  first migrated slice compares at most one exact Foundry proposal and one
+  minimum connected offense proposal. Fresh team, lift, raid, and utility work
+  consume only the resulting residual.
 - `sim/src/bot/strategy.rs` owns air operations, `sim/src/bot/lift.rs` owns
   severed-ground transport operations, and `sim/src/bot/routing.rs` owns their
   fog-honest route projection and exact command-subset checks.
@@ -65,6 +75,26 @@ immutable PublicMapBriefing + fog-honest Observation
 - `seat_bots` constructs controllers requested by scenario `BotConfig`.
 - Replays preserve the exact configuration and emitted commands, so playback
   does not rerun the controller.
+
+Keep allocation as a coordination seam. For every migrated domain, build its
+proposal and obligations from the same `ResourceSnapshot`; do not manufacture a
+reduced observation to represent a budget. A domain owns its evidence, ranking,
+target, composition, placement, and tactics. The allocator owns compatibility
+and exact shared capacity, and the domain must commit the accepted payload
+without reranking it. Retained jobs keep their exact producer and timing, while
+current-versus-forecast funding is refreshed from the latest observation. Pass
+the accepted future-lane reservations into residual production instead of
+fabricating queued units.
+
+Unmigrated `UtilityPolicy` channels still consume a reduced-observation budget
+adapter. Treat that as explicit strangler debt: do not extend it, and remove
+each use as the owning domain moves into typed allocation.
+
+Treat a current-threat emergency Turret or Flak Turret as a survival obligation
+when the opening core is deficient. Freeze the scorer-selected kind, site,
+builder, footprint, and current cost before clamping the remaining opening-core
+reserve, then prevent Utility from independently selecting a second defense in
+the same think.
 
 Keep policy memory controller-local and deterministic. A resumed replay rebuilds
 controller memory by observing the authoritative recorded prefix; never add an

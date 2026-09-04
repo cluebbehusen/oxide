@@ -417,12 +417,12 @@ explicitly held home by that watch continue to count toward the protected core.
 
 The player-facing controller distinguishes current sight from remembered
 evidence in `StrategicIntelligence`. Persistent planners retain phased air,
-lift, raid, and allied-relief operations across decisions. They name exact units
-and budget committed scrap before `UtilityPolicy` fills the remaining economy,
-production, defense, support, and combat work.
+lift, raid, and allied-relief operations across decisions. One
+`AllocationSession` coordinates their retained work with current investment
+opportunities before `UtilityPolicy` fills the remaining economy, production,
+defense, support, and combat work.
 
-At the boundary between those planners and `UtilityPolicy`, each player-facing
-utility pass constructs one immutable `ResourceSnapshot` from the current
+The session constructs one immutable `ResourceSnapshot` from the current
 `Observation`. It keeps current scrap distinct from a conservative forecast
 derived only from completed recurring-income buildings. It also records exact
 own units, construction-capable workers and their active or queued obligations,
@@ -433,22 +433,43 @@ malformed alignment, progress beyond the exact front item's training time, or
 nonzero progress on an empty queue yields only conservative unknown-progress
 bounds. Own queued programs are exposed only as a sorted set of occupied unit
 ids, not as order contents; allied and hostile production progress and programs
-remain opaque. Forecast income may inform a proposal but cannot satisfy a
-current-bank claim.
+remain opaque. Forecast income may establish feasibility at a later command
+boundary, but it never becomes current credit.
 
-A fresh `CommitmentLedger` imports upstream committed scrap, reserved units,
-strategic queue appends, persistent saving, and retained deferred foundations
-before utility channels run. It attributes current-bank spending and holds plus
-exact units, builders, footprints, and contiguous producer appends to
-deterministic owners. Failed proposals roll back atomically; releasing one owner
-returns only revisable claims and reindexes surviving producer appends.
-Unmigrated channels preserve their existing priority through explicit legacy
-claims. An operation admitted before a persistent Foundry saving retains its
-earlier claim on the bank; an operation admitted afterward can use only the
-capital beyond that saving. Cross-domain allocation has not yet moved to this
-seam. The commitment model owns planning-time exact-resource claims; the shared
-`Executive` owns command-lowering bookkeeping and converts intents into ordinary
-candidate commands.
+Before considering fresh work, the session imports exact obligations for
+already-paid or retained construction, protected opening work, standing and
+planner-owned units, saved Foundry expansion, and active connected operations.
+When the opening core is deficient, one current-threat emergency defense may
+also enter as a survival obligation with its scorer-selected site and builder.
+The remaining opening reserve receives only the bank left after that defense.
+The session also adapts same-think decisions from active team-relief, lift,
+raid, and admitted island-air planners into explicit legacy claims. The current
+proposal set contains at most one safe, command-legal Foundry expansion and one
+minimum connected offense package. The allocator exhaustively evaluates their
+four possible subsets against current and deadline-scoped forecast scrap,
+builders, sites, units, and producer FIFO timing. Named urgency, confidence,
+value, time-to-impact, and safety bands decide first; personality resolves only
+a genuine semantic tie and never removes a domain from consideration.
+
+Accepted payloads retain the exact site, builder, objective, force membership,
+and producer assignments selected by their domain. Commitment does not rerun
+domain ranking. A connected package may add the largest feasible marginal
+extension only from the capacity left after its minimum and any compatible
+expansion. Any malformed input or failed exact commit freezes residual spending
+for that decision and restores speculative planner state; the decision trace
+records the allocator result or coordinator failure. Otherwise, still-unmigrated
+fresh team, lift, and raid work runs against the true residual bank, and future
+producer reservations prevent it or `UtilityPolicy` from occupying an accepted
+lane.
+
+Within the residual utility pass, a fresh `CommitmentLedger` imports upstream
+committed scrap, reserved units, strategic queue appends, persistent saving, and
+retained deferred foundations. It attributes current-bank spending and holds
+plus exact units, builders, footprints, and contiguous producer appends to
+deterministic owners. Failed utility proposals roll back atomically; releasing
+one owner returns only revisable claims and reindexes surviving producer
+appends. The shared `Executive` owns command-lowering bookkeeping and converts
+the combined intents into ordinary candidate commands.
 
 Reusable air-operation survivors keep their roles only through the operation
 cooldown; aborts caused by unreachable routes or newly observed defenses release
@@ -652,7 +673,9 @@ The pre-core emergency path is deliberately narrower than that full scorer. It
 uses only a current visible armed ground threat for a Turret or a current
 visible ground-attack aircraft for Flak, places only the matching defense, and
 cannot inherit threat authority from pure air-to-air aircraft, memory, public
-starts, radar blips, or raid history.
+starts, radar blips, or raid history. Shared allocation freezes its exact site,
+builder, footprint, and current construction cost before ordinary opening-core
+recovery and suppresses a second utility ranking pass.
 
 Arrays use a separate player-facing sensor-site scorer because information
 coverage is not weapon coverage. Candidate sites extend up to the Array's radar
@@ -734,4 +757,5 @@ map rather than an exhaustive test inventory.
 | Fog, memory, radar, and stealth                    | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                                                                       | `sim/tests/bot_brain.rs`, `sim/tests/bastion_acquisition.rs`, `sim/tests/mines_015.rs`                                              |
 | Bot knowledge, profiles, and fair difficulty       | `sim/src/bot/briefing.rs`, `sim/src/bot/observation.rs`, `sim/src/bot/intelligence.rs`, `sim/src/bot/orient.rs`, `sim/src/bot/profile.rs`, `sim/src/bot/difficulty.rs`                        | inline module tests, `sim/tests/bot_brain.rs`                                                                                       |
 | Bot resource evidence and planning commitments     | `sim/src/bot/resources.rs`, `sim/src/bot/resources/ledger.rs`, `sim/src/bot/resources/production.rs`, `sim/src/bot/utility.rs`, `sim/src/bot/executive/lowering.rs`                           | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
+| Bot cross-domain investment allocation             | `sim/src/bot/resources/planning.rs`, `sim/src/bot/allocation.rs`, `sim/src/bot/allocation/`                                                                                                   | inline allocation, adapter, coordinator, session, and Brain tests                                                                   |
 | Bot playbooks, routing, reservations, and lowering | `sim/src/bot/strategy.rs`, `sim/src/bot/strategy/force_package.rs`, `sim/src/bot/lift.rs`, `sim/src/bot/raid.rs`, `sim/src/bot/team.rs`, `sim/src/bot/routing.rs`, `sim/src/bot/executive.rs` | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
