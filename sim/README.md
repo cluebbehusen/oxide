@@ -34,23 +34,24 @@ an ordinary command source rather than a separate ruleset.
   for a strictly better unlocked provider beside its affordable fallback.
   Economic alternatives value finite safe harvest work, orphaned construction,
   recurring-income payback, capability prerequisites, producer throughput, and
-  self-refits. They retain exact worker lanes, building identities, or
-  foundation sites and builders. Unpaid saving and deferred travel share one
-  fixed deadline; paid work is not cancelled on loss of the opening core. All
-  five domains compete in shared allocation, and forecast income never funds a
-  command. Current-threat emergency defense remains exact survival work with
-  precedence over voluntary proposals, and admitted island-air work advances
-  through the same transaction. Accepted domain payloads keep their exact
-  choices; compatible work may proceed together, while unmigrated planners and
-  utility use only the residual capacity. Connected air-and-siege operations
-  derive opportunity-scaled reconnaissance, suppression, direct strike, and
-  current-visible non-suppression bombing value, then freeze exact members at
-  commitment. Their route and queue preflight covers the complete admitted
-  target cluster, whose canonical anchors are exposed in optional decision
-  traces without entering controller state. See
-  [Bot Strategy](../docs/bot-strategy.md) for the policy direction and
-  [Simulation Architecture](../docs/simulation-architecture.md) for the current
-  implementation contracts.
+  self-refits. Live worker output includes initial travel, and concurrent air
+  operations share deadline-bound factory time. They retain exact worker lanes,
+  building identities, or foundation sites and builders. Unpaid saving and
+  deferred travel share one fixed deadline; paid work is not cancelled on loss
+  of the opening core. All five domains compete in shared allocation, and
+  forecast income never funds a command. Current-threat emergency defense
+  remains exact survival work with precedence over voluntary proposals, and
+  admitted island-air work advances through the same transaction. Accepted
+  domain payloads keep their exact choices; compatible work may proceed
+  together, while unmigrated planners and utility use only the residual
+  capacity. Connected air-and-siege operations derive opportunity-scaled
+  reconnaissance, suppression, direct strike, and current-visible
+  non-suppression bombing value, then freeze exact members at commitment. Their
+  route and queue preflight covers the complete admitted target cluster, whose
+  canonical anchors are exposed in optional decision traces without entering
+  controller state. See [Bot Strategy](../docs/bot-strategy.md) for the policy
+  direction and [Simulation Architecture](../docs/simulation-architecture.md)
+  for the current implementation contracts.
 - `vision` provides visibility and explored-world state.
 
 Repair and salvage share one damage-first building-work resolver and remain

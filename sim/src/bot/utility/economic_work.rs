@@ -307,6 +307,7 @@ impl UtilityPolicy {
             )
             .unwrap_or(u32::MAX);
         }
+        let mut work_distances = positions.iter().map(|_| None).collect::<Vec<_>>();
         for unit in &obs.my_units {
             if unit.kind.stats().harvest.is_none()
                 || unavailable.contains(&unit.id)
@@ -316,12 +317,21 @@ impl UtilityPolicy {
             {
                 continue;
             }
-            if let Some(region) = regions.iter_mut().find(|region| {
+            if let Some((index, region)) = regions.iter_mut().enumerate().find(|(_, region)| {
                 region.distance(unit.tile).is_some() && region.safe_door(unit.tile, &commands)
-            }) {
+            }) && let Some(distance) = work_distances[index]
+                .get_or_insert_with(|| {
+                    PublicGroundDistances::from_sources_avoiding(
+                        briefing,
+                        positions[index].iter().copied(),
+                        blocked,
+                    )
+                })
+                .footprint_distance(unit.tile, (1, 1))
+            {
                 region.workers.push(WorkerService {
                     kind: unit.kind,
-                    ready_after: 0,
+                    ready_after: travel_ticks(unit.kind, distance),
                 });
             }
         }

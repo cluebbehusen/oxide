@@ -550,15 +550,18 @@ Economy competes through exact worker, foundation, or self-refit alternatives.
 Worker value is finite harvest output or recovery of orphaned paid construction,
 net of reachable existing and queued workers. Technology and factories serve
 capability demand derived before prerequisite eligibility, with construction and
-production delay, missing-chain costs, and eventual capacity accounted for.
-Local Foundry throughput opportunities reuse the expansion admission and
-security path. Recurring-income investments are capped by unfunded useful work;
-completed income alone supplies spendable forecasts. Self-refits own exact
-building ids and withhold their offline source income separately from purchase
-capital. The residual technology scalar and the operational Airworks capital tax
-are absent. Accepted unpaid economic plans keep their original identity and
-deadline through saving and deferred travel, release unsafe or expired unpaid
-founders, and leave paid foundations and refits to ordinary simulation rules.
+production delay, missing-chain costs, and eventual capacity accounted for. Live
+harvest workers pay initial travel to visible safe work before contributing
+output. Concurrent air and lift demand share each Airworks lane's time once,
+bounded by readiness, customer deadlines, and route reachability. Local Foundry
+throughput opportunities reuse the expansion admission and security path.
+Recurring-income investments are capped by unfunded useful work; completed
+income alone supplies spendable forecasts. Self-refits own exact building ids
+and withhold their offline source income separately from purchase capital. The
+residual technology scalar and the operational Airworks capital tax are absent.
+Accepted unpaid economic plans keep their original identity and deadline through
+saving and deferred travel, release unsafe or expired unpaid founders, and leave
+paid foundations and refits to ordinary simulation rules.
 
 Before the difficulty floor is projected, the player-facing policy pauses new
 voluntary construction and upgrades, discretionary production, mobile support,

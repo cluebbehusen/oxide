@@ -1284,79 +1284,69 @@ fn infrastructure_benefit(
         })
         .max()
         .unwrap_or(0);
-    if kind != BuildingKind::Airworks {
+    if kind != BuildingKind::Airworks || context.air_work.is_empty() {
         return ordinary;
     }
-    let origin = crate::bot::standing_force::air_production_spawn_tile(
-        &candidate,
-        Some(context.orientation),
-    );
-    let operational = context
-        .air_work
-        .iter()
-        .filter_map(|demand| {
-            if !context
-                .routes
-                .origin_serves(origin, demand.kind, demand.service)
-            {
-                return None;
-            }
-            let remaining = demand.deadline.saturating_sub(obs.tick);
-            let existing = obs
-                .my_buildings
+    let construction_delay = u64::from(kind.base_stats().construction.unwrap().build_ticks);
+    let mut lane = |building: &BuildingObs, ready_after| {
+        let origin = crate::bot::standing_force::air_production_spawn_tile(
+            building,
+            Some(context.orientation),
+        );
+        super::economic_capacity::AirCapacityLane {
+            ready_after,
+            serves: context
+                .air_work
                 .iter()
-                .filter(|building| building.kind == kind)
-                .filter(|building| {
-                    context.routes.origin_serves(
-                        crate::bot::standing_force::air_production_spawn_tile(
-                            building,
-                            Some(context.orientation),
-                        ),
-                        demand.kind,
-                        demand.service,
-                    )
-                })
-                .map(|building| {
-                    if building.built {
-                        remaining
-                    } else {
-                        remaining.saturating_sub(u64::from(
-                            kind.base_stats().construction.unwrap().build_ticks,
-                        ))
-                    }
-                })
-                .fold(0, u64::saturating_add);
-            let deferred = UtilityPolicy::deferred_claims(obs)
-                .into_iter()
-                .filter(|(pending, anchor)| {
-                    *pending == kind
-                        && !obs
-                            .my_buildings
-                            .iter()
-                            .any(|building| building.kind == *pending && building.anchor == *anchor)
-                })
-                .filter(|(_, anchor)| {
+                .map(|demand| {
                     context
                         .routes
-                        .origin_serves(*anchor, demand.kind, demand.service)
+                        .origin_serves(origin, demand.kind, demand.service)
                 })
-                .map(|_| {
-                    remaining.saturating_sub(u64::from(
-                        kind.base_stats().construction.unwrap().build_ticks,
-                    ))
-                })
-                .fold(0, u64::saturating_add);
-            let existing = existing.saturating_add(deferred);
-            let available_work = remaining
-                .saturating_sub(delay)
-                .min(demand.work_ticks.saturating_sub(existing));
-            Some(
-                available_work / u64::from(demand.kind.stats().train_ticks.max(1))
-                    * u64::from(demand.kind.stats().cost),
+                .collect(),
+        }
+    };
+    let candidate_lane = lane(&candidate, delay);
+    if !candidate_lane.serves.iter().any(|serves| *serves) {
+        return ordinary;
+    }
+    let mut existing = obs
+        .my_buildings
+        .iter()
+        .filter(|building| building.kind == kind)
+        .map(|building| {
+            lane(
+                building,
+                if building.built {
+                    0
+                } else {
+                    construction_delay
+                },
             )
         })
-        .max()
-        .unwrap_or(0);
+        .collect::<Vec<_>>();
+    for (pending, anchor) in UtilityPolicy::deferred_claims(obs) {
+        if pending == kind
+            && !obs
+                .my_buildings
+                .iter()
+                .any(|building| building.kind == pending && building.anchor == anchor)
+        {
+            existing.push(lane(
+                &BuildingObs {
+                    anchor,
+                    ..candidate.clone()
+                },
+                construction_delay,
+            ));
+        }
+    }
+    let operational = super::economic_capacity::additional_air_capacity_value(
+        context.air_work,
+        obs.tick,
+        &existing,
+        &candidate_lane,
+    );
     ordinary.max(operational)
 }
 
@@ -1918,6 +1908,80 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn live_worker_arrival_preserves_useful_local_harvest_capacity() {
+        let (mut obs, mut map, _) = fixture();
+        obs.map_width = 160;
+        map.map_width = 160;
+        obs.visible = vec![true; 160 * 30];
+        obs.explored = obs.visible.clone();
+        let source = TilePos::new(10, 12);
+        obs.known_wrecks = vec![(source, 100_000)];
+        obs.my_units[0].tile = TilePos::new(158, 12);
+        let regions = |obs: &Observation| {
+            UtilityPolicy::new().economic_harvest_regions(
+                obs,
+                &map,
+                &ResourceSnapshot::from_observation(obs),
+                Orientation::for_home(obs, TilePos::new(3, 12)),
+                &[],
+                (&[], &[]),
+            )
+        };
+        let far = regions(&obs);
+        assert_eq!(far.len(), 1);
+        assert!(far[0].workers[0].ready_after > 1_000);
+        let local = WorkerService {
+            kind: UnitKind::Harvester,
+            ready_after: 150,
+        };
+        assert!(
+            far[0].marginal(local, 6_000) > u64::from(UnitKind::Harvester.stats().cost),
+            "work={:?}, workers={:?}, marginal={}",
+            far[0].work,
+            far[0].workers,
+            far[0].marginal(local, 6_000),
+        );
+        obs.my_units[0].tile = source;
+        let near = regions(&obs);
+        assert_eq!(near[0].workers[0].ready_after, 0);
+        assert_eq!(near[0].marginal(local, 6_000), 0);
+        obs.visible.fill(false);
+        assert!(
+            regions(&obs).is_empty(),
+            "remembered amounts are not live work"
+        );
+    }
+
+    #[test]
+    fn simultaneous_air_operations_share_existing_factory_time() {
+        let (mut obs, map, profile) = fixture();
+        obs.my_buildings
+            .push(building(2, BuildingKind::Fabricator, TilePos::new(3, 3)));
+        obs.my_buildings
+            .push(building(3, BuildingKind::Airworks, TilePos::new(15, 3)));
+        obs.my_queues.resize(3, Vec::new());
+        obs.my_queue_progress.resize(3, 0);
+        let demand = AirCapacityDemand {
+            work_ticks: 3_000,
+            deadline: obs.tick + 3_000,
+            kind: UnitKind::Skyhook,
+            service: StandingForceServiceKey::point(TilePos::new(30, 12)),
+        };
+        let bomber = AirCapacityDemand {
+            kind: crate::stats::Role::Bomber.unit_for(obs.faction),
+            ..demand
+        };
+        assert!(air_quotes(&obs, &map, &profile, &[demand]).is_empty());
+        assert!(air_quotes(&obs, &map, &profile, &[bomber]).is_empty());
+        assert!(!air_quotes(&obs, &map, &profile, &[bomber, demand]).is_empty());
+        obs.my_buildings
+            .push(building(4, BuildingKind::Airworks, TilePos::new(23, 3)));
+        obs.my_queues.push(Vec::new());
+        obs.my_queue_progress.push(0);
+        assert!(air_quotes(&obs, &map, &profile, &[bomber, demand]).is_empty());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-05T10:23:03
+updated: 2026-09-05T12:16:22
 ---
 
 # Scripted Bot Strategic Reset
@@ -67,6 +67,9 @@ without arbitrary controller caps.
 - Approved including the narrow pre-existing allied-frame home-Extractor
   recovery fix in the economic migration, with a regression and renewed
   validation before publication.
+- Hash and version approval is an implementing-agent responsibility. Reviewers
+  should assess technical compatibility, not flag missing approval that may have
+  been granted outside their context.
 
 ## Findings
 
@@ -462,6 +465,26 @@ without arbitrary controller caps.
   - Repeated the isolated 3400-tick benchmark after the allied-frame fix: 13.31
     seconds with the same state/command hashes and zero rejections or stalls,
     confirming the cheap optimization remains intact on the final tree.
+  - The published-slice review reproduced shared Airworks time being reused
+    across simultaneous air/lift demand and distant live harvesters entering
+    work with zero travel. Previously green single-demand tests missed both
+    cases. The follow-up regressions now cover them. The review also raised hash
+    approval, already satisfied by the stack-wide same-version decision recorded
+    before this slice.
+  - Fixed shared Airworks accounting with deadline/readiness/route-bound joint
+    time allocation. Live harvest workers now pay initial public-route travel to
+    visible safe work, using one lazily built distance field per used region.
+    Regressions cover both reproduced defects, restricted customers, residual
+    reassignment, paid readiness, expired deadlines, and partial-unit returns.
+  - Follow-up validation passes all workspace tests, Clippy, type checking,
+    rustdoc, rustfmt, Markdown formatting, unit coverage (90.50%), and combined
+    coverage (91.90%). Player-facing and frozen simulation hashes remain
+    unchanged; no bless or version change was needed. The 12000-tick Skyhook
+    replay preserves prior command/state hashes, eight Load commands (first tick
+    8952), zero rejections, and prior sparse stalls; reconstruction matches
+    0x841e2003b70e81e5. The isolated Terminal Basin 3400-tick benchmark takes
+    13.54 seconds versus 13.31 before the fixes, with identical hashes and zero
+    rejections or stalls.
 - [ ] 8. Migrate reconnaissance and support to information value and concrete
       operational demand.
   - Scout when resolving uncertainty could change a decision, and build repair,

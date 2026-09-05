@@ -40,6 +40,7 @@ mod construction;
 mod danger;
 mod defense;
 mod defensive_investment;
+mod economic_capacity;
 mod economic_investment;
 pub(in crate::bot) mod economic_value;
 mod economic_work;
