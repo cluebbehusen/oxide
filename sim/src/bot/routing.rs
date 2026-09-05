@@ -399,15 +399,34 @@ pub(super) fn unit_reaches_build_site_via(
 /// Reproduce that exact choice here: accepting a merely available safe detour
 /// is insufficient when the simulation will choose a shorter route through a
 /// remembered kill zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BuildCommandTarget {
+    pub(super) anchor: TilePos,
+    pub(super) size: (i32, i32),
+    pub(super) defer: bool,
+}
+
 pub(super) fn build_command_path_avoids(
     obs: &Observation,
     unit: &UnitObs,
     anchor: TilePos,
     size: (i32, i32),
     defer: bool,
-    blocked: impl FnMut(TilePos) -> bool,
+    mut blocked: impl FnMut(TilePos) -> bool,
 ) -> bool {
-    build_command_path_avoids_with_briefing(obs, unit, anchor, size, defer, None, blocked)
+    selected_build_command_path(
+        obs,
+        unit,
+        BuildCommandTarget {
+            anchor,
+            size,
+            defer,
+        },
+        None,
+        None,
+        |_| false,
+    )
+    .is_some_and(|path| !blocked(unit.tile) && path.into_iter().all(|tile| !blocked(tile)))
 }
 
 /// The exact Build-command route with immutable authored terrain included.
@@ -425,21 +444,171 @@ pub(super) fn build_command_path_avoids_with_public_terrain(
     defer: bool,
     blocked: impl FnMut(TilePos) -> bool,
 ) -> bool {
-    build_command_path_avoids_with_briefing(obs, unit, anchor, size, defer, Some(briefing), blocked)
+    build_command_path_avoids_with_public_terrain_projected(
+        obs,
+        briefing,
+        unit,
+        BuildCommandTarget {
+            anchor,
+            size,
+            defer,
+        },
+        None,
+        blocked,
+    )
 }
 
-fn build_command_path_avoids_with_briefing(
+/// The exact Build-command route with authored terrain, ranking doorsteps in
+/// the authoritative world frame while pathfinding in policy coordinates.
+pub(super) fn build_command_path_avoids_with_public_terrain_and_orientation(
     obs: &Observation,
+    briefing: &PublicMapBriefing,
+    unit: &UnitObs,
+    target: BuildCommandTarget,
+    orientation: Orientation,
+    blocked: impl FnMut(TilePos) -> bool,
+) -> bool {
+    build_command_path_avoids_with_public_terrain_projected(
+        obs,
+        briefing,
+        unit,
+        target,
+        Some(orientation),
+        blocked,
+    )
+}
+
+fn build_command_path_avoids_with_public_terrain_projected(
+    obs: &Observation,
+    briefing: &PublicMapBriefing,
+    unit: &UnitObs,
+    target: BuildCommandTarget,
+    orientation: Option<Orientation>,
+    mut blocked: impl FnMut(TilePos) -> bool,
+) -> bool {
+    selected_build_command_path(obs, unit, target, Some(briefing), orientation, |_| false)
+        .is_some_and(|path| !blocked(unit.tile) && path.into_iter().all(|tile| !blocked(tile)))
+}
+
+/// Movement cost, in path tenths, of the route an ordinary Build command will
+/// actually select against current dynamic knowledge and authored terrain.
+pub(super) fn build_command_path_cost_with_public_terrain(
+    obs: &Observation,
+    briefing: &PublicMapBriefing,
     unit: &UnitObs,
     anchor: TilePos,
     size: (i32, i32),
     defer: bool,
-    briefing: Option<&PublicMapBriefing>,
+) -> Option<u32> {
+    build_command_path_cost_with_public_terrain_projected(
+        obs, briefing, unit, anchor, size, defer, None,
+    )
+}
+
+/// Build-command movement cost with authoritative world-frame doorstep
+/// ranking and policy-frame pathfinding.
+pub(super) fn build_command_path_cost_with_public_terrain_and_orientation(
+    obs: &Observation,
+    briefing: &PublicMapBriefing,
+    unit: &UnitObs,
+    anchor: TilePos,
+    size: (i32, i32),
+    defer: bool,
+    orientation: Orientation,
+) -> Option<u32> {
+    build_command_path_cost_with_public_terrain_projected(
+        obs,
+        briefing,
+        unit,
+        anchor,
+        size,
+        defer,
+        Some(orientation),
+    )
+}
+
+fn build_command_path_cost_with_public_terrain_projected(
+    obs: &Observation,
+    briefing: &PublicMapBriefing,
+    unit: &UnitObs,
+    anchor: TilePos,
+    size: (i32, i32),
+    defer: bool,
+    orientation: Option<Orientation>,
+) -> Option<u32> {
+    selected_build_command_path(
+        obs,
+        unit,
+        BuildCommandTarget {
+            anchor,
+            size,
+            defer,
+        },
+        Some(briefing),
+        orientation,
+        |_| false,
+    )
+    .map(|path| path_cost_from(unit.tile, &path))
+}
+
+/// The exact Build-command route with authored terrain and additional frozen
+/// footprints, ranking doorsteps in the authoritative world frame.
+pub(super) fn build_command_path_avoids_with_public_terrain_and_blockers_and_orientation(
+    obs: &Observation,
+    briefing: &PublicMapBriefing,
+    unit: &UnitObs,
+    target: BuildCommandTarget,
+    orientation: Orientation,
+    additional_blocked: impl Fn(TilePos) -> bool,
+    blocked: impl FnMut(TilePos) -> bool,
+) -> bool {
+    build_command_path_avoids_with_public_terrain_and_blockers_projected(
+        obs,
+        briefing,
+        unit,
+        target,
+        Some(orientation),
+        additional_blocked,
+        blocked,
+    )
+}
+
+fn build_command_path_avoids_with_public_terrain_and_blockers_projected(
+    obs: &Observation,
+    briefing: &PublicMapBriefing,
+    unit: &UnitObs,
+    target: BuildCommandTarget,
+    orientation: Option<Orientation>,
+    additional_blocked: impl Fn(TilePos) -> bool,
     mut blocked: impl FnMut(TilePos) -> bool,
 ) -> bool {
+    selected_build_command_path(
+        obs,
+        unit,
+        target,
+        Some(briefing),
+        orientation,
+        additional_blocked,
+    )
+    .is_some_and(|path| !blocked(unit.tile) && path.into_iter().all(|tile| !blocked(tile)))
+}
+
+fn selected_build_command_path(
+    obs: &Observation,
+    unit: &UnitObs,
+    target: BuildCommandTarget,
+    briefing: Option<&PublicMapBriefing>,
+    orientation: Option<Orientation>,
+    additional_blocked: impl Fn(TilePos) -> bool,
+) -> Option<Vec<TilePos>> {
     if unit.kind.stats().domain != Domain::Ground || !in_bounds(obs, unit.tile) {
-        return false;
+        return None;
     }
+    let BuildCommandTarget {
+        anchor,
+        size,
+        defer,
+    } = target;
     let inside = |tile: TilePos| {
         tile.x >= anchor.x
             && tile.x < anchor.x + size.0
@@ -452,12 +621,45 @@ fn build_command_path_avoids_with_briefing(
                 map.terrain_at(tile)
                     .is_some_and(|terrain| !terrain.blocks_ground())
             })
+            && !additional_blocked(tile)
             && (defer || !inside(tile))
     };
     let mut candidates: Vec<_> = crate::tick::rect_adjacent_tiles(anchor, size)
         .filter(|tile| open(*tile))
         .collect();
-    candidates.sort_by_key(|tile| crate::tick::rect_approach_key(unit.tile, anchor, size, *tile));
+    let first_foundry = obs
+        .my_buildings
+        .iter()
+        .filter(|building| building.kind == crate::stats::BuildingKind::Foundry)
+        .min_by_key(|building| building.id)
+        .map(|foundry| (foundry.anchor, foundry.kind.base_stats().size))
+        .map(|(foundry_anchor, foundry_size)| {
+            (
+                orientation.map_or(foundry_anchor, |orientation| {
+                    orientation.anchor(foundry_anchor, foundry_size)
+                }),
+                foundry_size,
+            )
+        });
+    let command_unit = command_frame_tile(unit.tile, orientation);
+    let command_anchor = orientation.map_or(anchor, |orientation| orientation.anchor(anchor, size));
+    let approach_from = crate::tick::rect_approach_origin_for_map(
+        (obs.map_width, obs.map_height),
+        unit.player,
+        command_unit,
+        command_anchor,
+        size,
+        first_foundry,
+    );
+    candidates.sort_by_key(|tile| {
+        crate::tick::rect_approach_key_from(
+            command_unit,
+            approach_from,
+            command_anchor,
+            size,
+            command_frame_tile(*tile, orientation),
+        )
+    });
     let near = candidates.len().min(4);
     if near > 1 {
         let rank = crate::ids::owner_local_unit_rank(
@@ -475,16 +677,27 @@ fn build_command_path_avoids_with_briefing(
             obs.map_height,
             unit.tile,
             goal,
-            open,
+            &open,
             crate::stats::PATH_EXPANSION_CAP,
         ) else {
             continue;
         };
-        return !blocked(unit.tile)
-            && !blocked(goal)
-            && path.into_iter().all(|tile| !blocked(tile));
+        return Some(path);
     }
-    false
+    None
+}
+
+fn path_cost_from(start: TilePos, path: &[TilePos]) -> u32 {
+    path.iter()
+        .fold((0, start), |(cost, previous), tile| {
+            let step = if previous.x != tile.x && previous.y != tile.y {
+                14
+            } else {
+                10
+            };
+            (cost + step, *tile)
+        })
+        .0
 }
 
 /// First fixed-size subgroup, in candidate preference order, whose exact
@@ -718,6 +931,25 @@ pub(super) fn ground_open(obs: &Observation, tile: TilePos) -> bool {
 /// Producers are represented in policy coordinates, but the authoritative
 /// doorstep tie-break runs in the world's command frame. The selected tile is
 /// transformed back before route projection consults the oriented observation.
+pub(super) fn production_spawn_doorstep_for_open_tiles(
+    map_size: (i32, i32),
+    policy_anchor: TilePos,
+    size: (i32, i32),
+    orientation: Option<Orientation>,
+    mut open: impl FnMut(TilePos) -> bool,
+) -> Option<TilePos> {
+    let world_anchor = orientation.map_or(policy_anchor, |orientation| {
+        orientation.anchor(policy_anchor, size)
+    });
+    crate::tick::rect_adjacent_tiles(world_anchor, size)
+        .map(|world_tile| (world_tile, command_frame_tile(world_tile, orientation)))
+        .filter(|(_, policy_tile)| open(*policy_tile))
+        .min_by_key(|(world_tile, _)| {
+            crate::tick::spawn_doorstep_key(map_size, world_anchor, size, *world_tile)
+        })
+        .map(|(_, policy_tile)| policy_tile)
+}
+
 pub(super) fn production_spawn_doorstep(
     obs: &Observation,
     producer: &BuildingObs,
@@ -725,21 +957,17 @@ pub(super) fn production_spawn_doorstep(
     orientation: Option<Orientation>,
 ) -> Option<TilePos> {
     let size = producer.kind.tier_stats(producer.tier).size;
-    let world_anchor = orientation.map_or(producer.anchor, |orientation| {
-        orientation.anchor(producer.anchor, size)
-    });
-    let map_size = (obs.map_width, obs.map_height);
-    crate::tick::rect_adjacent_tiles(world_anchor, size)
-        .map(|world_tile| (world_tile, command_frame_tile(world_tile, orientation)))
-        .filter(|(_, policy_tile)| {
-            ground_open(obs, *policy_tile)
+    production_spawn_doorstep_for_open_tiles(
+        (obs.map_width, obs.map_height),
+        producer.anchor,
+        size,
+        orientation,
+        |policy_tile| {
+            ground_open(obs, policy_tile)
                 && public_map
-                    .is_none_or(|map| public_terrain_open(map, Domain::Ground, *policy_tile))
-        })
-        .min_by_key(|(world_tile, _)| {
-            crate::tick::spawn_doorstep_key(map_size, world_anchor, size, *world_tile)
-        })
-        .map(|(_, policy_tile)| policy_tile)
+                    .is_none_or(|map| public_terrain_open(map, Domain::Ground, policy_tile))
+        },
+    )
 }
 
 /// The projected ground goals assigned by Move or AttackMove.
@@ -1574,6 +1802,233 @@ mod tests {
             outcomes([4, 20], &[7, 12]),
             [false, true],
             "other seats' interleaved global ids must not alter either owner's local rank"
+        );
+
+        let mut obs = template;
+        let builder = |id| {
+            let mut unit = unit(1, Domain::Ground);
+            unit.id = UnitId(id);
+            unit.kind = UnitKind::Harvester;
+            unit.tile = origin;
+            unit.hp = UnitKind::Harvester.stats().max_hp;
+            unit
+        };
+        obs.my_units = [4, 20].map(builder).to_vec();
+        obs.enemy_units = [7, 12]
+            .map(|id| {
+                let mut enemy = unit(id, Domain::Ground);
+                enemy.player = PlayerId(1);
+                enemy
+            })
+            .to_vec();
+        let map = public_map(&obs, Vec::new());
+        assert_eq!(
+            build_command_path_cost_with_public_terrain(
+                &obs,
+                &map,
+                &obs.my_units[0],
+                anchor,
+                size,
+                false,
+            ),
+            Some(54),
+            "rank zero must retain the rotated first doorstep rather than the globally shortest one"
+        );
+        assert_eq!(
+            build_command_path_cost_with_public_terrain(
+                &obs,
+                &map,
+                &obs.my_units[1],
+                anchor,
+                size,
+                false,
+            ),
+            Some(50),
+            "rank one rotates the globally shortest west doorstep into first place"
+        );
+    }
+
+    #[test]
+    fn build_path_uses_the_home_frame_when_the_builder_starts_inside_a_one_tile_site() {
+        let mut obs = observation();
+        let anchor = TilePos::new(8, 3);
+        let mut first = unit(4, Domain::Ground);
+        first.kind = UnitKind::Harvester;
+        let mut builder = unit(20, Domain::Ground);
+        builder.kind = UnitKind::Harvester;
+        builder.tile = anchor;
+        obs.my_units = vec![first, builder];
+        obs.enemy_units = [7, 12]
+            .map(|id| {
+                let mut enemy = unit(id, Domain::Ground);
+                enemy.player = PlayerId(1);
+                enemy
+            })
+            .to_vec();
+        obs.my_buildings = vec![building(
+            1,
+            0,
+            BuildingKind::Foundry,
+            TilePos::new(0, 0),
+            true,
+        )];
+        obs.visible.fill(true);
+        let map = public_map(&obs, Vec::new());
+        let target = BuildCommandTarget {
+            anchor,
+            size: (1, 1),
+            defer: false,
+        };
+
+        let path =
+            selected_build_command_path(&obs, &obs.my_units[1], target, Some(&map), None, |_| {
+                false
+            })
+            .expect("the builder can leave the proposed one-tile footprint");
+        assert_eq!(
+            path.last(),
+            Some(&anchor.offset(-1, 0)),
+            "owner-local rank one must use the Foundry-oriented west doorstep"
+        );
+        assert!(
+            !build_command_path_avoids_with_public_terrain(
+                &obs,
+                &map,
+                &obs.my_units[1],
+                anchor,
+                (1, 1),
+                false,
+                |tile| tile == anchor.offset(-1, 0),
+            ),
+            "danger on the authoritative west doorstep cannot be bypassed through the old north-door preview"
+        );
+    }
+
+    #[test]
+    fn y_reflected_rank_one_build_preview_uses_the_authoritative_southwest_route() {
+        let mut world = observation();
+        let world_home = TilePos::new(0, 6);
+        let world_anchor = TilePos::new(8, 3);
+        let world_west = world_anchor.offset(-1, 0);
+        let world_southwest = world_anchor.offset(-1, 1);
+        let mut first = unit(4, Domain::Ground);
+        first.kind = UnitKind::Harvester;
+        first.tile = TilePos::new(2, 2);
+        let mut builder = unit(20, Domain::Ground);
+        builder.kind = UnitKind::Harvester;
+        builder.tile = world_west;
+        world.my_units = vec![first, builder];
+        world.my_buildings = vec![building(1, 0, BuildingKind::Foundry, world_home, true)];
+        world.visible.fill(true);
+        world.explored.fill(true);
+
+        let world_map = public_map(&world, Vec::new());
+        let world_target = BuildCommandTarget {
+            anchor: world_anchor,
+            size: (1, 1),
+            defer: false,
+        };
+        let world_path = selected_build_command_path(
+            &world,
+            &world.my_units[1],
+            world_target,
+            Some(&world_map),
+            None,
+            |_| false,
+        )
+        .expect("the authoritative southwest doorstep is reachable");
+        assert_eq!(world_path.last(), Some(&world_southwest));
+
+        let orientation = Orientation::for_home(&world, world_home);
+        assert_eq!(
+            orientation.tile(TilePos::new(1, 1)),
+            TilePos::new(1, 6),
+            "this fixture reflects only the y axis"
+        );
+        let obs = orientation.observe(&world);
+        let map = orientation.briefing(&world_map);
+        let anchor = orientation.anchor(world_anchor, (1, 1));
+        let builder = obs
+            .my_units
+            .iter()
+            .find(|unit| unit.id == UnitId(20))
+            .expect("the rank-one builder remains observed");
+        let policy_northwest = anchor.offset(-1, -1);
+        assert_eq!(
+            orientation.tile(policy_northwest),
+            world_southwest,
+            "the authoritative southwest doorstep is policy northwest"
+        );
+
+        let oriented_path = selected_build_command_path(
+            &obs,
+            builder,
+            BuildCommandTarget {
+                anchor,
+                size: (1, 1),
+                defer: false,
+            },
+            Some(&map),
+            Some(orientation),
+            |_| false,
+        )
+        .expect("the oriented preview can reach the authoritative doorstep");
+        assert_eq!(oriented_path.last(), Some(&policy_northwest));
+        assert!(
+            build_command_path_avoids_with_public_terrain(
+                &obs,
+                &map,
+                builder,
+                anchor,
+                (1, 1),
+                false,
+                |tile| tile == policy_northwest,
+            ),
+            "the identity preview would inspect the reflected southwest route"
+        );
+        assert!(
+            !build_command_path_avoids_with_public_terrain_and_orientation(
+                &obs,
+                &map,
+                builder,
+                BuildCommandTarget {
+                    anchor,
+                    size: (1, 1),
+                    defer: false,
+                },
+                orientation,
+                |tile| tile == policy_northwest,
+            ),
+            "the oriented preview must reject danger on the authoritative rank-one route"
+        );
+        assert!(
+            !build_command_path_avoids_with_public_terrain_and_blockers_and_orientation(
+                &obs,
+                &map,
+                builder,
+                BuildCommandTarget {
+                    anchor,
+                    size: (1, 1),
+                    defer: false,
+                },
+                orientation,
+                |_| false,
+                |tile| tile == policy_northwest,
+            ),
+            "frozen-layout safety must rank that same authoritative route"
+        );
+        assert_eq!(
+            build_command_path_cost_with_public_terrain_and_orientation(
+                &obs,
+                &map,
+                builder,
+                anchor,
+                (1, 1),
+                false,
+                orientation,
+            ),
+            Some(10),
+            "costing must use that same one-step authoritative route"
         );
     }
 

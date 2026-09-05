@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-04T12:45:06
+updated: 2026-09-04T20:40:20
 ---
 
 # Scripted Bot Strategic Reset
@@ -327,7 +327,7 @@ without arbitrary controller caps.
     coverage. The complete instrumented scripted-bot suite fell from 174 to 54
     seconds locally; combined coverage completed in 180 seconds at 91.64% and
     unit coverage completed in 107 seconds at 90.29%.
-- [ ] 6. Migrate defensive spending to opportunity-scaled investment while
+- [x] 6. Migrate defensive spending to opportunity-scaled investment while
       preserving strategic placement.
   - Scale defense from exposed value, credible current threats, existing
     coverage, reinforcement time, and opportunity cost; preserve the established
@@ -339,6 +339,38 @@ without arbitrary controller caps.
     overlap and diminishing return, unfinished defenses as claims rather than
     firepower, builder and route safety, personality expression, emergency
     exceptions, and competing offensive or economic proposals.
+  - Replaced voluntary defense admission with typed, current-funded alternatives
+    for Turret, Bastion, Flak Turret, Scuttle Charge, Barricade, and Array;
+    accepted work retains its exact role, site, builder, claims, readiness,
+    evidence, and marginal value through commitment.
+  - Kept current-threat emergency defense as a survival obligation while
+    voluntary defense competes with Foundry, Connected, and StandingForce work
+    in the shared deterministic portfolio.
+  - Scored exposed structures and active resource work against current,
+    remembered, and public-prior approaches; accounted for live versus
+    unfinished coverage, overlap, reinforcement and construction time, builder
+    danger, resource access, producer egress, and exact footprint compatibility.
+  - Preserved every defensive role at every personality setting, used
+    fortification, support, and guile only as bounded ordering signals, and kept
+    Array valuation on usable novel radar coverage rather than weapon coverage.
+  - Closed adversarial gaps in reflected builder routes, diagonal path
+    companions, unfinished producer egress, Connected reinforcement ownership,
+    and accepted-defense retention in bounded traces; focused and shipped-path
+    regressions pass.
+  - Profiled repeated candidate route searches and added exact endpoint caching,
+    baseline-cost pruning, and Array row-prefix coverage. Terminal Basin at
+    3,400 ticks fell from 31.22 to 10.15 seconds with identical outputs, versus
+    5.85 seconds at HEAD; the full player-facing hash oracle fell from 655.69 to
+    176.45 seconds. The remaining runtime overhead is a calibration and
+    performance follow-up.
+  - Passed workspace tests, Clippy, rustdoc, Rust and Markdown formatting,
+    canonical skill validation, and both coverage gates. Unit line coverage is
+    90.54% and combined is 91.88%; defensive investment reaches 99.17% unit and
+    99.25% combined.
+  - Refreshed only the approved player-facing state and command hashes at 0.16.0
+    and verified them unblessed in the full workspace suite. Frozen simulation
+    and Overseer behavior remain unchanged. Human play and final strength
+    calibration remain Action 10 work.
 - [ ] 7. Migrate economy, technology, and production capacity away from
       arbitrary ceilings.
   - Choose workers, Extractors, Reclaimers, Foundries, factories, and upgrades

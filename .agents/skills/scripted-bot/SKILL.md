@@ -63,7 +63,8 @@ immutable PublicMapBriefing + fog-honest Observation
   resolves the current cross-domain portfolio atomically. An admitted island
   operation advances once and contributes its exact same-think claims here. Its
   current proposal set compares at most one exact Foundry proposal, one
-  connected-offense proposal, and a best-first group of mutually exclusive
+  connected-offense proposal, one best-first group of mutually exclusive exact
+  defensive alternatives, and a best-first group of mutually exclusive
   standing-force alternatives. The allocator evaluates every zero-or-one choice
   from each domain without a proposal-count or machine-word cutoff. Fresh team,
   lift, raid, and utility work consume only the resulting residual.
@@ -92,20 +93,20 @@ Unmigrated `UtilityPolicy` channels still consume a reduced-observation budget
 adapter. Treat that as explicit strangler debt: do not extend it, and remove
 each use as the owning domain moves into typed allocation.
 
-Standing-force claims may require an exact minimum current bank to remain for a
-still-unmigrated construction decision. Use the construction ladder's existing
-next-technology reserve only while an eligible worker exists and construction is
-not recovering; after the tree is complete, require the strategic-defense scorer
-to find an exact legal Turret site and builder. The floor is neither claimed
-capital nor forecast credit: it remains available to Utility after allocation
-and disappears when its non-scrap premises disappear. Do not replace it with a
-permanent reserve or a general budget haircut.
+Standing-force and Defense claims may require an exact minimum current bank to
+remain for a still-unmigrated construction decision. Use the construction
+ladder's existing next-technology reserve only while an eligible worker exists
+and construction is not recovering. The floor is neither claimed capital nor
+forecast credit: it remains available to Utility after allocation and disappears
+when the technology tree completes or its builder premise disappears. Voluntary
+defense competes as a typed proposal; never hide it behind a post-technology
+Turret reserve, a permanent reserve, or a general budget haircut.
 
 Treat a current-threat emergency Turret or Flak Turret as a survival obligation
 when the opening core is deficient. Freeze the scorer-selected kind, site,
 builder, footprint, and current cost before clamping the remaining opening-core
-reserve, then prevent Utility from independently selecting a second defense in
-the same think.
+reserve. Emergency work has precedence over voluntary defensive proposals, and
+Utility must not independently select another defense in the same think.
 
 Keep policy memory controller-local and deterministic. A resumed replay rebuilds
 controller memory by observing the authoritative recorded prefix; never add an
@@ -300,26 +301,40 @@ funds, lower- and higher-tier mixes, target and defense evidence, personality
 invariants, exact-id freeze, and bounded abort and recovery with pure and
 composed tests.
 
-Defend every completed owned Foundry, not only the starting base. Choose sites
-for Turrets, Bastions, Flak Turrets, Scuttle Charges, and Barricades from
-exposed strategic value and credible hostile approaches. Score each kind's
-actual firing, spotting, trigger, or path-disruption geometry; preserve builder
-egress and resource access; and treat unfinished defenses as reservations rather
-than live fire. Predict the exact ordinary builder route with the public static
-terrain the bot was briefed on, while taking dynamic blockers only from current
-observation. Current contacts and remembered sites remain stronger evidence than
-an uncleared public starting prior. Keep the frozen Overseer's legacy placements
-separate from this player-facing policy.
+Defend every completed owned Foundry, not only the starting base. Derive and
+retain at most one exact quote for each of Turret, Bastion, Flak Turret, Scuttle
+Charge, Barricade, and Array, then present them as mutually exclusive
+alternatives in one Defense proposal domain. Do the expensive placement work
+once per role; portfolio masks and commitment must reuse the quoted kind,
+footprint, builder, coverage, evidence, and timing without reranking the map.
 
-Treat an Array as a persistent sensor, not as an unarmed defense. Search within
-its radar radius of home for the most usable map coverage, preferring coverage
-not already supplied by an allied Array and using current contacts, remembered
-contacts, then uncleared public starts to break equally useful ties toward a
-credible approach. Off-map area and Peaks provide no detection value because no
-unit can occupy them. Preserve active resource access and bind the exact
-ordinary route-capable builder proven through public terrain and current dynamic
-danger. Allow partial coverage on maps smaller than the radar diameter. Keep the
-frozen Overseer's first-valid Array placement unchanged.
+Choose weapon-bearing sites from exposed strategic value and credible hostile
+approaches. Score each kind's actual firing, spotting, trigger, or
+path-disruption geometry; preserve builder egress and resource access; and treat
+unfinished defenses as paid coverage reservations rather than live fire. Value
+newly protected assets fully and already protected assets with diminishing
+return. Compare that marginal value with current or remembered threats, mobile
+reinforcement readiness, builder travel, construction delay, completion risk,
+and opportunity cost through the allocator's named bands. Predict the exact
+ordinary builder route with the public static terrain the bot was briefed on,
+while taking dynamic blockers only from current observation. Current contacts
+and remembered sites remain stronger evidence than an uncleared public starting
+prior. Ordinary construction prerequisites are the only role gates;
+fortification and the role's relevant secondary trait rank otherwise legal
+choices but never remove one. Keep the frozen Overseer's legacy placements and
+sequential ladder separate from this player-facing policy.
+
+Treat an Array as a persistent sensor, not as an unarmed defense. Its
+alternative shares the Defense portfolio domain but uses positive novel usable
+radar coverage as its value. Search within its radar radius of home for the most
+usable map coverage, preferring coverage not already supplied by an allied Array
+and using current contacts, remembered contacts, then uncleared public starts to
+break equally useful ties toward a credible approach. Off-map area and Peaks
+provide no detection value because no unit can occupy them. Preserve active
+resource access and bind the exact ordinary route-capable builder proven through
+public terrain and current dynamic danger. Keep sensor proposals below immediate
+survival defense, allow partial coverage on maps smaller than the radar
+diameter, and keep the frozen Overseer's first-valid Array placement unchanged.
 
 Harvest work must also respect anonymous regional loss evidence, but a wreck
 near a dead combat unit is not automatically a dangerous replacement source. Use
@@ -352,6 +367,12 @@ exist, and no usable carrier is live or queued. Treat this as capital only. Do
 not start the lift, claim riders, or queue the carrier until current evidence
 admits the ordinary operation, and release the reservation when any premise no
 longer holds.
+
+Preview that exact retained or newly admissible Recon target before shared
+allocation and apply its carrier cost as the maximum minimum-residual floor on
+every fresh voluntary proposal. Do not import it as owned capital or add it to
+the shallow Sentinel guard. Let residual coordination confirm, release, and
+trace the actual hold once after the planners advance.
 
 A wealthy island operation has a separate admission gate of 12 currently armed
 units. This is a standing-roster readiness check, not its desired screen or
@@ -405,20 +426,22 @@ choices; they never alter vision, costs, prerequisites, capabilities, or unit
 strength, and they never roll private competence such as strength-estimation
 accuracy. Expect each axis to leave an observable signature: air in wing size
 and timing; siege in artillery volume and preference; support in support units,
-flak, and allied relief; fortification in turrets, mines, and defensive reserve;
-greed in worker targets and renewable-expansion payback appetite; and guile in
-raid size, timing, withdrawal, and some mine or airborne-screen emphasis. Store
-the seed in the scenario and replay rather than serializing resolved traits or
-planner state.
+flak, and allied relief; fortification in defensive opportunity and role
+ranking; greed in worker targets and renewable-expansion payback appetite; and
+guile in raid size, timing, withdrawal, and some mine or airborne-screen
+emphasis. Store the seed in the scenario and replay rather than serializing
+resolved traits or planner state.
 
-Keep early defensive choices bounded across identities. After the protected core
-is projected, one perimeter turret may precede contact once the enemy has been
-located; unlock the remainder of a fortification target only after a real raid.
-Below the core, only current visible armed evidence may justify the one matching
-emergency Turret or Flak Turret. Emergency Flak specifically requires an
-aircraft capable of attacking ground; a pure air-superiority flyer is not a
-threat to the defended ground assets. Anonymous radar blips are not confirmed
-air and must not independently trigger flak construction.
+Scale defensive choices from opportunity across identities. After the protected
+core is projected, every legal role may compete when its marginal protection or
+information value justifies its real cost. Existing coverage and reserved
+unfinished footprints create diminishing return; personality never supplies a
+count cap or unlock. Below the core, only current visible armed evidence may
+justify the one matching emergency Turret or Flak Turret. Emergency Flak
+specifically requires an aircraft capable of attacking ground; a pure
+air-superiority flyer is not a threat to the defended ground assets. Anonymous
+radar blips are not confirmed air and must not independently trigger emergency
+flak construction.
 
 Scrapheap, Standard, Veteran, and Prime use the same strategic repertoire.
 Scrapheap alone thinks less often; Standard, Veteran, and Prime intentionally
@@ -516,8 +539,9 @@ When a compact row or replay shows suspicious behavior, capture the
 player-facing controller's runtime decisions with
 `--decision-trace-out replays/bot-eval-trace.jsonl`. The trace sidecar requires
 `--out` and `--candidate`, joins each record to its exact evaluation leg, and
-contains only fog-honest facts the current coordinator can state directly. It
-does not reconstruct explanations from a replay, infer reasons from absent
+contains only fog-honest facts the current coordinator can state directly.
+Schema version 8 includes the exact defensive proposal and verdict identities.
+It does not reconstruct explanations from a replay, infer reasons from absent
 planner output, or trace the frozen Overseer. Treat the sidecar as disposable
 diagnostic evidence and keep it out of production commits.
 

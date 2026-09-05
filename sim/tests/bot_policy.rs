@@ -5,8 +5,8 @@ use oxide_sim::bot::trace::{
     ClaimOwnerTrace, ConfidenceTrace, ProposalDispositionTrace, ProposalKeyTrace,
 };
 use oxide_sim::bot::{
-    Brain, BuildingObs, Dials, DifficultyTuning, Executive, Intent, Observation, PublicMapBriefing,
-    UnitObs, UtilityPolicy,
+    Brain, BuildingObs, Dials, DifficultyTuning, Executive, Intent, Observation, Orientation,
+    PublicMapBriefing, UnitObs, UtilityPolicy,
 };
 use oxide_sim::scenario::{
     BotConfig, BotDifficulty, BotStance, BuildingSpec, PlayerSpec, UnitSpec,
@@ -1308,12 +1308,7 @@ fn shipped_brain_spends_capital_only_when_the_exact_shallow_remainder_survives()
 }
 
 #[test]
-fn shipped_brain_spends_exact_surplus_on_standing_force_and_capital() {
-    let crucible_cost = BuildingKind::Crucible
-        .base_stats()
-        .construction
-        .expect("Crucibles have a construction price")
-        .cost;
+fn shipped_brain_prefers_material_defense_while_preserving_the_capital_reserve() {
     let sentinel_cost = UnitKind::Sentinel.stats().cost;
     let capital_reserve = post_floor_capital_reserve();
     let scenario = post_floor_capital_scenario(capital_reserve + sentinel_cost);
@@ -1321,12 +1316,22 @@ fn shipped_brain_spends_exact_surplus_on_standing_force_and_capital() {
         .build()
         .expect("the exact capital-and-reinforcement fixture builds");
     advance_to_post_floor_policy_tick(&mut state);
+    let briefing =
+        Arc::new(PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds"));
+    let own_start = briefing
+        .starting_foundries()
+        .iter()
+        .find(|start| start.player == PlayerId(0))
+        .expect("the fixture has a public home anchor")
+        .anchor;
+    let orientation =
+        Orientation::for_home(&Observation::fog_honest(&state, PlayerId(0)), own_start);
     let mut brain = Brain::scripted(
         PlayerId(0),
         scenario.players[0]
             .bot_config
             .expect("the bot is configured"),
-        Arc::new(PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds")),
+        briefing,
     );
 
     let decision = brain.act_traced(&state);
@@ -1337,46 +1342,83 @@ fn shipped_brain_spends_exact_surplus_on_standing_force_and_capital() {
             .as_ref()
             .expect("the full policy path records its budget")
             .voluntary_scrap_guard,
-        0,
-        "the exact shallow Sentinel append discharges the shared guard",
+        sentinel_cost,
+        "the unspent shallow standing-force tranche remains guarded",
     );
-    let standing = trace
+    let defense = trace
         .allocation
         .proposals
         .entries
         .iter()
         .find(|proposal| {
-            matches!(proposal.key, ProposalKeyTrace::StandingForce { .. })
-                && proposal.disposition == ProposalDispositionTrace::Accepted
+            proposal.disposition == ProposalDispositionTrace::Accepted
+                && matches!(
+                    proposal.key,
+                    ProposalKeyTrace::Defense {
+                        kind: BuildingKind::Array,
+                        ..
+                    }
+                )
         })
-        .expect("the exact surplus admits a standing-force purchase");
-    assert_eq!(standing.claims.minimum_residual_scrap, capital_reserve);
-    let job = trace
-        .allocation
-        .producer_schedule
-        .entries
-        .iter()
-        .find(|job| {
-            matches!(
+        .expect("the material Array wins the exact shared surplus");
+    assert_eq!(
+        defense.claims.current_scrap,
+        BuildingKind::Array
+            .base_stats()
+            .construction
+            .expect("Arrays have a construction price")
+            .cost
+    );
+    assert_eq!(defense.claims.minimum_residual_scrap, capital_reserve);
+    assert_eq!(defense.claims.builders.total, 1);
+    assert_eq!(defense.claims.sites.total, 1);
+    let ProposalKeyTrace::Defense { kind, anchor } = defense.key else {
+        unreachable!("the accepted proposal was already proven to be Defense")
+    };
+    assert_eq!(defense.claims.sites.entries[0].anchor, anchor);
+    let builder = defense.claims.builders.entries[0];
+    let world_anchor = orientation.anchor(anchor, kind.base_stats().size);
+    assert!(
+        trace
+            .allocation
+            .proposals
+            .entries
+            .iter()
+            .filter(|proposal| matches!(proposal.key, ProposalKeyTrace::StandingForce { .. }))
+            .all(|proposal| proposal.disposition != ProposalDispositionTrace::Accepted)
+    );
+    assert!(
+        trace
+            .allocation
+            .producer_schedule
+            .entries
+            .iter()
+            .all(|job| !matches!(
                 job.owner,
-                ClaimOwnerTrace::Proposal { key } if key == standing.key
-            )
-        })
-        .expect("the accepted standing proposal owns an exact producer job");
-    assert_eq!(job.enqueued_at, state.current_tick());
-    assert_eq!(job.current_scrap, job.kind.stats().cost);
-    assert_eq!(job.forecast_scrap, 0);
+                ClaimOwnerTrace::Proposal {
+                    key: ProposalKeyTrace::StandingForce { .. }
+                }
+            ))
+    );
     assert!(decision.commands.iter().any(|command| matches!(
-        command.command,
-        Command::Train { building, kind }
-            if building == job.producer && kind == job.kind
-    )));
-    assert!(decision.commands.iter().any(|command| matches!(
-        command.command,
+        &command.command,
         Command::Build {
-            kind: BuildingKind::Crucible,
+            units,
+            kind: commanded_kind,
+            anchor: commanded_anchor,
             ..
-        }
+        } if command.player == PlayerId(0)
+            && units.as_slice() == [builder]
+            && *commanded_kind == kind
+            && *commanded_anchor == world_anchor
+    )));
+    assert!(decision.commands.iter().all(|command| !matches!(
+        command.command,
+        Command::Train { .. }
+            | Command::Build {
+                kind: BuildingKind::Crucible,
+                ..
+            }
     )));
 
     let report = state.tick(&decision.commands);
@@ -1387,12 +1429,12 @@ fn shipped_brain_spends_exact_surplus_on_standing_force_and_capital() {
             ..
         }
     )));
-    assert_eq!(
-        state.player(PlayerId(0)).scrap,
-        capital_reserve - crucible_cost
-    );
+    assert_eq!(state.player(PlayerId(0)).scrap, capital_reserve);
     assert!(state.buildings().iter().any(|building| {
-        building.player == PlayerId(0) && building.kind == BuildingKind::Crucible
+        building.player == PlayerId(0)
+            && building.kind == kind
+            && building.anchor == world_anchor
+            && !building.built
     }));
 }
 

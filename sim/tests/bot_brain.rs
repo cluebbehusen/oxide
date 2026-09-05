@@ -1107,7 +1107,7 @@ fn a_fallen_opening_core_stops_repairs_and_unpaid_deferred_capital() {
 }
 
 #[test]
-fn a_dispatched_build_that_never_appears_blacklists_only_its_anchor() {
+fn a_dispatched_defense_that_never_appears_blacklists_only_its_anchor() {
     let mut scenario = open_arena(
         (0..5)
             .map(|offset| unit(0, UnitKind::Harvester, 3 + offset, 3))
@@ -1121,13 +1121,9 @@ fn a_dispatched_build_that_never_appears_blacklists_only_its_anchor() {
     let mut state = scenario.build().expect("the construction arena builds");
     let mut continuing = Brain::balanced(PlayerId(0), public_map(&scenario));
     let macro_cadence = oxide_sim::bot::difficulty::STRATEGIC_ADMISSION_CADENCE;
-    let fabricator_anchor = |commands: &[PlayerCommand]| {
+    let capital_build = |commands: &[PlayerCommand]| {
         commands.iter().find_map(|command| match command.command {
-            Command::Build {
-                kind: BuildingKind::Fabricator,
-                anchor,
-                ..
-            } => Some(anchor),
+            Command::Build { kind, anchor, .. } => Some((kind, anchor)),
             _ => None,
         })
     };
@@ -1149,8 +1145,13 @@ fn a_dispatched_build_that_never_appears_blacklists_only_its_anchor() {
         1,
         "the scout's exact claim must survive the same lowering pass"
     );
-    let opening_anchor =
-        fabricator_anchor(&opening).expect("capital construction preempts a routine harvest chore");
+    let opening_build =
+        capital_build(&opening).expect("capital construction preempts a routine harvest chore");
+    assert_eq!(
+        opening_build.0,
+        BuildingKind::Array,
+        "the fixture must exercise a typed Defense dispatch"
+    );
 
     // Leave the emitted command unapplied. The next audit should treat the
     // absent site as a refusal, while a fresh commander still prefers the
@@ -1161,18 +1162,22 @@ fn a_dispatched_build_that_never_appears_blacklists_only_its_anchor() {
     assert_eq!(state.current_tick(), macro_cadence);
 
     let mut fresh = Brain::balanced(PlayerId(0), public_map(&scenario));
-    let preferred = fabricator_anchor(&fresh.act(&state))
-        .expect("a fresh commander dispatches its preferred Fabricator site");
-    let after_refusal = fabricator_anchor(&continuing.act(&state))
-        .expect("the continuing commander searches for another Fabricator site after refusal");
+    let preferred = capital_build(&fresh.act(&state))
+        .expect("a fresh commander dispatches its preferred capital site");
+    let after_refusal = capital_build(&continuing.act(&state))
+        .expect("the continuing commander searches for another capital site after refusal");
 
     assert_eq!(
-        opening_anchor, preferred,
+        opening_build, preferred,
         "a fresh commander should still prefer the unapplied command's legal geometry"
     );
     assert_ne!(
-        after_refusal, opening_anchor,
-        "a dispatched Build that never appears must still blacklist its anchor"
+        after_refusal.1, opening_build.1,
+        "a dispatched Build that never appears must still blacklist its anchor: opening={opening_build:?}, after={after_refusal:?}"
+    );
+    assert_eq!(
+        after_refusal.0, opening_build.0,
+        "one refused anchor must not blacklist the defensive role"
     );
 }
 

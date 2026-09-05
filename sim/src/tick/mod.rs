@@ -617,6 +617,34 @@ pub(crate) fn rect_approach_origin(
     anchor: TilePos,
     size: (i32, i32),
 ) -> TilePos {
+    let first_foundry = state
+        .buildings
+        .iter()
+        .filter(|building| {
+            building.player == player && building.kind == crate::stats::BuildingKind::Foundry
+        })
+        .min_by_key(|building| building.id)
+        .map(|foundry| (foundry.anchor, foundry.kind.base_stats().size));
+    rect_approach_origin_for_map(
+        (state.map.width(), state.map.height()),
+        player,
+        from,
+        anchor,
+        size,
+        first_foundry,
+    )
+}
+
+/// [`rect_approach_origin`] from immutable map and ownership facts. Command
+/// previews use this same tie frame without needing authoritative `State`.
+pub(crate) fn rect_approach_origin_for_map(
+    map_size: (i32, i32),
+    player: crate::ids::PlayerId,
+    from: TilePos,
+    anchor: TilePos,
+    size: (i32, i32),
+    first_foundry: Option<(TilePos, (i32, i32))>,
+) -> TilePos {
     let center_x = i64::from(anchor.x) * 2 + i64::from(size.0);
     let center_y = i64::from(anchor.y) * 2 + i64::from(size.1);
     let from_x = i64::from(from.x) * 2 + 1;
@@ -625,38 +653,30 @@ pub(crate) fn rect_approach_origin(
         return from;
     }
 
-    if let Some(foundry) = state
-        .buildings
-        .iter()
-        .filter(|building| {
-            building.player == player && building.kind == crate::stats::BuildingKind::Foundry
-        })
-        .min_by_key(|building| building.id)
-    {
-        let foundry_size = foundry.kind.base_stats().size;
-        let flip_x = i64::from(foundry.anchor.x) * 2 + i64::from(foundry_size.0)
-            >= i64::from(state.map.width());
-        let flip_y = i64::from(foundry.anchor.y) * 2 + i64::from(foundry_size.1)
-            >= i64::from(state.map.height());
-        return foundry.anchor.offset(
+    if let Some((foundry_anchor, foundry_size)) = first_foundry {
+        let flip_x =
+            i64::from(foundry_anchor.x) * 2 + i64::from(foundry_size.0) >= i64::from(map_size.0);
+        let flip_y =
+            i64::from(foundry_anchor.y) * 2 + i64::from(foundry_size.1) >= i64::from(map_size.1);
+        return foundry_anchor.offset(
             if flip_x { foundry_size.0 - 1 } else { 0 },
             if flip_y { foundry_size.1 - 1 } else { 0 },
         );
     }
 
-    let flip_x = if center_x == i64::from(state.map.width()) {
+    let flip_x = if center_x == i64::from(map_size.0) {
         player.0 % 2 == 1
     } else {
-        center_x > i64::from(state.map.width())
+        center_x > i64::from(map_size.0)
     };
-    let flip_y = if center_y == i64::from(state.map.height()) {
+    let flip_y = if center_y == i64::from(map_size.1) {
         player.0 % 2 == 1
     } else {
-        center_y > i64::from(state.map.height())
+        center_y > i64::from(map_size.1)
     };
     TilePos::new(
-        if flip_x { state.map.width() - 1 } else { 0 },
-        if flip_y { state.map.height() - 1 } else { 0 },
+        if flip_x { map_size.0 - 1 } else { 0 },
+        if flip_y { map_size.1 - 1 } else { 0 },
     )
 }
 

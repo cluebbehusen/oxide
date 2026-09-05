@@ -9,9 +9,9 @@ use super::{
     AllocationCapacity, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
     ClaimOwner, ConnectedMarginalError, ConnectedPortfolioContext, DeferrableCapitalClaim,
     DomainAllocationResult, DomainInvestmentProposal, ForecastClaim, ImportedObligation,
-    LegacyChannel, ObligationClass, ObligationKey, ProducerJobClaim, ProposalKey,
-    ScheduledProducerJob, accepted_portfolio_rank, allocate, allocate_requiring,
-    future_producer_lane_reservations,
+    IncompatibleLayoutPair, LegacyChannel, ObligationClass, ObligationKey, ProducerJobClaim,
+    ProposalKey, ScheduledProducerJob, accepted_portfolio_rank, allocate_requiring,
+    allocate_with_incompatible_layouts, future_producer_lane_reservations,
 };
 use crate::bot::observation::Observation;
 use crate::bot::resources::ProducerLaneReservations;
@@ -59,6 +59,7 @@ pub(crate) struct CrossDomainAllocation {
     obligations: Vec<ImportedObligation>,
     proposals: Vec<DomainInvestmentProposal>,
     contextual_proposals: Vec<ContextualProposalSet>,
+    incompatible_layouts: Vec<IncompatibleLayoutPair>,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +81,7 @@ impl CrossDomainAllocation {
             obligations: Vec::new(),
             proposals: Vec::new(),
             contextual_proposals: Vec::new(),
+            incompatible_layouts: Vec::new(),
         })
     }
 
@@ -93,6 +95,16 @@ impl CrossDomainAllocation {
     /// one of them.
     pub(crate) fn offer(&mut self, proposal: DomainInvestmentProposal) {
         self.proposals.push(proposal);
+    }
+
+    /// Rejects a pair of individually legal builds when their combined layout
+    /// fails a domain-owned route, egress, or resource-access preflight.
+    pub(crate) fn reject_incompatible_layout(&mut self, first: ProposalKey, second: ProposalKey) {
+        if let Some(pair) = IncompatibleLayoutPair::new(first, second) {
+            self.incompatible_layouts.push(pair);
+            self.incompatible_layouts.sort_unstable();
+            self.incompatible_layouts.dedup();
+        }
     }
 
     /// Registers every proposal derived against one exact connected state.
@@ -121,15 +133,17 @@ impl CrossDomainAllocation {
             obligations,
             proposals,
             contextual_proposals,
+            incompatible_layouts,
         } = self;
         let mut trace = trace;
         let (mut result, considered_proposals, selected_context, considered_contexts) =
             if contextual_proposals.is_empty() {
-                let result = match allocate(
+                let result = match allocate_with_incompatible_layouts(
                     &capacity,
                     obligations.clone(),
                     proposals.clone(),
                     personality,
+                    &incompatible_layouts,
                 ) {
                     Ok(result) => result,
                     Err(error) => {
@@ -148,6 +162,7 @@ impl CrossDomainAllocation {
                     &proposals,
                     contextual_proposals,
                     personality,
+                    &incompatible_layouts,
                 )?
             };
         if let Some(trace) = trace.as_deref_mut() {
@@ -208,6 +223,7 @@ fn select_contextual_portfolio(
     base_proposals: &[DomainInvestmentProposal],
     mut contextual: Vec<ContextualProposalSet>,
     personality: AllocationPersonality,
+    incompatible_layouts: &[IncompatibleLayoutPair],
 ) -> Result<
     (
         DomainAllocationResult,
@@ -256,12 +272,14 @@ fn select_contextual_portfolio(
                 proposals.clone(),
                 personality,
                 required,
+                incompatible_layouts,
             )?,
-            None => Some(allocate(
+            None => Some(allocate_with_incompatible_layouts(
                 capacity,
                 obligations.to_vec(),
                 proposals.clone(),
                 personality,
+                incompatible_layouts,
             )?),
         };
         let Some(mut result) = result else {
@@ -1188,8 +1206,9 @@ pub(crate) fn active_connected_producer_assignments(
 mod tests {
     use super::*;
     use crate::bot::allocation::{
-        ConnectedOffenseKey, ProposalCase, StandingForceKey, connected_investment_proposal,
-        foundry_investment_proposal, standing_force_investment_proposals,
+        ConnectedOffenseKey, DefenseInvestmentKey, ProposalCase, StandingForceKey,
+        connected_investment_proposal, foundry_investment_proposal,
+        standing_force_investment_proposals,
     };
     use crate::bot::observation::UnitObs;
     use crate::bot::profile::Specialty;
@@ -1346,6 +1365,16 @@ mod tests {
     }
 
     #[test]
+    fn defense_capital_is_not_exposed_to_residual_utility() {
+        let owner = ClaimOwner::Proposal(ProposalKey::Defense(DefenseInvestmentKey {
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(8, 9),
+        }));
+
+        assert!(!owner_is_utility(owner));
+    }
+
+    #[test]
     fn settlement_trace_records_the_final_foundry_funding_split_once() {
         let cost = BuildingKind::Foundry
             .base_stats()
@@ -1393,6 +1422,7 @@ mod tests {
                     .expect("the Foundry proposal has valid exact claims"),
             ],
             contextual_proposals: Vec::new(),
+            incompatible_layouts: Vec::new(),
         };
         let mut trace = AllocationTrace::default();
 
@@ -1787,6 +1817,7 @@ mod tests {
                     .expect("the connected proposal has valid claims"),
             ],
             contextual_proposals: Vec::new(),
+            incompatible_layouts: Vec::new(),
         };
         let mut trace = AllocationTrace::default();
 
@@ -1852,6 +1883,7 @@ mod tests {
                     .with_voluntary_scrap_guard(UnitKind::Sentinel.stats().cost),
             ],
             contextual_proposals: Vec::new(),
+            incompatible_layouts: Vec::new(),
         };
         allocation.offer_context(
             ConnectedPortfolioContext::Absent,
@@ -1977,6 +2009,7 @@ mod tests {
                     .expect("the connected ladder has valid exact claims"),
             ],
             contextual_proposals: Vec::new(),
+            incompatible_layouts: Vec::new(),
         };
         let standing = || standing_proposal(UnitKind::Lancer, crucible, common_case);
         allocation.offer_context(ConnectedPortfolioContext::Absent, vec![standing()]);
@@ -2114,6 +2147,7 @@ mod tests {
             obligations: Vec::new(),
             proposals: proposals(),
             contextual_proposals: Vec::new(),
+            incompatible_layouts: Vec::new(),
         }
         .resolve(AllocationPersonality::default(), None)
         .expect("the ordinary portfolio resolves");
@@ -2123,6 +2157,7 @@ mod tests {
             obligations: Vec::new(),
             proposals: proposals(),
             contextual_proposals: Vec::new(),
+            incompatible_layouts: Vec::new(),
         };
         contextual.offer_context(ConnectedPortfolioContext::Absent, Vec::new());
         contextual.offer_context(
@@ -2294,6 +2329,7 @@ mod tests {
                     .expect("the connected proposal has valid exact claims"),
             ],
             contextual_proposals: Vec::new(),
+            incompatible_layouts: Vec::new(),
         };
 
         let settlement = allocation
@@ -2378,6 +2414,7 @@ mod tests {
                     .expect("the connected package has valid claims"),
             ],
             contextual_proposals: Vec::new(),
+            incompatible_layouts: Vec::new(),
         };
         let settlement = allocation
             .resolve(AllocationPersonality::default(), None)
@@ -2481,6 +2518,7 @@ mod tests {
             obligations,
             proposals: Vec::new(),
             contextual_proposals: Vec::new(),
+            incompatible_layouts: Vec::new(),
         }
         .resolve(AllocationPersonality::default(), None)
         .expect("current survival and forecast-funded future production are jointly feasible");
