@@ -97,6 +97,20 @@ pub(crate) struct ResourceForecast {
 }
 
 impl ResourceForecast {
+    /// Income lost if an exact completed source is taken offline now.
+    pub(crate) fn source_income_through(
+        &self,
+        source: BuildingId,
+        deadline: Tick,
+    ) -> ForecastScrap {
+        ForecastScrap(
+            self.income
+                .iter()
+                .filter(|stream| stream.source == source)
+                .map(|stream| stream.income_through(deadline))
+                .fold(0, u32::saturating_add),
+        )
+    }
     /// The observation tick from which this forecast starts.
     pub(crate) const fn observed_at(&self) -> Tick {
         self.observed_at
@@ -592,36 +606,37 @@ impl ProducerLane {
     /// Number of paid queued units of `kind` conservatively ready before an
     /// operation deadline.
     pub(crate) fn queued_kind_ready_before(&self, kind: UnitKind, ready_before: Tick) -> usize {
+        self.queued_readiness()
+            .take_while(|(_, ready_at)| *ready_at < ready_before)
+            .filter(|(queued, _)| *queued == kind)
+            .count()
+    }
+
+    /// Each paid queue occurrence and its conservative completion tick, in queue order.
+    pub(crate) fn queued_readiness(&self) -> impl Iterator<Item = (UnitKind, Tick)> + '_ {
         let mut elapsed = 0_u64;
-        let mut ready = 0_usize;
-        for (index, queued) in self.queued.iter().copied().enumerate() {
-            let ticks = if index == 0 {
-                self.front_progress.map_or_else(
-                    || Tick::from(queued.stats().train_ticks),
-                    |progress| {
-                        Tick::from(queued.stats().train_ticks.saturating_sub(progress).max(1))
-                    },
-                )
-            } else {
-                Tick::from(queued.stats().train_ticks)
-            };
-            let Some(next_elapsed) = elapsed.checked_add(ticks) else {
-                break;
-            };
-            elapsed = next_elapsed;
-            let Some(ready_at) = self
-                .observed_at
-                .checked_add(elapsed)
-                .and_then(|tick| tick.checked_sub(1))
-            else {
-                break;
-            };
-            if ready_at >= ready_before {
-                break;
-            }
-            ready += usize::from(queued == kind);
-        }
-        ready
+        self.queued
+            .iter()
+            .copied()
+            .enumerate()
+            .map_while(move |(index, queued)| {
+                let ticks = if index == 0 {
+                    self.front_progress.map_or_else(
+                        || Tick::from(queued.stats().train_ticks),
+                        |progress| {
+                            Tick::from(queued.stats().train_ticks.saturating_sub(progress).max(1))
+                        },
+                    )
+                } else {
+                    Tick::from(queued.stats().train_ticks)
+                };
+                elapsed = elapsed.checked_add(ticks)?;
+                let ready_at = self
+                    .observed_at
+                    .checked_add(elapsed)
+                    .and_then(|tick| tick.checked_sub(1))?;
+                Some((queued, ready_at))
+            })
     }
 
     fn sequence_timing(&self, planned: &[UnitKind]) -> Option<ProductionTiming> {
@@ -670,6 +685,7 @@ pub(crate) struct ResourceSnapshot {
     builders: Vec<BuilderResource>,
     producers: Vec<ProducerLane>,
     producer_slots: Vec<ProducerSlot>,
+    owned_buildings: Vec<BuildingId>,
 }
 
 impl ResourceSnapshot {
@@ -754,6 +770,14 @@ impl ResourceSnapshot {
             .flat_map(ProducerLane::open_slots)
             .collect();
 
+        let mut owned_buildings = obs
+            .my_buildings
+            .iter()
+            .filter(|building| building.player == obs.me)
+            .map(|building| building.id)
+            .collect::<Vec<_>>();
+        owned_buildings.sort_unstable();
+        owned_buildings.dedup();
         Self {
             current_scrap: CurrentScrap(obs.scrap),
             forecast: forecast_from_observation(obs),
@@ -761,12 +785,17 @@ impl ResourceSnapshot {
             builders,
             producers,
             producer_slots,
+            owned_buildings,
         }
     }
 
     /// Current spendable bank, distinct from all forecast income.
     pub(crate) const fn current_scrap(&self) -> CurrentScrap {
         self.current_scrap
+    }
+
+    pub(crate) fn owned_buildings(&self) -> &[BuildingId] {
+        &self.owned_buildings
     }
 
     /// Returns the same observed resources after protecting a named share of
@@ -1003,6 +1032,7 @@ mod current_reserve_tests {
 
     fn snapshot_with_current_scrap(current_scrap: u32) -> ResourceSnapshot {
         ResourceSnapshot {
+            owned_buildings: Vec::new(),
             current_scrap: CurrentScrap(current_scrap),
             forecast: ResourceForecast {
                 observed_at: 40,

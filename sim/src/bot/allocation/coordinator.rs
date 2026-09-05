@@ -9,7 +9,7 @@ use super::{
     AllocationCapacity, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
     ClaimOwner, ConnectedMarginalError, ConnectedPortfolioContext, DeferrableCapitalClaim,
     DomainAllocationResult, DomainInvestmentProposal, ForecastClaim, ImportedObligation,
-    IncompatibleLayoutPair, LegacyChannel, ObligationClass, ObligationKey, ProducerJobClaim,
+    IncompatibleLayoutSet, LegacyChannel, ObligationClass, ObligationKey, ProducerJobClaim,
     ProposalKey, ScheduledProducerJob, accepted_portfolio_rank, allocate_requiring,
     allocate_with_incompatible_layouts, future_producer_lane_reservations,
 };
@@ -59,7 +59,7 @@ pub(crate) struct CrossDomainAllocation {
     obligations: Vec<ImportedObligation>,
     proposals: Vec<DomainInvestmentProposal>,
     contextual_proposals: Vec<ContextualProposalSet>,
-    incompatible_layouts: Vec<IncompatibleLayoutPair>,
+    incompatible_layouts: Vec<IncompatibleLayoutSet>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,8 +100,16 @@ impl CrossDomainAllocation {
     /// Rejects a pair of individually legal builds when their combined layout
     /// fails a domain-owned route, egress, or resource-access preflight.
     pub(crate) fn reject_incompatible_layout(&mut self, first: ProposalKey, second: ProposalKey) {
-        if let Some(pair) = IncompatibleLayoutPair::new(first, second) {
+        if let Some(pair) = IncompatibleLayoutSet::new(first, second) {
             self.incompatible_layouts.push(pair);
+            self.incompatible_layouts.sort_unstable();
+            self.incompatible_layouts.dedup();
+        }
+    }
+
+    pub(crate) fn reject_incompatible_triple(&mut self, keys: [ProposalKey; 3]) {
+        if let Some(layout) = IncompatibleLayoutSet::triple(keys) {
+            self.incompatible_layouts.push(layout);
             self.incompatible_layouts.sort_unstable();
             self.incompatible_layouts.dedup();
         }
@@ -223,7 +231,7 @@ fn select_contextual_portfolio(
     base_proposals: &[DomainInvestmentProposal],
     mut contextual: Vec<ContextualProposalSet>,
     personality: AllocationPersonality,
-    incompatible_layouts: &[IncompatibleLayoutPair],
+    incompatible_layouts: &[IncompatibleLayoutSet],
 ) -> Result<
     (
         DomainAllocationResult,
@@ -495,6 +503,12 @@ impl CrossDomainSettlement {
         excluded: impl Fn(ClaimOwner) -> bool,
         through: Tick,
     ) -> u32 {
+        let foregone = self
+            .obligation_and_selected_claims()
+            .flat_map(|(_, claims)| claims.foregone_income())
+            .filter(|claim| claim.through <= through)
+            .map(|claim| claim.amount)
+            .fold(0, u32::saturating_add);
         let nonproduction = self
             .obligation_and_selected_claims()
             .filter(|(owner, _)| !excluded(*owner))
@@ -509,7 +523,7 @@ impl CrossDomainSettlement {
             .iter()
             .filter(|job| !excluded(job.owner) && job.enqueued_at <= through)
             .map(|job| job.forecast_scrap)
-            .fold(nonproduction, u32::saturating_add);
+            .fold(nonproduction.saturating_add(foregone), u32::saturating_add);
         self.result
             .capital_assignments
             .iter()
@@ -613,6 +627,7 @@ pub(crate) fn forecast_reserve_through(obligations: &[ImportedObligation], throu
                 .claims
                 .forecast_scrap()
                 .iter()
+                .chain(obligation.claims.foregone_income())
                 .filter(|claim| claim.through <= through)
                 .map(|claim| claim.amount)
                 .fold(0, u32::saturating_add)
@@ -916,19 +931,23 @@ pub(crate) fn observed_builder_obligations(
                 Vec::new(),
             ),
         };
-        result.push(imported_obligation(
-            class,
-            accepted_at,
-            key,
-            ClaimBundle::new(
-                current_cost,
-                forecast_cost.into_iter().collect(),
-                ids,
-                Vec::new(),
-                sites,
-                Vec::new(),
-            )?,
-        ));
+        let mut claims = ClaimBundle::new(
+            current_cost,
+            forecast_cost.into_iter().collect(),
+            ids,
+            Vec::new(),
+            sites,
+            Vec::new(),
+        )?;
+        if let BuilderObligation::Salvage(building) = obligation
+            && resources.owned_buildings().contains(&building)
+            && !result
+                .iter()
+                .any(|prior: &ImportedObligation| prior.claims.buildings().contains(&building))
+        {
+            claims = claims.with_building(building);
+        }
+        result.push(imported_obligation(class, accepted_at, key, claims));
         index = end;
     }
     Ok(result)

@@ -164,6 +164,7 @@ impl UtilityPolicy {
         builders: &[&UnitObs],
         unavailable_reinforcements: &[UnitId],
         minimum_residual_scrap: u32,
+        committed_current_scrap: u32,
     ) -> Vec<FreshDefenseProposal> {
         debug_assert_eq!(resources.forecast().observed_at(), obs.tick);
         let construction_builders = self.construction_builders(obs, &[], &[]);
@@ -195,7 +196,10 @@ impl UtilityPolicy {
             let Some(construction_stats) = kind.base_stats().construction else {
                 continue;
             };
-            if resources.current_scrap().amount()
+            if resources
+                .current_scrap()
+                .amount()
+                .saturating_sub(committed_current_scrap)
                 < construction_stats
                     .cost
                     .saturating_add(minimum_residual_scrap)
@@ -890,6 +894,7 @@ mod tests {
             &builders,
             &[],
             0,
+            0,
         );
         assert!(!proposals.is_empty());
         assert!(
@@ -917,6 +922,7 @@ mod tests {
                     &[],
                     &protected_builders,
                     &[],
+                    0,
                     0,
                 )
                 .is_empty(),
@@ -957,6 +963,7 @@ mod tests {
             &[],
             &builders,
             &[],
+            0,
             0,
         );
 
@@ -1319,6 +1326,7 @@ mod tests {
                     &builders,
                     &[],
                     0,
+                    0,
                 )
                 .into_iter()
                 .find(|proposal| proposal.kind() == BuildingKind::FlakTurret)
@@ -1453,6 +1461,7 @@ mod tests {
             &builders,
             &[],
             90,
+            0,
         );
         let roles: BTreeSet<_> = proposals.iter().map(FreshDefenseProposal::kind).collect();
 
@@ -1482,6 +1491,47 @@ mod tests {
     }
 
     #[test]
+    fn committed_capital_prunes_only_defenses_that_cannot_win_allocation() {
+        let (obs, briefing) = opportunity_fixture();
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let builders = vec![&obs.my_units[0]];
+        let profile = low_fortification_profile();
+        let derive = |committed| {
+            UtilityPolicy::new().fresh_defense_proposals(
+                &profile,
+                &obs,
+                &resources,
+                &briefing,
+                Orientation::for_home(&obs, HOME),
+                HOME,
+                &[],
+                &[],
+                &builders,
+                &[],
+                90,
+                committed,
+            )
+        };
+        let baseline = derive(0);
+        assert_eq!(baseline.len(), DefenseConstruction::ALL.len());
+        assert!(derive(obs.scrap).is_empty());
+        for proposal in &baseline {
+            let required = proposal.construction_capital() + proposal.minimum_residual_scrap();
+            for available in [required - 1, required] {
+                assert_eq!(
+                    derive(obs.scrap - available),
+                    baseline
+                        .iter()
+                        .copied()
+                        .filter(|quote| quote.construction_capital() + 90 <= available)
+                        .collect::<Vec<_>>(),
+                    "prior capital prunes unaffordable roles without changing exact viable quotes"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn planned_arrays_exhaust_novel_coverage_in_diminishing_steps() {
         let (mut obs, briefing) = opportunity_fixture();
         let profile = low_fortification_profile();
@@ -1505,6 +1555,7 @@ mod tests {
                     &builders,
                     &[],
                     90,
+                    0,
                 )
                 .into_iter()
                 .find(|proposal| proposal.kind() == BuildingKind::Array);

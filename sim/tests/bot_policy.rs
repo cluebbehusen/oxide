@@ -120,7 +120,15 @@ fn public_map(obs: &Observation) -> PublicMapBriefing {
     let height = usize::try_from(obs.map_height).expect("the test map has a positive height");
     assert!(width >= 2 && height >= 2);
     let mut map = vec![".".repeat(width); height];
-    map[0].replace_range(..1, "1");
+    let home = obs
+        .my_buildings
+        .iter()
+        .find(|building| building.kind == BuildingKind::Foundry)
+        .map_or(TilePos::new(0, 0), |building| building.anchor);
+    map[home.y as usize].replace_range(home.x as usize..home.x as usize + 1, "1");
+    for frame in &obs.known_frames {
+        map[frame.y as usize].replace_range(frame.x as usize..frame.x as usize + 1, "E");
+    }
     PublicMapBriefing::from_scenario(&Scenario {
         name: "policy test map".into(),
         seed: 0,
@@ -275,39 +283,16 @@ fn advance_to_post_floor_policy_tick(state: &mut oxide_sim::State) {
     }
 }
 
-fn post_floor_capital_reserve() -> u32 {
-    let scenario = post_floor_capital_scenario(10_000);
-    let mut state = scenario
-        .build()
-        .expect("the capital-reserve reference fixture builds");
+fn post_floor_capital_case(scrap: u32) -> (oxide_sim::State, Brain) {
+    let scenario = post_floor_capital_scenario(scrap);
+    let mut state = scenario.build().expect("the capital fixture builds");
     advance_to_post_floor_policy_tick(&mut state);
-    let mut brain = Brain::scripted(
+    let brain = Brain::scripted(
         PlayerId(0),
-        scenario.players[0]
-            .bot_config
-            .expect("the bot is configured"),
-        Arc::new(PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds")),
+        scenario.players[0].bot_config.unwrap(),
+        Arc::new(PublicMapBriefing::from_scenario(&scenario).unwrap()),
     );
-    let decision = brain.act_traced(&state);
-    decision
-        .trace
-        .expect("the reference decision is traced")
-        .allocation
-        .proposals
-        .entries
-        .into_iter()
-        .find_map(|proposal| {
-            matches!(
-                proposal.key,
-                ProposalKeyTrace::StandingForce {
-                    kind: UnitKind::Sentinel,
-                    ..
-                }
-            )
-            .then_some(proposal.claims.minimum_residual_scrap)
-        })
-        .filter(|reserve| *reserve > 0)
-        .expect("standing force protects the actionable capital reserve")
+    (state, brain)
 }
 
 fn air_response_scenario(contact: Option<UnitKind>, spotter: bool) -> Scenario {
@@ -1077,7 +1062,7 @@ fn noncurrent_air_evidence_cannot_spend_below_floor_opening_escrow() {
 }
 
 #[test]
-fn prime_opening_core_blocks_optional_capital_until_the_floor_is_projected() {
+fn prime_residual_policy_recovers_the_core_without_originating_optional_capital() {
     let home = TilePos::new(2, 10);
     let mut obs = construction_observation(10_000);
     add_building(
@@ -1120,14 +1105,14 @@ fn prime_opening_core_blocks_optional_capital_until_the_floor_is_projected() {
     let ready =
         UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert!(
-        ready.iter().any(|intent| matches!(
+        ready.iter().all(|intent| !matches!(
             intent,
             Intent::Build {
                 kind: BuildingKind::Fabricator,
                 ..
             }
         )),
-        "the same bank may fund the first voluntary tech project once Prime has eight equivalents: {ready:?}"
+        "a recovered core alone is not capability demand and does not authorize residual technology: {ready:?}"
     );
 }
 
@@ -1180,171 +1165,111 @@ fn reaching_the_core_floor_after_cancelling_an_unsafe_site_does_not_cancel_twice
 }
 
 #[test]
-fn shipped_standing_force_preserves_the_residual_capital_floor() {
-    let crucible_cost = BuildingKind::Crucible
-        .base_stats()
-        .construction
-        .expect("Crucibles have a construction price")
-        .cost;
-    let sentinel_cost = UnitKind::Sentinel.stats().cost;
-    let capital_reserve = post_floor_capital_reserve();
-    assert!(capital_reserve >= crucible_cost);
-    let scenario = post_floor_capital_scenario(crucible_cost + sentinel_cost - 1);
-    let mut state = scenario.build().expect("the capital-guard fixture builds");
-    advance_to_post_floor_policy_tick(&mut state);
-    let mut brain = Brain::scripted(
-        PlayerId(0),
-        scenario.players[0]
-            .bot_config
-            .expect("the bot is configured"),
-        Arc::new(PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds")),
-    );
-
-    let decision = brain.act_traced(&state);
-    let trace = decision.trace.as_ref().expect("the decision is traced");
-    assert!(trace.allocation.error.is_none());
-    assert!(trace.allocation.coordinator_failure.is_none());
-    assert_eq!(
-        trace
-            .budget
-            .as_ref()
-            .expect("the full policy path records its budget")
-            .voluntary_scrap_guard,
-        sentinel_cost,
-    );
-    assert!(
-        trace
-            .allocation
-            .proposals
-            .entries
-            .iter()
-            .filter(|proposal| matches!(proposal.key, ProposalKeyTrace::StandingForce { .. }))
-            .all(|proposal| proposal.disposition != ProposalDispositionTrace::Accepted)
-    );
-    assert!(
-        trace
-            .allocation
-            .producer_schedule
-            .entries
-            .iter()
-            .all(|job| !matches!(
-                job.owner,
-                ClaimOwnerTrace::Proposal {
-                    key: ProposalKeyTrace::StandingForce { .. }
-                }
-            ))
-    );
-    assert!(
-        decision.commands.iter().all(|command| !matches!(
-            command.command,
-            Command::Train {
-                kind: UnitKind::Sentinel,
-                ..
-            } | Command::Build {
-                kind: BuildingKind::Crucible,
-                ..
+fn shipped_proposals_have_no_residual_technology_floor() {
+    let mut saw_standing = false;
+    for bank in [89, 90, 489, 490, 10_000] {
+        let (state, mut brain) = post_floor_capital_case(bank);
+        let trace = brain.act_traced(&state).trace.unwrap();
+        assert!(trace.allocation.error.is_none());
+        assert!(trace.allocation.coordinator_failure.is_none());
+        for proposal in &trace.allocation.proposals.entries {
+            if matches!(proposal.key, ProposalKeyTrace::StandingForce { .. }) {
+                saw_standing = true;
             }
-        )),
-        "one scrap short of the combined guard and capital fund must accumulate: {:?}",
-        decision.commands
+            if matches!(
+                proposal.key,
+                ProposalKeyTrace::StandingForce { .. } | ProposalKeyTrace::Defense { .. }
+            ) {
+                assert_eq!(
+                    proposal.claims.minimum_residual_scrap, 0,
+                    "technology may own exact capital but cannot impose a scalar floor: {proposal:?}"
+                );
+            }
+        }
+    }
+    assert!(saw_standing, "the matrix must exercise standing production");
+}
+
+#[test]
+fn shipped_capital_purchases_preserve_or_fill_the_exact_shallow_screen() {
+    let mut saw_capital = false;
+    for bank in [149, 150, 239, 240, 489, 490, 10_000] {
+        let (mut state, mut brain) = post_floor_capital_case(bank);
+        let before = state.player(PlayerId(0)).scrap;
+        let decision = brain.act_traced(&state);
+        let trace = decision.trace.as_ref().unwrap();
+        assert!(trace.allocation.error.is_none());
+        assert!(trace.allocation.coordinator_failure.is_none());
+        let guard = trace.budget.as_ref().unwrap().voluntary_scrap_guard;
+        let has_capital = decision.commands.iter().any(|command| {
+            matches!(
+                command.command,
+                Command::Build { .. } | Command::UpgradeBuilding { .. }
+            )
+        });
+        saw_capital |= has_capital;
+        let spent = decision
+            .commands
+            .iter()
+            .map(|command| match command.command {
+                Command::UpgradeBuilding { building } => {
+                    let owned = state.building(building).unwrap();
+                    owned.kind.upgrade_from(owned.tier).unwrap().cost
+                }
+                _ => command_cost(&command.command),
+            })
+            .sum::<u32>();
+        assert!(
+            spent <= before.saturating_sub(guard),
+            "bank={before}, guard={guard}, commands={:?}",
+            decision.commands
+        );
+        if has_capital && guard == 0 {
+            assert!(
+                decision.commands.iter().any(|command| matches!(
+                    command.command,
+                    Command::Train {
+                        kind: UnitKind::Sentinel,
+                        ..
+                    }
+                )),
+                "without an existing shallow queue the exact Sentinel purchase must discharge its guard: {:?}",
+                decision.commands
+            );
+        }
+        let report = state.tick(&decision.commands);
+        assert!(
+            report.events.iter().all(|event| !matches!(
+                event,
+                Event::CommandRejected {
+                    player: PlayerId(0),
+                    ..
+                }
+            )),
+            "{:?}",
+            report.events
+        );
+        assert!(state.player(PlayerId(0)).scrap >= guard);
+    }
+    assert!(
+        saw_capital,
+        "the matrix must exercise an actual capital purchase"
     );
 }
 
 #[test]
-fn shipped_brain_spends_capital_only_when_the_exact_shallow_remainder_survives() {
-    let crucible_cost = BuildingKind::Crucible
-        .base_stats()
-        .construction
-        .expect("Crucibles have a construction price")
-        .cost;
-    let sentinel_cost = UnitKind::Sentinel.stats().cost;
-    let scenario = post_floor_capital_scenario(crucible_cost + sentinel_cost);
-    let mut state = scenario
-        .build()
-        .expect("the exact shallow-remainder fixture builds");
-    advance_to_post_floor_policy_tick(&mut state);
-    let mut brain = Brain::scripted(
-        PlayerId(0),
-        scenario.players[0]
-            .bot_config
-            .expect("the bot is configured"),
-        Arc::new(PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds")),
-    );
-
-    let decision = brain.act_traced(&state);
-    assert_eq!(
-        decision
-            .trace
-            .as_ref()
-            .and_then(|trace| trace.budget.as_ref())
-            .expect("the full policy path records its budget")
-            .voluntary_scrap_guard,
-        sentinel_cost,
-    );
-    assert!(decision.commands.iter().any(|command| matches!(
-        command.command,
-        Command::Build {
-            kind: BuildingKind::Crucible,
-            ..
-        }
-    )));
-    assert!(decision.commands.iter().all(|command| !matches!(
-        command.command,
-        Command::Train {
-            kind: UnitKind::Sentinel,
-            ..
-        }
-    )));
-
-    let report = state.tick(&decision.commands);
-    assert!(report.events.iter().all(|event| !matches!(
-        event,
-        Event::CommandRejected {
-            player: PlayerId(0),
-            ..
-        }
-    )));
-    assert_eq!(state.player(PlayerId(0)).scrap, sentinel_cost);
-}
-
-#[test]
-fn shipped_brain_prefers_material_defense_while_preserving_the_capital_reserve() {
-    let sentinel_cost = UnitKind::Sentinel.stats().cost;
-    let capital_reserve = post_floor_capital_reserve();
-    let scenario = post_floor_capital_scenario(capital_reserve + sentinel_cost);
-    let mut state = scenario
-        .build()
-        .expect("the exact capital-and-reinforcement fixture builds");
-    advance_to_post_floor_policy_tick(&mut state);
-    let briefing =
-        Arc::new(PublicMapBriefing::from_scenario(&scenario).expect("the briefing builds"));
-    let own_start = briefing
-        .starting_foundries()
+fn shipped_defense_retains_its_exact_builder_and_site_beside_economic_allocation() {
+    let (mut state, mut brain) = post_floor_capital_case(10_000);
+    let obs = Observation::fog_honest(&state, PlayerId(0));
+    let home = obs
+        .my_buildings
         .iter()
-        .find(|start| start.player == PlayerId(0))
-        .expect("the fixture has a public home anchor")
+        .find(|building| building.kind == BuildingKind::Foundry)
+        .unwrap()
         .anchor;
-    let orientation =
-        Orientation::for_home(&Observation::fog_honest(&state, PlayerId(0)), own_start);
-    let mut brain = Brain::scripted(
-        PlayerId(0),
-        scenario.players[0]
-            .bot_config
-            .expect("the bot is configured"),
-        briefing,
-    );
-
+    let orientation = Orientation::for_home(&obs, home);
     let decision = brain.act_traced(&state);
-    let trace = decision.trace.as_ref().expect("the decision is traced");
-    assert_eq!(
-        trace
-            .budget
-            .as_ref()
-            .expect("the full policy path records its budget")
-            .voluntary_scrap_guard,
-        sentinel_cost,
-        "the unspent shallow standing-force tranche remains guarded",
-    );
+    let trace = decision.trace.as_ref().unwrap();
     let defense = trace
         .allocation
         .proposals
@@ -1352,90 +1277,40 @@ fn shipped_brain_prefers_material_defense_while_preserving_the_capital_reserve()
         .iter()
         .find(|proposal| {
             proposal.disposition == ProposalDispositionTrace::Accepted
-                && matches!(
-                    proposal.key,
-                    ProposalKeyTrace::Defense {
-                        kind: BuildingKind::Array,
-                        ..
-                    }
-                )
+                && matches!(proposal.key, ProposalKeyTrace::Defense { .. })
         })
-        .expect("the material Array wins the exact shared surplus");
-    assert_eq!(
-        defense.claims.current_scrap,
-        BuildingKind::Array
-            .base_stats()
-            .construction
-            .expect("Arrays have a construction price")
-            .cost
-    );
-    assert_eq!(defense.claims.minimum_residual_scrap, capital_reserve);
+        .expect("the exposed position must admit a defensive alternative");
+    assert_eq!(defense.claims.minimum_residual_scrap, 0);
     assert_eq!(defense.claims.builders.total, 1);
     assert_eq!(defense.claims.sites.total, 1);
     let ProposalKeyTrace::Defense { kind, anchor } = defense.key else {
-        unreachable!("the accepted proposal was already proven to be Defense")
+        unreachable!()
     };
-    assert_eq!(defense.claims.sites.entries[0].anchor, anchor);
     let builder = defense.claims.builders.entries[0];
     let world_anchor = orientation.anchor(anchor, kind.base_stats().size);
+    assert_eq!(defense.claims.sites.entries[0].anchor, anchor);
+    assert!(decision.commands.iter().any(|command| matches!(&command.command, Command::Build { units, kind: actual_kind, anchor: actual_anchor, .. } if units.as_slice() == [builder] && *actual_kind == kind && *actual_anchor == world_anchor)));
+    let report = state.tick(&decision.commands);
     assert!(
-        trace
-            .allocation
-            .proposals
-            .entries
-            .iter()
-            .filter(|proposal| matches!(proposal.key, ProposalKeyTrace::StandingForce { .. }))
-            .all(|proposal| proposal.disposition != ProposalDispositionTrace::Accepted)
-    );
-    assert!(
-        trace
-            .allocation
-            .producer_schedule
-            .entries
-            .iter()
-            .all(|job| !matches!(
-                job.owner,
-                ClaimOwnerTrace::Proposal {
-                    key: ProposalKeyTrace::StandingForce { .. }
-                }
-            ))
-    );
-    assert!(decision.commands.iter().any(|command| matches!(
-        &command.command,
-        Command::Build {
-            units,
-            kind: commanded_kind,
-            anchor: commanded_anchor,
-            ..
-        } if command.player == PlayerId(0)
-            && units.as_slice() == [builder]
-            && *commanded_kind == kind
-            && *commanded_anchor == world_anchor
-    )));
-    assert!(decision.commands.iter().all(|command| !matches!(
-        command.command,
-        Command::Train { .. }
-            | Command::Build {
-                kind: BuildingKind::Crucible,
+        report.events.iter().all(|event| !matches!(
+            event,
+            Event::CommandRejected {
+                player: PlayerId(0),
                 ..
             }
-    )));
-
-    let report = state.tick(&decision.commands);
-    assert!(report.events.iter().all(|event| !matches!(
-        event,
-        Event::CommandRejected {
-            player: PlayerId(0),
-            ..
-        }
-    )));
-    assert_eq!(state.player(PlayerId(0)).scrap, capital_reserve);
-    assert!(state.buildings().iter().any(|building| {
-        building.player == PlayerId(0)
-            && building.kind == kind
-            && building.anchor == world_anchor
-            && !building.built
-    }));
+        )),
+        "{:?}",
+        report.events
+    );
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .any(|building| building.player == PlayerId(0)
+                && building.kind == kind
+                && building.anchor == world_anchor
+                && !building.built)
+    );
 }
 
 #[test]
@@ -1451,7 +1326,7 @@ fn player_facing_restoration_waits_for_the_full_frame_footprint() {
     let hidden = frame.offset(1, 1);
     let hidden_index = usize::try_from(hidden.y * obs.map_width + hidden.x).unwrap();
     obs.explored[hidden_index] = false;
-    let dials = standard_dials_without_opening_core_floor();
+    let dials = standard_dials();
 
     let partial = player_facing_intents(&dials, &obs);
     assert!(
@@ -1482,7 +1357,7 @@ fn player_facing_restoration_waits_for_a_visible_occupant_to_clear() {
     let mut occupant = observed_unit(90, UnitKind::Sentinel, frame.offset(1, 0));
     occupant.player = PlayerId(1);
     obs.enemy_units.push(occupant);
-    let dials = standard_dials_without_opening_core_floor();
+    let dials = standard_dials();
 
     let occupied = player_facing_intents(&dials, &obs);
     assert!(
@@ -1531,7 +1406,7 @@ fn player_facing_restoration_requires_a_clean_bounded_sweep_after_worker_damage(
         observed_building(0, BuildingKind::Foundry, home, true),
     );
     obs.known_frames.push(frame);
-    let dials = standard_dials_without_opening_core_floor();
+    let dials = standard_dials();
     let mut policy = UtilityPolicy::new();
     let restores_frame = |intents: &[Intent]| plans_build(intents, BuildingKind::Extractor, frame);
 
@@ -1614,7 +1489,7 @@ fn residual_policy_cannot_originate_a_remote_extractor_foundry() {
         )),
         "an economic priority cannot bypass the real Fabricator prerequisite"
     );
-    assert!(pretech.iter().any(|intent| matches!(
+    assert!(pretech.iter().all(|intent| !matches!(
         intent,
         Intent::Build {
             kind: BuildingKind::Fabricator,
@@ -1643,7 +1518,7 @@ fn residual_policy_cannot_originate_a_remote_extractor_foundry() {
 }
 
 #[test]
-fn impossible_extractor_support_does_not_pin_the_crucible_fund() {
+fn impossible_extractor_support_cannot_originate_residual_technology() {
     let home = TilePos::new(2, 10);
     let extractor = TilePos::new(28, 10);
     let mut obs = construction_observation(470);
@@ -1675,19 +1550,19 @@ fn impossible_extractor_support_does_not_pin_the_crucible_fund() {
         "a remote Extractor without a viable support site is not a capital rung: {intents:?}"
     );
     assert!(
-        intents.iter().any(|intent| matches!(
+        intents.iter().all(|intent| !matches!(
             intent,
             Intent::Build {
                 kind: BuildingKind::Crucible,
                 ..
             }
         )),
-        "the next real tech rung must keep its full 470-scrap fund: {intents:?}"
+        "the residual policy cannot turn an impossible support site into an independent technology purchase: {intents:?}"
     );
 }
 
 #[test]
-fn extractor_support_requires_a_builder_on_the_reachable_side() {
+fn unreachable_support_cannot_trigger_an_unowned_capital_purchase() {
     let home = TilePos::new(22, 10);
     let extractor = TilePos::new(36, 10);
     let mut obs = construction_observation(470);
@@ -1722,14 +1597,14 @@ fn extractor_support_requires_a_builder_on_the_reachable_side() {
         "legal support terrain is not viable while every builder is across a known wall: {intents:?}"
     );
     assert!(
-        intents.iter().any(|intent| matches!(
+        intents.iter().all(|intent| !matches!(
             intent,
             Intent::Build {
                 kind: BuildingKind::Crucible,
                 ..
             }
         )),
-        "an unreachable support claim must not reserve away the next tech rung: {intents:?}"
+        "capital alternatives require their own admitted route-capable builder: {intents:?}"
     );
 }
 
@@ -1794,7 +1669,7 @@ fn projected_support_and_unknown_routes_do_not_create_duplicate_foundry_claims()
 }
 
 #[test]
-fn player_facing_reclaimers_scale_to_producer_demand_past_the_overseer_ceiling() {
+fn idle_producers_do_not_originate_residual_reclaimers_and_overseer_retains_its_cap() {
     let home = TilePos::new(2, 10);
     let mut obs = construction_observation(1_000);
     add_building(
@@ -1828,14 +1703,14 @@ fn player_facing_reclaimers_scale_to_producer_demand_past_the_overseer_ceiling()
 
     let player_facing = player_facing_intents(&dials, &obs);
     assert!(
-        player_facing.iter().any(|intent| matches!(
+        player_facing.iter().all(|intent| !matches!(
             intent,
             Intent::Build {
                 kind: BuildingKind::Reclaimer,
                 ..
             }
         )),
-        "a dry frame-less economy may keep scaling through ordinary legal Reclaimers"
+        "idle factories alone are not useful demand and the residual facade cannot admit Reclaimers"
     );
 
     let overseer = UtilityPolicy::new().think(&dials, &obs, &[], &[]);

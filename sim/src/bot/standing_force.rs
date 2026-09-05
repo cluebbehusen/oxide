@@ -53,7 +53,6 @@ pub(crate) struct StandingForceContext<'a> {
     orientation: Option<Orientation>,
     force_projection_targets: &'a [StandingGroundTarget],
     expansion_security: Option<ExpansionSecurityNeed>,
-    minimum_residual_scrap: u32,
 }
 
 impl<'a> StandingForceContext<'a> {
@@ -70,7 +69,6 @@ impl<'a> StandingForceContext<'a> {
             orientation: None,
             force_projection_targets: &[],
             expansion_security: None,
-            minimum_residual_scrap: 0,
         }
     }
 
@@ -99,12 +97,6 @@ impl<'a> StandingForceContext<'a> {
             target,
             target_strength,
         });
-        self
-    }
-
-    /// Preserves current capital required by an unmigrated residual policy.
-    pub(crate) const fn with_minimum_residual_scrap(mut self, amount: u32) -> Self {
-        self.minimum_residual_scrap = amount;
         self
     }
 }
@@ -566,6 +558,42 @@ struct DemandBasis {
     unmet: u32,
 }
 
+/// Useful route-local work before current funds, technology, or factories gate
+/// its providers. Alternatives with the same service and reason are substitutes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CapabilityDemand {
+    pub(crate) kind: UnitKind,
+    pub(crate) service: StandingForceServiceKey,
+    pub(crate) reason: StandingForceReason,
+    pub(crate) case: ProposalCase,
+    pub(crate) unmet: u32,
+    pub(crate) baseline: UnitKind,
+    pub(crate) provider_value: u128,
+}
+
+impl CapabilityDemand {
+    pub(crate) fn units_needed(&self) -> u64 {
+        let (baseline, provider) = if self.reason == StandingForceReason::WoundedSupport {
+            (1, 1)
+        } else if self.reason == StandingForceReason::AirDefense {
+            let baseline = self.baseline;
+            (
+                combat_strength(baseline, baseline.stats().max_hp, Domain::Air),
+                combat_strength(self.kind, self.kind.stats().max_hp, Domain::Air),
+            )
+        } else {
+            let baseline = self.baseline;
+            (
+                full_ground_strength(baseline),
+                full_ground_strength(self.kind),
+            )
+        };
+        u64::from(self.unmet)
+            .saturating_mul(baseline)
+            .div_ceil(provider.max(1))
+    }
+}
+
 /// Derives ranked, mutually exclusive current-bank alternatives for the
 /// ordinary standing force.
 ///
@@ -574,6 +602,7 @@ struct DemandBasis {
 /// providers, but it never makes an unaffordable request legal. Persistent
 /// operations keep ownership of partial strategic cohorts through exact unit
 /// and paid-queue exclusions.
+#[cfg(test)]
 pub(crate) fn derive_standing_force_proposals(
     obs: &Observation,
     intelligence: &StrategicIntelligence,
@@ -582,6 +611,17 @@ pub(crate) fn derive_standing_force_proposals(
     resources: &ResourceSnapshot,
     context: StandingForceContext<'_>,
 ) -> Vec<StandingForceProposal> {
+    derive_standing_force_with_demand(obs, intelligence, profile, tuning, resources, context).0
+}
+
+pub(crate) fn derive_standing_force_with_demand(
+    obs: &Observation,
+    intelligence: &StrategicIntelligence,
+    profile: &ResolvedProfile,
+    tuning: DifficultyTuning,
+    resources: &ResourceSnapshot,
+    context: StandingForceContext<'_>,
+) -> (Vec<StandingForceProposal>, Vec<CapabilityDemand>) {
     let roster = InventoryRoster::from_observation(obs, context);
     let threats = threat_summary(obs.tick, intelligence);
     let sentinel_strength = full_ground_strength(UnitKind::Sentinel);
@@ -842,13 +882,13 @@ pub(crate) fn derive_standing_force_proposals(
         ));
     }
 
-    let projection_demands = context
+    let projection_demands: Vec<_> = context
         .force_projection_targets
         .iter()
         .copied()
         .map(|target| LocatedDemand::fixed(target, 0))
         .collect();
-    for projection in demand_components(Domain::Ground, projection_demands, &mut routing) {
+    for projection in demand_components(Domain::Ground, projection_demands.clone(), &mut routing) {
         let projection_inventory = component_inventory.serviceable(
             Domain::Ground,
             &projection.targets,
@@ -865,11 +905,57 @@ pub(crate) fn derive_standing_force_proposals(
         ));
     }
 
-    apply_bounded_provider_accumulation(obs, resources, context, &mut candidates);
+    let home_components = routing.components_for_targets(Domain::Ground, &home_targets);
+    for projection in demand_components(Domain::Air, projection_demands, &mut routing) {
+        let ground_components = routing.components_for_targets(Domain::Ground, &projection.targets);
+        if ground_components
+            .iter()
+            .any(|component| home_components.binary_search(component).is_ok())
+        {
+            continue;
+        }
+        let Some(service) = projection.targets.iter().copied().min() else {
+            continue;
+        };
+        let unmet = resources
+            .current_scrap()
+            .amount()
+            .saturating_add(
+                resources
+                    .forecast()
+                    .income_through(
+                        obs.tick
+                            .saturating_add(super::strategy::connected_preparation_horizon()),
+                    )
+                    .amount(),
+            )
+            .checked_div(UnitKind::Sentinel.stats().cost.max(1))
+            .unwrap_or(0)
+            .max(1);
+        for role in [Role::AirGround, Role::Bomber] {
+            routing.capability_demands.push(CapabilityDemand {
+                kind: role.unit_for(obs.faction),
+                service,
+                reason: StandingForceReason::ForceProjection,
+                case: ProposalCase {
+                    urgency: Urgency::Developmental,
+                    confidence: Confidence::Prior,
+                    value: StrategicValue::Material,
+                    time_to_impact: TimeToImpact::Patient,
+                    safety: ExecutionSafety::Managed,
+                },
+                unmet,
+                baseline: UnitKind::Sentinel,
+                provider_value: 0,
+            });
+        }
+    }
+
+    apply_bounded_provider_accumulation(obs, resources, &mut candidates);
 
     let current_scrap = resources.current_scrap().amount();
     candidates.retain(|candidate| {
-        current_scrap.saturating_sub(context.minimum_residual_scrap) >= candidate.kind.stats().cost
+        current_scrap >= candidate.kind.stats().cost
             || matches!(candidate.funding, StandingForceFunding::Accumulate { .. })
     });
 
@@ -893,12 +979,11 @@ pub(crate) fn derive_standing_force_proposals(
             .cmp(&candidate_rank(left))
             .then_with(|| demand_candidate_key(left).cmp(&demand_candidate_key(right)))
     });
-    alternatives
+    let proposals = alternatives
         .into_iter()
-        .map(|candidate| {
-            StandingForceProposal::from_candidate(candidate, context.minimum_residual_scrap)
-        })
-        .collect()
+        .map(|candidate| StandingForceProposal::from_candidate(candidate, 0))
+        .collect();
+    (proposals, routing.capability_demands)
 }
 
 fn force_projection_candidates(
@@ -1223,6 +1308,24 @@ fn candidates_for_kinds(
     let current_scrap = resources.current_scrap().amount();
     let mut candidates = Vec::new();
     for kind in kinds.iter().copied() {
+        routing.capability_demands.push(CapabilityDemand {
+            kind,
+            service,
+            reason: basis.reason,
+            case: basis.case,
+            unmet: basis.unmet,
+            baseline: if basis.reason == StandingForceReason::AirDefense {
+                Role::AntiAir.unit_for(obs.faction)
+            } else if matches!(
+                kind,
+                UnitKind::Lancer | UnitKind::Bombard | UnitKind::Avalanche
+            ) {
+                UnitKind::Lancer
+            } else {
+                UnitKind::Sentinel
+            },
+            provider_value: usefulness(kind),
+        });
         let Some((eligible_producers, ready_before)) =
             eligible_producers(obs, resources, kind, routing, targets)
         else {
@@ -1336,13 +1439,10 @@ fn useful_provider_capacity(full: u64, missing: u64, reason: StandingForceReason
 fn apply_bounded_provider_accumulation(
     obs: &Observation,
     resources: &ResourceSnapshot,
-    context: StandingForceContext<'_>,
     candidates: &mut [DemandCandidate],
 ) {
     let current_scrap = resources.current_scrap().amount();
-    let affordable = |candidate: &DemandCandidate| {
-        current_scrap.saturating_sub(context.minimum_residual_scrap) >= candidate.kind.stats().cost
-    };
+    let affordable = |candidate: &DemandCandidate| current_scrap >= candidate.kind.stats().cost;
     let held_current = candidates
         .iter()
         .enumerate()
@@ -1373,15 +1473,12 @@ fn apply_bounded_provider_accumulation(
                     let fallback_delay = current_best.ready_before.saturating_sub(obs.tick);
                     let accumulation_deadline =
                         candidate.ready_before.saturating_add(fallback_delay);
-                    current_scrap
-                        .saturating_add(
-                            resources
-                                .forecast()
-                                .income_through(accumulation_deadline)
-                                .amount(),
-                        )
-                        .saturating_sub(context.minimum_residual_scrap)
-                        >= candidate.kind.stats().cost
+                    current_scrap.saturating_add(
+                        resources
+                            .forecast()
+                            .income_through(accumulation_deadline)
+                            .amount(),
+                    ) >= candidate.kind.stats().cost
                 })
         })
         .map(|(index, _)| index)
@@ -1403,7 +1500,6 @@ fn apply_bounded_provider_accumulation(
                 let through = candidate.ready_before.saturating_add(fallback_delay);
                 (current_scrap
                     .saturating_add(resources.forecast().income_through(through).amount())
-                    .saturating_sub(context.minimum_residual_scrap)
                     >= candidate.kind.stats().cost)
                     .then_some((index, through))
             })
@@ -1418,9 +1514,7 @@ fn apply_bounded_provider_accumulation(
             });
         if let Some((index, through)) = selected {
             let cost = candidates[index].kind.stats().cost;
-            let current_scrap = current_scrap
-                .saturating_sub(context.minimum_residual_scrap)
-                .min(cost);
+            let current_scrap = current_scrap.min(cost);
             candidates[index].funding = StandingForceFunding::Accumulate {
                 through,
                 current_scrap,
@@ -1458,7 +1552,7 @@ impl RouteComponentIndex {
     }
 }
 
-struct ServiceRouting<'a> {
+pub(crate) struct ServiceRouting<'a> {
     obs: &'a Observation,
     public_map: Option<&'a PublicMapBriefing>,
     orientation: Option<Orientation>,
@@ -1470,10 +1564,11 @@ struct ServiceRouting<'a> {
     air_target_components: BTreeMap<StandingGroundTarget, Vec<usize>>,
     ground_producer_components: BTreeMap<BuildingId, Option<usize>>,
     air_producer_components: BTreeMap<BuildingId, Option<usize>>,
+    capability_demands: Vec<CapabilityDemand>,
 }
 
 impl<'a> ServiceRouting<'a> {
-    fn new(
+    pub(crate) fn new(
         obs: &'a Observation,
         public_map: Option<&'a PublicMapBriefing>,
         orientation: Option<Orientation>,
@@ -1490,7 +1585,22 @@ impl<'a> ServiceRouting<'a> {
             air_target_components: BTreeMap::new(),
             ground_producer_components: BTreeMap::new(),
             air_producer_components: BTreeMap::new(),
+            capability_demands: Vec::new(),
         }
+    }
+
+    pub(crate) fn origin_serves(
+        &mut self,
+        origin: TilePos,
+        kind: UnitKind,
+        service: StandingGroundTarget,
+    ) -> bool {
+        let Some(component) = self.component(kind.stats().domain, origin) else {
+            return false;
+        };
+        self.components_for_target(kind.stats().domain, service)
+            .binary_search(&component)
+            .is_ok()
     }
 
     fn inventory_origin_components(&mut self, member: InventoryMember) -> Vec<usize> {
@@ -1508,7 +1618,7 @@ impl<'a> ServiceRouting<'a> {
         }
     }
 
-    fn producer_reaches_any(
+    pub(crate) fn producer_reaches_any(
         &mut self,
         producer: BuildingId,
         kind: UnitKind,
@@ -1662,7 +1772,7 @@ fn service_route_projection<'a>(
     }
 }
 
-fn air_production_spawn_tile(
+pub(crate) fn air_production_spawn_tile(
     producer: &super::observation::BuildingObs,
     orientation: Option<Orientation>,
 ) -> TilePos {

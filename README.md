@@ -23,7 +23,9 @@ the complete unit roster, settings, and controls. Normal skirmishes use
 deterministic rules-based opponents with four difficulty levels and Turtle,
 Balanced, or Aggressive stances. A hidden seeded identity varies each opponent's
 strategic preferences. They receive no extra resources, information, build
-access, or combat advantages.
+access, or combat advantages. Economic investment follows reachable work,
+production bottlenecks, and useful capability demand rather than fixed worker or
+factory quotas.
 
 ## The game
 

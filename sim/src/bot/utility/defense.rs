@@ -529,6 +529,179 @@ impl<'a> DefenseThinkContext<'a> {
         self.building_contacts
     }
 
+    pub(super) fn upgrade_evidence(&mut self, kind: BuildingKind) -> DefenseOpportunityEvidence {
+        let Some(profile) = DefenseProfile::for_kind(kind) else {
+            return DefenseOpportunityEvidence::PublicPrior;
+        };
+        self.ensure_projection(profile.domain);
+        let projection = match profile.domain {
+            DefenseDomain::Ground => self.ground_projection.as_ref().and_then(Option::as_ref),
+            DefenseDomain::Air => self.air_projection.as_ref().and_then(Option::as_ref),
+        };
+        projection.map_or(DefenseOpportunityEvidence::PublicPrior, |projection| {
+            projection.evidence
+        })
+    }
+
+    pub(super) fn upgrade_value(&mut self, building: &BuildingObs, horizon: u64) -> u64 {
+        let Some(upgrade) = building.kind.upgrade_from(building.tier) else {
+            return 0;
+        };
+        if building.kind == BuildingKind::Array {
+            return self.array_upgrade_value(building, horizon, u64::from(upgrade.build_ticks));
+        }
+        let Some(profile) = DefenseProfile::for_kind(building.kind) else {
+            return 0;
+        };
+        self.ensure_projection(profile.domain);
+        let projection = match profile.domain {
+            DefenseDomain::Ground => self.ground_projection.as_ref().and_then(Option::as_ref),
+            DefenseDomain::Air => self.air_projection.as_ref().and_then(Option::as_ref),
+        };
+        let Some(projection) = projection else {
+            return 0;
+        };
+        let mut upgraded = building.clone();
+        upgraded.tier += 1;
+        let dps = |building: &BuildingObs| {
+            building
+                .kind
+                .tier_stats(building.tier)
+                .weapons
+                .iter()
+                .filter(|weapon| weapon_targets_domain(weapon, profile.domain))
+                .map(|weapon| {
+                    u64::from(weapon.damage)
+                        .saturating_mul(u64::from(weapon.salvo))
+                        .saturating_mul(100)
+                        / u64::from(weapon.cooldown_ticks.max(1))
+                })
+                .fold(0, u64::saturating_add)
+        };
+        let old_dps = dps(building);
+        let new_dps = dps(&upgraded);
+        if new_dps == 0 {
+            return 0;
+        }
+        let active_ticks = horizon.saturating_sub(u64::from(upgrade.build_ticks));
+        let mut value = 0u64;
+        for (index, asset) in self.grounding.assets.iter().enumerate() {
+            let mut marginal = 0;
+            for approach in projection
+                .approaches
+                .iter()
+                .filter(|approach| approach.asset == index)
+            {
+                let currently_covered = approach.path.iter().any(|tile| {
+                    building_covers(self.obs, self.briefing, building, *tile, profile.domain)
+                });
+                // The self-refit cannot retreat or be cancelled. Do not remove
+                // a needed firing position while a current attacker is near it.
+                if currently_covered
+                    && projection.evidence == DefenseOpportunityEvidence::CurrentArmed
+                    && approach.path.len() <= DEFENSE_RADIUS as usize
+                {
+                    return 0;
+                }
+                for &tile in &approach.path {
+                    if !building_covers(self.obs, self.briefing, &upgraded, tile, profile.domain) {
+                        continue;
+                    }
+                    let before =
+                        if building_covers(self.obs, self.briefing, building, tile, profile.domain)
+                        {
+                            old_dps
+                        } else {
+                            0
+                        };
+                    let gain = new_dps
+                        .saturating_mul(active_ticks)
+                        .saturating_sub(before.saturating_mul(horizon));
+                    let redundancy = projection
+                        .existing
+                        .iter()
+                        .filter(|other| {
+                            other.id != building.id
+                                && building_covers(
+                                    self.obs,
+                                    self.briefing,
+                                    other,
+                                    tile,
+                                    profile.domain,
+                                )
+                        })
+                        .count() as u64;
+                    let covered_value = u64::from(asset.value)
+                        .saturating_mul(u64::from(UnitKind::Sentinel.stats().cost));
+                    marginal = marginal.max(
+                        covered_value.saturating_mul(gain)
+                            / new_dps
+                                .saturating_mul(horizon)
+                                .saturating_mul(redundancy.saturating_add(1))
+                                .max(1),
+                    );
+                }
+            }
+            value = value.saturating_add(marginal);
+        }
+        value.saturating_mul(u64::from(building.hp))
+            / u64::from(building.kind.tier_stats(building.tier).max_hp.max(1))
+    }
+
+    fn array_upgrade_value(&self, building: &BuildingObs, horizon: u64, offline: u64) -> u64 {
+        let covers = |array: &BuildingObs, target: TilePos, tier: u8| {
+            let radius = if tier == 0 {
+                crate::stats::CHARGE_BASE_ARRAY_DETECT_RADIUS
+            } else {
+                crate::stats::CHARGE_ARRAY_DETECT_RADIUS
+            };
+            let dx = i64::from(target.x) - i64::from(array.anchor.x);
+            let dy = i64::from(target.y) - i64::from(array.anchor.y);
+            dx * dx + dy * dy <= i64::from(radius) * i64::from(radius)
+        };
+        let radius = crate::stats::CHARGE_ARRAY_DETECT_RADIUS;
+        let mut before = 0u64;
+        let mut after = 0u64;
+        for y in (building.anchor.y - radius).max(0)
+            ..=(building.anchor.y + radius).min(self.obs.map_height - 1)
+        {
+            for x in (building.anchor.x - radius).max(0)
+                ..=(building.anchor.x + radius).min(self.obs.map_width - 1)
+            {
+                let tile = TilePos::new(x, y);
+                if self
+                    .briefing
+                    .terrain_at(tile)
+                    .is_none_or(|terrain| terrain.blocks_ground())
+                {
+                    continue;
+                }
+                if self
+                    .obs
+                    .my_buildings
+                    .iter()
+                    .chain(&self.obs.ally_buildings)
+                    .any(|other| {
+                        other.id != building.id
+                            && other.built
+                            && other.kind == BuildingKind::Array
+                            && covers(other, tile, other.tier)
+                    })
+                {
+                    continue;
+                }
+                before += u64::from(covers(building, tile, building.tier));
+                after += u64::from(covers(building, tile, building.tier + 1));
+            }
+        }
+        // Both tiers have the same radar radius. Only novel, usable buried-charge
+        // detection earns value; the refit also loses the existing coverage.
+        after
+            .saturating_mul(horizon.saturating_sub(offline))
+            .saturating_sub(before.saturating_mul(horizon))
+            / horizon.max(1)
+    }
+
     pub(super) fn reinforcement_travel_cost(
         &mut self,
         unit: &UnitObs,

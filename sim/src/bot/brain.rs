@@ -572,6 +572,7 @@ impl Brain {
             fresh_emergency_defense_intents,
             fresh_foundry_intents,
             fresh_defense_intents,
+            fresh_economy_intents,
             allocated_producer_intents,
             allocation_ok,
             accepted_connected,
@@ -602,10 +603,16 @@ impl Brain {
         let strategic_was_staged = staged_strategy.is_some();
         let fresh_defense_builders = fresh_defense_intents
             .iter()
+            .chain(&fresh_economy_intents)
             .filter_map(|intent| match intent {
                 Intent::BuildWith { builder, .. } => Some(*builder),
                 _ => None,
             })
+            .chain(
+                self.policy
+                    .economic_saving()
+                    .and_then(|saving| saving.builder),
+            )
             .collect::<Vec<_>>();
         let strategic_result = if let Some(staged) = staged_strategy {
             staged
@@ -649,6 +656,7 @@ impl Brain {
             remove_producer_intents(&mut strategic);
         }
         strategic.intents.splice(0..0, fresh_defense_intents);
+        strategic.intents.splice(0..0, fresh_economy_intents);
         strategic.intents.splice(0..0, fresh_foundry_intents);
         strategic
             .intents
@@ -2371,7 +2379,31 @@ mod tests {
             let report = state.tick(&commands);
             for event in report.events {
                 if let crate::Event::CommandRejected { player, reason } = event {
-                    panic!("seat {player} issued a rejected opening command: {reason:?}");
+                    let placements: Vec<_> = commands
+                        .iter()
+                        .filter_map(|command| match &command.command {
+                            Command::Build {
+                                kind,
+                                anchor,
+                                units,
+                                ..
+                            } => Some((
+                                *kind,
+                                *anchor,
+                                state.place_intent_refusal_replacing(
+                                    command.player,
+                                    *kind,
+                                    *anchor,
+                                    units,
+                                ),
+                            )),
+                            _ => None,
+                        })
+                        .collect();
+                    panic!(
+                        "seat {player} issued a rejected opening command: {reason:?}; tick={}; commands={commands:?}; placements={placements:?}",
+                        state.current_tick()
+                    );
                 }
             }
         }
@@ -3178,7 +3210,7 @@ mod tests {
     }
 
     #[test]
-    fn active_bulk_lift_spends_only_the_bank_beyond_its_airworks_capacity() {
+    fn active_bulk_lift_spends_its_funded_bank_without_a_factory_tax() {
         let airworks_capacity = BuildingKind::Airworks
             .base_stats()
             .construction
@@ -3234,19 +3266,19 @@ mod tests {
             })
             .count();
         assert_eq!(
-            carrier_commands, 1,
-            "the lift may spend exactly the non-capacity remainder: {:?}",
+            carrier_commands, 2,
+            "the retained lift may use both planned queue slots without an unfunded factory tax: {:?}",
             result.trace
         );
         assert!(
-            result.commands.iter().any(|command| matches!(
+            result.commands.iter().all(|command| !matches!(
                 command.command,
                 Command::Build {
                     kind: BuildingKind::Airworks,
                     ..
                 }
             )),
-            "the active lift's capacity investment must lower beside the carrier: commands={:?}, trace={:?}",
+            "factory investment must not seize the older operation's funded bank: commands={:?}, trace={:?}",
             result.commands,
             result.trace
         );
@@ -3261,7 +3293,7 @@ mod tests {
     }
 
     #[test]
-    fn active_bulk_lift_holds_exact_airworks_capital_through_full_queues() {
+    fn active_bulk_lift_retains_its_funding_through_full_queues() {
         let airworks_cost = BuildingKind::Airworks
             .base_stats()
             .construction
@@ -3399,14 +3431,14 @@ mod tests {
         let result = brain.act_traced(&state);
         let commands = result.commands;
         assert!(
-            commands.iter().any(|command| matches!(
+            commands.iter().all(|command| !matches!(
                 command.command,
                 Command::Build {
                     kind: BuildingKind::Airworks,
                     ..
                 }
             )),
-            "Utility must receive and spend the capital hidden from active strategic production: {commands:?}; trace={:?}",
+            "a full queue must not redirect the retained operation's capital to an unadmitted factory: {commands:?}; trace={:?}",
             result.trace
         );
         assert!(
@@ -3431,7 +3463,7 @@ mod tests {
     }
 
     #[test]
-    fn connected_air_cannot_spend_capacity_independently_required_by_a_lift() {
+    fn connected_air_and_lift_share_capacity_without_a_residual_factory_tax() {
         let mut scenario = combined_operation_scenario();
         scenario
             .buildings
@@ -3478,15 +3510,11 @@ mod tests {
 
         let mut brain = operation_identity_brain(PlayerId(0), &scenario);
         brain.dials.minimum_core_equivalents = 0;
-        let capacity_fund = brain.policy.airworks_capacity_commitment(
-            &brain.dials,
-            &oriented,
-            home,
-            Some(lift_airwork),
-            Some(0),
-            &[],
-        );
-        assert!(capacity_fund > 0);
+        let capacity_fund = BuildingKind::Airworks
+            .base_stats()
+            .construction
+            .unwrap()
+            .cost;
         enlist_opening_core(&mut brain, &state);
         brain.orientation = Some(orientation);
         brain.mind_mut().lifts = Some(lift);
@@ -3502,15 +3530,23 @@ mod tests {
 
         let result = brain.act_traced(&state);
         let trace = result.trace.expect("the capacity decision is traced");
-        assert!(
-            trace.channels.connected_air.effects.committed_scrap <= spendable_after_capacity,
-            "the connected package must size itself inside the bank left after the lift's capacity fund"
-        );
         let budget = trace.budget.expect("the ledger decision is traced");
-        assert_eq!(budget.airworks_capacity, capacity_fund);
+        assert_eq!(budget.airworks_capacity, 0);
         assert!(
-            budget.utility_spendable >= capacity_fund,
-            "the independently warranted Airworks fund must survive connected and lift planning"
+            trace.channels.connected_air.effects.committed_scrap <= budget.bank,
+            "operation spending must still fit observed current capital"
+        );
+        let report = state.tick(&result.commands);
+        assert!(
+            report.events.iter().all(|event| !matches!(
+                event,
+                crate::Event::CommandRejected {
+                    player: PlayerId(0),
+                    ..
+                }
+            )),
+            "{:?}",
+            report.events
         );
     }
 
@@ -3569,7 +3605,7 @@ mod tests {
                     ..
                 }
             )),
-            "all combined-operation commands must remain ordinary legal commands: {:?}",
+            "all combined-operation commands must remain ordinary legal commands: {:?}; commands={commands:?}",
             report.events
         );
     }
@@ -5442,7 +5478,7 @@ mod tests {
             })
             .map(|job| job.current_scrap)
             .sum::<u32>();
-        let defense_current_scrap = funded_trace
+        let capital_current_scrap = funded_trace
             .allocation
             .proposals
             .entries
@@ -5452,6 +5488,7 @@ mod tests {
                     && matches!(
                         proposal.key,
                         super::super::trace::ProposalKeyTrace::Defense { .. }
+                            | super::super::trace::ProposalKeyTrace::Economy { .. }
                     )
             })
             .map(|proposal| proposal.claims.current_scrap)
@@ -5466,7 +5503,7 @@ mod tests {
             funded_budget
                 .strategic_spendable
                 .saturating_add(standing_current_scrap)
-                .saturating_add(defense_current_scrap),
+                .saturating_add(capital_current_scrap),
             operation_fund.saturating_sub(funded_budget.voluntary_scrap_guard),
             "the accepted Foundry owns only its construction capital; shared allocation may spend the independent excess on connected, standing-force, and defense investment after retaining the shallow screen exactly once: budget={funded_budget:?}, schedule={:?}",
             funded_trace.allocation.producer_schedule,
@@ -5900,6 +5937,12 @@ mod tests {
                 .saturating_add(UnitKind::Harvester.stats().cost),
         );
         scenario.name = "simultaneous Foundry and connected offense dispatch".into();
+        scenario.buildings.extend((0..8).map(|index| BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Reclaimer,
+            x: 16 + index * 3,
+            y: 2,
+        }));
         let scout = scenario
             .units
             .iter_mut()

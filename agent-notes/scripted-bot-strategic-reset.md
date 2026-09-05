@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-04T20:40:20
+updated: 2026-09-05T12:16:22
 ---
 
 # Scripted Bot Strategic Reset
@@ -56,6 +56,20 @@ without arbitrary controller caps.
   because their final combined hashes will ship under 0.17.0.
 - The tenth and final PR owns the workspace and `SIM_VERSION` bump to 0.17.0
   plus the final fixture refresh. No earlier PR changes either version.
+- Approved a six-minute pre-contact defense bound while retaining exact
+  allocation, placement, completion, and command-legality assertions. Economic
+  investment may precede voluntary static defense; the prior diagnostic placed
+  it at tick 5808.
+- Prioritized cheap, behavior-preserving performance improvements before
+  publication. The user accepts remaining overhead for this slice if removing it
+  would require major architectural changes; preserve the measured cost and
+  profiling evidence instead of expanding the migration into a redesign.
+- Approved including the narrow pre-existing allied-frame home-Extractor
+  recovery fix in the economic migration, with a regression and renewed
+  validation before publication.
+- Hash and version approval is an implementing-agent responsibility. Reviewers
+  should assess technical compatibility, not flag missing approval that may have
+  been granted outside their context.
 
 ## Findings
 
@@ -76,6 +90,13 @@ without arbitrary controller caps.
   storm: bots repeatedly issue rejected Extractor builds against contested
   frames hidden by fog. The selection and reissue path is unchanged from the
   Action 5 base and belongs in a separate bug fix.
+- Terminal Basin seed 20260814 with personality seeds 9008-9015 exposed a
+  pre-existing home-restoration omission: seat 1 retried an allied Extractor
+  frame (13,23) 143 times from ticks 8568 through 11976. At tick 11976, allied
+  seat 0 Extractor 109 occupies the frame in both authoritative state and seat 1
+  knowledge. The selector checked own/enemy buildings but omitted allied
+  buildings; the approved narrow fix adds that same occupancy check for allies
+  without changing frozen Overseer or simulation rules.
 
 ## Actions
 
@@ -371,7 +392,7 @@ without arbitrary controller caps.
     and verified them unblessed in the full workspace suite. Frozen simulation
     and Overseer behavior remain unchanged. Human play and final strength
     calibration remain Action 10 work.
-- [ ] 7. Migrate economy, technology, and production capacity away from
+- [x] 7. Migrate economy, technology, and production capacity away from
       arbitrary ceilings.
   - Choose workers, Extractors, Reclaimers, Foundries, factories, and upgrades
     from saturation, payback, bottlenecks, demand, and reachable opportunity;
@@ -384,6 +405,86 @@ without arbitrary controller caps.
     delay, diminishing return, rich-map growth, and removal of worker,
     specialist, factory, and upgrade ceilings that lack game-world
     justification.
+  - Implement the accepted economic-investment migration: safe work and
+    capability demand, exact typed capital and worker choices, upgrade downtime,
+    shared allocation, and bounded saving. Preserve opening recovery and frozen
+    Overseer; leave raid, reconnaissance, and Repair Bay admission for Action 8.
+  - Implemented typed economic proposals from finite safe work, pre-eligibility
+    capability demand, exact capital/builders/sites/upgrade ids, refit income
+    loss, and shared capacity. Added construction-backlog replacement valuation
+    and capacity-only Foundry quotes through existing expansion security and
+    saving. Retained opening recovery and the frozen Overseer; residual Repair
+    Bay, scouting, and raid admission remain Action 8.
+  - Regressions cover fixed-deadline saving and deferred foundation ownership,
+    paid-work preservation, core loss and expiry, changed site occupation,
+    retained Foundry footprint alternatives, three-foundation conflicts,
+    prerequisite chains, paid/deferred capacity, and exact five-domain dispatch.
+    Fixed a live cancellation loop caused by shallow Sentinel recovery revoking
+    accepted construction, and prevented prior-based income demand from
+    borrowing evidence from already-funded current work. Doctrine fixtures
+    retain orphan recovery, scout ownership, and repair cancellation assertions.
+  - Large-map review retains calibration limits: Terminal Basin remained
+    undecided at ten minutes with late and uneven technology, while Skyhook
+    produced air forces, transport loads, and multi-Foundry growth but seats 2,
+    3, and 7 stopped exploring after early scout losses and banked substantial
+    scrap. These observations do not constitute whole-match promotion;
+    reconnaissance and outcome recovery remain Actions 8-10.
+  - Cheap behavior-preserving optimization is complete: skip defense roles that
+    cannot fit imported fixed capital, and skip standing-force demand projection
+    when revalidating only deferred foundation travel. The isolated 3400-tick
+    Terminal Basin benchmark improved from 22.50 to 13.64 seconds, versus the
+    recorded 10.15-second baseline; final state 0x28883c0a2567af60 and command
+    hash fnv1a64:f0135e5840cbe199 are unchanged, with zero rejections or stalls.
+    Remaining defense-routing overhead is accepted under the user-approved scope
+    boundary; broad geometry/cache redesign is deferred.
+  - Reviewed complete Scrapheap/Turtle, Standard/Balanced, and
+    Veteran/Aggressive Skirmish games, plus the six-leg Prime/Balanced batch
+    across Skirmish, Terminal Basin, and Skyhook with personality seeds starting
+    at 9000. All Skirmish games reached decisions without rejections or stalls.
+    Four large-map legs reached the 12000-tick review limit; one Terminal seed
+    exposed the allied-frame defect recorded in Findings, while both Skyhook
+    legs had zero rejections and exercised transport and air capacity. Native
+    Skyhook playback at tick 8953 confirmed the Load checkpoint. These are
+    execution and review evidence, not human fun approval.
+  - Included the approved allied-frame recovery fix. The regression failed
+    before the selector change and now covers unfinished/completed allied
+    Extractors, repeated decisions without a phantom capital hold, and
+    eligibility after the frame becomes vacant. The exact Terminal Basin seed
+    20260814 with personality seeds 9008-9015 now runs 12000 ticks with zero
+    command rejections across all eight seats, versus 143 rejected restoration
+    commands before the fix. Allied Extractor 109 remains visible on (13,23) at
+    ticks 8568 and 11976; seat 1 never retries after its original tick-zero
+    build. Replay reconstruction matches final hash 0x71078290e083a001.
+  - Final validation passes: full workspace tests including unblessed
+    player-facing oracles and frozen state hashes, Clippy, cargo check, rustdoc
+    with warnings denied, rustfmt, Markdown formatting, all eight canonical
+    skill validators, unit coverage at 90.49%, and combined coverage at 91.89%.
+    The previously approved player-facing fixture refresh remains the only
+    golden change; no further bless was needed for the allied-frame fix.
+    Workspace and simulation versions remain unchanged.
+  - Repeated the isolated 3400-tick benchmark after the allied-frame fix: 13.31
+    seconds with the same state/command hashes and zero rejections or stalls,
+    confirming the cheap optimization remains intact on the final tree.
+  - The published-slice review reproduced shared Airworks time being reused
+    across simultaneous air/lift demand and distant live harvesters entering
+    work with zero travel. Previously green single-demand tests missed both
+    cases. The follow-up regressions now cover them. The review also raised hash
+    approval, already satisfied by the stack-wide same-version decision recorded
+    before this slice.
+  - Fixed shared Airworks accounting with deadline/readiness/route-bound joint
+    time allocation. Live harvest workers now pay initial public-route travel to
+    visible safe work, using one lazily built distance field per used region.
+    Regressions cover both reproduced defects, restricted customers, residual
+    reassignment, paid readiness, expired deadlines, and partial-unit returns.
+  - Follow-up validation passes all workspace tests, Clippy, type checking,
+    rustdoc, rustfmt, Markdown formatting, unit coverage (90.50%), and combined
+    coverage (91.90%). Player-facing and frozen simulation hashes remain
+    unchanged; no bless or version change was needed. The 12000-tick Skyhook
+    replay preserves prior command/state hashes, eight Load commands (first tick
+    8952), zero rejections, and prior sparse stalls; reconstruction matches
+    0x841e2003b70e81e5. The isolated Terminal Basin 3400-tick benchmark takes
+    13.54 seconds versus 13.31 before the fixes, with identical hashes and zero
+    rejections or stalls.
 - [ ] 8. Migrate reconnaissance and support to information value and concrete
       operational demand.
   - Scout when resolving uncertainty could change a decision, and build repair,

@@ -15,8 +15,9 @@ use crate::bot::strategy::{
     ConnectedTimeToImpact, ConnectedUrgency, FreshConnectedProposal,
 };
 use crate::bot::utility::{
-    FoundryConfidence, FoundryExecutionSafety, FoundryOpportunityCase, FoundryStrategicValue,
-    FoundryTimeToImpact, FoundryUrgency, FreshDefenseProposal, FreshFoundryProposal,
+    EconomicInvestment, EconomicInvestmentKey, FoundryConfidence, FoundryExecutionSafety,
+    FoundryOpportunityCase, FoundryStrategicValue, FoundryTimeToImpact, FoundryUrgency,
+    FreshDefenseProposal, FreshFoundryProposal,
 };
 use crate::stats::BuildingKind;
 
@@ -31,6 +32,8 @@ pub(crate) enum DomainPayload {
     StandingForce(StandingForceProposal),
     /// Frozen exact defensive construction.
     Defense(FreshDefenseProposal),
+    /// Exact economic purchase.
+    Economy(EconomicInvestment),
 }
 
 /// Exact domain payloads compared during cross-domain allocation.
@@ -38,6 +41,69 @@ pub(crate) type DomainInvestmentProposal = InvestmentProposal<DomainPayload>;
 
 /// Allocation output retaining the exact selected domain plans.
 pub(crate) type DomainAllocationResult = AllocationResult<DomainPayload>;
+
+pub(crate) fn economic_investment_proposal(
+    proposal: EconomicInvestment,
+) -> Result<DomainInvestmentProposal, ClaimBundleError> {
+    let claims = economic_investment_claims(&proposal)?;
+    let personality = proposal.personality;
+    Ok(InvestmentProposal::fresh(
+        ProposalKey::Economy(proposal.key),
+        proposal.case,
+        claims,
+        DomainPayload::Economy(proposal),
+    )
+    .with_personality_preference(u16::from(personality)))
+}
+
+pub(crate) fn economic_investment_claims(
+    proposal: &EconomicInvestment,
+) -> Result<ClaimBundle, ClaimBundleError> {
+    let forecast = (proposal.current_capital < proposal.cost)
+        .then_some(ForecastClaim {
+            through: proposal.deadline,
+            amount: proposal.cost.saturating_sub(proposal.current_capital),
+        })
+        .into_iter()
+        .collect();
+    let claims = match proposal.key {
+        EconomicInvestmentKey::Train { kind, producer, .. } => ClaimBundle::new(
+            0,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![ProducerJobClaim::immediate(
+                kind,
+                proposal.observed_at,
+                proposal.ready_at.saturating_add(1),
+                vec![producer],
+            )],
+        )?,
+        EconomicInvestmentKey::Build { kind, anchor } => ClaimBundle::new(
+            proposal.current_capital,
+            forecast,
+            proposal.builder.into_iter().collect(),
+            Vec::new(),
+            vec![
+                crate::bot::resources::SiteFootprint::new(anchor, kind.base_stats().size)
+                    .expect("economic foundations have positive footprints"),
+            ],
+            Vec::new(),
+        )?,
+        EconomicInvestmentKey::Upgrade { building, .. } => ClaimBundle::new(
+            proposal.current_capital,
+            forecast,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )?
+        .with_building(building)
+        .with_foregone_income(proposal.foregone_income.clone())?,
+    };
+    Ok(claims)
+}
 
 impl AllocationPersonality {
     /// Resolves positive cross-domain emphasis without granting or removing work.
@@ -366,9 +432,13 @@ pub(crate) struct AcceptedDomainPayloads {
     connected: Option<FreshConnectedProposal>,
     standing_force: Option<StandingForceProposal>,
     defense: Option<FreshDefenseProposal>,
+    economy: Option<EconomicInvestment>,
 }
 
 impl AcceptedDomainPayloads {
+    pub(crate) fn take_economy(&mut self) -> Option<EconomicInvestment> {
+        self.economy.take()
+    }
     /// Selected expansion payload, if the economic proposal won.
     pub(crate) fn take_foundry(&mut self) -> Option<FreshFoundryProposal> {
         self.foundry.take()
@@ -412,7 +482,8 @@ impl DomainAllocationResult {
                 ProposalKey::ConnectedOffenseMinimum(key) => Some(key),
                 ProposalKey::FoundryExpansion(_)
                 | ProposalKey::StandingForce(_)
-                | ProposalKey::Defense(_) => None,
+                | ProposalKey::Defense(_)
+                | ProposalKey::Economy(_) => None,
             }
         })
     }
@@ -425,7 +496,8 @@ impl DomainAllocationResult {
                 DomainPayload::Connected(payload) => Some(payload.marginal_variants()),
                 DomainPayload::Foundry(_)
                 | DomainPayload::StandingForce(_)
-                | DomainPayload::Defense(_) => None,
+                | DomainPayload::Defense(_)
+                | DomainPayload::Economy(_) => None,
             }
         })
     }
@@ -448,7 +520,8 @@ impl DomainAllocationResult {
                     ) => Some((key, payload.marginal_variants().contains(marginal))),
                     (ProposalKey::FoundryExpansion(_), DomainPayload::Foundry(_))
                     | (ProposalKey::StandingForce(_), DomainPayload::StandingForce(_))
-                    | (ProposalKey::Defense(_), DomainPayload::Defense(_)) => None,
+                    | (ProposalKey::Defense(_), DomainPayload::Defense(_))
+                    | (ProposalKey::Economy(_), DomainPayload::Economy(_)) => None,
                     _ => unreachable!("payload validation is exhaustive above"),
                 }
             })
@@ -467,7 +540,8 @@ impl DomainAllocationResult {
                 DomainPayload::Connected(payload) => Some(payload),
                 DomainPayload::Foundry(_)
                 | DomainPayload::StandingForce(_)
-                | DomainPayload::Defense(_) => None,
+                | DomainPayload::Defense(_)
+                | DomainPayload::Economy(_) => None,
             });
         assert!(
             selected.is_some_and(|payload| payload.select_marginal(marginal)),
@@ -509,6 +583,10 @@ impl DomainAllocationResult {
                     debug_assert!(payloads.defense.is_none());
                     payloads.defense = Some(payload);
                 }
+                (ProposalKey::Economy(_), DomainPayload::Economy(payload)) => {
+                    debug_assert!(payloads.economy.is_none());
+                    payloads.economy = Some(payload);
+                }
                 _ => panic!("an accepted allocation payload must match its proposal domain"),
             }
         }
@@ -541,6 +619,7 @@ fn validate_payload_key(proposal: &DomainInvestmentProposal) {
                     DomainPayload::StandingForce(_)
                 )
                 | (ProposalKey::Defense(_), DomainPayload::Defense(_))
+                | (ProposalKey::Economy(_), DomainPayload::Economy(_))
         ),
         "an allocation payload must match its proposal domain"
     );
@@ -676,6 +755,7 @@ mod tests {
         match proposal.payload() {
             DomainPayload::Foundry(payload) => assert_eq!(payload, &original),
             DomainPayload::Connected(_)
+            | DomainPayload::Economy(_)
             | DomainPayload::StandingForce(_)
             | DomainPayload::Defense(_) => {
                 panic!("the Foundry adapter returned the wrong domain payload");
@@ -773,7 +853,10 @@ mod tests {
 
         match proposal.payload() {
             DomainPayload::StandingForce(payload) => assert_eq!(payload, &original),
-            DomainPayload::Foundry(_) | DomainPayload::Connected(_) | DomainPayload::Defense(_) => {
+            DomainPayload::Foundry(_)
+            | DomainPayload::Connected(_)
+            | DomainPayload::Defense(_)
+            | DomainPayload::Economy(_) => {
                 panic!("the standing-force adapter returned the wrong domain payload");
             }
         }

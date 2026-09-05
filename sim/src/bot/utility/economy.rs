@@ -17,11 +17,6 @@ struct ProducerSelectionContext<'a> {
     account_same_think_intents: bool,
 }
 
-/// Production capacity required to finish one active strategic air plan in
-/// two minutes. Capacity is ordinary infrastructure: it still costs scrap,
-/// takes builder time, and obeys the shared placement and prerequisite rules.
-const AIRWORKS_ASSEMBLY_HORIZON_TICKS: u64 = 2_400;
-
 impl UtilityPolicy {
     /// Economy channel: idle harvesters back to work on the nearest
     /// known node that hasn't bounced anyone. A node only qualifies if
@@ -204,7 +199,7 @@ impl UtilityPolicy {
         self.production_with_air_demand(
             dials,
             obs,
-            ProductionContext::new(home, claims, None),
+            ProductionContext::new(home, claims),
             budget,
             intents,
         )
@@ -428,104 +423,6 @@ impl UtilityPolicy {
         } else {
             built().min_by_key(|(_, building)| building.id).filter(open)
         }
-    }
-
-    /// The Airworks capacity purchase: buys the held extra Airworks when
-    /// the site is actionable, and reports either the capital the still
-    /// unbought site keeps reserved, or that this think's voluntary
-    /// spending ends with the purchase (the exact-guard early return).
-    fn airworks_capacity_stage(
-        &mut self,
-        dials: &Dials,
-        obs: &Observation,
-        context: ProductionContext<'_>,
-        budget: &mut u32,
-        intents: &mut Vec<Intent>,
-    ) -> std::ops::ControlFlow<(), Option<u32>> {
-        let ProductionContext {
-            home,
-            claims,
-            outstanding_air_production_ticks,
-            unit_contacts,
-            building_contacts,
-            voluntary_scrap_guard,
-            ..
-        } = context;
-        let ConstructionClaims {
-            enlisted, reserved, ..
-        } = claims;
-        let airworks_cost = BuildingKind::Airworks
-            .base_stats()
-            .construction
-            .map_or(0, |construction| construction.cost);
-        let capacity_guard = voluntary_scrap_guard.amount(TECH_RESERVE);
-        let mut capacity_site =
-            self.airworks_capacity_site(dials, obs, home, claims, outstanding_air_production_ticks);
-        let capacity_active = capacity_site.is_some();
-        if let Some(anchor) = capacity_site
-            && *budget >= airworks_cost.saturating_add(capacity_guard)
-        {
-            let mut unavailable = Vec::new();
-            for intent in intents.iter() {
-                Self::claim_non_preemptible_intent_units(intent, &mut unavailable);
-            }
-            let mut builders: Vec<_> = self
-                .construction_builders(obs, enlisted, reserved)
-                .into_iter()
-                .filter(|builder| !unavailable.contains(&builder.id))
-                .collect();
-            let accepted_builds: Vec<_> = intents
-                .iter()
-                .filter_map(|intent| match intent {
-                    Intent::Build { kind, anchor } | Intent::BuildWith { kind, anchor, .. } => {
-                        Some((*kind, *anchor))
-                    }
-                    _ => None,
-                })
-                .collect();
-            self.prepare_ground_producer_egress(obs);
-            let preserves_egress = self.preserves_ground_producer_egress_prepared(
-                &accepted_builds,
-                (BuildingKind::Airworks, anchor),
-            );
-            let danger = preserves_egress
-                .then(|| self.harvest_danger_projection(obs, unit_contacts, building_contacts));
-            if preserves_egress
-                && let Some(builder) = self.safe_implicit_builder(
-                    obs,
-                    BuildingKind::Airworks,
-                    anchor,
-                    &mut builders,
-                    danger
-                        .as_deref()
-                        .expect("an actionable capacity site prepared worker danger"),
-                    None,
-                )
-            {
-                *budget -= airworks_cost;
-                Self::insert_build_before_harvest(
-                    intents,
-                    BuildingKind::Airworks,
-                    anchor,
-                    Intent::BuildWith {
-                        builder,
-                        kind: BuildingKind::Airworks,
-                        anchor,
-                    },
-                );
-                capacity_site = None;
-                if capacity_guard > 0 && voluntary_scrap_guard.is_exact() {
-                    return std::ops::ControlFlow::Break(());
-                }
-            }
-        }
-        std::ops::ControlFlow::Continue(capacity_active.then(|| {
-            if capacity_site.is_some() {
-                airworks_cost.saturating_add(capacity_guard)
-            } else {
-                0
-            }
-        }))
     }
 
     fn alive_count(obs: &Observation, kind: UnitKind) -> usize {
@@ -786,7 +683,6 @@ impl UtilityPolicy {
             home,
             claims,
             combat_core_exclusions,
-            outstanding_air_production_ticks: _,
             unit_contacts,
             building_contacts,
             public_map,
@@ -833,12 +729,6 @@ impl UtilityPolicy {
         // owns this think's construction channel, while a partial one retains
         // its fund. Actionable Extractor restoration keeps the same precedence
         // it has in construction.
-        let capacity_stage =
-            match self.airworks_capacity_stage(dials, obs, context, budget, intents) {
-                std::ops::ControlFlow::Break(()) => return false,
-                std::ops::ControlFlow::Continue(stage) => stage,
-            };
-        let capacity_capital = capacity_stage.unwrap_or(0);
         if commitments
             .as_ref()
             .is_some_and(|commitments| commitments.foundry_saving_blocked())
@@ -874,17 +764,10 @@ impl UtilityPolicy {
         }) {
             return true;
         }
-        let extractor_restoration_precedes_expansion = dials.extractors
-            && self
-                .supported_frame_restoration_claim(obs, capital_context)
-                .is_some();
         let saved_foundry = self.foundry_saving.clone();
-        let prior_capital_project = saved_foundry.is_none()
-            && (capacity_stage.is_some() || extractor_restoration_precedes_expansion);
 
         let expansion_inputs = if player_facing
             && dials.expansion
-            && !prior_capital_project
             && let Some(saving) = &saved_foundry
         {
             let (foundries, pending_foundries) = Self::projected_foundries(obs);
@@ -932,7 +815,8 @@ impl UtilityPolicy {
                         support_extractors: obs.my_buildings.iter().any(|building| {
                             building.kind == BuildingKind::Fabricator && building.built
                         }),
-                        ordinary_frontiers: !dials.deep_tech
+                        ordinary_frontiers: player_facing
+                            || !dials.deep_tech
                             || Self::projected_count(obs, BuildingKind::Airworks, player_facing)
                                 > 0,
                         unit_contacts,
@@ -1065,19 +949,9 @@ impl UtilityPolicy {
         } else {
             self.capital_reserve(dials, obs, capital_context)
         };
-        let ordinary_capital = if extractor_restoration_precedes_expansion {
-            ordinary_capital.max(
-                BuildingKind::Extractor
-                    .base_stats()
-                    .construction
-                    .map_or(0, |construction| construction.cost),
-            )
-        } else {
-            ordinary_capital
-        };
 
         let voluntary_guard = voluntary_scrap_guard.amount(0);
-        let capital = ordinary_capital.max(capacity_capital).max(voluntary_guard);
+        let capital = ordinary_capital.max(voluntary_guard);
         let allow_repeatable_ground =
             !player_facing || self.has_honest_ground_objective(dials, obs, home, public_map);
 
@@ -1303,81 +1177,6 @@ impl UtilityPolicy {
         })
     }
 
-    fn airworks_capacity_site(
-        &self,
-        dials: &Dials,
-        obs: &Observation,
-        home: TilePos,
-        claims: ConstructionClaims<'_>,
-        outstanding_air_production_ticks: Option<u64>,
-    ) -> Option<TilePos> {
-        let target = Self::airworks_capacity_target(outstanding_air_production_ticks)?;
-        if !claims.player_facing || !dials.deep_tech {
-            return None;
-        }
-        let completed = |kind: BuildingKind| {
-            obs.my_buildings
-                .iter()
-                .filter(|building| building.kind == kind && building.built)
-                .count()
-        };
-        if completed(BuildingKind::Fabricator) == 0
-            || completed(BuildingKind::Airworks) == 0
-            || completed(BuildingKind::Crucible) == 0
-        {
-            return None;
-        }
-
-        let completed_airworks = completed(BuildingKind::Airworks);
-        let projected_airworks = Self::projected_count(obs, BuildingKind::Airworks, true);
-        if projected_airworks >= target || projected_airworks > completed_airworks {
-            return None;
-        }
-        if self
-            .construction_builders(obs, claims.enlisted, claims.reserved)
-            .is_empty()
-        {
-            return None;
-        }
-        self.placement_near(obs, BuildingKind::Airworks, home)
-    }
-
-    /// Scrap the strategic planners must leave untouched while one active air
-    /// plan needs another ordinary Airworks. The caller may subtract this from
-    /// the planners' private observation before they schedule units; Utility
-    /// still sees the authoritative bank and spends the held fund through the
-    /// exact same eligibility boundary as [`Self::airworks_capacity_site`].
-    /// `voluntary_scrap_guard` replaces the legacy technology reserve when the
-    /// shared allocator has already derived an exact post-opening floor.
-    pub(in crate::bot) fn airworks_capacity_commitment(
-        &self,
-        dials: &Dials,
-        obs: &Observation,
-        home: TilePos,
-        outstanding_air_production_ticks: Option<u64>,
-        voluntary_scrap_guard: Option<u32>,
-        unavailable_builders: &[UnitId],
-    ) -> u32 {
-        let claims = ConstructionClaims {
-            player_facing: true,
-            enlisted: unavailable_builders,
-            reserved: &[],
-        };
-        self.airworks_capacity_site(dials, obs, home, claims, outstanding_air_production_ticks)
-            .and_then(|_| BuildingKind::Airworks.base_stats().construction)
-            .map_or(0, |construction| {
-                construction
-                    .cost
-                    .saturating_add(voluntary_scrap_guard.unwrap_or(TECH_RESERVE))
-            })
-    }
-
-    fn airworks_capacity_target(outstanding_air_production_ticks: Option<u64>) -> Option<usize> {
-        let ticks = outstanding_air_production_ticks?;
-        let target = ticks.div_ceil(AIRWORKS_ASSEMBLY_HORIZON_TICKS).max(1);
-        Some(usize::try_from(target).unwrap_or(usize::MAX))
-    }
-
     /// The next owed tech rung's price plus the fighting reserve — the
     /// fund the unbounded military drip must leave untouched so the
     /// construction channel can ever afford to climb. Zero once the
@@ -1391,6 +1190,9 @@ impl UtilityPolicy {
     ) -> u32 {
         let ConstructionContext { claims, .. } = context;
         let player_facing = claims.player_facing;
+        if player_facing {
+            return 0;
+        }
         let have = |kind: BuildingKind| Self::projected_count(obs, kind, player_facing) > 0;
         let price =
             |kind: BuildingKind| kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
@@ -2177,7 +1979,7 @@ mod tests {
     }
 
     #[test]
-    fn player_facing_production_reopens_worker_growth_after_renewable_income() {
+    fn residual_production_leaves_worker_growth_to_economic_allocation() {
         let mut obs = observation();
         for id in 4..=6 {
             add_unit(
@@ -2220,16 +2022,7 @@ mod tests {
             TilePos::new(4, 6),
             true,
         );
-        assert_eq!(
-            decide(&obs),
-            (
-                0,
-                vec![Intent::TrainAt {
-                    building: BuildingId(0),
-                    kind: UnitKind::Harvester,
-                }]
-            )
-        );
+        assert_eq!(decide(&obs), (UnitKind::Harvester.stats().cost, Vec::new()));
     }
 
     #[test]
@@ -2416,53 +2209,6 @@ mod tests {
         );
     }
 
-    fn capacity_decision(obs: &Observation, demand: Option<u64>) -> (u32, Vec<Intent>) {
-        let mut budget = obs.scrap;
-        let mut intents = Vec::new();
-        UtilityPolicy::new().production_with_air_demand(
-            &Dials::balanced(),
-            obs,
-            ProductionContext::new(
-                TilePos::new(1, 1),
-                ConstructionClaims {
-                    player_facing: true,
-                    enlisted: &[],
-                    reserved: &[],
-                },
-                demand,
-            ),
-            &mut budget,
-            &mut intents,
-        );
-        (budget, intents)
-    }
-
-    fn guarded_capacity_decision(
-        obs: &Observation,
-        demand: Option<u64>,
-        guard: u32,
-        mut intents: Vec<Intent>,
-    ) -> (u32, Vec<Intent>) {
-        let mut budget = obs.scrap;
-        UtilityPolicy::new().production_with_air_demand(
-            &Dials::balanced(),
-            obs,
-            ProductionContext::new(
-                TilePos::new(1, 1),
-                ConstructionClaims {
-                    player_facing: true,
-                    enlisted: &[],
-                    reserved: &[],
-                },
-                demand,
-            )
-            .with_voluntary_scrap_guard(Reserve::Exact(guard)),
-            &mut budget,
-            &mut intents,
-        );
-        (budget, intents)
-    }
-
     fn capital_reserve_for(
         policy: &UtilityPolicy,
         dials: &Dials,
@@ -2482,24 +2228,6 @@ mod tests {
                 },
             ),
         )
-    }
-
-    fn airworks_builds(intents: &[Intent]) -> Vec<TilePos> {
-        intents
-            .iter()
-            .filter_map(|intent| match intent {
-                Intent::Build {
-                    kind: BuildingKind::Airworks,
-                    anchor,
-                }
-                | Intent::BuildWith {
-                    kind: BuildingKind::Airworks,
-                    anchor,
-                    ..
-                } => Some(*anchor),
-                _ => None,
-            })
-            .collect()
     }
 
     #[test]
@@ -2542,7 +2270,6 @@ mod tests {
                     enlisted: &[],
                     reserved: &[],
                 },
-                Some(4_000),
             ),
             &mut budget,
             &mut intents,
@@ -2601,7 +2328,6 @@ mod tests {
                         enlisted: &[],
                         reserved: &[],
                     },
-                    None,
                 ),
                 &mut budget,
                 &mut intents,
@@ -2668,7 +2394,6 @@ mod tests {
                         enlisted: &[],
                         reserved: &[],
                     },
-                    None,
                 )
                 .with_voluntary_scrap_guard(Reserve::Exact(guard)),
                 &mut budget,
@@ -2724,7 +2449,6 @@ mod tests {
                         enlisted: &[],
                         reserved: &[],
                     },
-                    None,
                 ),
                 &mut budget,
                 &mut intents,
@@ -2870,28 +2594,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn airworks_capacity_rounds_active_work_up_to_two_minute_factory_loads() {
-        assert_eq!(UtilityPolicy::airworks_capacity_target(None), None);
-        assert_eq!(UtilityPolicy::airworks_capacity_target(Some(0)), Some(1));
-        assert_eq!(
-            UtilityPolicy::airworks_capacity_target(Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS)),
-            Some(1)
-        );
-        assert_eq!(
-            UtilityPolicy::airworks_capacity_target(Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS + 1)),
-            Some(2)
-        );
-        assert_eq!(
-            UtilityPolicy::airworks_capacity_target(Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS * 2)),
-            Some(2)
-        );
-        assert_eq!(
-            UtilityPolicy::airworks_capacity_target(Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS * 2 + 1)),
-            Some(3)
-        );
-    }
-
     fn competing_expansion_fixture() -> (TilePos, TilePos, Observation, Dials, PublicMapBriefing) {
         let home = TilePos::new(1, 1);
         let extractor = TilePos::new(30, 16);
@@ -2929,110 +2631,7 @@ mod tests {
     }
 
     #[test]
-    fn active_airworks_capacity_precedes_an_otherwise_ready_expansion() {
-        let (home, extractor, mut obs, mut dials, public_map) = competing_expansion_fixture();
-        dials.extractors = false;
-        let claims = ConstructionClaims {
-            player_facing: true,
-            enlisted: &[],
-            reserved: &[],
-        };
-        let foundry_cost = BuildingKind::Foundry
-            .base_stats()
-            .construction
-            .expect("Foundry has construction stats")
-            .cost;
-        let airworks_cost = BuildingKind::Airworks
-            .base_stats()
-            .construction
-            .expect("Airworks has construction stats")
-            .cost;
-        obs.scrap = foundry_cost + airworks_cost + TECH_RESERVE;
-
-        let ready = player_expansion_assessment(
-            &UtilityPolicy::new(),
-            &dials,
-            &obs,
-            home,
-            &public_map,
-            None,
-            ExpansionDecisionState {
-                spendable_scrap: obs.scrap,
-                same_think_intents: &[],
-            },
-        )
-        .expect("the supported Extractor makes an expansion worthwhile");
-        assert_eq!(ready.disposition, expansion::ExpansionDisposition::Build);
-        assert!(UtilityPolicy::foundry_supports_extractor(
-            ready.plan.anchor,
-            extractor
-        ));
-
-        let expansion_intents = adjudicate_fresh_foundry(
-            &mut UtilityPolicy::new(),
-            &dials,
-            &obs,
-            home,
-            &public_map,
-            FreshFoundryTestDecision {
-                current_scrap: obs.scrap,
-                protected_reserve: TECH_RESERVE,
-                intents: Vec::new(),
-            },
-        );
-        assert!(expansion_intents.iter().any(|intent| matches!(
-            intent,
-            Intent::BuildWith {
-                kind: BuildingKind::Foundry,
-                anchor,
-                ..
-            } if *anchor == ready.plan.anchor
-        )));
-
-        let demand = Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS + 1);
-        let capacity_anchor = UtilityPolicy::new()
-            .airworks_capacity_site(&dials, &obs, home, claims, demand)
-            .expect("the outstanding air work needs a second actionable Airworks");
-        let mut competing_budget = obs.scrap;
-        let mut competing_intents = Vec::new();
-        UtilityPolicy::new().production_with_air_demand(
-            &dials,
-            &obs,
-            ProductionContext::new(home, claims, demand).with_public_map(Some(&public_map)),
-            &mut competing_budget,
-            &mut competing_intents,
-        );
-
-        assert!(competing_intents.iter().any(|intent| matches!(
-            intent,
-            Intent::BuildWith {
-                kind: BuildingKind::Airworks,
-                anchor,
-                ..
-            } if *anchor == capacity_anchor
-        )));
-        assert!(competing_intents.iter().all(|intent| !matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Foundry,
-                ..
-            } | Intent::BuildWith {
-                kind: BuildingKind::Foundry,
-                ..
-            }
-        )));
-        assert_eq!(
-            competing_intents
-                .iter()
-                .filter(|intent| matches!(intent, Intent::Build { .. } | Intent::BuildWith { .. }))
-                .count(),
-            1,
-            "capacity must exclusively own the construction channel"
-        );
-    }
-
-    #[test]
-    fn actionable_supported_extractor_precedes_an_otherwise_ready_expansion() {
+    fn supported_extractor_and_expansion_offer_separate_exact_investments() {
         let (home, extractor, mut obs, mut dials, public_map) = competing_expansion_fixture();
         let frame = TilePos::new(9, 1);
         obs.known_frames = vec![frame];
@@ -3105,64 +2704,25 @@ mod tests {
             } if *anchor == ready.plan.anchor
         )));
 
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let profile = crate::scenario::BotConfig::scripted(
+            crate::scenario::BotDifficulty::Prime,
+            crate::scenario::BotStance::Balanced,
+            7,
+        )
+        .resolve_profile();
         let mut policy = UtilityPolicy::new();
-        let mut competing_budget = obs.scrap;
-        let mut competing_intents = Vec::new();
-        policy.production_with_air_demand(
-            &dials,
-            &obs,
-            ProductionContext::new(home, claims, None).with_public_map(Some(&public_map)),
-            &mut competing_budget,
-            &mut competing_intents,
-        );
-        assert!(competing_intents.iter().all(|intent| !matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Foundry,
-                ..
-            } | Intent::BuildWith {
-                kind: BuildingKind::Foundry,
-                ..
-            }
-        )));
-        assert_eq!(
-            competing_budget, extractor_cost,
-            "production must preserve the actionable restoration fund"
-        );
-        policy.construction(
-            &dials,
-            &obs,
-            ConstructionContext::new(home, claims).with_public_map(Some(&public_map)),
-            &mut competing_budget,
-            &mut competing_intents,
-        );
-
-        assert!(competing_intents.iter().any(|intent| matches!(
-            intent,
-            Intent::BuildWith {
-                kind: BuildingKind::Extractor,
-                anchor,
-                ..
-            } if *anchor == frame
-        )));
-        assert!(competing_intents.iter().all(|intent| !matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Foundry,
-                ..
-            } | Intent::BuildWith {
-                kind: BuildingKind::Foundry,
-                ..
-            }
-        )));
-        assert_eq!(
-            competing_intents
-                .iter()
-                .filter(|intent| matches!(intent, Intent::Build { .. } | Intent::BuildWith { .. }))
-                .count(),
-            1,
-            "restoration must exclusively own the construction channel"
-        );
+        let quote = policy.fresh_economic_investments(EconomicInvestmentContext {
+            obs: &obs, resources: &resources, profile: &profile, briefing: &public_map,
+            orientation: crate::bot::orient::Orientation::for_home(&obs, home),
+            unavailable: &[], demands: &[], unit_contacts: &[], building_contacts: &[],
+            cadence: 12, protected_scrap: 0, air_work: &[],
+        }).into_iter().find(|proposal| matches!(proposal.key, EconomicInvestmentKey::Build { kind: BuildingKind::Extractor, anchor } if anchor == frame))
+            .expect("the same supported frame must offer its own exact economic alternative");
+        let expected = quote.intent();
+        let mut intents = Vec::new();
+        policy.commit_economic_investment(quote, extractor_cost, &mut intents);
+        assert_eq!(intents, vec![expected]);
     }
 
     #[test]
@@ -3272,7 +2832,7 @@ mod tests {
         let promised = adjudicated_policy.production_with_air_demand(
             &dials,
             &obs,
-            ProductionContext::new(home, claims, None).with_public_map(Some(&public_map)),
+            ProductionContext::new(home, claims).with_public_map(Some(&public_map)),
             &mut adjudicated_budget,
             &mut adjudicated_intents,
         );
@@ -3296,7 +2856,7 @@ mod tests {
         no_expansion_policy.production_with_air_demand(
             &no_expansion_dials,
             &obs,
-            ProductionContext::new(home, claims, None).with_public_map(Some(&public_map)),
+            ProductionContext::new(home, claims).with_public_map(Some(&public_map)),
             &mut no_expansion_budget,
             &mut no_expansion_intents,
         );
@@ -3550,7 +3110,7 @@ mod tests {
         UtilityPolicy::new().production_with_air_demand(
             &dials,
             &threatened,
-            ProductionContext::new(home, claims, None)
+            ProductionContext::new(home, claims)
                 .with_intelligence(Some(&contacts), Some(&[]))
                 .with_public_map(Some(&public_map)),
             &mut budget,
@@ -3567,7 +3127,7 @@ mod tests {
     }
 
     #[test]
-    fn unactionable_supported_extractor_releases_its_fund_to_core_production() {
+    fn an_unadmitted_supported_extractor_never_creates_a_residual_capital_floor() {
         let home = TilePos::new(1, 1);
         let frame = TilePos::new(9, 1);
         let mut obs = completed_tree();
@@ -3613,7 +3173,7 @@ mod tests {
             &mut safe_budget,
             &mut safe_intents,
         );
-        assert!(safe_intents.iter().all(|intent| !matches!(
+        assert!(safe_intents.iter().any(|intent| matches!(
             intent,
             Intent::TrainAt {
                 kind: UnitKind::Sentinel,
@@ -3621,8 +3181,8 @@ mod tests {
             }
         )));
         assert_eq!(
-            safe_budget, obs.scrap,
-            "an actionable restoration keeps its exact fund out of the ordinary fighter drip"
+            safe_budget, 0,
+            "an available site without an admitted economic claim must not silently own the bank"
         );
 
         let harvesters: Vec<_> = obs
@@ -3692,8 +3252,7 @@ mod tests {
         UtilityPolicy::new().production_with_air_demand(
             &dials,
             &obs,
-            ProductionContext::new(home, open_claims, None)
-                .with_intelligence(Some(&contacts), Some(&[])),
+            ProductionContext::new(home, open_claims).with_intelligence(Some(&contacts), Some(&[])),
             &mut remembered_budget,
             &mut remembered_intents,
         );
@@ -3803,7 +3362,7 @@ mod tests {
         UtilityPolicy::new().production_with_air_demand(
             &dials,
             &obs,
-            ProductionContext::new(home, claims, None).with_public_map(Some(&public_map)),
+            ProductionContext::new(home, claims).with_public_map(Some(&public_map)),
             &mut adjudicated_budget,
             &mut adjudicated_intents,
         );
@@ -4423,7 +3982,6 @@ mod tests {
                     enlisted: &[],
                     reserved: &[],
                 },
-                None,
             )
             .with_public_map(Some(&fixture.public_map)),
             &mut budget,
@@ -4498,7 +4056,6 @@ mod tests {
                     enlisted: &[],
                     reserved: &[],
                 },
-                None,
             )
             .with_public_map(Some(&fixture.public_map)),
             &mut budget,
@@ -4628,7 +4185,7 @@ mod tests {
             let promised = policy.production_with_commitments(
                 &fixture.dials,
                 observation,
-                ProductionContext::new(fixture.home, claims, None)
+                ProductionContext::new(fixture.home, claims)
                     .with_public_map(Some(&fixture.public_map)),
                 &mut budget,
                 Some(&mut commitments),
@@ -4890,7 +4447,7 @@ mod tests {
         let promised = policy.production_with_commitments(
             &fixture.dials,
             &guarded,
-            ProductionContext::new(fixture.home, claims, None)
+            ProductionContext::new(fixture.home, claims)
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(shallow_guard)),
             &mut budget,
@@ -4978,7 +4535,7 @@ mod tests {
         let promised = policy.production_with_commitments(
             &fixture.dials,
             &underprotected,
-            ProductionContext::new(fixture.home, claims, None)
+            ProductionContext::new(fixture.home, claims)
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(0)),
             &mut budget,
@@ -5154,7 +4711,7 @@ mod tests {
         policy.production_with_commitments(
             &fixture.dials,
             &blocked,
-            ProductionContext::new(fixture.home, claims, None)
+            ProductionContext::new(fixture.home, claims)
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(0)),
             &mut budget,
@@ -5201,7 +4758,7 @@ mod tests {
         policy.production_with_commitments(
             &fixture.dials,
             &blocked,
-            ProductionContext::new(fixture.home, claims, None)
+            ProductionContext::new(fixture.home, claims)
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(0)),
             &mut budget,
@@ -5248,7 +4805,7 @@ mod tests {
         policy.production_with_commitments(
             &fixture.dials,
             &blocked,
-            ProductionContext::new(fixture.home, claims, None)
+            ProductionContext::new(fixture.home, claims)
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(0)),
             &mut budget,
@@ -5281,7 +4838,7 @@ mod tests {
         policy.production_with_commitments(
             &fixture.dials,
             &recovered,
-            ProductionContext::new(fixture.home, claims, None)
+            ProductionContext::new(fixture.home, claims)
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(0)),
             &mut budget,
@@ -5560,7 +5117,7 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_island_frontier_cannot_starve_the_player_facing_crucible_fund() {
+    fn unreachable_island_frontier_creates_no_player_facing_scalar_technology_fund() {
         let mut obs = completed_tree();
         let crucible = obs
             .my_buildings
@@ -5586,12 +5143,6 @@ mod tests {
 
         let dials = Dials::balanced();
         let policy = UtilityPolicy::new();
-        let crucible_fund = BuildingKind::Crucible
-            .base_stats()
-            .construction
-            .expect("Crucible has construction stats")
-            .cost
-            + TECH_RESERVE;
         let foundry_fund = BuildingKind::Foundry
             .base_stats()
             .construction
@@ -5601,314 +5152,13 @@ mod tests {
 
         assert_eq!(
             capital_reserve_for(&policy, &dials, &obs, home, true),
-            crucible_fund,
-            "a frontier the construction channel cannot reach must yield to the next legal tech rung"
+            0,
+            "technology admission belongs to exact capability demand, not a route-blind reserve"
         );
         assert_eq!(
             capital_reserve_for(&policy, &dials, &obs, home, false),
             foundry_fund,
             "the profile-free Overseer's historical reserve remains route-agnostic"
-        );
-    }
-
-    #[test]
-    fn active_air_work_buys_one_ordinary_airworks_after_the_tree_stands() {
-        let mut obs = completed_tree();
-        let cost = BuildingKind::Airworks
-            .base_stats()
-            .construction
-            .expect("Airworks has construction stats")
-            .cost;
-        obs.scrap = cost + TECH_RESERVE;
-
-        let (budget, intents) = capacity_decision(
-            &obs,
-            Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS.saturating_add(1)),
-        );
-        let builds = airworks_builds(&intents);
-
-        assert_eq!(builds.len(), 1, "one additional factory should be paid");
-        assert!(
-            !obs.my_buildings
-                .iter()
-                .any(|building| building.anchor == builds[0]),
-            "capacity must use a fresh legal footprint"
-        );
-        assert_eq!(budget, TECH_RESERVE);
-        assert!(
-            intents
-                .iter()
-                .all(|intent| !matches!(intent, Intent::TrainAt { .. })),
-            "the exact capacity fund must not be skimmed by routine production"
-        );
-    }
-
-    #[test]
-    fn active_airworks_capacity_preserves_the_opening_reinforcement_guard() {
-        let mut obs = completed_tree();
-        let demand = Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS.saturating_add(1));
-        let airworks_cost = BuildingKind::Airworks
-            .base_stats()
-            .construction
-            .expect("Airworks has construction stats")
-            .cost;
-        let sentinel_cost = UnitKind::Sentinel.stats().cost;
-
-        obs.scrap = airworks_cost + sentinel_cost - 1;
-        let (short_budget, short) =
-            guarded_capacity_decision(&obs, demand, sentinel_cost, Vec::new());
-        assert!(airworks_builds(&short).is_empty());
-        assert_eq!(short_budget, obs.scrap);
-
-        obs.scrap += 1;
-        let (exact_budget, exact) =
-            guarded_capacity_decision(&obs, demand, sentinel_cost, Vec::new());
-        assert_eq!(airworks_builds(&exact).len(), 1);
-        assert_eq!(exact_budget, sentinel_cost);
-        assert!(
-            exact
-                .iter()
-                .all(|intent| !matches!(intent, Intent::TrainAt { .. })),
-            "the exact unqueued reinforcement fund remains untouched after capacity: {exact:?}"
-        );
-
-        obs.scrap = airworks_cost;
-        obs.my_queues[0] = vec![UnitKind::Sentinel];
-        let (queued_budget, queued) = guarded_capacity_decision(&obs, demand, 0, Vec::new());
-        assert_eq!(airworks_builds(&queued).len(), 1);
-        assert_eq!(queued_budget, 0);
-
-        obs.my_queues[0].clear();
-        let planned_sentinel = Intent::TrainAt {
-            building: obs.my_buildings[0].id,
-            kind: UnitKind::Sentinel,
-        };
-        let (planned_budget, planned) =
-            guarded_capacity_decision(&obs, demand, 0, vec![planned_sentinel.clone()]);
-        assert_eq!(airworks_builds(&planned).len(), 1);
-        assert_eq!(planned_budget, 0);
-        assert!(planned.contains(&planned_sentinel));
-    }
-
-    #[test]
-    fn inactive_or_single_factory_work_never_raises_speculative_capacity() {
-        let mut obs = completed_tree();
-        obs.scrap = 2_000;
-
-        for demand in [None, Some(0), Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS)] {
-            let (_, intents) = capacity_decision(&obs, demand);
-            assert!(
-                airworks_builds(&intents).is_empty(),
-                "demand {demand:?} is already served by the first Airworks"
-            );
-        }
-    }
-
-    #[test]
-    fn a_partial_capacity_fund_is_protected_from_routine_units() {
-        let mut obs = completed_tree();
-        let cost = BuildingKind::Airworks
-            .base_stats()
-            .construction
-            .expect("Airworks has construction stats")
-            .cost;
-        obs.scrap = cost + TECH_RESERVE - 1;
-
-        let (budget, intents) = capacity_decision(
-            &obs,
-            Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS.saturating_add(1)),
-        );
-
-        assert_eq!(budget, obs.scrap);
-        assert!(airworks_builds(&intents).is_empty());
-        assert!(
-            intents
-                .iter()
-                .all(|intent| !matches!(intent, Intent::TrainAt { .. })),
-            "ordinary production must leave the incomplete factory fund intact"
-        );
-    }
-
-    #[test]
-    fn a_full_airworks_queue_cannot_spend_the_recurring_capacity_fund() {
-        let mut obs = completed_tree();
-        let airworks = obs
-            .my_buildings
-            .iter()
-            .position(|building| building.kind == BuildingKind::Airworks)
-            .expect("the completed tree has an Airworks");
-        obs.my_queues[airworks] = vec![UnitKind::Condor, UnitKind::Skyhook];
-        let policy = UtilityPolicy::new();
-        let commitment = policy.airworks_capacity_commitment(
-            &Dials::balanced(),
-            &obs,
-            TilePos::new(1, 1),
-            Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS + 1),
-            None,
-            &[],
-        );
-        let expected = BuildingKind::Airworks
-            .base_stats()
-            .construction
-            .expect("Airworks has construction stats")
-            .cost
-            + TECH_RESERVE;
-
-        assert_eq!(commitment, expected);
-        assert_eq!(0_u32.saturating_sub(commitment), 0);
-        assert_eq!((expected - 1).saturating_sub(commitment), 0);
-        assert_eq!(expected.saturating_sub(commitment), 0);
-        assert_eq!((expected + 1).saturating_sub(commitment), 1);
-    }
-
-    #[test]
-    fn capacity_commitment_uses_the_shared_exact_residual_guard() {
-        let obs = completed_tree();
-        let demand = Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS + 1);
-        let policy = UtilityPolicy::new();
-        let home = TilePos::new(1, 1);
-        let cost = BuildingKind::Airworks
-            .base_stats()
-            .construction
-            .expect("Airworks has construction stats")
-            .cost;
-        let shallow_guard = UnitKind::Sentinel.stats().cost;
-
-        assert_eq!(
-            policy.airworks_capacity_commitment(
-                &Dials::balanced(),
-                &obs,
-                home,
-                demand,
-                Some(shallow_guard),
-                &[],
-            ),
-            cost + shallow_guard,
-            "capacity and execution must protect the same shallow-screen remainder"
-        );
-        assert_eq!(
-            policy.airworks_capacity_commitment(
-                &Dials::balanced(),
-                &obs,
-                home,
-                demand,
-                Some(0),
-                &[],
-            ),
-            cost,
-            "an exact zero guard must not silently restore the legacy technology reserve"
-        );
-    }
-
-    #[test]
-    fn capacity_commitment_respects_current_builder_claims_and_projected_sites() {
-        let mut obs = completed_tree();
-        let demand = Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS + 1);
-        let policy = UtilityPolicy::new();
-        let home = TilePos::new(1, 1);
-        let commitment = BuildingKind::Airworks
-            .base_stats()
-            .construction
-            .expect("Airworks has construction stats")
-            .cost
-            + TECH_RESERVE;
-        let harvesters: Vec<_> = obs
-            .my_units
-            .iter()
-            .filter(|unit| unit.kind == UnitKind::Harvester)
-            .map(|unit| unit.id)
-            .collect();
-
-        assert_eq!(
-            policy.airworks_capacity_commitment(
-                &Dials::balanced(),
-                &obs,
-                home,
-                demand,
-                None,
-                &harvesters[..harvesters.len() - 1],
-            ),
-            commitment,
-            "one unclaimed ordinary builder keeps the capacity fund active"
-        );
-        assert_eq!(
-            policy.airworks_capacity_commitment(
-                &Dials::balanced(),
-                &obs,
-                home,
-                demand,
-                None,
-                &harvesters,
-            ),
-            0,
-            "fully claimed builders make capacity construction ineligible"
-        );
-
-        obs.my_units[0].idle = false;
-        obs.my_units[0].founding = Some((BuildingKind::Airworks, TilePos::new(10, 3)));
-        assert_eq!(
-            policy.airworks_capacity_commitment(&Dials::balanced(), &obs, home, demand, None, &[],),
-            0,
-            "a deferred Airworks already satisfies the projected-capacity boundary"
-        );
-    }
-
-    #[test]
-    fn capacity_waits_for_the_normal_tree_and_for_each_prior_factory() {
-        let mut without_crucible = completed_tree();
-        let crucible = without_crucible
-            .my_buildings
-            .iter()
-            .position(|building| building.kind == BuildingKind::Crucible)
-            .unwrap();
-        without_crucible.my_buildings.remove(crucible);
-        without_crucible.my_queues.remove(crucible);
-        without_crucible.scrap = 2_000;
-        let (_, intents) =
-            capacity_decision(&without_crucible, Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS * 3));
-        assert!(
-            airworks_builds(&intents).is_empty(),
-            "capacity must not overtake the normal Crucible rung"
-        );
-
-        let mut site_in_progress = completed_tree();
-        add_building(
-            &mut site_in_progress,
-            4,
-            BuildingKind::Airworks,
-            TilePos::new(10, 3),
-            false,
-        );
-        site_in_progress.scrap = 2_000;
-        let (_, intents) =
-            capacity_decision(&site_in_progress, Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS * 3));
-        assert!(
-            airworks_builds(&intents).is_empty(),
-            "an unfinished second Airworks must finish before a third is promised"
-        );
-
-        site_in_progress.my_buildings.last_mut().unwrap().built = true;
-        let (_, intents) =
-            capacity_decision(&site_in_progress, Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS * 3));
-        assert_eq!(
-            airworks_builds(&intents).len(),
-            1,
-            "the third Airworks becomes legal after the second stands"
-        );
-    }
-
-    #[test]
-    fn a_deferred_airworks_claim_prevents_duplicate_capacity_commands() {
-        let mut obs = completed_tree();
-        obs.scrap = 2_000;
-        obs.my_units[0].idle = false;
-        obs.my_units[0].founding = Some((BuildingKind::Airworks, TilePos::new(10, 3)));
-
-        let (_, intents) = capacity_decision(&obs, Some(AIRWORKS_ASSEMBLY_HORIZON_TICKS * 3));
-
-        assert!(
-            airworks_builds(&intents).is_empty(),
-            "a walking founder is already the one outstanding capacity build"
         );
     }
 

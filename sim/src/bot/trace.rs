@@ -33,7 +33,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// Schema version for serialized decision traces.
-pub const DECISION_TRACE_VERSION: u32 = 8;
+pub const DECISION_TRACE_VERSION: u32 = 9;
 
 const RESOURCE_FORECAST_TICKS: Tick = crate::TICKS_PER_SECOND as Tick * 60;
 const ALLOCATION_TRACE_ENTRY_LIMIT: usize = 32;
@@ -867,6 +867,11 @@ impl<Payload> From<&InvestmentProposal<Payload>> for AllocationProposalTrace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "domain", rename_all = "snake_case")]
 pub enum ProposalKeyTrace {
+    /// One exact worker, infrastructure, or upgrade opportunity.
+    Economy {
+        /// Canonical action identity retained through commitment.
+        action: crate::bot::utility::EconomicInvestmentKey,
+    },
     /// A fresh Foundry expansion at an exact anchor.
     FoundryExpansion {
         /// Proposed top-left Foundry tile.
@@ -902,10 +907,14 @@ impl ProposalKeyTrace {
             Self::ConnectedOffenseMinimum { .. } => 1,
             Self::StandingForce { .. } => 2,
             Self::Defense { .. } => 3,
+            Self::Economy { .. } => 4,
         };
         domain(self)
             .cmp(&domain(other))
             .then_with(|| match (self, other) {
+                (Self::Economy { action: left }, Self::Economy { action: right }) => {
+                    left.cmp(right)
+                }
                 (
                     Self::FoundryExpansion { anchor: left },
                     Self::FoundryExpansion { anchor: right },
@@ -1001,6 +1010,7 @@ impl From<StandingForceServiceKey> for StandingForceServiceKeyTrace {
 impl From<ProposalKey> for ProposalKeyTrace {
     fn from(key: ProposalKey) -> Self {
         match key {
+            ProposalKey::Economy(action) => Self::Economy { action },
             ProposalKey::FoundryExpansion(key) => Self::FoundryExpansion { anchor: key.anchor },
             ProposalKey::ConnectedOffenseMinimum(key) => Self::ConnectedOffenseMinimum {
                 objective: key.objective,
@@ -1176,6 +1186,10 @@ impl From<ExecutionSafety> for ExecutionSafetyTrace {
 /// Exact shared-resource requirements summarized at a fixed diagnostic bound.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct AllocationClaimsTrace {
+    /// Completed-source income made unavailable by irreversible offline work.
+    pub foregone_income: BoundedTraceEntries<ForecastClaimTrace>,
+    /// Exact owned structures leased for irreversible work.
+    pub buildings: BoundedTraceEntries<BuildingId>,
     /// Non-production capital required from the current bank.
     pub current_scrap: u32,
     /// Current bank that must survive selection for residual policy work.
@@ -1213,6 +1227,17 @@ impl From<&ClaimBundle> for AllocationClaimsTrace {
             .map(|job| u128::from(job.kind().stats().cost))
             .sum::<u128>();
         Self {
+            foregone_income: BoundedTraceEntries::from_vec(
+                claims
+                    .foregone_income()
+                    .iter()
+                    .map(|claim| ForecastClaimTrace {
+                        through: claim.through,
+                        amount: claim.amount,
+                    })
+                    .collect(),
+            ),
+            buildings: BoundedTraceEntries::from_vec(claims.buildings().to_vec()),
             current_scrap: claims.current_scrap(),
             minimum_residual_scrap: claims.minimum_residual_scrap(),
             forecast_scrap_total,
@@ -1383,6 +1408,11 @@ impl From<ObligationClass> for ObligationClassTrace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ObligationKeyTrace {
+    /// One exact economic investment awaiting current funding.
+    SavedEconomy {
+        /// Frozen action identity.
+        action: crate::bot::utility::EconomicInvestmentKey,
+    },
     /// One exact opening defense admitted before ordinary core recovery.
     EmergencyDefense {
         /// Defensive structure selected by the utility scorer.
@@ -1447,6 +1477,7 @@ impl From<ObligationKey> for ObligationKeyTrace {
                 Self::DeferredFoundation { builder, anchor }
             }
             ObligationKey::SavedFoundry { anchor } => Self::SavedFoundry { anchor },
+            ObligationKey::SavedEconomy(action) => Self::SavedEconomy { action },
             ObligationKey::ConnectedOffense { objective, anchor } => {
                 Self::ConnectedOffense { objective, anchor }
             }
@@ -1631,6 +1662,18 @@ fn proposal_keys_trace(mut keys: Vec<ProposalKey>) -> BoundedTraceEntries<Propos
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum AllocationConflictTrace {
+    /// A claim names a building absent from the seat's resource snapshot.
+    UnknownBuilding {
+        /// Exact missing structure.
+        building: BuildingId,
+    },
+    /// An exact structure is already owned by another investment.
+    Building {
+        /// Exact shared structure.
+        building: BuildingId,
+        /// Existing claim owner.
+        owner: ClaimOwnerTrace,
+    },
     /// A marginal claim names an unselected connected proposal.
     InactiveProposal {
         /// Missing selected proposal.
@@ -1691,6 +1734,8 @@ pub enum AllocationConflictTrace {
         first: ProposalKeyTrace,
         /// Second canonical proposal identity.
         second: ProposalKeyTrace,
+        /// Third proposal when the incompatibility requires all three builds.
+        third: Option<ProposalKeyTrace>,
     },
     /// A requested producer is absent from completed capacity.
     UnknownProducer {
@@ -1764,6 +1809,13 @@ impl From<&AllocationConflict> for AllocationConflictTrace {
                 horizon: *horizon,
             },
             AllocationConflict::UnknownUnit(unit) => Self::UnknownUnit { unit: *unit },
+            AllocationConflict::UnknownBuilding(building) => Self::UnknownBuilding {
+                building: *building,
+            },
+            AllocationConflict::Building { building, owner } => Self::Building {
+                building: *building,
+                owner: (*owner).into(),
+            },
             AllocationConflict::UnknownBuilder(unit) => Self::UnknownBuilder { unit: *unit },
             AllocationConflict::Actor { unit, existing } => Self::Actor {
                 unit: *unit,
@@ -1778,9 +1830,14 @@ impl From<&AllocationConflict> for AllocationConflictTrace {
                 existing: (*existing).into(),
                 owner: (*owner).into(),
             },
-            AllocationConflict::IncompatibleLayout { first, second } => Self::IncompatibleLayout {
+            AllocationConflict::IncompatibleLayout {
+                first,
+                second,
+                third,
+            } => Self::IncompatibleLayout {
                 first: (*first).into(),
                 second: (*second).into(),
+                third: third.map(Into::into),
             },
             AllocationConflict::UnknownProducer(producer) => Self::UnknownProducer {
                 producer: *producer,
@@ -1905,6 +1962,8 @@ pub enum AllocationCoordinatorStageTrace {
     FoundryProposalAdaptation,
     /// A defensive candidate could not be adapted into exact shared claims.
     DefenseProposalAdaptation,
+    /// An economic candidate could not be adapted into exact shared claims.
+    EconomyProposalAdaptation,
     /// The selected connected-operation candidate could not be adapted into shared claims.
     ConnectedProposalAdaptation,
     /// The selected standing-force candidate could not be adapted into shared claims.
@@ -3252,10 +3311,12 @@ mod tests {
             AllocationConflictTrace::from(AllocationConflict::IncompatibleLayout {
                 first: foundry,
                 second: ProposalKey::Defense(defense),
+                third: None,
             }),
             AllocationConflictTrace::IncompatibleLayout {
                 first: foundry.into(),
                 second: defense.into(),
+                third: None,
             }
         );
     }
@@ -3970,7 +4031,7 @@ mod tests {
 
     #[test]
     fn serialized_trace_has_a_fixed_schema() {
-        assert_eq!(DECISION_TRACE_VERSION, 8);
+        assert_eq!(DECISION_TRACE_VERSION, 9);
         let mut trace = DecisionTrace::from_observation(&Observation::default());
         trace.gates.opening_core = Some(CoreGateTrace {
             projected_strength: 1,
@@ -4080,6 +4141,7 @@ mod tests {
                         conflict: AllocationConflictTrace::IncompatibleLayout {
                             first: expansion_key,
                             second: defense_key,
+                            third: None,
                         },
                     },
                 },
@@ -4299,10 +4361,12 @@ mod tests {
             claims.keys().map(String::as_str).collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 "builders",
+                "buildings",
                 "claimed_capital",
                 "current_scrap",
                 "deferrable_capital",
                 "forecast_scrap",
+                "foregone_income",
                 "forecast_scrap_total",
                 "minimum_residual_scrap",
                 "producer_jobs",
@@ -4371,7 +4435,8 @@ mod tests {
                         "domain": "defense",
                         "kind": "turret",
                         "anchor": { "x": 9, "y": 5 }
-                    }
+                    },
+                    "third": null
                 }
             }))
         );

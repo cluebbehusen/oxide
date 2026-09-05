@@ -2765,6 +2765,11 @@ fn an_unreachable_paid_site_does_not_starve_reachable_construction() {
     orphan.hp = 1;
     obs.my_buildings.push(orphan);
     obs.my_queues.push(Vec::new());
+    let mut reachable = building_obs(2, 0, BuildingKind::Fabricator, 7, 2);
+    reachable.built = false;
+    reachable.hp = 1;
+    obs.my_buildings.push(reachable);
+    obs.my_queues.push(Vec::new());
     obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(12, y)).collect();
 
     let intents = player_think(&mut UtilityPolicy::new(), &Dials::full(), &obs);
@@ -3172,6 +3177,11 @@ fn deferred_build_stops_repairs_before_reusing_a_repairing_builder() {
         .collect();
     let mut dials = Dials::full();
     dials.scouting = false;
+    dials.adaptive_composition = true;
+    dials.support_target = 3;
+    obs.my_buildings
+        .push(building_obs(1, 0, BuildingKind::Fabricator, 8, 2));
+    obs.my_queues.push(Vec::new());
 
     let intents = player_think(&mut UtilityPolicy::new(), &dials, &obs);
     let stop = intents
@@ -3181,7 +3191,7 @@ fn deferred_build_stops_repairs_before_reusing_a_repairing_builder() {
     let build = intents
         .iter()
         .position(|intent| matches!(intent, Intent::Build { .. }))
-        .expect("the remote Fabricator is still planned");
+        .expect("the unseen Repair Bay is still planned");
     assert!(
         stop < build,
         "repair cancellation must lower before Build: {intents:?}"
@@ -3334,6 +3344,11 @@ fn a_fresh_scout_owns_its_harvester_before_construction_lowers() {
         "profile-free intent ordering remains frozen for the Overseer: {legacy:?}"
     );
 
+    let mut orphan = building_obs(1, 0, BuildingKind::Fabricator, 8, 2);
+    orphan.built = false;
+    orphan.hp = 1;
+    obs.my_buildings.push(orphan);
+    obs.my_queues.push(Vec::new());
     let intents = player_think(&mut policy, &dials, &obs);
     let player_scout = intents
         .iter()
@@ -3342,7 +3357,7 @@ fn a_fresh_scout_owns_its_harvester_before_construction_lowers() {
     let player_build = intents
         .iter()
         .position(|intent| matches!(intent, Intent::Build { .. }))
-        .expect("the player-facing policy advances its tech tree");
+        .expect("the player-facing policy resumes paid construction");
     assert!(player_scout < player_build);
     let scout = intents
         .iter()
@@ -3359,7 +3374,7 @@ fn a_fresh_scout_owns_its_harvester_before_construction_lowers() {
                 ..
             }
         )),
-        "the same think also advances the tech tree: {intents:?}"
+        "the same think also resumes the paid Fabricator: {intents:?}"
     );
 
     let commands = Executive::new().apply_with_reservations(PlayerId(0), &obs, &intents, &[]);

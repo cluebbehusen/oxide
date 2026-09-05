@@ -15,10 +15,10 @@ use super::{
     active_connected_revision_investment_proposal, active_connected_revision_obligation,
     active_connected_revision_producer_assignments, clamped_current_reserve_obligation,
     connected_investment_proposal, connected_producer_assignments, current_reserve_at,
-    defense_investment_proposals, forecast_reserve_through, foundry_investment_proposal,
-    fresh_emergency_defense_obligation, imported_obligation, legacy_decision_obligation,
-    legacy_unit_obligation, observed_builder_obligations, saved_foundry_obligation,
-    standing_force_investment_proposals,
+    defense_investment_proposals, economic_investment_claims, economic_investment_proposal,
+    forecast_reserve_through, foundry_investment_proposal, fresh_emergency_defense_obligation,
+    imported_obligation, legacy_decision_obligation, legacy_unit_obligation,
+    observed_builder_obligations, saved_foundry_obligation, standing_force_investment_proposals,
 };
 use crate::bot::PublicMapBriefing;
 use crate::bot::difficulty::{DifficultyTuning, strategic_admission_tick};
@@ -34,8 +34,8 @@ use crate::bot::profile::ResolvedProfile;
 use crate::bot::raid::RaidPlanner;
 use crate::bot::resources::{ProducerLaneReservations, ReservedProducerJob, ResourceSnapshot};
 use crate::bot::standing_force::{
-    StandingForceContext, StandingForceProposal, StandingGroundTarget,
-    StandingProductionCommitment, derive_standing_force_proposals,
+    CapabilityDemand, StandingForceContext, StandingForceProposal, StandingGroundTarget,
+    StandingProductionCommitment, derive_standing_force_with_demand,
 };
 use crate::bot::strategy::{
     ActiveConnectedObligation, AirOperation, AirOperationOutcome, AirOperationPhase,
@@ -48,9 +48,9 @@ use crate::bot::trace::{
     AllocationCoordinatorFailureReasonTrace, AllocationCoordinatorStageTrace, AllocationTrace,
 };
 use crate::bot::utility::{
-    CombatCoreStatus, Dials, FreshDefenseProposal, FreshEmergencyDefense,
-    FreshEmergencyDefenseContext, FreshFoundryInvestment, FreshFoundryProposal,
-    FreshFoundryProposalContext, ResidualTechnologyReserveContext, SHALLOW_QUEUE_DEPTH,
+    AirCapacityDemand, CombatCoreStatus, Dials, EconomicInvestment, EconomicInvestmentContext,
+    FreshDefenseProposal, FreshEmergencyDefense, FreshEmergencyDefenseContext,
+    FreshFoundryInvestment, FreshFoundryProposal, FreshFoundryProposalContext, SHALLOW_QUEUE_DEPTH,
     SavedFoundryReadiness, UtilityPolicy, ValidatedFoundryObligation, combat_core_status,
 };
 use crate::ids::UnitId;
@@ -375,6 +375,7 @@ pub(crate) struct AllocationSessionOutcome {
     pub(crate) fresh_emergency_defense_intents: Vec<Intent>,
     pub(crate) fresh_foundry_intents: Vec<Intent>,
     pub(crate) fresh_defense_intents: Vec<Intent>,
+    pub(crate) fresh_economy_intents: Vec<Intent>,
     pub(crate) allocated_producer_intents: Vec<Intent>,
     pub(crate) allocation_ok: bool,
     pub(crate) accepted_connected: bool,
@@ -420,7 +421,7 @@ impl<'a> AllocationSession<'a> {
     /// asks each migrated domain for at most one already-ranked proposal.
     fn prepare(&mut self) -> PreparedAllocation {
         let mut claims = self.snapshot_claims();
-        let mut obligations = self.collect_legacy_obligations();
+        let mut obligations = self.collect_legacy_obligations(&claims);
         if obligations.invalid_active_connected {
             self.participants
                 .strategy
@@ -438,7 +439,71 @@ impl<'a> AllocationSession<'a> {
             obligations.active_lift = None;
         }
         let emergency_defense = self.prepare_emergency_defense(&claims, &mut obligations);
+        if let Some(plan) = self.participants.policy.economic_foundation() {
+            let guard = self.participants.policy.shallow_sentinel_capital_reserve(
+                self.context.dials,
+                self.context.observation,
+                self.context.home,
+                self.context.public_map,
+                &[],
+            );
+            let available = residual_current_after_obligations(
+                &obligations.resources,
+                &obligations.obligations,
+                obligation_horizon(&obligations.obligations, plan.deadline),
+                self.context.dials.cadence,
+            )
+            .unwrap_or(0);
+            if guard > 0 {
+                obligations.obligations.push(super::imported_obligation(
+                    ObligationClass::PersistentPlan,
+                    plan.observed_at,
+                    ObligationKey::SavedEconomy(plan.key),
+                    ClaimBundle::new(
+                        guard.min(available),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                    .expect("a current-only construction escrow has no conflicting members"),
+                ));
+            }
+        }
         let mut air_lift = self.prepare_air_commitments(&claims, &mut obligations);
+        if let Some(saving) = self.participants.policy.economic_saving() {
+            let available = residual_current_after_obligations(
+                &obligations.resources,
+                &obligations.obligations,
+                obligation_horizon(&obligations.obligations, saving.deadline),
+                self.context.dials.cadence,
+            )
+            .unwrap_or(0)
+            .saturating_sub(air_lift.voluntary_scrap_guard);
+            self.participants
+                .policy
+                .bind_economic_saving_current(available);
+            let saving = self
+                .participants
+                .policy
+                .economic_saving()
+                .expect("funding retains the exact plan");
+            retain_first_coordinator_failure(
+                &mut obligations.coordinator_failure,
+                AllocationCoordinatorStageTrace::ObligationCollection,
+                economic_investment_claims(saving)
+                    .map(|claims| {
+                        obligations.obligations.push(super::imported_obligation(
+                            ObligationClass::PersistentPlan,
+                            saving.observed_at,
+                            ObligationKey::SavedEconomy(saving.key),
+                            claims,
+                        ))
+                    })
+                    .map_err(Into::into),
+            );
+        }
         let island_admitted_at = self
             .participants
             .strategy
@@ -540,7 +605,8 @@ impl<'a> AllocationSession<'a> {
             obligations: obligations.obligations,
             coordinator_failure: obligations.coordinator_failure,
             opening_core: claims.opening_core,
-            allow_new_voluntary_operations: claims.opening_core.ready,
+            allow_new_voluntary_operations: claims.opening_core.ready
+                && self.participants.policy.economic_saving().is_none(),
             planner_claims: claims.planner_claims,
             strategic_core_exclusions: claims.strategic_core_exclusions,
             active_connected: obligations.active_connected,
@@ -549,6 +615,7 @@ impl<'a> AllocationSession<'a> {
             saved_foundry: saved.obligation,
             fresh_foundry: fresh.foundry,
             fresh_defense: fresh.defense,
+            fresh_economy: fresh.economy,
             fresh_connected: fresh.connected,
             standing_force: fresh.standing_force,
             connected_accepted_at: fresh.connected_accepted_at,
@@ -598,11 +665,56 @@ impl<'a> AllocationSession<'a> {
         }
     }
 
-    fn collect_legacy_obligations(&self) -> ObligationPreparation {
+    fn collect_legacy_obligations(&mut self, claims: &ClaimSnapshot) -> ObligationPreparation {
         let resources = ResourceSnapshot::from_observation(self.context.observation);
+        let air_work = self.economic_air_work();
         let mut obligations = Vec::new();
         let mut coordinator_failure = None;
         let mut observed_capital = self.context.observation.scrap;
+        if self.participants.policy.economic_saving().is_some()
+            || self.participants.policy.has_economic_foundation()
+        {
+            let demand = if self.participants.policy.economic_saving().is_some() {
+                let targets = self.standing_force_projection_targets();
+                derive_standing_force_with_demand(
+                    self.context.observation,
+                    self.context.intelligence,
+                    self.context.profile,
+                    self.context.tuning,
+                    &resources,
+                    StandingForceContext::new(&claims.strategic_core_exclusions, &[])
+                        .with_ground_routing(
+                            StandingGroundTarget::footprint(
+                                self.context.home,
+                                BuildingKind::Foundry.base_stats().size,
+                            ),
+                            Some(self.context.public_map),
+                            &targets,
+                            Some(self.context.orientation),
+                        ),
+                )
+                .1
+            } else {
+                Vec::new()
+            };
+            self.participants.policy.refresh_economic_saving(
+                EconomicInvestmentContext {
+                    obs: self.context.observation,
+                    resources: &resources,
+                    profile: self.context.profile,
+                    briefing: self.context.public_map,
+                    orientation: self.context.orientation,
+                    unavailable: &claims.planner_claims,
+                    demands: &demand,
+                    cadence: self.context.dials.cadence,
+                    unit_contacts: self.context.intelligence.units(),
+                    building_contacts: self.context.intelligence.buildings(),
+                    protected_scrap: 0,
+                    air_work: &air_work,
+                },
+                claims.opening_core.ready,
+            );
+        }
         match observed_builder_obligations(
             &resources,
             self.context.observation,
@@ -964,53 +1076,13 @@ impl<'a> AllocationSession<'a> {
             0
         };
 
-        let connected_air_ticks = self.participants.strategy.as_ref().map_or(0, |planner| {
-            planner.remaining_airwork_ticks(self.context.observation)
-        });
-        let lift_air_ticks = self.participants.lifts.as_ref().map_or(0, |planner| {
-            planner
-                .remaining_airwork_ticks(self.context.observation, &self.advanced.lift_unavailable)
-        });
-        let connected_air_active = self
-            .participants
-            .strategy
-            .as_ref()
-            .is_some_and(|planner| planner.air_operation().is_some());
-        let lift_air_active = self
-            .participants
-            .lifts
-            .as_ref()
-            .is_some_and(|planner| planner.operation().is_some());
-        let airworks_capacity = if claims.opening_core.ready {
-            self.participants.policy.airworks_capacity_commitment(
-                self.context.dials,
-                self.context.observation,
-                self.context.home,
-                (connected_air_active || lift_air_active)
-                    .then_some(connected_air_ticks.saturating_add(lift_air_ticks)),
-                Some(voluntary_scrap_guard),
-                &claims.planner_claims,
-            )
-        } else {
-            0
-        };
+        let airworks_capacity = 0;
         let active_lift_precedes_foundry = self.advanced.lift_was_active
             && self
                 .participants
                 .policy
                 .operation_precedes_foundry_saving(self.advanced.lift_started_at);
-        let lift_airworks_capacity = if claims.opening_core.ready && lift_air_active {
-            self.participants.policy.airworks_capacity_commitment(
-                self.context.dials,
-                self.context.observation,
-                self.context.home,
-                Some(lift_air_ticks),
-                Some(voluntary_scrap_guard),
-                &claims.planner_claims,
-            )
-        } else {
-            0
-        };
+        let lift_airworks_capacity = 0;
         let lift_deadline = self
             .participants
             .lifts
@@ -1625,6 +1697,7 @@ impl<'a> AllocationSession<'a> {
     ) -> FreshInvestmentPreparation {
         let admission_tick = strategic_admission_tick(self.context.observation.tick)
             && claims.opening_core.ready
+            && self.participants.policy.economic_saving().is_none()
             && !saved.blocked
             && obligations.coordinator_failure.is_none();
         let available_builders =
@@ -1663,7 +1736,7 @@ impl<'a> AllocationSession<'a> {
             .as_ref()
             .and_then(FreshFoundryInvestment::preparation_need)
             .or(saved.preparation_need);
-        let foundry = match foundry_investment {
+        let mut foundry = match foundry_investment {
             Some(FreshFoundryInvestment::Ready(proposal)) => Some(proposal),
             Some(FreshFoundryInvestment::NeedsProtection { .. }) | None => None,
         };
@@ -1749,14 +1822,6 @@ impl<'a> AllocationSession<'a> {
                     .saturating_add(connected_preparation_horizon())
             });
         let committed_production = self.committed_standing_production();
-        let residual_technology_reserve = self.participants.policy.residual_technology_reserve(
-            self.context.dials,
-            self.context.observation,
-            ResidualTechnologyReserveContext {
-                home: self.context.home,
-                available_builders: &available_builders,
-            },
-        );
         let mut defense = if admission_tick {
             self.participants.policy.fresh_defense_proposals(
                 self.context.profile,
@@ -1769,7 +1834,12 @@ impl<'a> AllocationSession<'a> {
                 self.context.intelligence.buildings(),
                 &available_builder_units,
                 &defense_reinforcement_exclusions,
-                residual_technology_reserve,
+                0,
+                obligations
+                    .obligations
+                    .iter()
+                    .map(|obligation| obligation.claims.current_scrap())
+                    .fold(0, u32::saturating_add),
             )
         } else {
             Vec::new()
@@ -1797,20 +1867,22 @@ impl<'a> AllocationSession<'a> {
         }
         let standing_force_derivation = StandingForceDerivation {
             projection_targets: self.standing_force_projection_targets(),
-            residual_technology_reserve,
             expansion_security_need,
         };
-        let derive_standing_force =
+        let mut capability_demands = None;
+        let mut derive_standing_force =
             |unit_exclusions: &[UnitId],
              connected_paid_production: &[StandingProductionCommitment]| {
-                self.derive_standing_force(
+                let (proposals, demands) = self.derive_standing_force(
                     claims,
                     obligations,
                     &standing_force_derivation,
                     &committed_production,
                     unit_exclusions,
                     connected_paid_production,
-                )
+                );
+                capability_demands.get_or_insert(demands);
+                proposals
             };
         let standing_force = if let Some(proposal) = connected.as_ref() {
             let mut standing_force_cache = Vec::<(
@@ -1905,9 +1977,75 @@ impl<'a> AllocationSession<'a> {
                 &[],
             ))
         };
+        let unavailable_economy_workers = self
+            .context
+            .observation
+            .my_units
+            .iter()
+            .filter(|unit| !available_builders.contains(&unit.id))
+            .map(|unit| unit.id)
+            .collect::<Vec<_>>();
+        let air_work = self.economic_air_work();
+        let economy = if admission_tick
+            && claims.opening_core.ready
+            && self.participants.policy.economic_saving().is_none()
+        {
+            let economic_context = EconomicInvestmentContext {
+                obs: self.context.observation,
+                resources: &obligations.resources,
+                profile: self.context.profile,
+                briefing: self.context.public_map,
+                orientation: self.context.orientation,
+                unavailable: &unavailable_economy_workers,
+                demands: capability_demands.as_deref().unwrap_or(&[]),
+                air_work: &air_work,
+                cadence: self.context.dials.cadence,
+                unit_contacts: self.context.intelligence.units(),
+                building_contacts: self.context.intelligence.buildings(),
+                protected_scrap: current_reserve_at(
+                    &obligations.obligations,
+                    self.context.observation.tick,
+                )
+                .saturating_add(
+                    self.participants.policy.shallow_sentinel_capital_reserve(
+                        self.context.dials,
+                        self.context.observation,
+                        self.context.home,
+                        self.context.public_map,
+                        &[],
+                    ),
+                ),
+            };
+            if foundry.is_none()
+                && let Some(FreshFoundryInvestment::Ready(proposal)) =
+                    self.participants.policy.fresh_capacity_foundry_investment(
+                        self.context.dials,
+                        economic_context,
+                        FreshFoundryProposalContext {
+                            home: self.context.home,
+                            available_builders: &available_builders,
+                            combat_core_exclusions: &claims.strategic_core_exclusions,
+                            unit_contacts: self.context.intelligence.units(),
+                            building_contacts: self.context.intelligence.buildings(),
+                            public_map: self.context.public_map,
+                            same_think_intents: &self.advanced.team_decision.intents,
+                            current_scrap: self.context.observation.scrap,
+                            protected_reserve: economic_context.protected_scrap,
+                        },
+                    )
+            {
+                foundry = Some(proposal);
+            }
+            self.participants
+                .policy
+                .fresh_economic_investments(economic_context)
+        } else {
+            Vec::new()
+        };
         FreshInvestmentPreparation {
             foundry,
             defense,
+            economy,
             connected,
             standing_force,
             standing_force_derivation,
@@ -1915,6 +2053,39 @@ impl<'a> AllocationSession<'a> {
             connected_reserve_deadline,
             rejected_connected_candidate,
         }
+    }
+
+    fn economic_air_work(&self) -> Vec<AirCapacityDemand> {
+        let mut demands = Vec::new();
+        if let Some(planner) = self.participants.strategy.as_ref()
+            && let Some(operation) = planner.air_operation()
+            && let Some(deadline) = planner.air_capacity_deadline()
+        {
+            let work_ticks = planner.remaining_airwork_ticks(self.context.observation);
+            if work_ticks > 0 {
+                demands.push(AirCapacityDemand {
+                    work_ticks,
+                    deadline,
+                    kind: crate::stats::Role::Bomber.unit_for(self.context.observation.faction),
+                    service: StandingGroundTarget::point(operation.target),
+                });
+            }
+        }
+        if let Some(planner) = self.participants.lifts.as_ref()
+            && let Some(operation) = planner.operation()
+        {
+            let work_ticks = planner
+                .remaining_airwork_ticks(self.context.observation, &self.advanced.lift_unavailable);
+            if work_ticks > 0 {
+                demands.push(AirCapacityDemand {
+                    work_ticks,
+                    deadline: operation.deadline,
+                    kind: UnitKind::Skyhook,
+                    service: StandingGroundTarget::point(operation.target),
+                });
+            }
+        }
+        demands
     }
 
     fn committed_standing_production(&mut self) -> Vec<StandingProductionCommitment> {
@@ -1950,9 +2121,12 @@ impl<'a> AllocationSession<'a> {
         committed_production: &[StandingProductionCommitment],
         unit_exclusions: &[UnitId],
         connected_paid_production: &[StandingProductionCommitment],
-    ) -> Vec<StandingForceProposal> {
-        if !claims.opening_core.ready || obligations.coordinator_failure.is_some() {
-            return Vec::new();
+    ) -> (Vec<StandingForceProposal>, Vec<CapabilityDemand>) {
+        if !claims.opening_core.ready
+            || obligations.coordinator_failure.is_some()
+            || self.participants.policy.economic_saving().is_some()
+        {
+            return (Vec::new(), Vec::new());
         }
         let owned_production =
             merged_production_commitments(committed_production, connected_paid_production);
@@ -1965,15 +2139,14 @@ impl<'a> AllocationSession<'a> {
                 Some(self.context.public_map),
                 &derivation.projection_targets,
                 Some(self.context.orientation),
-            )
-            .with_minimum_residual_scrap(derivation.residual_technology_reserve);
+            );
         if let Some((anchor, target_strength)) = derivation.expansion_security_need {
             context = context.with_expansion_security(
                 StandingGroundTarget::footprint(anchor, BuildingKind::Foundry.base_stats().size),
                 target_strength,
             );
         }
-        derive_standing_force_proposals(
+        derive_standing_force_with_demand(
             self.context.observation,
             self.context.intelligence,
             self.context.profile,
@@ -2117,7 +2290,8 @@ impl<'a> AllocationSession<'a> {
             &claims.strategic_core_exclusions,
             &[],
         );
-        fresh.standing_force = StandingForcePreparation::Unconditional(standing_force);
+        fresh.standing_force = StandingForcePreparation::Unconditional(standing_force.0);
+        fresh.economy.clear();
     }
 
     fn downgrade_unfundable_active_connected(
@@ -2258,6 +2432,9 @@ impl<'a> AllocationSession<'a> {
         if let Some(obligation) = saved.obligation {
             horizon = horizon.max(obligation.forecast_deadline());
         }
+        if let Some(saving) = self.participants.policy.economic_saving() {
+            horizon = horizon.max(saving.deadline);
+        }
         if let Some(active) = active_connected {
             horizon = horizon.max(active.deadline());
         }
@@ -2277,6 +2454,9 @@ impl<'a> AllocationSession<'a> {
         }
         for proposal in &fresh.defense {
             horizon = horizon.max(proposal.ready_at());
+        }
+        for proposal in &fresh.economy {
+            horizon = horizon.max(proposal.deadline);
         }
         fresh.standing_force.for_each(|proposal| {
             horizon = horizon.max(proposal.ready_before());
@@ -2321,6 +2501,26 @@ impl<'a> AllocationSession<'a> {
                         });
                     for obligation in prepared.obligations.iter().cloned() {
                         allocation.import(obligation);
+                    }
+                    for (rank, proposal) in prepared.fresh_economy.iter().cloned().enumerate() {
+                        match economic_investment_proposal(proposal) {
+                            Ok(proposal) => allocation.offer(
+                                proposal
+                                    .with_domain_preference(rank)
+                                    .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
+                                    .with_minimum_residual_scrap(
+                                        prepared.prospective_carrier_floor,
+                                    ),
+                            ),
+                            Err(error) => {
+                                retain_first_coordinator_failure(
+                                    &mut prepared.coordinator_failure,
+                                    AllocationCoordinatorStageTrace::EconomyProposalAdaptation,
+                                    Err(error.into()),
+                                );
+                                allocation_ok = false;
+                            }
+                        }
                     }
                     if let Some(proposal) = prepared.fresh_foundry.take() {
                         match foundry_investment_proposal(proposal) {
@@ -2488,19 +2688,31 @@ impl<'a> AllocationSession<'a> {
         allocation: &mut CrossDomainAllocation,
         prepared: &PreparedAllocation,
     ) {
-        let Some(foundry) = prepared.fresh_foundry.as_ref() else {
-            return;
-        };
-        let foundry_key = ProposalKey::FoundryExpansion(super::FoundryExpansionKey {
-            anchor: foundry.anchor(),
-        });
-        for defense in &prepared.fresh_defense {
-            let pair = [
+        let mut layouts = Vec::new();
+        if let Some(foundry) = prepared.fresh_foundry.as_ref() {
+            layouts.push((
+                ProposalKey::FoundryExpansion(super::FoundryExpansionKey {
+                    anchor: foundry.anchor(),
+                }),
                 (BuildingKind::Foundry, foundry.anchor(), foundry.builder()),
+            ));
+        }
+        layouts.extend(prepared.fresh_defense.iter().map(|defense| {
+            (
+                ProposalKey::Defense(DefenseInvestmentKey {
+                    kind: defense.kind(),
+                    anchor: defense.anchor(),
+                }),
                 (defense.kind(), defense.anchor(), defense.builder()),
-            ];
-            if !self
-                .participants
+            )
+        }));
+        layouts.extend(prepared.fresh_economy.iter().filter_map(|economy| {
+            economy
+                .build()
+                .map(|build| (ProposalKey::Economy(economy.key), build))
+        }));
+        let safe = |builds: &[_]| {
+            self.participants
                 .policy
                 .combined_build_layout_with_builders_is_safe(
                     self.context.observation,
@@ -2508,16 +2720,28 @@ impl<'a> AllocationSession<'a> {
                     self.context.intelligence.units(),
                     self.context.intelligence.buildings(),
                     self.context.orientation,
-                    &pair,
+                    builds,
                 )
-            {
-                allocation.reject_incompatible_layout(
-                    foundry_key,
-                    ProposalKey::Defense(DefenseInvestmentKey {
-                        kind: defense.kind(),
-                        anchor: defense.anchor(),
-                    }),
-                );
+        };
+        for (index, &(first_key, first)) in layouts.iter().enumerate() {
+            for (offset, &(second_key, second)) in layouts[index + 1..].iter().enumerate() {
+                if first_key.domain() == second_key.domain() {
+                    continue;
+                }
+                if !safe(&[first, second]) {
+                    allocation.reject_incompatible_layout(first_key, second_key);
+                    continue;
+                }
+                for &(third_key, third) in &layouts[index + offset + 2..] {
+                    if third_key.domain() == first_key.domain()
+                        || third_key.domain() == second_key.domain()
+                    {
+                        continue;
+                    }
+                    if !safe(&[first, second, third]) {
+                        allocation.reject_incompatible_triple([first_key, second_key, third_key]);
+                    }
+                }
             }
         }
     }
@@ -2575,6 +2799,15 @@ impl<'a> AllocationSession<'a> {
             .collect();
         effects.producer_lane_reservations = settlement.producer_lane_reservations().clone();
 
+        if let Some(saved) = self.participants.policy.economic_saving().cloned() {
+            let current = saved.current_capital;
+            self.participants.policy.commit_economic_investment(
+                saved,
+                current,
+                &mut effects.fresh_economy_intents,
+            );
+        }
+
         self.commit_emergency_defense(prepared, &mut effects);
         self.bind_saved_foundry_funding(prepared, &settlement, allocation_ok);
         self.refresh_and_bind_lift(prepared, &producer_schedule, allocation_ok);
@@ -2589,6 +2822,14 @@ impl<'a> AllocationSession<'a> {
             allocation_ok,
         );
         self.commit_fresh_foundry(prepared, &mut payloads, &mut effects, allocation_ok);
+        if *allocation_ok && let Some(economy) = payloads.take_economy() {
+            let current = economy.current_capital;
+            self.participants.policy.commit_economic_investment(
+                economy,
+                current,
+                &mut effects.fresh_economy_intents,
+            );
+        }
         if *allocation_ok && let Some(defense) = payloads.take_defense() {
             self.participants
                 .policy
@@ -2925,6 +3166,7 @@ impl<'a> AllocationSession<'a> {
             fresh_emergency_defense_intents: effects.fresh_emergency_defense_intents,
             fresh_foundry_intents: effects.fresh_foundry_intents,
             fresh_defense_intents: effects.fresh_defense_intents,
+            fresh_economy_intents: effects.fresh_economy_intents,
             allocated_producer_intents: effects.allocated_producer_intents,
             allocation_ok,
             accepted_connected: effects.accepted_connected,
@@ -3058,6 +3300,7 @@ struct ActiveRevisionPreparation {
 struct FreshInvestmentPreparation {
     foundry: Option<FreshFoundryProposal>,
     defense: Vec<FreshDefenseProposal>,
+    economy: Vec<EconomicInvestment>,
     connected: Option<FreshConnectedProposal>,
     standing_force: StandingForcePreparation,
     standing_force_derivation: StandingForceDerivation,
@@ -3068,7 +3311,6 @@ struct FreshInvestmentPreparation {
 
 struct StandingForceDerivation {
     projection_targets: Vec<StandingGroundTarget>,
-    residual_technology_reserve: u32,
     expansion_security_need: Option<(TilePos, u64)>,
 }
 
@@ -3106,6 +3348,7 @@ struct CommitEffects {
     fresh_emergency_defense_intents: Vec<Intent>,
     fresh_foundry_intents: Vec<Intent>,
     fresh_defense_intents: Vec<Intent>,
+    fresh_economy_intents: Vec<Intent>,
     allocated_producer_intents: Vec<Intent>,
     budget: AllocationBudgetOutcome,
 }
@@ -3118,6 +3361,7 @@ impl CommitEffects {
             fresh_emergency_defense_intents: Vec::new(),
             fresh_foundry_intents: Vec::new(),
             fresh_defense_intents: Vec::new(),
+            fresh_economy_intents: Vec::new(),
             allocated_producer_intents: Vec::new(),
             budget: AllocationBudgetOutcome::frozen(
                 prepared.foundry_saving,
@@ -3143,6 +3387,7 @@ struct PreparedAllocation {
     saved_foundry: Option<ValidatedFoundryObligation>,
     fresh_foundry: Option<FreshFoundryProposal>,
     fresh_defense: Vec<FreshDefenseProposal>,
+    fresh_economy: Vec<EconomicInvestment>,
     fresh_connected: Option<FreshConnectedProposal>,
     standing_force: StandingForcePreparation,
     connected_accepted_at: Option<Tick>,
@@ -3579,6 +3824,7 @@ fn obligation_horizon(obligations: &[ImportedObligation], minimum: Tick) -> Tick
             .claims
             .forecast_scrap()
             .iter()
+            .chain(obligation.claims.foregone_income())
             .fold(horizon, |horizon, claim| horizon.max(claim.through));
         let horizon = obligation
             .claims
@@ -4040,7 +4286,12 @@ fn retained_producer_context(
         for job in obligation.claims.producer_jobs() {
             horizon = horizon.max(job.ready_before());
         }
-        for claim in obligation.claims.forecast_scrap() {
+        for claim in obligation
+            .claims
+            .forecast_scrap()
+            .iter()
+            .chain(obligation.claims.foregone_income())
+        {
             horizon = horizon.max(claim.through);
         }
         if let Some(claim) = obligation.claims.deferrable_capital() {
@@ -4339,6 +4590,7 @@ mod tests {
             saved_foundry: None,
             fresh_foundry: None,
             fresh_defense: Vec::new(),
+            fresh_economy: Vec::new(),
             fresh_connected: None,
             standing_force: StandingForcePreparation::default(),
             connected_accepted_at: None,
@@ -6971,6 +7223,7 @@ mod tests {
                         kind: BuildingKind::Turret,
                         anchor: second,
                     },
+                    third: None,
                 },
                 ..
             } if *first == foundry_anchor && *second == unsafe_defense_anchor

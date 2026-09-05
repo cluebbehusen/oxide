@@ -64,7 +64,8 @@ pub(in crate::bot) struct FreshEmergencyDefenseContext<'a> {
 /// Inputs for the exact current-capital threshold that residual technology
 /// construction needs the shared allocator to leave available.
 #[derive(Clone, Copy)]
-pub(in crate::bot) struct ResidualTechnologyReserveContext<'a> {
+#[cfg(test)]
+struct ResidualTechnologyReserveContext<'a> {
     pub(in crate::bot) home: TilePos,
     pub(in crate::bot) available_builders: &'a [UnitId],
 }
@@ -963,7 +964,7 @@ impl UtilityPolicy {
         )) <= crate::stats::EXTRACTOR_SUPPORT_RADIUS
     }
 
-    fn frame_has_foundry_support(obs: &Observation, frame: TilePos) -> bool {
+    pub(super) fn frame_has_foundry_support(obs: &Observation, frame: TilePos) -> bool {
         obs.my_buildings.iter().any(|building| {
             building.kind == BuildingKind::Foundry
                 && building.built
@@ -1000,11 +1001,9 @@ impl UtilityPolicy {
             .filter(|frame| {
                 !obs.my_buildings
                     .iter()
+                    .chain(obs.ally_buildings.iter())
+                    .chain(obs.enemy_buildings.iter())
                     .any(|building| building.anchor == *frame)
-                    && !obs
-                        .enemy_buildings
-                        .iter()
-                        .any(|building| building.anchor == *frame)
                     && !deferred
                         .iter()
                         .any(|(kind, anchor)| *kind == BuildingKind::Extractor && *anchor == *frame)
@@ -1047,6 +1046,7 @@ impl UtilityPolicy {
             })
     }
 
+    #[cfg(test)]
     pub(super) fn supported_frame_restoration_claim(
         &self,
         obs: &Observation,
@@ -1440,6 +1440,7 @@ impl UtilityPolicy {
             context,
             economy,
             same_think_intents,
+            None,
         )
     }
 
@@ -1450,6 +1451,7 @@ impl UtilityPolicy {
         context: FoundryAssessmentContext<'_>,
         economy: expansion::ExpansionEconomy,
         same_think_intents: &[Intent],
+        opportunities: Option<Vec<expansion::FoundryOpportunity>>,
     ) -> Option<expansion::FoundryExpansionAssessment> {
         if context.claim.builders.is_empty() {
             return None;
@@ -1459,13 +1461,15 @@ impl UtilityPolicy {
             context.claim.unit_contacts,
             context.claim.building_contacts,
         );
-        let mut opportunities = self.player_facing_foundry_opportunities(
-            obs,
-            context.claim,
-            context.public_map,
-            economy,
-            &danger,
-        );
+        let mut opportunities = opportunities.unwrap_or_else(|| {
+            self.player_facing_foundry_opportunities(
+                obs,
+                context.claim,
+                context.public_map,
+                economy,
+                &danger,
+            )
+        });
         if let Some(required_anchor) = context.required_anchor {
             opportunities.retain(|opportunity| opportunity.anchor == required_anchor);
         }
@@ -1512,6 +1516,17 @@ impl UtilityPolicy {
         obs: &Observation,
         resources: &ResourceSnapshot,
         context: FreshFoundryProposalContext<'_>,
+    ) -> Option<FreshFoundryInvestment> {
+        self.fresh_foundry_with_opportunities(dials, obs, resources, context, None)
+    }
+
+    pub(super) fn fresh_foundry_with_opportunities(
+        &self,
+        dials: &Dials,
+        obs: &Observation,
+        resources: &ResourceSnapshot,
+        context: FreshFoundryProposalContext<'_>,
+        opportunities: Option<Vec<expansion::FoundryOpportunity>>,
     ) -> Option<FreshFoundryInvestment> {
         let has_built = |kind| {
             obs.my_buildings
@@ -1586,8 +1601,7 @@ impl UtilityPolicy {
                     support_extractors: obs.my_buildings.iter().any(|building| {
                         building.kind == BuildingKind::Fabricator && building.built
                     }),
-                    ordinary_frontiers: !dials.deep_tech
-                        || Self::projected_count(obs, BuildingKind::Airworks, true) > 0,
+                    ordinary_frontiers: true,
                     unit_contacts: Some(context.unit_contacts),
                     building_contacts: Some(context.building_contacts),
                 },
@@ -1599,6 +1613,7 @@ impl UtilityPolicy {
             },
             economy,
             context.same_think_intents,
+            opportunities,
         )?;
         match assessment.disposition {
             expansion::ExpansionDisposition::Reject => return None,
@@ -2213,7 +2228,8 @@ impl UtilityPolicy {
     /// Standing and Defense proposals carry the constraint. The reserve
     /// disappears once the technology tree is complete or no worker can act
     /// on it.
-    pub(in crate::bot) fn residual_technology_reserve(
+    #[cfg(test)]
+    fn residual_technology_reserve(
         &self,
         dials: &Dials,
         obs: &Observation,
@@ -2307,6 +2323,10 @@ impl UtilityPolicy {
         }
 
         // One advanced construction rung per think, cheapest gate first.
+        if player_facing {
+            self.late_tech_rungs(dials, obs, context, budget, intents);
+            return;
+        }
         if (dials.deep_tech || dials.extractors || dials.upgrades || dials.expansion)
             && self.advanced_construction(
                 dials,
@@ -2526,9 +2546,7 @@ impl UtilityPolicy {
         }
     }
 
-    /// The developed-base rungs retained by residual construction: Repair Bay
-    /// and Reclaimers for player-facing play, plus the frozen Overseer's Array
-    /// and Bastion branches.
+    /// Residual Repair Bay admission and the frozen Overseer's developed-base rungs.
     fn late_tech_rungs(
         &mut self,
         dials: &Dials,
@@ -2633,7 +2651,7 @@ impl UtilityPolicy {
         // adds passive capacity only while completed producers remain
         // underfunded after already-paid and promised income comes online;
         // the frozen Overseer retains its historical count cap.
-        if dials.reclaimers {
+        if !player_facing && dials.reclaimers {
             let near_home: u32 = obs
                 .known_scrap
                 .iter()
@@ -2721,6 +2739,11 @@ impl UtilityPolicy {
             // on purpose. Repair and salvage evict each other, so a repair
             // intent here would reverse the teardown.
             .filter(|b| !obs.my_units.iter().any(|u| u.salvaging == Some(b.id)))
+            .filter(|b| {
+                !intents.iter().any(
+                    |intent| matches!(intent, Intent::Upgrade { building } if *building == b.id),
+                )
+            })
             .map(|b| {
                 let deficit = b.kind.tier_stats(b.tier).max_hp - b.hp;
                 (std::cmp::Reverse(deficit), b.anchor.y, b.anchor.x, b.id)
@@ -2753,6 +2776,9 @@ impl UtilityPolicy {
             .my_buildings
             .iter()
             .filter(|b| b.built)
+            .filter(|b| !intents.iter().any(|intent| matches!(intent, Intent::Upgrade { building } if *building == b.id)))
+            .filter(|b| self.economic_saving.as_ref().is_none_or(|saving|
+                !matches!(saving.key, EconomicInvestmentKey::Upgrade { building, .. } if building == b.id)))
             .filter_map(|b| {
                 SALVAGE_PRIORITY
                     .iter()
@@ -5473,9 +5499,28 @@ mod tests {
         let hidden_corner = incident.offset(CONTESTED_RECON_RADIUS, CONTESTED_RECON_RADIUS);
         let mut obs = observation();
         obs.known_frames = vec![frame];
-        let mut dials = focused_dials();
-        dials.extractors = true;
         let mut policy = UtilityPolicy::new();
+        let restoration = |policy: &UtilityPolicy, obs: &Observation| {
+            policy
+                .supported_frame_restoration_claim(
+                    obs,
+                    ConstructionContext::new(
+                        HOME,
+                        ConstructionClaims {
+                            player_facing: true,
+                            enlisted: &[],
+                            reserved: &[],
+                        },
+                    ),
+                )
+                .map(|(anchor, builder)| Intent::BuildWith {
+                    builder,
+                    kind: BuildingKind::Extractor,
+                    anchor,
+                })
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
 
         let worker_tile = obs.my_units[0].tile;
         obs.my_units[0].tile = incident;
@@ -5491,7 +5536,7 @@ mod tests {
         policy.refresh_contested_harvest_regions(&obs, None, None);
         assert_eq!(policy.contested_harvest_regions[0].sweep_started_at, None);
         assert!(
-            construction_intents(&mut policy, &dials, &obs).is_empty(),
+            restoration(&policy, &obs).is_empty(),
             "an active loss incident must hold the destroyed home frame"
         );
 
@@ -5507,7 +5552,7 @@ mod tests {
                 .contains(&(incident, hidden_corner))
         );
         assert!(
-            construction_intents(&mut policy, &dials, &obs).is_empty(),
+            restoration(&policy, &obs).is_empty(),
             "elapsed time under partial sight is not evidence that the loss site is safe"
         );
 
@@ -5519,7 +5564,7 @@ mod tests {
         policy.refresh_contested_harvest_regions(&obs, None, None);
         assert_eq!(policy.contested_harvest_regions[0].sweep_started_at, None);
         assert!(
-            construction_intents(&mut policy, &dials, &obs).is_empty(),
+            restoration(&policy, &obs).is_empty(),
             "a known threat must restart a partial clear interval and keep complete sight from \
              clearing the region"
         );
@@ -5528,7 +5573,7 @@ mod tests {
         obs.tick += 1;
         policy.refresh_contested_harvest_regions(&obs, None, None);
         assert_eq!(
-            construction_intents(&mut policy, &dials, &obs),
+            restoration(&policy, &obs),
             vec![Intent::BuildWith {
                 builder: UnitId(1),
                 kind: BuildingKind::Extractor,
@@ -5539,7 +5584,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsafe_frame_route_yields_to_the_next_actionable_capital_rung() {
+    fn an_unsafe_frame_route_does_not_hide_safe_technology_alternatives() {
         let choke = TilePos::new(30, 12);
         let frame = TilePos::new(54, 12);
         let mut obs = observation();
@@ -5559,38 +5604,83 @@ mod tests {
                 .push(building(id, PlayerId(0), kind, anchor));
             obs.my_queues.push(Vec::new());
         }
-        let mut dials = focused_dials();
-        dials.tech = true;
-        dials.deep_tech = true;
-        dials.extractors = true;
+        let map = PublicMapBriefing {
+            map_width: obs.map_width,
+            map_height: obs.map_height,
+            starting_foundries: Vec::new(),
+            teams: vec![None, None],
+            non_ground_terrain: obs
+                .known_rock
+                .iter()
+                .map(|tile| (*tile, crate::map::Terrain::Rock))
+                .collect(),
+            extractor_frames: vec![frame],
+            initial_scrap: Vec::new(),
+        };
+        let profile = crate::scenario::BotConfig::scripted(
+            crate::scenario::BotDifficulty::Prime,
+            crate::scenario::BotStance::Balanced,
+            7,
+        )
+        .resolve_profile();
+        let evaluate = |policy: &UtilityPolicy, current: &Observation, contacts: &[UnitContact]| {
+            let resources = ResourceSnapshot::from_observation(current);
+            let demands = [crate::bot::standing_force::CapabilityDemand {
+                kind: UnitKind::Avalanche,
+                service: crate::bot::allocation::StandingForceServiceKey::point(HOME.offset(8, 5)),
+                reason: crate::bot::standing_force::StandingForceReason::GroundPressure,
+                case: crate::bot::allocation::ProposalCase {
+                    urgency: crate::bot::allocation::Urgency::Timely,
+                    confidence: crate::bot::allocation::Confidence::Current,
+                    value: crate::bot::allocation::StrategicValue::Material,
+                    time_to_impact: crate::bot::allocation::TimeToImpact::Near,
+                    safety: crate::bot::allocation::ExecutionSafety::Managed,
+                },
+                unmet: 100,
+                baseline: UnitKind::Sentinel,
+                provider_value: 1,
+            }];
+            policy.fresh_economic_investments(EconomicInvestmentContext {
+                obs: current,
+                resources: &resources,
+                profile: &profile,
+                briefing: &map,
+                orientation: crate::bot::orient::Orientation::for_home(current, HOME),
+                unavailable: &[],
+                demands: &demands,
+                unit_contacts: contacts,
+                building_contacts: &[],
+                cadence: 12,
+                protected_scrap: 0,
+                air_work: &[],
+            })
+        };
         let mut policy = UtilityPolicy::new();
         policy.contested_harvest_regions = vec![ContestedHarvestRegion {
             center: choke,
             last_evidence: obs.tick,
             sweep_started_at: None,
         }];
+        assert!(UtilityPolicy::ground_route_known(&obs, HOME, frame));
+        assert!(!policy.harvest_location_contested(frame));
+        let alternatives = evaluate(&policy, &obs, &[]);
         assert!(
-            UtilityPolicy::ground_route_known(&obs, HOME, frame),
-            "the authored choke is a known route, not an unreachable-frame case"
-        );
-        assert!(
-            !policy.harvest_location_contested(frame),
-            "the frame itself is safe; only its sole approach is quarantined"
-        );
-
-        let mut intents = construction_intents(&mut policy, &dials, &obs);
-        policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
-        assert!(
-            matches!(
-                intents.as_slice(),
-                [Intent::BuildWith {
+            alternatives.iter().any(|proposal| matches!(
+                proposal.key,
+                EconomicInvestmentKey::Build {
                     kind: BuildingKind::Crucible,
                     ..
-                }]
-            ),
-            "an unbindable frame must not shadow the safe Crucible rung: {intents:?}"
+                }
+            )),
+            "{alternatives:?}"
         );
-
+        assert!(alternatives.iter().all(|proposal| !matches!(
+            proposal.key,
+            EconomicInvestmentKey::Build {
+                kind: BuildingKind::Extractor,
+                ..
+            }
+        )));
         let contacts = [UnitContact {
             id: UnitId(90),
             player: PlayerId(1),
@@ -5601,54 +5691,29 @@ mod tests {
             last_seen: obs.tick,
             evidence: crate::bot::intelligence::ContactEvidence::Remembered,
         }];
-        let mut remembered_policy = UtilityPolicy::new();
-        let mut remembered_budget = obs.scrap;
-        let mut remembered_intents = Vec::new();
-        remembered_policy.construction(
-            &dials,
-            &obs,
-            ConstructionContext::new(
-                HOME,
-                ConstructionClaims {
-                    player_facing: true,
-                    enlisted: &[],
-                    reserved: &[],
-                },
-            )
-            .with_intelligence(Some(&contacts), Some(&[])),
-            &mut remembered_budget,
-            &mut remembered_intents,
-        );
-        remembered_policy.bind_player_facing_builders(
-            &obs,
-            &contacts,
-            &[],
-            &[],
-            &[],
-            &mut remembered_intents,
-        );
-        assert!(
-            matches!(
-                remembered_intents.as_slice(),
-                [Intent::BuildWith {
-                    kind: BuildingKind::Crucible,
-                    ..
-                }]
-            ),
-            "remembered tactical danger must participate in the same preflight as final binding: {remembered_intents:?}"
-        );
-
-        obs.my_units.push(harvester(2, frame.offset(-2, 0), None));
-        let mut intents = construction_intents(&mut policy, &dials, &obs);
-        policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
-        assert_eq!(
-            intents,
-            vec![Intent::BuildWith {
-                builder: UnitId(2),
+        let remembered = evaluate(&UtilityPolicy::new(), &obs, &contacts);
+        assert!(remembered.iter().any(|proposal| matches!(
+            proposal.key,
+            EconomicInvestmentKey::Build {
+                kind: BuildingKind::Crucible,
+                ..
+            }
+        )));
+        assert!(remembered.iter().all(|proposal| !matches!(
+            proposal.key,
+            EconomicInvestmentKey::Build {
                 kind: BuildingKind::Extractor,
-                anchor: frame,
-            }],
-            "an exact safe worker on the frame side of the choke makes restoration actionable"
+                ..
+            }
+        )));
+        obs.my_units.push(harvester(2, frame.offset(-2, 0), None));
+        let alternatives = evaluate(&policy, &obs, &[]);
+        assert!(
+            alternatives
+                .iter()
+                .any(|proposal| proposal.build()
+                    == Some((BuildingKind::Extractor, frame, UnitId(2)))),
+            "a safe worker beyond the choke must make restoration independently actionable: {alternatives:?}"
         );
     }
 
@@ -5814,22 +5879,16 @@ mod tests {
     }
 
     #[test]
-    fn residual_technology_reserve_tracks_the_next_technology_threshold() {
+    fn technology_has_no_residual_scalar_reserve() {
         let mut dials = focused_dials();
         dials.tech = true;
         let mut obs = observation();
         let policy = UtilityPolicy::new();
-        let expected = BuildingKind::Fabricator
-            .base_stats()
-            .construction
-            .expect("Fabricators are constructible")
-            .cost
-            .saturating_add(TECH_RESERVE);
 
         assert_eq!(
             residual_technology_reserve_for(&policy, &dials, &obs, &[UnitId(1)]),
-            expected,
-            "Standing must leave the existing first-tech threshold reachable"
+            0,
+            "technology claims belong to exact economic proposals, not a blanket floor"
         );
         assert_eq!(
             residual_technology_reserve_for(&policy, &dials, &obs, &[]),
@@ -6275,6 +6334,60 @@ mod tests {
     }
 
     #[test]
+    fn home_extractor_recovery_skips_an_allied_claim_without_holding_its_cost() {
+        let frame = HOME.offset(5, 4);
+        let public_map = array_briefing(40, 24, HOME, TilePos::new(32, 10), |tile| {
+            if tile == frame { 'E' } else { '.' }
+        });
+        let context = || {
+            ConstructionContext::new(
+                HOME,
+                ConstructionClaims {
+                    player_facing: true,
+                    enlisted: &[],
+                    reserved: &[],
+                },
+            )
+            .with_public_map(Some(&public_map))
+            .during_opening_core()
+        };
+        let mut dials = focused_dials();
+        dials.extractors = true;
+        dials.harvester_target = 1;
+        let mut obs = observation();
+        obs.known_frames.push(frame);
+        let policy = UtilityPolicy::new();
+        assert_eq!(
+            policy.starting_home_frame_restoration_claim(&obs, context()),
+            Some((frame, UnitId(1)))
+        );
+        for built in [false, true] {
+            let mut ally = building(2, PlayerId(1), BuildingKind::Extractor, frame);
+            ally.built = built;
+            obs.ally_buildings = vec![ally];
+            for tick in [0, 24, 48] {
+                obs.tick = tick;
+                assert_eq!(
+                    policy.starting_home_frame_restoration_claim(&obs, context()),
+                    None,
+                    "an allied paid or completed site cannot trigger restoration retries"
+                );
+                assert_eq!(
+                    policy.opening_bootstrap_reserve(&dials, &obs, context(), &[]),
+                    0,
+                    "an occupied frame cannot strand opening capital"
+                );
+            }
+        }
+        obs.ally_buildings.clear();
+        assert_eq!(
+            policy.starting_home_frame_restoration_claim(&obs, context()),
+            Some((frame, UnitId(1))),
+            "a subsequently vacant known frame remains eligible"
+        );
+    }
+
+    #[test]
     fn exact_bound_construction_command_is_accepted_by_state() {
         let scenario = Scenario::skirmish();
         let public_map =
@@ -6301,6 +6414,7 @@ mod tests {
                 &[],
                 &builders,
                 &[],
+                0,
                 0,
             )
             .into_iter()
