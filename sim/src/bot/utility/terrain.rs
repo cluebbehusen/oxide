@@ -472,7 +472,7 @@ impl UtilityPolicy {
         kind: BuildingKind,
         anchor: TilePos,
     ) -> bool {
-        if self.dead_anchors.contains(&anchor) {
+        if self.dead_anchors.contains(&anchor) || self.pending_sites.contains(&anchor) {
             return false;
         }
         let (width, height) = kind.base_stats().size;

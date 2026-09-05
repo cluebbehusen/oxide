@@ -6,10 +6,11 @@
 use super::allocation::{
     AllocationConflict, AllocationError, AllocationResult, CapitalFundingAssignment, ClaimBundle,
     ClaimBundleError, ClaimOwner, Confidence, ConnectedOffenseKey, ConnectedPortfolioContext,
-    CoordinatorInputError, ExecutionSafety, ImportedObligation, InvestmentProposal, LegacyChannel,
-    ObligationClass, ObligationKey, OutrankingBasis, ProducerJobClaim, ProposalCase,
-    ProposalDecision, ProposalDisposition, ProposalKey, ProposalRejection, ScheduledProducerJob,
-    StandingForceKey, StandingForceServiceKey, StrategicValue, TimeToImpact, Urgency,
+    CoordinatorInputError, DefenseInvestmentKey, ExecutionSafety, ImportedObligation,
+    InvestmentProposal, LegacyChannel, ObligationClass, ObligationKey, OutrankingBasis,
+    ProducerJobClaim, ProposalCase, ProposalDecision, ProposalDisposition, ProposalKey,
+    ProposalRejection, ScheduledProducerJob, StandingForceKey, StandingForceServiceKey,
+    StrategicValue, TimeToImpact, Urgency,
 };
 use super::observation::Observation;
 use super::resources::{
@@ -28,10 +29,11 @@ use crate::stats::{BuildingKind, UnitKind};
 use chassis::Tick;
 use chassis::grid::TilePos;
 use serde::Serialize;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// Schema version for serialized decision traces.
-pub const DECISION_TRACE_VERSION: u32 = 7;
+pub const DECISION_TRACE_VERSION: u32 = 8;
 
 const RESOURCE_FORECAST_TICKS: Tick = crate::TICKS_PER_SECOND as Tick * 60;
 const ALLOCATION_TRACE_ENTRY_LIMIT: usize = 32;
@@ -629,6 +631,7 @@ impl AllocationTrace {
 
     /// Applies final proposal dispositions and the selected lane schedule.
     pub(super) fn record_result<Payload>(&mut self, result: &AllocationResult<Payload>) {
+        self.retain_accepted_proposals(&result.accepted);
         self.record_decisions(&result.decisions);
         for accepted in &result.accepted {
             if let Some(proposal) = self
@@ -650,6 +653,36 @@ impl AllocationTrace {
                 .map(CapitalFundingAssignmentTrace::from)
                 .collect(),
         );
+    }
+
+    fn retain_accepted_proposals<Payload>(&mut self, accepted: &[InvestmentProposal<Payload>]) {
+        let accepted_keys = accepted
+            .iter()
+            .map(|proposal| ProposalKeyTrace::from(proposal.key()))
+            .collect::<Vec<_>>();
+        for proposal in accepted {
+            let key = proposal.key().into();
+            if self.proposals.entries.iter().any(|entry| entry.key == key) {
+                continue;
+            }
+            if self.proposals.entries.len() == ALLOCATION_TRACE_ENTRY_LIMIT {
+                let Some(index) = self
+                    .proposals
+                    .entries
+                    .iter()
+                    .rposition(|entry| !accepted_keys.contains(&entry.key))
+                else {
+                    break;
+                };
+                self.proposals.entries.remove(index);
+            }
+            self.proposals
+                .entries
+                .push(AllocationProposalTrace::from(proposal));
+        }
+        self.proposals
+            .entries
+            .sort_unstable_by(|left, right| left.key.canonical_cmp(&right.key));
     }
 
     /// Records the exact conditional state whose proposal set was selected.
@@ -853,6 +886,83 @@ pub enum ProposalKeyTrace {
         /// Canonical route-local demand served by this purchase.
         service: StandingForceServiceKeyTrace,
     },
+    /// One exact defensive construction opportunity.
+    Defense {
+        /// Exact defensive structure kind.
+        kind: BuildingKind,
+        /// Proposed top-left footprint anchor.
+        anchor: TilePos,
+    },
+}
+
+impl ProposalKeyTrace {
+    fn canonical_cmp(&self, other: &Self) -> Ordering {
+        let domain = |key: &Self| match key {
+            Self::FoundryExpansion { .. } => 0,
+            Self::ConnectedOffenseMinimum { .. } => 1,
+            Self::StandingForce { .. } => 2,
+            Self::Defense { .. } => 3,
+        };
+        domain(self)
+            .cmp(&domain(other))
+            .then_with(|| match (self, other) {
+                (
+                    Self::FoundryExpansion { anchor: left },
+                    Self::FoundryExpansion { anchor: right },
+                ) => trace_tile_key(*left).cmp(&trace_tile_key(*right)),
+                (
+                    Self::ConnectedOffenseMinimum {
+                        objective: left_objective,
+                        anchor: left_anchor,
+                    },
+                    Self::ConnectedOffenseMinimum {
+                        objective: right_objective,
+                        anchor: right_anchor,
+                    },
+                ) => (trace_tile_key(*left_anchor), left_objective)
+                    .cmp(&(trace_tile_key(*right_anchor), right_objective)),
+                (
+                    Self::StandingForce {
+                        kind: left_kind,
+                        service: left_service,
+                    },
+                    Self::StandingForce {
+                        kind: right_kind,
+                        service: right_service,
+                    },
+                ) => (left_kind, trace_standing_service_key(*left_service))
+                    .cmp(&(right_kind, trace_standing_service_key(*right_service))),
+                (
+                    Self::Defense {
+                        kind: left_kind,
+                        anchor: left_anchor,
+                    },
+                    Self::Defense {
+                        kind: right_kind,
+                        anchor: right_anchor,
+                    },
+                ) => (left_kind, trace_tile_key(*left_anchor))
+                    .cmp(&(right_kind, trace_tile_key(*right_anchor))),
+                _ => Ordering::Equal,
+            })
+    }
+}
+
+const fn trace_tile_key(tile: TilePos) -> (i32, i32) {
+    (tile.y, tile.x)
+}
+
+const fn trace_standing_service_key(
+    service: StandingForceServiceKeyTrace,
+) -> ((i32, i32), u8, i32, i32) {
+    match service {
+        StandingForceServiceKeyTrace::Point { tile } => (trace_tile_key(tile), 0, 0, 0),
+        StandingForceServiceKeyTrace::Footprint {
+            anchor,
+            width,
+            height,
+        } => (trace_tile_key(anchor), 1, height, width),
+    }
 }
 
 /// Public diagnostic form of a standing-force service target.
@@ -900,6 +1010,10 @@ impl From<ProposalKey> for ProposalKeyTrace {
                 kind: key.kind,
                 service: key.service.into(),
             },
+            ProposalKey::Defense(key) => Self::Defense {
+                kind: key.kind,
+                anchor: key.anchor,
+            },
         }
     }
 }
@@ -913,6 +1027,12 @@ impl From<ConnectedOffenseKey> for ProposalKeyTrace {
 impl From<StandingForceKey> for ProposalKeyTrace {
     fn from(key: StandingForceKey) -> Self {
         ProposalKey::StandingForce(key).into()
+    }
+}
+
+impl From<DefenseInvestmentKey> for ProposalKeyTrace {
+    fn from(key: DefenseInvestmentKey) -> Self {
+        ProposalKey::Defense(key).into()
     }
 }
 
@@ -1565,6 +1685,13 @@ pub enum AllocationConflictTrace {
         /// Owner of the existing footprint.
         owner: ClaimOwnerTrace,
     },
+    /// Two individually legal builds cannot safely share one layout.
+    IncompatibleLayout {
+        /// First canonical proposal identity.
+        first: ProposalKeyTrace,
+        /// Second canonical proposal identity.
+        second: ProposalKeyTrace,
+    },
     /// A requested producer is absent from completed capacity.
     UnknownProducer {
         /// Missing producer.
@@ -1650,6 +1777,10 @@ impl From<&AllocationConflict> for AllocationConflictTrace {
                 requested: (*requested).into(),
                 existing: (*existing).into(),
                 owner: (*owner).into(),
+            },
+            AllocationConflict::IncompatibleLayout { first, second } => Self::IncompatibleLayout {
+                first: (*first).into(),
+                second: (*second).into(),
             },
             AllocationConflict::UnknownProducer(producer) => Self::UnknownProducer {
                 producer: *producer,
@@ -1772,6 +1903,8 @@ pub enum AllocationCoordinatorStageTrace {
     CapacityProjection,
     /// The selected Foundry candidate could not be adapted into shared claims.
     FoundryProposalAdaptation,
+    /// A defensive candidate could not be adapted into exact shared claims.
+    DefenseProposalAdaptation,
     /// The selected connected-operation candidate could not be adapted into shared claims.
     ConnectedProposalAdaptation,
     /// The selected standing-force candidate could not be adapted into shared claims.
@@ -3099,6 +3232,35 @@ mod tests {
     }
 
     #[test]
+    fn defense_trace_preserves_exact_identity_and_layout_conflicts() {
+        let foundry =
+            ProposalKey::FoundryExpansion(super::super::allocation::FoundryExpansionKey {
+                anchor: TilePos::new(4, 6),
+            });
+        let defense = DefenseInvestmentKey {
+            kind: BuildingKind::Bastion,
+            anchor: TilePos::new(12, 8),
+        };
+        assert_eq!(
+            ProposalKeyTrace::from(defense),
+            ProposalKeyTrace::Defense {
+                kind: BuildingKind::Bastion,
+                anchor: TilePos::new(12, 8),
+            }
+        );
+        assert_eq!(
+            AllocationConflictTrace::from(AllocationConflict::IncompatibleLayout {
+                first: foundry,
+                second: ProposalKey::Defense(defense),
+            }),
+            AllocationConflictTrace::IncompatibleLayout {
+                first: foundry.into(),
+                second: defense.into(),
+            }
+        );
+    }
+
+    #[test]
     fn allocation_claim_trace_distinguishes_unassigned_flexible_capital() {
         let claims = ClaimBundle::new(
             0,
@@ -3164,6 +3326,11 @@ mod tests {
 
     #[test]
     fn coordinator_failure_trace_preserves_stage_and_exact_reason() {
+        assert_eq!(
+            serde_json::to_value(AllocationCoordinatorStageTrace::DefenseProposalAdaptation)
+                .expect("the coordinator stage serializes"),
+            Value::from("defense_proposal_adaptation")
+        );
         let mut trace = AllocationTrace::default();
         let input = CoordinatorInputError::ImmediateProducerUnavailable {
             producer: BuildingId(7),
@@ -3488,6 +3655,63 @@ mod tests {
     }
 
     #[test]
+    fn bounded_allocation_trace_always_retains_the_accepted_defense() {
+        let case = ProposalCase {
+            urgency: Urgency::Timely,
+            confidence: Confidence::Supported,
+            value: StrategicValue::Material,
+            time_to_impact: TimeToImpact::Near,
+            safety: ExecutionSafety::Managed,
+        };
+        let proposals = (0..=ALLOCATION_TRACE_ENTRY_LIMIT)
+            .map(|index| {
+                let proposal = crate::bot::utility::FreshDefenseProposal::fixture(
+                    crate::bot::utility::DefenseConstruction::Turret,
+                    TilePos::new(i32::try_from(index).unwrap(), 5),
+                    UnitId(1),
+                    case,
+                    50,
+                    0,
+                );
+                crate::bot::allocation::defense_investment_proposal(proposal)
+                    .expect("the exact defense claim is valid")
+            })
+            .collect::<Vec<_>>();
+        let accepted = proposals
+            .last()
+            .cloned()
+            .expect("the fixture includes one proposal beyond the trace bound");
+        let accepted_key = ProposalKeyTrace::from(accepted.key());
+        let mut trace = AllocationTrace::from_inputs(&[], &proposals);
+
+        trace.retain_accepted_proposals(std::slice::from_ref(&accepted));
+        trace.record_decisions(&[ProposalDecision {
+            key: accepted.key(),
+            case,
+            personality_weight: 150,
+            disposition: ProposalDisposition::Accepted,
+        }]);
+
+        assert_eq!(trace.proposals.total, 33);
+        assert_eq!(trace.proposals.entries.len(), ALLOCATION_TRACE_ENTRY_LIMIT);
+        assert_eq!(trace.proposals.omitted, 1);
+        assert!(
+            trace
+                .proposals
+                .entries
+                .windows(2)
+                .all(|pair| { pair[0].key.canonical_cmp(&pair[1].key) != Ordering::Greater })
+        );
+        let accepted = trace
+            .proposals
+            .entries
+            .iter()
+            .find(|proposal| proposal.key == accepted_key)
+            .expect("the selected defense displaces an omitted rejected row");
+        assert_eq!(accepted.disposition, ProposalDispositionTrace::Accepted);
+    }
+
+    #[test]
     fn allocation_trace_records_dispositions_and_preserves_selected_lane_order() {
         let expansion =
             ProposalKey::FoundryExpansion(super::super::allocation::FoundryExpansionKey {
@@ -3746,7 +3970,7 @@ mod tests {
 
     #[test]
     fn serialized_trace_has_a_fixed_schema() {
-        assert_eq!(DECISION_TRACE_VERSION, 7);
+        assert_eq!(DECISION_TRACE_VERSION, 8);
         let mut trace = DecisionTrace::from_observation(&Observation::default());
         trace.gates.opening_core = Some(CoreGateTrace {
             projected_strength: 1,
@@ -3777,6 +4001,10 @@ mod tests {
         let expansion_key = ProposalKeyTrace::FoundryExpansion {
             anchor: TilePos::new(6, 5),
         };
+        let defense_key = ProposalKeyTrace::Defense {
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(9, 5),
+        };
         trace.allocation = AllocationTrace {
             obligations: BoundedTraceEntries::from_vec(vec![AllocationObligationTrace {
                 class: ObligationClassTrace::Survival,
@@ -3789,40 +4017,73 @@ mod tests {
                     ..AllocationClaimsTrace::default()
                 },
             }]),
-            proposals: BoundedTraceEntries::from_vec(vec![AllocationProposalTrace {
-                key: expansion_key,
-                case: ProposalCaseTrace {
-                    urgency: UrgencyTrace::Timely,
-                    confidence: ConfidenceTrace::Current,
-                    value: StrategicValueTrace::Material,
-                    time_to_impact: TimeToImpactTrace::Near,
-                    safety: ExecutionSafetyTrace::Secure,
+            proposals: BoundedTraceEntries::from_vec(vec![
+                AllocationProposalTrace {
+                    key: expansion_key,
+                    case: ProposalCaseTrace {
+                        urgency: UrgencyTrace::Timely,
+                        confidence: ConfidenceTrace::Current,
+                        value: StrategicValueTrace::Material,
+                        time_to_impact: TimeToImpactTrace::Near,
+                        safety: ExecutionSafetyTrace::Secure,
+                    },
+                    personality_weight: Some(147),
+                    claims: AllocationClaimsTrace {
+                        current_scrap: 150,
+                        producer_job_scrap_total: u128::from(UnitKind::Sentinel.stats().cost),
+                        claimed_capital: 150 + u128::from(UnitKind::Sentinel.stats().cost),
+                        sites: BoundedTraceEntries::from_vec(vec![SiteFootprintTrace {
+                            anchor: TilePos::new(6, 5),
+                            width: 3,
+                            height: 3,
+                        }]),
+                        producer_jobs: BoundedTraceEntries::from_vec(vec![ProducerJobClaimTrace {
+                            kind: UnitKind::Sentinel,
+                            cost: UnitKind::Sentinel.stats().cost,
+                            enqueue_not_before: 10,
+                            enqueue_not_after: 119,
+                            ready_before: 120,
+                            requires_current_funding: false,
+                            access: ProducerJobAccessTrace::Flexible {
+                                eligible_producers: BoundedTraceEntries::from_vec(vec![
+                                    BuildingId(3),
+                                ]),
+                            },
+                        }]),
+                        ..AllocationClaimsTrace::default()
+                    },
+                    disposition: ProposalDispositionTrace::Accepted,
                 },
-                personality_weight: Some(147),
-                claims: AllocationClaimsTrace {
-                    current_scrap: 150,
-                    producer_job_scrap_total: u128::from(UnitKind::Sentinel.stats().cost),
-                    claimed_capital: 150 + u128::from(UnitKind::Sentinel.stats().cost),
-                    sites: BoundedTraceEntries::from_vec(vec![SiteFootprintTrace {
-                        anchor: TilePos::new(6, 5),
-                        width: 3,
-                        height: 3,
-                    }]),
-                    producer_jobs: BoundedTraceEntries::from_vec(vec![ProducerJobClaimTrace {
-                        kind: UnitKind::Sentinel,
-                        cost: UnitKind::Sentinel.stats().cost,
-                        enqueue_not_before: 10,
-                        enqueue_not_after: 119,
-                        ready_before: 120,
-                        requires_current_funding: false,
-                        access: ProducerJobAccessTrace::Flexible {
-                            eligible_producers: BoundedTraceEntries::from_vec(vec![BuildingId(3)]),
+                AllocationProposalTrace {
+                    key: defense_key,
+                    case: ProposalCaseTrace {
+                        urgency: UrgencyTrace::Timely,
+                        confidence: ConfidenceTrace::Supported,
+                        value: StrategicValueTrace::Material,
+                        time_to_impact: TimeToImpactTrace::Near,
+                        safety: ExecutionSafetyTrace::Secure,
+                    },
+                    personality_weight: Some(91),
+                    claims: AllocationClaimsTrace {
+                        current_scrap: 100,
+                        claimed_capital: 100,
+                        builders: BoundedTraceEntries::from_vec(vec![UnitId(4)]),
+                        sites: BoundedTraceEntries::from_vec(vec![SiteFootprintTrace {
+                            anchor: TilePos::new(9, 5),
+                            width: 1,
+                            height: 1,
+                        }]),
+                        ..AllocationClaimsTrace::default()
+                    },
+                    disposition: ProposalDispositionTrace::ConflictsWithSelected {
+                        selected: BoundedTraceEntries::from_vec(vec![expansion_key]),
+                        conflict: AllocationConflictTrace::IncompatibleLayout {
+                            first: expansion_key,
+                            second: defense_key,
                         },
-                    }]),
-                    ..AllocationClaimsTrace::default()
+                    },
                 },
-                disposition: ProposalDispositionTrace::Accepted,
-            }]),
+            ]),
             producer_schedule: BoundedTraceEntries::from_vec(vec![ScheduledProducerJobTrace {
                 owner: ClaimOwnerTrace::Proposal { key: expansion_key },
                 producer: BuildingId(3),
@@ -4072,6 +4333,47 @@ mod tests {
                 "ready_before",
                 "requires_current_funding",
             ])
+        );
+        let defense = proposals
+            .iter()
+            .find(|proposal| {
+                proposal.get("key").and_then(|key| key.get("domain"))
+                    == Some(&Value::from("defense"))
+            })
+            .expect("the fixed trace contains a defensive proposal");
+        assert_eq!(
+            defense.get("key"),
+            Some(&serde_json::json!({
+                "domain": "defense",
+                "kind": "turret",
+                "anchor": { "x": 9, "y": 5 }
+            }))
+        );
+        assert_eq!(
+            defense.get("disposition"),
+            Some(&serde_json::json!({
+                "status": "conflicts_with_selected",
+                "selected": {
+                    "total": 1,
+                    "entries": [{
+                        "domain": "foundry_expansion",
+                        "anchor": { "x": 6, "y": 5 }
+                    }],
+                    "omitted": 0
+                },
+                "conflict": {
+                    "reason": "incompatible_layout",
+                    "first": {
+                        "domain": "foundry_expansion",
+                        "anchor": { "x": 6, "y": 5 }
+                    },
+                    "second": {
+                        "domain": "defense",
+                        "kind": "turret",
+                        "anchor": { "x": 9, "y": 5 }
+                    }
+                }
+            }))
         );
 
         let expected_objects = [

@@ -31,6 +31,7 @@ pub(super) struct ResidualCoordinationContext<'a> {
     pub(super) allocation_ok: bool,
     pub(super) allow_new_voluntary_operations: bool,
     pub(super) connected_is_typed: bool,
+    pub(super) raw_residual_scrap: u32,
     pub(super) residual_scrap: u32,
     pub(super) allocation_utility_spendable: u32,
     pub(super) producer_lanes: &'a ProducerLaneReservations,
@@ -276,6 +277,15 @@ pub(super) fn coordinate_residual_work(
         merge_strategic(&mut strategic, raid_decision.clone());
     }
 
+    let claims_after_raid = PlannerClaims::new(context.enlisted, strategy, raids, lifts);
+    let core_exclusions_after_raid = claims_after_raid.core_exclusions(&team_core_claims);
+    let prior_non_lift_after_raid = claims_after_raid.without_lift(&team_core_claims);
+    let lift_unavailable_after_raid = lift_unavailable(
+        context.observation,
+        context.armies,
+        context.enlisted,
+        &prior_non_lift_after_raid,
+    );
     let prospective_carrier_commitment = if context.allocation_ok
         && context.allow_new_voluntary_operations
     {
@@ -295,8 +305,8 @@ pub(super) fn coordinate_residual_work(
                     planner.prospective_first_carrier_commitment(
                         context.observation,
                         context.home,
-                        &lift_unavailable_after,
-                        &core_exclusions_after_team,
+                        &lift_unavailable_after_raid,
+                        &core_exclusions_after_raid,
                         context.minimum_core_equivalents,
                         target,
                     )
@@ -309,7 +319,7 @@ pub(super) fn coordinate_residual_work(
     let prospective_carrier_hold = applied_prospective_carrier_hold(
         prospective_carrier_commitment,
         context
-            .residual_scrap
+            .raw_residual_scrap
             .saturating_sub(post_allocation_commitment),
     );
     post_allocation_commitment =
@@ -324,7 +334,7 @@ pub(super) fn coordinate_residual_work(
             planner.remaining_airwork_ticks(context.observation)
         })
         .saturating_add(lifts.as_ref().map_or(0, |planner| {
-            planner.remaining_airwork_ticks(context.observation, &lift_unavailable_after)
+            planner.remaining_airwork_ticks(context.observation, &lift_unavailable_after_raid)
         }));
     let utility_prior_commitment = context
         .observation
@@ -500,6 +510,7 @@ mod tests {
                 allocation_ok: false,
                 allow_new_voluntary_operations: false,
                 connected_is_typed: false,
+                raw_residual_scrap: 70,
                 residual_scrap: 70,
                 allocation_utility_spendable: 70,
                 producer_lanes: &producer_lanes,

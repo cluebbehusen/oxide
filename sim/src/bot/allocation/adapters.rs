@@ -2,10 +2,10 @@
 
 use super::{
     AllocationConflict, AllocationPersonality, AllocationResult, ClaimBundle, ClaimBundleError,
-    Confidence, ConnectedOffenseKey, DeferrableCapitalClaim, ExecutionSafety, ForecastClaim,
-    FoundryExpansionKey, ImportedObligation, InvestmentProposal, ObligationClass, ObligationKey,
-    ProducerJobClaim, ProposalCase, ProposalKey, ScheduledProducerJob, StrategicValue,
-    TimeToImpact, Urgency,
+    Confidence, ConnectedOffenseKey, DefenseInvestmentKey, DeferrableCapitalClaim, ExecutionSafety,
+    ForecastClaim, FoundryExpansionKey, ImportedObligation, InvestmentProposal, ObligationClass,
+    ObligationKey, ProducerJobClaim, ProposalCase, ProposalKey, ScheduledProducerJob,
+    StrategicValue, TimeToImpact, Urgency,
 };
 use crate::bot::profile::ResolvedProfile;
 use crate::bot::standing_force::StandingForceProposal;
@@ -16,7 +16,7 @@ use crate::bot::strategy::{
 };
 use crate::bot::utility::{
     FoundryConfidence, FoundryExecutionSafety, FoundryOpportunityCase, FoundryStrategicValue,
-    FoundryTimeToImpact, FoundryUrgency, FreshFoundryProposal,
+    FoundryTimeToImpact, FoundryUrgency, FreshDefenseProposal, FreshFoundryProposal,
 };
 use crate::stats::BuildingKind;
 
@@ -29,6 +29,8 @@ pub(crate) enum DomainPayload {
     Connected(Box<FreshConnectedProposal>),
     /// One independently useful standing-force purchase.
     StandingForce(StandingForceProposal),
+    /// Frozen exact defensive construction.
+    Defense(FreshDefenseProposal),
 }
 
 /// Exact domain payloads compared during cross-domain allocation.
@@ -47,6 +49,7 @@ impl AllocationPersonality {
                 + profile.traits.fortification as u16
                 + profile.traits.guile as u16)
                 / 3,
+            defense: profile.traits.fortification as u16,
         }
     }
 }
@@ -139,6 +142,44 @@ pub(crate) fn standing_force_investment_proposals(
         .enumerate()
         .map(|(preference, proposal)| {
             standing_force_investment_proposal(proposal)
+                .map(|proposal| proposal.with_domain_preference(preference))
+        })
+        .collect()
+}
+
+/// Retains one defensive domain's frozen builder, site, and exact capital claim.
+pub(crate) fn defense_investment_proposal(
+    proposal: FreshDefenseProposal,
+) -> Result<DomainInvestmentProposal, ClaimBundleError> {
+    let claims = ClaimBundle::new(
+        proposal.construction_capital(),
+        Vec::new(),
+        vec![proposal.builder()],
+        Vec::new(),
+        vec![proposal.site()],
+        Vec::new(),
+    )?
+    .with_minimum_residual_scrap(proposal.minimum_residual_scrap());
+    Ok(InvestmentProposal::fresh(
+        ProposalKey::Defense(DefenseInvestmentKey {
+            kind: proposal.kind(),
+            anchor: proposal.anchor(),
+        }),
+        proposal.case(),
+        claims,
+        DomainPayload::Defense(proposal),
+    ))
+}
+
+/// Retains the defensive domain's deterministic best-first alternatives.
+pub(crate) fn defense_investment_proposals(
+    proposals: Vec<FreshDefenseProposal>,
+) -> Result<Vec<DomainInvestmentProposal>, ClaimBundleError> {
+    proposals
+        .into_iter()
+        .enumerate()
+        .map(|(preference, proposal)| {
+            defense_investment_proposal(proposal)
                 .map(|proposal| proposal.with_domain_preference(preference))
         })
         .collect()
@@ -324,6 +365,7 @@ pub(crate) struct AcceptedDomainPayloads {
     foundry: Option<FreshFoundryProposal>,
     connected: Option<FreshConnectedProposal>,
     standing_force: Option<StandingForceProposal>,
+    defense: Option<FreshDefenseProposal>,
 }
 
 impl AcceptedDomainPayloads {
@@ -340,6 +382,11 @@ impl AcceptedDomainPayloads {
     /// Selected standing-force purchase, if it won allocation.
     pub(crate) fn take_standing_force(&mut self) -> Option<StandingForceProposal> {
         self.standing_force.take()
+    }
+
+    /// Selected exact defensive construction, if it won allocation.
+    pub(crate) fn take_defense(&mut self) -> Option<FreshDefenseProposal> {
+        self.defense.take()
     }
 }
 
@@ -363,7 +410,9 @@ impl DomainAllocationResult {
             validate_payload_key(proposal);
             match proposal.key() {
                 ProposalKey::ConnectedOffenseMinimum(key) => Some(key),
-                ProposalKey::FoundryExpansion(_) | ProposalKey::StandingForce(_) => None,
+                ProposalKey::FoundryExpansion(_)
+                | ProposalKey::StandingForce(_)
+                | ProposalKey::Defense(_) => None,
             }
         })
     }
@@ -374,7 +423,9 @@ impl DomainAllocationResult {
             validate_payload_key(proposal);
             match proposal.payload() {
                 DomainPayload::Connected(payload) => Some(payload.marginal_variants()),
-                DomainPayload::Foundry(_) | DomainPayload::StandingForce(_) => None,
+                DomainPayload::Foundry(_)
+                | DomainPayload::StandingForce(_)
+                | DomainPayload::Defense(_) => None,
             }
         })
     }
@@ -396,7 +447,8 @@ impl DomainAllocationResult {
                         DomainPayload::Connected(payload),
                     ) => Some((key, payload.marginal_variants().contains(marginal))),
                     (ProposalKey::FoundryExpansion(_), DomainPayload::Foundry(_))
-                    | (ProposalKey::StandingForce(_), DomainPayload::StandingForce(_)) => None,
+                    | (ProposalKey::StandingForce(_), DomainPayload::StandingForce(_))
+                    | (ProposalKey::Defense(_), DomainPayload::Defense(_)) => None,
                     _ => unreachable!("payload validation is exhaustive above"),
                 }
             })
@@ -413,7 +465,9 @@ impl DomainAllocationResult {
             .iter_mut()
             .find_map(|proposal| match proposal.payload_mut() {
                 DomainPayload::Connected(payload) => Some(payload),
-                DomainPayload::Foundry(_) | DomainPayload::StandingForce(_) => None,
+                DomainPayload::Foundry(_)
+                | DomainPayload::StandingForce(_)
+                | DomainPayload::Defense(_) => None,
             });
         assert!(
             selected.is_some_and(|payload| payload.select_marginal(marginal)),
@@ -451,6 +505,10 @@ impl DomainAllocationResult {
                     debug_assert!(payloads.standing_force.is_none());
                     payloads.standing_force = Some(payload);
                 }
+                (ProposalKey::Defense(_), DomainPayload::Defense(payload)) => {
+                    debug_assert!(payloads.defense.is_none());
+                    payloads.defense = Some(payload);
+                }
                 _ => panic!("an accepted allocation payload must match its proposal domain"),
             }
         }
@@ -482,6 +540,7 @@ fn validate_payload_key(proposal: &DomainInvestmentProposal) {
                     ProposalKey::StandingForce(_),
                     DomainPayload::StandingForce(_)
                 )
+                | (ProposalKey::Defense(_), DomainPayload::Defense(_))
         ),
         "an allocation payload must match its proposal domain"
     );
@@ -503,6 +562,7 @@ mod tests {
         StandingForceFixture, StandingForceProposal, StandingForceReason,
     };
     use crate::bot::strategy::FreshConnectedProposalFixture;
+    use crate::bot::utility::DefenseConstruction;
     use crate::ids::{BuildingId, UnitId};
     use crate::scenario::{BotDifficulty, BotStance};
     use crate::stats::UnitKind;
@@ -615,10 +675,55 @@ mod tests {
 
         match proposal.payload() {
             DomainPayload::Foundry(payload) => assert_eq!(payload, &original),
-            DomainPayload::Connected(_) | DomainPayload::StandingForce(_) => {
+            DomainPayload::Connected(_)
+            | DomainPayload::StandingForce(_)
+            | DomainPayload::Defense(_) => {
                 panic!("the Foundry adapter returned the wrong domain payload");
             }
         }
+    }
+
+    #[test]
+    fn defense_adapter_preserves_exact_build_and_technology_floor() {
+        let anchor = TilePos::new(21, 11);
+        let case = ProposalCase {
+            urgency: Urgency::Pressing,
+            confidence: Confidence::Current,
+            value: StrategicValue::Material,
+            time_to_impact: TimeToImpact::Immediate,
+            safety: ExecutionSafety::Managed,
+        };
+        let original = FreshDefenseProposal::fixture(
+            DefenseConstruction::FlakTurret,
+            anchor,
+            UnitId(4),
+            case,
+            67,
+            150,
+        );
+        let cost = original.construction_capital();
+        let site = original.site();
+        let proposal = defense_investment_proposal(original)
+            .expect("one exact defensive build is a valid claim bundle");
+
+        assert_eq!(
+            proposal.key(),
+            ProposalKey::Defense(DefenseInvestmentKey {
+                kind: BuildingKind::FlakTurret,
+                anchor,
+            })
+        );
+        assert_eq!(proposal.case(), case);
+        assert_eq!(proposal.personality_preference(), None);
+        assert_eq!(proposal.claims().current_scrap(), cost);
+        assert_eq!(proposal.claims().minimum_residual_scrap(), 150);
+        assert_eq!(proposal.claims().builders(), &[UnitId(4)]);
+        assert_eq!(proposal.claims().sites(), &[site]);
+        assert!(proposal.claims().forecast_scrap().is_empty());
+        assert!(proposal.claims().producer_jobs().is_empty());
+        assert!(
+            matches!(proposal.payload(), DomainPayload::Defense(payload) if *payload == original)
+        );
     }
 
     #[test]
@@ -668,7 +773,7 @@ mod tests {
 
         match proposal.payload() {
             DomainPayload::StandingForce(payload) => assert_eq!(payload, &original),
-            DomainPayload::Foundry(_) | DomainPayload::Connected(_) => {
+            DomainPayload::Foundry(_) | DomainPayload::Connected(_) | DomainPayload::Defense(_) => {
                 panic!("the standing-force adapter returned the wrong domain payload");
             }
         }
@@ -899,6 +1004,7 @@ mod tests {
                 economy: 80,
                 offense: 0,
                 standing_force: 0,
+                defense: 0,
             },
         )
         .expect("both proposals are independently valid");
@@ -1244,6 +1350,7 @@ mod tests {
                 economy: 90,
                 offense: 10,
                 standing_force: 0,
+                defense: 0,
             }),
             ProposalKey::FoundryExpansion(_)
         ));
@@ -1252,6 +1359,7 @@ mod tests {
                 economy: 10,
                 offense: 90,
                 standing_force: 0,
+                defense: 0,
             }),
             ProposalKey::ConnectedOffenseMinimum(_)
         ));
@@ -1280,6 +1388,7 @@ mod tests {
                 economy: 73,
                 offense: 60,
                 standing_force: 50,
+                defense: 50,
             }
         );
     }

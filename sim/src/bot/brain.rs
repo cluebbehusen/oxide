@@ -18,9 +18,9 @@ use super::allocation::{
     ObligationKey, prior_planner_claims, push_bounded_capital_reserve,
 };
 use super::difficulty::DifficultyTuning;
-use super::executive::Executive;
 #[cfg(test)]
-use super::executive::{Army, ArmyState, Intent};
+use super::executive::{Army, ArmyState};
+use super::executive::{Executive, Intent};
 use super::intelligence::StrategicIntelligence;
 #[cfg(test)]
 use super::lift::LiftAdmission;
@@ -36,12 +36,12 @@ use super::residual_coordination::{
 use super::resources::BuilderLease;
 #[cfg(test)]
 use super::resources::{ProducerLaneReservations, ReservedProducerJob, ResourceSnapshot};
-#[cfg(test)]
-use super::strategy::connected_preparation_horizon;
 use super::strategy::{
     AirOperationOutcome, AirOperationPhase, LiftSupportRequest, StrategicCoordination,
     StrategicDecision, StrategicPlanner, StrategicThinkContext, StrategicThinkResult,
 };
+#[cfg(test)]
+use super::strategy::{AirRecoveryReason, connected_preparation_horizon};
 use super::team::{TeamReliefAdmission, TeamReliefPlanner};
 use super::trace::{
     ChannelPhase, ChannelState, ChannelTrace, CoreGateTrace, DecisionControlFlow,
@@ -462,6 +462,11 @@ impl Brain {
         if strategy.is_some() {
             intelligence.update(&oriented);
         }
+        self.policy.refresh_allocation_worker_safety(
+            &oriented,
+            intelligence.units(),
+            intelligence.buildings(),
+        );
         let lift_support_request = lifts
             .as_ref()
             .and_then(LiftPlanner::operation)
@@ -566,6 +571,7 @@ impl Brain {
             staged_strategy,
             fresh_emergency_defense_intents,
             fresh_foundry_intents,
+            fresh_defense_intents,
             allocated_producer_intents,
             allocation_ok,
             accepted_connected,
@@ -575,6 +581,7 @@ impl Brain {
                     foundry_saving,
                     airworks_capacity,
                     opening_bootstrap,
+                    raw_residual_scrap,
                     residual_scrap,
                     connected_spendable,
                     connected_forecast_hold,
@@ -593,6 +600,13 @@ impl Brain {
             });
         }
         let strategic_was_staged = staged_strategy.is_some();
+        let fresh_defense_builders = fresh_defense_intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::BuildWith { builder, .. } => Some(*builder),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let strategic_result = if let Some(staged) = staged_strategy {
             staged
         } else if !allocation_ok {
@@ -634,6 +648,7 @@ impl Brain {
         if strategic_was_staged || connected_continues || accepted_connected {
             remove_producer_intents(&mut strategic);
         }
+        strategic.intents.splice(0..0, fresh_defense_intents);
         strategic.intents.splice(0..0, fresh_foundry_intents);
         strategic
             .intents
@@ -674,6 +689,7 @@ impl Brain {
                 allocation_ok,
                 allow_new_voluntary_operations,
                 connected_is_typed,
+                raw_residual_scrap,
                 residual_scrap,
                 allocation_utility_spendable,
                 producer_lanes: &producer_lane_reservations,
@@ -765,9 +781,13 @@ impl Brain {
             &strategic_core_exclusions,
             &allocation_observation,
         );
+        let mut utility_reservations = reservations.clone();
+        utility_reservations.extend(fresh_defense_builders);
+        utility_reservations.sort_unstable();
+        utility_reservations.dedup();
         let intelligence = &*intelligence;
         let utility_context = StrategicUtilityContext::new(
-            &reservations,
+            &utility_reservations,
             intelligence.units(),
             intelligence.buildings(),
             oriented_public_map,
@@ -775,7 +795,7 @@ impl Brain {
         )
         .with_combat_core_exclusions(&strategic_core_exclusions)
         .with_prior_scrap_commitment(utility_prior_commitment)
-        .with_voluntary_scrap_guard(voluntary_scrap_guard)
+        .with_voluntary_scrap_guard(voluntary_scrap_guard.saturating_sub(prospective_carrier_hold))
         .with_producer_lane_reservations(&producer_lane_reservations);
         let utility_context = if air_active || lift_active {
             utility_context.with_outstanding_air_production_ticks(outstanding_air_production_ticks)
@@ -3782,7 +3802,66 @@ mod tests {
                 "the fog-honest snapshot warrants exactly one prospective carrier for {difficulty:?}"
             );
 
-            let commands = brain.act(&state);
+            let act = brain.act_traced(&state);
+            let first_trace = act
+                .trace
+                .as_ref()
+                .expect("the prospective hold is traced on its admission think");
+            let first_budget = first_trace
+                .budget
+                .as_ref()
+                .expect("the prospective hold is traced on its admission think");
+            assert_eq!(
+                first_budget.prospective_carrier,
+                UnitKind::Skyhook.stats().cost,
+                "the first-carrier hold is owned exactly once for {difficulty:?}"
+            );
+            assert_eq!(
+                first_budget.voluntary_scrap_guard,
+                UnitKind::Sentinel.stats().cost,
+                "the reachable ground objective keeps the overlapping shallow guard visible for {difficulty:?}"
+            );
+            assert_eq!(
+                first_budget.utility_spendable, 0,
+                "the exact carrier bank is protected once rather than splitting into additive carrier and shallow holds for {difficulty:?}"
+            );
+            assert!(
+                first_trace
+                    .allocation
+                    .proposals
+                    .entries
+                    .iter()
+                    .any(|proposal| matches!(
+                        proposal.key,
+                        super::super::trace::ProposalKeyTrace::Defense { .. }
+                    )),
+                "the fixture must expose a competing defense for {difficulty:?}"
+            );
+            assert!(
+                first_trace
+                    .allocation
+                    .proposals
+                    .entries
+                    .iter()
+                    .all(|proposal| proposal.claims.minimum_residual_scrap
+                        >= UnitKind::Skyhook.stats().cost),
+                "every fresh voluntary proposal must preserve the prospective carrier floor for {difficulty:?}"
+            );
+            assert!(
+                first_trace
+                    .allocation
+                    .proposals
+                    .entries
+                    .iter()
+                    .filter(|proposal| matches!(
+                        proposal.key,
+                        super::super::trace::ProposalKeyTrace::Defense { .. }
+                    ))
+                    .all(|proposal| proposal.disposition
+                        != super::super::trace::ProposalDispositionTrace::Accepted),
+                "no voluntary defense may spend the prospective carrier floor for {difficulty:?}"
+            );
+            let commands = act.commands;
             let operation = brain
                 .mind()
                 .strategy
@@ -3813,6 +3892,31 @@ mod tests {
                 spending.is_empty(),
                 "{difficulty:?} spent the first-carrier fund before current sight: {commands:?}"
             );
+
+            let mut continued_state = state.clone();
+            continued_state.tick(&commands);
+            for _ in 1..brain.dials.cadence {
+                continued_state.tick(&[]);
+            }
+            let continued = brain.act_traced(&continued_state);
+            let continued_budget = continued
+                .trace
+                .as_ref()
+                .and_then(|trace| trace.budget.as_ref())
+                .expect("the active remembered Recon keeps a traced carrier hold");
+            assert_eq!(
+                continued_budget.prospective_carrier,
+                UnitKind::Skyhook.stats().cost,
+                "active remembered Recon keeps the exact first-carrier hold for {difficulty:?}"
+            );
+            assert!(
+                continued.commands.iter().all(|command| !matches!(
+                    &command.command,
+                    Command::Build { .. } | Command::Train { .. } | Command::UpgradeBuilding { .. }
+                )),
+                "{difficulty:?} spent the active Recon carrier hold: {:?}",
+                continued.commands
+            );
             spending_by_difficulty.push(spending);
         }
 
@@ -3821,6 +3925,285 @@ mod tests {
                 .windows(2)
                 .all(|pair| pair[0] == pair[1]),
             "higher difficulties must preserve the lower rung's mandatory transport prefix"
+        );
+    }
+
+    #[test]
+    fn stale_active_recon_releases_its_carrier_floor_before_defense_allocation() {
+        let mut scenario = prospective_lift_reservation_scenario();
+        scenario.name = "stale Recon releases prospective carrier".into();
+        scenario.players[0].scrap = UnitKind::Skyhook.stats().cost;
+        scenario
+            .buildings
+            .retain(|building| building.kind != BuildingKind::Foundry);
+        scenario.units.push(UnitSpec {
+            player: 1,
+            kind: UnitKind::Sentinel,
+            x: 18,
+            y: 19,
+        });
+        let mut state = scenario
+            .build()
+            .expect("stale prospective-lift scenario builds");
+        state.tick = 6_000;
+        let last_seen = state.current_tick().saturating_sub(100);
+        let mut brain = brain_with_remembered_lift_target(&scenario, &state, last_seen);
+
+        let admitted = brain.act_traced(&state);
+        assert_eq!(
+            admitted
+                .trace
+                .as_ref()
+                .and_then(|trace| trace.budget.as_ref())
+                .map(|budget| budget.prospective_carrier),
+            Some(UnitKind::Skyhook.stats().cost)
+        );
+        assert_eq!(
+            brain
+                .mind()
+                .strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation)
+                .map(|operation| operation.phase),
+            Some(AirOperationPhase::Recon)
+        );
+
+        state.tick = last_seen.saturating_add(541);
+        while !state.current_tick().is_multiple_of(24) {
+            state.tick = state.tick.saturating_add(1);
+        }
+        let released = brain.act_traced(&state);
+        let trace = released
+            .trace
+            .as_ref()
+            .expect("the stale recovery decision is traced");
+        assert_eq!(
+            trace
+                .budget
+                .as_ref()
+                .expect("the stale decision retains budget evidence")
+                .prospective_carrier,
+            0,
+            "stale Recon must not impose a phantom Skyhook floor"
+        );
+        assert!(
+            trace.allocation.proposals.entries.iter().any(|proposal| {
+                matches!(
+                    proposal.key,
+                    super::super::trace::ProposalKeyTrace::Defense { .. }
+                ) && proposal.disposition == super::super::trace::ProposalDispositionTrace::Accepted
+            }),
+            "the released carrier bank should remain eligible for the best defensive quote: {trace:#?}"
+        );
+        let operation = brain
+            .mind()
+            .strategy
+            .as_ref()
+            .and_then(StrategicPlanner::air_operation)
+            .expect("the stale operation remains observable during recovery");
+        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(
+            operation.recovery_reason,
+            Some(AirRecoveryReason::StaleIntelligence)
+        );
+    }
+
+    #[test]
+    fn unreachable_remembered_recon_never_imposes_a_carrier_floor_on_defense() {
+        let mut scenario = prospective_lift_reservation_scenario();
+        scenario.name = "unreachable Recon releases prospective carrier".into();
+        scenario.players[0].scrap = UnitKind::Skyhook.stats().cost;
+        scenario
+            .buildings
+            .retain(|building| building.kind != BuildingKind::Foundry);
+        scenario.units.push(UnitSpec {
+            player: 1,
+            kind: UnitKind::Sentinel,
+            x: 18,
+            y: 19,
+        });
+        let sealed_scout = TilePos::new(18, 2);
+        scenario.map = scenario
+            .map
+            .iter()
+            .enumerate()
+            .map(|(y, row)| {
+                row.chars()
+                    .enumerate()
+                    .map(|(x, terrain)| {
+                        let tile = TilePos::new(
+                            i32::try_from(x).expect("the focused map width fits i32"),
+                            i32::try_from(y).expect("the focused map height fits i32"),
+                        );
+                        if sealed_scout.chebyshev(tile) == 2 {
+                            '^'
+                        } else {
+                            terrain
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut state = scenario
+            .build()
+            .expect("peak-sealed prospective-lift scenario builds");
+        state.tick = 6_000;
+        let mut brain = brain_with_remembered_lift_target(
+            &scenario,
+            &state,
+            state.current_tick().saturating_sub(100),
+        );
+
+        let released = brain.act_traced(&state);
+        let trace = released
+            .trace
+            .as_ref()
+            .expect("the unreachable recovery decision is traced");
+        assert_eq!(
+            trace
+                .budget
+                .as_ref()
+                .expect("the unreachable decision retains budget evidence")
+                .prospective_carrier,
+            0,
+            "a peak-sealed scout route must not impose a phantom Skyhook floor"
+        );
+        assert!(
+            trace.allocation.proposals.entries.iter().any(|proposal| {
+                matches!(
+                    proposal.key,
+                    super::super::trace::ProposalKeyTrace::Defense { .. }
+                ) && proposal.disposition == super::super::trace::ProposalDispositionTrace::Accepted
+            }),
+            "the released carrier bank should remain eligible for the best defensive quote: {:?}",
+            trace.allocation.proposals
+        );
+        let strategy = brain
+            .mind()
+            .strategy
+            .as_ref()
+            .expect("the player-facing brain retains its strategic planner");
+        assert!(
+            strategy.air_operation().is_some_and(|operation| {
+                operation.phase == AirOperationPhase::Recover
+                    && operation.recovery_reason == Some(AirRecoveryReason::UnreachableAirRoute)
+            }) || matches!(
+                strategy.terminal_outcome(),
+                Some(AirOperationOutcome::Aborted { .. })
+            ),
+            "the route refusal must enter or complete bounded recovery"
+        );
+    }
+
+    #[test]
+    fn fresh_raid_claiming_the_only_lift_payload_releases_the_carrier_hold() {
+        let mut scenario = prospective_lift_reservation_scenario();
+        scenario.name = "fresh raid releases prospective carrier".into();
+        scenario.players[0].scrap = UnitKind::Skyhook.stats().cost;
+        let mut retained_sentinels = 0usize;
+        scenario.units.retain(|unit| {
+            if unit.player != 0 || unit.kind != UnitKind::Sentinel {
+                return true;
+            }
+            retained_sentinels += 1;
+            retained_sentinels <= 10
+        });
+        scenario.units.extend([9, 10].map(|y| UnitSpec {
+            player: 0,
+            kind: UnitKind::Scuttler,
+            x: 16,
+            y,
+        }));
+        let mut state = scenario
+            .build()
+            .expect("prospective raid/lift scenario builds");
+        state.tick = 6_000;
+
+        let raw = Observation::fog_honest(&state, PlayerId(0));
+        let home = raw
+            .my_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::Foundry)
+            .min_by_key(|building| building.id)
+            .expect("the home Foundry stands")
+            .anchor;
+        let orientation = Orientation::for_home(&raw, home);
+        let mut brain = scripted_brain(
+            &scenario,
+            PlayerId(0),
+            BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 20_024),
+        );
+        brain.orientation = Some(orientation);
+        let enemy_foundry = state
+            .buildings()
+            .iter()
+            .find(|building| {
+                building.player == PlayerId(1) && building.kind == BuildingKind::Foundry
+            })
+            .expect("the enemy Foundry stands beyond the barrier");
+        let mut prior = raw.clone();
+        prior.tick = prior.tick.saturating_sub(100);
+        prior.enemy_buildings.push(BuildingObs {
+            id: enemy_foundry.id,
+            player: enemy_foundry.player,
+            kind: enemy_foundry.kind,
+            anchor: enemy_foundry.anchor,
+            hp: enemy_foundry.hp,
+            built: enemy_foundry.built,
+            seen: true,
+            tier: enemy_foundry.tier,
+        });
+        brain
+            .mind_mut()
+            .intelligence
+            .update(&orientation.observe(&prior));
+
+        let scuttlers = raw
+            .my_units
+            .iter()
+            .filter(|unit| unit.kind == UnitKind::Scuttler)
+            .map(|unit| unit.id)
+            .collect::<Vec<_>>();
+        assert_eq!(scuttlers.len(), 2);
+        let act = brain.act_traced(&state);
+        let trace = act.trace.expect("the coordinated decision is traced");
+        assert!(
+            trace
+                .allocation
+                .proposals
+                .entries
+                .iter()
+                .all(|proposal| proposal.claims.minimum_residual_scrap
+                    >= UnitKind::Skyhook.stats().cost),
+            "allocation must preview the carrier before residual Raid admission: {:?}",
+            trace.allocation.proposals
+        );
+        assert_eq!(
+            brain
+                .mind()
+                .raids
+                .as_ref()
+                .and_then(RaidPlanner::operation)
+                .expect("Prime admits the fresh raid beside Recon")
+                .members,
+            scuttlers
+        );
+        assert_eq!(
+            brain
+                .mind()
+                .strategy
+                .as_ref()
+                .and_then(StrategicPlanner::air_operation)
+                .map(|operation| operation.phase),
+            Some(AirOperationPhase::Recon)
+        );
+        assert_eq!(
+            trace
+                .budget
+                .expect("the residual carrier decision is traced")
+                .prospective_carrier,
+            0,
+            "the newly reserved raiders leave no payload for a prospective lift"
         );
     }
 
@@ -5059,6 +5442,20 @@ mod tests {
             })
             .map(|job| job.current_scrap)
             .sum::<u32>();
+        let defense_current_scrap = funded_trace
+            .allocation
+            .proposals
+            .entries
+            .iter()
+            .filter(|proposal| {
+                proposal.disposition == super::super::trace::ProposalDispositionTrace::Accepted
+                    && matches!(
+                        proposal.key,
+                        super::super::trace::ProposalKeyTrace::Defense { .. }
+                    )
+            })
+            .map(|proposal| proposal.claims.current_scrap)
+            .sum::<u32>();
         assert_eq!(funded_budget.foundry_saving, saved);
         assert_eq!(
             funded_budget.voluntary_scrap_guard,
@@ -5068,9 +5465,10 @@ mod tests {
         assert_eq!(
             funded_budget
                 .strategic_spendable
-                .saturating_add(standing_current_scrap),
+                .saturating_add(standing_current_scrap)
+                .saturating_add(defense_current_scrap),
             operation_fund.saturating_sub(funded_budget.voluntary_scrap_guard),
-            "the accepted Foundry owns only its construction capital; shared allocation may spend the independent excess on connected and standing forces after retaining the shallow screen exactly once: budget={funded_budget:?}, schedule={:?}",
+            "the accepted Foundry owns only its construction capital; shared allocation may spend the independent excess on connected, standing-force, and defense investment after retaining the shallow screen exactly once: budget={funded_budget:?}, schedule={:?}",
             funded_trace.allocation.producer_schedule,
         );
         assert!(
@@ -5281,7 +5679,7 @@ mod tests {
             first_trace.channels.connected_air.after,
             ChannelState::Active(ChannelPhase::AirRecon)
         );
-        let accepted_domains = first_trace
+        let accepted_keys = first_trace
             .allocation
             .proposals
             .entries
@@ -5289,11 +5687,30 @@ mod tests {
             .filter(|proposal| {
                 proposal.disposition == super::super::trace::ProposalDispositionTrace::Accepted
             })
-            .count();
+            .map(|proposal| proposal.key)
+            .collect::<Vec<_>>();
         assert_eq!(
-            accepted_domains, 3,
-            "the staffed connected minimum, expansion, and standing force are compatible"
+            accepted_keys.len(),
+            4,
+            "the staffed connected minimum, expansion, defense, and standing force are compatible: {accepted_keys:?}"
         );
+        assert!(accepted_keys.iter().any(|key| matches!(
+            key,
+            super::super::trace::ProposalKeyTrace::FoundryExpansion { .. }
+        )));
+        assert!(accepted_keys.iter().any(|key| matches!(
+            key,
+            super::super::trace::ProposalKeyTrace::ConnectedOffenseMinimum { .. }
+        )));
+        assert!(
+            accepted_keys
+                .iter()
+                .any(|key| matches!(key, super::super::trace::ProposalKeyTrace::Defense { .. }))
+        );
+        assert!(accepted_keys.iter().any(|key| matches!(
+            key,
+            super::super::trace::ProposalKeyTrace::StandingForce { .. }
+        )));
         let package = first_trace
             .connected_force
             .package
@@ -5540,7 +5957,7 @@ mod tests {
             })
             .map(|proposal| proposal.key)
             .collect::<Vec<_>>();
-        assert_eq!(accepted_keys.len(), 3);
+        assert_eq!(accepted_keys.len(), 4);
         assert!(accepted_keys.iter().any(|key| matches!(
             key,
             super::super::trace::ProposalKeyTrace::FoundryExpansion { .. }
@@ -5553,6 +5970,11 @@ mod tests {
             key,
             super::super::trace::ProposalKeyTrace::StandingForce { .. }
         )));
+        assert!(
+            accepted_keys
+                .iter()
+                .any(|key| matches!(key, super::super::trace::ProposalKeyTrace::Defense { .. }))
+        );
         let connected_jobs = trace
             .allocation
             .producer_schedule
@@ -5571,8 +5993,11 @@ mod tests {
             !connected_jobs.is_empty()
                 && connected_jobs
                     .iter()
-                    .all(|job| job.enqueued_at > state.current_tick()),
-            "the accepted connected scale must retain its exact future producer schedule"
+                    .any(|job| job.enqueued_at == state.current_tick())
+                && connected_jobs
+                    .iter()
+                    .any(|job| job.enqueued_at > state.current_tick()),
+            "the accepted connected scale must retain both its current append and exact future producer schedule: {connected_jobs:?}"
         );
         let accepted_due = trace
             .allocation
@@ -5619,7 +6044,15 @@ mod tests {
             UnitKind::Buzzard
                 .stats()
                 .cost
-                .saturating_add(UnitKind::Lancer.stats().cost),
+                .saturating_add(UnitKind::Lancer.stats().cost)
+                .saturating_add(
+                    BuildingKind::Turret
+                        .base_stats()
+                        .construction
+                        .expect("Turrets are constructible")
+                        .cost,
+                )
+                .saturating_add(UnitKind::Sentinel.stats().cost),
         );
         scenario.name = "due connected provider survives same-tick recovery".into();
         scenario.buildings.push(BuildingSpec {
@@ -5685,6 +6118,20 @@ mod tests {
             .expect("the connected admission is traced");
         assert!(admission_trace.allocation.error.is_none());
         assert!(admission_trace.allocation.coordinator_failure.is_none());
+        assert!(
+            admission_trace
+                .allocation
+                .proposals
+                .entries
+                .iter()
+                .any(|proposal| {
+                    proposal.disposition == super::super::trace::ProposalDispositionTrace::Accepted
+                        && matches!(
+                            proposal.key,
+                            super::super::trace::ProposalKeyTrace::Defense { .. }
+                        )
+                })
+        );
         let target = brain
             .mind()
             .strategy
@@ -8337,6 +8784,12 @@ mod tests {
             x: 18,
             y,
         }));
+        scenario.units.push(UnitSpec {
+            player: 1,
+            kind: UnitKind::Harvester,
+            x: 18,
+            y: 20,
+        });
         scenario.buildings.extend([
             BuildingSpec {
                 player: 0,
@@ -8352,6 +8805,52 @@ mod tests {
             },
         ]);
         scenario
+    }
+
+    fn brain_with_remembered_lift_target(
+        scenario: &Scenario,
+        state: &State,
+        last_seen: u64,
+    ) -> Brain {
+        let raw = Observation::fog_honest(state, PlayerId(0));
+        let home = raw
+            .my_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::Foundry)
+            .min_by_key(|building| building.id)
+            .expect("the home Foundry stands")
+            .anchor;
+        let orientation = Orientation::for_home(&raw, home);
+        let mut brain = scripted_brain(
+            scenario,
+            PlayerId(0),
+            BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 20_024),
+        );
+        brain.orientation = Some(orientation);
+        let enemy_foundry = state
+            .buildings()
+            .iter()
+            .find(|building| {
+                building.player == PlayerId(1) && building.kind == BuildingKind::Foundry
+            })
+            .expect("the enemy Foundry stands beyond the barrier");
+        let mut prior = raw;
+        prior.tick = last_seen;
+        prior.enemy_buildings.push(BuildingObs {
+            id: enemy_foundry.id,
+            player: enemy_foundry.player,
+            kind: enemy_foundry.kind,
+            anchor: enemy_foundry.anchor,
+            hp: enemy_foundry.hp,
+            built: enemy_foundry.built,
+            seen: true,
+            tier: enemy_foundry.tier,
+        });
+        brain
+            .mind_mut()
+            .intelligence
+            .update(&orientation.observe(&prior));
+        brain
     }
 
     fn combined_operation_scenario() -> Scenario {

@@ -38,11 +38,12 @@ Player-facing bot decision traces have the same one-way boundary. An opt-in
 coordinator while returning the same ordinary commands as `Brain::act`. The
 trace recorder is local to that call; traces are not controller memory,
 authoritative state, replay input, or replay metadata. Overseer and ticks on
-which no player-facing decision occurs produce no trace. The versioned trace
-schema reports current scrap separately from a bounded forecast based only on
-completed income sources, together with current builder and producer capacity.
-Proposal and allocation evidence records the coordinator's actual inputs and
-verdicts rather than reconstructing decisions after the fact.
+which no player-facing decision occurs produce no trace. Trace schema version 8
+reports current scrap separately from a bounded forecast based only on completed
+income sources, together with current builder and producer capacity. Proposal
+and allocation evidence records the coordinator's actual inputs and verdicts,
+including defensive proposal identities, rather than reconstructing decisions
+after the fact.
 
 ## State construction and trust boundary
 
@@ -375,18 +376,19 @@ competence: each difficulty uses one fixed conservative strength-estimation
 error. The traits leave visible signatures rather than unlocking private
 strategies: air changes ordinary and island strike composition and timing; siege
 changes artillery volume and preference; support changes support-unit, flak, and
-allied relief investment; fortification changes turrets, mines, and defensive
-reserve; greed changes worker targets and renewable-expansion payback appetite;
-and guile changes raid size, timing, withdrawal, and some mine or
-airborne-screen emphasis. Every adaptive identity receives one perimeter turret
-after locating the enemy and completing its protected opening core; only an
-observed raid unlocks the remainder of its fortification target. Before that
-core exists, a current visible threat may justify one matching emergency Turret,
-while emergency Flak requires a current visible aircraft capable of attacking
-ground. A pure air-to-air flyer cannot unlock that exception. A player-facing
-controller requires this actionable air evidence before investing in flak, so an
-anonymous radar blip cannot turn a small seeded preference into an opening
-economy cliff.
+allied relief investment; fortification changes cross-domain defense priority
+and otherwise competitive defensive roles; greed changes worker targets and
+renewable-expansion payback appetite; and guile changes raid size, timing,
+withdrawal, and some mine or airborne-screen emphasis. Every adaptive identity
+may propose every defensive role its ordinary prerequisites permit. Exposed
+value, credible approach evidence, existing coverage, and diminishing return
+bound investment instead of personality-derived count ceilings. Before the
+protected core exists, a current visible threat may justify one matching
+emergency Turret, while emergency Flak requires a current visible aircraft
+capable of attacking ground. A pure air-to-air flyer cannot unlock that
+exception. A player-facing controller requires this actionable air evidence
+before investing in emergency flak, so an anonymous radar blip cannot turn a
+small seeded preference into an opening economy cliff.
 
 Difficulty schedules are structurally monotone. Scrapheap thinks every 24 ticks;
 Standard, Veteran, and Prime share a 12-tick cadence so controller APM does not
@@ -445,20 +447,24 @@ The remaining opening reserve receives only the bank left after that defense.
 The session also adapts same-think decisions from active team-relief, lift,
 raid, and admitted island-air planners into explicit legacy claims. The current
 proposal set contains at most one safe, command-legal Foundry expansion, one
-connected offense package, and a best-first group of mutually exclusive
+connected offense package, a best-first group of mutually exclusive exact
+defensive alternatives, and a best-first group of mutually exclusive
 standing-force alternatives. The allocator exhaustively evaluates every
 zero-or-one choice from each domain against current and deadline-scoped forecast
-scrap, builders, sites, units, and producer FIFO timing. This Cartesian search
-has neither a proposal-count cutoff nor a machine-word mask limit. Named
-urgency, confidence, value, time-to-impact, and safety bands decide first;
-personality resolves only a genuine semantic tie and never removes a domain from
+scrap, builders, sites, units, producer FIFO timing, and incompatible
+construction footprints. This Cartesian search has neither a proposal-count
+cutoff nor a machine-word mask limit. Named urgency, confidence, value,
+time-to-impact, and safety bands decide first; personality resolves only a
+genuine semantic tie and never removes a domain or defensive role from
 consideration.
 
 Accepted payloads retain the exact site, builder, objective, force membership,
-unit kind, and producer assignments selected by their domain. Commitment does
-not rerun domain ranking. A connected package may add the largest feasible
-marginal extension only from the capacity left after its minimum and any
-compatible expansion or standing-force purchase. Any malformed input or failed
+unit kind, and producer assignments selected by their domain. A defensive
+payload includes the scorer-selected role and footprint, its route-proven
+builder, and its quoted opportunity evidence. Commitment does not rerun domain
+ranking or placement. A connected package may add the largest feasible marginal
+extension only from the capacity left after its minimum and any compatible
+expansion, defense, or standing-force purchase. Any malformed input or failed
 exact commit freezes residual spending for that decision and restores
 speculative planner state; the decision trace records the allocator result or
 coordinator failure. Otherwise, still-unmigrated fresh team, lift, and raid work
@@ -534,16 +540,14 @@ units, and rederives unconditional Standing proposals against the remaining paid
 ownership. This downgrade is one allocation preparation transition; no context
 derived from the failed revision reaches portfolio selection.
 
-A standing-force proposal may carry a minimum current bank that the allocator
-must leave for the still-residual construction ladder. While an eligible worker
-exists and opening construction is not recovering, this floor is the existing
-capital reserve for the next technology rung. After technology is complete, it
-becomes an actionable strategic Turret threshold only when the defense scorer
-finds an exact legal site and builder. It is not claimed capital or forecast
-credit: Utility may spend it after allocation, and the floor vanishes when its
-non-scrap premises disappear. This prevents repeatable unit production from
-permanently starving the next reachable investment without creating a permanent
-reserve.
+Standing-force and Defense proposals may carry a minimum current bank that the
+allocator must leave for the still-residual technology ladder. While an eligible
+worker exists and opening construction is not recovering, this floor is the
+existing capital reserve for the next technology rung. It is not claimed capital
+or forecast credit: Utility may spend it after allocation, and the floor
+vanishes when the technology tree is complete or its builder premise disappears.
+Voluntary defense competes through its typed proposal instead of hiding behind a
+post-technology Turret reserve.
 
 Before the difficulty floor is projected, the player-facing policy pauses new
 voluntary construction and upgrades, discretionary production, mobile support,
@@ -571,14 +575,18 @@ reserve returns to shallow production before another voluntary project. Losing
 enough core strength reapplies the same gate.
 
 The residual Foundry pass no longer originates player-facing ordinary combat,
-siege, anti-air, or Tender orders. During the strangler migration it retains
-only post-bootstrap Harvesters after completed renewable income exists,
-Excavators, and the existing bounded Scuttler roster. It uses only current scrap
-and producer lanes left after allocation, keeps queues shallow, and leaves those
-roles for the later economy, reconnaissance, and support migrations. Bomber,
-ground-attack-air, and transport cohorts remain owned by persistent operations;
-while an air or lift plan has outstanding factory work, that plan owns Airworks
-capacity. The profile-free Overseer retains its legacy production order.
+siege, anti-air, or Tender orders. Residual construction no longer originates a
+player-facing Turret, Bastion, Flak Turret, Scuttle Charge, Barricade, or Array;
+it retains technology progression, Repair Bays, Reclaimers, recovery, and other
+not-yet-migrated economy work. During the strangler migration residual
+production retains only post-bootstrap Harvesters after completed renewable
+income exists, Excavators, and the existing bounded Scuttler roster. It uses
+only current scrap and producer lanes left after allocation, keeps queues
+shallow, and leaves those roles for the later economy, reconnaissance, and
+support migrations. Bomber, ground-attack-air, and transport cohorts remain
+owned by persistent operations; while an air or lift plan has outstanding
+factory work, that plan owns Airworks capacity. The profile-free Overseer
+retains its legacy production and construction order.
 
 On connected ground, the air planner admits a force package only when current
 sight, the spendable current bank after prior reserves, completed recurring
@@ -660,6 +668,13 @@ still proves the pickup and objective ground-disconnected. This is a prospective
 capital reservation only: it neither creates a lift nor claims a payload or
 queues a carrier before current sight.
 
+Fresh typed investments resolve before that residual Recon lifecycle. The
+allocator therefore previews the exact retained or newly admissible Recon target
+and raises every fresh proposal's shared minimum-residual floor by the
+prospective carrier cost. The floor does not claim the bank: residual
+coordination confirms or releases it from the resulting planner state and
+records the actual hold exactly once.
+
 The operations choose and execute objectives independently. When both select the
 same target, they exchange an explicit target-specific hold, release, or abort
 signal so a lift can follow air-defense suppression without depending on it.
@@ -712,38 +727,54 @@ quarantined cells, so recovery cannot cross the same kill zone it is trying to
 prove safe. Lowering remembers a dispatched Harvest only long enough to audit an
 immediate no-route bounce.
 
-Player-facing static-defense construction uses one fog-honest strategic site
-scorer for Turrets, Bastions, Flak Turrets, Scuttle Charges, and Barricades. It
-values owned production, technology, support, renewable economy, and active
-resource work; then intersects credible hostile approaches with each kind's
-actual weapon, spotting, trigger, or path-disruption geometry. Current contacts,
-remembered enemy sites, and uncleared public starts form descending evidence
-tiers. Existing defenses reduce marginal value, while unfinished sites reserve
-coverage without pretending to fire. Candidate footprints must preserve builder
-access, egress, and resource routes. Exact builder-route prediction combines the
-public static terrain briefing with fog-honest observed dynamic blockers; public
-resource priors are not treated as live obstacles. The frozen Overseer retains
-its legacy placement rules.
+Player-facing static-defense investment is a typed allocation domain. At most
+one exact candidate for each of Turret, Bastion, Flak Turret, Scuttle Charge,
+Barricade, and Array is derived from a shared grounding, and the portfolio may
+select at most one of those mutually exclusive alternatives per decision. The
+weapon-bearing roles share one fog-honest strategic site scorer. It values owned
+production, technology, support, renewable economy, and active resource work;
+then intersects credible hostile approaches with each kind's actual weapon,
+spotting, trigger, or path-disruption geometry. Current contacts, remembered
+enemy sites, and uncleared public starts form descending evidence tiers.
 
-The pre-core emergency path is deliberately narrower than that full scorer. It
-uses only a current visible armed ground threat for a Turret or a current
+The investment case prices only marginal protection not already owned by a live
+defense or reserved by a paid unfinished footprint. New protected value counts
+fully and reinforced value has diminishing return. Current or remembered
+threats, construction and builder travel time, the readiness of mobile
+reinforcement, and risk before completion determine the named urgency, value,
+confidence, time-to-impact, and safety bands compared by allocation. Ordinary
+technology prerequisites are the only role gates; personality ranks otherwise
+legal cases across and within the domain but never removes a role. Candidate
+footprints must preserve builder access, producer egress, and active resource
+routes. Exact builder-route prediction combines the public static terrain
+briefing with fog-honest observed dynamic blockers; public resource priors are
+not treated as live obstacles. The accepted proposal retains the scorer's exact
+site and builder through `BuildWith`. The frozen Overseer retains its legacy
+placement and sequential construction rules.
+
+The pre-core emergency path is deliberately narrower than voluntary allocation.
+It uses only a current visible armed ground threat for a Turret or a current
 visible ground-attack aircraft for Flak, places only the matching defense, and
 cannot inherit threat authority from pure air-to-air aircraft, memory, public
 starts, radar blips, or raid history. Shared allocation freezes its exact site,
 builder, footprint, and current construction cost before ordinary opening-core
-recovery and suppresses a second utility ranking pass.
+recovery. This survival obligation has precedence over voluntary defense and no
+second utility ranking pass runs.
 
-Arrays use a separate player-facing sensor-site scorer because information
-coverage is not weapon coverage. Candidate sites extend up to the Array's radar
-radius from the starting Foundry, preserve ordinary placement, producer-egress,
-and active resource-access rules, and bind the exact route-capable builder
-proven through public static terrain plus observed dynamic danger. The scorer
-first extends radar area not already supplied by an allied Array, then retains
-usable in-map coverage; off-map tiles and Peaks contribute nothing because no
-unit can occupy them. Current contacts, remembered contacts, and uncleared
-public starting priors break otherwise equivalent sites toward credible hostile
-approaches. Compact maps may use a partial radar disc. The profile-free Overseer
-retains its legacy first-valid placement scan.
+Arrays enter the Defense proposal group through a separate player-facing
+sensor-site scorer because information coverage is not weapon coverage.
+Candidate sites extend up to the Array's radar radius from the starting Foundry,
+preserve ordinary placement, producer-egress, and active resource-access rules,
+and bind the exact route-capable builder proven through public static terrain
+plus observed dynamic danger. An Array requires positive usable coverage not
+already reserved by another proposal. The scorer first extends radar area not
+already supplied by an allied Array, then retains usable in-map coverage;
+off-map tiles and Peaks contribute nothing because no unit can occupy them.
+Current contacts, remembered contacts, and uncleared public starting priors
+break otherwise equivalent sites toward credible hostile approaches. Sensor
+cases remain bounded below an immediate survival defense regardless of coverage,
+and compact maps may use a partial radar disc. The profile-free Overseer retains
+its legacy first-valid placement scan.
 
 The player-facing budget counts each unique deferred construction claim until
 its site is paid and stops voluntary repair programs that could drain that

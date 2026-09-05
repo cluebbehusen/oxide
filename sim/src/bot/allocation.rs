@@ -35,6 +35,27 @@ pub(crate) struct FoundryExpansionKey {
     pub(crate) anchor: TilePos,
 }
 
+/// Stable identity of one exact defensive construction opportunity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DefenseInvestmentKey {
+    /// Exact defensive structure selected by the domain.
+    pub(crate) kind: BuildingKind,
+    /// Exact proposed top-left footprint anchor.
+    pub(crate) anchor: TilePos,
+}
+
+impl Ord for DefenseInvestmentKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.kind, tile_key(self.anchor)).cmp(&(other.kind, tile_key(other.anchor)))
+    }
+}
+
+impl PartialOrd for DefenseInvestmentKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Ord for FoundryExpansionKey {
     fn cmp(&self, other: &Self) -> Ordering {
         tile_key(self.anchor).cmp(&tile_key(other.anchor))
@@ -164,6 +185,42 @@ pub(crate) enum ProposalKey {
     ConnectedOffenseMinimum(ConnectedOffenseKey),
     /// One immediate standing-force purchase.
     StandingForce(StandingForceKey),
+    /// One exact defensive construction opportunity.
+    Defense(DefenseInvestmentKey),
+}
+
+/// Canonical pair of individually legal builds that cannot share one layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct IncompatibleLayoutPair {
+    first: ProposalKey,
+    second: ProposalKey,
+}
+
+impl IncompatibleLayoutPair {
+    /// Canonicalizes a distinct pair for deterministic portfolio checks.
+    pub(crate) fn new(first: ProposalKey, second: ProposalKey) -> Option<Self> {
+        (first != second).then(|| {
+            let (first, second) = if first < second {
+                (first, second)
+            } else {
+                (second, first)
+            };
+            Self { first, second }
+        })
+    }
+
+    fn is_selected<Payload>(
+        self,
+        selected: &[usize],
+        proposals: &[InvestmentProposal<Payload>],
+    ) -> bool {
+        selected
+            .iter()
+            .any(|&index| proposals[index].key() == self.first)
+            && selected
+                .iter()
+                .any(|&index| proposals[index].key() == self.second)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -171,6 +228,7 @@ enum ProposalDomain {
     FoundryExpansion,
     ConnectedOffenseMinimum,
     StandingForce,
+    Defense,
 }
 
 impl ProposalKey {
@@ -179,6 +237,7 @@ impl ProposalKey {
             Self::FoundryExpansion(_) => ProposalDomain::FoundryExpansion,
             Self::ConnectedOffenseMinimum(_) => ProposalDomain::ConnectedOffenseMinimum,
             Self::StandingForce(_) => ProposalDomain::StandingForce,
+            Self::Defense(_) => ProposalDomain::Defense,
         }
     }
 }
@@ -270,6 +329,8 @@ pub(crate) struct AllocationPersonality {
     pub(crate) offense: u16,
     /// Support-, fortification-, and guile-derived emphasis on standing force.
     pub(crate) standing_force: u16,
+    /// Fortification-derived emphasis on defensive construction.
+    pub(crate) defense: u16,
 }
 
 impl AllocationPersonality {
@@ -278,6 +339,7 @@ impl AllocationPersonality {
             ProposalKey::FoundryExpansion(_) => self.economy,
             ProposalKey::ConnectedOffenseMinimum(_) => self.offense,
             ProposalKey::StandingForce(_) => self.standing_force,
+            ProposalKey::Defense(_) => self.defense,
         }
     }
 }
@@ -862,6 +924,18 @@ impl<Payload> InvestmentProposal<Payload> {
         self
     }
 
+    /// Requires a shared current-bank remainder without claiming it. Existing
+    /// domain-specific floors remain authoritative when they are stronger.
+    pub(in crate::bot::allocation) const fn with_minimum_residual_scrap(
+        mut self,
+        amount: u32,
+    ) -> Self {
+        if amount > self.claims.minimum_residual_scrap {
+            self.claims.minimum_residual_scrap = amount;
+        }
+        self
+    }
+
     /// Marks this exact proposal as satisfying the shared current-only
     /// remainder only when its allocated producer append enters this queue
     /// prefix.
@@ -960,6 +1034,13 @@ pub(crate) enum AllocationConflict {
         existing: SiteFootprint,
         /// Owner of the existing footprint.
         owner: ClaimOwner,
+    },
+    /// Two individually legal construction proposals cannot safely share a layout.
+    IncompatibleLayout {
+        /// First canonical proposal identity.
+        first: ProposalKey,
+        /// Second canonical proposal identity.
+        second: ProposalKey,
     },
     /// A requested producer is absent from current completed capacity.
     UnknownProducer(BuildingId),
@@ -1419,6 +1500,7 @@ impl<Payload> AllocationResult<Payload> {
 /// Every zero-or-one choice within each submitted domain is evaluated. Named
 /// semantic bands win first, then personality at a deliberate near-tie, lower
 /// claimed capital, and finally the smaller structural-key vector.
+#[cfg(test)]
 pub(crate) fn allocate<Payload>(
     capacity: &AllocationCapacity,
     obligations: Vec<ImportedObligation>,
@@ -1426,9 +1508,27 @@ pub(crate) fn allocate<Payload>(
     personality: AllocationPersonality,
 ) -> Result<AllocationResult<Payload>, AllocationError> {
     Ok(
-        allocate_with_required(capacity, obligations, proposals, personality, None)?
+        allocate_with_required(capacity, obligations, proposals, personality, None, &[])?
             .expect("the unconstrained empty portfolio always preserves valid obligations"),
     )
+}
+
+pub(super) fn allocate_with_incompatible_layouts<Payload>(
+    capacity: &AllocationCapacity,
+    obligations: Vec<ImportedObligation>,
+    proposals: Vec<InvestmentProposal<Payload>>,
+    personality: AllocationPersonality,
+    incompatible_layouts: &[IncompatibleLayoutPair],
+) -> Result<AllocationResult<Payload>, AllocationError> {
+    Ok(allocate_with_required(
+        capacity,
+        obligations,
+        proposals,
+        personality,
+        None,
+        incompatible_layouts,
+    )?
+    .expect("the unconstrained empty portfolio always preserves valid obligations"))
 }
 
 pub(super) fn allocate_requiring<Payload>(
@@ -1437,6 +1537,7 @@ pub(super) fn allocate_requiring<Payload>(
     proposals: Vec<InvestmentProposal<Payload>>,
     personality: AllocationPersonality,
     required: ProposalKey,
+    incompatible_layouts: &[IncompatibleLayoutPair],
 ) -> Result<Option<AllocationResult<Payload>>, AllocationError> {
     allocate_with_required(
         capacity,
@@ -1444,6 +1545,7 @@ pub(super) fn allocate_requiring<Payload>(
         proposals,
         personality,
         Some(required),
+        incompatible_layouts,
     )
 }
 
@@ -1453,6 +1555,7 @@ fn allocate_with_required<Payload>(
     mut proposals: Vec<InvestmentProposal<Payload>>,
     personality: AllocationPersonality,
     required: Option<ProposalKey>,
+    incompatible_layouts: &[IncompatibleLayoutPair],
 ) -> Result<Option<AllocationResult<Payload>>, AllocationError> {
     proposals.sort_by_key(InvestmentProposal::key);
     for pair in proposals.windows(2) {
@@ -1512,6 +1615,9 @@ fn allocate_with_required<Payload>(
     let mut best_with_proposal = vec![None; proposals.len()];
     for_each_portfolio(&proposals, |selected| {
         if required_index.is_some_and(|required| !selected.contains(&required)) {
+            return;
+        }
+        if portfolio_layout_conflict(selected, &proposals, incompatible_layouts).is_some() {
             return;
         }
         let mut state = mandatory.clone();
@@ -1579,36 +1685,48 @@ fn allocate_with_required<Payload>(
                 .iter()
                 .any(|&selected| proposals[selected].key().domain() == proposal.key().domain())
             {
-                match best_with_proposal[index].as_ref() {
-                    Some(rejected_rank) => {
-                        let basis = outranking_basis(&selected_rank, rejected_rank)
-                            .expect("an unselected domain alternative has a weaker rank");
-                        ProposalDisposition::Rejected(ProposalRejection::Outranked {
-                            selected: selected_keys.clone(),
-                            basis,
-                        })
-                    }
-                    None => {
-                        let retained = selected_indices
-                            .iter()
-                            .copied()
-                            .filter(|&selected| {
-                                proposals[selected].key().domain() != proposal.key().domain()
+                let retained = selected_indices
+                    .iter()
+                    .copied()
+                    .filter(|&selected| {
+                        proposals[selected].key().domain() != proposal.key().domain()
+                    })
+                    .chain(core::iter::once(index))
+                    .collect::<Vec<_>>();
+                if let Some(conflict) =
+                    portfolio_layout_conflict(&retained, &proposals, incompatible_layouts)
+                {
+                    ProposalDisposition::Rejected(ProposalRejection::ConflictsWithSelected {
+                        selected: selected_keys.clone(),
+                        conflict,
+                    })
+                } else {
+                    match best_with_proposal[index].as_ref() {
+                        Some(rejected_rank) => {
+                            let basis = outranking_basis(&selected_rank, rejected_rank)
+                                .expect("an unselected domain alternative has a weaker rank");
+                            ProposalDisposition::Rejected(ProposalRejection::Outranked {
+                                selected: selected_keys.clone(),
+                                basis,
                             })
-                            .chain(core::iter::once(index))
-                            .collect::<Vec<_>>();
-                        let conflict = portfolio_conflict(
-                            capacity,
-                            &mandatory,
-                            &retained,
-                            &proposals,
-                            personality,
-                        )
-                        .expect("a constrained alternative without a portfolio must conflict");
-                        ProposalDisposition::Rejected(ProposalRejection::ConflictsWithSelected {
-                            selected: selected_keys.clone(),
-                            conflict,
-                        })
+                        }
+                        None => {
+                            let conflict = portfolio_conflict(
+                                capacity,
+                                &mandatory,
+                                &retained,
+                                &proposals,
+                                personality,
+                                incompatible_layouts,
+                            )
+                            .expect("a constrained alternative without a portfolio must conflict");
+                            ProposalDisposition::Rejected(
+                                ProposalRejection::ConflictsWithSelected {
+                                    selected: selected_keys.clone(),
+                                    conflict,
+                                },
+                            )
+                        }
                     }
                 }
             } else {
@@ -1617,12 +1735,24 @@ fn allocate_with_required<Payload>(
                 combined_indices.push(index);
                 combined.voluntary_scrap_guard =
                     portfolio_voluntary_scrap_guard(&combined_indices, &proposals);
-                match combined.try_apply_with_priority(
-                    capacity,
-                    ClaimOwner::Proposal(proposal.key()),
-                    proposal.claims(),
-                    proposal_funding_priority(proposal, u8::MAX, capacity.resources.observed_at()),
-                ) {
+                let combined_result =
+                    portfolio_layout_conflict(&combined_indices, &proposals, incompatible_layouts)
+                        .map_or_else(
+                            || {
+                                combined.try_apply_with_priority(
+                                    capacity,
+                                    ClaimOwner::Proposal(proposal.key()),
+                                    proposal.claims(),
+                                    proposal_funding_priority(
+                                        proposal,
+                                        u8::MAX,
+                                        capacity.resources.observed_at(),
+                                    ),
+                                )
+                            },
+                            Err,
+                        );
+                match combined_result {
                     Ok(_) => {
                         let rejected_rank = best_with_proposal[index]
                             .as_ref()
@@ -1684,7 +1814,11 @@ fn portfolio_conflict<Payload>(
     selected: &[usize],
     proposals: &[InvestmentProposal<Payload>],
     personality: AllocationPersonality,
+    incompatible_layouts: &[IncompatibleLayoutPair],
 ) -> Option<AllocationConflict> {
+    if let Some(conflict) = portfolio_layout_conflict(selected, proposals, incompatible_layouts) {
+        return Some(conflict);
+    }
     let mut state = mandatory.clone();
     state.voluntary_scrap_guard = portfolio_voluntary_scrap_guard(selected, proposals);
     for (index, funding_priority) in proposal_funding_order(
@@ -1704,6 +1838,22 @@ fn portfolio_conflict<Payload>(
         }
     }
     None
+}
+
+fn portfolio_layout_conflict<Payload>(
+    selected: &[usize],
+    proposals: &[InvestmentProposal<Payload>],
+    incompatible_layouts: &[IncompatibleLayoutPair],
+) -> Option<AllocationConflict> {
+    incompatible_layouts
+        .iter()
+        .copied()
+        .filter(|pair| pair.is_selected(selected, proposals))
+        .min()
+        .map(|pair| AllocationConflict::IncompatibleLayout {
+            first: pair.first,
+            second: pair.second,
+        })
 }
 
 fn portfolio_voluntary_scrap_guard<Payload>(
@@ -2428,26 +2578,42 @@ impl ClaimState {
         let mut schedule = Vec::with_capacity(self.producer_jobs.len());
         let mut capital_assignments = Vec::with_capacity(self.deferrable_capital.len());
         let minimum_residual_scrap = self.effective_minimum_residual_scrap();
+        let guarded_minimum_residual_scrap = self
+            .minimum_residual_scrap
+            .max(self.voluntary_scrap_guard.amount);
+        let earliest_enqueue_dominates = current_bank_covers_all_claims(
+            capacity,
+            self.current_scrap,
+            guarded_minimum_residual_scrap,
+            &self.forecast_scrap,
+            &self.deferrable_capital,
+            &self.producer_jobs,
+        );
+        if !earliest_enqueue_dominates && !self.producer_jobs.is_empty() {
+            let mut optimistic_schedule = optimistic_funding_schedule(&self.producer_jobs)?;
+            assign_joint_funding(
+                JointFundingBasis {
+                    capacity,
+                    current_capital: self.current_scrap,
+                    minimum_residual_scrap,
+                    forecast_capital: &self.forecast_scrap,
+                    deferrable_capital: &self.deferrable_capital,
+                    jobs: &self.producer_jobs,
+                },
+                &mut optimistic_schedule,
+                funding_mode,
+            )?;
+        }
         let mut search = ProductionPortfolioSearch {
             capacity,
             jobs: &self.producer_jobs,
             current_capital: self.current_scrap,
             minimum_residual_scrap,
-            guarded_minimum_residual_scrap: self
-                .minimum_residual_scrap
-                .max(self.voluntary_scrap_guard.amount),
+            guarded_minimum_residual_scrap,
             voluntary_scrap_guard: self.voluntary_scrap_guard,
             forecast_capital: &self.forecast_scrap,
             deferrable_capital: &self.deferrable_capital,
-            earliest_enqueue_dominates: current_bank_covers_all_claims(
-                capacity,
-                self.current_scrap,
-                self.minimum_residual_scrap
-                    .max(self.voluntary_scrap_guard.amount),
-                &self.forecast_scrap,
-                &self.deferrable_capital,
-                &self.producer_jobs,
-            ),
+            earliest_enqueue_dominates,
             failed: BTreeSet::new(),
             explored_states: 0,
             memo_hits: 0,
@@ -2575,6 +2741,83 @@ impl ClaimState {
         }
         Ok(())
     }
+}
+
+/// Builds a deliberately permissive funding-only schedule for a cheap no-go
+/// check before the exact producer search. Every flexible job receives its
+/// latest possible enqueue deadline, tightened only by the allocator's
+/// same-owner ordinal ordering. Real queue, lane, cadence, and producer
+/// conflicts can only move those payments earlier, so failure here proves that
+/// the corresponding funding mode has no exact schedule to search.
+fn optimistic_funding_schedule(jobs: &[OwnedProducerJob]) -> Option<Vec<ScheduledProducerJob>> {
+    debug_assert!(
+        jobs.windows(2)
+            .all(|pair| { (pair[0].owner, pair[0].ordinal) < (pair[1].owner, pair[1].ordinal) })
+    );
+    let mut latest_enqueues = jobs
+        .iter()
+        .map(|job| {
+            let duration = Tick::from(job.claim.kind.stats().train_ticks);
+            Some(
+                job.claim.fixed_assignment().map_or(
+                    job.claim
+                        .enqueue_not_after
+                        .min(job.claim.ready_before.checked_sub(duration)?),
+                    |fixed| fixed.enqueued_at,
+                ),
+            )
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    let mut current_owner = None;
+    let mut owner_ceiling = 0;
+    for (index, job) in jobs.iter().enumerate().rev() {
+        if current_owner == Some(job.owner) {
+            owner_ceiling = owner_ceiling.min(latest_enqueues[index]);
+        } else {
+            current_owner = Some(job.owner);
+            owner_ceiling = latest_enqueues[index];
+        }
+        let latest = owner_ceiling;
+        if job
+            .claim
+            .fixed_assignment()
+            .is_some_and(|fixed| fixed.enqueued_at != latest)
+            || latest < job.claim.enqueue_not_before
+        {
+            return None;
+        }
+        latest_enqueues[index] = latest;
+    }
+
+    jobs.iter()
+        .zip(latest_enqueues)
+        .map(|(job, enqueued_at)| {
+            let duration = Tick::from(job.claim.kind.stats().train_ticks);
+            let (producer, starts_at, ready_at) = if let Some(fixed) = job.claim.fixed_assignment()
+            {
+                (fixed.producer, fixed.starts_at, fixed.ready_at)
+            } else {
+                (
+                    *job.claim.access.producers().first()?,
+                    enqueued_at,
+                    enqueued_at.checked_add(duration)?.checked_sub(1)?,
+                )
+            };
+            Some(ScheduledProducerJob {
+                owner: job.owner,
+                producer,
+                kind: job.claim.kind,
+                request_ordinal: job.ordinal,
+                enqueued_at,
+                starts_at,
+                ready_at,
+                ready_before: job.claim.ready_before,
+                current_scrap: 0,
+                forecast_scrap: 0,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -3552,6 +3795,29 @@ mod tests {
         )
     }
 
+    fn defense(
+        kind: BuildingKind,
+        anchor: TilePos,
+        current_scrap: u32,
+        case: ProposalCase,
+    ) -> InvestmentProposal<&'static str> {
+        let footprint = SiteFootprint::new(anchor, kind.base_stats().size)
+            .expect("the defensive fixture has a positive footprint");
+        InvestmentProposal::fresh(
+            ProposalKey::Defense(DefenseInvestmentKey { kind, anchor }),
+            case,
+            bundle(
+                current_scrap,
+                vec![],
+                vec![2],
+                vec![],
+                vec![footprint],
+                vec![],
+            ),
+            "exact defense token",
+        )
+    }
+
     fn accepted_keys<Payload>(result: &AllocationResult<Payload>) -> Vec<ProposalKey> {
         result
             .accepted
@@ -3684,6 +3950,160 @@ mod tests {
         .expect("the deep Sentinel can coexist only when a second shallow-screen cost survives");
         assert_eq!(accepted_keys(&deep_funded).len(), 2);
         assert!(!deep_funded.voluntary_scrap_guard_satisfied);
+    }
+
+    #[test]
+    fn defense_retains_exact_kind_anchor_builder_site_and_capital_claims() {
+        let anchor = TilePos::new(14, 9);
+        let mut proposal = defense(BuildingKind::FlakTurret, anchor, 90, ordinary_case());
+        proposal.claims_mut().minimum_residual_scrap = 40;
+
+        assert_eq!(
+            proposal.key(),
+            ProposalKey::Defense(DefenseInvestmentKey {
+                kind: BuildingKind::FlakTurret,
+                anchor,
+            })
+        );
+        assert_eq!(proposal.claims().current_scrap(), 90);
+        assert_eq!(proposal.claims().minimum_residual_scrap(), 40);
+        assert_eq!(proposal.claims().builders(), &[UnitId(2)]);
+        assert_eq!(
+            proposal.claims().sites(),
+            &[SiteFootprint::new(anchor, BuildingKind::FlakTurret.base_stats().size).unwrap()]
+        );
+    }
+
+    #[test]
+    fn an_incompatible_foundry_and_defense_layout_is_rejected_without_reranking() {
+        let foundry = foundry(10, 100, vec![], ordinary_case());
+        let defense = defense(
+            BuildingKind::Turret,
+            TilePos::new(18, 10),
+            100,
+            ordinary_case(),
+        );
+        let incompatible = IncompatibleLayoutPair::new(foundry.key(), defense.key()).unwrap();
+        let basis = capacity(200, 0, vec![], vec![]);
+
+        let unconstrained = allocate(
+            &basis,
+            vec![],
+            vec![foundry.clone(), defense.clone()],
+            AllocationPersonality::default(),
+        )
+        .expect("both individually safe builds fit ordinary shared claims");
+        assert_eq!(unconstrained.accepted.len(), 2);
+
+        let constrained = allocate_with_incompatible_layouts(
+            &basis,
+            vec![],
+            vec![foundry, defense],
+            AllocationPersonality::default(),
+            &[incompatible],
+        )
+        .expect("layout incompatibility is a selectable portfolio conflict");
+        assert_eq!(constrained.accepted.len(), 1);
+        assert!(matches!(
+            constrained.decisions.iter().find_map(|decision| match &decision.disposition {
+                ProposalDisposition::Rejected(ProposalRejection::ConflictsWithSelected {
+                    conflict,
+                    ..
+                }) => Some(conflict),
+                ProposalDisposition::Accepted
+                | ProposalDisposition::Rejected(ProposalRejection::Infeasible(_))
+                | ProposalDisposition::Rejected(ProposalRejection::Outranked { .. }) => None,
+            }),
+            Some(AllocationConflict::IncompatibleLayout { first, second })
+                if *first == incompatible.first && *second == incompatible.second
+        ));
+    }
+
+    #[test]
+    fn incompatible_defense_alternative_reports_the_selected_foundry_layout_conflict() {
+        let foundry = foundry(10, 100, vec![], ordinary_case());
+        let compatible_defense = defense(
+            BuildingKind::Turret,
+            TilePos::new(17, 10),
+            100,
+            ordinary_case(),
+        );
+        let incompatible_defense = defense(
+            BuildingKind::Turret,
+            TilePos::new(18, 10),
+            100,
+            ordinary_case(),
+        );
+        let incompatible =
+            IncompatibleLayoutPair::new(foundry.key(), incompatible_defense.key()).unwrap();
+        let foundry_key = foundry.key();
+        let compatible_key = compatible_defense.key();
+        let incompatible_key = incompatible_defense.key();
+
+        let result = allocate_with_incompatible_layouts(
+            &capacity(200, 0, vec![], vec![]),
+            vec![],
+            vec![foundry, compatible_defense, incompatible_defense],
+            AllocationPersonality::default(),
+            &[incompatible],
+        )
+        .expect("the compatible Foundry and Defense remain selectable together");
+
+        assert_eq!(accepted_keys(&result), vec![foundry_key, compatible_key]);
+        assert_eq!(
+            result
+                .decisions
+                .iter()
+                .find(|decision| decision.key == incompatible_key)
+                .map(|decision| &decision.disposition),
+            Some(&ProposalDisposition::Rejected(
+                ProposalRejection::ConflictsWithSelected {
+                    selected: vec![foundry_key, compatible_key],
+                    conflict: AllocationConflict::IncompatibleLayout {
+                        first: incompatible.first,
+                        second: incompatible.second,
+                    },
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn defense_semantics_outrank_cross_domain_personality() {
+        let developmental = ProposalCase {
+            urgency: Urgency::Developmental,
+            confidence: Confidence::Current,
+            value: StrategicValue::Decisive,
+            time_to_impact: TimeToImpact::Immediate,
+            safety: ExecutionSafety::Secure,
+        };
+        let pressing = ProposalCase {
+            urgency: Urgency::Pressing,
+            ..ordinary_case()
+        };
+        let proposals = vec![
+            foundry(10, 100, vec![], developmental),
+            defense(BuildingKind::Turret, TilePos::new(18, 10), 100, pressing),
+        ];
+        let personality = AllocationPersonality {
+            economy: u16::MAX,
+            offense: 0,
+            standing_force: 0,
+            defense: 0,
+        };
+        assert!(
+            portfolio_rank(&[1], &proposals, personality)
+                > portfolio_rank(&[0], &proposals, personality)
+        );
+        let result = allocate(
+            &capacity(100, 0, vec![], vec![]),
+            vec![],
+            proposals,
+            personality,
+        )
+        .expect("the one-build bank produces a semantic comparison");
+
+        assert!(matches!(result.accepted[0].key(), ProposalKey::Defense(_)));
     }
 
     #[test]
@@ -3885,16 +4305,19 @@ mod tests {
                 economy: 40,
                 offense: 0,
                 standing_force: 0,
+                defense: 0,
             },
             AllocationPersonality {
                 economy: 0,
                 offense: 40,
                 standing_force: 0,
+                defense: 0,
             },
             AllocationPersonality {
                 economy: 0,
                 offense: 0,
                 standing_force: 40,
+                defense: 0,
             },
         ];
         let economy_key = FoundryExpansionKey {
@@ -4028,6 +4451,9 @@ mod tests {
                                                     }
                                                     ProposalKey::StandingForce(_) => {
                                                         unreachable!("the fixture has two kinds")
+                                                    }
+                                                    ProposalKey::Defense(_) => {
+                                                        unreachable!("the fixture has no defense")
                                                     }
                                                 }
                                             },
@@ -4592,6 +5018,7 @@ mod tests {
                 economy: 0,
                 offense: 0,
                 standing_force: 1,
+                defense: 0,
             },
         )
         .expect("a mutually exclusive lane is a proposal decision");
@@ -5560,6 +5987,166 @@ mod tests {
     }
 
     #[test]
+    fn optimistic_funding_precheck_rejects_an_unfundable_largest_marginal() {
+        const OBSERVED_AT: Tick = 5_952;
+        const CADENCE: Tick = 12;
+        const CONNECTED_DEADLINE: Tick = 8_352;
+        const HORIZON: Tick = 10_668;
+        let fabricator = BuildingId(15);
+        let airworks = BuildingId(36);
+        let income = (1..=393_u64)
+            .map(|step| ForecastAvailability {
+                available_at: OBSERVED_AT + step * CADENCE,
+                amount: if step <= 79 || step > 187 { 5 } else { 4 },
+            })
+            .collect::<Vec<_>>();
+        let producer = |id, trainable| {
+            ProducerPlanningProjection::fixture(
+                id,
+                OBSERVED_AT,
+                CADENCE,
+                OBSERVED_AT,
+                vec![OBSERVED_AT; QUEUE_CAP],
+                trainable,
+            )
+            .expect("the late-game producer fixture is canonical")
+        };
+        let basis = timed_capacity(
+            87,
+            OBSERVED_AT,
+            HORIZON,
+            CADENCE,
+            income,
+            vec![
+                producer(fabricator, vec![UnitKind::Bombard]),
+                producer(airworks, vec![UnitKind::Darter, UnitKind::Gnat]),
+            ],
+        );
+        let saved = ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: 5_088,
+            key: ObligationKey::SavedFoundry {
+                anchor: TilePos::new(42, 22),
+            },
+            claims: bundle(0, vec![], vec![1], vec![], vec![site(42, 22)], vec![])
+                .with_deferrable_capital(DeferrableCapitalClaim {
+                    through: HORIZON,
+                    amount: 300,
+                })
+                .expect("the saved Foundry has one flexible capital claim"),
+        };
+        let connected_key = ConnectedOffenseKey {
+            objective: BuildingId(90),
+            anchor: TilePos::new(40, 10),
+        };
+        let connected = with_jobs(
+            offense_accepted_at(0, vec![], ordinary_case(), OBSERVED_AT),
+            vec![
+                ProducerJobClaim::flexible(
+                    UnitKind::Gnat,
+                    OBSERVED_AT,
+                    CONNECTED_DEADLINE,
+                    vec![airworks],
+                ),
+                ProducerJobClaim::flexible(
+                    UnitKind::Bombard,
+                    6_408,
+                    CONNECTED_DEADLINE,
+                    vec![fabricator],
+                ),
+                ProducerJobClaim::flexible(
+                    UnitKind::Darter,
+                    6_672,
+                    CONNECTED_DEADLINE,
+                    vec![airworks],
+                ),
+            ],
+        );
+        let mut result = allocate(
+            &basis,
+            vec![saved],
+            vec![connected],
+            AllocationPersonality::default(),
+        )
+        .expect("the connected minimum and saved Foundry fit");
+        let marginal = bundle(
+            0,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            [6_948, 7_224, 7_500, 7_764, 8_040]
+                .into_iter()
+                .map(|enqueue_not_before| {
+                    ProducerJobClaim::flexible(
+                        UnitKind::Darter,
+                        enqueue_not_before,
+                        CONNECTED_DEADLINE,
+                        vec![airworks],
+                    )
+                })
+                .collect(),
+        );
+
+        let owner = ClaimOwner::Proposal(ProposalKey::ConnectedOffenseMinimum(connected_key));
+        let first_ordinal = result.selected_state.producer_jobs.len();
+        let mut optimistic_jobs = result.selected_state.producer_jobs.clone();
+        optimistic_jobs.extend(
+            marginal
+                .producer_jobs
+                .iter()
+                .enumerate()
+                .map(|(offset, claim)| OwnedProducerJob {
+                    claim: claim.clone(),
+                    owner,
+                    ordinal: first_ordinal + offset,
+                    funding_priority: FundingPriority::marginal(owner),
+                }),
+        );
+        optimistic_jobs.sort_unstable_by_key(|job| (job.owner, job.ordinal));
+        let optimistic = optimistic_funding_schedule(&optimistic_jobs)
+            .expect("the funding bound ignores stricter lane conflicts");
+        assert_eq!(
+            optimistic
+                .iter()
+                .map(|job| job.enqueued_at)
+                .collect::<Vec<_>>(),
+            vec![8_052, 8_052, 8_202, 8_202, 8_202, 8_202, 8_202, 8_202]
+        );
+        for funding_mode in [
+            JointFundingMode::PreferPriority,
+            JointFundingMode::PreserveCompatiblePortfolio,
+        ] {
+            let mut funding_only = optimistic.clone();
+            assert!(
+                assign_joint_funding(
+                    JointFundingBasis {
+                        capacity: &basis,
+                        current_capital: result.selected_state.current_scrap,
+                        minimum_residual_scrap: result
+                            .selected_state
+                            .effective_minimum_residual_scrap(),
+                        forecast_capital: &result.selected_state.forecast_scrap,
+                        deferrable_capital: &result.selected_state.deferrable_capital,
+                        jobs: &optimistic_jobs,
+                    },
+                    &mut funding_only,
+                    funding_mode,
+                )
+                .is_none(),
+                "even optimistic ordered deadlines cannot fund the largest scale in {funding_mode:?}"
+            );
+        }
+
+        let before_schedule = result.producer_schedule.clone();
+        let error = result
+            .try_extend_connected_offense(&basis, connected_key, &marginal)
+            .expect_err("the unfundable largest marginal is rejected without a search");
+        assert!(matches!(error, AllocationConflict::ProducerSchedule { .. }));
+        assert_eq!(result.producer_schedule, before_schedule);
+    }
+
+    #[test]
     fn production_cost_and_nonproduction_capital_are_each_charged_once() {
         let producer = BuildingId(7);
         let proposal = |current_scrap| {
@@ -6195,6 +6782,9 @@ mod tests {
                                         ) => 1,
                                         ClaimOwner::Proposal(ProposalKey::StandingForce(_)) => {
                                             unreachable!("the oracle submits no standing proposal")
+                                        }
+                                        ClaimOwner::Proposal(ProposalKey::Defense(_)) => {
+                                            unreachable!("the oracle submits no defense proposal")
                                         }
                                         ClaimOwner::Obligation { .. } => {
                                             unreachable!("the oracle submits no obligations")
@@ -7386,6 +7976,7 @@ mod tests {
                 economy: 50,
                 offense: 0,
                 standing_force: 0,
+                defense: 0,
             },
         )
         .expect("economic personality allocation");
@@ -7397,6 +7988,7 @@ mod tests {
                 economy: 0,
                 offense: 50,
                 standing_force: 0,
+                defense: 0,
             },
         )
         .expect("offensive personality allocation");
@@ -7408,6 +8000,7 @@ mod tests {
                 economy: 0,
                 offense: 0,
                 standing_force: 50,
+                defense: 0,
             },
         )
         .expect("standing-force personality allocation");
@@ -7458,6 +8051,7 @@ mod tests {
                 economy: 0,
                 offense: u16::MAX,
                 standing_force: 0,
+                defense: 0,
             },
         );
         let developmental_rank = portfolio_rank(
@@ -7470,6 +8064,7 @@ mod tests {
                 economy: u16::MAX,
                 offense: u16::MAX,
                 standing_force: u16::MAX,
+                defense: u16::MAX,
             },
         );
 
@@ -7557,6 +8152,7 @@ mod tests {
             economy: 40,
             offense: 10,
             standing_force: 0,
+            defense: 0,
         };
         let expansion = portfolio_rank(&[0], &proposals, personality);
         let offense = portfolio_rank(&[1], &proposals, personality);
@@ -7876,6 +8472,17 @@ mod tests {
             anchor: TilePos::new(20, 1),
         };
         let bottom_left = FoundryExpansionKey {
+            anchor: TilePos::new(1, 20),
+        };
+        assert!(top_right < bottom_left);
+        assert!(top_right.anchor > bottom_left.anchor);
+
+        let top_right = DefenseInvestmentKey {
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(20, 1),
+        };
+        let bottom_left = DefenseInvestmentKey {
+            kind: BuildingKind::Turret,
             anchor: TilePos::new(1, 20),
         };
         assert!(top_right < bottom_left);

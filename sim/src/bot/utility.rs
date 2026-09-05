@@ -39,6 +39,7 @@ mod combat;
 mod construction;
 mod danger;
 mod defense;
+mod defensive_investment;
 mod economy;
 mod expansion;
 mod production;
@@ -52,8 +53,11 @@ pub(in crate::bot) use construction::{
     FoundryConfidence, FoundryExecutionSafety, FoundryOpportunityCase, FoundryStrategicValue,
     FoundryTimeToImpact, FoundryUrgency, FreshEmergencyDefense, FreshEmergencyDefenseContext,
     FreshFoundryInvestment, FreshFoundryProposal, FreshFoundryProposalContext,
-    ResidualInvestmentReserveContext, SavedFoundryReadiness, ValidatedFoundryObligation,
+    ResidualTechnologyReserveContext, SavedFoundryReadiness, ValidatedFoundryObligation,
 };
+#[cfg(test)]
+pub(in crate::bot) use defensive_investment::DefenseConstruction;
+pub(in crate::bot) use defensive_investment::FreshDefenseProposal;
 pub(in crate::bot) use production::{CombatCoreStatus, combat_core_status};
 
 /// How far from home an enemy unit counts as an intruder (Chebyshev).
@@ -503,16 +507,20 @@ pub struct Dials {
     pub support_target: usize,
     /// Fast ground raiders kept alive or queued.
     pub raider_target: usize,
-    /// Maximum ordinary defensive turrets.
+    /// Legacy profile-free Turret ceiling, retained for policy compatibility.
+    /// Player-facing typed defensive investment does not read this cap.
     pub turret_cap: usize,
-    /// Maximum anti-air emplacements.
+    /// Legacy profile-free Flak Turret ceiling, retained for policy compatibility.
+    /// Player-facing typed defensive investment does not read this cap.
     pub flak_cap: usize,
     /// Maximum late-economy Reclaimers.
     pub reclaimer_cap: usize,
-    /// Maximum defensive minefield charges.
+    /// Legacy profile-free Scuttle Charge ceiling, retained for policy compatibility.
+    /// Player-facing typed defensive investment does not read this cap.
     pub mine_cap: usize,
-    /// Maximum lane-shaping Barricades. Zero preserves the frozen QA policy's
-    /// historical repertoire.
+    /// Legacy Barricade appetite retained for policy compatibility. The frozen
+    /// QA policy keeps this at zero, and player-facing typed defensive
+    /// investment does not read it.
     pub barricade_cap: usize,
     /// Appetite for expansion payback and its supporting security investment.
     /// This changes when a legal expansion becomes worthwhile, never whether
@@ -851,9 +859,10 @@ pub struct UtilityPolicy {
     /// the fund and climb to the sky.
     desperate_march: bool,
     desperate_road: bool,
-    /// Set when a harvester died on this watch. The player-facing controller
-    /// keeps the latch until its configured Turret line is actually built;
-    /// the profile-free QA controller retains its legacy one-site reset.
+    /// Set when a harvester died on this watch. Player-facing typed defense
+    /// derives opportunities directly from fog-honest current and remembered
+    /// evidence instead of reading this legacy latch; the profile-free QA
+    /// controller retains its one-site reset.
     raided: bool,
     /// Turret-site count at the last profile-free think.
     turrets_seen: usize,
@@ -1534,6 +1543,18 @@ impl UtilityPolicy {
     /// Workers whose active escape must outrank every implicit utility claim.
     pub(super) fn worker_safety_reservations(&self) -> &[UnitId] {
         &self.evacuating_workers
+    }
+
+    /// Refreshes same-observation incident evidence before shared allocation
+    /// freezes an exact construction builder. The ordinary Utility pass repeats
+    /// this idempotent refresh before issuing any required evacuation.
+    pub(in crate::bot) fn refresh_allocation_worker_safety(
+        &mut self,
+        obs: &Observation,
+        unit_contacts: &[UnitContact],
+        building_contacts: &[BuildingContact],
+    ) {
+        self.refresh_contested_harvest_regions(obs, Some(unit_contacts), Some(building_contacts));
     }
 
     /// Replaces player-facing implicit Build intents with one exact worker
@@ -3246,8 +3267,9 @@ impl UtilityPolicy {
         }
     }
 
-    /// A shrinking harvest line means raiders. Player-facing identities keep
-    /// the response open until every configured Turret is complete; the
+    /// A shrinking harvest line updates the legacy raid latch. Player-facing
+    /// typed defense derives its opportunities from fog-honest current and
+    /// remembered evidence instead of using this latch for eligibility; the
     /// profile-free controller preserves its historical one-site reset.
     fn audit_raids(&mut self, dials: &Dials, obs: &Observation, player_facing: bool) {
         let harvesters = obs

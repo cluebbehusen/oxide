@@ -8,16 +8,17 @@
 use super::{
     AllocationConflict, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
     ClaimOwner, ConnectedOffenseKey, ConnectedPortfolioContext, CoordinatorInputError,
-    CrossDomainAllocation, CrossDomainSettlement, DomainInvestmentProposal, ForecastClaim,
-    ImportedObligation, LegacyChannel, LegacyDecisionRequest, ObligationClass, ObligationKey,
-    ProducerJobClaim, ProposalKey, StandingForceKey, Urgency, active_connected_obligation,
-    active_connected_producer_assignments, active_connected_revision_investment_proposal,
-    active_connected_revision_obligation, active_connected_revision_producer_assignments,
-    clamped_current_reserve_obligation, connected_investment_proposal,
-    connected_producer_assignments, current_reserve_at, forecast_reserve_through,
-    foundry_investment_proposal, fresh_emergency_defense_obligation, imported_obligation,
-    legacy_decision_obligation, legacy_unit_obligation, observed_builder_obligations,
-    saved_foundry_obligation, standing_force_investment_proposals,
+    CrossDomainAllocation, CrossDomainSettlement, DefenseInvestmentKey, DomainInvestmentProposal,
+    ForecastClaim, ImportedObligation, LegacyChannel, LegacyDecisionRequest, ObligationClass,
+    ObligationKey, ProducerJobClaim, ProposalKey, StandingForceKey, Urgency,
+    active_connected_obligation, active_connected_producer_assignments,
+    active_connected_revision_investment_proposal, active_connected_revision_obligation,
+    active_connected_revision_producer_assignments, clamped_current_reserve_obligation,
+    connected_investment_proposal, connected_producer_assignments, current_reserve_at,
+    defense_investment_proposals, forecast_reserve_through, foundry_investment_proposal,
+    fresh_emergency_defense_obligation, imported_obligation, legacy_decision_obligation,
+    legacy_unit_obligation, observed_builder_obligations, saved_foundry_obligation,
+    standing_force_investment_proposals,
 };
 use crate::bot::PublicMapBriefing;
 use crate::bot::difficulty::{DifficultyTuning, strategic_admission_tick};
@@ -47,10 +48,10 @@ use crate::bot::trace::{
     AllocationCoordinatorFailureReasonTrace, AllocationCoordinatorStageTrace, AllocationTrace,
 };
 use crate::bot::utility::{
-    CombatCoreStatus, Dials, FreshEmergencyDefense, FreshEmergencyDefenseContext,
-    FreshFoundryInvestment, FreshFoundryProposal, FreshFoundryProposalContext,
-    ResidualInvestmentReserveContext, SHALLOW_QUEUE_DEPTH, SavedFoundryReadiness, UtilityPolicy,
-    ValidatedFoundryObligation, combat_core_status,
+    CombatCoreStatus, Dials, FreshDefenseProposal, FreshEmergencyDefense,
+    FreshEmergencyDefenseContext, FreshFoundryInvestment, FreshFoundryProposal,
+    FreshFoundryProposalContext, ResidualTechnologyReserveContext, SHALLOW_QUEUE_DEPTH,
+    SavedFoundryReadiness, UtilityPolicy, ValidatedFoundryObligation, combat_core_status,
 };
 use crate::ids::UnitId;
 use crate::stats::{BuildingKind, Domain, UnitKind};
@@ -331,6 +332,7 @@ pub(crate) struct AllocationBudgetOutcome {
     pub(crate) foundry_saving: u32,
     pub(crate) airworks_capacity: u32,
     pub(crate) opening_bootstrap: u32,
+    pub(crate) raw_residual_scrap: u32,
     pub(crate) residual_scrap: u32,
     pub(crate) connected_spendable: u32,
     pub(crate) connected_forecast_hold: u32,
@@ -372,6 +374,7 @@ pub(crate) struct AllocationSessionOutcome {
     pub(crate) staged_strategy: Option<StrategicThinkResult>,
     pub(crate) fresh_emergency_defense_intents: Vec<Intent>,
     pub(crate) fresh_foundry_intents: Vec<Intent>,
+    pub(crate) fresh_defense_intents: Vec<Intent>,
     pub(crate) allocated_producer_intents: Vec<Intent>,
     pub(crate) allocation_ok: bool,
     pub(crate) accepted_connected: bool,
@@ -518,6 +521,8 @@ impl<'a> AllocationSession<'a> {
         if active_revision.proposal.is_none() {
             self.downgrade_unfundable_active_connected(&mut saved, &air_lift, &mut obligations);
         }
+        let prospective_carrier_floor =
+            self.prospective_carrier_floor(&claims, obligations.coordinator_failure.is_none());
         let mut fresh =
             self.prepare_fresh_investments(&claims, &saved, &mut obligations, active_revision);
         self.downgrade_unfundable_active_revision(
@@ -543,6 +548,7 @@ impl<'a> AllocationSession<'a> {
             fresh_lift_producer_jobs: air_lift.fresh_lift_producer_jobs,
             saved_foundry: saved.obligation,
             fresh_foundry: fresh.foundry,
+            fresh_defense: fresh.defense,
             fresh_connected: fresh.connected,
             standing_force: fresh.standing_force,
             connected_accepted_at: fresh.connected_accepted_at,
@@ -554,6 +560,7 @@ impl<'a> AllocationSession<'a> {
             airworks_capacity: air_lift.airworks_capacity,
             opening_bootstrap: air_lift.opening_bootstrap,
             voluntary_scrap_guard: air_lift.voluntary_scrap_guard,
+            prospective_carrier_floor,
             rejected_connected_candidate: fresh.rejected_connected_candidate,
             staged_strategy: obligations.staged_strategy,
             emergency_defense,
@@ -1039,6 +1046,42 @@ impl<'a> AllocationSession<'a> {
             fresh_lift_producer_jobs: 0,
             voluntary_scrap_guard,
         }
+    }
+
+    fn prospective_carrier_floor(&self, claims: &ClaimSnapshot, allocation_possible: bool) -> u32 {
+        if !allocation_possible || !claims.opening_core.ready {
+            return 0;
+        }
+        let Some(target) = self.participants.strategy.as_ref().and_then(|planner| {
+            planner.prospective_recon_target(StrategicThinkContext::new(
+                self.context.profile,
+                self.context.tuning,
+                self.context.observation,
+                self.context.intelligence,
+                self.context.home,
+                StrategicCoordination {
+                    enlisted: &claims.planner_claims,
+                    lift_support: self.context.lift_support,
+                    allow_new_operation: true,
+                    protected_current_scrap: 0,
+                    protected_forecast_scrap: 0,
+                    public_map: Some(self.context.public_map),
+                    orientation: self.context.orientation,
+                },
+            ))
+        }) else {
+            return 0;
+        };
+        self.participants.lifts.as_ref().map_or(0, |planner| {
+            planner.prospective_first_carrier_commitment(
+                self.context.observation,
+                self.context.home,
+                &self.advanced.lift_unavailable,
+                &claims.strategic_core_exclusions,
+                u64::from(self.context.dials.minimum_core_equivalents),
+                target,
+            )
+        })
     }
 
     fn advance_active_lift(
@@ -1586,6 +1629,13 @@ impl<'a> AllocationSession<'a> {
             && obligations.coordinator_failure.is_none();
         let available_builders =
             available_allocation_builders(&obligations.resources, &obligations.obligations);
+        let available_builder_units = self
+            .context
+            .observation
+            .my_units
+            .iter()
+            .filter(|unit| available_builders.binary_search(&unit.id).is_ok())
+            .collect::<Vec<_>>();
         let foundry_investment = admission_tick
             .then(|| {
                 self.participants.policy.fresh_foundry_investment(
@@ -1663,6 +1713,8 @@ impl<'a> AllocationSession<'a> {
             None
         };
         let connected = connected_candidate;
+        let defense_reinforcement_exclusions =
+            defense_reinforcement_exclusions(&claims.strategic_core_exclusions, connected.as_ref());
         let connected_accepted_at = obligations
             .active_connected
             .as_ref()
@@ -1697,19 +1749,55 @@ impl<'a> AllocationSession<'a> {
                     .saturating_add(connected_preparation_horizon())
             });
         let committed_production = self.committed_standing_production();
+        let residual_technology_reserve = self.participants.policy.residual_technology_reserve(
+            self.context.dials,
+            self.context.observation,
+            ResidualTechnologyReserveContext {
+                home: self.context.home,
+                available_builders: &available_builders,
+            },
+        );
+        let mut defense = if admission_tick {
+            self.participants.policy.fresh_defense_proposals(
+                self.context.profile,
+                self.context.observation,
+                &obligations.resources,
+                self.context.public_map,
+                self.context.orientation,
+                self.context.home,
+                self.context.intelligence.units(),
+                self.context.intelligence.buildings(),
+                &available_builder_units,
+                &defense_reinforcement_exclusions,
+                residual_technology_reserve,
+            )
+        } else {
+            Vec::new()
+        };
+        if let Some(saved_foundry) = saved.obligation {
+            defense.retain(|proposal| {
+                self.participants
+                    .policy
+                    .combined_build_layout_with_builders_is_safe(
+                        self.context.observation,
+                        self.context.public_map,
+                        self.context.intelligence.units(),
+                        self.context.intelligence.buildings(),
+                        self.context.orientation,
+                        &[
+                            (
+                                BuildingKind::Foundry,
+                                saved_foundry.anchor(),
+                                saved_foundry.builder(),
+                            ),
+                            (proposal.kind(), proposal.anchor(), proposal.builder()),
+                        ],
+                    )
+            });
+        }
         let standing_force_derivation = StandingForceDerivation {
             projection_targets: self.standing_force_projection_targets(),
-            residual_investment_reserve: self.participants.policy.residual_investment_reserve(
-                self.context.dials,
-                self.context.observation,
-                ResidualInvestmentReserveContext {
-                    home: self.context.home,
-                    available_builders: &available_builders,
-                    unit_contacts: self.context.intelligence.units(),
-                    building_contacts: self.context.intelligence.buildings(),
-                    public_map: self.context.public_map,
-                },
-            ),
+            residual_technology_reserve,
             expansion_security_need,
         };
         let derive_standing_force =
@@ -1819,6 +1907,7 @@ impl<'a> AllocationSession<'a> {
         };
         FreshInvestmentPreparation {
             foundry,
+            defense,
             connected,
             standing_force,
             standing_force_derivation,
@@ -1877,7 +1966,7 @@ impl<'a> AllocationSession<'a> {
                 &derivation.projection_targets,
                 Some(self.context.orientation),
             )
-            .with_minimum_residual_scrap(derivation.residual_investment_reserve);
+            .with_minimum_residual_scrap(derivation.residual_technology_reserve);
         if let Some((anchor, target_strength)) = derivation.expansion_security_need {
             context = context.with_expansion_security(
                 StandingGroundTarget::footprint(anchor, BuildingKind::Foundry.base_stats().size),
@@ -2186,6 +2275,9 @@ impl<'a> AllocationSession<'a> {
         if let Some(proposal) = fresh.connected.as_ref() {
             horizon = horizon.max(proposal.deadline());
         }
+        for proposal in &fresh.defense {
+            horizon = horizon.max(proposal.ready_at());
+        }
         fresh.standing_force.for_each(|proposal| {
             horizon = horizon.max(proposal.ready_before());
         });
@@ -2208,6 +2300,7 @@ impl<'a> AllocationSession<'a> {
                 self.context.dials.cadence,
             ) {
                 Ok(mut allocation) => {
+                    self.reject_incompatible_fresh_layouts(&mut allocation, &prepared);
                     let allocatable_voluntary_scrap_guard = prepared
                         .voluntary_scrap_guard
                         .min(prepared.resources.current_scrap().amount());
@@ -2233,7 +2326,10 @@ impl<'a> AllocationSession<'a> {
                         match foundry_investment_proposal(proposal) {
                             Ok(proposal) => allocation.offer(
                                 proposal
-                                    .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
+                                    .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
+                                    .with_minimum_residual_scrap(
+                                        prepared.prospective_carrier_floor,
+                                    ),
                             ),
                             Err(error) => {
                                 retain_first_coordinator_failure(
@@ -2245,21 +2341,52 @@ impl<'a> AllocationSession<'a> {
                             }
                         }
                     }
+                    match defense_investment_proposals(core::mem::take(&mut prepared.fresh_defense))
+                    {
+                        Ok(proposals) => {
+                            for proposal in proposals {
+                                allocation.offer(
+                                    proposal
+                                        .with_voluntary_scrap_guard(
+                                            allocatable_voluntary_scrap_guard,
+                                        )
+                                        .with_minimum_residual_scrap(
+                                            prepared.prospective_carrier_floor,
+                                        ),
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            retain_first_coordinator_failure(
+                                &mut prepared.coordinator_failure,
+                                AllocationCoordinatorStageTrace::DefenseProposalAdaptation,
+                                Err(error.into()),
+                            );
+                            allocation_ok = false;
+                        }
+                    }
                     if let Some(proposal) = prepared.fresh_connected.take() {
                         if proposal.revises_active_operation() {
                             allocation.offer(
                                 active_connected_revision_investment_proposal(proposal)
                                     .with_voluntary_scrap_guard(
                                         active_revision_voluntary_scrap_guard,
+                                    )
+                                    .with_minimum_residual_scrap(
+                                        prepared.prospective_carrier_floor,
                                     ),
                             );
                         } else {
                             match connected_investment_proposal(proposal) {
-                                Ok(proposal) => {
-                                    allocation.offer(proposal.with_voluntary_scrap_guard(
-                                        allocatable_voluntary_scrap_guard,
-                                    ))
-                                }
+                                Ok(proposal) => allocation.offer(
+                                    proposal
+                                        .with_voluntary_scrap_guard(
+                                            allocatable_voluntary_scrap_guard,
+                                        )
+                                        .with_minimum_residual_scrap(
+                                            prepared.prospective_carrier_floor,
+                                        ),
+                                ),
                                 Err(error) => {
                                     retain_first_coordinator_failure(
                                         &mut prepared.coordinator_failure,
@@ -2276,10 +2403,15 @@ impl<'a> AllocationSession<'a> {
                             match standing_force_investment_proposals(standing_force) {
                                 Ok(proposals) => {
                                     for proposal in proposals {
-                                        allocation.offer(standing_force_with_voluntary_guard(
-                                            proposal,
-                                            allocatable_voluntary_scrap_guard,
-                                        ));
+                                        allocation.offer(
+                                            standing_force_with_voluntary_guard(
+                                                proposal,
+                                                allocatable_voluntary_scrap_guard,
+                                            )
+                                            .with_minimum_residual_scrap(
+                                                prepared.prospective_carrier_floor,
+                                            ),
+                                        );
                                     }
                                 }
                                 Err(error) => {
@@ -2303,6 +2435,9 @@ impl<'a> AllocationSession<'a> {
                                                 standing_force_with_voluntary_guard(
                                                     proposal,
                                                     allocatable_voluntary_scrap_guard,
+                                                )
+                                                .with_minimum_residual_scrap(
+                                                    prepared.prospective_carrier_floor,
                                                 )
                                             })
                                             .collect(),
@@ -2348,6 +2483,45 @@ impl<'a> AllocationSession<'a> {
         }
     }
 
+    fn reject_incompatible_fresh_layouts(
+        &self,
+        allocation: &mut CrossDomainAllocation,
+        prepared: &PreparedAllocation,
+    ) {
+        let Some(foundry) = prepared.fresh_foundry.as_ref() else {
+            return;
+        };
+        let foundry_key = ProposalKey::FoundryExpansion(super::FoundryExpansionKey {
+            anchor: foundry.anchor(),
+        });
+        for defense in &prepared.fresh_defense {
+            let pair = [
+                (BuildingKind::Foundry, foundry.anchor(), foundry.builder()),
+                (defense.kind(), defense.anchor(), defense.builder()),
+            ];
+            if !self
+                .participants
+                .policy
+                .combined_build_layout_with_builders_is_safe(
+                    self.context.observation,
+                    self.context.public_map,
+                    self.context.intelligence.units(),
+                    self.context.intelligence.buildings(),
+                    self.context.orientation,
+                    &pair,
+                )
+            {
+                allocation.reject_incompatible_layout(
+                    foundry_key,
+                    ProposalKey::Defense(DefenseInvestmentKey {
+                        kind: defense.kind(),
+                        anchor: defense.anchor(),
+                    }),
+                );
+            }
+        }
+    }
+
     fn commit_settlement(
         &mut self,
         prepared: &mut PreparedAllocation,
@@ -2362,8 +2536,10 @@ impl<'a> AllocationSession<'a> {
             prepared.voluntary_scrap_guard
         };
         effects.budget.voluntary_scrap_guard = voluntary_scrap_guard;
-        effects.budget.residual_scrap = settlement
-            .residual_current_scrap()
+        effects.budget.raw_residual_scrap = settlement.residual_current_scrap();
+        effects.budget.residual_scrap = effects
+            .budget
+            .raw_residual_scrap
             .saturating_sub(voluntary_scrap_guard);
         effects.budget.connected_spendable =
             if prepared.active_connected.is_some() || prepared.staged_strategy.is_some() {
@@ -2413,6 +2589,11 @@ impl<'a> AllocationSession<'a> {
             allocation_ok,
         );
         self.commit_fresh_foundry(prepared, &mut payloads, &mut effects, allocation_ok);
+        if *allocation_ok && let Some(defense) = payloads.take_defense() {
+            self.participants
+                .policy
+                .commit_adjudicated_defense(defense, &mut effects.fresh_defense_intents);
+        }
         if let Some(standing_force) = payloads.take_standing_force() {
             let scheduled = producer_schedule.iter().any(|job| {
                 job.owner == ClaimOwner::Proposal(ProposalKey::StandingForce(standing_force.key()))
@@ -2743,6 +2924,7 @@ impl<'a> AllocationSession<'a> {
             staged_strategy,
             fresh_emergency_defense_intents: effects.fresh_emergency_defense_intents,
             fresh_foundry_intents: effects.fresh_foundry_intents,
+            fresh_defense_intents: effects.fresh_defense_intents,
             allocated_producer_intents: effects.allocated_producer_intents,
             allocation_ok,
             accepted_connected: effects.accepted_connected,
@@ -2875,6 +3057,7 @@ struct ActiveRevisionPreparation {
 
 struct FreshInvestmentPreparation {
     foundry: Option<FreshFoundryProposal>,
+    defense: Vec<FreshDefenseProposal>,
     connected: Option<FreshConnectedProposal>,
     standing_force: StandingForcePreparation,
     standing_force_derivation: StandingForceDerivation,
@@ -2885,7 +3068,7 @@ struct FreshInvestmentPreparation {
 
 struct StandingForceDerivation {
     projection_targets: Vec<StandingGroundTarget>,
-    residual_investment_reserve: u32,
+    residual_technology_reserve: u32,
     expansion_security_need: Option<(TilePos, u64)>,
 }
 
@@ -2922,6 +3105,7 @@ struct CommitEffects {
     producer_lane_reservations: ProducerLaneReservations,
     fresh_emergency_defense_intents: Vec<Intent>,
     fresh_foundry_intents: Vec<Intent>,
+    fresh_defense_intents: Vec<Intent>,
     allocated_producer_intents: Vec<Intent>,
     budget: AllocationBudgetOutcome,
 }
@@ -2933,6 +3117,7 @@ impl CommitEffects {
             producer_lane_reservations: ProducerLaneReservations::default(),
             fresh_emergency_defense_intents: Vec::new(),
             fresh_foundry_intents: Vec::new(),
+            fresh_defense_intents: Vec::new(),
             allocated_producer_intents: Vec::new(),
             budget: AllocationBudgetOutcome::frozen(
                 prepared.foundry_saving,
@@ -2957,6 +3142,7 @@ struct PreparedAllocation {
     fresh_lift_producer_jobs: usize,
     saved_foundry: Option<ValidatedFoundryObligation>,
     fresh_foundry: Option<FreshFoundryProposal>,
+    fresh_defense: Vec<FreshDefenseProposal>,
     fresh_connected: Option<FreshConnectedProposal>,
     standing_force: StandingForcePreparation,
     connected_accepted_at: Option<Tick>,
@@ -2968,6 +3154,7 @@ struct PreparedAllocation {
     airworks_capacity: u32,
     opening_bootstrap: u32,
     voluntary_scrap_guard: u32,
+    prospective_carrier_floor: u32,
     rejected_connected_candidate: Option<RejectedConnectedCandidate>,
     staged_strategy: Option<StrategicThinkResult>,
     emergency_defense: Option<FreshEmergencyDefense>,
@@ -3879,6 +4066,26 @@ fn retained_producer_context(
     Some((settlement.producer_lane_reservations().clone(), due))
 }
 
+/// A typed Defense quote cannot count a live unit that any co-selectable fresh
+/// Connected package may own as mobile reinforcement. Defense has one frozen
+/// case across Connected portfolio variants, so derive it against their
+/// canonical union rather than allowing one unit to justify both investments.
+fn defense_reinforcement_exclusions(
+    prior: &[UnitId],
+    connected: Option<&FreshConnectedProposal>,
+) -> Vec<UnitId> {
+    let mut excluded = prior.to_vec();
+    if let Some(connected) = connected {
+        excluded.extend_from_slice(connected.minimum_claims().units());
+        for marginal in connected.marginal_variants() {
+            excluded.extend_from_slice(marginal.additions().units());
+        }
+    }
+    excluded.sort_unstable();
+    excluded.dedup();
+    excluded
+}
+
 fn available_allocation_builders(
     resources: &ResourceSnapshot,
     obligations: &[ImportedObligation],
@@ -3924,9 +4131,10 @@ mod tests {
         ConnectedProducerTiming, ConnectedProviderJob, ConnectedStrategicValue,
         ConnectedTimeToImpact, ConnectedUrgency, FreshConnectedProposalFixture,
     };
+    use crate::bot::trace::{AllocationConflictTrace, ProposalDispositionTrace, ProposalKeyTrace};
     use crate::bot::utility::{
-        FoundryConfidence, FoundryExecutionSafety, FoundryOpportunityCase, FoundryStrategicValue,
-        FoundryTimeToImpact, FoundryUrgency,
+        DefenseConstruction, FoundryConfidence, FoundryExecutionSafety, FoundryOpportunityCase,
+        FoundryStrategicValue, FoundryTimeToImpact, FoundryUrgency,
     };
     use crate::ids::{BuildingId, PlayerId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance};
@@ -4130,6 +4338,7 @@ mod tests {
             fresh_lift_producer_jobs: 0,
             saved_foundry: None,
             fresh_foundry: None,
+            fresh_defense: Vec::new(),
             fresh_connected: None,
             standing_force: StandingForcePreparation::default(),
             connected_accepted_at: None,
@@ -4141,6 +4350,7 @@ mod tests {
             airworks_capacity: 12,
             opening_bootstrap: 13,
             voluntary_scrap_guard: 0,
+            prospective_carrier_floor: 0,
             rejected_connected_candidate: None,
             staged_strategy: None,
             emergency_defense: None,
@@ -6417,6 +6627,357 @@ mod tests {
     }
 
     #[test]
+    fn accepted_defense_preserves_the_shared_carrier_floor_without_claiming_it() {
+        const HOME: TilePos = TilePos::new(5, 15);
+        let mut observation = observation();
+        let builder = UnitId(7);
+        let anchor = TilePos::new(9, 11);
+        let carrier_floor = UnitKind::Skyhook.stats().cost;
+        let cost = BuildingKind::Turret
+            .base_stats()
+            .construction
+            .expect("Turrets are constructible")
+            .cost;
+        observation.scrap = cost.saturating_add(carrier_floor);
+        observation.my_units.push(owned_unit(
+            builder.0,
+            UnitKind::Harvester,
+            TilePos::new(7, 12),
+        ));
+
+        let profile = prime_profile();
+        let tuning = DifficultyTuning::for_level(profile.difficulty);
+        let dials = Dials::scripted(&profile, tuning);
+        let public_map = briefing();
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(&observation);
+        let mut policy = UtilityPolicy::new();
+        let original_policy = policy.clone();
+        let mut strategy = None;
+        let mut lifts = None;
+        let mut team = None;
+        let mut raids = None;
+        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+        let mut input = prepared(&observation, None);
+        input.prospective_carrier_floor = carrier_floor;
+        input.fresh_defense = vec![FreshDefenseProposal::fixture(
+            DefenseConstruction::Turret,
+            anchor,
+            builder,
+            ProposalCase {
+                urgency: Urgency::Pressing,
+                confidence: Confidence::Current,
+                value: StrategicValue::Material,
+                time_to_impact: TimeToImpact::Near,
+                safety: ExecutionSafety::Secure,
+            },
+            100,
+            UnitKind::Sentinel.stats().cost,
+        )];
+        let mut trace = AllocationTrace::default();
+        let mut session = AllocationSession::new(
+            AllocationSessionContext {
+                dials: &dials,
+                profile: &profile,
+                tuning,
+                observation: &observation,
+                home: HOME,
+                public_map: &public_map,
+                orientation: Orientation::for_home(&observation, HOME),
+                intelligence: &intelligence,
+                enlisted: &[],
+                lift_support: None,
+            },
+            AllocationParticipants {
+                policy: &mut policy,
+                strategy: &mut strategy,
+                lifts: &mut lifts,
+                team: &mut team,
+                raids: &mut raids,
+            },
+            advanced(snapshots),
+            Some(&mut trace),
+        );
+        let resolved = session.resolve(
+            input,
+            CommitSnapshots {
+                policy: original_policy,
+            },
+        );
+        let outcome = session.commit_or_restore(resolved);
+
+        assert!(outcome.allocation_ok);
+        assert_eq!(
+            outcome.fresh_defense_intents,
+            vec![Intent::BuildWith {
+                builder,
+                kind: BuildingKind::Turret,
+                anchor,
+            }]
+        );
+        assert_eq!(outcome.budget.residual_scrap, carrier_floor);
+        assert_eq!(outcome.budget.utility_spendable, carrier_floor);
+        let proposal = trace
+            .proposals
+            .entries
+            .iter()
+            .find(|proposal| {
+                proposal.key
+                    == ProposalKeyTrace::Defense {
+                        kind: BuildingKind::Turret,
+                        anchor,
+                    }
+            })
+            .expect("the accepted defense remains visible in the trace");
+        assert_eq!(proposal.claims.minimum_residual_scrap, carrier_floor);
+    }
+
+    #[test]
+    fn fresh_connected_units_are_unavailable_to_defense_reinforcement_quotes() {
+        let connected = FreshConnectedProposal::fixture(FreshConnectedProposalFixture {
+            objective: BuildingId(700),
+            anchor: TilePos::new(16, 12),
+            deadline: 240,
+            case: ConnectedOpportunityCase::fixture(
+                ConnectedUrgency::Timely,
+                ConnectedConfidence::Current,
+                ConnectedStrategicValue::Material,
+                ConnectedTimeToImpact::Near,
+                ConnectedExecutionSafety::Managed,
+            ),
+            minimum_claims: ConnectedOffenseClaims::fixture(vec![UnitId(3), UnitId(5)], Vec::new()),
+            marginal_additions: vec![
+                ConnectedOffenseClaims::fixture(vec![UnitId(5), UnitId(7)], Vec::new()),
+                ConnectedOffenseClaims::fixture(vec![UnitId(7), UnitId(9)], Vec::new()),
+            ],
+            protected_current_scrap: 0,
+            protected_forecast_scrap: 0,
+        });
+
+        assert_eq!(
+            defense_reinforcement_exclusions(&[UnitId(1), UnitId(5)], Some(&connected)),
+            vec![UnitId(1), UnitId(3), UnitId(5), UnitId(7), UnitId(9)],
+            "Defense must not count a unit owned by any co-selectable Connected scale"
+        );
+        assert_eq!(
+            defense_reinforcement_exclusions(&[UnitId(5), UnitId(1)], None),
+            vec![UnitId(1), UnitId(5)]
+        );
+    }
+
+    #[test]
+    fn session_rejects_only_the_defense_that_would_seal_a_selected_foundry_layout() {
+        const HOME: TilePos = TilePos::new(5, 15);
+        let mut observation = observation();
+        let producer_anchor = TilePos::new(7, 7);
+        let producer_size = BuildingKind::Foundry.base_stats().size;
+        let foundry_anchor = producer_anchor.offset(producer_size.0, 0);
+        let unsafe_defense_anchor = producer_anchor.offset(0, -1);
+        let safe_defense_anchor = TilePos::new(2, 2);
+        let foundry_builder = UnitId(7);
+        let defense_builder = UnitId(8);
+        observation.my_buildings.push(observed_building(
+            1,
+            0,
+            BuildingKind::Foundry,
+            producer_anchor,
+        ));
+        observation.my_queues.push(Vec::new());
+        observation.my_queue_progress.push(0);
+        observation.my_units.extend([
+            owned_unit(
+                foundry_builder.0,
+                UnitKind::Harvester,
+                foundry_anchor.offset(producer_size.0 + 1, 1),
+            ),
+            owned_unit(defense_builder.0, UnitKind::Harvester, TilePos::new(5, 4)),
+        ]);
+        observation.known_rock = crate::tick::rect_adjacent_tiles(producer_anchor, producer_size)
+            .filter(|tile| {
+                let covered_by_fresh_foundry = tile.x >= foundry_anchor.x
+                    && tile.x < foundry_anchor.x + producer_size.0
+                    && tile.y >= foundry_anchor.y
+                    && tile.y < foundry_anchor.y + producer_size.1;
+                *tile != unsafe_defense_anchor && !covered_by_fresh_foundry
+            })
+            .collect();
+        observation
+            .known_rock
+            .sort_unstable_by_key(|tile| (tile.y, tile.x));
+        let foundry_cost = BuildingKind::Foundry
+            .base_stats()
+            .construction
+            .expect("Foundries are constructible")
+            .cost;
+        let defense_cost = BuildingKind::Turret
+            .base_stats()
+            .construction
+            .expect("Turrets are constructible")
+            .cost;
+        observation.scrap = foundry_cost.saturating_add(defense_cost);
+
+        let profile = prime_profile();
+        let tuning = DifficultyTuning::for_level(profile.difficulty);
+        let dials = Dials::scripted(&profile, tuning);
+        let public_map = briefing();
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(&observation);
+        let mut policy = UtilityPolicy::new();
+        let foundry_build = (BuildingKind::Foundry, foundry_anchor, foundry_builder);
+        let unsafe_defense_build = (BuildingKind::Turret, unsafe_defense_anchor, defense_builder);
+        let safe_defense_build = (BuildingKind::Turret, safe_defense_anchor, defense_builder);
+        let orientation = Orientation::for_home(&observation, HOME);
+        assert!(policy.combined_build_layout_with_builders_is_safe(
+            &observation,
+            &public_map,
+            &[],
+            &[],
+            orientation,
+            &[foundry_build],
+        ));
+        assert!(policy.combined_build_layout_with_builders_is_safe(
+            &observation,
+            &public_map,
+            &[],
+            &[],
+            orientation,
+            &[unsafe_defense_build],
+        ));
+        assert!(!policy.combined_build_layout_with_builders_is_safe(
+            &observation,
+            &public_map,
+            &[],
+            &[],
+            orientation,
+            &[foundry_build, unsafe_defense_build],
+        ));
+        assert!(policy.combined_build_layout_with_builders_is_safe(
+            &observation,
+            &public_map,
+            &[],
+            &[],
+            orientation,
+            &[foundry_build, safe_defense_build],
+        ));
+
+        let original_policy = policy.clone();
+        let mut strategy = None;
+        let mut lifts = None;
+        let mut team = None;
+        let mut raids = None;
+        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+        let mut input = prepared(&observation, None);
+        input.fresh_foundry = Some(FreshFoundryProposal::fixture(
+            foundry_anchor,
+            foundry_builder,
+            foundry_cost,
+            0,
+            0,
+            input.allocation_horizon,
+            foundry_case(),
+        ));
+        let defense_case = ProposalCase {
+            urgency: Urgency::Timely,
+            confidence: Confidence::Supported,
+            value: StrategicValue::Material,
+            time_to_impact: TimeToImpact::Near,
+            safety: ExecutionSafety::Secure,
+        };
+        input.fresh_defense = vec![
+            FreshDefenseProposal::fixture(
+                DefenseConstruction::Turret,
+                unsafe_defense_anchor,
+                defense_builder,
+                defense_case,
+                100,
+                0,
+            ),
+            FreshDefenseProposal::fixture(
+                DefenseConstruction::Turret,
+                safe_defense_anchor,
+                defense_builder,
+                defense_case,
+                100,
+                0,
+            ),
+        ];
+        let mut trace = AllocationTrace::default();
+        let mut session = AllocationSession::new(
+            AllocationSessionContext {
+                dials: &dials,
+                profile: &profile,
+                tuning,
+                observation: &observation,
+                home: HOME,
+                public_map: &public_map,
+                orientation: Orientation::for_home(&observation, HOME),
+                intelligence: &intelligence,
+                enlisted: &[],
+                lift_support: None,
+            },
+            AllocationParticipants {
+                policy: &mut policy,
+                strategy: &mut strategy,
+                lifts: &mut lifts,
+                team: &mut team,
+                raids: &mut raids,
+            },
+            advanced(snapshots),
+            Some(&mut trace),
+        );
+        let resolved = session.resolve(
+            input,
+            CommitSnapshots {
+                policy: original_policy,
+            },
+        );
+        let outcome = session.commit_or_restore(resolved);
+
+        assert!(outcome.allocation_ok, "{trace:#?}");
+        assert_eq!(
+            outcome.fresh_foundry_intents,
+            vec![Intent::BuildWith {
+                builder: foundry_builder,
+                kind: BuildingKind::Foundry,
+                anchor: foundry_anchor,
+            }]
+        );
+        assert_eq!(
+            outcome.fresh_defense_intents,
+            vec![Intent::BuildWith {
+                builder: defense_builder,
+                kind: BuildingKind::Turret,
+                anchor: safe_defense_anchor,
+            }]
+        );
+        let unsafe_proposal = trace
+            .proposals
+            .entries
+            .iter()
+            .find(|proposal| {
+                proposal.key
+                    == ProposalKeyTrace::Defense {
+                        kind: BuildingKind::Turret,
+                        anchor: unsafe_defense_anchor,
+                    }
+            })
+            .expect("the unsafe exact defense remains visible in the allocation trace");
+        assert!(matches!(
+            &unsafe_proposal.disposition,
+            ProposalDispositionTrace::ConflictsWithSelected {
+                conflict: AllocationConflictTrace::IncompatibleLayout {
+                    first: ProposalKeyTrace::FoundryExpansion { anchor: first },
+                    second: ProposalKeyTrace::Defense {
+                        kind: BuildingKind::Turret,
+                        anchor: second,
+                    },
+                },
+                ..
+            } if *first == foundry_anchor && *second == unsafe_defense_anchor
+        ));
+    }
+
+    #[test]
     fn active_connected_revision_marginal_preserves_the_voluntary_scrap_guard() {
         const HOME: TilePos = TilePos::new(3, 10);
         let guard = UnitKind::Sentinel.stats().cost;
@@ -7116,18 +7677,23 @@ mod tests {
                 })
         );
         assert!(
-            !outcome
+            outcome
                 .allocated_producer_intents
-                .iter()
-                .any(|intent| matches!(
-                    intent,
-                    Intent::TrainAt {
-                        kind: UnitKind::Sentinel | UnitKind::Lancer,
-                        ..
-                    }
-                )),
-            "the exact replacement may wait, but cannot turn into an unrelated generic screen"
+                .contains(&Intent::TrainAt {
+                    building: BuildingId(10),
+                    kind: UnitKind::Sentinel,
+                }),
+            "without the retired post-tech Turret floor, an independently useful shallow guard may use the residual bank while the exact replacement waits"
         );
+        assert!(!outcome.allocated_producer_intents.iter().any(|intent| {
+            matches!(
+                intent,
+                Intent::TrainAt {
+                    kind: UnitKind::Lancer,
+                    ..
+                }
+            )
+        }));
         assert!(matches!(
             trace
                 .connected_context
@@ -7156,7 +7722,10 @@ mod tests {
                 .iter()
                 .map(|job| (job.producer, job.kind))
                 .collect::<Vec<_>>(),
-            vec![(BuildingId(12), UnitKind::Buzzard)]
+            vec![
+                (BuildingId(12), UnitKind::Buzzard),
+                (BuildingId(10), UnitKind::Sentinel),
+            ]
         );
 
         let observation = connected_inventory_transfer_observation(400, 5);

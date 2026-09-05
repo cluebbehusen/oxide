@@ -7,7 +7,7 @@
 //! immutable PublicMapBriefing + fog-honest Observation
 //!   -> oriented public priors + StrategicIntelligence
 //!   -> persistent playbooks + UtilityPolicy proposals
-//!   -> AllocationSession (Foundry + connected offense + StandingForce)
+//!   -> AllocationSession (Foundry + connected offense + Defense + StandingForce)
 //!   -> admitted Intent[]
 //!   -> Executive
 //!   -> PlayerCommand[]
@@ -15,9 +15,10 @@
 //!
 //! [`observation`] builds what a bot may know; [`StrategicIntelligence`]
 //! distinguishes current evidence from memory; persistent planners,
-//! [`UtilityPolicy`], and the standing-force policy propose competing work; the
-//! allocation session admits a current-funded portfolio; and [`Executive`]
-//! owns exact unit reservations and lowers the resulting [`Intent`]s to commands.
+//! [`UtilityPolicy`], defense, and the standing-force policy propose competing
+//! work; the allocation session admits a current-funded portfolio; and
+//! [`Executive`] owns exact unit reservations and lowers the resulting
+//! [`Intent`]s to commands.
 //! [`Brain::scripted`] is the configurable player-facing opponent.
 //! [`Brain::overseer`] remains a separate QA yardstick.
 

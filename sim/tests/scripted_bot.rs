@@ -392,7 +392,7 @@ fn scrapheap_and_prime_reach_their_opening_core_before_the_first_fabricator() {
 }
 
 #[test]
-fn prime_skirmish_places_an_accepted_turret_on_the_hostile_approach() {
+fn prime_skirmish_places_an_accepted_defense_on_the_hostile_approach() {
     let mut scenario = Scenario::skirmish();
     scenario.players[0].bot = true;
     scenario.players[0].bot_config = Some(BotConfig::scripted(
@@ -416,37 +416,52 @@ fn prime_skirmish_places_an_accepted_turret_on_the_hostile_approach() {
         .expect("Skirmish has a public hostile starting Foundry")
         .anchor;
     let config = scenario.players[0].bot_config.expect("Prime is configured");
-    let mut brain = Brain::scripted(PlayerId(0), config, briefing);
     let mut state = scenario.build().expect("Skirmish builds");
-    let mut turret_anchor = None;
+    let orientation =
+        Orientation::for_home(&Observation::fog_honest(&state, PlayerId(0)), own_start);
+    let mut brain = Brain::scripted(PlayerId(0), config, briefing);
+    let mut defense_build = None;
     let mut rejected = Vec::new();
 
     for _ in 0..TICKS_PER_SECOND * 4 * 60 {
-        let commands = brain.act(&state);
-        let proposed = commands.iter().find_map(|command| match command.command {
-            Command::Build {
-                kind: BuildingKind::Turret,
-                anchor,
-                ..
-            } if command.player == PlayerId(0) => Some(anchor),
-            _ => None,
-        });
-        if let Some(anchor) = proposed {
-            if let Some(expected) = turret_anchor {
-                assert_eq!(
-                    anchor, expected,
-                    "Prime should keep the accepted strategic site while its founder walks"
-                );
-            } else {
-                let observation = Observation::fog_honest(&state, PlayerId(0));
-                assert!(
-                    observation.enemy_units.is_empty() && observation.enemy_buildings.is_empty(),
-                    "the first Turret should use the public approach before live hostile contact"
-                );
-                turret_anchor = Some(anchor);
-            }
+        let decision = brain.act_traced(&state);
+        if let Some(proposal) = decision.trace.as_ref().and_then(|trace| {
+            trace.allocation.proposals.entries.iter().find(|proposal| {
+                proposal.disposition == ProposalDispositionTrace::Accepted
+                    && matches!(proposal.key, ProposalKeyTrace::Defense { .. })
+            })
+        }) {
+            let ProposalKeyTrace::Defense { kind, anchor } = proposal.key else {
+                unreachable!("the selected proposal was already proven to be Defense")
+            };
+            assert_eq!(proposal.claims.builders.total, 1);
+            assert_eq!(proposal.claims.sites.total, 1);
+            assert_eq!(proposal.claims.sites.entries[0].anchor, anchor);
+            let builder = proposal.claims.builders.entries[0];
+            let world_anchor = orientation.anchor(anchor, kind.base_stats().size);
+            assert!(decision.commands.iter().any(|command| matches!(
+                &command.command,
+                Command::Build {
+                    units,
+                    kind: commanded_kind,
+                    anchor: commanded_anchor,
+                    ..
+                } if command.player == PlayerId(0)
+                    && units.as_slice() == [builder]
+                    && *commanded_kind == kind
+                    && *commanded_anchor == world_anchor
+            )));
+            let observation = Observation::fog_honest(&state, PlayerId(0));
+            assert!(
+                observation.enemy_units.is_empty() && observation.enemy_buildings.is_empty(),
+                "the first accepted voluntary defense should use the public approach before live hostile contact"
+            );
+            assert!(
+                defense_build.replace((kind, world_anchor)).is_none(),
+                "the first accepted Defense must lower exactly once"
+            );
         }
-        let report = state.tick(&commands);
+        let report = state.tick(&decision.commands);
         rejected.extend(report.events.into_iter().filter_map(|event| match event {
             Event::CommandRejected {
                 player: PlayerId(0),
@@ -454,38 +469,37 @@ fn prime_skirmish_places_an_accepted_turret_on_the_hostile_approach() {
             } => Some((report.tick, reason)),
             _ => None,
         }));
-        if turret_anchor.is_some_and(|anchor| {
+        if defense_build.is_some_and(|(kind, anchor)| {
             state.buildings().iter().any(|building| {
-                building.player == PlayerId(0)
-                    && building.kind == BuildingKind::Turret
-                    && building.anchor == anchor
+                building.player == PlayerId(0) && building.kind == kind && building.anchor == anchor
             })
         }) {
             break;
         }
     }
 
-    let turret_anchor = turret_anchor.expect("Prime proposed its bounded pre-contact Turret");
+    let (defense_kind, defense_anchor) =
+        defense_build.expect("Prime proposed a bounded pre-contact defensive investment");
     assert!(
         rejected.is_empty(),
-        "Prime issued rejected commands before its Turret: {rejected:?}"
+        "Prime issued rejected commands before its defense: {rejected:?}"
     );
     assert!(
         state.buildings().iter().any(|building| {
             building.player == PlayerId(0)
-                && building.kind == BuildingKind::Turret
-                && building.anchor == turret_anchor
+                && building.kind == defense_kind
+                && building.anchor == defense_anchor
         }),
-        "the ordinary Build command should place the strategic Turret site"
+        "the ordinary Build command should place the exact allocated defense site"
     );
     assert_ne!(
-        turret_anchor,
+        defense_anchor,
         TilePos::new(4, 1),
         "the public hostile approach should replace the old rear-corner placement"
     );
 
     let foundry_size = BuildingKind::Foundry.base_stats().size;
-    let turret_size = BuildingKind::Turret.base_stats().size;
+    let defense_size = defense_kind.base_stats().size;
     let own_center = (
         own_start.x * 2 + foundry_size.0,
         own_start.y * 2 + foundry_size.1,
@@ -494,23 +508,23 @@ fn prime_skirmish_places_an_accepted_turret_on_the_hostile_approach() {
         hostile_start.x * 2 + foundry_size.0,
         hostile_start.y * 2 + foundry_size.1,
     );
-    let turret_center = (
-        turret_anchor.x * 2 + turret_size.0,
-        turret_anchor.y * 2 + turret_size.1,
+    let defense_center = (
+        defense_anchor.x * 2 + defense_size.0,
+        defense_anchor.y * 2 + defense_size.1,
     );
     let hostile_direction = (
         i64::from(hostile_center.0 - own_center.0),
         i64::from(hostile_center.1 - own_center.1),
     );
-    let turret_direction = (
-        i64::from(turret_center.0 - own_center.0),
-        i64::from(turret_center.1 - own_center.1),
+    let defense_direction = (
+        i64::from(defense_center.0 - own_center.0),
+        i64::from(defense_center.1 - own_center.1),
     );
     let forward_progress =
-        hostile_direction.0 * turret_direction.0 + hostile_direction.1 * turret_direction.1;
+        hostile_direction.0 * defense_direction.0 + hostile_direction.1 * defense_direction.1;
     assert!(
         forward_progress > 0,
-        "the Turret at {turret_anchor:?} must face the public hostile approach from {own_start:?} toward {hostile_start:?}"
+        "the {defense_kind:?} at {defense_anchor:?} must face the public hostile approach from {own_start:?} toward {hostile_start:?}"
     );
 }
 
@@ -1240,23 +1254,24 @@ fn connected_package_uses_only_a_producer_that_can_reach_its_staging_route() {
 }
 
 #[test]
-fn shipped_brain_allocates_compatible_foundry_connected_and_standing_work() {
+fn shipped_brain_allocates_compatible_work_across_all_four_proposal_domains() {
     let foundry_cost = BuildingKind::Foundry
         .base_stats()
         .construction
         .expect("Foundries are constructible")
         .cost;
-    let residual_investment = BuildingKind::Turret
+    let defense_cost = BuildingKind::Barricade
         .base_stats()
         .construction
-        .expect("Turrets are constructible")
-        .cost
-        .saturating_add(UnitKind::Harvester.stats().cost);
+        .expect("Barricades are constructible")
+        .cost;
+    let voluntary_guard = UnitKind::Sentinel.stats().cost;
     let scenario = foundry_connected_allocation_scenario(
         foundry_cost
             .saturating_add(UnitKind::Buzzard.stats().cost)
-            .saturating_add(UnitKind::Sentinel.stats().cost)
-            .saturating_add(residual_investment),
+            .saturating_add(UnitKind::Lancer.stats().cost)
+            .saturating_add(defense_cost)
+            .saturating_add(voluntary_guard),
     );
     let mut state = scenario
         .build()
@@ -1283,6 +1298,7 @@ fn shipped_brain_allocates_compatible_foundry_connected_and_standing_work() {
     let mut foundry_anchor = None;
     let mut connected_key = None;
     let mut standing_key = None;
+    let mut defense_key = None;
     for proposal in &trace.allocation.proposals.entries {
         match proposal.key {
             ProposalKeyTrace::FoundryExpansion { anchor } => {
@@ -1312,11 +1328,21 @@ fn shipped_brain_allocates_compatible_foundry_connected_and_standing_work() {
                     );
                 }
             }
+            key @ ProposalKeyTrace::Defense { .. } => {
+                if proposal.disposition == ProposalDispositionTrace::Accepted {
+                    assert!(
+                        defense_key.replace(key).is_none(),
+                        "only one alternative from the defense domain may win: {:?}",
+                        trace.allocation.proposals
+                    );
+                }
+            }
         }
     }
     let foundry_anchor = foundry_anchor.expect("the unsupported Extractor proposes a Foundry");
     let connected_key = connected_key.expect("the current target proposes connected offense");
     let standing_key = standing_key.expect("the residual current bank funds standing force");
+    let defense_key = defense_key.expect("exposed value funds one defensive alternative");
     let world_foundry_anchor =
         orientation.anchor(foundry_anchor, BuildingKind::Foundry.base_stats().size);
 
@@ -1381,10 +1407,7 @@ fn shipped_brain_allocates_compatible_foundry_connected_and_standing_work() {
         .iter()
         .find(|proposal| proposal.key == standing_key)
         .expect("the standing proposal remains visible in the exact trace");
-    assert_eq!(
-        standing_proposal.claims.minimum_residual_scrap,
-        residual_investment
-    );
+    assert_eq!(standing_proposal.claims.minimum_residual_scrap, 0);
     assert_eq!(
         decision
             .commands
@@ -1398,6 +1421,22 @@ fn shipped_brain_allocates_compatible_foundry_connected_and_standing_work() {
         1,
         "the exact accepted standing-force job must lower to one ordinary Train command"
     );
+    let ProposalKeyTrace::Defense {
+        kind: defense_kind,
+        anchor: defense_anchor,
+    } = defense_key
+    else {
+        unreachable!("the selected key was already proven to be a defense")
+    };
+    let world_defense_anchor = orientation.anchor(defense_anchor, defense_kind.base_stats().size);
+    assert!(decision.commands.iter().any(|command| matches!(
+        command.command,
+        Command::Build {
+            kind,
+            anchor,
+            ..
+        } if kind == defense_kind && anchor == world_defense_anchor
+    )));
 
     let report = state.tick(&decision.commands);
     assert!(
@@ -1408,13 +1447,18 @@ fn shipped_brain_allocates_compatible_foundry_connected_and_standing_work() {
                 ..
             }
         )),
-        "the authoritative State must accept both domains in one transaction: {:?}",
+        "the authoritative State must accept all four domains in one transaction: {:?}",
         report.events
     );
     assert!(state.buildings().iter().any(|building| {
         building.player == PlayerId(0)
             && building.kind == BuildingKind::Foundry
             && building.anchor == world_foundry_anchor
+    }));
+    assert!(state.buildings().iter().any(|building| {
+        building.player == PlayerId(0)
+            && building.kind == defense_kind
+            && building.anchor == world_defense_anchor
     }));
 }
 
@@ -1470,6 +1514,15 @@ fn completed_income_forecast_cannot_fund_an_immediate_standing_purchase() {
             })
             .expect("the fixture has a completed Foundry")
             .id;
+        let builders = state
+            .units()
+            .iter()
+            .filter(|unit| {
+                unit.player == PlayerId(0)
+                    && matches!(unit.kind, UnitKind::Harvester | UnitKind::Excavator)
+            })
+            .map(|unit| unit.id)
+            .collect::<Vec<_>>();
         let report = state.tick(&[
             oxide_sim::PlayerCommand {
                 player: PlayerId(0),
@@ -1483,6 +1536,13 @@ fn completed_income_forecast_cannot_fund_an_immediate_standing_purchase() {
                 command: Command::Train {
                     building: foundry,
                     kind: UnitKind::Sentinel,
+                },
+            },
+            oxide_sim::PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Patrol {
+                    units: builders,
+                    waypoints: vec![TilePos::new(5, 18), TilePos::new(9, 18)],
                 },
             },
         ]);
@@ -1626,7 +1686,12 @@ fn completed_income_forecast_cannot_fund_an_immediate_standing_purchase() {
             proposal.disposition == ProposalDispositionTrace::Accepted
                 && matches!(proposal.key, ProposalKeyTrace::StandingForce { .. })
         })
-        .expect("current scrap should expose the standing-force control demand");
+        .unwrap_or_else(|| {
+            panic!(
+                "current scrap should expose the standing-force control demand: proposals={:?}, commands={:?}",
+                current_trace.allocation.proposals.entries, current_decision.commands
+            )
+        });
     assert_eq!(
         accepted_standing.claims.minimum_residual_scrap, 0,
         "completed tech, an existing Turret, and the shallow queue leave no unrelated investment floor"
@@ -2218,7 +2283,7 @@ fn full_tech_standing_production_replaces_the_tier_one_fallback_across_cadences(
 }
 
 #[test]
-fn standing_force_preserves_and_dispatches_an_exact_legal_turret_threshold() {
+fn standing_force_and_direct_defense_share_capital_without_a_hidden_reserve() {
     let turret_cost = BuildingKind::Turret
         .base_stats()
         .construction
@@ -2232,10 +2297,18 @@ fn standing_force_preserves_and_dispatches_an_exact_legal_turret_threshold() {
         false,
     );
     let mut state = scenario.build().expect("the exact Turret fixture builds");
+    let briefing = public_map(&scenario);
+    let home = briefing
+        .starting_foundries()
+        .iter()
+        .find(|start| start.player == PlayerId(0))
+        .expect("the configured seat has a public starting Foundry")
+        .anchor;
+    let orientation = Orientation::for_home(&Observation::fog_honest(&state, PlayerId(0)), home);
     let mut brain = Brain::scripted(
         PlayerId(0),
         scenario.players[0].bot_config.expect("bot is configured"),
-        public_map(&scenario),
+        briefing,
     );
 
     let decision = brain.act_traced(&state);
@@ -2256,7 +2329,7 @@ fn standing_force_preserves_and_dispatches_an_exact_legal_turret_threshold() {
                 )
         })
         .expect("the exact surplus admits one independently useful screen");
-    assert_eq!(standing.claims.minimum_residual_scrap, residual_threshold);
+    assert_eq!(standing.claims.minimum_residual_scrap, 0);
     assert_eq!(
         decision
             .commands
@@ -2271,22 +2344,57 @@ fn standing_force_preserves_and_dispatches_an_exact_legal_turret_threshold() {
             .count(),
         1,
     );
+    let defense = trace
+        .allocation
+        .proposals
+        .entries
+        .iter()
+        .find(|proposal| {
+            proposal.disposition == ProposalDispositionTrace::Accepted
+                && matches!(
+                    proposal.key,
+                    ProposalKeyTrace::Defense {
+                        kind: BuildingKind::Turret,
+                        ..
+                    }
+                )
+        })
+        .expect("the independently scored Turret wins one defensive alternative");
+    let ProposalKeyTrace::Defense { anchor, .. } = defense.key else {
+        unreachable!("the accepted proposal was already proven to be a defense")
+    };
+    let builder = *defense
+        .claims
+        .builders
+        .entries
+        .first()
+        .expect("the accepted defense retains one exact builder claim");
+    assert_eq!(defense.claims.current_scrap, turret_cost);
+    assert_eq!(defense.claims.minimum_residual_scrap, 0);
+    assert_eq!(defense.claims.builders.total, 1);
+    assert_eq!(defense.claims.sites.total, 1);
+    assert_eq!(defense.claims.sites.entries[0].anchor, anchor);
+    let world_anchor = orientation.anchor(anchor, BuildingKind::Turret.base_stats().size);
+    let dispatched = decision
+        .commands
+        .iter()
+        .filter_map(|command| match &command.command {
+            Command::Build {
+                units,
+                kind: BuildingKind::Turret,
+                anchor,
+                ..
+            } if *anchor == world_anchor => Some(units),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        decision
-            .commands
-            .iter()
-            .filter(|command| matches!(
-                command.command,
-                Command::Build {
-                    kind: BuildingKind::Turret,
-                    ..
-                }
-            ))
-            .count(),
+        dispatched.len(),
         1,
-        "the current-only floor must remain available to the exact scored Turret rung: {:?}",
+        "the accepted defensive proposal must dispatch its exact frozen build: {:?}",
         decision.commands
     );
+    assert_eq!(dispatched[0].as_slice(), &[builder]);
 
     let report = state.tick(&decision.commands);
     assert!(report.events.iter().all(|event| !matches!(
@@ -2301,7 +2409,10 @@ fn standing_force_preserves_and_dispatches_an_exact_legal_turret_threshold() {
         UnitKind::Harvester.stats().cost
     );
     assert!(state.buildings().iter().any(|building| {
-        building.player == PlayerId(0) && building.kind == BuildingKind::Turret && !building.built
+        building.player == PlayerId(0)
+            && building.kind == BuildingKind::Turret
+            && building.anchor == world_anchor
+            && !building.built
     }));
 }
 
@@ -2382,35 +2493,29 @@ fn completed_income_accumulates_into_the_better_shipped_standing_provider() {
     assert!(wait.claims.producer_jobs.entries.is_empty());
 
     let started_at = state.current_tick();
-    let mut warden_orders = 0_usize;
+    let mut better_order = None;
     while state.current_tick() < started_at.saturating_add(1_440) {
         let decision = if state.current_tick() == started_at {
             held.clone()
         } else {
             brain.act_traced(&state)
         };
-        assert!(decision.commands.iter().all(|command| !matches!(
-            command.command,
-            Command::Train {
-                kind: UnitKind::Sentinel,
-                ..
-            }
-        )));
-        warden_orders = warden_orders.saturating_add(
-            decision
-                .commands
-                .iter()
-                .filter(|command| {
-                    matches!(
-                        command.command,
-                        Command::Train {
-                            kind: UnitKind::Warden,
-                            ..
-                        }
-                    )
-                })
-                .count(),
-        );
+        for kind in decision
+            .commands
+            .iter()
+            .filter_map(|command| match command.command {
+                Command::Train {
+                    kind: kind @ (UnitKind::Warden | UnitKind::Breaker),
+                    ..
+                } => Some(kind),
+                _ => None,
+            })
+        {
+            assert!(
+                better_order.replace(kind).is_none(),
+                "one decision must not duplicate the selected better provider"
+            );
+        }
         let report = state.tick(&decision.commands);
         assert!(report.events.iter().all(|event| !matches!(
             event,
@@ -2419,15 +2524,14 @@ fn completed_income_accumulates_into_the_better_shipped_standing_provider() {
                 ..
             }
         )));
-        if warden_orders > 0 {
+        if better_order.is_some() {
             break;
         }
     }
 
-    assert_eq!(
-        warden_orders,
-        1,
-        "completed income never funded the selected Warden: tick={}, bank={}, result={:?}, profile={:?}, queues={:?}",
+    let better_kind = better_order.unwrap_or_else(|| {
+        panic!(
+            "completed income never funded a better standing provider: tick={}, bank={}, result={:?}, profile={:?}, queues={:?}",
         state.current_tick(),
         state.player(PlayerId(0)).scrap,
         state.result(),
@@ -2438,7 +2542,8 @@ fn completed_income_accumulates_into_the_better_shipped_standing_provider() {
             .filter(|building| building.player == PlayerId(0) && !building.queue.is_empty())
             .map(|building| (building.kind, building.queue.clone()))
             .collect::<Vec<_>>()
-    );
+        )
+    });
     assert!(
         state.current_tick() > started_at,
         "the higher-tier purchase must follow real authoritative income"
@@ -2449,7 +2554,7 @@ fn completed_income_accumulates_into_the_better_shipped_standing_provider() {
             .iter()
             .filter(|building| building.player == PlayerId(0))
             .flat_map(|building| building.queue.iter())
-            .filter(|kind| **kind == UnitKind::Warden)
+            .filter(|kind| **kind == better_kind)
             .count(),
         1,
         "the accumulated current bank must enqueue the better provider exactly once"
@@ -2567,14 +2672,14 @@ fn connected_package_refills_one_lane_until_an_oversized_roster_freezes() {
         })
         .expect("fixture has exactly one Fabricator")
         .id;
-    let prefill: Vec<_> = (0..QUEUE_CAP)
+    let mut prefill: Vec<_> = (0..QUEUE_CAP)
         .flat_map(|_| {
             [
                 oxide_sim::PlayerCommand {
                     player: PlayerId(0),
                     command: Command::Train {
                         building: foundry,
-                        kind: UnitKind::Excavator,
+                        kind: UnitKind::Sentinel,
                     },
                 },
                 oxide_sim::PlayerCommand {
@@ -2587,6 +2692,19 @@ fn connected_package_refills_one_lane_until_an_oversized_roster_freezes() {
             ]
         })
         .collect();
+    let builders = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind.role() == Role::Harvester)
+        .map(|unit| unit.id)
+        .collect::<Vec<_>>();
+    prefill.push(oxide_sim::PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Patrol {
+            units: builders,
+            waypoints: vec![TilePos::new(4, 14), TilePos::new(9, 14)],
+        },
+    });
     let prefill_report = state.tick(&prefill);
     assert!(prefill_report.events.iter().all(|event| {
         !matches!(
@@ -2600,7 +2718,7 @@ fn connected_package_refills_one_lane_until_an_oversized_roster_freezes() {
     let mut brain = Brain::scripted(PlayerId(0), config, briefing);
 
     let mut fixed_deadline = None;
-    let mut fixed_target_value = None;
+    let mut last_target_value = None;
     let mut largest_requested_strike = 0usize;
     let mut strike_orders = 0usize;
     let mut strike_completions = 0usize;
@@ -2608,6 +2726,11 @@ fn connected_package_refills_one_lane_until_an_oversized_roster_freezes() {
     let mut saw_full_queue = false;
     let mut frozen_strike = None;
     let mut premature_hits = Vec::new();
+    let mut premature_turret_fire = Vec::new();
+    let mut premature_shell_landings = Vec::new();
+    let mut premature_shell_launches = Vec::new();
+    let mut defense_commits = Vec::new();
+    let mut precommit_units = BTreeSet::new();
     let mut precommit_hold_batches = 0usize;
     let mut precommit_held = BTreeSet::new();
     let mut freeze_observation_tick = None;
@@ -2636,6 +2759,23 @@ fn connected_package_refills_one_lane_until_an_oversized_roster_freezes() {
             && trace.connected_force.status == ConnectedForceStatus::Active
             && let Some(package) = &trace.connected_force.package
         {
+            if !trace.connected_force.assigned.membership_frozen {
+                precommit_units.extend(trace.connected_force.assigned.scout);
+                precommit_units.extend(trace.connected_force.assigned.suppression.iter().copied());
+                precommit_units.extend(trace.connected_force.assigned.strike.iter().copied());
+            }
+            defense_commits.extend(
+                trace
+                    .allocation
+                    .proposals
+                    .entries
+                    .iter()
+                    .filter(|proposal| {
+                        proposal.disposition == ProposalDispositionTrace::Accepted
+                            && matches!(proposal.key, ProposalKeyTrace::Defense { .. })
+                    })
+                    .map(|proposal| (state.current_tick(), proposal.key)),
+            );
             let strike = package
                 .demands
                 .strike
@@ -2647,11 +2787,12 @@ fn connected_package_refills_one_lane_until_an_oversized_roster_freezes() {
                 package.preparation_deadline, deadline,
                 "queue refills must not extend the fixed preparation horizon"
             );
-            let target_value = *fixed_target_value.get_or_insert(package.target_value);
-            assert_eq!(
-                package.target_value, target_value,
-                "the held preparation force must leave the stable target cluster untouched"
+            let prior_target_value = *last_target_value.get_or_insert(package.target_value);
+            assert!(
+                package.target_value <= prior_target_value,
+                "a stable target cluster cannot gain value while the roster prepares; prior building hits={premature_hits:?}, turret fire={premature_turret_fire:?}, shell launches={premature_shell_launches:?}, shell landings={premature_shell_landings:?}, defenses={defense_commits:?}"
             );
+            last_target_value = Some(package.target_value);
             largest_requested_strike = largest_requested_strike.max(strike);
             if trace.connected_force.assigned.membership_frozen {
                 freeze_observation_tick = Some(state.current_tick());
@@ -2697,13 +2838,33 @@ fn connected_package_refills_one_lane_until_an_oversized_roster_freezes() {
 
         let report = state.tick(&decision.commands);
         for event in &report.events {
-            if let Event::AttackHit {
-                attacker_kind,
-                target: Target::Building(_),
-                ..
-            } = event
-            {
-                premature_hits.push((report.tick, *attacker_kind));
+            match event {
+                Event::AttackHit {
+                    attacker,
+                    attacker_kind,
+                    target: Target::Building(_),
+                    ..
+                } if precommit_units.contains(attacker) => {
+                    premature_hits.push((report.tick, *attacker, *attacker_kind));
+                }
+                Event::TurretFired {
+                    kind,
+                    target: Target::Building(_),
+                    ..
+                } => premature_turret_fire.push((report.tick, *kind)),
+                Event::ShellLanded {
+                    player: PlayerId(0),
+                    ..
+                } => premature_shell_landings.push(report.tick),
+                Event::ShellLaunched {
+                    shooter: Target::Unit(attacker),
+                    target: Target::Building(_),
+                    player: PlayerId(0),
+                    ..
+                } if precommit_units.contains(attacker) => {
+                    premature_shell_launches.push((report.tick, *attacker));
+                }
+                _ => {}
             }
         }
         assert!(report.events.iter().all(|event| {
@@ -2775,8 +2936,8 @@ fn connected_package_refills_one_lane_until_an_oversized_roster_freezes() {
         "pre-commit revisions may narrow but must not invent providers at freeze"
     );
     assert!(
-        premature_hits.is_empty(),
-        "preparation units attacked the target before exact-roster freeze: {premature_hits:?}"
+        premature_hits.is_empty() && premature_shell_launches.is_empty(),
+        "preparation units attacked the target before exact-roster freeze: direct={premature_hits:?}, shells={premature_shell_launches:?}"
     );
     let deadline = fixed_deadline.expect("an admitted package fixes a deadline");
     assert!(
@@ -4289,6 +4450,12 @@ fn oversized_connected_package_scenario() -> Scenario {
     scenario.seed = 0x0A17_0003;
     scenario.players[0].scrap = 100_000;
     scenario.retint_seat(0, Faction::Cupric);
+    scenario.units.extend((0..5).map(|index| UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 4 + index,
+        y: 14,
+    }));
     let mut map: Vec<Vec<_>> = scenario
         .map
         .iter()
