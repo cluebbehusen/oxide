@@ -38,12 +38,13 @@ Player-facing bot decision traces have the same one-way boundary. An opt-in
 coordinator while returning the same ordinary commands as `Brain::act`. The
 trace recorder is local to that call; traces are not controller memory,
 authoritative state, replay input, or replay metadata. Overseer and ticks on
-which no player-facing decision occurs produce no trace. Trace schema version 8
+which no player-facing decision occurs produce no trace. Trace schema version 9
 reports current scrap separately from a bounded forecast based only on completed
 income sources, together with current builder and producer capacity. Proposal
 and allocation evidence records the coordinator's actual inputs and verdicts,
-including defensive proposal identities, rather than reconstructing decisions
-after the fact.
+including economic action and defensive proposal identities, exact building
+claims, refit income losses, and three-way layout conflicts, rather than
+reconstructing decisions after the fact.
 
 ## State construction and trust boundary
 
@@ -448,15 +449,20 @@ The session also adapts same-think decisions from active team-relief, lift,
 raid, and admitted island-air planners into explicit legacy claims. The current
 proposal set contains at most one safe, command-legal Foundry expansion, one
 connected offense package, a best-first group of mutually exclusive exact
-defensive alternatives, and a best-first group of mutually exclusive
-standing-force alternatives. The allocator exhaustively evaluates every
-zero-or-one choice from each domain against current and deadline-scoped forecast
-scrap, builders, sites, units, producer FIFO timing, and incompatible
-construction footprints. This Cartesian search has neither a proposal-count
-cutoff nor a machine-word mask limit. Named urgency, confidence, value,
-time-to-impact, and safety bands decide first; personality resolves only a
-genuine semantic tie and never removes a domain or defensive role from
-consideration.
+defensive alternatives, mutually exclusive economic actions, and a best-first
+group of mutually exclusive standing-force alternatives. The allocator
+exhaustively evaluates every zero-or-one choice from each domain against current
+and deadline-scoped forecast scrap, builders, sites, units, producer FIFO
+timing, and incompatible construction footprints. This Cartesian search has
+neither a proposal-count cutoff nor a machine-word mask limit. Named urgency,
+confidence, value, time-to-impact, and safety bands decide first; personality
+resolves only a genuine semantic tie and never removes a domain or defensive
+role from consideration.
+
+Defense derivation skips expensive placement for roles whose real current cost
+cannot fit after imported fixed capital. This prefilter leaves viable quotes
+unchanged; the allocator still owns producer funding and portfolio
+compatibility.
 
 Accepted payloads retain the exact site, builder, objective, force membership,
 unit kind, and producer assignments selected by their domain. A defensive
@@ -540,14 +546,19 @@ units, and rederives unconditional Standing proposals against the remaining paid
 ownership. This downgrade is one allocation preparation transition; no context
 derived from the failed revision reaches portfolio selection.
 
-Standing-force and Defense proposals may carry a minimum current bank that the
-allocator must leave for the still-residual technology ladder. While an eligible
-worker exists and opening construction is not recovering, this floor is the
-existing capital reserve for the next technology rung. It is not claimed capital
-or forecast credit: Utility may spend it after allocation, and the floor
-vanishes when the technology tree is complete or its builder premise disappears.
-Voluntary defense competes through its typed proposal instead of hiding behind a
-post-technology Turret reserve.
+Economy competes through exact worker, foundation, or self-refit alternatives.
+Worker value is finite harvest output or recovery of orphaned paid construction,
+net of reachable existing and queued workers. Technology and factories serve
+capability demand derived before prerequisite eligibility, with construction and
+production delay, missing-chain costs, and eventual capacity accounted for.
+Local Foundry throughput opportunities reuse the expansion admission and
+security path. Recurring-income investments are capped by unfunded useful work;
+completed income alone supplies spendable forecasts. Self-refits own exact
+building ids and withhold their offline source income separately from purchase
+capital. The residual technology scalar and the operational Airworks capital tax
+are absent. Accepted unpaid economic plans keep their original identity and
+deadline through saving and deferred travel, release unsafe or expired unpaid
+founders, and leave paid foundations and refits to ordinary simulation rules.
 
 Before the difficulty floor is projected, the player-facing policy pauses new
 voluntary construction and upgrades, discretionary production, mobile support,
@@ -577,16 +588,14 @@ enough core strength reapplies the same gate.
 The residual Foundry pass no longer originates player-facing ordinary combat,
 siege, anti-air, or Tender orders. Residual construction no longer originates a
 player-facing Turret, Bastion, Flak Turret, Scuttle Charge, Barricade, or Array;
-it retains technology progression, Repair Bays, Reclaimers, recovery, and other
-not-yet-migrated economy work. During the strangler migration residual
-production retains only post-bootstrap Harvesters after completed renewable
-income exists, Excavators, and the existing bounded Scuttler roster. It uses
-only current scrap and producer lanes left after allocation, keeps queues
-shallow, and leaves those roles for the later economy, reconnaissance, and
-support migrations. Bomber, ground-attack-air, and transport cohorts remain
-owned by persistent operations; while an air or lift plan has outstanding
-factory work, that plan owns Airworks capacity. The profile-free Overseer
-retains its legacy production and construction order.
+it retains Repair Bays and recovery. During the strangler migration residual
+production retains the existing bounded Scuttler roster. It uses only current
+scrap and producer lanes left after allocation, keeps queues shallow, and leaves
+reconnaissance and support admission for their owning domains. Bomber,
+ground-attack-air, and transport cohorts remain owned by persistent operations.
+Their outstanding work and fixed deadlines contribute economic capacity demand;
+they do not impose an unowned factory reserve. The profile-free Overseer retains
+its legacy production and construction order.
 
 On connected ground, the air planner admits a force package only when current
 sight, the spendable current bank after prior reserves, completed recurring

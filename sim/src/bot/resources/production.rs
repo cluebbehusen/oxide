@@ -1080,6 +1080,7 @@ mod tests {
                 income: Vec::new(),
             },
             units: Vec::<UnitResource>::new(),
+            owned_buildings: Vec::new(),
             builders: Vec::<BuilderResource>::new(),
             producers,
             producer_slots,

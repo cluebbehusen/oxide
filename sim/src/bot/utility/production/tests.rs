@@ -347,7 +347,7 @@ fn every_line_hull_uses_the_same_live_and_queued_strength_currency() {
 }
 
 #[test]
-fn renewable_income_unlocks_only_post_bootstrap_harvesters() {
+fn residual_production_never_duplicates_economic_worker_admission() {
     let mut obs = observation();
     add_building(&mut obs, 1, BuildingKind::Foundry, Vec::new());
     let mut next_id = 10;
@@ -380,14 +380,8 @@ fn renewable_income_unlocks_only_post_bootstrap_harvesters() {
         &mut budget,
         &mut intents,
     );
-    assert_eq!(
-        intents,
-        [Intent::TrainAt {
-            building: BuildingId(1),
-            kind: UnitKind::Harvester,
-        }]
-    );
-    assert_eq!(budget, 0);
+    assert!(intents.is_empty());
+    assert_eq!(budget, UnitKind::Harvester.stats().cost);
 
     let mut below_bootstrap = obs.clone();
     below_bootstrap
@@ -410,7 +404,7 @@ fn renewable_income_unlocks_only_post_bootstrap_harvesters() {
 }
 
 #[test]
-fn residual_foundry_roles_own_excavators_and_scuttlers_but_not_standing_units() {
+fn residual_foundry_roles_own_scuttlers_but_not_workers_or_standing_units() {
     let mut obs = observation();
     add_building(&mut obs, 1, BuildingKind::Foundry, Vec::new());
     add_building(&mut obs, 2, BuildingKind::Fabricator, Vec::new());
@@ -441,10 +435,13 @@ fn residual_foundry_roles_own_excavators_and_scuttlers_but_not_standing_units() 
         intents,
         [Intent::TrainAt {
             building: BuildingId(1),
-            kind: UnitKind::Excavator,
+            kind: UnitKind::Scuttler,
         }]
     );
-    assert_eq!(budget, fighting_reserve);
+    assert_eq!(
+        budget,
+        UnitKind::Excavator.stats().cost + fighting_reserve - UnitKind::Scuttler.stats().cost
+    );
 
     obs.my_units.push(unit(next_id, UnitKind::Excavator));
     let mut budget = UnitKind::Scuttler

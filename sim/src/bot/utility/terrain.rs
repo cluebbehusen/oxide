@@ -418,6 +418,16 @@ impl UtilityPolicy {
         kind: BuildingKind,
         near: TilePos,
     ) -> Option<TilePos> {
+        self.placement_near_where(obs, kind, near, |_| true)
+    }
+
+    pub(super) fn placement_near_where(
+        &self,
+        obs: &Observation,
+        kind: BuildingKind,
+        near: TilePos,
+        final_check: impl FnMut(TilePos) -> bool,
+    ) -> Option<TilePos> {
         let candidates = (3i32..=7).flat_map(|radius| {
             (-radius..=radius).flat_map(move |dy| {
                 (-radius..=radius)
@@ -425,7 +435,7 @@ impl UtilityPolicy {
                     .map(move |dx| near.offset(dx, dy))
             })
         });
-        self.first_valid_placement(obs, kind, candidates)
+        self.first_valid_placement_where(obs, kind, candidates, final_check)
     }
 
     pub(super) fn first_valid_placement(
@@ -466,13 +476,31 @@ impl UtilityPolicy {
             && self.preserves_ground_producer_egress_prepared(&[], (kind, anchor))
     }
 
-    fn placement_geometry_valid(
+    pub(super) fn placement_geometry_valid(
         &self,
         obs: &Observation,
         kind: BuildingKind,
         anchor: TilePos,
     ) -> bool {
-        if self.dead_anchors.contains(&anchor) || self.pending_sites.contains(&anchor) {
+        self.placement_geometry_valid_except(obs, kind, anchor, None)
+    }
+
+    pub(super) fn placement_geometry_valid_except(
+        &self,
+        obs: &Observation,
+        kind: BuildingKind,
+        anchor: TilePos,
+        retained: Option<(BuildingKind, TilePos)>,
+    ) -> bool {
+        if self.dead_anchors.contains(&anchor)
+            || (retained != Some((kind, anchor)) && self.pending_sites.contains(&anchor))
+        {
+            return false;
+        }
+        if kind == BuildingKind::Extractor
+            && (!obs.known_frames.contains(&anchor)
+                || !self.player_can_plan_frame_restoration(obs, anchor))
+        {
             return false;
         }
         let (width, height) = kind.base_stats().size;
@@ -482,7 +510,13 @@ impl UtilityPolicy {
         let footprint_ok = (0..width).all(|dx| {
             (0..height).all(|dy| {
                 let tile = anchor.offset(dx, dy);
-                in_bounds(tile) && obs.explored(tile) && self.placement_tile_open(obs, tile)
+                in_bounds(tile)
+                    && obs.explored(tile)
+                    && if kind == BuildingKind::Extractor {
+                        self.tile_open(obs, tile)
+                    } else {
+                        self.placement_tile_open_except(obs, tile, retained)
+                    }
             })
         });
         if !footprint_ok {
@@ -947,7 +981,12 @@ impl UtilityPolicy {
             && (anchor.y..anchor.y + height).contains(&tile.y)
     }
 
-    fn placement_tile_open(&self, obs: &Observation, tile: TilePos) -> bool {
+    fn placement_tile_open_except(
+        &self,
+        obs: &Observation,
+        tile: TilePos,
+        retained: Option<(BuildingKind, TilePos)>,
+    ) -> bool {
         if !self.tile_open(obs, tile) {
             return false;
         }
@@ -966,6 +1005,9 @@ impl UtilityPolicy {
         }
         let claimed = obs.my_units.iter().any(|unit| {
             unit.founding.is_some_and(|(kind, anchor)| {
+                if retained == Some((kind, anchor)) {
+                    return false;
+                }
                 let (width, height) = kind.base_stats().size;
                 tile.x >= anchor.x
                     && tile.x < anchor.x + width
@@ -1116,7 +1158,7 @@ mod tests {
         let policy = UtilityPolicy::new();
         let tile = (0..obs.map_height)
             .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
-            .find(|t| policy.placement_tile_open(&obs, *t))
+            .find(|t| policy.placement_tile_open_except(&obs, *t, None))
             .expect("the fixture has open ground");
         obs.enemy_units.push(UnitObs {
             id: UnitId(90),
@@ -1135,12 +1177,12 @@ mod tests {
             grounded: true,
         });
         assert!(
-            !policy.placement_tile_open(&obs, tile),
+            !policy.placement_tile_open_except(&obs, tile, None),
             "a parked airframe is a ground body the sim would refuse a footprint over"
         );
         obs.enemy_units.last_mut().unwrap().grounded = false;
         assert!(
-            policy.placement_tile_open(&obs, tile),
+            policy.placement_tile_open_except(&obs, tile, None),
             "the same airframe in the air leaves the tile open"
         );
     }

@@ -13,10 +13,6 @@ use crate::bot::observation::Observation;
 use crate::ids::UnitId;
 use crate::stats::{BuildingKind, Domain, UnitKind};
 
-const BASE_HORIZON_TICKS: u64 = 3_600;
-const GREED_HORIZON_TICKS: u64 = 36;
-const SURPLUS_HORIZON_TICKS: u64 = 6;
-const SURPLUS_HORIZON_CAP: u32 = 300;
 const THREAT_MARGIN_PERCENT: u64 = 15;
 
 fn extractor_gain_per_minute() -> u64 {
@@ -76,12 +72,7 @@ pub(super) struct ExpansionEconomy {
 
 impl ExpansionEconomy {
     pub(super) fn horizon_ticks(self) -> u64 {
-        BASE_HORIZON_TICKS
-            .saturating_add(u64::from(self.greed).saturating_mul(GREED_HORIZON_TICKS))
-            .saturating_add(
-                u64::from(self.uncommitted_surplus.min(SURPLUS_HORIZON_CAP))
-                    .saturating_mul(SURPLUS_HORIZON_TICKS),
-            )
+        super::economic_value::investment_horizon(self.greed, self.uncommitted_surplus)
     }
 
     /// Prices capital that must be committed before the Foundry can be built.
@@ -101,12 +92,21 @@ pub(super) struct FoundryOpportunity {
     pub(super) recurring_gain_per_minute: u64,
     pub(super) current_scrap_credit: u64,
     pub(super) projected_return: u64,
+    capacity_return: u64,
     pub(super) economically_eligible: bool,
     extractor_gain_per_minute: u64,
     has_external_objective: bool,
 }
 
 impl FoundryOpportunity {
+    pub(super) fn capacity_only(anchor: TilePos, value: u64, economy: ExpansionEconomy) -> Self {
+        let mut opportunity = Self::quote(anchor, 0, 0, false, economy);
+        opportunity.capacity_return = value;
+        opportunity.projected_return = value;
+        opportunity.economically_eligible = value >= u64::from(economy.foundry_cost);
+        opportunity
+    }
+
     #[cfg(test)]
     fn evaluate(candidate: &FoundryCandidate, economy: ExpansionEconomy) -> Self {
         Self::evaluate_objectives(
@@ -218,6 +218,7 @@ impl FoundryOpportunity {
             recurring_gain_per_minute,
             current_scrap_credit,
             projected_return,
+            capacity_return: 0,
             economically_eligible: has_external_objective
                 && projected_return >= u64::from(economy.foundry_cost),
             extractor_gain_per_minute,
@@ -226,13 +227,19 @@ impl FoundryOpportunity {
     }
 
     fn after_security_commitment(self, economy: ExpansionEconomy, commitment: u32) -> Self {
-        Self::quote(
+        let mut quote = Self::quote(
             self.anchor,
             self.current_scrap_credit,
             self.extractor_gain_per_minute,
             self.has_external_objective,
             economy.after_security_commitment(commitment),
-        )
+        );
+        quote.capacity_return =
+            self.capacity_return.saturating_mul(quote.horizon_ticks) / self.horizon_ticks.max(1);
+        quote.projected_return = quote.projected_return.saturating_add(quote.capacity_return);
+        quote.economically_eligible |=
+            quote.capacity_return > 0 && quote.projected_return >= u64::from(economy.foundry_cost);
+        quote
     }
 
     fn surplus(self, foundry_cost: u32) -> u64 {
@@ -1882,6 +1889,7 @@ mod tests {
     #[test]
     fn marginal_value_does_not_fund_disproportionate_security() {
         let marginal = FoundryOpportunity {
+            capacity_return: 0,
             anchor: TilePos::new(9, 1),
             horizon_ticks: 4_000,
             recurring_gain_per_minute: 80,
@@ -1910,6 +1918,7 @@ mod tests {
     #[test]
     fn expansion_appetite_controls_whether_the_same_security_cost_is_affordable() {
         let opportunity = FoundryOpportunity {
+            capacity_return: 0,
             anchor: TilePos::new(9, 1),
             horizon_ticks: 4_000,
             recurring_gain_per_minute: 80,

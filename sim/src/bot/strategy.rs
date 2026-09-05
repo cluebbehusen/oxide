@@ -2540,6 +2540,19 @@ impl StrategicPlanner {
         self.air.as_ref().map(|active| &active.op)
     }
 
+    pub(in crate::bot) fn air_capacity_deadline(&self) -> Option<Tick> {
+        let active = self.air.as_ref()?;
+        Some(active.plan.connected_package.as_ref().map_or_else(
+            || {
+                active
+                    .op
+                    .started_at
+                    .saturating_add(active.plan.assembly_timeout)
+            },
+            |package| package.preparation_deadline,
+        ))
+    }
+
     /// Immutable admission tick for resource-priority comparisons. The public
     /// operation's timeout clock may restart when reconnaissance becomes an
     /// assault, but its place in the commitment order does not.

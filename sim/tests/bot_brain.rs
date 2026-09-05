@@ -1123,7 +1123,11 @@ fn a_dispatched_defense_that_never_appears_blacklists_only_its_anchor() {
     let macro_cadence = oxide_sim::bot::difficulty::STRATEGIC_ADMISSION_CADENCE;
     let capital_build = |commands: &[PlayerCommand]| {
         commands.iter().find_map(|command| match command.command {
-            Command::Build { kind, anchor, .. } => Some((kind, anchor)),
+            Command::Build {
+                kind: BuildingKind::Array,
+                anchor,
+                ..
+            } => Some((BuildingKind::Array, anchor)),
             _ => None,
         })
     };
@@ -1134,8 +1138,11 @@ fn a_dispatched_defense_that_never_appears_blacklists_only_its_anchor() {
             .iter()
             .filter(|command| matches!(command.command, Command::Harvest { .. }))
             .count(),
-        3,
-        "the scout and builder each preempt one opening harvest chore"
+        4 - opening
+            .iter()
+            .filter(|command| matches!(command.command, Command::Build { .. }))
+            .count(),
+        "the scout and exact capital builders each preempt their own harvest chore"
     );
     assert_eq!(
         opening

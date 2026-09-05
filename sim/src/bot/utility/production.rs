@@ -331,47 +331,14 @@ fn best_residual_foundry_demand(
 }
 
 fn residual_foundry_demands(dials: &Dials, obs: &Observation) -> Vec<ResidualFoundryDemand> {
-    let mut demands = vec![ResidualFoundryDemand {
+    vec![ResidualFoundryDemand {
         kind: Role::Scuttler.unit_for(obs.faction),
         minimum_owned: 0,
         target: dials.raider_target,
         own_floor: 1,
         discount_allies: true,
         order: 20,
-    }];
-    let bootstrap_workers = immediate_harvester_target(dials) as usize;
-    let workers = dials.harvester_target as usize;
-    if workers > bootstrap_workers && renewable_economy_stands(obs) {
-        demands.push(ResidualFoundryDemand {
-            kind: Role::Harvester.unit_for(obs.faction),
-            minimum_owned: bootstrap_workers,
-            target: workers,
-            own_floor: 0,
-            discount_allies: false,
-            order: 5,
-        });
-    }
-    if dials.tech {
-        demands.push(ResidualFoundryDemand {
-            kind: Role::Excavator.unit_for(obs.faction),
-            minimum_owned: 0,
-            target: workers.saturating_sub(3).div_ceil(2).max(1),
-            own_floor: 1,
-            discount_allies: false,
-            order: 10,
-        });
-    }
-    demands
-}
-
-fn renewable_economy_stands(obs: &Observation) -> bool {
-    obs.my_buildings.iter().any(|building| {
-        building.built
-            && matches!(
-                building.kind,
-                BuildingKind::Extractor | BuildingKind::Reclaimer
-            )
-    })
+    }]
 }
 
 fn own_role_count(obs: &Observation, intents: &[Intent], role: Role) -> usize {

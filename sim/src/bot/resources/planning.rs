@@ -568,6 +568,7 @@ mod tests {
                 income,
             },
             units: Vec::new(),
+            owned_buildings: Vec::new(),
             builders: Vec::new(),
             producers,
             producer_slots: Vec::new(),

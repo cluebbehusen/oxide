@@ -64,10 +64,11 @@ immutable PublicMapBriefing + fog-honest Observation
   operation advances once and contributes its exact same-think claims here. Its
   current proposal set compares at most one exact Foundry proposal, one
   connected-offense proposal, one best-first group of mutually exclusive exact
-  defensive alternatives, and a best-first group of mutually exclusive
-  standing-force alternatives. The allocator evaluates every zero-or-one choice
-  from each domain without a proposal-count or machine-word cutoff. Fresh team,
-  lift, raid, and utility work consume only the resulting residual.
+  defensive alternatives, mutually exclusive economic actions, and a best-first
+  group of mutually exclusive standing-force alternatives. The allocator
+  evaluates every zero-or-one choice from each domain without a proposal-count
+  or machine-word cutoff. Fresh team, lift, raid, and utility work consume only
+  the resulting residual.
 - `sim/src/bot/strategy.rs` owns air operations, `sim/src/bot/lift.rs` owns
   severed-ground transport operations, and `sim/src/bot/routing.rs` owns their
   fog-honest route projection and exact command-subset checks.
@@ -93,14 +94,19 @@ Unmigrated `UtilityPolicy` channels still consume a reduced-observation budget
 adapter. Treat that as explicit strangler debt: do not extend it, and remove
 each use as the owning domain moves into typed allocation.
 
-Standing-force and Defense claims may require an exact minimum current bank to
-remain for a still-unmigrated construction decision. Use the construction
-ladder's existing next-technology reserve only while an eligible worker exists
-and construction is not recovering. The floor is neither claimed capital nor
-forecast credit: it remains available to Utility after allocation and disappears
-when the technology tree completes or its builder premise disappears. Voluntary
-defense competes as a typed proposal; never hide it behind a post-technology
-Turret reserve, a permanent reserve, or a general budget haircut.
+Economic actions must own exact current or forecast capital, worker lanes,
+founders and sites, or upgrade building ids. Do not restore a residual
+technology floor or an operational Airworks tax. Value finite safe work, useful
+capability demand, payback, and capacity bottlenecks; count paid and uniquely
+deferred supply without granting it spendable income. Refit downtime must remove
+only the source income that would arrive while offline, separately from the
+purchase cost. Saving and deferred founding retain one identity and deadline.
+Test expiry, core loss, changed site knowledge, exact founder ownership, and
+preservation of paid work. A newly shallow Sentinel cannot repeatedly revoke
+already accepted construction; preserve its required escrow through the deferred
+interval. Ensure prior-based demand cannot borrow the confidence of a smaller
+current need already covered by existing resources. Test combined
+three-foundation layouts even when every pair is individually safe.
 
 Treat a current-threat emergency Turret or Flak Turret as a survival obligation
 when the opening core is deficient. Freeze the scorer-selected kind, site,
@@ -237,18 +243,19 @@ unconditional Standing proposals against the remaining exact paid ownership
 before allocation. Never let a failed revision leave contextual inventory or a
 paid queue occurrence stranded between the two domains.
 
-The temporary residual Foundry pass owns only demands not yet migrated to typed
-allocation: post-bootstrap Harvesters after completed renewable income exists,
-Excavators, and the existing bounded Scuttler roster. It spends only current
-scrap and producer capacity left by allocation, and must not originate ordinary
-combat, anti-air, siege, or Tender orders. Migrate those residual roles with
-their economy, reconnaissance, and support domains rather than growing this
-bridge.
+The temporary residual Foundry pass owns only the existing bounded Scuttler
+roster. Worker investment belongs to typed Economy. The residual pass spends
+only current scrap and producer capacity left by allocation, and must not
+originate ordinary combat, anti-air, siege, or Tender orders. Migrate those
+residual roles with their economy, reconnaissance, and support domains rather
+than growing this bridge.
 
 Persistent air and lift operations own partial bomber, ground-attack-air, and
-transport cohorts plus their outstanding Airworks capacity. Standing force may
-buy an independently useful air-defense provider only when that capacity is
-free. The profile-free Overseer retains its legacy production order.
+transport cohorts and their accepted producer work. Outstanding work contributes
+deadline-bound economic demand for additional Airworks; it does not reserve an
+unowned factory cost. Standing force may buy an independently useful air-defense
+provider only when that capacity is free. The profile-free Overseer retains its
+legacy production order.
 
 For a connected air-and-siege operation, derive a shared capability minimum and
 an opportunity-specific useful capability target in reconnaissance, suppression,
@@ -540,10 +547,11 @@ player-facing controller's runtime decisions with
 `--decision-trace-out replays/bot-eval-trace.jsonl`. The trace sidecar requires
 `--out` and `--candidate`, joins each record to its exact evaluation leg, and
 contains only fog-honest facts the current coordinator can state directly.
-Schema version 8 includes the exact defensive proposal and verdict identities.
-It does not reconstruct explanations from a replay, infer reasons from absent
-planner output, or trace the frozen Overseer. Treat the sidecar as disposable
-diagnostic evidence and keep it out of production commits.
+Schema version 9 includes exact economic and defensive identities, building
+ownership, refit forecast losses, and combined three-site conflicts. It does not
+reconstruct explanations from a replay, infer reasons from absent planner
+output, or trace the frozen Overseer. Treat the sidecar as disposable diagnostic
+evidence and keep it out of production commits.
 
 For the maintained Prime-versus-Overseer yardstick, keep Overseer confined to
 the evaluation-only `--against-overseer` path. Do not encode it in `BotConfig`,

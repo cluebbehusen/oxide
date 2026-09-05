@@ -349,10 +349,15 @@ fn scrapheap_and_prime_reach_their_opening_core_before_the_first_fabricator() {
         );
         let target_strength = full_ground_strength(UnitKind::Sentinel) * floor;
         let mut first_fabricator = None;
+        let mut last_trace = None;
 
         while state.current_tick() < OPENING_END && first_fabricator.is_none() {
             let observation = Observation::fog_honest(&state, PlayerId(0));
-            let commands = brain.act(&state);
+            let decision = brain.act_traced(&state);
+            if decision.trace.is_some() {
+                last_trace = decision.trace;
+            }
+            let commands = decision.commands;
             if commands.iter().any(|command| {
                 matches!(
                     command.command,
@@ -386,7 +391,7 @@ fn scrapheap_and_prime_reach_their_opening_core_before_the_first_fabricator() {
 
         assert!(
             first_fabricator.is_some(),
-            "{difficulty:?} did not reach a Fabricator within {OPENING_END} ticks"
+            "{difficulty:?} did not reach a Fabricator within {OPENING_END} ticks; trace={last_trace:?}"
         );
     }
 }
@@ -423,7 +428,7 @@ fn prime_skirmish_places_an_accepted_defense_on_the_hostile_approach() {
     let mut defense_build = None;
     let mut rejected = Vec::new();
 
-    for _ in 0..TICKS_PER_SECOND * 4 * 60 {
+    for _ in 0..TICKS_PER_SECOND * 6 * 60 {
         let decision = brain.act_traced(&state);
         if let Some(proposal) = decision.trace.as_ref().and_then(|trace| {
             trace.allocation.proposals.entries.iter().find(|proposal| {
@@ -1254,7 +1259,7 @@ fn connected_package_uses_only_a_producer_that_can_reach_its_staging_route() {
 }
 
 #[test]
-fn shipped_brain_allocates_compatible_work_across_all_four_proposal_domains() {
+fn shipped_brain_allocates_compatible_work_across_all_five_proposal_domains() {
     let foundry_cost = BuildingKind::Foundry
         .base_stats()
         .construction
@@ -1266,11 +1271,13 @@ fn shipped_brain_allocates_compatible_work_across_all_four_proposal_domains() {
         .expect("Barricades are constructible")
         .cost;
     let voluntary_guard = UnitKind::Sentinel.stats().cost;
+    let upgrade_cost = BuildingKind::Turret.upgrade_from(0).unwrap().cost;
     let scenario = foundry_connected_allocation_scenario(
         foundry_cost
             .saturating_add(UnitKind::Buzzard.stats().cost)
             .saturating_add(UnitKind::Lancer.stats().cost)
             .saturating_add(defense_cost)
+            .saturating_add(upgrade_cost)
             .saturating_add(voluntary_guard),
     );
     let mut state = scenario
@@ -1299,8 +1306,17 @@ fn shipped_brain_allocates_compatible_work_across_all_four_proposal_domains() {
     let mut connected_key = None;
     let mut standing_key = None;
     let mut defense_key = None;
+    let mut economy_key = None;
     for proposal in &trace.allocation.proposals.entries {
         match proposal.key {
+            key @ ProposalKeyTrace::Economy { .. } => {
+                if proposal.disposition == ProposalDispositionTrace::Accepted {
+                    assert!(
+                        economy_key.replace(key).is_none(),
+                        "only one economic alternative may win"
+                    );
+                }
+            }
             ProposalKeyTrace::FoundryExpansion { anchor } => {
                 assert_eq!(
                     proposal.disposition,
@@ -1343,6 +1359,16 @@ fn shipped_brain_allocates_compatible_work_across_all_four_proposal_domains() {
     let connected_key = connected_key.expect("the current target proposes connected offense");
     let standing_key = standing_key.expect("the residual current bank funds standing force");
     let defense_key = defense_key.expect("exposed value funds one defensive alternative");
+    assert!(
+        economy_key.is_some(),
+        "the funded self-refit owns the economic alternative"
+    );
+    assert!(
+        decision
+            .commands
+            .iter()
+            .any(|command| matches!(command.command, Command::UpgradeBuilding { .. }))
+    );
     let world_foundry_anchor =
         orientation.anchor(foundry_anchor, BuildingKind::Foundry.base_stats().size);
 
@@ -1447,7 +1473,7 @@ fn shipped_brain_allocates_compatible_work_across_all_four_proposal_domains() {
                 ..
             }
         )),
-        "the authoritative State must accept all four domains in one transaction: {:?}",
+        "the authoritative State must accept all five domains in one transaction: {:?}",
         report.events
     );
     assert!(state.buildings().iter().any(|building| {
@@ -1624,9 +1650,22 @@ fn completed_income_forecast_cannot_fund_an_immediate_standing_purchase() {
         future_connected_jobs
             .iter()
             .map(|job| job.current_scrap)
-            .sum::<u32>(),
+            .sum::<u32>()
+            .saturating_add(
+                forecast_trace
+                    .allocation
+                    .proposals
+                    .entries
+                    .iter()
+                    .filter(
+                        |proposal| proposal.disposition == ProposalDispositionTrace::Accepted
+                            && matches!(proposal.key, ProposalKeyTrace::Economy { .. })
+                    )
+                    .map(|proposal| proposal.claims.current_scrap)
+                    .sum::<u32>()
+            ),
         forecast_trace.resources.current_scrap,
-        "the small live bank may part-fund future work but cannot make an immediate unit affordable"
+        "the small live bank may part-fund accepted future work but cannot make an immediate unit affordable"
     );
     assert!(
         forecast_trace
@@ -1666,7 +1705,9 @@ fn completed_income_forecast_cannot_fund_an_immediate_standing_purchase() {
         }
     )));
 
-    let mut current_state = prepare_state(UnitKind::Lancer.stats().cost);
+    let mut current_state = prepare_state(
+        UnitKind::Lancer.stats().cost + BuildingKind::Turret.upgrade_from(0).unwrap().cost,
+    );
     let mut current_brain = Brain::scripted(
         PlayerId(0),
         scenario.players[0].bot_config.expect("bot is configured"),

@@ -139,6 +139,18 @@ impl<'a> RouteProjection<'a> {
         projection
     }
 
+    pub(super) fn ground_avoiding_with_public_terrain(
+        obs: &'a Observation,
+        briefing: &'a PublicMapBriefing,
+        orientation: Orientation,
+        blocked: impl FnMut(TilePos) -> bool,
+    ) -> Self {
+        let mut projection = Self::ground_avoiding(obs, blocked);
+        projection.public_map = Some(briefing);
+        projection.command_orientation = Some(orientation);
+        projection
+    }
+
     pub(super) fn unit_reaches(&mut self, unit: &UnitObs, goal: TilePos) -> bool {
         unit.kind.stats().domain == self.domain && self.reaches(unit.tile, goal)
     }
@@ -167,17 +179,22 @@ impl<'a> RouteProjection<'a> {
         if !in_bounds(self.obs, from) || !domain_open(self.obs, self.domain, to) {
             return false;
         }
+        let transform = |tile| {
+            self.command_orientation
+                .map_or(tile, |orientation| orientation.tile(tile))
+        };
         chassis::path::astar(
             self.obs.map_width,
             self.obs.map_height,
-            from,
-            to,
+            transform(from),
+            transform(to),
             |tile| {
+                let tile = transform(tile);
                 self.domain_open_memo(tile) && (!self.require_explored || self.obs.explored(tile))
             },
             crate::stats::PATH_EXPANSION_CAP,
         )
-        .is_some_and(|path| path.into_iter().all(|tile| self.open(tile)))
+        .is_some_and(|path| path.into_iter().all(|tile| self.open(transform(tile))))
     }
 
     pub(super) fn group_reaches_command_goal(&mut self, units: &[UnitId], goal: TilePos) -> bool {

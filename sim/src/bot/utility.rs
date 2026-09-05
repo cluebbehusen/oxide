@@ -40,6 +40,9 @@ mod construction;
 mod danger;
 mod defense;
 mod defensive_investment;
+mod economic_investment;
+pub(in crate::bot) mod economic_value;
+mod economic_work;
 mod economy;
 mod expansion;
 mod production;
@@ -53,11 +56,15 @@ pub(in crate::bot) use construction::{
     FoundryConfidence, FoundryExecutionSafety, FoundryOpportunityCase, FoundryStrategicValue,
     FoundryTimeToImpact, FoundryUrgency, FreshEmergencyDefense, FreshEmergencyDefenseContext,
     FreshFoundryInvestment, FreshFoundryProposal, FreshFoundryProposalContext,
-    ResidualTechnologyReserveContext, SavedFoundryReadiness, ValidatedFoundryObligation,
+    SavedFoundryReadiness, ValidatedFoundryObligation,
 };
 #[cfg(test)]
 pub(in crate::bot) use defensive_investment::DefenseConstruction;
 pub(in crate::bot) use defensive_investment::FreshDefenseProposal;
+pub use economic_investment::EconomicInvestmentKey;
+pub(in crate::bot) use economic_investment::{
+    AirCapacityDemand, EconomicInvestment, EconomicInvestmentContext,
+};
 pub(in crate::bot) use production::{CombatCoreStatus, combat_core_status};
 
 /// How far from home an enemy unit counts as an intruder (Chebyshev).
@@ -284,10 +291,6 @@ impl Reserve {
             Self::Exact(scrap) => scrap,
         }
     }
-
-    const fn is_exact(self) -> bool {
-        matches!(self, Self::Exact(_))
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -358,7 +361,6 @@ struct ProductionContext<'a> {
     home: TilePos,
     claims: ConstructionClaims<'a>,
     combat_core_exclusions: &'a [UnitId],
-    outstanding_air_production_ticks: Option<u64>,
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
     public_map: Option<&'a PublicMapBriefing>,
@@ -367,16 +369,11 @@ struct ProductionContext<'a> {
 }
 
 impl<'a> ProductionContext<'a> {
-    fn new(
-        home: TilePos,
-        claims: ConstructionClaims<'a>,
-        outstanding_air_production_ticks: Option<u64>,
-    ) -> Self {
+    fn new(home: TilePos, claims: ConstructionClaims<'a>) -> Self {
         Self {
             home,
             claims,
             combat_core_exclusions: claims.reserved,
-            outstanding_air_production_ticks,
             unit_contacts: None,
             building_contacts: None,
             public_map: None,
@@ -875,6 +872,10 @@ pub struct UtilityPolicy {
     /// Player-facing expansion whose exact site and builder own the partial
     /// fund while current scrap accumulates to its admission threshold.
     foundry_saving: Option<construction::FoundrySavingCommitment>,
+    economic_saving: Option<EconomicInvestment>,
+    economic_foundation: Option<EconomicInvestment>,
+    economic_cancelled_founder: Option<(UnitId, BuildingKind, TilePos)>,
+    economic_retry_at: u64,
     /// The designated scout, held only mid-sweep (released between
     /// sweeps so the draft can have it back).
     scout: Option<UnitId>,
@@ -1976,6 +1977,15 @@ impl UtilityPolicy {
         let mut kept_ground_emergency = false;
         let mut kept_air_emergency = false;
         for claim @ (kind, anchor) in claims {
+            if self.economic_foundation.as_ref().is_some_and(|plan| {
+                plan.build()
+                    .is_some_and(|(planned_kind, planned_anchor, _)| {
+                        (planned_kind, planned_anchor) == claim
+                    })
+            }) {
+                exceptions.push(claim);
+                continue;
+            }
             let exception = public_map.is_some_and(|briefing| match kind {
                 BuildingKind::Extractor if !kept_home_extractor => {
                     let keep = self.safe_starting_home_extractor_claim(
@@ -2067,10 +2077,18 @@ impl UtilityPolicy {
             .filter(|building| building.kind == BuildingKind::Foundry)
             .map(|building| building.anchor)
             .collect();
-        let pending: Vec<TilePos> = Self::deferred_claims(obs)
+        let mut pending: Vec<TilePos> = Self::deferred_claims(obs)
             .into_iter()
             .filter_map(|(kind, anchor)| (kind == BuildingKind::Foundry).then_some(anchor))
+            .chain(
+                obs.my_buildings
+                    .iter()
+                    .filter(|building| building.kind == BuildingKind::Foundry && !building.built)
+                    .map(|building| building.anchor),
+            )
             .collect();
+        pending.sort_unstable();
+        pending.dedup();
         let outstanding = pending.len();
         anchors.extend(pending);
         anchors.sort_unstable();
@@ -2229,6 +2247,16 @@ impl UtilityPolicy {
         let player_facing = mode.player_facing;
         let strategic_production = strategic_production_claims(&prelude);
         let mut intents = prelude;
+        if let Some((builder, kind, anchor)) = self.economic_cancelled_founder.take()
+            && obs
+                .my_units
+                .iter()
+                .any(|unit| unit.id == builder && unit.founding == Some((kind, anchor)))
+        {
+            intents.push(Intent::StopUnits {
+                units: vec![builder],
+            });
+        }
         let Some(home) = obs
             .my_buildings
             .iter()
@@ -2462,7 +2490,7 @@ impl UtilityPolicy {
             let status = self.opening_core_production(
                 dials,
                 obs,
-                ProductionContext::new(home_tile, construction_claims, None)
+                ProductionContext::new(home_tile, construction_claims)
                     .with_combat_core_exclusions(combat_core_exclusions)
                     .with_intelligence(mode.unit_contacts, mode.building_contacts)
                     .with_public_map(mode.public_map)
@@ -2496,16 +2524,12 @@ impl UtilityPolicy {
             expansion_capital_promised = self.production_with_commitments(
                 dials,
                 obs,
-                ProductionContext::new(
-                    home_tile,
-                    construction_claims,
-                    outstanding_air_production_ticks,
-                )
-                .with_combat_core_exclusions(combat_core_exclusions)
-                .with_intelligence(mode.unit_contacts, mode.building_contacts)
-                .with_public_map(mode.public_map)
-                .with_voluntary_scrap_guard(Reserve::Exact(production_guard))
-                .with_producer_lane_reservations(producer_lane_reservations),
+                ProductionContext::new(home_tile, construction_claims)
+                    .with_combat_core_exclusions(combat_core_exclusions)
+                    .with_intelligence(mode.unit_contacts, mode.building_contacts)
+                    .with_public_map(mode.public_map)
+                    .with_voluntary_scrap_guard(Reserve::Exact(production_guard))
+                    .with_producer_lane_reservations(producer_lane_reservations),
                 &mut budget,
                 commitments.as_mut(),
                 &mut intents,
@@ -2552,15 +2576,11 @@ impl UtilityPolicy {
                 expansion_capital_promised = self.production_with_commitments(
                     dials,
                     obs,
-                    ProductionContext::new(
-                        home_tile,
-                        construction_claims,
-                        outstanding_air_production_ticks,
-                    )
-                    .with_combat_core_exclusions(combat_core_exclusions)
-                    .with_intelligence(mode.unit_contacts, mode.building_contacts)
-                    .with_public_map(mode.public_map)
-                    .with_producer_lane_reservations(producer_lane_reservations),
+                    ProductionContext::new(home_tile, construction_claims)
+                        .with_combat_core_exclusions(combat_core_exclusions)
+                        .with_intelligence(mode.unit_contacts, mode.building_contacts)
+                        .with_public_map(mode.public_map)
+                        .with_producer_lane_reservations(producer_lane_reservations),
                     &mut budget,
                     commitments.as_mut(),
                     &mut intents,
@@ -2569,7 +2589,7 @@ impl UtilityPolicy {
                 expansion_capital_promised = self.production_with_commitments(
                     dials,
                     obs,
-                    ProductionContext::new(home_tile, construction_claims, None)
+                    ProductionContext::new(home_tile, construction_claims)
                         .with_producer_lane_reservations(producer_lane_reservations),
                     &mut budget,
                     commitments.as_mut(),
@@ -5742,38 +5762,49 @@ mod tests {
             Some(UnitId(1)),
             "the sole worker must have a safe command path to the capacity site"
         );
-        let mut production_budget = obs.scrap;
-        let mut production_intents = Vec::new();
-        policy.production_with_air_demand(
-            &dials,
-            &obs,
-            ProductionContext::new(
-                home,
-                ConstructionClaims {
-                    player_facing: true,
-                    enlisted: &[],
-                    reserved: &[],
-                },
-                Some(u64::from(crate::TICKS_PER_SECOND) * 120 + 1),
-            ),
-            &mut production_budget,
-            &mut production_intents,
-        );
-        assert!(
-            production_intents.iter().any(|intent| matches!(
-                intent,
-                Intent::BuildWith {
-                    builder: UnitId(1),
-                    kind: BuildingKind::Airworks,
-                    ..
-                }
-            )),
-            "the fixture must have an actionable capacity site: {production_intents:?}"
-        );
         let public_map = public_map(&obs);
-        let context = StrategicUtilityContext::new(&[], &[], &[], &public_map, Vec::new())
-            .with_outstanding_air_production_ticks(u64::from(crate::TICKS_PER_SECOND) * 120 + 1);
-
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let profile =
+            BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 17).resolve_profile();
+        let work = [AirCapacityDemand {
+            work_ticks: 30_000,
+            deadline: obs.tick + 7_000,
+            kind: UnitKind::Skyhook,
+            service: crate::bot::allocation::StandingForceServiceKey::point(home),
+        }];
+        let quote = policy
+            .fresh_economic_investments(EconomicInvestmentContext {
+                obs: &obs,
+                resources: &resources,
+                profile: &profile,
+                briefing: &public_map,
+                orientation: crate::bot::orient::Orientation::for_home(&obs, home),
+                unavailable: &[],
+                demands: &[],
+                unit_contacts: &[],
+                building_contacts: &[],
+                cadence: 12,
+                protected_scrap: 0,
+                air_work: &work,
+            })
+            .into_iter()
+            .find(|proposal| {
+                matches!(
+                    proposal.key,
+                    EconomicInvestmentKey::Build {
+                        kind: BuildingKind::Airworks,
+                        ..
+                    }
+                )
+            })
+            .expect("concrete unfinished transport work admits an exact capacity proposal");
+        assert_eq!(quote.builder, Some(UnitId(1)));
+        let mut prelude = Vec::new();
+        let cost = quote.cost;
+        policy.commit_economic_investment(quote, cost, &mut prelude);
+        let claimed = [UnitId(1)];
+        let context = StrategicUtilityContext::new(&claimed, &[], &[], &public_map, prelude)
+            .with_outstanding_air_production_ticks(30_000);
         let mut intents = policy.think_with_intelligence(&dials, &obs, &[], &[], context);
         policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
 
@@ -5832,6 +5863,8 @@ mod tests {
         obs.my_queues.push(Vec::new());
         let mut dials = Dials::full();
         dials.extractors = true;
+        dials.adaptive_composition = true;
+        dials.minimum_core_equivalents = 4;
         let mut policy = UtilityPolicy::new();
         assert!(
             has_supported_restoration(&policy, &obs, home),
@@ -5843,7 +5876,13 @@ mod tests {
             &obs,
             &[],
             &[],
-            StrategicUtilityContext::new(&[], &[], &[], &public_map(&obs), Vec::new()),
+            StrategicUtilityContext::new(
+                &[],
+                &[],
+                &[],
+                &public_map_with_home_and_frames(&obs, home, &[frame]),
+                Vec::new(),
+            ),
         );
         assert!(intents.contains(&Intent::AssignHarvest {
             unit: UnitId(1),
@@ -5921,6 +5960,8 @@ mod tests {
         }
         let mut dials = Dials::full();
         dials.extractors = true;
+        dials.adaptive_composition = true;
+        dials.minimum_core_equivalents = 4;
         dials.scouting = false;
         let mut policy = UtilityPolicy::new();
         assert!(
@@ -5933,7 +5974,13 @@ mod tests {
             &obs,
             &[],
             &[],
-            StrategicUtilityContext::new(&[], &[], &[], &public_map(&obs), Vec::new()),
+            StrategicUtilityContext::new(
+                &[],
+                &[],
+                &[],
+                &public_map_with_home_and_frames(&obs, home, &[frame]),
+                Vec::new(),
+            ),
         );
         policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
         let commands = Executive::new().apply_with_reservations(PlayerId(0), &obs, &intents, &[]);
@@ -6720,7 +6767,11 @@ mod tests {
             UtilityPolicy::deferred_construction_commitment(&obs),
             price * 2 + fabricator_price
         );
-        assert_eq!(UtilityPolicy::projected_foundries(&obs).1, 2);
+        assert_eq!(
+            UtilityPolicy::projected_foundries(&obs).1,
+            3,
+            "eventual capacity counts the paid site once without charging its capital again"
+        );
     }
 
     #[test]
