@@ -370,6 +370,7 @@ impl<const N: usize> PartialEq<[UnitId; N]> for UnitIdSet {
 /// Controller-local owner of a persistent transport wave.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LiftPlanner {
+    pub(in crate::bot) outcomes: super::experience::OutcomeJournal,
     operation: Option<LiftOperation>,
     support_latched: bool,
     support_released: bool,
@@ -388,6 +389,13 @@ pub(super) struct LiftAdmission<'a> {
 }
 
 impl LiftPlanner {
+    pub(in crate::bot) fn shares_air_objective(&self, air: &super::strategy::AirOperation) -> bool {
+        self.support_latched
+            && self.operation.as_ref().is_some_and(|operation| {
+                Some(operation.target_id) == air.target_id
+                    && operation.target_player == air.target_player
+            })
+    }
     /// Creates an idle lift planner.
     pub fn new() -> Self {
         Self::default()
@@ -830,6 +838,31 @@ impl LiftPlanner {
         let Some(mut operation) = self.operation.take() else {
             return StrategicDecision::default();
         };
+        use super::experience::{
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+        };
+        let members: Vec<_> = operation
+            .payload
+            .iter()
+            .copied()
+            .chain(operation.manifests.iter().map(|manifest| manifest.carrier))
+            .collect();
+        self.outcomes.watch(
+            obs,
+            EpisodeId {
+                owner: EpisodeOwner::Lift,
+                serial: operation.started_at,
+            },
+            ExperienceKey {
+                doctrine: Doctrine::Air,
+                y: operation.target.y,
+                x: operation.target.x,
+                subject: u64::from(operation.target_id.0),
+            },
+            &members,
+            operation.phase as u8,
+        );
+        self.outcomes.observe_objective(obs, operation.target_id);
         let mut decision = StrategicDecision::default();
         let mut handoff = Vec::new();
 
@@ -1042,6 +1075,35 @@ impl LiftPlanner {
             if !operation.launched {
                 self.retry_not_before = obs.tick.saturating_add(support_grace());
             }
+            let delivered = operation
+                .manifests
+                .iter()
+                .filter(|manifest| manifest.attack_issued && !manifest.aborted)
+                .map(|manifest| manifest.riders.len() as u32)
+                .sum::<u32>();
+            self.outcomes.progress(delivered);
+            if delivered > 0 {
+                let participants: Vec<_> = operation
+                    .manifests
+                    .iter()
+                    .filter(|manifest| manifest.attack_issued && !manifest.aborted)
+                    .flat_map(|manifest| manifest.riders.iter().copied())
+                    .collect();
+                self.outcomes.handoff_objective(obs, &participants);
+            }
+            let (outcome, reason, confidence) = if delivered > 0 {
+                (Outcome::Partial, OutcomeReason::ObservedProgress, 500)
+            } else if self.outcomes.own_lost_value(obs) > 0 {
+                (Outcome::Ineffective, OutcomeReason::RequiredUnitLost, 1000)
+            } else if operation.manifests.iter().any(|manifest| manifest.aborted) {
+                (Outcome::Aborted, OutcomeReason::BlockedRoute, 750)
+            } else if !operation.launched && obs.tick >= operation.deadline {
+                (Outcome::Aborted, OutcomeReason::Deadline, 1000)
+            } else {
+                (Outcome::Invalidated, OutcomeReason::Preempted, 1000)
+            };
+            self.outcomes
+                .finish(obs, outcome, reason, confidence, false);
             self.operation = None;
             self.support_latched = false;
             self.support_released = false;
@@ -3764,6 +3826,7 @@ mod tests {
             support_released: false,
             assault_waypoints: Vec::new(),
             retry_not_before: 0,
+            outcomes: Default::default(),
         };
 
         let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
@@ -3813,6 +3876,7 @@ mod tests {
             support_released: false,
             assault_waypoints: Vec::new(),
             retry_not_before: 0,
+            outcomes: Default::default(),
         };
 
         let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
@@ -4707,6 +4771,14 @@ mod tests {
         let mut carrier = own(900, UnitKind::Skyhook, TARGET.offset(-2, -2));
         carrier.cargo = 3;
         obs.my_units.push(carrier);
+        obs.my_carried_units = (1..=3)
+            .map(|id| crate::bot::observation::CarriedUnitObs {
+                carrier: UnitId(900),
+                id: UnitId(id),
+                kind: UnitKind::Sentinel,
+                hp: UnitKind::Sentinel.stats().max_hp,
+            })
+            .collect();
         let initial_drop = TARGET.offset(-2, -2);
         let mut planner = LiftPlanner {
             operation: Some(LiftOperation {
@@ -4744,6 +4816,7 @@ mod tests {
             support_released: false,
             assault_waypoints: Vec::new(),
             retry_not_before: 0,
+            outcomes: Default::default(),
         };
         let mut target_attempts = Vec::new();
         let mut all_unloads = 0usize;
@@ -4766,6 +4839,14 @@ mod tests {
         assert_eq!(unique.len(), target_attempts.len());
         assert_eq!(all_unloads, usize::from(DROP_ATTEMPTS * 2));
         assert!(planner.operation().is_none());
+        let report = &planner.outcomes.pending[0];
+        assert_eq!(report.outcome, crate::bot::experience::Outcome::Aborted);
+        assert_eq!(
+            report.reason,
+            crate::bot::experience::OutcomeReason::BlockedRoute
+        );
+        assert_eq!(report.own_lost_value, 0);
+        assert!(!report.doctrine_eligible);
     }
 
     #[test]
@@ -4809,6 +4890,7 @@ mod tests {
             support_released: false,
             assault_waypoints: Vec::new(),
             retry_not_before: 0,
+            outcomes: Default::default(),
         };
 
         let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
@@ -6297,6 +6379,7 @@ mod tests {
             support_released: false,
             assault_waypoints: Vec::new(),
             retry_not_before: 0,
+            outcomes: Default::default(),
         }
     }
 
@@ -6345,6 +6428,7 @@ mod tests {
             support_released: false,
             assault_waypoints: Vec::new(),
             retry_not_before: 0,
+            outcomes: Default::default(),
         };
         (obs, planner, riders, drop)
     }

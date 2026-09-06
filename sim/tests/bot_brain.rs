@@ -1389,6 +1389,7 @@ fn qa_rear_line_stays_frozen_while_player_facing_releases_repaired_units() {
         map_width: 24,
         map_height: 13,
         my_units: units,
+        my_carried_units: Vec::new(),
         my_buildings: Vec::new(),
         my_queues: Vec::new(),
         my_queue_progress: Vec::new(),

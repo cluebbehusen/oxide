@@ -97,6 +97,26 @@ impl CrossDomainAllocation {
         self.proposals.push(proposal);
     }
 
+    pub(crate) fn apply_experience(
+        &mut self,
+        experience: &crate::bot::experience::Experience,
+        now: Tick,
+    ) {
+        for proposal in self.proposals.iter_mut().chain(
+            self.contextual_proposals
+                .iter_mut()
+                .flat_map(|context| context.proposals.iter_mut()),
+        ) {
+            if proposal.accepted_at(now) < now {
+                continue;
+            }
+            let Some(context) = super::adapters::experience_context(proposal.key()) else {
+                continue;
+            };
+            proposal.experience = experience.score(context);
+        }
+    }
+
     /// Rejects a set of individually legal builds when their combined layout
     /// fails a domain-owned route, egress, or resource-access preflight.
     pub(crate) fn reject_incompatible_layout_set(&mut self, keys: Vec<ProposalKey>) {

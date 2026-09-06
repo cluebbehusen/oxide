@@ -512,6 +512,8 @@ impl UtilityPolicy {
                 let tile = anchor.offset(dx, dy);
                 in_bounds(tile)
                     && obs.explored(tile)
+                    && (kind.is_stealthy()
+                        || !self.work_experience.construction_work_tiles.contains(&tile))
                     && if kind == BuildingKind::Extractor {
                         self.tile_open(obs, tile)
                     } else {
@@ -1150,6 +1152,88 @@ mod tests {
         anchor: TilePos,
     ) -> bool {
         policy.first_valid_placement(obs, kind, [anchor]) == Some(anchor)
+    }
+
+    #[test]
+    fn fresh_foundations_do_not_displace_an_active_builder_from_its_work_tile() {
+        let mut obs = observation();
+        let site = TilePos::new(10, 5);
+        let work = TilePos::new(10, 6);
+        add_building(&mut obs, BuildingKind::Reclaimer, site);
+        obs.my_buildings[1].built = false;
+        obs.my_units.push(UnitObs {
+            id: UnitId(70),
+            player: obs.me,
+            kind: UnitKind::Harvester,
+            tile: work,
+            hp: 60,
+            idle: false,
+            carrying: 0,
+            harvesting: None,
+            cargo: 0,
+            site: Some(obs.my_buildings[1].id),
+            salvaging: None,
+            founding: None,
+            repairing: false,
+            grounded: false,
+        });
+        let legacy = UtilityPolicy::new();
+        assert!(placement_valid(
+            &legacy,
+            &obs,
+            BuildingKind::Reclaimer,
+            work
+        ));
+
+        let mut policy = UtilityPolicy::new();
+        policy.observe_work_experience(&obs);
+        assert!(policy.tile_open(&obs, work));
+        assert!(!placement_valid(
+            &policy,
+            &obs,
+            BuildingKind::Reclaimer,
+            work
+        ));
+        assert!(placement_valid(
+            &policy,
+            &obs,
+            BuildingKind::ScuttleCharge,
+            work
+        ));
+        assert!(placement_valid(
+            &policy,
+            &obs,
+            BuildingKind::Reclaimer,
+            TilePos::new(12, 9)
+        ));
+
+        obs.tick += 12;
+        obs.my_units[0].tile = TilePos::new(12, 9);
+        policy.observe_work_experience(&obs);
+        assert!(placement_valid(
+            &policy,
+            &obs,
+            BuildingKind::Reclaimer,
+            work
+        ));
+        assert!(!placement_valid(
+            &policy,
+            &obs,
+            BuildingKind::Reclaimer,
+            obs.my_units[0].tile
+        ));
+
+        obs.tick += 12;
+        obs.my_buildings[1].built = true;
+        obs.my_units[0].site = None;
+        obs.my_units[0].idle = true;
+        policy.observe_work_experience(&obs);
+        assert!(placement_valid(
+            &policy,
+            &obs,
+            BuildingKind::Reclaimer,
+            obs.my_units[0].tile
+        ));
     }
 
     #[test]

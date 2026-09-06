@@ -36,6 +36,7 @@ use chassis::grid::TilePos;
 use std::collections::{BTreeSet, VecDeque};
 
 mod combat;
+pub(in crate::bot) use combat::{GroundMissionInputs, ground_weapon_reaches_footprint};
 mod construction;
 mod danger;
 mod defense;
@@ -46,6 +47,7 @@ pub(in crate::bot) mod economic_value;
 mod economic_work;
 mod economy;
 mod expansion;
+mod experience_work;
 mod production;
 mod reconnaissance;
 pub(crate) use reconnaissance::{
@@ -822,6 +824,10 @@ impl Dials {
 /// memory, and the scout rotation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UtilityPolicy {
+    pub(in crate::bot) work_experience: experience_work::WorkExperience,
+    pub(in crate::bot) ground_inputs: Option<combat::GroundMissionInputs>,
+    pub(in crate::bot) battlefield: std::sync::Arc<super::battlefield::BattlefieldAssessment>,
+    pub(in crate::bot) experience: std::sync::Arc<super::experience::Experience>,
     /// Exact placement-egress answers for the current known blocking layout.
     /// Construction changes far less often than the bot thinks; retaining this
     /// derived data keeps a fair full-component safety check out of the hot
@@ -1744,6 +1750,7 @@ impl UtilityPolicy {
             | Intent::AttackMoveUnits { units, .. }
             | Intent::AttackUnits { units, .. }
             | Intent::StopUnits { units } => claimed.extend(units.iter().copied()),
+            Intent::FormArmyWith { members, .. } => claimed.extend(members.iter().copied()),
             Intent::RepairUnits { welders, .. } => claimed.extend(welders.iter().copied()),
             Intent::RepairWith { worker, .. } => claimed.push(*worker),
             Intent::Scout { unit, .. } => claimed.push(*unit),
@@ -1759,6 +1766,7 @@ impl UtilityPolicy {
             | Intent::AssignHarvest { .. }
             | Intent::FormArmy { .. }
             | Intent::PushArmy { .. }
+            | Intent::AssignArmyMission { .. }
             | Intent::Repair { .. }
             | Intent::Salvage { .. }
             | Intent::RaidAir { .. }
@@ -2686,6 +2694,9 @@ impl UtilityPolicy {
                 .any(|(pos, amount)| *pos == node && *amount > 0);
             if bounced && still_reports && !self.dead_nodes.contains(&node) {
                 self.dead_nodes.push(node);
+                if self.work_experience.enabled {
+                    self.record_failed_work(obs, id, node, None);
+                }
             }
         }
     }
@@ -3185,6 +3196,7 @@ impl UtilityPolicy {
         };
         self.last_sent.retain(|(sent, _, _)| *sent != unit);
         self.last_sent.push((unit, node, worker.tile));
+        self.record_harvest_episode(obs, unit, node);
     }
 
     /// Forget source evidence for workers whose Harvest was replaced by a
@@ -3203,6 +3215,9 @@ impl UtilityPolicy {
     /// player-facing brain defers claims outside current sight, so a
     /// walking founder remains pending until the ground is actually reached.
     fn audit_sites(&mut self, obs: &Observation) {
+        if self.work_experience.enabled {
+            return;
+        }
         for anchor in std::mem::take(&mut self.pending_sites) {
             let appeared = obs.my_buildings.iter().any(|b| b.anchor == anchor);
             if appeared {

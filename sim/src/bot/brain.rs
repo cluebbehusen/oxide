@@ -68,6 +68,8 @@ use std::sync::Arc;
 struct PlayerFacingMind {
     profile: ResolvedProfile,
     intelligence: StrategicIntelligence,
+    battlefield: super::battlefield::Battlefield,
+    experience: super::experience::Experience,
     strategy: Option<StrategicPlanner>,
     lifts: Option<LiftPlanner>,
     team: Option<TeamReliefPlanner>,
@@ -152,6 +154,8 @@ impl Brain {
         brain.controller = Controller::PlayerFacing(Box::new(PlayerFacingMind {
             profile,
             intelligence: StrategicIntelligence::new(),
+            battlefield: Default::default(),
+            experience: Default::default(),
             strategy: Some(StrategicPlanner::new()),
             lifts: Some(LiftPlanner::new()),
             team: Some(TeamReliefPlanner::new()),
@@ -286,6 +290,7 @@ impl Brain {
             rear_anchor
         };
         let mut commands = if player_facing {
+            self.exec.mission_decisions.clear();
             self.exec.maintain_player_facing_with_tactics(
                 self.player,
                 &obs,
@@ -297,11 +302,76 @@ impl Brain {
             self.exec.maintain(self.player, &obs, rear)
         };
         let maintenance_commands = commands.len();
+        let oriented = orientation.observe(&obs);
+        let armies: Vec<_> = self
+            .exec
+            .armies()
+            .iter()
+            .map(|army| orientation.army(army.clone()))
+            .collect();
+        if let Controller::PlayerFacing(mind) = &mut self.controller {
+            let tuning = DifficultyTuning::for_level(mind.profile.difficulty);
+            let map = mind
+                .oriented_public_map
+                .get_or_insert_with(|| orientation.briefing(&mind.public_map));
+            mind.battlefield
+                .observe(&oriented, &armies, tuning, Some(map));
+            mind.experience
+                .observe(&oriented, tuning.opponent_force_memory);
+            self.policy.observe_work_experience(&oriented);
+            for journal in self.exec.ground_outcomes.values_mut() {
+                for mut report in std::mem::take(&mut journal.pending) {
+                    let tile = orientation.tile(TilePos::new(report.context.x, report.context.y));
+                    report.context.x = tile.x;
+                    report.context.y = tile.y;
+                    mind.experience.report(report);
+                }
+            }
+            let live_armies: std::collections::BTreeSet<_> =
+                self.exec.armies().iter().map(|army| army.id).collect();
+            self.exec
+                .ground_outcomes
+                .retain(|id, _| live_armies.contains(id));
+            self.exec.missions.retain(|id, _| live_armies.contains(id));
+            for report in std::mem::take(&mut self.policy.work_experience.pending) {
+                mind.experience.report(report);
+            }
+            for journal in [
+                mind.strategy.as_mut().map(|planner| &mut planner.outcomes),
+                mind.lifts.as_mut().map(|planner| &mut planner.outcomes),
+                mind.raids.as_mut().map(|planner| &mut planner.outcomes),
+                mind.team.as_mut().map(|planner| &mut planner.outcomes),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                journal.observe_follow_through(&oriented);
+                for report in std::mem::take(&mut journal.pending) {
+                    mind.experience.report(report);
+                }
+            }
+            mind.battlefield
+                .review_approaches(&oriented, &mind.experience);
+            self.policy.battlefield = Arc::new(mind.battlefield.assessment().clone());
+            self.policy.experience = Arc::new(mind.experience.clone());
+            if let Some(planner) = &mut mind.strategy {
+                planner.experience = self.policy.experience.clone();
+            }
+            if let Some(recorder) = recorder.as_deref_mut() {
+                recorder.trace_mut().battlefield = Some(mind.battlefield.assessment().clone());
+                recorder.trace_mut().experience = mind.experience.trace();
+                recorder.trace_mut().missions = self
+                    .exec
+                    .missions
+                    .iter()
+                    .map(|(id, mission)| (id.0, mission.clone()))
+                    .collect();
+            }
+        }
         if let Some(recovery) = self.exec.harvester_recovery(self.player, &obs) {
             commands.extend(recovery);
             let strategic_recovery = match &mut self.controller {
                 Controller::PlayerFacing(mind) => {
-                    let oriented = orientation.observe(&obs);
                     let PlayerFacingMind {
                         profile,
                         strategy,
@@ -356,13 +426,6 @@ impl Brain {
         // The policy thinks in seat-oriented space (see [`Orientation`]):
         // the same logic runs for both seats, so its compass-flavored
         // tie-breaks cannot systematically favor either one.
-        let oriented = orientation.observe(&obs);
-        let armies: Vec<_> = self
-            .exec
-            .armies()
-            .iter()
-            .map(|a| orientation.army(a.clone()))
-            .collect();
         let enlisted: Vec<_> = self.exec.enlisted().collect();
         let Controller::PlayerFacing(mind) = &mut self.controller else {
             let intents = self
@@ -389,6 +452,7 @@ impl Brain {
             raids,
             public_map,
             oriented_public_map,
+            ..
         } = mind.as_mut();
         let profile = &*profile;
         let oriented_public_map: &PublicMapBriefing =
@@ -750,6 +814,15 @@ impl Brain {
             },
         );
 
+        if let (Some(air), Some(lift)) = (strategy.as_ref(), lifts.as_mut())
+            && air
+                .air_operation()
+                .is_some_and(|operation| lift.shares_air_objective(operation))
+            && let Some(credit) = air.outcomes.episode_id()
+        {
+            lift.outcomes.share_credit(credit);
+        }
+
         if let Some(recorder) = recorder.as_deref_mut() {
             let trace = recorder.trace_mut();
             if let Some(core_ready) = team_relief_core_ready {
@@ -822,6 +895,9 @@ impl Brain {
         let mut utility_reservations = reservations.clone();
         utility_reservations.extend(self.policy.reconnaissance.reservations());
         utility_reservations.extend(self.policy.support_reservations());
+        if let Some(planner) = team.as_ref() {
+            utility_reservations.extend(planner.reservations());
+        }
         utility_reservations.extend(fresh_defense_builders);
         utility_reservations.sort_unstable();
         utility_reservations.dedup();
@@ -842,6 +918,30 @@ impl Brain {
         } else {
             utility_context
         };
+        let mut ground_unavailable = utility_reservations.clone();
+        ground_unavailable.extend(self.exec.muster_exclusions());
+        ground_unavailable.sort_unstable();
+        ground_unavailable.dedup();
+        self.policy.ground_inputs = Some(super::utility::GroundMissionInputs {
+            missions: self
+                .exec
+                .missions
+                .iter()
+                .map(|(id, mission)| {
+                    let mut mission = mission.clone();
+                    orientation.mission(&mut mission);
+                    (*id, mission)
+                })
+                .collect(),
+            unavailable: ground_unavailable,
+            enlisted: enlisted.clone(),
+            tuning,
+            relief: team
+                .as_ref()
+                .and_then(|planner| planner.operation())
+                .filter(|operation| operation.phase != super::team::TeamReliefPhase::Withdrawing)
+                .map(|operation| (operation.foundry, operation.members.clone())),
+        });
         let mut intents = self.policy.think_with_intelligence(
             &self.dials,
             &allocation_observation,
@@ -888,9 +988,20 @@ impl Brain {
             &reservations,
             builder_lease,
         );
+        if let Some(lift) = lifts.as_ref() {
+            for journal in self.exec.ground_outcomes.values_mut() {
+                journal.link_handoff(&lift.outcomes);
+            }
+        }
         for command in &lowered {
             if let Some(units) = queue_replacing_non_harvest_units(&command.command) {
                 self.policy.record_dispatched_retask(units);
+                let build = if let Command::Build { kind, anchor, .. } = command.command {
+                    Some((kind, orientation.anchor(anchor, kind.base_stats().size)))
+                } else {
+                    None
+                };
+                self.policy.record_work_retask(&oriented, units, build);
             }
             match &command.command {
                 Command::Build {
@@ -902,8 +1013,12 @@ impl Brain {
                     let oriented_anchor = orientation.anchor(*anchor, kind.base_stats().size);
                     self.policy
                         .record_dispatched_foundry_build(units, *kind, oriented_anchor);
-                    self.policy
-                        .record_dispatched_build(&oriented, *kind, oriented_anchor);
+                    self.policy.record_exact_build_attempt(
+                        &oriented,
+                        units,
+                        *kind,
+                        oriented_anchor,
+                    );
                 }
                 Command::Harvest { units, node, .. } => {
                     let oriented_node = orientation.tile(*node);
@@ -912,10 +1027,15 @@ impl Brain {
                             .record_dispatched_harvest(&oriented, unit, oriented_node);
                     }
                 }
+                Command::Cancel { building } => {
+                    self.policy
+                        .record_foundation_cancellation(&oriented, *building);
+                }
                 _ => {}
             }
         }
         if let Some(recorder) = recorder {
+            recorder.trace_mut().mission_decisions = self.exec.mission_decisions.clone();
             recorder.trace_mut().lowering = LoweringTrace {
                 maintenance_commands: bounded_count(maintenance_commands),
                 decision_commands: bounded_count(lowered.len()),
@@ -8479,8 +8599,14 @@ mod tests {
                 .is_some_and(|budget| { budget.frozen && budget.utility_spendable == 0 }),
             "a malformed shared session must not reopen the current bank to residual utility"
         );
-        assert_eq!(brain.mind().team.as_ref(), Some(&team_before));
-        assert_eq!(brain.mind().lifts.as_ref(), Some(&lift_before));
+        let mut restored_team = brain.mind().team.clone().unwrap();
+        assert_eq!(restored_team.outcomes, independently_advanced_team.outcomes);
+        restored_team.outcomes = team_before.outcomes.clone();
+        assert_eq!(restored_team, team_before);
+        let mut restored_lift = brain.mind().lifts.clone().unwrap();
+        assert!(restored_lift.outcomes.pending.is_empty());
+        restored_lift.outcomes = lift_before.outcomes.clone();
+        assert_eq!(restored_lift, lift_before);
         assert!(result.commands.iter().all(|command| !matches!(
             command.command,
             Command::Build { .. } | Command::Train { .. }
@@ -8670,15 +8796,28 @@ mod tests {
                 .copied()
                 .filter(|unit| strategic_claims.binary_search(unit).is_err())
                 .collect();
+            let mission = brain
+                .exec
+                .missions
+                .get(&army.id)
+                .expect("the unreserved body receives a defense responsibility");
+            assert!(matches!(
+                mission.purpose,
+                super::super::executive::ArmyPurpose::Defend(_)
+            ));
+            assert!(
+                mission.goal.chebyshev(TilePos::new(5, 6)) <= 8,
+                "the defensive service point must answer the visible incursion"
+            );
             if think == 0 {
                 assert!(
                     commands.iter().any(|command| matches!(
                         &command.command,
                         Command::AttackMove {
                             units,
-                            goal: TilePos { x: 5, y: 6 },
+                            goal,
                             queue: false,
-                        } if units == &available
+                        } if units == &available && *goal == mission.goal
                     )),
                     "unreserved members must remain available for the visible emergency: {commands:?}"
                 );
@@ -8691,7 +8830,7 @@ mod tests {
                 .expect("the defending remainder remains tracked");
             assert_eq!(staged.members, available, "think {think}");
             assert_eq!(staged.state, ArmyState::Pushing);
-            assert_eq!(staged.target, Some(TilePos::new(5, 6)));
+            assert_eq!(staged.target, Some(mission.goal));
 
             state.tick(&[]);
         }

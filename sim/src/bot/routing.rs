@@ -26,9 +26,9 @@ pub(super) struct RouteProjection<'a> {
     labels: Vec<u32>,
     next_label: u32,
     /// Per-tile memo of the domain passability predicate: 0 unqueried,
-    /// 1 open, 2 closed. Component floods and path checks ask the same
-    /// tile several times, and the raw ground predicate costs two binary
-    /// searches plus a building scan per ask. The memo is sound because
+    /// 1 open, 2 closed. Known ground obstructions seed the memo once,
+    /// avoiding repeated entity searches during component floods.
+    /// The memo is sound because
     /// the projection immutably borrows its observation for its whole
     /// life; projection-local overlays and the explored requirement stay
     /// outside it.
@@ -45,6 +45,36 @@ impl<'a> RouteProjection<'a> {
                     .and_then(|height| width.checked_mul(height))
             })
             .unwrap_or(0);
+        let mut open_memo = vec![0; cells];
+        if domain == Domain::Ground {
+            let mut block = |tile: TilePos| {
+                if in_bounds(obs, tile) {
+                    open_memo[(tile.y * obs.map_width + tile.x) as usize] = 2;
+                }
+            };
+            for tile in obs
+                .known_rock
+                .iter()
+                .copied()
+                .chain(obs.known_scrap.iter().map(|(tile, _)| *tile))
+            {
+                block(tile);
+            }
+            for building in obs
+                .my_buildings
+                .iter()
+                .chain(&obs.ally_buildings)
+                .chain(&obs.enemy_buildings)
+                .filter(|building| !building.kind.is_stealthy())
+            {
+                let (width, height) = building.kind.base_stats().size;
+                for dy in 0..height {
+                    for dx in 0..width {
+                        block(building.anchor.offset(dx, dy));
+                    }
+                }
+            }
+        }
         Self {
             obs,
             public_map: None,
@@ -56,7 +86,7 @@ impl<'a> RouteProjection<'a> {
             has_blocked_tiles: false,
             labels: vec![0; cells],
             next_label: 1,
-            open_memo: std::cell::RefCell::new(vec![0; cells]),
+            open_memo: std::cell::RefCell::new(open_memo),
         }
     }
 
@@ -430,10 +460,10 @@ impl<'a> RouteProjection<'a> {
                         && (anchor.y..anchor.y + height).contains(&tile.y)
                 });
         let blocked_by_tile = in_bounds(self.obs, tile) && self.blocked_tiles[self.index(tile)];
-        self.domain_open_memo(tile)
-            && !blocked_by_candidate
+        !blocked_by_candidate
             && !blocked_by_tile
             && (!self.require_explored || self.obs.explored(tile))
+            && self.domain_open_memo(tile)
     }
 
     fn domain_open_memo(&self, tile: TilePos) -> bool {
@@ -446,7 +476,8 @@ impl<'a> RouteProjection<'a> {
             1 => true,
             2 => false,
             _ => {
-                let open = domain_open(self.obs, self.domain, tile)
+                let open = (self.domain == Domain::Ground
+                    || domain_open(self.obs, self.domain, tile))
                     && self
                         .public_map
                         .is_none_or(|map| public_terrain_open(map, self.domain, tile));
@@ -1325,6 +1356,49 @@ mod tests {
             visible: vec![false; 12 * 8],
             explored: vec![false; 12 * 8],
             ..Observation::default()
+        }
+    }
+
+    #[test]
+    fn indexed_ground_obstructions_match_the_uncached_predicate() {
+        let mut obs = observation();
+        obs.known_rock = vec![TilePos::new(1, 1), TilePos::new(9, 6)];
+        obs.known_scrap = vec![(TilePos::new(3, 2), 0), (TilePos::new(8, 5), 50)];
+        obs.my_buildings = vec![building(
+            1,
+            0,
+            BuildingKind::Foundry,
+            TilePos::new(4, 3),
+            true,
+        )];
+        obs.ally_buildings = vec![building(
+            2,
+            1,
+            BuildingKind::RepairBay,
+            TilePos::new(9, 1),
+            true,
+        )];
+        obs.enemy_buildings = vec![
+            building(3, 2, BuildingKind::Array, TilePos::new(0, 6), false),
+            building(4, 2, BuildingKind::ScuttleCharge, TilePos::new(6, 1), true),
+        ];
+        let map = public_map(&obs, vec![(TilePos::new(7, 4), Terrain::Peak)]);
+        for domain in [Domain::Ground, Domain::Air] {
+            let plain = RouteProjection::new(&obs, domain);
+            let public = RouteProjection::with_public_terrain(&obs, domain, &map);
+            for y in -1..=obs.map_height {
+                for x in -1..=obs.map_width {
+                    let tile = TilePos::new(x, y);
+                    assert_eq!(
+                        plain.domain_open_memo(tile),
+                        domain_open(&obs, domain, tile)
+                    );
+                    assert_eq!(
+                        public.domain_open_memo(tile),
+                        domain_open(&obs, domain, tile) && public_terrain_open(&map, domain, tile)
+                    );
+                }
+            }
         }
     }
 

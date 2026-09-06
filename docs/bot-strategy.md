@@ -82,6 +82,60 @@ views.
 
 ## Allocation across domains
 
+### Battlefield responsibilities and grounded experience
+
+A shared assessment should connect investment to current battlefield needs.
+Group observed concentrations by physical and target domain, retain directly
+observed displacement with timestamps, and identify threatened assets and
+consequential uncertainty. Losing sight freezes the last observation; it does
+not authorize extrapolating a hidden trajectory. Anonymous radar establishes
+presence, not identity, composition, or strength. An observed departure is not
+proof that another location is undefended.
+
+General ground armies carry Defend, Pressure, Reserve, or Recover
+responsibilities without duplicating the Executive's unit ownership. Respond
+with useful reachable bodies, credit existing service once, and preserve
+protection and pressure elsewhere. Splitting and merging require exact atomic
+membership changes while safely staging, with valid minimums on both sides.
+Emergency withdrawal takes precedence over new assignments. Normal redirection
+uses an initial 300-tick hold and requires a 25% improvement afterward; current
+emergencies, invalidation, unsafe routes, and recovery bypass that hold.
+
+Scouting and Arrays serve decisions rather than map completion. A bounded sweep
+can investigate a lost force's approach, but an empty last-known tile does not
+establish that a mobile threat vanished. Arrays can supply early warning at
+relevant assets and approaches. Their anonymous detection cannot replace visual
+identification, and information arriving after a consumer's deadline has no
+credit for that decision.
+
+Owners report physical episodes, not inferred victories. Distinguish completion,
+partial progress, abort, ineffective execution, changed circumstances, and
+inconclusive outcomes. An empty, currently visible complete building footprint
+can establish that an objective is gone without attributing its destruction.
+Transport delivery and coordination release are not assault success; bounded
+follow-through observation must not retain ownership of handed-off units. Shared
+operation credit must not multiply one failure across its components.
+
+Initial experience defaults are 64 recent episodes and 128 contextual entries,
+with expired-first and then canonical oldest-first eviction. Context can change
+after one supported event; doctrine needs at least two distinct attributable
+episodes. Signed preferences start at zero and remain within `[-1024, 1024]`;
+one fully supported episode contributes at most 256. Linear decay returns them
+toward neutral within the lesser of 6,000 ticks and the seat's strategic-memory
+horizon. Counterevidence can reverse them sooner. These are implementation
+defaults, not final calibration.
+
+Expected return may shift at most one named allocation value band at preferences
+of `±512`; continuous preference breaks remaining effective-return ties before
+personality. Neutral experience preserves baseline ordering. Historical
+adjustments cannot invent stronger evidence, waive feasibility, or cancel paid
+work and retained obligations. Failed harvest and construction attempts use a
+300-tick retry delay and at most an 1,800-tick exclusion, with fresh legal
+checks before retry. General expiry never substitutes for contested harvest's
+exact safe sweep and observed safe return.
+
+### Comparable investment cases
+
 Each domain should present a structured investment case rather than claiming
 scrap merely because it has an available action. A useful case includes:
 

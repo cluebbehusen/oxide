@@ -148,6 +148,7 @@ fn asset(obs: &Observation, target: Target) -> Option<(TilePos, Domain, u32, boo
 
 pub(super) fn protection_requests(
     context: EconomicInvestmentContext<'_>,
+    battlefield: &crate::bot::battlefield::BattlefieldAssessment,
 ) -> Vec<ProtectionRequest> {
     let obs = context.obs;
     if obs.enemy_units.is_empty() {
@@ -166,20 +167,33 @@ pub(super) fn protection_requests(
             if !air && !needs_screen {
                 continue;
             }
-            let pressure = obs
-                .enemy_units
-                .iter()
-                .filter(|enemy| {
-                    enemy.hp > 0
-                        && (enemy.kind.stats().domain == Domain::Air) == air
-                        && enemy.kind.stats().weapons.iter().any(|weapon| {
-                            weapon.targets.covers(body)
-                                && enemy.tile.chebyshev(tile)
-                                    <= weapon.range.to_num::<i32>() + SERVICE_RADIUS
-                        })
-                })
-                .map(|enemy| strength(enemy.kind, enemy.hp, body == Domain::Air))
-                .sum::<u64>();
+            let pressure = if battlefield.observed
+                && battlefield.tick == obs.tick
+                && let Target::Building(id) = target
+            {
+                battlefield
+                    .pressure
+                    .iter()
+                    .find(|pressure| pressure.asset == id)
+                    .map_or(
+                        0,
+                        |pressure| if air { pressure.air } else { pressure.ground },
+                    )
+            } else {
+                obs.enemy_units
+                    .iter()
+                    .filter(|enemy| {
+                        enemy.hp > 0
+                            && (enemy.kind.stats().domain == Domain::Air) == air
+                            && enemy.kind.stats().weapons.iter().any(|weapon| {
+                                weapon.targets.covers(body)
+                                    && enemy.tile.chebyshev(tile)
+                                        <= weapon.range.to_num::<i32>() + SERVICE_RADIUS
+                            })
+                    })
+                    .map(|enemy| strength(enemy.kind, enemy.hp, body == Domain::Air))
+                    .sum::<u64>()
+            };
             if pressure == 0 {
                 continue;
             }

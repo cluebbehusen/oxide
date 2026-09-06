@@ -32,8 +32,22 @@ use serde::{Deserialize, Serialize};
 /// Harvester's current work node without revealing allied or enemy orders.
 /// Version 14 exposes which own units have queued or looping programs. Version
 /// 15 exposes exact owner-visible progress for the front of each training
-/// queue. Version 16 exposes exact own active repair targets.
-pub const OBSERVATION_VERSION: u32 = 16;
+/// queue. Version 16 exposes exact own active repair targets. Version 17 adds
+/// owner-only carried identities separately from available units.
+pub const OBSERVATION_VERSION: u32 = 17;
+
+/// An own passenger that remains alive but is unavailable for new assignments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarriedUnitObs {
+    /// Exact transport holding the passenger.
+    pub carrier: UnitId,
+    /// Passenger identity.
+    pub id: UnitId,
+    /// Passenger kind, for ordinary replacement valuation.
+    pub kind: UnitKind,
+    /// Current passenger health.
+    pub hp: u32,
+}
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +156,9 @@ pub struct Observation {
     pub map_height: i32,
     /// Own units, id order.
     pub my_units: Vec<UnitObs>,
+    /// Own carried passengers, ordered by carrier then passenger id. They are
+    /// not commandable inventory and reveal no allied or hostile manifests.
+    pub my_carried_units: Vec<CarriedUnitObs>,
     /// Own buildings (queue lengths matter for production decisions).
     pub my_buildings: Vec<BuildingObs>,
     /// Training queue contents per own building, aligned with
@@ -237,6 +254,7 @@ impl Default for Observation {
             map_width: 0,
             map_height: 0,
             my_units: Vec::new(),
+            my_carried_units: Vec::new(),
             my_buildings: Vec::new(),
             my_queues: Vec::new(),
             my_queue_progress: Vec::new(),
@@ -350,6 +368,7 @@ impl Observation {
             }
             if u.player == me {
                 obs.my_units.push(own_unit(u));
+                obs.observe_own_cargo(u);
                 if let Some(target) = own_repair_target(&u.order) {
                     obs.my_repair_targets.push((u.id, target));
                 }
@@ -435,6 +454,7 @@ impl Observation {
             }
             if u.player == me {
                 obs.my_units.push(own_unit(u));
+                obs.observe_own_cargo(u);
                 if let Some(target) = own_repair_target(&u.order) {
                     obs.my_repair_targets.push((u.id, target));
                 }
@@ -568,6 +588,7 @@ impl Observation {
             map_width: state.map().width(),
             map_height: state.map().height(),
             my_units: Vec::new(),
+            my_carried_units: Vec::new(),
             my_buildings: Vec::new(),
             my_queues: Vec::new(),
             my_queue_progress: Vec::new(),
@@ -596,6 +617,20 @@ impl Observation {
             my_shells: 0,
             incoming_shells: Vec::new(),
         }
+    }
+}
+
+impl Observation {
+    fn observe_own_cargo(&mut self, carrier: &crate::state::Unit) {
+        let start = self.my_carried_units.len();
+        self.my_carried_units
+            .extend(carrier.cargo.iter().map(|rider| CarriedUnitObs {
+                carrier: carrier.id,
+                id: rider.id,
+                kind: rider.kind,
+                hp: rider.hp,
+            }));
+        self.my_carried_units[start..].sort_unstable_by_key(|rider| rider.id);
     }
 }
 
@@ -731,7 +766,7 @@ mod tests {
             Observation::omniscient(&state, PlayerId(0)),
         ] {
             assert_eq!(own.repair_target(worker), Some(Target::Building(patient)));
-            assert_eq!(own.version, 16);
+            assert_eq!(own.version, OBSERVATION_VERSION);
             let mut missing_targets = serde_json::to_value(&own).unwrap();
             missing_targets
                 .as_object_mut()
@@ -907,9 +942,38 @@ mod tests {
                 .find(|unit| unit.id == skyhook)
                 .expect("the owner observes its Skyhook");
             assert_eq!(transport.cargo, expected_occupancy);
+            assert_eq!(observation.my_carried_units.len(), 3);
+            for passenger in &observation.my_carried_units {
+                assert_eq!(passenger.carrier, skyhook);
+                assert!(
+                    !observation
+                        .my_units
+                        .iter()
+                        .any(|unit| unit.id == passenger.id)
+                );
+                let actual = state
+                    .unit(skyhook)
+                    .unwrap()
+                    .cargo
+                    .iter()
+                    .find(|unit| unit.id == passenger.id)
+                    .unwrap();
+                assert_eq!((passenger.kind, passenger.hp), (actual.kind, actual.hp));
+            }
+            assert_eq!(
+                serde_json::from_str::<Observation>(&serde_json::to_string(&observation).unwrap())
+                    .unwrap(),
+                observation
+            );
         }
 
         let opponent = Observation::omniscient(&state, PlayerId(1));
+        assert!(opponent.my_carried_units.is_empty());
+        assert!(
+            Observation::fog_honest(&state, PlayerId(1))
+                .my_carried_units
+                .is_empty()
+        );
         let transport = opponent
             .enemy_units
             .iter()

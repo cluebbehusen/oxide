@@ -18,6 +18,7 @@ fn obs_base() -> Observation {
         map_width: 24,
         map_height: 13,
         my_units: Vec::new(),
+        my_carried_units: Vec::new(),
         my_buildings: Vec::new(),
         my_queues: Vec::new(),
         my_queue_progress: Vec::new(),

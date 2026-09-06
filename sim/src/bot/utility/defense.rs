@@ -3427,7 +3427,11 @@ fn shortest_path_between_cached(
 
     let mut best: Option<(TilePos, TilePos, Vec<TilePos>)> = None;
     let mut scratch = chassis::path::AstarScratch::default();
+    let mut proven_unreachable = BTreeSet::new();
     for (start, goal) in pairs {
+        if proven_unreachable.contains(&(start, goal)) {
+            continue;
+        }
         if best
             .as_ref()
             .is_some_and(|(_, _, path)| octile_cost(start, goal) > path_cost(path))
@@ -3503,7 +3507,26 @@ fn shortest_path_between_cached(
                 path
             }
         };
-        let Some(path) = path else { continue };
+        let Some(path) = path else {
+            if scratch.last_search_exhausted() {
+                // Both baseline and candidate searches are lower bounds on
+                // connectivity after adding the candidate's blocking tiles.
+                for reached_start in starts
+                    .iter()
+                    .copied()
+                    .filter(|tile| scratch.last_search_reached(*tile))
+                {
+                    for unreachable_goal in goals
+                        .iter()
+                        .copied()
+                        .filter(|tile| !scratch.last_search_reached(*tile))
+                    {
+                        proven_unreachable.insert((reached_start, unreachable_goal));
+                    }
+                }
+            }
+            continue;
+        };
         let replace = best
             .as_ref()
             .is_none_or(|(best_start, best_goal, best_path)| {

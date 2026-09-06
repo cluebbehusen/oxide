@@ -316,6 +316,37 @@ impl Executive {
             }
 
             let centroid = centroid(&members, centroid_frame);
+            if player_facing
+                && army.state != ArmyState::Withdrawing
+                && let Some(mission) = self.missions.get(&army.id)
+                && mission.purpose == ArmyPurpose::Recover
+                && centroid.chebyshev(mission.goal) > 2
+            {
+                let (mine, theirs) = local_strength(obs, &members);
+                if mine.saturating_mul(u64::from(WITHDRAW_MARGIN_DEN))
+                    < theirs.saturating_mul(u64::from(WITHDRAW_MARGIN_NUM))
+                    && !tiles_within(centroid, army.staging, 2)
+                {
+                    army.state = ArmyState::Engaging;
+                } else {
+                    let bounced = members.iter().all(|unit| unit.idle)
+                        && army.issued.is_some_and(|(tick, from)| {
+                            obs.tick > tick && centroid.chebyshev(from) <= 1
+                        });
+                    if obs.tick >= mission.deadline
+                        || bounced
+                        || wedged(
+                            &mut army.progress,
+                            centroid.chebyshev(mission.goal),
+                            obs.tick,
+                        )
+                    {
+                        army.members.clear();
+                    }
+                    // A return is an ordinary Move, not permission to reacquire a chase.
+                    continue;
+                }
+            }
             match army.state {
                 ArmyState::Staging => {
                     if player_facing
@@ -629,6 +660,9 @@ impl Executive {
             }
         }
         self.armies.retain(|a| !a.members.is_empty());
+        if player_facing {
+            self.observe_ground_outcomes(obs);
+        }
         out
     }
 
@@ -1224,6 +1258,218 @@ mod tests {
     }
 
     #[test]
+    fn recover_mission_does_not_reacquire_or_repeat_a_busy_return() {
+        let goal = TilePos::new(2, 2);
+        let mut obs = observation(
+            24,
+            (40, 30),
+            vec![unit(
+                1,
+                PlayerId(0),
+                UnitKind::Sentinel,
+                TilePos::new(14, 10),
+                200,
+                false,
+            )],
+            vec![unit(
+                2,
+                PlayerId(1),
+                UnitKind::Sentinel,
+                TilePos::new(18, 10),
+                20,
+                false,
+            )],
+        );
+        let mut executive = Executive::default();
+        let mut body = army(0, vec![UnitId(1)], ArmyState::Staging, goal);
+        body.issued = Some((0, TilePos::new(16, 10)));
+        executive.armies.push(body);
+        executive.missions.insert(
+            ArmyId(0),
+            ArmyMission {
+                purpose: ArmyPurpose::Recover,
+                goal,
+                accepted_at: 0,
+                deadline: 1800,
+                score: 0,
+            },
+        );
+        for tick in [24, 48, 72] {
+            obs.tick = tick;
+            assert!(
+                executive
+                    .maintain_player_facing(PlayerId(0), &obs, goal)
+                    .is_empty()
+            );
+            assert_eq!(executive.armies[0].state, ArmyState::Staging);
+            assert_eq!(executive.missions[&ArmyId(0)].deadline, 1800);
+        }
+        obs.my_units[0].tile = goal;
+        obs.enemy_units[0].tile = TilePos::new(5, 2);
+        obs.tick = 96;
+        executive.maintain_player_facing(PlayerId(0), &obs, goal);
+        assert_eq!(executive.armies[0].state, ArmyState::Engaging);
+    }
+
+    #[test]
+    fn blocked_recovery_releases_members_without_fabricating_casualties() {
+        let from = TilePos::new(14, 10);
+        let goal = TilePos::new(2, 2);
+        let obs = observation(
+            24,
+            (40, 30),
+            vec![unit(1, PlayerId(0), UnitKind::Sentinel, from, 200, true)],
+            Vec::new(),
+        );
+        let mut executive = Executive::default();
+        let mut body = army(0, vec![UnitId(1)], ArmyState::Staging, goal);
+        body.issued = Some((0, from));
+        executive.armies.push(body);
+        executive.missions.insert(
+            ArmyId(0),
+            ArmyMission {
+                purpose: ArmyPurpose::Recover,
+                goal,
+                accepted_at: 0,
+                deadline: 1800,
+                score: 0,
+            },
+        );
+        assert!(
+            executive
+                .maintain_player_facing(PlayerId(0), &obs, goal)
+                .is_empty()
+        );
+        assert!(executive.armies.is_empty());
+    }
+
+    #[test]
+    fn exact_reorganization_is_atomic_and_keeps_both_minimums() {
+        let staging = TilePos::new(3, 3);
+        let obs = observation(
+            24,
+            (40, 30),
+            (1..=6)
+                .map(|id| unit(id, PlayerId(0), UnitKind::Sentinel, staging, 200, true))
+                .collect(),
+            Vec::new(),
+        );
+        let mut executive = Executive::default();
+        executive.armies.push(army(
+            0,
+            (1..=6).map(UnitId).collect(),
+            ArmyState::Staging,
+            staging,
+        ));
+        executive.next_army = 1;
+        let before = executive.clone();
+        assert_eq!(
+            executive.form_exact_army(
+                &obs,
+                None,
+                &[UnitId(1), UnitId(2), UnitId(3), UnitId(4), UnitId(5)],
+                staging,
+                2,
+                &[]
+            ),
+            None
+        );
+        assert_eq!(executive, before);
+        assert_eq!(
+            executive.form_exact_army(
+                &obs,
+                None,
+                &[UnitId(1), UnitId(2)],
+                staging,
+                2,
+                &[UnitId(2)]
+            ),
+            None
+        );
+        assert_eq!(executive, before);
+        assert_eq!(
+            executive.form_exact_army(&obs, None, &[UnitId(1), UnitId(2)], staging, 2, &[]),
+            Some(ArmyId(1))
+        );
+        assert_eq!(
+            executive.armies[0].members,
+            vec![UnitId(3), UnitId(4), UnitId(5), UnitId(6)]
+        );
+        assert_eq!(executive.armies[1].members, vec![UnitId(1), UnitId(2)]);
+    }
+
+    #[test]
+    fn engaged_or_incompatible_staging_bodies_cannot_be_reorganized() {
+        let staging = TilePos::new(3, 3);
+        let mut obs = observation(
+            24,
+            (40, 30),
+            (1..=4)
+                .map(|id| unit(id, PlayerId(0), UnitKind::Sentinel, staging, 200, true))
+                .collect(),
+            Vec::new(),
+        );
+        let mut executive = Executive::default();
+        executive.armies.push(army(
+            0,
+            vec![UnitId(1), UnitId(2)],
+            ArmyState::Staging,
+            staging,
+        ));
+        executive.armies.push(army(
+            1,
+            vec![UnitId(3), UnitId(4)],
+            ArmyState::Staging,
+            staging,
+        ));
+        executive.missions.insert(
+            ArmyId(1),
+            ArmyMission {
+                purpose: ArmyPurpose::Defend(BuildingId(1)),
+                goal: staging,
+                accepted_at: 0,
+                deadline: 1800,
+                score: 100,
+            },
+        );
+        let before = executive.clone();
+        assert_eq!(
+            executive.form_exact_army(
+                &obs,
+                Some(ArmyId(1)),
+                &[UnitId(1), UnitId(2)],
+                staging,
+                2,
+                &[]
+            ),
+            None
+        );
+        assert_eq!(executive, before);
+        executive.missions.clear();
+        obs.enemy_units.push(unit(
+            100,
+            PlayerId(1),
+            UnitKind::Sentinel,
+            TilePos::new(5, 3),
+            200,
+            true,
+        ));
+        let before = executive.clone();
+        assert_eq!(
+            executive.form_exact_army(
+                &obs,
+                Some(ArmyId(1)),
+                &[UnitId(1), UnitId(2)],
+                staging,
+                2,
+                &[]
+            ),
+            None
+        );
+        assert_eq!(executive, before);
+    }
+
+    #[test]
     fn coordinated_static_defenses_lock_one_visible_threat_without_command_churn() {
         let primary = unit(
             100,
@@ -1677,6 +1923,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
         let mut right = Executive {
             armies: vec![right_body],
@@ -1684,6 +1933,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         assert!(
@@ -1769,6 +2021,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         let commands = executive.maintain_player_facing(PlayerId(0), &obs, TilePos::new(4, 4));
@@ -1802,6 +2057,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
         assert!(
             pushing
@@ -1827,6 +2085,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
         assert!(
             withdrawing
@@ -1910,6 +2171,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         let mut contact = observation(10, (40, 40), units.clone(), vec![enemy.clone()]);
@@ -2035,6 +2299,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         let mut uncoordinated = executive.clone();
@@ -2178,6 +2445,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         for permuted in [false, true] {
@@ -2247,6 +2517,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         let obs = observation(0, (40, 40), members.clone(), vec![parked.clone()]);
@@ -2353,6 +2626,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
         let spread_body = vec![
             unit(
@@ -2487,6 +2763,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
         let obs = observation(12, (40, 40), members, vec![harmless_aa]);
 
@@ -2552,6 +2831,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         let commands = executive.maintain_player_facing(PlayerId(0), &obs, staging);
@@ -2627,6 +2909,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         let commands = executive.maintain(PlayerId(0), &obs, staging);
@@ -2672,6 +2957,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
         let obs = observation(12, (40, 40), vec![bombard], vec![harmless_aa]);
 
@@ -2727,6 +3015,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         let commands = executive.maintain_player_facing(PlayerId(0), &contact_ended, staging);
@@ -2801,6 +3092,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         assert!(
@@ -2855,6 +3149,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         let commands = executive.maintain_player_facing(PlayerId(0), &obs, staging);
@@ -2959,6 +3256,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         let commands = executive.maintain_player_facing(PlayerId(0), &obs, staging);
@@ -2999,6 +3299,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         let (player_facing, commands) = assert_reference_parity(&executive, &obs, staging, true);
@@ -3041,6 +3344,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         let contested = observation(20, (40, 40), vec![sentinel.clone()], vec![enemy]);
@@ -3119,6 +3425,9 @@ mod tests {
             rear: Vec::new(),
             exhausted_rear: Vec::new(),
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         for player_facing in [false, true] {
@@ -3228,6 +3537,9 @@ mod tests {
             }],
             exhausted_rear: vec![UnitId(997)],
             player_frame: None,
+            missions: Default::default(),
+            ground_outcomes: Default::default(),
+            mission_decisions: Default::default(),
         };
 
         let (player_facing, player_commands) =

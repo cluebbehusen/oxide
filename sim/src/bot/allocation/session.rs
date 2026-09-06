@@ -276,11 +276,32 @@ impl PlannerSnapshots {
     }
 
     fn restore(self, participants: &mut AllocationParticipants<'_>) {
-        *participants.strategy = self.strategy;
-        *participants.team = self.team;
-        *participants.lifts = self.lifts;
-        *participants.raids = self.raids;
+        restore_ownership(self.strategy, participants.strategy, |planner| {
+            &mut planner.outcomes
+        });
+        restore_ownership(self.team, participants.team, |planner| {
+            &mut planner.outcomes
+        });
+        restore_ownership(self.lifts, participants.lifts, |planner| {
+            &mut planner.outcomes
+        });
+        restore_ownership(self.raids, participants.raids, |planner| {
+            &mut planner.outcomes
+        });
     }
+}
+
+fn restore_ownership<T>(
+    mut snapshot: Option<T>,
+    current: &mut Option<T>,
+    outcomes: fn(&mut T) -> &mut crate::bot::experience::OutcomeJournal,
+) {
+    // Commit adapters do not observe outcomes. Retained-work observations are
+    // facts even when speculative capital or membership must be rolled back.
+    if let (Some(restored), Some(observed)) = (snapshot.as_mut(), current.as_mut()) {
+        *outcomes(restored) = std::mem::take(outcomes(observed));
+    }
+    *current = snapshot;
 }
 
 /// Immutable evidence shared by every phase of one allocation pass.
@@ -3279,6 +3300,10 @@ impl<'a> AllocationSession<'a> {
                         }
                     }
                     if allocation_ok {
+                        allocation.apply_experience(
+                            &self.participants.policy.experience,
+                            self.context.observation.tick,
+                        );
                         match allocation.resolve(
                             AllocationPersonality::from_profile(self.context.profile),
                             self.trace.as_deref_mut(),
@@ -5205,6 +5230,53 @@ mod tests {
     use crate::ids::{BuildingId, PlayerId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance};
     use crate::stats::{BuildingKind, UnitKind};
+
+    #[test]
+    fn rollback_preserves_observed_outcomes_without_committing_new_ownership() {
+        use crate::bot::experience::{
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+        };
+        let mut policy = UtilityPolicy::default();
+        let mut strategy = None;
+        let mut team = None;
+        let mut lifts = None;
+        let mut raids = Some(RaidPlanner::new());
+        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+        let obs = observation();
+        let journal = &mut raids.as_mut().unwrap().outcomes;
+        journal.watch(
+            &obs,
+            EpisodeId {
+                owner: EpisodeOwner::Raid,
+                serial: 1,
+            },
+            ExperienceKey {
+                doctrine: Doctrine::Pressure,
+                x: 3,
+                y: 3,
+                subject: 4,
+            },
+            &[],
+            1,
+        );
+        journal.finish(
+            &obs,
+            Outcome::Aborted,
+            OutcomeReason::UnsafeApproach,
+            750,
+            false,
+        );
+        let observed = journal.clone();
+        snapshots.restore(&mut AllocationParticipants {
+            policy: &mut policy,
+            strategy: &mut strategy,
+            team: &mut team,
+            lifts: &mut lifts,
+            raids: &mut raids,
+        });
+        assert_eq!(raids.as_ref().unwrap().outcomes, observed);
+        assert!(raids.as_ref().unwrap().operation().is_none());
+    }
 
     fn observation() -> Observation {
         Observation {

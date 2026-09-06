@@ -227,7 +227,7 @@ impl UtilityPolicy {
         SupportWorkSnapshot {
             patients,
             danger,
-            protection: super::support_deployment::protection_requests(context),
+            protection: super::support_deployment::protection_requests(context, &self.battlefield),
         }
     }
 

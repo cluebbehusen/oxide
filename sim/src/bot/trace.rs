@@ -33,7 +33,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// Schema version for serialized decision traces.
-pub const DECISION_TRACE_VERSION: u32 = 10;
+pub const DECISION_TRACE_VERSION: u32 = 11;
 
 const RESOURCE_FORECAST_TICKS: Tick = crate::TICKS_PER_SECOND as Tick * 60;
 const ALLOCATION_TRACE_ENTRY_LIMIT: usize = 32;
@@ -80,6 +80,14 @@ pub struct DecisionTrace {
     pub support: SupportTrace,
     /// Exact question ownership, preparation, dispatch, and local recovery.
     pub reconnaissance: ReconnaissanceTrace,
+    /// Shared current battlefield facts and explicitly unresolved regions.
+    pub battlefield: Option<super::battlefield::BattlefieldAssessment>,
+    /// Decayed experience and the bounded evidence supporting it.
+    pub experience: ExperienceTrace,
+    /// Exact Executive responsibilities at the start of this decision.
+    pub missions: Vec<(u32, super::executive::ArmyMission)>,
+    /// Exact mission lowering receipts, including rejected ownership changes.
+    pub mission_decisions: Vec<super::executive::MissionDecision>,
     /// Input and output size of the utility-policy pass.
     pub utility: UtilityTrace,
     /// Final intent-to-command lowering summary.
@@ -120,10 +128,24 @@ impl DecisionTrace {
             connected_force: ConnectedForceTrace::default(),
             support: SupportTrace::default(),
             reconnaissance: ReconnaissanceTrace::default(),
+            battlefield: None,
+            experience: ExperienceTrace::default(),
+            missions: Vec::new(),
+            mission_decisions: Vec::new(),
             utility: UtilityTrace::default(),
             lowering: LoweringTrace::default(),
         }
     }
+}
+
+/// Bounded learning diagnostics, never read back into the decision pipeline.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ExperienceTrace {
+    /// Linear decay horizon, limited by the seat's strategic memory.
+    pub horizon: Tick,
+    pub(crate) episodes: Vec<super::experience::EpisodeReport>,
+    pub(crate) contexts: Vec<(super::experience::ExperienceKey, i16)>,
+    pub(crate) doctrine: Vec<(super::experience::Doctrine, i16)>,
 }
 
 /// Why a finite repair assignment started, continued, or released its claims.
@@ -1057,6 +1079,10 @@ pub struct AllocationProposalTrace {
     pub key: ProposalKeyTrace,
     /// Five named comparison bands supplied by the owning domain.
     pub case: ProposalCaseTrace,
+    /// Bounded learned preference, separate from raw evidence and consequence.
+    pub experience: i16,
+    /// Strategic return band actually compared after the bounded adjustment.
+    pub effective_value: StrategicValueTrace,
     /// Positive personality weight, absent only if allocation rejected its inputs.
     pub personality_weight: Option<u128>,
     /// Exact bounded shared-resource claims required by the proposal.
@@ -1070,6 +1096,12 @@ impl<Payload> From<&InvestmentProposal<Payload>> for AllocationProposalTrace {
         Self {
             key: proposal.key().into(),
             case: proposal.case().into(),
+            experience: proposal.experience(),
+            effective_value: ProposalCaseTrace::from(ProposalCase {
+                value: proposal.effective_value(),
+                ..proposal.case()
+            })
+            .value,
             personality_weight: None,
             claims: proposal.claims().into(),
             disposition: ProposalDispositionTrace::NotEvaluated,
@@ -1100,6 +1132,11 @@ pub enum ReconConsumerTrace {
     /// Identify an approach threatening a specific defended asset.
     Defense {
         /// Own asset consuming the information.
+        building: BuildingId,
+    },
+    /// Recheck a bounded region after losing a previously observed force.
+    Approach {
+        /// Own or allied asset consuming the information.
         building: BuildingId,
     },
 }
@@ -1145,6 +1182,9 @@ pub struct ReconAssignmentTrace {
     pub phase: ReconPhaseTrace,
     /// Last command goal, retained to avoid reissuing unchanged orders.
     pub dispatch: Option<TilePos>,
+    /// Distinct currently or previously inspected tiles in a bounded approach sweep.
+    /// This is partial evidence, not proof that a mobile threat disappeared.
+    pub inspected_tiles: u32,
 }
 
 /// Bounded recovery for one question, independent of all other reconnaissance.
@@ -1295,6 +1335,7 @@ impl ReconnaissanceTrace {
                         funding_deadline: work.proposal.funding_deadline(),
                         phase: work.phase.trace(),
                         dispatch: work.dispatch,
+                        inspected_tiles: bounded_count(work.inspected.len()),
                     })
                     .collect(),
             ),
@@ -1325,6 +1366,7 @@ impl From<crate::bot::utility::ReconConsumer> for ReconConsumerTrace {
             ReconConsumer::Economy => Self::Economy,
             ReconConsumer::HarvestRecovery => Self::HarvestRecovery,
             ReconConsumer::Defense(building) => Self::Defense { building },
+            ReconConsumer::Approach(building) => Self::Approach { building },
         }
     }
 }
@@ -2280,6 +2322,8 @@ pub enum OutrankingBasisTrace {
     TimeToImpact,
     /// The selected portfolio had the stronger execution-safety histogram.
     Safety,
+    /// Bounded experience broke an effective-return semantic tie.
+    Experience,
     /// Positive personality emphasis broke a semantic tie.
     Personality,
     /// Cross-domain rank tied and one domain preferred this exact alternative.
@@ -2298,6 +2342,7 @@ impl From<OutrankingBasis> for OutrankingBasisTrace {
             OutrankingBasis::StrategicValue => Self::StrategicValue,
             OutrankingBasis::TimeToImpact => Self::TimeToImpact,
             OutrankingBasis::Safety => Self::Safety,
+            OutrankingBasis::Experience => Self::Experience,
             OutrankingBasis::Personality => Self::Personality,
             OutrankingBasis::DomainPreference => Self::DomainPreference,
             OutrankingBasis::LowerCapital => Self::LowerCapital,
@@ -4453,6 +4498,8 @@ mod tests {
             proposals: BoundedTraceEntries::from_vec(vec![
                 AllocationProposalTrace {
                     key: expansion.into(),
+                    experience: 0,
+                    effective_value: StrategicValueTrace::Material,
                     case,
                     personality_weight: None,
                     claims: AllocationClaimsTrace::default(),
@@ -4460,6 +4507,8 @@ mod tests {
                 },
                 AllocationProposalTrace {
                     key: offense.into(),
+                    experience: 0,
+                    effective_value: StrategicValueTrace::Material,
                     case,
                     personality_weight: None,
                     claims: AllocationClaimsTrace::default(),
@@ -4690,7 +4739,7 @@ mod tests {
 
     #[test]
     fn serialized_trace_has_a_fixed_schema() {
-        assert_eq!(DECISION_TRACE_VERSION, 10);
+        assert_eq!(DECISION_TRACE_VERSION, 11);
         let mut trace = DecisionTrace::from_observation(&Observation::default());
         trace.gates.opening_core = Some(CoreGateTrace {
             projected_strength: 1,
@@ -4740,6 +4789,8 @@ mod tests {
             proposals: BoundedTraceEntries::from_vec(vec![
                 AllocationProposalTrace {
                     key: expansion_key,
+                    experience: 0,
+                    effective_value: StrategicValueTrace::Material,
                     case: ProposalCaseTrace {
                         urgency: UrgencyTrace::Timely,
                         confidence: ConfidenceTrace::Current,
@@ -4776,6 +4827,8 @@ mod tests {
                 },
                 AllocationProposalTrace {
                     key: defense_key,
+                    experience: 0,
+                    effective_value: StrategicValueTrace::Material,
                     case: ProposalCaseTrace {
                         urgency: UrgencyTrace::Timely,
                         confidence: ConfidenceTrace::Supported,
@@ -4935,6 +4988,10 @@ mod tests {
             trace.keys().map(String::as_str).collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 "budget",
+                "battlefield",
+                "experience",
+                "missions",
+                "mission_decisions",
                 "allocation",
                 "channels",
                 "connected_force",
@@ -5004,7 +5061,15 @@ mod tests {
         };
         assert_eq!(
             proposal.keys().map(String::as_str).collect::<BTreeSet<_>>(),
-            BTreeSet::from(["case", "claims", "disposition", "key", "personality_weight",])
+            BTreeSet::from([
+                "case",
+                "claims",
+                "disposition",
+                "key",
+                "personality_weight",
+                "effective_value",
+                "experience"
+            ])
         );
         let Some(Value::Object(case)) = proposal.get("case") else {
             panic!("proposal case serializes as an object");
