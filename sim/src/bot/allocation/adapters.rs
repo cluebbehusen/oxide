@@ -223,6 +223,12 @@ pub(crate) fn standing_force_investment_proposal(
         )?
     }
     .with_minimum_residual_scrap(proposal.minimum_residual_scrap());
+    let claims = claims.with_paid_queue(
+        proposal
+            .raid
+            .as_ref()
+            .map_or_else(Vec::new, |raid| raid.new_paid_claims()),
+    );
     let case = proposal.case();
     let (key, payload) =
         if proposal.reason() == crate::bot::standing_force::StandingForceReason::WoundedSupport {
@@ -379,7 +385,6 @@ fn connected_claim_bundle(
     let paid = claims
         .paid_providers()
         .iter()
-        .filter(|provider| provider.kind().role() == crate::stats::Role::Scout)
         .map(|provider| super::PaidQueueClaim {
             producer: provider.producer(),
             kind: provider.kind(),

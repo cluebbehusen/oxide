@@ -602,6 +602,92 @@ fn healthy_precontact_roster_has_no_speculative_tender_or_scuttler_purchase() {
 }
 
 #[test]
+fn raid_keeps_its_live_member_and_paid_occurrence_through_brain_allocation() {
+    use oxide_sim::bot::trace::{ChannelPhase, ChannelState};
+    let mut scenario = three_fronts();
+    scenario.players[0].scrap = 2_000;
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Array,
+        x: 54,
+        y: 3,
+    });
+    scenario.units.push(UnitSpec {
+        player: 0,
+        kind: UnitKind::Scuttler,
+        x: 7,
+        y: 15,
+    });
+    let mut state = scenario.build().unwrap();
+    let original = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Scuttler)
+        .unwrap()
+        .id;
+    let mut brain = brain(&scenario, BotDifficulty::Prime);
+    let mut bought = 0;
+    let mut saw_paid = false;
+    let mut launched = false;
+    for _ in 0..1_200 {
+        let decision = brain.act_traced(&state);
+        bought += decision
+            .commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command.command,
+                    Command::Train {
+                        kind: UnitKind::Scuttler,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert!(bought <= 1, "the accepted live member must not be replaced");
+        if let Some(trace) = &decision.trace {
+            if bought > 0 && !launched {
+                assert!(
+                    trace.channels.raid.effects.unit_claims.contains(&original),
+                    "raid lost its member at tick {}",
+                    state.current_tick()
+                );
+            }
+            saw_paid |= trace
+                .allocation
+                .obligations
+                .entries
+                .iter()
+                .any(|obligation| {
+                    obligation
+                        .claims
+                        .paid_queue
+                        .entries
+                        .iter()
+                        .any(|claim| claim.kind == UnitKind::Scuttler)
+                });
+            launched = matches!(
+                trace.channels.raid.after,
+                ChannelState::Active(ChannelPhase::RaidIngress)
+            );
+        }
+        assert_legal(&state.tick(&decision.commands));
+        if launched {
+            break;
+        }
+    }
+    assert_eq!(bought, 1);
+    assert!(
+        saw_paid,
+        "paid raid ownership must enter the next allocation"
+    );
+    assert!(
+        launched,
+        "the same member must launch with the purchased partner"
+    );
+}
+
+#[test]
 fn question_ownership_preserves_traced_and_untraced_commands_at_every_difficulty() {
     for difficulty in BotDifficulty::ALL {
         let scenario = three_fronts();

@@ -219,8 +219,8 @@ pub(super) fn coordinate_residual_work(
         && context.allow_new_voluntary_operations
         && can_admit_optional_raid(context.tuning, strategic_load);
     if !raid_was_active && (raid_claimed || can_begin_raid) {
-        let raid_exclusions =
-            PlannerClaims::new(context.enlisted, strategy, raids, lifts).all(&team_core_claims);
+        let raid_exclusions = PlannerClaims::new(context.enlisted, strategy, raids, lifts)
+            .without_raid(&team_core_claims);
         if let Some(planner) = raids.as_mut() {
             raid_decision = planner.think_with_admission(
                 RaidPlanningContext::new(

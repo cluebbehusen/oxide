@@ -43,7 +43,10 @@ an ordinary command source rather than a separate ruleset.
   Reachable workers, paid Tenders, and delayed Bay service reduce the same
   finite repair demand. Exact protective deployments feed missing screen and
   anti-air work to the existing Standing Force purchaser. Own repair targets are
-  visible to the controller; allied and hostile programs remain opaque.
+  visible to the controller; allied and hostile programs remain opaque. Busy
+  protectors return to their asset before resuming defense. Raid preparation
+  retains its objective, exact live members, and paid queue occurrences through
+  spawning and launch, excluding them from competing operation inventory.
   Persistent voluntary repairs renew a current-bank debit through the next
   decision boundary and stop when unfunded. Reconnaissance retains independent
   questions, exact live or paid observers, fixed useful deadlines, and

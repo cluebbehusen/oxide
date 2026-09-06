@@ -132,6 +132,11 @@ impl<'a> PlannerClaims<'a> {
         prior_planner_claims(&[], self.air(), relief, self.raid_reservations(), None)
     }
 
+    /// External owners from the raid planner's point of view.
+    pub(crate) fn without_raid(&self, relief: &[UnitId]) -> Vec<UnitId> {
+        prior_planner_claims(self.enlisted, self.air(), relief, &[], self.lift())
+    }
+
     /// Every claim from every source.
     pub(crate) fn all(&self, relief: &[UnitId]) -> Vec<UnitId> {
         prior_planner_claims(
@@ -472,6 +477,14 @@ impl<'a> AllocationSession<'a> {
                 Some(self.context.public_map),
                 Some(self.context.orientation),
             );
+            self.recon_paid_exclusions.extend(
+                planner
+                    .paid_claims()
+                    .iter()
+                    .map(|claim| (claim.producer, claim.kind, claim.occurrence)),
+            );
+            self.recon_paid_exclusions.sort_unstable();
+            self.recon_paid_exclusions.dedup();
         }
         let mut claims = self.snapshot_claims();
         let mut obligations = self.collect_legacy_obligations(&claims);
@@ -1012,6 +1025,21 @@ impl<'a> AllocationSession<'a> {
         let resources = ResourceSnapshot::from_observation(self.context.observation);
         let air_work = self.economic_air_work();
         let mut obligations = Vec::new();
+        if let Some(planner) = self.participants.raids.as_ref()
+            && !planner.paid_claims().is_empty()
+        {
+            obligations.push(imported_obligation(
+                ObligationClass::PersistentPlan,
+                planner
+                    .preparation_started_at()
+                    .unwrap_or(self.context.observation.tick),
+                ObligationKey::Legacy {
+                    channel: LegacyChannel::Raid,
+                    sequence: 2,
+                },
+                ClaimBundle::default().with_paid_queue(planner.paid_claims().to_vec()),
+            ));
+        }
         for deployment in &self.participants.policy.support_deployments.active {
             obligations.push(imported_obligation(
                 ObligationClass::PersistentPlan,
@@ -2296,7 +2324,11 @@ impl<'a> AllocationSession<'a> {
         let standing_force_derivation = StandingForceDerivation {
             projection_targets: self.standing_force_projection_targets(),
             expansion_security_need,
-            raid: self.raid_work.clone().filter(|request| request.missing > 0),
+            raid: self.raid_work.clone().filter(|request| {
+                request.missing > 0
+                    || !request.newly_claimed.is_empty()
+                    || !request.new_paid_claims().is_empty()
+            }),
         };
         let mut capability_demands = None;
         let mut derive_standing_force =
@@ -2519,6 +2551,14 @@ impl<'a> AllocationSession<'a> {
 
     fn committed_standing_production(&mut self) -> Vec<StandingProductionCommitment> {
         let mut committed = Vec::new();
+        if let Some(planner) = self.participants.raids.as_ref() {
+            committed.extend(
+                planner
+                    .paid_claims()
+                    .iter()
+                    .map(|claim| StandingProductionCommitment::paid(claim.producer, claim.kind)),
+            );
+        }
         if let Some(planner) = self.participants.strategy.as_mut() {
             committed.extend(
                 planner
@@ -3517,7 +3557,14 @@ impl<'a> AllocationSession<'a> {
                     && job.enqueued_at == self.context.observation.tick
                     && job.kind == standing_force.key_kind()
             });
-            debug_assert_eq!(scheduled, standing_force.accumulation().is_none());
+            debug_assert_eq!(
+                scheduled,
+                standing_force.accumulation().is_none()
+                    && standing_force
+                        .raid
+                        .as_ref()
+                        .is_none_or(|raid| raid.missing > 0)
+            );
             if *allocation_ok && let Some(request) = standing_force.raid {
                 let count = producer_schedule
                     .iter()
@@ -3535,6 +3582,12 @@ impl<'a> AllocationSession<'a> {
                 if count != request.missing
                     || !self.participants.raids.as_mut().is_some_and(|planner| {
                         planner.commit_procurement(request, self.context.observation.tick)
+                            && planner.bind_procurement(
+                                self.context.observation,
+                                &producer_schedule,
+                                self.context.public_map,
+                                self.context.orientation,
+                            )
                     })
                 {
                     retain_first_coordinator_failure(
@@ -5793,6 +5846,119 @@ mod tests {
             StrategicDecision::default(),
             None,
         )
+    }
+
+    #[test]
+    fn retained_raid_queues_are_obligations_before_connected_package_derivation() {
+        use crate::bot::raid::RaidPlanningContext;
+        const HOME: TilePos = TilePos::new(3, 10);
+        for live in [0, 1] {
+            let mut obs = connected_observation(120, 10_000);
+            if live == 1 {
+                obs.my_units
+                    .push(owned_unit(101, UnitKind::Scuttler, HOME.offset(4, 0)));
+            }
+            obs.my_queues[0] = vec![UnitKind::Scuttler; 2 - live];
+            let profile = prime_profile();
+            let tuning = DifficultyTuning::for_level(profile.difficulty);
+            let map = connected_briefing(&obs);
+            let orientation = Orientation::for_home(&obs, HOME);
+            let resources = ResourceSnapshot::from_observation(&obs);
+            let mut raid = RaidPlanner::new();
+            let request = raid
+                .muster_request(
+                    RaidPlanningContext::new(&profile, tuning, &obs, HOME, &[], &[]),
+                    &resources,
+                    Some(&map),
+                    Some(orientation),
+                )
+                .unwrap();
+            assert_eq!(request.missing, 0);
+            assert!(raid.commit_procurement(request, obs.tick));
+            assert!(raid.bind_procurement(&obs, &[], &map, orientation));
+            let paid = raid.paid_claims().to_vec();
+            obs.tick += 24;
+            let dials = Dials::scripted(&profile, tuning);
+            let mut intelligence = StrategicIntelligence::new();
+            intelligence.update(&obs);
+            let mut policy = UtilityPolicy::new();
+            let mut strategy = Some(StrategicPlanner::new());
+            let mut lifts = None;
+            let mut team = None;
+            let mut raids = Some(raid);
+            let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+            let mut session = AllocationSession::new(
+                AllocationSessionContext {
+                    dials: &dials,
+                    profile: &profile,
+                    tuning,
+                    observation: &obs,
+                    home: HOME,
+                    public_map: &map,
+                    orientation,
+                    intelligence: &intelligence,
+                    enlisted: &[],
+                    lift_support: None,
+                },
+                AllocationParticipants {
+                    policy: &mut policy,
+                    strategy: &mut strategy,
+                    lifts: &mut lifts,
+                    team: &mut team,
+                    raids: &mut raids,
+                },
+                advanced(snapshots),
+                None,
+            );
+            let prepared = session.prepare();
+            assert!(prepared.coordinator_failure.is_none());
+            let claim = prepared
+                .obligations
+                .iter()
+                .find(|obligation| {
+                    matches!(
+                        obligation.key,
+                        ObligationKey::Legacy {
+                            channel: LegacyChannel::Raid,
+                            sequence: 2
+                        }
+                    )
+                })
+                .unwrap();
+            assert_eq!(claim.claims.paid_queue(), paid);
+            assert!(
+                session
+                    .committed_standing_production()
+                    .iter()
+                    .filter(|commitment| commitment.matches(BuildingId(10), UnitKind::Scuttler))
+                    .count()
+                    >= paid.len()
+            );
+            let connected = prepared
+                .fresh_connected
+                .as_ref()
+                .expect("a competing package remains feasible");
+            for provider in connected.minimum_claims().paid_providers() {
+                assert!(
+                    !paid
+                        .iter()
+                        .any(|claim| claim.producer == provider.producer()
+                            && claim.kind == provider.kind()
+                            && claim.occurrence == provider.occurrence())
+                );
+            }
+            let original_policy = session.participants.policy.clone();
+            let resolved = session.resolve(
+                prepared,
+                CommitSnapshots {
+                    policy: original_policy,
+                },
+            );
+            let outcome = session.commit_or_restore(resolved);
+            assert!(outcome.allocation_ok);
+            assert_eq!(raids.as_ref().unwrap().paid_claims(), paid);
+            assert_eq!(raids.as_ref().unwrap().reservations().len(), live);
+        }
     }
 
     fn run_connected_session_with_team_decision(

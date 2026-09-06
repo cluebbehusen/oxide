@@ -35,6 +35,7 @@ pub(crate) struct SupportDeployment {
     pub(crate) goal: TilePos,
     pub(crate) arrival_at: Tick,
     pub(crate) quiet_since: Option<Tick>,
+    returning: bool,
 }
 
 impl SupportDeployment {
@@ -55,6 +56,12 @@ impl SupportDeployment {
         }
     }
     pub(crate) fn intent(&self) -> Intent {
+        if self.returning {
+            return Intent::MoveUnits {
+                units: vec![self.unit],
+                goal: self.goal,
+            };
+        }
         Intent::AttackMoveUnits {
             units: vec![self.unit],
             goal: self.goal,
@@ -351,20 +358,25 @@ impl UtilityPolicy {
                 continue;
             }
             let goal = target.expect("live asset was checked").0;
-            if goal.chebyshev(deployment.goal) >= 3
-                || unit.idle && unit.tile.chebyshev(goal) > SERVICE_RADIUS
+            let outside = unit.tile.chebyshev(goal) > SERVICE_RADIUS;
+            let returning = outside;
+            let needs_dispatch = goal.chebyshev(deployment.goal) >= 3
+                || returning != deployment.returning
+                || unit.idle && outside;
+            if (returning || needs_dispatch) && !routes.group_reaches_command_goal(&[unit.id], goal)
             {
-                if !routes.group_reaches_command_goal(&[unit.id], goal) {
-                    intents.push(Intent::StopUnits {
-                        units: vec![unit.id],
-                    });
-                    self.support_deployments.released.push((
-                        deployment,
-                        crate::bot::trace::DeploymentReleaseReason::RouteUnavailable,
-                    ));
-                    continue;
-                }
+                intents.push(Intent::StopUnits {
+                    units: vec![unit.id],
+                });
+                self.support_deployments.released.push((
+                    deployment,
+                    crate::bot::trace::DeploymentReleaseReason::RouteUnavailable,
+                ));
+                continue;
+            }
+            if needs_dispatch {
                 deployment.goal = goal;
+                deployment.returning = returning;
                 intents.push(deployment.intent());
             }
             self.support_deployments.active.push(deployment);
@@ -475,6 +487,7 @@ impl UtilityPolicy {
                 goal: request.tile,
                 arrival_at,
                 quiet_since: None,
+                returning: false,
             });
         }
         proposals
@@ -698,5 +711,93 @@ mod tests {
                 .prepare_support_deployments(current, tuning, 8)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn busy_protector_returns_once_then_resumes_defending_the_same_asset() {
+        let (mut obs, map, profile) = fixture();
+        let mut policy = UtilityPolicy::new();
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let initial = context(&obs, &map, &profile, &resources);
+        let snapshot = policy.support_work_snapshot(initial);
+        policy.observe_support_deployments(initial, &snapshot.protection);
+        let deployment = policy
+            .prepare_support_deployments(
+                initial,
+                DifficultyTuning::for_level(profile.difficulty),
+                8,
+            )
+            .into_iter()
+            .find(|work| !work.key.air)
+            .unwrap();
+        let worker = deployment.unit;
+        let deadline = deployment.deadline;
+        let goal = deployment.goal;
+        assert!(policy.commit_support_deployment(deployment, &obs, &mut vec![]));
+        let observe = |policy: &mut UtilityPolicy, obs: &Observation| {
+            let resources = ResourceSnapshot::from_observation(obs);
+            let context = context(obs, &map, &profile, &resources);
+            let snapshot = policy.support_work_snapshot(context);
+            policy.observe_support_deployments(context, &snapshot.protection)
+        };
+        obs.tick += 24;
+        let unit = obs
+            .my_units
+            .iter_mut()
+            .find(|unit| unit.id == worker)
+            .unwrap();
+        unit.idle = false;
+        unit.tile = TilePos::new(goal.x - 9, goal.y);
+        assert_eq!(
+            observe(&mut policy, &obs),
+            vec![Intent::MoveUnits {
+                units: vec![worker],
+                goal
+            }]
+        );
+        assert_eq!(policy.support_reservations(), vec![worker]);
+        obs.tick += 24;
+        assert!(
+            observe(&mut policy, &obs).is_empty(),
+            "an unchanged return order remains in effect"
+        );
+        obs.tick += 24;
+        obs.my_units
+            .iter_mut()
+            .find(|unit| unit.id == worker)
+            .unwrap()
+            .tile = goal;
+        assert_eq!(
+            observe(&mut policy, &obs),
+            vec![Intent::AttackMoveUnits {
+                units: vec![worker],
+                goal
+            }]
+        );
+        assert_eq!(policy.support_deployments.active[0].deadline, deadline);
+        obs.tick += 24;
+        assert!(observe(&mut policy, &obs).is_empty());
+        obs.tick += 24;
+        obs.my_units
+            .iter_mut()
+            .find(|unit| unit.id == worker)
+            .unwrap()
+            .tile = TilePos::new(10, goal.y);
+        assert_eq!(
+            observe(&mut policy, &obs),
+            vec![Intent::MoveUnits {
+                units: vec![worker],
+                goal
+            }]
+        );
+        obs.tick += 24;
+        obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(20, y)).collect();
+        assert_eq!(
+            observe(&mut policy, &obs),
+            vec![Intent::StopUnits {
+                units: vec![worker]
+            }]
+        );
+        assert!(policy.support_reservations().is_empty());
     }
 }

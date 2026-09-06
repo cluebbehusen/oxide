@@ -10,10 +10,10 @@
     "skyhook-anchorage@9000": "0x79c5ea8d02db22f4",
     "skyhook-anchorage@9000#commands": "0xcc1ab29df428a11e",
     "terminal-basin": "0x7f20ce1625c86482",
-    "terminal-basin#commands": "0xed19c34d033aa200",
+    "terminal-basin#commands": "0xe3cec98ff09dacdf",
     "three-shifts": "0x08a389511aa68ac2",
-    "three-shifts#commands": "0xd7d9f38bb29256d2",
-    "twin-forges": "0x16b3f46fbeef3c5a",
-    "twin-forges#commands": "0x0554296bc88156b9"
+    "three-shifts#commands": "0x223e99a69bbce1a4",
+    "twin-forges": "0xdecfa822a6821826",
+    "twin-forges#commands": "0x87068107d098a4ac"
   }
 }

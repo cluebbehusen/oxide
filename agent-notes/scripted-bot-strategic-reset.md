@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-05T20:42:57
+updated: 2026-09-05T21:51:30
 ---
 
 # Scripted Bot Strategic Reset
@@ -605,5 +605,40 @@ without arbitrary controller caps.
     existing defensive approach pathfinding. Revisit these measured outcomes and
     routing cost in Actions 9-10; automated legality and coverage do not
     establish human fun or final difficulty quality.
+- [x] Address reconnaissance and support review findings: retain raid
+      membership, objective, and paid production; correct Bay coverage and
+      protector recall; validate and push a follow-up commit.
+  - Retained the accepted raid pair, target, deadline, and exact paid queue
+    occurrences across allocation and residual advancement. Queue completion
+    binds observed births before connected-operation inventory; ambiguous
+    missing births release the preparation conservatively without cancelling
+    paid work. Bay coverage now uses both complete rectangles. Busy protectors
+    recall with ordinary movement, retain ownership, and resume protection
+    inside the service radius; a blocked return releases the assignment.
+  - Reviewed exact raid and protector sequences in the native shell. A staged
+    pair trained one missing Scuttler and dispatched the original member plus
+    its birth at tick 96; its replay reconstructs to 0xc8672d5e57968771. Twin
+    Forges unit 74 changed from an active chase to Move at tick 5748 and resumed
+    AttackMove at 5796 without repeated recall orders. Skirmish and Twin Forges
+    replay finals reconstruct exactly; all seats had zero rejected commands.
+    Artifacts remain outside the repository at /tmp/oxide-pr51-followup.7GLACh;
+    the staging scenario was removed and its embedded replay retained.
+  - Focused raid (29), allocation (137), support (16), and recon_support (9)
+    tests passed, including coordinator ownership against connected operations,
+    mixed paid/live pairs, cancellation, missing births, frozen objectives,
+    rectangle symmetry, delayed overlapping service, and busy protector
+    recovery. Inspected and refreshed four player-facing hash rows under the
+    existing same-version approval: Twin Forges state/commands and Terminal
+    Basin/Three Shifts commands. The first unblessed rerun passed; version
+    0.16.0 and frozen fixture files remain unchanged.
+  - Final validation passed: cargo fmt --all --check; cargo clippy --workspace
+    --all-targets --locked -- -D warnings; cargo check --workspace --all-targets
+    --locked; cargo test --workspace --locked; warning-free workspace rustdoc;
+    and repository-wide Prettier. Sequential cargo cov-unit and cargo
+    cov-combined passed at 90.50% and 91.98% line coverage. The final full
+    workspace rerun included the unblessed player-facing oracle and unchanged
+    frozen Overseer/state compatibility gates. No skill guidance changed. Native
+    review established the selected raid/recall transitions, not human fun or
+    final calibration.
 
 ## Open Questions

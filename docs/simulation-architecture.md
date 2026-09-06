@@ -612,35 +612,43 @@ Existing workers, paid Tenders, and local built or pending Bays consume the same
 finite patient workload before procurement is valued. Repair cost and patient
 replacement value are distinct. Current threats to specific own assets produce
 protective deployment requests; Support retains exact deployment actors, while
-ordinary Standing Force owns any missing screen or anti-air procurement.
-Reconnaissance is a separate allocation domain: the controller reconciles
-retained questions before proposing new work, then compares exact live
-observers, paid queue occurrences, and dedicated purchases. Each accepted
-question retains its consumer, evidence, goal, and useful deadline
-independently. An unpaid purchase retains its exact accepted producer schedule
-and current/forecast funding; only a current-funded append becomes a command.
-Question-local loss cooldowns and quiet intervals permit valuable safe
-reconsideration without requiring new enemy sight. Reconnaissance no longer uses
-one global scout slot. A completed paid occurrence binds only a newly observed
-eligible scout at its exact producer exit; a lost occurrence cannot adopt
-another assignment's later newborn. A surviving observer that can no longer
-arrive before its fixed deadline remains owned for recall, not recorded as lost.
-Operational and question-driven scouts share exact
-`(producer, kind, occurrence)` exclusions: excluded items still occupy the FIFO
-lane but cannot supply another assignment. Recent objective sightings suppress
-immediate repeat purchases; remembered positive buildings are not uncleared
-authored starts. Existing paid observers cover overlapping point questions only
-when their route and deadline serve the entire footprint. This overlap credit
-never replaces contested sweeps. Full-footprint negative evidence and
-contested-region sweep completion remain separate from safe return. It no longer
-originates residual scout purchases. Scuttlers enter Standing Force allocation
-only through a viable current raid objective's exact missing tactical pair. Paid
-and serviceable live supply reduce that request; its preparation deadline is
-fixed, and target loss does not revoke paid queues. Bomber, ground-attack-air,
-and transport cohorts remain owned by persistent operations. Their outstanding
-work and fixed deadlines contribute economic capacity demand; they do not impose
-an unowned factory reserve. The profile-free Overseer retains its legacy
-production and construction order.
+ordinary Standing Force owns any missing screen or anti-air procurement. An
+out-of-position protector returns with an ordinary Move order, even while busy,
+and resumes protection inside the service radius without renewing its deadline.
+Building-patient Bay coverage uses both complete footprint rectangles, matching
+the simulation's aura when valuing new and overlapping service. Reconnaissance
+is a separate allocation domain: the controller reconciles retained questions
+before proposing new work, then compares exact live observers, paid queue
+occurrences, and dedicated purchases. Each accepted question retains its
+consumer, evidence, goal, and useful deadline independently. An unpaid purchase
+retains its exact accepted producer schedule and current/forecast funding; only
+a current-funded append becomes a command. Question-local loss cooldowns and
+quiet intervals permit valuable safe reconsideration without requiring new enemy
+sight. Reconnaissance no longer uses one global scout slot. A completed paid
+occurrence binds only a newly observed eligible scout at its exact producer
+exit; a lost occurrence cannot adopt another assignment's later newborn. A
+surviving observer that can no longer arrive before its fixed deadline remains
+owned for recall, not recorded as lost. Operational and question-driven scouts
+share exact `(producer, kind, occurrence)` exclusions: excluded items still
+occupy the FIFO lane but cannot supply another assignment. Recent objective
+sightings suppress immediate repeat purchases; remembered positive buildings are
+not uncleared authored starts. Existing paid observers cover overlapping point
+questions only when their route and deadline serve the entire footprint. This
+overlap credit never replaces contested sweeps. Full-footprint negative evidence
+and contested-region sweep completion remain separate from safe return. It no
+longer originates residual scout purchases. Scuttlers enter Standing Force
+allocation only through a viable current raid objective's exact missing tactical
+pair. Paid and serviceable live supply reduce that request; its preparation
+deadline is fixed, and target loss does not revoke paid queues. Raid preparation
+retains exact paid queue occurrences as allocation obligations until they bind
+newly observed members at their producer exits. Residual advancement excludes
+other owners while retaining the raid's own muster, and launches only against
+the procurement objective. A missing paid member releases preparation into
+bounded recovery without adopting a later birth. Bomber, ground-attack-air, and
+transport cohorts remain owned by persistent operations. Their outstanding work
+and fixed deadlines contribute economic capacity demand; they do not impose an
+unowned factory reserve. The profile-free Overseer retains its legacy production
+and construction order.
 
 On connected ground, the air planner admits a force package only when current
 sight, the spendable current bank after prior reserves, completed recurring

@@ -2,9 +2,11 @@
 
 use super::*;
 use crate::bot::PublicMapBriefing;
+use crate::bot::allocation::{ClaimOwner, PaidQueueClaim, ProposalKey, ScheduledProducerJob};
 use crate::bot::orient::Orientation;
 use crate::bot::resources::{ProducerEgress, ResourceSnapshot};
 use crate::bot::routing::production_spawn_doorstep;
+use std::collections::{BTreeMap, BTreeSet};
 
 const PREPARATION_HORIZON: Tick = 1_800;
 
@@ -20,28 +22,74 @@ pub(crate) struct RaidProcurementRequest {
     pub(crate) newly_claimed: Vec<UnitId>,
     pub(crate) missing: usize,
     pub(crate) eligible_producers: Vec<BuildingId>,
-    paid: Vec<(BuildingId, usize)>,
+    pub(crate) paid: Vec<PaidQueueClaim>,
+    available_paid: Vec<PaidQueueClaim>,
+    retained_paid: Vec<PaidQueueClaim>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct RaidPaidWork {
+    claims: Vec<PaidQueueClaim>,
+    counts: BTreeMap<BuildingId, usize>,
+    origins: BTreeMap<BuildingId, TilePos>,
+    known_units: BTreeSet<UnitId>,
+    observed_at: Option<Tick>,
 }
 
 impl RaidProcurementRequest {
+    pub(crate) fn new_paid_claims(&self) -> Vec<PaidQueueClaim> {
+        self.paid
+            .iter()
+            .copied()
+            .filter(|claim| !self.retained_paid.contains(claim))
+            .collect()
+    }
     pub(crate) fn with_paid_ownership(
         mut self,
         owned: &[crate::bot::standing_force::StandingProductionCommitment],
     ) -> Self {
-        let available = self
-            .paid
+        self.paid = self
+            .available_paid
             .iter()
-            .map(|(producer, count)| {
-                count.saturating_sub(
-                    owned
-                        .iter()
-                        .filter(|commitment| commitment.matches(*producer, UnitKind::Scuttler))
-                        .count(),
-                )
+            .copied()
+            .filter(|claim| {
+                self.retained_paid.contains(claim)
+                    || claim.occurrence
+                        >= owned
+                            .iter()
+                            .filter(|commitment| commitment.matches(claim.producer, claim.kind))
+                            .count()
             })
-            .sum::<usize>();
-        self.missing = RAID_GROUP_SIZE.saturating_sub(self.members.len().saturating_add(available));
+            .collect();
+        self.paid
+            .truncate(RAID_GROUP_SIZE.saturating_sub(self.members.len()));
+        self.missing = RAID_GROUP_SIZE.saturating_sub(self.members.len() + self.paid.len());
         self
+    }
+
+    pub(super) fn begin(
+        &self,
+        obs: &Observation,
+        muster: &[UnitId],
+        routes: &mut RouteProjection<'_>,
+    ) -> Option<RaidOperation> {
+        let tile = current_target(obs, self)?;
+        if obs.tick >= self.deadline || muster.len() != RAID_GROUP_SIZE {
+            return None;
+        }
+        let members = first_reachable_group(routes, muster, RAID_GROUP_SIZE, tile)?;
+        Some(RaidOperation {
+            target_player: self.player,
+            objective: self.objective,
+            last_tile: tile,
+            members,
+            committed_size: RAID_GROUP_SIZE,
+            phase: RaidPhase::Ingress,
+            started_at: obs.tick,
+            phase_started_at: obs.tick,
+            exit_reason: None,
+            dispatch: None,
+        })
     }
 }
 
@@ -56,16 +104,23 @@ impl RaidPlanner {
         briefing: Option<&PublicMapBriefing>,
         orientation: Option<Orientation>,
     ) {
+        if self.paid_work.observed_at == Some(obs.tick) {
+            return;
+        }
+        self.paid_work.observed_at = Some(obs.tick);
+        let lost_paid = self.reconcile_paid(obs, briefing, orientation);
         let invalid = self.preparation.as_ref().is_some_and(|request| {
-            if obs.tick >= request.deadline {
+            if obs.tick >= request.deadline
+                || self.muster.iter().any(|id| own_unit(obs, *id).is_none())
+            {
                 return true;
             }
             let Some(target) = current_target(obs, request) else {
                 return true;
             };
             let routes = procurement_routes(obs, briefing, orientation);
-            let live = request
-                .members
+            let live = self
+                .muster
                 .iter()
                 .filter_map(|id| own_unit(obs, *id))
                 .any(|unit| {
@@ -76,7 +131,9 @@ impl RaidPlanner {
             let producer = request
                 .eligible_producers
                 .iter()
-                .filter_map(|id| obs.my_buildings.iter().find(|building| building.id == *id))
+                .copied()
+                .chain(self.paid_work.claims.iter().map(|claim| claim.producer))
+                .filter_map(|id| obs.my_buildings.iter().find(|building| building.id == id))
                 .any(|building| {
                     production_spawn_doorstep(obs, building, briefing, orientation).is_some_and(
                         |origin| {
@@ -88,13 +145,189 @@ impl RaidPlanner {
                 });
             !live && !producer
         });
-        if invalid {
+        if invalid || lost_paid {
             self.preparation = None;
+            self.paid_work = RaidPaidWork {
+                observed_at: Some(obs.tick),
+                ..Default::default()
+            };
             if self.active.is_none() {
                 self.muster.clear();
             }
             self.cooldown_until = self.cooldown_until.max(obs.tick.saturating_add(300));
         }
+    }
+
+    pub(crate) fn paid_claims(&self) -> &[PaidQueueClaim] {
+        &self.paid_work.claims
+    }
+
+    pub(crate) fn preparation_started_at(&self) -> Option<Tick> {
+        self.preparation.as_ref().map(|request| request.observed_at)
+    }
+
+    fn reconcile_paid(
+        &mut self,
+        obs: &Observation,
+        briefing: Option<&PublicMapBriefing>,
+        orientation: Option<Orientation>,
+    ) -> bool {
+        if self.paid_work.claims.is_empty() {
+            return false;
+        }
+        let mut lost = false;
+        let mut retained = Vec::new();
+        for (&producer, &before) in &self.paid_work.counts {
+            let Some(index) = obs
+                .my_buildings
+                .iter()
+                .position(|building| building.id == producer && building.hp > 0)
+            else {
+                lost |= self
+                    .paid_work
+                    .claims
+                    .iter()
+                    .any(|claim| claim.producer == producer);
+                continue;
+            };
+            let now = obs.my_queues.get(index).map_or(0, |queue| {
+                queue
+                    .iter()
+                    .filter(|kind| **kind == UnitKind::Scuttler)
+                    .count()
+            });
+            let Some(&origin) = self.paid_work.origins.get(&producer) else {
+                lost |= self
+                    .paid_work
+                    .claims
+                    .iter()
+                    .any(|claim| claim.producer == producer);
+                continue;
+            };
+            let mut births = obs
+                .my_units
+                .iter()
+                .filter(|unit| {
+                    unit.kind == UnitKind::Scuttler
+                        && unit.hp > 0
+                        && !self.paid_work.known_units.contains(&unit.id)
+                        && unit.tile.chebyshev(origin) <= 2
+                        && obs
+                            .my_buildings
+                            .iter()
+                            .filter(|building| {
+                                building.id != producer
+                                    && building
+                                        .kind
+                                        .base_stats()
+                                        .produces
+                                        .contains(&UnitKind::Scuttler)
+                            })
+                            .all(|building| {
+                                production_spawn_doorstep(obs, building, briefing, orientation)
+                                    .is_none_or(|other| {
+                                        unit.tile.chebyshev(other) > unit.tile.chebyshev(origin)
+                                    })
+                            })
+                })
+                .map(|unit| unit.id)
+                .collect::<Vec<_>>();
+            births.sort_unstable();
+            let completed = before.saturating_sub(now).max(births.len());
+            for claim in self
+                .paid_work
+                .claims
+                .iter()
+                .filter(|claim| claim.producer == producer)
+            {
+                if claim.occurrence < completed {
+                    // Missing births cannot shift a later occurrence into this claim.
+                    if births.len() == completed {
+                        self.muster.push(births[claim.occurrence]);
+                    } else {
+                        lost = true;
+                    }
+                } else {
+                    retained.push(PaidQueueClaim {
+                        occurrence: claim.occurrence - completed,
+                        ..*claim
+                    });
+                }
+            }
+        }
+        self.muster.sort_unstable();
+        self.muster.dedup();
+        self.paid_work.claims = retained;
+        self.observe_paid_inventory(obs, briefing, orientation);
+        lost
+    }
+
+    fn observe_paid_inventory(
+        &mut self,
+        obs: &Observation,
+        briefing: Option<&PublicMapBriefing>,
+        orientation: Option<Orientation>,
+    ) {
+        self.paid_work.known_units = obs.my_units.iter().map(|unit| unit.id).collect();
+        self.paid_work.counts.clear();
+        self.paid_work.origins.clear();
+        for (index, building) in obs.my_buildings.iter().enumerate() {
+            let count = obs.my_queues.get(index).map_or(0, |queue| {
+                queue
+                    .iter()
+                    .filter(|kind| **kind == UnitKind::Scuttler)
+                    .count()
+            });
+            self.paid_work.counts.insert(building.id, count);
+            if let Some(origin) = production_spawn_doorstep(obs, building, briefing, orientation) {
+                self.paid_work.origins.insert(building.id, origin);
+            }
+        }
+    }
+
+    pub(crate) fn bind_procurement(
+        &mut self,
+        obs: &Observation,
+        jobs: &[ScheduledProducerJob],
+        briefing: &PublicMapBriefing,
+        orientation: Orientation,
+    ) -> bool {
+        let Some(request) = self.preparation.as_ref() else {
+            return false;
+        };
+        let owner = ClaimOwner::Proposal(ProposalKey::StandingForce(
+            crate::bot::allocation::StandingForceKey {
+                kind: UnitKind::Scuttler,
+                service: crate::bot::standing_force::StandingGroundTarget::point(request.tile),
+            },
+        ));
+        let mut claims = request.paid.clone();
+        self.observe_paid_inventory(obs, Some(briefing), Some(orientation));
+        for job in jobs
+            .iter()
+            .filter(|job| job.enqueued_at == obs.tick && job.kind == UnitKind::Scuttler)
+        {
+            let occurrence = self.paid_work.counts.entry(job.producer).or_default();
+            if job.owner == owner {
+                claims.push(PaidQueueClaim {
+                    producer: job.producer,
+                    kind: job.kind,
+                    occurrence: *occurrence,
+                });
+            }
+            *occurrence += 1;
+        }
+        if claims
+            .iter()
+            .any(|claim| !self.paid_work.origins.contains_key(&claim.producer))
+        {
+            return false;
+        }
+        claims.sort_unstable();
+        claims.dedup();
+        self.paid_work.claims = claims;
+        self.paid_work.observed_at = Some(obs.tick);
+        true
     }
 
     #[cfg(test)]
@@ -153,6 +386,7 @@ impl RaidPlanner {
                         && !context.enlisted.contains(&unit.id)
                         && (!context.additionally_reserved.contains(&unit.id)
                             || self.muster.contains(&unit.id))
+                        && (self.preparation.is_none() || self.muster.contains(&unit.id))
                         && routes
                             .prospective_group_route_cost(unit.tile, tile, RAID_GROUP_SIZE)
                             .is_some_and(|cost| {
@@ -163,13 +397,15 @@ impl RaidPlanner {
                 .collect::<Vec<_>>();
             members.sort_unstable();
             members.truncate(RAID_GROUP_SIZE);
+            if self.preparation.is_some() && members.len() != self.muster.len() {
+                continue;
+            }
             let mut home_exclusions = members.clone();
             home_exclusions.extend_from_slice(context.enlisted);
             home_exclusions.extend_from_slice(context.additionally_reserved);
             if !home_screen_ready(context.profile, obs, context.home, &home_exclusions) {
                 continue;
             }
-            let mut paid = 0_usize;
             let mut paid_occurrences = Vec::new();
             let mut producers = Vec::new();
             let mut production_deadline = deadline;
@@ -191,14 +427,19 @@ impl RaidPlanner {
                     .iter()
                     .filter(|commitment| commitment.matches(lane.producer, UnitKind::Scuttler))
                     .count();
-                paid_occurrences.push((
-                    lane.producer,
-                    lane.queued_kind_ready_before(UnitKind::Scuttler, ready_before),
-                ));
-                paid = paid.saturating_add(
-                    lane.queued_kind_ready_before(UnitKind::Scuttler, ready_before)
-                        .saturating_sub(owned),
-                );
+                for occurrence in 0..lane.queued_kind_ready_before(UnitKind::Scuttler, ready_before)
+                {
+                    let claim = PaidQueueClaim {
+                        producer: lane.producer,
+                        kind: UnitKind::Scuttler,
+                        occurrence,
+                    };
+                    if self.paid_work.claims.contains(&claim)
+                        || self.preparation.is_none() && occurrence >= owned
+                    {
+                        paid_occurrences.push(claim);
+                    }
+                }
                 if lane
                     .production_timing(&[UnitKind::Scuttler])
                     .is_some_and(|timing| {
@@ -210,7 +451,9 @@ impl RaidPlanner {
                     production_deadline = production_deadline.min(ready_before);
                 }
             }
-            let missing = RAID_GROUP_SIZE.saturating_sub(members.len().saturating_add(paid));
+            let available_paid = paid_occurrences.clone();
+            paid_occurrences.truncate(RAID_GROUP_SIZE.saturating_sub(members.len()));
+            let missing = RAID_GROUP_SIZE.saturating_sub(members.len() + paid_occurrences.len());
             if missing > 0 && producers.is_empty() {
                 continue;
             }
@@ -232,6 +475,8 @@ impl RaidPlanner {
                 missing,
                 eligible_producers: producers,
                 paid: paid_occurrences,
+                available_paid,
+                retained_paid: self.paid_work.claims.clone(),
             });
         }
         None
@@ -245,7 +490,6 @@ impl RaidPlanner {
         if self.active.is_some()
             || request.observed_at != now
             || request.deadline <= now
-            || request.missing == 0
             || request.missing > RAID_GROUP_SIZE
             || self.preparation.as_ref().is_some_and(|prior| {
                 prior.objective != request.objective || prior.deadline != request.deadline

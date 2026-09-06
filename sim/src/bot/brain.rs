@@ -413,6 +413,13 @@ impl Brain {
         let raid_before_state = recorder
             .is_some()
             .then(|| raid_channel_state(raids.as_ref()));
+        if let Some(planner) = raids.as_mut() {
+            planner.reconcile_procurement_routes(
+                &oriented,
+                Some(oriented_public_map),
+                Some(orientation),
+            );
+        }
         let allocation_snapshots = PlannerSnapshots::capture(strategy, team, lifts, raids);
 
         // Accepted legacy operations advance first so the allocation pass sees
@@ -518,7 +525,7 @@ impl Brain {
             u64::from(self.dials.minimum_core_equivalents),
         );
         let raid_exclusions =
-            PlannerClaims::new(&enlisted, strategy, raids, lifts).all(&team_claims);
+            PlannerClaims::new(&enlisted, strategy, raids, lifts).without_raid(&team_claims);
         let raid_decision = if raid_was_active {
             raids
                 .as_mut()

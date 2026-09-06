@@ -128,6 +128,30 @@ struct Patient {
 }
 
 impl Patient {
+    fn covered_by_bay(self, anchor: TilePos) -> bool {
+        let (dx, dy) = if matches!(self.target, Target::Building(_)) {
+            let size = BuildingKind::RepairBay.base_stats().size;
+            (
+                (anchor.x - self.tile.x - self.size.0)
+                    .max(self.tile.x - anchor.x - size.0)
+                    .max(0),
+                (anchor.y - self.tile.y - self.size.1)
+                    .max(self.tile.y - anchor.y - size.1)
+                    .max(0),
+            )
+        } else {
+            (
+                (anchor.x - self.tile.x)
+                    .max(self.tile.x - anchor.x - 1)
+                    .max(0),
+                (anchor.y - self.tile.y)
+                    .max(self.tile.y - anchor.y - 1)
+                    .max(0),
+            )
+        };
+        chassis::fx::Fx::from_num(dx * dx + dy * dy)
+            <= crate::stats::REPAIR_BAY_RADIUS * crate::stats::REPAIR_BAY_RADIUS
+    }
     fn reserve(self, cadence: Tick) -> u32 {
         // A meter's phase is private. Bound both cumulative integer-HP and
         // milli-scrap rounding across the entire renewal interval, not each tick.
@@ -339,16 +363,7 @@ impl UtilityPolicy {
         if builders.is_empty() {
             return Vec::new();
         }
-        let covered = |anchor: TilePos, patient: &Patient| {
-            let dx = (anchor.x - patient.tile.x)
-                .max(patient.tile.x - anchor.x - 1)
-                .max(0);
-            let dy = (anchor.y - patient.tile.y)
-                .max(patient.tile.y - anchor.y - 1)
-                .max(0);
-            let distance = chassis::fx::Fx::from_num(dx * dx + dy * dy);
-            distance <= crate::stats::REPAIR_BAY_RADIUS * crate::stats::REPAIR_BAY_RADIUS
-        };
+        let covered = |anchor: TilePos, patient: &Patient| patient.covered_by_bay(anchor);
         let existing = obs
             .my_buildings
             .iter()
@@ -1014,6 +1029,58 @@ mod tests {
                 .fresh_repair_bays(context(&obs, &map, &profile, &resources))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn bay_building_coverage_matches_authoritative_rectangles_under_half_turns() {
+        let state = crate::Scenario::skirmish().build().unwrap();
+        let prototype = state.buildings()[0].clone();
+        for kind in [BuildingKind::Airworks, BuildingKind::Foundry] {
+            let mut target = prototype.clone();
+            target.kind = kind;
+            target.anchor = TilePos::new(20, 20);
+            let mut bay = prototype.clone();
+            bay.kind = BuildingKind::RepairBay;
+            for dx in -8..=8 {
+                for dy in -8..=8 {
+                    bay.anchor = target.anchor.offset(dx, dy);
+                    let patient = Patient {
+                        target: Target::Building(target.id),
+                        tile: target.anchor,
+                        size: target.stats().size,
+                        missing: 100,
+                        hp: 1,
+                        max_hp: 101,
+                        basis: 300,
+                        value_basis: 300,
+                        ramp: 100,
+                        ticks: 100,
+                    };
+                    let on_bay = bay.closest_point_to(target.center());
+                    let expected = on_bay.dist_sq(target.closest_point_to(on_bay))
+                        <= crate::stats::REPAIR_BAY_RADIUS * crate::stats::REPAIR_BAY_RADIUS;
+                    assert_eq!(
+                        patient.covered_by_bay(bay.anchor),
+                        expected,
+                        "{kind:?} {dx},{dy}"
+                    );
+                    let mirrored = Patient {
+                        tile: TilePos::new(
+                            64 - patient.tile.x - patient.size.0,
+                            64 - patient.tile.y - patient.size.1,
+                        ),
+                        ..patient
+                    };
+                    assert_eq!(
+                        mirrored.covered_by_bay(TilePos::new(
+                            64 - bay.anchor.x - 2,
+                            64 - bay.anchor.y - 2
+                        )),
+                        expected
+                    );
+                }
+            }
+        }
     }
 
     #[test]
