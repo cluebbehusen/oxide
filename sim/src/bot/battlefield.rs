@@ -398,7 +398,7 @@ impl Battlefield {
                 if (demand.ground == 0 || ground == 0) && (demand.air == 0 || air == 0) {
                     continue;
                 }
-                let domain = unit.body_domain();
+                let domain = unit.kind.stats().domain;
                 let projection = if domain == Domain::Ground {
                     &mut routes
                 } else {
@@ -474,8 +474,10 @@ impl Battlefield {
                 && experience.contextual_score(episode.context) < 0
         }) {
             let tile = TilePos::new(episode.context.x, episode.context.y);
-            if !obs.enemy_buildings.iter().any(|building| {
-                u64::from(building.id.0) == episode.context.subject && building.hp > 0
+            if !episode.objective.is_some_and(|objective| {
+                obs.enemy_buildings
+                    .iter()
+                    .any(|building| objective.matches(building) && building.hp > 0)
             }) {
                 continue;
             }
@@ -586,6 +588,98 @@ mod tests {
 
     fn tuning() -> DifficultyTuning {
         DifficultyTuning::for_level(BotDifficulty::Prime)
+    }
+
+    #[test]
+    fn parked_aircraft_receive_the_same_reachable_defensive_credit() {
+        for (hostile_kind, provider_kind) in [
+            (UnitKind::Sentinel, UnitKind::Buzzard),
+            (UnitKind::Buzzard, UnitKind::Talon),
+        ] {
+            let mut obs = fixture();
+            obs.enemy_units[0].kind = hostile_kind;
+            obs.enemy_units[0].hp = hostile_kind.stats().max_hp;
+            let mut provider = obs.my_units[0].clone();
+            provider.kind = provider_kind;
+            provider.hp = provider.kind.stats().max_hp;
+            provider.grounded = false;
+            provider.tile = obs.my_buildings[0].anchor.offset(0, 5);
+            let id = provider.id;
+            obs.my_units = vec![provider];
+            let mut airborne = Battlefield::default();
+            airborne.observe(&obs, &[], tuning(), None);
+            assert_eq!(airborne.assessment.uncovered[0].providers, vec![id]);
+            obs.my_units[0].grounded = true;
+            let mut parked = Battlefield::default();
+            parked.observe(&obs, &[], tuning(), None);
+            assert_eq!(parked.assessment.uncovered, airborne.assessment.uncovered);
+        }
+    }
+
+    #[test]
+    fn failed_approaches_keep_the_frozen_objective_through_fog() {
+        use crate::bot::experience::{
+            Doctrine, EpisodeId, EpisodeOwner, Experience, ExperienceKey, Outcome, OutcomeJournal,
+            OutcomeReason,
+        };
+        let mut obs = fixture();
+        obs.enemy_units.clear();
+        let target = obs.enemy_buildings[0].clone();
+        let mut journal = OutcomeJournal::default();
+        journal.watch(
+            &obs,
+            EpisodeId {
+                owner: EpisodeOwner::Air,
+                serial: 1,
+            },
+            ExperienceKey {
+                doctrine: Doctrine::Air,
+                x: target.anchor.x,
+                y: target.anchor.y,
+                subject: u64::from(target.id.0),
+            },
+            &[],
+            1,
+        );
+        journal.observe_objective(&obs, target.id);
+        journal.finish(
+            &obs,
+            Outcome::Aborted,
+            OutcomeReason::UnsafeApproach,
+            1000,
+            false,
+        );
+        let mut experience = Experience::default();
+        experience.observe(&obs, 6000);
+        experience.report(journal.pending.remove(0));
+        obs.tick += 12;
+        obs.visible.fill(false);
+        let mut ghost = target.clone();
+        ghost.seen = false;
+        ghost.id = BuildingId(u32::MAX);
+        let questions = |building: BuildingObs| {
+            let mut observed = obs.clone();
+            observed.enemy_buildings = vec![building];
+            let mut battlefield = Battlefield::default();
+            battlefield.observe(&observed, &[], tuning(), None);
+            battlefield.review_approaches(&observed, &experience);
+            battlefield.assessment.questions
+        };
+        let retained = questions(ghost.clone());
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].evidence_at, 0);
+        assert_eq!(questions(target.clone()), retained);
+        let mut changed_owner = ghost.clone();
+        changed_owner.player = PlayerId(2);
+        assert!(questions(changed_owner).is_empty());
+        ghost.kind = BuildingKind::Fabricator;
+        assert!(questions(ghost.clone()).is_empty());
+        ghost.kind = target.kind;
+        ghost.anchor.x += 1;
+        assert!(questions(ghost).is_empty());
+        let mut replacement = target;
+        replacement.id = BuildingId(9999);
+        assert!(questions(replacement).is_empty());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-06T17:54:16
+updated: 2026-09-06T19:47:17
 ---
 
 # Scripted Bot Strategic Reset
@@ -1027,5 +1027,30 @@ without arbitrary controller caps.
     frozen Overseer/state compatibility gates. No skill guidance changed. Native
     review established the selected raid/recall transitions, not human fun or
     final calibration.
+- [x] Correct battlefield-adaptation review findings: flight-domain defensive
+      credit, age-preserving contextual decay, deadline-safe Array selection,
+      and frozen failed-objective identity. Preserve conservative unit-raid
+      outcomes; validate without publishing unless separately authorized.
+  - Reproduced and corrected all four review boundaries: parked flight-capable
+    providers, staggered contextual decay with exact shared-credit replacement,
+    completion-time Array selection with lazy route bounds, and failed-objective
+    identity through fog. Unit-target raid disappearance remains inconclusive.
+    Focused regressions pass; full gates are running. No publication is
+    authorized for this follow-up.
+  - Full workspace tests, Clippy, type checking, rustdoc, formatting, and all
+    eight canonical skill validators passed. The unblessed player-facing oracle
+    and frozen Overseer/state checks passed without fixture or version changes.
+    Sequential coverage remains pending; validation logs are in
+    /tmp/oxide-pr52-review.wydw2b.
+  - Completed all four fixes with pre-fix reproductions and passing focused
+    regressions, including independent decay ages, exact shared-credit
+    replacement, bounded saturation recovery, and the one-quote neutral Array
+    fast path. Sequential coverage passed at 90.64% unit and 92.14% combined.
+    All required gates are green; no fixture refresh, version change, or
+    repeated match matrix was needed. Updated architecture and scripted-bot
+    regression guidance. Changes remain uncommitted and unpushed.
+  - The user subsequently authorized committing and pushing this validated
+    follow-up to the existing branch. Publish as a new signed conventional
+    commit without amending or force-pushing.
 
 ## Open Questions

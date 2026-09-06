@@ -86,21 +86,29 @@ units remain present but unavailable. Foundation observation continues after the
 builder leaves; a delivery watch continues without ownership of its landed
 troops. Shared coordination credits prevent these components from teaching the
 same outcome repeatedly. Stronger assault evidence may replace preliminary
-delivery credit. Ambiguous attribution cannot earn broad doctrine credit.
+delivery credit. Ambiguous attribution cannot earn broad doctrine credit. Frozen
+objective owner, kind, and footprint anchor link failed approaches to remembered
+buildings without relying on their placeholder ids. Defensive service uses a
+provider's movement domain for routing, including parked aircraft; target
+exposure still uses its current body domain.
 
 Contextual return and corroborated doctrine preferences decay toward neutral;
-they alter candidate ranking and effective allocation return without rewriting
-raw consequence, urgency, confidence, or safety. Retry records for dispatched
-harvest and construction attempts expire and require fresh legal preparation.
-Current footprint occupation invalidates a construction attempt without a route
-penalty; remembered buildings alone cannot establish that occupation. Work
-observation also indexes active builders' occupied tiles once per decision.
-Fresh blocking foundations cannot displace those workers from their current work
-tiles; movement and completion release this protection without changing ordinary
-terrain routing or the frozen Overseer policy. Contested-harvest quarantine
-retains its separate complete-sweep and safe-return requirements. These
-components are reconstructed by replaying the observed command prefix, not
-serialized into authoritative `State`.
+each contextual contribution keeps its original completion time, including when
+new evidence arrives for the same context. Replacing shared credit removes that
+credit alone. Storage retains at most 64 contributions per context, 128
+contexts, and 64 recent episode reports, with canonical oldest-first eviction.
+These preferences alter candidate ranking and effective allocation return
+without rewriting raw consequence, urgency, confidence, or safety. Retry records
+for dispatched harvest and construction attempts expire and require fresh legal
+preparation. Current footprint occupation invalidates a construction attempt
+without a route penalty; remembered buildings alone cannot establish that
+occupation. Work observation also indexes active builders' occupied tiles once
+per decision. Fresh blocking foundations cannot displace those workers from
+their current work tiles; movement and completion release this protection
+without changing ordinary terrain routing or the frozen Overseer policy.
+Contested-harvest quarantine retains its separate complete-sweep and safe-return
+requirements. These components are reconstructed by replaying the observed
+command prefix, not serialized into authoritative `State`.
 
 ## State construction and trust boundary
 
@@ -886,14 +894,18 @@ Candidate sites extend up to the Array's radar radius from relevant owned
 assets, preserve ordinary placement, producer-egress, and active resource-access
 rules, and bind the exact route-capable builder proven through public static
 terrain plus observed dynamic danger. An Array requires positive usable coverage
-not already reserved by another proposal. The scorer first extends radar area
-not already supplied by own, allied, or pending Arrays, then retains usable
-in-map coverage; off-map tiles and Peaks contribute nothing because no unit can
-occupy them. Current contacts, remembered contacts, and uncleared public
-starting priors break otherwise equivalent sites toward credible hostile
-approaches. Sensor cases remain bounded below an immediate survival defense
-regardless of coverage, and compact maps may use a partial radar disc. The
-profile-free Overseer retains its legacy first-valid placement scan.
+not already reserved by another proposal. The scorer first ranks strategic
+demand remaining useful at the selected builder's arrival and construction
+completion, then extends radar area not already supplied by own, allied, or
+pending Arrays, then retains usable in-map coverage; off-map tiles and Peaks
+contribute nothing because no unit can occupy them. Current contacts, remembered
+contacts, and uncleared public starting priors break otherwise equivalent sites
+toward credible hostile approaches. Sensor cases remain bounded below an
+immediate survival defense regardless of coverage, and compact maps may use a
+partial radar disc. The profile-free Overseer retains its legacy first-valid
+placement scan. Optimistic readiness bounds order candidates; exact route quotes
+stop once no remaining bound can beat the selected site's completion-time
+coverage.
 
 The player-facing budget counts each unique deferred construction claim until
 its site is paid and stops voluntary repair programs that could drain that

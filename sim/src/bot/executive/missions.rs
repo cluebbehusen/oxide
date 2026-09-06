@@ -198,6 +198,7 @@ impl Executive {
             body.state as u8,
         );
         if let ArmyPurpose::Pressure(target) = mission.purpose {
+            journal.bind_objective(target);
             journal.observe_objective(obs, target.observed_id(obs));
         }
         let peers: Vec<_> = self

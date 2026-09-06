@@ -30,7 +30,8 @@ independently owned observers. Repair assignments and allied relief share the
 same resource allocation as economic and military investments. Ground armies
 take specific defensive, pressure, reserve, or recovery responsibilities.
 Observed movement and bounded experience inform later choices; lost contacts
-never become predicted positions inside fog.
+never become predicted positions inside fog. New reports do not renew older
+experience, and sensor investments compare coverage at construction readiness.
 
 ## The game
 

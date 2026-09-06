@@ -2358,6 +2358,7 @@ mod tests {
                     y: 6,
                     subject: 200,
                 },
+                objective: None,
                 started_at: 0,
                 finished_at: obs.tick,
                 participants: vec![UnitId(100 + serial as u32)],

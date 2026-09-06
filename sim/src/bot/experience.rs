@@ -83,6 +83,8 @@ pub(crate) struct EpisodeReport {
     /// Coordinated components share one credit identity, even after handoff.
     pub(crate) credit: EpisodeId,
     pub(crate) context: ExperienceKey,
+    /// Frozen observed site, independent of a remembered building's placeholder id.
+    pub(crate) objective: Option<super::executive::ArmyObjective>,
     pub(crate) started_at: Tick,
     pub(crate) finished_at: Tick,
     pub(crate) participants: Vec<UnitId>,
@@ -136,8 +138,15 @@ impl EpisodeReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ContextEntry {
     key: ExperienceKey,
-    score: i32,
+    contributions: Vec<ContextContribution>,
     updated_at: Tick,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContextContribution {
+    credit: EpisodeId,
+    score: i32,
+    finished_at: Tick,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -162,8 +171,12 @@ impl Experience {
         self.horizon = memory.min(6000);
         self.episodes
             .retain(|report| obs.tick.saturating_sub(report.finished_at) < self.horizon);
-        self.contexts
-            .retain(|entry| obs.tick.saturating_sub(entry.updated_at) < self.horizon);
+        self.contexts.retain_mut(|entry| {
+            entry.contributions.retain(|contribution| {
+                obs.tick.saturating_sub(contribution.finished_at) < self.horizon
+            });
+            !entry.contributions.is_empty()
+        });
     }
 
     /// Idempotent owner report; a shared credit can affect learning only once.
@@ -224,22 +237,7 @@ impl Experience {
             .as_ref()
             .is_none_or(|prior| report.contextual_rank() > prior.contextual_rank())
         {
-            if let Some(prior) = prior_credit
-                && self.contexts.iter().any(|entry| entry.key == prior.context)
-            {
-                let delta = decay(
-                    prior.contribution(),
-                    now.saturating_sub(prior.finished_at),
-                    self.horizon,
-                );
-                self.adjust_context(prior.context, -delta, now);
-            }
-            let delta = decay(
-                report.contribution(),
-                now.saturating_sub(report.finished_at),
-                self.horizon,
-            );
-            self.adjust_context(report.context, delta, now);
+            self.record_context(&report, now);
         }
         self.episodes.push(report);
         self.episodes
@@ -254,22 +252,39 @@ impl Experience {
         }
     }
 
-    fn adjust_context(&mut self, key: ExperienceKey, delta: i32, now: Tick) {
-        if delta == 0 {
+    fn record_context(&mut self, report: &EpisodeReport, now: Tick) {
+        self.contexts.retain_mut(|entry| {
+            entry
+                .contributions
+                .retain(|contribution| contribution.credit != report.credit);
+            !entry.contributions.is_empty()
+        });
+        let score = report.contribution();
+        if score == 0 {
             return;
         }
-        if let Some(entry) = self.contexts.iter_mut().find(|entry| entry.key == key) {
-            entry.score = (decay(
-                entry.score,
-                now.saturating_sub(entry.updated_at),
-                self.horizon,
-            ) + delta)
-                .clamp(-SCORE_LIMIT, SCORE_LIMIT);
+        let contribution = ContextContribution {
+            credit: report.credit,
+            score,
+            finished_at: report.finished_at,
+        };
+        if let Some(entry) = self
+            .contexts
+            .iter_mut()
+            .find(|entry| entry.key == report.context)
+        {
+            entry.contributions.push(contribution);
+            entry
+                .contributions
+                .sort_unstable_by_key(|value| (value.finished_at, value.credit));
+            if entry.contributions.len() > EPISODE_LIMIT {
+                entry.contributions.remove(0);
+            }
             entry.updated_at = now;
         } else {
             self.contexts.push(ContextEntry {
-                key,
-                score: delta,
+                key: report.context,
+                contributions: vec![contribution],
                 updated_at: now,
             });
         }
@@ -281,11 +296,15 @@ impl Experience {
             .iter()
             .find(|entry| entry.key == key)
             .map_or(0, |entry| {
-                decay(
-                    entry.score,
-                    now.saturating_sub(entry.updated_at),
-                    self.horizon,
-                ) as i16
+                entry.contributions.iter().fold(0, |score, contribution| {
+                    (score
+                        + decay(
+                            contribution.score,
+                            now.saturating_sub(contribution.finished_at),
+                            self.horizon,
+                        ))
+                    .clamp(-SCORE_LIMIT, SCORE_LIMIT)
+                }) as i16
             })
     }
 
@@ -664,6 +683,7 @@ impl OutcomeJournal {
                     id,
                     credit: id,
                     context,
+                    objective: None,
                     started_at: obs.tick,
                     finished_at: obs.tick,
                     participants: Vec::new(),
@@ -764,6 +784,10 @@ impl OutcomeJournal {
             .iter()
             .find(|building| building.id == id && building.seen)
         {
+            watch
+                .report
+                .objective
+                .get_or_insert_with(|| super::executive::ArmyObjective::from_building(current));
             let baseline = watch.objective.get_or_insert_with(|| current.clone());
             watch.report.observed_progress = watch
                 .report
@@ -779,6 +803,12 @@ impl OutcomeJournal {
                     .iter()
                     .any(|building| building.id == baseline.id)
         })
+    }
+
+    pub(crate) fn bind_objective(&mut self, objective: super::executive::ArmyObjective) {
+        if let Some(watch) = self.watch.as_mut().filter(|watch| !watch.finished) {
+            watch.report.objective.get_or_insert(objective);
+        }
     }
 }
 
@@ -802,6 +832,7 @@ mod tests {
                 x: 4,
                 subject: 5,
             },
+            objective: None,
             started_at: 0,
             finished_at: 100,
             participants: vec![UnitId(3), UnitId(1), UnitId(3)],
@@ -945,6 +976,76 @@ mod tests {
         partial.confidence = 500;
         memory.report(partial);
         assert_eq!(memory.contextual_score(report(1).context), 64);
+    }
+
+    #[test]
+    fn later_reports_do_not_renew_older_context_contributions() {
+        let mut memory = memory();
+        let key = report(1).context;
+        memory.report(report(1));
+        let mut obs = Observation {
+            tick: 3100,
+            map_width: 32,
+            map_height: 32,
+            ..Default::default()
+        };
+        memory.observe(&obs, 6000);
+        let mut later = report(2);
+        later.finished_at = obs.tick;
+        memory.report(later);
+        assert_eq!(memory.contextual_score(key), -384);
+        obs.tick = 6100;
+        memory.observe(&obs, 6000);
+        assert_eq!(memory.episodes.len(), 1);
+        assert_eq!(memory.contextual_score(key), -128);
+        obs.tick = 9100;
+        memory.observe(&obs, 6000);
+        assert_eq!(memory.contextual_score(key), 0);
+        assert!(memory.contexts.is_empty());
+    }
+
+    #[test]
+    fn replacing_shared_credit_preserves_independent_contribution_ages() {
+        let mut memory = memory();
+        let mut delivery = report(1);
+        delivery.outcome = Outcome::Partial;
+        memory.report(delivery.clone());
+        memory.report(report(2));
+        let mut obs = Observation {
+            tick: 3100,
+            map_width: 32,
+            map_height: 32,
+            ..Default::default()
+        };
+        memory.observe(&obs, 6000);
+        let mut assault = report(3);
+        assault.credit = delivery.credit;
+        assault.finished_at = obs.tick;
+        memory.report(assault.clone());
+        assert_eq!(memory.contextual_score(delivery.context), -384);
+        assert_eq!(memory.contexts[0].contributions.len(), 2);
+        memory.report(assault);
+        assert_eq!(memory.contextual_score(delivery.context), -384);
+        obs.tick = 6100;
+        memory.observe(&obs, 6000);
+        assert_eq!(memory.contextual_score(delivery.context), -128);
+        assert_eq!(memory.contexts[0].contributions[0].credit, delivery.credit);
+    }
+
+    #[test]
+    fn context_contributions_are_bounded_and_counterevidence_breaks_saturation() {
+        let mut memory = memory();
+        for serial in 0..200 {
+            memory.report(report(serial));
+        }
+        assert_eq!(memory.contexts.len(), 1);
+        assert_eq!(memory.contexts[0].contributions.len(), EPISODE_LIMIT);
+        assert_eq!(memory.contexts[0].contributions[0].credit.serial, 136);
+        assert_eq!(memory.contextual_score(report(0).context), -1024);
+        let mut success = report(200);
+        success.outcome = Outcome::Complete;
+        memory.report(success);
+        assert_eq!(memory.contextual_score(report(0).context), -768);
     }
 
     #[test]

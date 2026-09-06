@@ -117,14 +117,17 @@ presence but never availability. Shared air/lift credit and a post-delivery
 objective watch must not reward delivery as a kill or claim handed-off units.
 
 Validate experience at neutral, both one-band thresholds, bounded saturation,
-decay, and counterevidence. One route failure stays contextual; broader doctrine
-requires corroborating attributable episodes. Exercise retries from exact
-dispatched worker/target receipts, distinguishing death, preemption, exhaustion,
-missing funding, and currently occupied footprints from blocked paths.
-Remembered buildings alone cannot establish current site occupation. Fresh
-blocking foundations must not displace active builders from their current work
-tiles; test movement and completion release, nonblocking charges, and unchanged
-legacy placement. General retry expiry cannot clear contested-harvest
+decay, and counterevidence. Old contributions must not inherit renewed ages from
+later reports. Test staggered contributions and shared-credit replacement
+independently. Failed-approach questions must match frozen objective sites
+through fog, not remembered placeholder ids. One route failure stays contextual;
+broader doctrine requires corroborating attributable episodes. Exercise retries
+from exact dispatched worker/target receipts, distinguishing death, preemption,
+exhaustion, missing funding, and currently occupied footprints from blocked
+paths. Remembered buildings alone cannot establish current site occupation.
+Fresh blocking foundations must not displace active builders from their current
+work tiles; test movement and completion release, nonblocking charges, and
+unchanged legacy placement. General retry expiry cannot clear contested-harvest
 quarantine. Preserve the frozen Overseer path.
 
 Run the focused `battlefield_adaptation` integration suite alongside
@@ -428,13 +431,16 @@ Treat an Array as a persistent sensor, not as an unarmed defense. Its
 alternative shares the Defense portfolio domain but uses positive novel usable
 radar coverage as its value. Search around relevant owned assets for useful
 coverage of strategic approaches, discounting own, allied, and pending Arrays.
-Use current contacts, remembered contacts, then uncleared public starts to break
-equally useful ties toward a credible approach. Off-map area and Peaks provide
-no detection value because no unit can occupy them. Preserve active resource
-access and bind the exact ordinary route-capable builder proven through public
-terrain and current dynamic danger. Keep sensor proposals below immediate
-survival defense, allow partial coverage on maps smaller than the radar
-diameter, and keep the frozen Overseer's first-valid Array placement unchanged.
+Rank demand at exact builder readiness, not just the current tick; test an
+expired-on-arrival leader against a useful runner-up and preserve bounded route
+quotation through optimistic coverage bounds. Use current contacts, remembered
+contacts, then uncleared public starts to break equally useful ties toward a
+credible approach. Off-map area and Peaks provide no detection value because no
+unit can occupy them. Preserve active resource access and bind the exact
+ordinary route-capable builder proven through public terrain and current dynamic
+danger. Keep sensor proposals below immediate survival defense, allow partial
+coverage on maps smaller than the radar diameter, and keep the frozen Overseer's
+first-valid Array placement unchanged.
 
 Harvest work must also respect anonymous regional loss evidence, but a wreck
 near a dead combat unit is not automatically a dangerous replacement source. Use
