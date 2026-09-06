@@ -277,6 +277,7 @@ impl Orientation {
                 keep @ (Intent::TrainAt { .. }
                 | Intent::CancelSite { .. }
                 | Intent::Repair { .. }
+                | Intent::RepairWith { .. }
                 | Intent::Salvage { .. }
                 | Intent::Upgrade { .. }
                 | Intent::Load { .. }
@@ -360,6 +361,7 @@ mod tests {
             my_queues: vec![vec![UnitKind::Harvester]],
             my_queue_progress: vec![17],
             my_queued_units: vec![UnitId(1)],
+            my_repair_targets: vec![(UnitId(1), crate::ids::Target::Building(BuildingId(2)))],
             ally_units: vec![unit(2, 1, UnitKind::Wisp, TilePos::new(2, 3), None)],
             ally_buildings: vec![building(2, 1, BuildingKind::Array, TilePos::new(2, 1))],
             enemy_units: vec![unit(3, 2, UnitKind::Darter, TilePos::new(3, 4), None)],

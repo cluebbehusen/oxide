@@ -33,7 +33,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// Schema version for serialized decision traces.
-pub const DECISION_TRACE_VERSION: u32 = 9;
+pub const DECISION_TRACE_VERSION: u32 = 10;
 
 const RESOURCE_FORECAST_TICKS: Tick = crate::TICKS_PER_SECOND as Tick * 60;
 const ALLOCATION_TRACE_ENTRY_LIMIT: usize = 32;
@@ -76,6 +76,10 @@ pub struct DecisionTrace {
     pub channels: ChannelTraces,
     /// Bounded evidence for the connected force package and its assigned force.
     pub connected_force: ConnectedForceTrace,
+    /// Exact voluntary repair ownership, cadence funding, and lifecycle decisions.
+    pub support: SupportTrace,
+    /// Exact question ownership, preparation, dispatch, and local recovery.
+    pub reconnaissance: ReconnaissanceTrace,
     /// Input and output size of the utility-policy pass.
     pub utility: UtilityTrace,
     /// Final intent-to-command lowering summary.
@@ -114,10 +118,220 @@ impl DecisionTrace {
             allocation: AllocationTrace::default(),
             channels: ChannelTraces::default(),
             connected_force: ConnectedForceTrace::default(),
+            support: SupportTrace::default(),
+            reconnaissance: ReconnaissanceTrace::default(),
             utility: UtilityTrace::default(),
             lowering: LoweringTrace::default(),
         }
     }
+}
+
+/// Why a finite repair assignment started, continued, or released its claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportLifecycleReason {
+    /// Allocation accepted the exact patient and worker.
+    Accepted,
+    /// The unchanged ordinary program received its next cadence's debit.
+    Renewed,
+    /// The own patient is gone, healthy, ineligible, or no longer safe to service.
+    PatientUnavailable,
+    /// The assigned worker is dead or absent from the owner's observation.
+    WorkerUnavailable,
+    /// A different program or planner now owns the worker.
+    Preempted,
+    /// The ordinary approach cannot be proved safe from current knowledge.
+    UnsafeApproach,
+    /// Protected capital leaves insufficient current scrap for renewal.
+    Unfunded,
+    /// Opening recovery closes voluntary paid sustain.
+    CoreRecovery,
+}
+
+/// One exact repair program's owner-visible funding interval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RepairProgramTrace {
+    /// Exact worker, never an implicit first-available selection.
+    pub worker: UnitId,
+    /// Exact own patient.
+    pub patient: crate::ids::Target,
+    /// Tick on which the assignment was accepted.
+    pub accepted_at: Tick,
+    /// First tick not covered by its conservative repair debit.
+    pub funded_until: Tick,
+    /// Current scrap reserved for ordinary repair spending in this cadence.
+    pub debit: u32,
+}
+
+/// One observed lifecycle decision, independent of trace enablement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SupportLifecycleTrace {
+    /// Decision tick that produced this transition.
+    pub tick: Tick,
+    /// Exact program affected by this transition.
+    pub program: RepairProgramTrace,
+    /// Actual renewal or release outcome.
+    pub reason: SupportLifecycleReason,
+}
+
+/// Bounded diagnostics for allocated voluntary repair work.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SupportTrace {
+    /// Current pressure on exact own assets and uncovered protective strength.
+    pub requests: BoundedTraceEntries<ProtectionRequestTrace>,
+    /// Exact fighters retained for protective deployment.
+    pub deployments: BoundedTraceEntries<SupportDeploymentTrace>,
+    /// Exact protective ownership released during this observation.
+    pub deployment_releases: BoundedTraceEntries<DeploymentReleaseTrace>,
+    /// Canonically ordered active programs after allocation and renewal.
+    pub repairs: BoundedTraceEntries<RepairProgramTrace>,
+    /// Canonical transitions produced during this decision only.
+    pub lifecycle: BoundedTraceEntries<SupportLifecycleTrace>,
+}
+
+impl SupportTrace {
+    pub(super) fn from_policy(policy: &super::utility::UtilityPolicy, tick: Tick) -> Self {
+        let mut lifecycle = policy
+            .support_work
+            .lifecycle
+            .iter()
+            .filter(|entry| entry.tick == tick)
+            .cloned()
+            .collect::<Vec<_>>();
+        lifecycle.sort_by_key(|entry| {
+            (
+                entry.program.patient,
+                entry.program.worker,
+                entry.program.accepted_at,
+                entry.reason as u8,
+            )
+        });
+        Self {
+            deployment_releases: BoundedTraceEntries::from_vec(
+                policy
+                    .support_deployments
+                    .released
+                    .iter()
+                    .map(|(work, reason)| DeploymentReleaseTrace {
+                        asset: work.key.asset,
+                        air: work.key.air,
+                        unit: work.unit,
+                        deadline: work.deadline,
+                        reason: *reason,
+                    })
+                    .collect(),
+            ),
+            requests: BoundedTraceEntries::from_vec(
+                policy
+                    .support_deployments
+                    .requests
+                    .iter()
+                    .map(|request| ProtectionRequestTrace {
+                        asset: request.key.asset,
+                        air: request.key.air,
+                        tile: request.tile,
+                        pressure: request.pressure,
+                        missing: request.missing,
+                    })
+                    .collect(),
+            ),
+            deployments: BoundedTraceEntries::from_vec(
+                policy
+                    .support_deployments
+                    .active
+                    .iter()
+                    .map(|work| SupportDeploymentTrace {
+                        asset: work.key.asset,
+                        air: work.key.air,
+                        unit: work.unit,
+                        accepted_at: work.accepted_at,
+                        deadline: work.deadline,
+                        arrival_at: work.arrival_at,
+                        goal: work.goal,
+                        quiet_since: work.quiet_since,
+                    })
+                    .collect(),
+            ),
+            repairs: BoundedTraceEntries::from_vec(
+                policy
+                    .support_work
+                    .repairs
+                    .iter()
+                    .map(|repair| repair.trace())
+                    .collect(),
+            ),
+            lifecycle: BoundedTraceEntries::from_vec(lifecycle),
+        }
+    }
+}
+
+/// Current, owner-local protection work. This grants no allied repair access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentReleaseReason {
+    /// The exact fighter is no longer alive in the owner's observation.
+    UnitUnavailable,
+    /// The protected own asset is no longer alive.
+    AssetUnavailable,
+    /// A queued program takes precedence over voluntary deployment.
+    Preempted,
+    /// The frozen useful horizon elapsed.
+    DeadlineExpired,
+    /// Current pressure remained absent through the quiet interval.
+    PressureCleared,
+    /// The current ordinary ground approach is blocked.
+    RouteUnavailable,
+}
+
+/// One protective assignment's actual release cause.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeploymentReleaseTrace {
+    /// Exact own asset originally protected.
+    pub asset: crate::ids::Target,
+    /// Whether the assignment required anti-air service.
+    pub air: bool,
+    /// Fighter whose ownership was released.
+    pub unit: UnitId,
+    /// Original useful horizon, never extended on release.
+    pub deadline: Tick,
+    /// Actual observed release cause.
+    pub reason: DeploymentReleaseReason,
+}
+
+/// Current, owner-local protection work. This grants no allied repair access.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProtectionRequestTrace {
+    /// Own asset needing protection.
+    pub asset: crate::ids::Target,
+    /// Whether its attackers are aircraft.
+    pub air: bool,
+    /// Current asset location.
+    pub tile: TilePos,
+    /// Current visible hostile strength affecting this asset.
+    pub pressure: u64,
+    /// Strength not covered by current local service.
+    pub missing: u64,
+}
+
+/// A protective assignment with frozen actor and useful horizon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SupportDeploymentTrace {
+    /// Own asset receiving service.
+    pub asset: crate::ids::Target,
+    /// Whether service must engage aircraft.
+    pub air: bool,
+    /// Exact retained fighter.
+    pub unit: UnitId,
+    /// Original admission boundary.
+    pub accepted_at: Tick,
+    /// Frozen useful horizon.
+    pub deadline: Tick,
+    /// Originally validated arrival.
+    pub arrival_at: Tick,
+    /// Last issued deployment goal.
+    pub goal: TilePos,
+    /// First observation without the original pressure.
+    pub quiet_since: Option<Tick>,
 }
 
 /// Bounded resource evidence from the typed, fog-honest snapshot.
@@ -864,9 +1078,305 @@ impl<Payload> From<&InvestmentProposal<Payload>> for AllocationProposalTrace {
 }
 
 /// Stable public diagnostic identity for one fresh proposal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReconConsumerTrace {
+    /// Find the current state of an authored hostile start.
+    HostileStart {
+        /// Authored owner, not confirmed current ownership.
+        player: PlayerId,
+    },
+    /// Refresh a strategically useful remembered structure.
+    Objective {
+        /// Remembered owner.
+        player: PlayerId,
+        /// Remembered structure kind.
+        building: BuildingKind,
+    },
+    /// Resolve a concrete resource or Extractor opportunity.
+    Economy,
+    /// Prove a complete contested harvest region safe again.
+    HarvestRecovery,
+    /// Identify an approach threatening a specific defended asset.
+    Defense {
+        /// Own asset consuming the information.
+        building: BuildingId,
+    },
+}
+
+/// Current phase of an exact information assignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconPhaseTrace {
+    /// A specific paid observer is still being produced.
+    Preparation,
+    /// An exact live observer is looking for the answer.
+    Outbound,
+    /// The observer remains owned until its safe return is observed.
+    Recall,
+}
+
+/// Retained question and dispatch identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReconAssignmentTrace {
+    /// Exact frozen consumer and observer selection.
+    pub key: ProposalKeyTrace,
+    /// Evidence motivating the question, not certainty about its answer.
+    pub confidence: ConfidenceTrace,
+    /// First observation establishing this question.
+    pub evidence_at: Tick,
+    /// Tick on which allocation accepted this work.
+    pub accepted_at: Tick,
+    /// Frozen useful deadline; route changes never extend it.
+    pub deadline: Tick,
+    /// Assigned unit after production has resolved.
+    pub unit: Option<UnitId>,
+    /// Frozen observer origin, or the exact producer exit for a paid observer.
+    pub origin: TilePos,
+    /// Exact remaining paid occurrence, if still queued.
+    pub paid_queue: Option<PaidQueueClaimTrace>,
+    /// True while ordinary income is still needed before the purchase can execute.
+    pub unpaid: bool,
+    /// Exact current/forecast split and producer schedule, when procurement is funded.
+    pub funding: Option<ScheduledProducerJobTrace>,
+    /// Latest useful production completion, including the frozen travel allowance.
+    pub funding_deadline: Tick,
+    /// Current execution phase.
+    pub phase: ReconPhaseTrace,
+    /// Last command goal, retained to avoid reissuing unchanged orders.
+    pub dispatch: Option<TilePos>,
+}
+
+/// Bounded recovery for one question, independent of all other reconnaissance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReconRecoveryTrace {
+    /// Decision consuming the still-unanswered information.
+    pub consumer: ReconConsumerTrace,
+    /// Exact question location.
+    pub anchor: TilePos,
+    /// Earliest reconsideration tick, never an automatic purchase time.
+    pub retry_at: Tick,
+    /// First observation of the current quiet interval.
+    pub quiet_since: Option<Tick>,
+    /// Observed scout losses for this question.
+    pub losses: u32,
+}
+
+/// Why an unpaid information assignment released its capital.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconReleaseReason {
+    /// Current evidence answered the pending question before dispatch.
+    Answered,
+    /// The question no longer enables a useful decision.
+    NoLongerUseful,
+    /// Preparation missed the original useful or funding deadline.
+    DeadlineExpired,
+    /// The exact recalled observer was observed safely home.
+    SafeReturn,
+    /// An assigned observer died or a completed paid occurrence supplied no eligible surviving observer.
+    ObserverLost,
+    /// Protected home strength must recover before voluntary spending.
+    CoreRecovery,
+    /// Current resources and completed income no longer fund the fixed deadline.
+    Unfundable,
+    /// The exact factory or its useful safe route no longer exists.
+    ProducerOrRouteUnavailable,
+}
+
+/// One question-local release observed during this decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReconReleaseTrace {
+    /// Decision consuming the information.
+    pub consumer: ReconConsumerTrace,
+    /// Frozen question location.
+    pub anchor: TilePos,
+    /// Actual release cause.
+    pub reason: ReconReleaseReason,
+}
+
+/// Information expected from an observer retained by an existing operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReconCoverageTrace {
+    /// Decision that will consume this observation.
+    pub consumer: ReconConsumerTrace,
+    /// Question location, not a current targeting claim.
+    pub anchor: TilePos,
+    /// Already-owned live observer, if produced.
+    pub unit: Option<UnitId>,
+    /// Already-paid occurrence retained by the operation, if still queued.
+    pub paid_queue: Option<PaidQueueClaimTrace>,
+    /// Validated arrival before the useful deadline.
+    pub arrival_at: Tick,
+}
+
+/// Bounded question-owned work and recovery diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct ReconnaissanceTrace {
+    /// Existing operational service; no second lease or purchase is created.
+    pub covered: BoundedTraceEntries<ReconCoverageTrace>,
+    /// Independently retained assignments in canonical question order.
+    pub assignments: BoundedTraceEntries<ReconAssignmentTrace>,
+    /// Local cooldowns and observed quiet intervals.
+    pub recovery: BoundedTraceEntries<ReconRecoveryTrace>,
+    /// Explicit releases of unpaid promises, without cancelling paid queue work.
+    pub released: BoundedTraceEntries<ReconReleaseTrace>,
+}
+
+impl ReconnaissanceTrace {
+    pub(super) fn from_policy(policy: &super::utility::UtilityPolicy) -> Self {
+        Self {
+            covered: BoundedTraceEntries::from_vec(
+                policy
+                    .reconnaissance
+                    .covered
+                    .iter()
+                    .map(|(key, observer, arrival_at)| {
+                        let (unit, paid_queue) = match observer {
+                            super::utility::ReconObserver::Live(id) => (Some(*id), None),
+                            super::utility::ReconObserver::Queued {
+                                producer,
+                                kind,
+                                occurrence,
+                                ..
+                            } => (
+                                None,
+                                Some(
+                                    crate::bot::allocation::PaidQueueClaim {
+                                        producer: *producer,
+                                        kind: *kind,
+                                        occurrence: *occurrence,
+                                    }
+                                    .into(),
+                                ),
+                            ),
+                            super::utility::ReconObserver::Purchase { .. } => {
+                                unreachable!("operational coverage needs a live or paid observer")
+                            }
+                        };
+                        ReconCoverageTrace {
+                            consumer: key.consumer.into(),
+                            anchor: key.tile(),
+                            unit,
+                            paid_queue,
+                            arrival_at: *arrival_at,
+                        }
+                    })
+                    .collect(),
+            ),
+            released: BoundedTraceEntries::from_vec(
+                policy
+                    .reconnaissance
+                    .released
+                    .iter()
+                    .map(|(key, reason)| ReconReleaseTrace {
+                        consumer: key.consumer.into(),
+                        anchor: key.tile(),
+                        reason: *reason,
+                    })
+                    .collect(),
+            ),
+            assignments: BoundedTraceEntries::from_vec(
+                policy
+                    .reconnaissance
+                    .assignments
+                    .values()
+                    .map(|work| ReconAssignmentTrace {
+                        key: ProposalKey::Reconnaissance(work.proposal.key()).into(),
+                        confidence: ProposalCaseTrace::from(work.proposal.case()).confidence,
+                        evidence_at: work.proposal.question.evidence_at,
+                        accepted_at: work.proposal.observed_at,
+                        deadline: work.proposal.deadline,
+                        unit: work.unit,
+                        origin: work.proposal.origin,
+                        paid_queue: work.paid_claim.map(Into::into),
+                        unpaid: work.unpaid,
+                        funding: work.funding.map(Into::into),
+                        funding_deadline: work.proposal.funding_deadline(),
+                        phase: work.phase.trace(),
+                        dispatch: work.dispatch,
+                    })
+                    .collect(),
+            ),
+            recovery: BoundedTraceEntries::from_vec(
+                policy
+                    .reconnaissance
+                    .recovery
+                    .iter()
+                    .map(|(key, recovery)| ReconRecoveryTrace {
+                        consumer: key.consumer.into(),
+                        anchor: key.tile(),
+                        retry_at: recovery.retry_at,
+                        quiet_since: recovery.quiet_since,
+                        losses: recovery.attempts,
+                    })
+                    .collect(),
+            ),
+        }
+    }
+}
+
+impl From<crate::bot::utility::ReconConsumer> for ReconConsumerTrace {
+    fn from(value: crate::bot::utility::ReconConsumer) -> Self {
+        use crate::bot::utility::ReconConsumer;
+        match value {
+            ReconConsumer::HostileStart(player) => Self::HostileStart { player },
+            ReconConsumer::Objective(player, building) => Self::Objective { player, building },
+            ReconConsumer::Economy => Self::Economy,
+            ReconConsumer::HarvestRecovery => Self::HarvestRecovery,
+            ReconConsumer::Defense(building) => Self::Defense { building },
+        }
+    }
+}
+
+/// Stable public diagnostic identity for one fresh proposal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "domain", rename_all = "snake_case")]
 pub enum ProposalKeyTrace {
+    /// Exact protective deployment, not a competing fighter purchase.
+    SupportDeployment {
+        /// Own exposed asset.
+        asset: crate::ids::Target,
+        /// Whether service must engage aircraft.
+        air: bool,
+    },
+    /// Exact question and its proposed observer.
+    Reconnaissance {
+        /// Decision that needs the answer.
+        consumer: ReconConsumerTrace,
+        /// Exact question footprint anchor or region center.
+        anchor: TilePos,
+        /// Existing observer, when using live inventory.
+        unit: Option<UnitId>,
+        /// Exact factory, when buying a dedicated observer.
+        producer: Option<BuildingId>,
+        /// Exact already-paid occurrence when assigning queued inventory.
+        paid_occurrence: Option<u32>,
+    },
+    /// Exact allied asset whose pressure justifies a frozen deployment.
+    SupportRelief {
+        /// Allied Foundry, not an own repair target.
+        foundry: BuildingId,
+    },
+    /// Exact Repair Bay foundation.
+    SupportConstruction {
+        /// Frozen site and kind.
+        action: crate::bot::utility::EconomicInvestmentKey,
+    },
+    /// One finite repair-service purchase.
+    SupportProcurement {
+        /// Exact provider kind.
+        kind: UnitKind,
+        /// Reachable repair front served by the provider.
+        service: StandingForceServiceKeyTrace,
+    },
+    /// Finite own repair work admitted with an exact actor.
+    Support {
+        /// Exact patient, never an allied repair target.
+        patient: crate::ids::Target,
+        /// Exact admitted worker.
+        worker: UnitId,
+    },
     /// One exact worker, infrastructure, or upgrade opportunity.
     Economy {
         /// Canonical action identity retained through commitment.
@@ -908,13 +1418,62 @@ impl ProposalKeyTrace {
             Self::StandingForce { .. } => 2,
             Self::Defense { .. } => 3,
             Self::Economy { .. } => 4,
+            Self::Support { .. } => 5,
+            Self::SupportProcurement { .. } => 6,
+            Self::SupportConstruction { .. } => 7,
+            Self::SupportRelief { .. } => 8,
+            Self::Reconnaissance { .. } => 10,
+            Self::SupportDeployment { .. } => 9,
         };
         domain(self)
             .cmp(&domain(other))
             .then_with(|| match (self, other) {
+                (
+                    Self::Reconnaissance {
+                        consumer: left,
+                        anchor: a,
+                        unit: u,
+                        producer: p,
+                        paid_occurrence: o,
+                    },
+                    Self::Reconnaissance {
+                        consumer: right,
+                        anchor: b,
+                        unit: v,
+                        producer: q,
+                        paid_occurrence: r,
+                    },
+                ) => (left, a.y, a.x, u, p, o).cmp(&(right, b.y, b.x, v, q, r)),
+                (Self::SupportRelief { foundry: left }, Self::SupportRelief { foundry: right }) => {
+                    left.cmp(right)
+                }
+                (
+                    Self::SupportDeployment {
+                        asset: left,
+                        air: a,
+                    },
+                    Self::SupportDeployment {
+                        asset: right,
+                        air: b,
+                    },
+                ) => (left, a).cmp(&(right, b)),
+                (
+                    Self::Support {
+                        patient: left,
+                        worker: left_worker,
+                    },
+                    Self::Support {
+                        patient: right,
+                        worker: right_worker,
+                    },
+                ) => (left, left_worker).cmp(&(right, right_worker)),
                 (Self::Economy { action: left }, Self::Economy { action: right }) => {
                     left.cmp(right)
                 }
+                (
+                    Self::SupportConstruction { action: left },
+                    Self::SupportConstruction { action: right },
+                ) => left.cmp(right),
                 (
                     Self::FoundryExpansion { anchor: left },
                     Self::FoundryExpansion { anchor: right },
@@ -936,6 +1495,16 @@ impl ProposalKeyTrace {
                         service: left_service,
                     },
                     Self::StandingForce {
+                        kind: right_kind,
+                        service: right_service,
+                    },
+                )
+                | (
+                    Self::SupportProcurement {
+                        kind: left_kind,
+                        service: left_service,
+                    },
+                    Self::SupportProcurement {
                         kind: right_kind,
                         service: right_service,
                     },
@@ -1010,6 +1579,27 @@ impl From<StandingForceServiceKey> for StandingForceServiceKeyTrace {
 impl From<ProposalKey> for ProposalKeyTrace {
     fn from(key: ProposalKey) -> Self {
         match key {
+            ProposalKey::SupportConstruction(action) => Self::SupportConstruction { action },
+            ProposalKey::SupportRelief(foundry) => Self::SupportRelief { foundry },
+            ProposalKey::SupportDeployment(key) => Self::SupportDeployment {
+                asset: key.asset,
+                air: key.air,
+            },
+            ProposalKey::Reconnaissance(key) => Self::Reconnaissance {
+                consumer: key.question.consumer.into(),
+                anchor: key.question.tile(),
+                unit: key.unit,
+                producer: key.producer,
+                paid_occurrence: key.paid_occurrence.map(u32::from),
+            },
+            ProposalKey::SupportProcurement(key) => Self::SupportProcurement {
+                kind: key.kind,
+                service: key.service.into(),
+            },
+            ProposalKey::Support(key) => Self::Support {
+                patient: key.patient,
+                worker: key.worker,
+            },
             ProposalKey::Economy(action) => Self::Economy { action },
             ProposalKey::FoundryExpansion(key) => Self::FoundryExpansion { anchor: key.anchor },
             ProposalKey::ConnectedOffenseMinimum(key) => Self::ConnectedOffenseMinimum {
@@ -1184,8 +1774,31 @@ impl From<ExecutionSafety> for ExecutionSafetyTrace {
 }
 
 /// Exact shared-resource requirements summarized at a fixed diagnostic bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PaidQueueClaimTrace {
+    /// Exact producer.
+    pub producer: BuildingId,
+    /// Paid unit kind.
+    pub kind: UnitKind,
+    /// Zero-based occurrence among this kind in the current paid queue.
+    pub occurrence: u32,
+}
+
+impl From<crate::bot::allocation::PaidQueueClaim> for PaidQueueClaimTrace {
+    fn from(claim: crate::bot::allocation::PaidQueueClaim) -> Self {
+        Self {
+            producer: claim.producer,
+            kind: claim.kind,
+            occurrence: bounded_count(claim.occurrence),
+        }
+    }
+}
+
+/// Exact shared-resource requirements summarized at a fixed diagnostic bound.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct AllocationClaimsTrace {
+    /// Already-paid occurrences exclusively assigned to this work.
+    pub paid_queue: BoundedTraceEntries<PaidQueueClaimTrace>,
     /// Completed-source income made unavailable by irreversible offline work.
     pub foregone_income: BoundedTraceEntries<ForecastClaimTrace>,
     /// Exact owned structures leased for irreversible work.
@@ -1238,6 +1851,14 @@ impl From<&ClaimBundle> for AllocationClaimsTrace {
                     .collect(),
             ),
             buildings: BoundedTraceEntries::from_vec(claims.buildings().to_vec()),
+            paid_queue: BoundedTraceEntries::from_vec(
+                claims
+                    .paid_queue()
+                    .iter()
+                    .copied()
+                    .map(Into::into)
+                    .collect(),
+            ),
             current_scrap: claims.current_scrap(),
             minimum_residual_scrap: claims.minimum_residual_scrap(),
             forecast_scrap_total,
@@ -1408,6 +2029,27 @@ impl From<ObligationClass> for ObligationClassTrace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ObligationKeyTrace {
+    /// Exact previously admitted protective deployment.
+    SupportDeployment {
+        /// Own exposed asset.
+        asset: crate::ids::Target,
+        /// Whether service must engage aircraft.
+        air: bool,
+    },
+    /// Exact retained information assignment.
+    Reconnaissance {
+        /// Decision consuming the answer.
+        consumer: ReconConsumerTrace,
+        /// Frozen question anchor.
+        anchor: TilePos,
+    },
+    /// Cadence-funded voluntary repair.
+    Support {
+        /// Exact own patient.
+        patient: crate::ids::Target,
+        /// Exact worker retained by the program.
+        worker: UnitId,
+    },
     /// One exact economic investment awaiting current funding.
     SavedEconomy {
         /// Frozen action identity.
@@ -1466,6 +2108,18 @@ pub enum ObligationKeyTrace {
 impl From<ObligationKey> for ObligationKeyTrace {
     fn from(value: ObligationKey) -> Self {
         match value {
+            ObligationKey::Support(key) => Self::Support {
+                patient: key.patient,
+                worker: key.worker,
+            },
+            ObligationKey::SupportDeployment(key) => Self::SupportDeployment {
+                asset: key.asset,
+                air: key.air,
+            },
+            ObligationKey::Reconnaissance(key) => Self::Reconnaissance {
+                consumer: key.consumer.into(),
+                anchor: key.tile(),
+            },
             ObligationKey::EmergencyDefense { kind, anchor } => Self::EmergencyDefense {
                 building: kind,
                 anchor,
@@ -1662,6 +2316,18 @@ fn proposal_keys_trace(mut keys: Vec<ProposalKey>) -> BoundedTraceEntries<Propos
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum AllocationConflictTrace {
+    /// An absent paid occurrence cannot satisfy an assignment.
+    UnknownPaidQueue {
+        /// Exact absent occurrence.
+        claim: PaidQueueClaimTrace,
+    },
+    /// One paid occurrence cannot serve two independent assignments.
+    PaidQueue {
+        /// Exact conflicting occurrence.
+        claim: PaidQueueClaimTrace,
+        /// Retained owner.
+        owner: ClaimOwnerTrace,
+    },
     /// A claim names a building absent from the seat's resource snapshot.
     UnknownBuilding {
         /// Exact missing structure.
@@ -1730,12 +2396,8 @@ pub enum AllocationConflictTrace {
     },
     /// Two individually legal builds cannot safely share one layout.
     IncompatibleLayout {
-        /// First canonical proposal identity.
-        first: ProposalKeyTrace,
-        /// Second canonical proposal identity.
-        second: ProposalKeyTrace,
-        /// Third proposal when the incompatibility requires all three builds.
-        third: Option<ProposalKeyTrace>,
+        /// Canonical identities whose complete layout is unsafe.
+        keys: Vec<ProposalKeyTrace>,
     },
     /// A requested producer is absent from completed capacity.
     UnknownProducer {
@@ -1809,6 +2471,13 @@ impl From<&AllocationConflict> for AllocationConflictTrace {
                 horizon: *horizon,
             },
             AllocationConflict::UnknownUnit(unit) => Self::UnknownUnit { unit: *unit },
+            AllocationConflict::UnknownPaidQueue(claim) => Self::UnknownPaidQueue {
+                claim: (*claim).into(),
+            },
+            AllocationConflict::PaidQueue { claim, owner } => Self::PaidQueue {
+                claim: (*claim).into(),
+                owner: (*owner).into(),
+            },
             AllocationConflict::UnknownBuilding(building) => Self::UnknownBuilding {
                 building: *building,
             },
@@ -1830,14 +2499,8 @@ impl From<&AllocationConflict> for AllocationConflictTrace {
                 existing: (*existing).into(),
                 owner: (*owner).into(),
             },
-            AllocationConflict::IncompatibleLayout {
-                first,
-                second,
-                third,
-            } => Self::IncompatibleLayout {
-                first: (*first).into(),
-                second: (*second).into(),
-                third: third.map(Into::into),
+            AllocationConflict::IncompatibleLayout { keys } => Self::IncompatibleLayout {
+                keys: keys.iter().copied().map(Into::into).collect(),
             },
             AllocationConflict::UnknownProducer(producer) => Self::UnknownProducer {
                 producer: *producer,
@@ -3309,14 +3972,10 @@ mod tests {
         );
         assert_eq!(
             AllocationConflictTrace::from(AllocationConflict::IncompatibleLayout {
-                first: foundry,
-                second: ProposalKey::Defense(defense),
-                third: None,
+                keys: vec![foundry, ProposalKey::Defense(defense)],
             }),
             AllocationConflictTrace::IncompatibleLayout {
-                first: foundry.into(),
-                second: defense.into(),
-                third: None,
+                keys: vec![foundry.into(), defense.into()],
             }
         );
     }
@@ -4031,7 +4690,7 @@ mod tests {
 
     #[test]
     fn serialized_trace_has_a_fixed_schema() {
-        assert_eq!(DECISION_TRACE_VERSION, 9);
+        assert_eq!(DECISION_TRACE_VERSION, 10);
         let mut trace = DecisionTrace::from_observation(&Observation::default());
         trace.gates.opening_core = Some(CoreGateTrace {
             projected_strength: 1,
@@ -4139,9 +4798,7 @@ mod tests {
                     disposition: ProposalDispositionTrace::ConflictsWithSelected {
                         selected: BoundedTraceEntries::from_vec(vec![expansion_key]),
                         conflict: AllocationConflictTrace::IncompatibleLayout {
-                            first: expansion_key,
-                            second: defense_key,
-                            third: None,
+                            keys: vec![expansion_key, defense_key],
                         },
                     },
                 },
@@ -4287,6 +4944,8 @@ mod tests {
                 "lowering",
                 "player",
                 "resources",
+                "support",
+                "reconnaissance",
                 "tick",
                 "utility",
                 "version",
@@ -4369,6 +5028,7 @@ mod tests {
                 "foregone_income",
                 "forecast_scrap_total",
                 "minimum_residual_scrap",
+                "paid_queue",
                 "producer_jobs",
                 "producer_job_scrap_total",
                 "sites",
@@ -4427,21 +5087,33 @@ mod tests {
                 },
                 "conflict": {
                     "reason": "incompatible_layout",
-                    "first": {
+                    "keys": [{
                         "domain": "foundry_expansion",
                         "anchor": { "x": 6, "y": 5 }
-                    },
-                    "second": {
+                    }, {
                         "domain": "defense",
                         "kind": "turret",
                         "anchor": { "x": 9, "y": 5 }
-                    },
-                    "third": null
+                    }]
                 }
             }))
         );
 
         let expected_objects = [
+            (
+                "support",
+                BTreeSet::from([
+                    "repairs",
+                    "lifecycle",
+                    "requests",
+                    "deployments",
+                    "deployment_releases",
+                ]),
+            ),
+            (
+                "reconnaissance",
+                BTreeSet::from(["assignments", "covered", "recovery", "released"]),
+            ),
             (
                 "resources",
                 BTreeSet::from([

@@ -434,6 +434,33 @@ impl Executive {
                         },
                     });
                 }
+                Intent::RepairWith { worker, building } => {
+                    if lease.is_some_and(|lease| lease.builder() == *worker)
+                        || !obs.my_buildings.iter().any(|patient| {
+                            patient.id == *building
+                                && patient.player == me
+                                && patient.built
+                                && patient.hp > 0
+                        })
+                        || !obs
+                            .my_units
+                            .iter()
+                            .any(|unit| unit.id == *worker && unit.kind.stats().harvest.is_some())
+                    {
+                        continue;
+                    }
+                    let units = self.claim_exact_units(me, obs, &[*worker], &mut claimed);
+                    if !units.is_empty() {
+                        out.push(PlayerCommand {
+                            player: me,
+                            command: Command::Repair {
+                                units,
+                                building: *building,
+                                queue: false,
+                            },
+                        });
+                    }
+                }
                 Intent::Repair { building } => {
                     let anchor = obs
                         .my_buildings
@@ -873,6 +900,7 @@ mod tests {
             my_queues: Vec::new(),
             my_queue_progress: Vec::new(),
             my_queued_units: Vec::new(),
+            my_repair_targets: Vec::new(),
             ally_units: Vec::new(),
             ally_buildings: Vec::new(),
             enemy_units: Vec::new(),
@@ -966,6 +994,7 @@ mod tests {
             my_queues: Vec::new(),
             my_queue_progress: Vec::new(),
             my_queued_units: Vec::new(),
+            my_repair_targets: Vec::new(),
             ally_units: Vec::new(),
             ally_buildings: Vec::new(),
             enemy_units: Vec::new(),
@@ -1482,6 +1511,63 @@ mod tests {
                 ..
             }] if units == &[UnitId(10)] && *command_goal == goal
         ));
+    }
+
+    #[test]
+    fn exact_building_repair_never_substitutes_an_available_worker() {
+        let (mut obs, _) = target_holding_position();
+        obs.my_units = vec![
+            unit(10, 0, UnitKind::Harvester, 100),
+            unit(11, 0, UnitKind::Harvester, 100),
+        ];
+        let building = BuildingId(9);
+        obs.my_buildings = vec![crate::bot::observation::BuildingObs {
+            id: building,
+            player: PlayerId(0),
+            kind: BuildingKind::Foundry,
+            anchor: TilePos::new(2, 2),
+            hp: 100,
+            built: true,
+            seen: true,
+            tier: 0,
+        }];
+        let goal = TilePos::new(14, 8);
+        let commands = Executive::new().apply_with_reservations(
+            PlayerId(0),
+            &obs,
+            &[
+                Intent::MoveUnits {
+                    units: vec![UnitId(10)],
+                    goal,
+                },
+                Intent::RepairWith {
+                    worker: UnitId(10),
+                    building,
+                },
+                Intent::RepairWith {
+                    worker: UnitId(99),
+                    building,
+                },
+            ],
+            &[],
+        );
+        assert_eq!(commands.len(), 1);
+        assert!(
+            matches!(&commands[0].command, Command::Move { units, .. } if units == &[UnitId(10)])
+        );
+
+        let commands = Executive::new().apply_with_reservations(
+            PlayerId(0),
+            &obs,
+            &[Intent::RepairWith {
+                worker: UnitId(11),
+                building,
+            }],
+            &[],
+        );
+        assert!(
+            matches!(commands.as_slice(), [PlayerCommand { command: Command::Repair { units, building: target, queue: false }, .. }] if units == &[UnitId(11)] && *target == building)
+        );
     }
 
     #[test]

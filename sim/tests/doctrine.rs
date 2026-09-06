@@ -22,6 +22,7 @@ fn obs_base() -> Observation {
         my_queues: Vec::new(),
         my_queue_progress: Vec::new(),
         my_queued_units: Vec::new(),
+        my_repair_targets: Vec::new(),
         ally_units: Vec::new(),
         ally_buildings: Vec::new(),
         enemy_units: Vec::new(),
@@ -3177,21 +3178,30 @@ fn deferred_build_stops_repairs_before_reusing_a_repairing_builder() {
         .collect();
     let mut dials = Dials::full();
     dials.scouting = false;
-    dials.adaptive_composition = true;
-    dials.support_target = 3;
     obs.my_buildings
         .push(building_obs(1, 0, BuildingKind::Fabricator, 8, 2));
     obs.my_queues.push(Vec::new());
 
-    let intents = player_think(&mut UtilityPolicy::new(), &dials, &obs);
+    let mut intents = player_think(&mut UtilityPolicy::new(), &dials, &obs);
+    assert!(
+        intents
+            .iter()
+            .all(|intent| !matches!(intent, Intent::Build { .. } | Intent::BuildWith { .. })),
+        "residual utility must not originate a speculative Repair Bay: {intents:?}"
+    );
+    intents.push(Intent::BuildWith {
+        builder: UnitId(0),
+        kind: BuildingKind::RepairBay,
+        anchor: TilePos::new(12, 6),
+    });
     let stop = intents
         .iter()
         .position(|intent| matches!(intent, Intent::StopUnits { .. }))
         .expect("the unpaid remote build cancels voluntary repair");
     let build = intents
         .iter()
-        .position(|intent| matches!(intent, Intent::Build { .. }))
-        .expect("the unseen Repair Bay is still planned");
+        .position(|intent| matches!(intent, Intent::BuildWith { .. }))
+        .expect("the exact construction assignment is retained");
     assert!(
         stop < build,
         "repair cancellation must lower before Build: {intents:?}"
@@ -3216,7 +3226,7 @@ fn deferred_build_stops_repairs_before_reusing_a_repairing_builder() {
 }
 
 #[test]
-fn visible_paid_construction_leaves_existing_repair_work_alone() {
+fn visible_paid_construction_does_not_fund_an_unowned_repair_program() {
     let mut obs = obs_with_home();
     obs.scrap = 1_000;
     obs.my_units = (0..4)
@@ -3228,6 +3238,11 @@ fn visible_paid_construction_leaves_existing_repair_work_alone() {
     wounded.hp = 1;
     obs.my_buildings.push(wounded);
     obs.my_queues.push(Vec::new());
+    obs.my_repair_targets = vec![(UnitId(0), Target::Building(BuildingId(7)))];
+    let mut site = building_obs(8, 0, BuildingKind::Fabricator, 14, 8);
+    site.built = false;
+    obs.my_buildings.push(site);
+    obs.my_queues.push(Vec::new());
     let mut dials = Dials::full();
     dials.scouting = false;
 
@@ -3235,14 +3250,14 @@ fn visible_paid_construction_leaves_existing_repair_work_alone() {
     assert!(
         intents
             .iter()
-            .all(|intent| !matches!(intent, Intent::StopUnits { .. })),
-        "an immediately paid visible site creates no deferred obligation: {intents:?}"
+            .any(|intent| matches!(intent, Intent::StopUnits { units } if units == &[UnitId(0)])),
+        "paid construction and a known patient do not supply a Support funding grant: {intents:?}"
     );
     assert!(
         intents
             .iter()
-            .all(|intent| !matches!(intent, Intent::Repair { .. })),
-        "the existing persistent repair continues without a replacement intent: {intents:?}"
+            .all(|intent| !matches!(intent, Intent::Repair { .. } | Intent::RepairWith { .. })),
+        "residual utility cannot restart an unfunded repair: {intents:?}"
     );
 }
 

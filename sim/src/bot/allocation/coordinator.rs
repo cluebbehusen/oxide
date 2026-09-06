@@ -97,18 +97,10 @@ impl CrossDomainAllocation {
         self.proposals.push(proposal);
     }
 
-    /// Rejects a pair of individually legal builds when their combined layout
+    /// Rejects a set of individually legal builds when their combined layout
     /// fails a domain-owned route, egress, or resource-access preflight.
-    pub(crate) fn reject_incompatible_layout(&mut self, first: ProposalKey, second: ProposalKey) {
-        if let Some(pair) = IncompatibleLayoutSet::new(first, second) {
-            self.incompatible_layouts.push(pair);
-            self.incompatible_layouts.sort_unstable();
-            self.incompatible_layouts.dedup();
-        }
-    }
-
-    pub(crate) fn reject_incompatible_triple(&mut self, keys: [ProposalKey; 3]) {
-        if let Some(layout) = IncompatibleLayoutSet::triple(keys) {
+    pub(crate) fn reject_incompatible_layout_set(&mut self, keys: Vec<ProposalKey>) {
+        if let Some(layout) = IncompatibleLayoutSet::from_keys(keys) {
             self.incompatible_layouts.push(layout);
             self.incompatible_layouts.sort_unstable();
             self.incompatible_layouts.dedup();

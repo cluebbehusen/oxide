@@ -47,8 +47,18 @@ mod economic_work;
 mod economy;
 mod expansion;
 mod production;
+mod reconnaissance;
+pub(crate) use reconnaissance::{
+    OperationalReconWork, ReconConsumer, ReconObserver, ReconProposal, ReconProposalKey,
+    ReconQuestionKey,
+};
 mod sensor;
 mod support;
+mod support_allocation;
+pub(in crate::bot) use support_allocation::SupportWorkSnapshot;
+pub(crate) use support_allocation::{RepairAssignment, SupportKey};
+mod support_deployment;
+pub(crate) use support_deployment::{ProtectionKey, ProtectionRequest, SupportDeployment};
 mod terrain;
 
 #[cfg(test)]
@@ -877,6 +887,9 @@ pub struct UtilityPolicy {
     economic_foundation: Option<EconomicInvestment>,
     economic_cancelled_founder: Option<(UnitId, BuildingKind, TilePos)>,
     economic_retry_at: u64,
+    pub(crate) support_work: support_allocation::SupportWork,
+    pub(crate) support_deployments: support_deployment::SupportDeployments,
+    pub(crate) reconnaissance: reconnaissance::Reconnaissance,
     /// The designated scout, held only mid-sweep (released between
     /// sweeps so the draft can have it back).
     scout: Option<UnitId>,
@@ -898,9 +911,8 @@ pub struct UtilityPolicy {
     /// the recomputable authored-start prior above.
     persistent_air_scout_needed: bool,
     /// A dispatched dedicated scout died before completing its solo look.
-    /// Do not fund the same suicide conveyor until genuinely current enemy
-    /// sight changes the information state; remembered ghosts are not new
-    /// evidence.
+    /// Reconsider only after changed current sight or the bounded loss
+    /// cooldown and quiet interval; remembered ghosts are not new evidence.
     solo_air_scout_suspended: bool,
     /// First tick of uninterrupted absence of actionable enemy sight after a
     /// solo scout loss.
@@ -1016,7 +1028,7 @@ impl PolicyCommitments {
             foundry_saving_blocked: false,
         };
         commitments.hold_legacy_saturating(prior_scrap_commitment);
-        commitments.import_strategic_reservations(reserved);
+        commitments.import_strategic_reservations(reserved, &resources);
         commitments.import_strategic_production(strategic_production);
         commitments
     }
@@ -1088,12 +1100,25 @@ impl PolicyCommitments {
         owner
     }
 
-    fn import_strategic_reservations(&mut self, reserved: &[UnitId]) {
+    fn import_strategic_reservations(&mut self, reserved: &[UnitId], resources: &ResourceSnapshot) {
         let mut units = reserved.to_vec();
         units.sort_unstable();
         units.dedup();
         for unit in units {
             let owner = self.next_strategic_owner();
+            if resources.builders().iter().any(|builder| {
+                builder.id == unit
+                    && builder.obligation == Some(super::resources::BuilderObligation::Repair)
+            }) {
+                self.ledger
+                    .import_builder_obligation(
+                        owner,
+                        unit,
+                        super::resources::BuilderObligation::Repair,
+                    )
+                    .expect("retained repair ownership must match the observed program");
+                continue;
+            }
             self.ledger
                 .claim_unit(owner, unit, UnitClaimRole::Strategic)
                 .expect("strategic reservations must name distinct free own units");
@@ -1290,6 +1315,9 @@ impl UtilityPolicy {
     }
 
     fn air_scout_needed(&self) -> bool {
+        if self.reconnaissance.observed_at.is_some() {
+            return self.reconnaissance.needs_air;
+        }
         self.public_prior_air_scout_needed
             || self.contested_recon_air_scout_needed
             || self.persistent_air_scout_needed
@@ -1484,24 +1512,6 @@ impl UtilityPolicy {
             return 0;
         }
         UnitKind::Sentinel.stats().cost
-    }
-
-    fn unpaid_deferred_construction(obs: &Observation, intents: &[Intent]) -> bool {
-        intents.iter().any(|intent| match intent {
-            Intent::Build { kind, anchor } | Intent::BuildWith { kind, anchor, .. } => {
-                let already_paid = obs.my_buildings.iter().any(|building| {
-                    building.kind == *kind
-                        && building.anchor == *anchor
-                        && !building.built
-                        && building.tier == 0
-                });
-                let (width, height) = kind.base_stats().size;
-                !already_paid
-                    && (0..height)
-                        .any(|dy| (0..width).any(|dx| !obs.visible(anchor.offset(dx, dy))))
-            }
-            _ => false,
-        })
     }
 
     pub(super) fn strategic_opening_bootstrap_reserve(
@@ -1735,6 +1745,7 @@ impl UtilityPolicy {
             | Intent::AttackUnits { units, .. }
             | Intent::StopUnits { units } => claimed.extend(units.iter().copied()),
             Intent::RepairUnits { welders, .. } => claimed.extend(welders.iter().copied()),
+            Intent::RepairWith { worker, .. } => claimed.push(*worker),
             Intent::Scout { unit, .. } => claimed.push(*unit),
             Intent::BuildWith { builder, .. } => claimed.push(*builder),
             Intent::Load { transport, riders } => {
@@ -2279,10 +2290,16 @@ impl UtilityPolicy {
             if let Some(public_map) = mode.public_map {
                 self.clear_visible_public_starts(obs, public_map);
             }
-            self.audit_missing_scout(obs);
-            self.refresh_solo_air_scout_suspension(obs);
-            self.refresh_contested_harvest_regions(obs, mode.unit_contacts, mode.building_contacts);
-            self.retreat_contested_scout(obs, home_tile, &mut intents);
+            if self.reconnaissance.observed_at != Some(obs.tick) {
+                self.audit_missing_scout(obs);
+                self.refresh_solo_air_scout_suspension(obs);
+                self.refresh_contested_harvest_regions(
+                    obs,
+                    mode.unit_contacts,
+                    mode.building_contacts,
+                );
+                self.retreat_contested_scout(obs, home_tile, &mut intents);
+            }
             self.evacuate_contested_workers(
                 obs,
                 home_tile,
@@ -2308,6 +2325,9 @@ impl UtilityPolicy {
         // player-facing difficulty.
         if !mode.admit_voluntary_macro {
             self.army(dials, obs, armies, home_tile, mode, &mut intents);
+            if player_facing {
+                self.stop_unfunded_repairs(obs, &mut intents);
+            }
             return intents;
         }
 
@@ -2386,12 +2406,6 @@ impl UtilityPolicy {
         } else {
             Self::deferred_claims(admission_obs)
         };
-        let foundry_saving_commitment = self
-            .foundry_saving
-            .as_ref()
-            .map_or(0, |saving| saving.required_scrap);
-        let construction_commitment = Self::deferred_claims_commitment(&retained_deferred_claims)
-            .saturating_add(foundry_saving_commitment);
         if let Some(commitments) = &mut commitments {
             commitments.import_deferred_claims(admission_obs, &retained_deferred_claims);
             let foundry_import = self
@@ -2417,7 +2431,7 @@ impl UtilityPolicy {
             .as_ref()
             .map_or(obs.scrap, PolicyCommitments::available_scrap);
         let mut budget = uncommitted_scrap_at_admission;
-        let mut expansion_capital_promised = false;
+        let expansion_capital_promised;
 
         let harvesters = obs
             .my_units
@@ -2431,7 +2445,7 @@ impl UtilityPolicy {
             && dials.scouting
             && (harvesters >= immediate_harvester_target(dials) as usize
                 || contested_recon.is_some());
-        if scouting_admitted {
+        if scouting_admitted && self.reconnaissance.observed_at != Some(obs.tick) {
             // Exact scout ownership precedes every implicit utility claim.
             let mut unavailable = enlisted.to_vec();
             unavailable.extend_from_slice(reserved);
@@ -2450,7 +2464,7 @@ impl UtilityPolicy {
                 &unavailable,
                 &mut intents,
             );
-        } else if player_facing {
+        } else if player_facing && self.reconnaissance.observed_at != Some(obs.tick) {
             // Production still consumes this recomputable demand when the
             // roster is not yet large enough to dispatch the scouting channel.
             self.contested_recon_air_scout_needed = false;
@@ -2609,59 +2623,14 @@ impl UtilityPolicy {
                 );
             }
         }
-        let construction_promised = expansion_capital_promised
-            || construction_commitment > 0
-            || Self::unpaid_deferred_construction(obs, &intents);
-        if player_facing
-            && (construction_promised
-                || opening_core_deficient
-                || opening_bootstrap_active
-                || shallow_capital_guard > 0)
-        {
-            // A promised construction preempts its builders and protects its
-            // deferred fund from new repair work. A deficient opening core
-            // stops every paid repairer so training can spend the full bank.
-            let bound_builders: Vec<UnitId> = intents
-                .iter()
-                .filter_map(|intent| match intent {
-                    Intent::BuildWith { builder, .. } => Some(*builder),
-                    _ => None,
-                })
-                .collect();
-            let repairers: Vec<UnitId> = obs
-                .my_units
-                .iter()
-                .filter(|unit| {
-                    unit.repairing
-                        && !bound_builders.contains(&unit.id)
-                        && (opening_core_deficient
-                            || opening_bootstrap_active
-                            || shallow_capital_guard > 0
-                            || expansion_capital_promised
-                            || unit.kind.stats().harvest.is_some()
-                            || uncommitted_scrap_at_admission == 0)
-                })
-                .map(|unit| unit.id)
-                .collect();
-            if !repairers.is_empty() {
-                let before_spend = intents
-                    .iter()
-                    .position(|intent| {
-                        matches!(
-                            intent,
-                            Intent::TrainAt { .. }
-                                | Intent::Build { .. }
-                                | Intent::BuildWith { .. }
-                                | Intent::Upgrade { .. }
-                        )
-                    })
-                    .unwrap_or(0);
-                intents.insert(before_spend, Intent::StopUnits { units: repairers });
-            }
-        } else {
+        if !player_facing {
             self.repairs(dials, obs, mode, &mut budget, &mut intents);
         }
-        if !opening_core_deficient && !opening_bootstrap_active && shallow_capital_guard == 0 {
+        if !player_facing
+            && !opening_core_deficient
+            && !opening_bootstrap_active
+            && shallow_capital_guard == 0
+        {
             self.mobile_support(dials, obs, player_facing, budget, &mut intents);
         }
         self.salvage(dials, obs, &mut intents);
@@ -2689,6 +2658,9 @@ impl UtilityPolicy {
                 },
                 &mut intents,
             );
+        }
+        if player_facing {
+            self.stop_unfunded_repairs(obs, &mut intents);
         }
         intents
     }
@@ -4010,12 +3982,21 @@ mod tests {
         dials.mines = false;
         dials.support_target = 1;
 
-        let available = UtilityPolicy::new().think_with_intelligence(
+        let mut funded_policy = UtilityPolicy::new();
+        let mut funded_prelude = Vec::new();
+        funded_policy.admit_test_repair(
+            &obs,
+            &map,
+            UnitId(1),
+            crate::ids::Target::Unit(UnitId(2)),
+            &mut funded_prelude,
+        );
+        let available = funded_policy.think_with_intelligence(
             &dials,
             &obs,
             &[],
             &[],
-            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new()),
+            StrategicUtilityContext::new(&[], &[], &[], &map, funded_prelude),
         );
         assert!(available.iter().any(|intent| matches!(
             intent,
@@ -6155,7 +6136,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_support_identity_builds_its_repair_bay_before_the_general_fallback() {
+    fn healthy_support_identities_do_not_buy_timer_driven_repair_bays() {
         let home = TilePos::new(3, 3);
         let mut obs = obs_with(vec![harvester(0, None)]);
         for (id, kind, anchor) in [
@@ -6204,13 +6185,13 @@ mod tests {
             );
             intents
         };
-        assert!(matches!(
-            construct(&high, &obs).as_slice(),
-            [Intent::Build {
+        assert!(construct(&high, &obs).iter().all(|intent| !matches!(
+            intent,
+            Intent::Build {
                 kind: BuildingKind::RepairBay,
                 ..
-            }]
-        ));
+            }
+        )));
         assert!(
             construct(&low, &obs).iter().all(|intent| !matches!(
                 intent,
@@ -6219,17 +6200,17 @@ mod tests {
                     ..
                 }
             )),
-            "low Support must not inherit the early identity signature"
+            "traits cannot manufacture repair demand"
         );
 
         obs.tick = 6_000;
-        assert!(matches!(
-            construct(&low, &obs).as_slice(),
-            [Intent::Build {
+        assert!(construct(&low, &obs).iter().all(|intent| !matches!(
+            intent,
+            Intent::Build {
                 kind: BuildingKind::RepairBay,
                 ..
-            }]
-        ));
+            }
+        )));
     }
 
     #[test]
@@ -6301,9 +6282,9 @@ mod tests {
                     }
                 )
             });
-            assert_eq!(
-                support_committed, ready_at_start,
-                "a core-recovery decision cannot also buy optional support: {intents:?}"
+            assert!(
+                !support_committed,
+                "neither a funded core nor elapsed time creates repair work: {intents:?}"
             );
             assert!(intents.iter().all(|intent| {
                 !matches!(intent, Intent::Upgrade { .. })
@@ -6323,10 +6304,9 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            let spent =
-                repair_cost.saturating_add(trains.iter().fold(0_u32, |total, (_, kind)| {
-                    total.saturating_add(kind.stats().cost)
-                }));
+            let spent = trains.iter().fold(0_u32, |total, (_, kind)| {
+                total.saturating_add(kind.stats().cost)
+            });
             assert!(
                 spent <= obs.scrap,
                 "{difficulty:?} overspent {spent}: {intents:?}"
@@ -6365,14 +6345,14 @@ mod tests {
                     &public_map(&next),
                 );
                 assert!(
-                    continued.iter().any(|intent| matches!(
+                    continued.iter().all(|intent| !matches!(
                         intent,
                         Intent::Build {
                             kind: BuildingKind::RepairBay,
                             ..
                         }
                     )),
-                    "{difficulty:?} did not reopen optional support after observing the recovered core: {continued:?}"
+                    "{difficulty:?} must not buy a Repair Bay for a healthy recovered force: {continued:?}"
                 );
             }
         }
@@ -6574,10 +6554,41 @@ mod tests {
             )
         }));
         ready.my_units.sort_unstable_by_key(|unit| unit.id);
-        let intents = run(&ready);
-        assert!(intents.contains(&Intent::StopUnits {
-            units: vec![UnitId(2)],
-        }));
+        let mut initial = ready.clone();
+        initial.my_units.retain(|unit| unit.id != UnitId(4));
+        let tender = initial
+            .my_units
+            .iter_mut()
+            .find(|unit| unit.id == UnitId(3))
+            .unwrap();
+        tender.idle = true;
+        tender.repairing = false;
+        let mut policy = UtilityPolicy::new();
+        policy.admit_test_repair(
+            &initial,
+            &public_map(&initial),
+            UnitId(3),
+            crate::ids::Target::Unit(UnitId(5)),
+            &mut Vec::new(),
+        );
+        ready.my_repair_targets = vec![(UnitId(3), crate::ids::Target::Unit(UnitId(5)))];
+        let intents =
+            policy.think_player_facing(&dials, &ready, &[], &[], &[], &public_map(&ready));
+        let preemption = intents
+            .iter()
+            .position(|intent| match intent {
+                Intent::StopUnits { units } => units.contains(&UnitId(2)),
+                Intent::Scout { unit, .. } => *unit == UnitId(2),
+                _ => false,
+            })
+            .expect("unfunded building repair must stop or be replaced by another exact program");
+        assert!(
+            intents
+                .iter()
+                .position(|intent| matches!(intent, Intent::TrainAt { .. }))
+                .is_none_or(|purchase| preemption < purchase),
+            "repair preemption must precede protected spending: {intents:?}"
+        );
         assert!(
             intents.iter().all(|intent| !matches!(
                 intent,
@@ -6585,10 +6596,12 @@ mod tests {
             )),
             "an active Tender may keep welding once the opening core is funded"
         );
-        assert!(intents.contains(&Intent::RepairUnits {
-            welders: vec![UnitId(4)],
-            target: UnitId(5),
-        }));
+        assert!(
+            !intents
+                .iter()
+                .any(|intent| matches!(intent, Intent::RepairUnits { .. })),
+            "the funded exact repair must neither restart nor acquire a duplicate welder"
+        );
 
         obs.scrap = foundry_cost + UnitKind::Sentinel.stats().cost - 1;
         let lean = run(&obs);

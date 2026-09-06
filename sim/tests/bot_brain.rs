@@ -1115,6 +1115,7 @@ fn a_dispatched_defense_that_never_appears_blacklists_only_its_anchor() {
             .collect(),
     );
     scenario.players[0].scrap = 2_000;
+    scenario.units.push(unit(0, UnitKind::Kestrel, 8, 4));
     let mut salvage_row = scenario.map[6].as_bytes().to_vec();
     salvage_row[12] = b's';
     scenario.map[6] = String::from_utf8(salvage_row).unwrap();
@@ -1138,10 +1139,26 @@ fn a_dispatched_defense_that_never_appears_blacklists_only_its_anchor() {
             .iter()
             .filter(|command| matches!(command.command, Command::Harvest { .. }))
             .count(),
-        4 - opening
+        5 - opening
             .iter()
             .filter(|command| matches!(command.command, Command::Build { .. }))
-            .count(),
+            .count()
+            - opening
+                .iter()
+                .filter_map(|command| match &command.command {
+                    Command::Move { units, .. } => Some(
+                        units
+                            .iter()
+                            .filter(|id| {
+                                state
+                                    .unit(**id)
+                                    .is_some_and(|unit| unit.kind.stats().harvest.is_some())
+                            })
+                            .count()
+                    ),
+                    _ => None,
+                })
+                .sum::<usize>(),
         "the scout and exact capital builders each preempt their own harvest chore"
     );
     assert_eq!(
@@ -1376,6 +1393,7 @@ fn qa_rear_line_stays_frozen_while_player_facing_releases_repaired_units() {
         my_queues: Vec::new(),
         my_queue_progress: Vec::new(),
         my_queued_units: Vec::new(),
+        my_repair_targets: Vec::new(),
         ally_units: Vec::new(),
         ally_buildings: Vec::new(),
         enemy_units: Vec::new(),
@@ -1529,12 +1547,6 @@ fn scripted_brain_repairs_a_timed_out_rear_unit_before_redrafting_it() {
         .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Sentinel)
         .expect("the wounded veteran exists")
         .id;
-    let tender = state
-        .units()
-        .iter()
-        .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Tender)
-        .expect("the mobile welder exists")
-        .id;
     let mut document = serde_json::to_value(state).unwrap();
     for unit in document["units"].as_array_mut().unwrap() {
         if unit["id"] == serde_json::json!(wounded.0) {
@@ -1601,7 +1613,9 @@ fn scripted_brain_repairs_a_timed_out_rear_unit_before_redrafting_it() {
             matches!(
                 &command.command,
                 Command::RepairUnit { units, target, queue: false }
-                    if units == &[tender] && *target == wounded
+                    if *target == wounded && units.len() == 1
+                        && state.unit(units[0]).is_some_and(|worker|
+                            worker.player == PlayerId(0) && worker.kind.stats().welder)
             )
         });
         let hp_before = state.unit(wounded).unwrap().hp;

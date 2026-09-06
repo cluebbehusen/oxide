@@ -189,58 +189,46 @@ pub(crate) enum ProposalKey {
     Defense(DefenseInvestmentKey),
     /// One exact worker, infrastructure, or upgrade opportunity.
     Economy(crate::bot::utility::EconomicInvestmentKey),
+    /// Exact repair work with one worker and one patient.
+    Support(crate::bot::utility::SupportKey),
+    /// A repair provider for exact route-local wounded demand.
+    SupportProcurement(StandingForceKey),
+    /// An exact repair-service foundation.
+    SupportConstruction(crate::bot::utility::EconomicInvestmentKey),
+    /// Exact allied Foundry and frozen relief membership.
+    SupportRelief(BuildingId),
+    /// Exact screen or anti-air service for an exposed asset.
+    SupportDeployment(crate::bot::utility::ProtectionKey),
+    /// One exact observer for an independently useful information question.
+    Reconnaissance(crate::bot::utility::ReconProposalKey),
 }
 
-/// Canonical pair or triple of individually legal builds that cannot share one layout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Canonical set of individually legal builds that cannot share one layout.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct IncompatibleLayoutSet {
-    first: ProposalKey,
-    second: ProposalKey,
-    third: Option<ProposalKey>,
+    keys: Vec<ProposalKey>,
 }
 
 impl IncompatibleLayoutSet {
     /// Canonicalizes a distinct pair for deterministic portfolio checks.
+    #[cfg(test)]
     pub(crate) fn new(first: ProposalKey, second: ProposalKey) -> Option<Self> {
-        (first != second).then(|| {
-            let (first, second) = if first < second {
-                (first, second)
-            } else {
-                (second, first)
-            };
-            Self {
-                first,
-                second,
-                third: None,
-            }
-        })
+        Self::from_keys(vec![first, second])
     }
 
-    pub(crate) fn triple(mut keys: [ProposalKey; 3]) -> Option<Self> {
+    pub(crate) fn from_keys(mut keys: Vec<ProposalKey>) -> Option<Self> {
         keys.sort_unstable();
-        (keys[0] != keys[1] && keys[1] != keys[2]).then_some(Self {
-            first: keys[0],
-            second: keys[1],
-            third: Some(keys[2]),
-        })
+        (keys.len() >= 2 && keys.windows(2).all(|pair| pair[0] != pair[1])).then_some(Self { keys })
     }
 
     fn is_selected<Payload>(
-        self,
+        &self,
         selected: &[usize],
         proposals: &[InvestmentProposal<Payload>],
     ) -> bool {
-        selected
+        self.keys
             .iter()
-            .any(|&index| proposals[index].key() == self.first)
-            && selected
-                .iter()
-                .any(|&index| proposals[index].key() == self.second)
-            && self.third.is_none_or(|third| {
-                selected
-                    .iter()
-                    .any(|&index| proposals[index].key() == third)
-            })
+            .all(|key| selected.iter().any(|&index| proposals[index].key() == *key))
     }
 }
 
@@ -251,6 +239,8 @@ enum ProposalDomain {
     StandingForce,
     Defense,
     Economy,
+    Support,
+    Reconnaissance,
 }
 
 impl ProposalKey {
@@ -261,6 +251,12 @@ impl ProposalKey {
             Self::StandingForce(_) => ProposalDomain::StandingForce,
             Self::Defense(_) => ProposalDomain::Defense,
             Self::Economy(_) => ProposalDomain::Economy,
+            Self::Support(_) => ProposalDomain::Support,
+            Self::SupportProcurement(_) => ProposalDomain::Support,
+            Self::SupportConstruction(_) => ProposalDomain::Support,
+            Self::SupportRelief(_) => ProposalDomain::Support,
+            Self::SupportDeployment(_) => ProposalDomain::Support,
+            Self::Reconnaissance(_) => ProposalDomain::Reconnaissance,
         }
     }
 }
@@ -363,6 +359,12 @@ impl AllocationPersonality {
             ProposalKey::ConnectedOffenseMinimum(_) => self.offense,
             ProposalKey::StandingForce(_) => self.standing_force,
             ProposalKey::Defense(_) => self.defense,
+            ProposalKey::Support(_) => self.standing_force,
+            ProposalKey::SupportProcurement(_) => self.standing_force,
+            ProposalKey::SupportConstruction(_) => self.standing_force,
+            ProposalKey::SupportRelief(_) => self.standing_force,
+            ProposalKey::SupportDeployment(_) => self.standing_force,
+            ProposalKey::Reconnaissance(_) => self.offense,
         }
     }
 }
@@ -588,6 +590,7 @@ impl ProducerJobClaim {
 pub(crate) struct AllocationCapacity {
     resources: ResourcePlanningProjection,
     buildings: Vec<BuildingId>,
+    paid_queue: std::collections::BTreeMap<(BuildingId, UnitKind), usize>,
 }
 
 impl AllocationCapacity {
@@ -597,9 +600,16 @@ impl AllocationCapacity {
         forecast_horizon: Tick,
         decision_cadence: Tick,
     ) -> Result<Self, PlanningProjectionError> {
+        let mut paid_queue = std::collections::BTreeMap::new();
+        for lane in resources.producers() {
+            for (kind, _) in lane.queued_readiness() {
+                *paid_queue.entry((lane.producer, kind)).or_insert(0usize) += 1;
+            }
+        }
         Ok(Self {
             resources: resources.planning_projection(forecast_horizon, decision_cadence)?,
             buildings: resources.owned_buildings().to_vec(),
+            paid_queue,
         })
     }
 
@@ -616,6 +626,7 @@ impl AllocationCapacity {
         Self {
             resources,
             buildings: Vec::new(),
+            paid_queue: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -652,6 +663,15 @@ pub(crate) enum ClaimBundleError {
 /// residual policy. Every producer job is charged exactly once from
 /// [`UnitKind`] by the joint scheduler and must not be duplicated in a capital
 /// field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct PaidQueueClaim {
+    pub(crate) producer: BuildingId,
+    pub(crate) kind: UnitKind,
+    /// Occurrence of this kind in the producer's current paid queue.
+    pub(crate) occurrence: usize,
+}
+
+/// Exact actors, capital, geometry, and production ownership.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ClaimBundle {
     current_scrap: u32,
@@ -664,9 +684,23 @@ pub(crate) struct ClaimBundle {
     sites: Vec<SiteFootprint>,
     producer_jobs: Vec<ProducerJobClaim>,
     buildings: Vec<BuildingId>,
+    paid_queue: Vec<PaidQueueClaim>,
 }
 
 impl ClaimBundle {
+    pub(crate) fn with_paid_queue(mut self, mut claims: Vec<PaidQueueClaim>) -> Self {
+        claims.sort_unstable();
+        assert!(
+            claims.windows(2).all(|pair| pair[0] != pair[1]),
+            "one payload cannot credit a paid occurrence twice"
+        );
+        self.paid_queue = claims;
+        self
+    }
+
+    pub(crate) fn paid_queue(&self) -> &[PaidQueueClaim] {
+        &self.paid_queue
+    }
     pub(crate) fn with_foregone_income(
         mut self,
         income: Vec<ForecastClaim>,
@@ -752,6 +786,7 @@ impl ClaimBundle {
             sites,
             producer_jobs,
             buildings: Vec::new(),
+            paid_queue: Vec::new(),
         })
     }
 
@@ -1045,6 +1080,13 @@ impl<Payload> InvestmentProposal<Payload> {
 /// Why a mandatory claim or selectable proposal could not fit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AllocationConflict {
+    /// A paid occurrence does not exist in this observation.
+    UnknownPaidQueue(PaidQueueClaim),
+    /// Two assignments credit the same already-paid occurrence.
+    PaidQueue {
+        claim: PaidQueueClaim,
+        owner: ClaimOwner,
+    },
     /// A claim names a building absent from this seat's resource snapshot.
     UnknownBuilding(BuildingId),
     /// An exact structure is already owned by another investment.
@@ -1099,12 +1141,8 @@ pub(crate) enum AllocationConflict {
     },
     /// Two individually legal construction proposals cannot safely share a layout.
     IncompatibleLayout {
-        /// First canonical proposal identity.
-        first: ProposalKey,
-        /// Second canonical proposal identity.
-        second: ProposalKey,
-        /// Third proposal when the incompatibility requires all three builds.
-        third: Option<ProposalKey>,
+        /// Canonically ordered identities whose complete layout is unsafe.
+        keys: Vec<ProposalKey>,
     },
     /// A requested producer is absent from current completed capacity.
     UnknownProducer(BuildingId),
@@ -1215,6 +1253,12 @@ pub(crate) enum ObligationKey {
     SavedFoundry { anchor: TilePos },
     /// One exact accepted economic investment awaiting current funding.
     SavedEconomy(crate::bot::utility::EconomicInvestmentKey),
+    /// A funded persistent voluntary repair program.
+    Support(crate::bot::utility::SupportKey),
+    /// One retained information assignment.
+    Reconnaissance(crate::bot::utility::ReconQuestionKey),
+    /// Exact retained screen or anti-air deployment.
+    SupportDeployment(crate::bot::utility::ProtectionKey),
     /// One already-active connected operation.
     ConnectedOffense {
         /// Exact primary objective when admitted.
@@ -1260,12 +1304,24 @@ impl ObligationKey {
             Self::ConnectedOffense { objective, anchor } => (6, anchor.y, anchor.x, objective.0),
             Self::Legacy { channel, sequence } => (7, channel.sort_key(), 0, sequence),
             Self::SavedEconomy(_) => (8, 0, 0, 0),
+            Self::Support(_) => (9, 0, 0, 0),
+            Self::Reconnaissance(_) => (10, 0, 0, 0),
+            Self::SupportDeployment(_) => (11, 0, 0, 0),
         }
     }
 }
 
 impl Ord for ObligationKey {
     fn cmp(&self, other: &Self) -> Ordering {
+        if let (Self::SupportDeployment(left), Self::SupportDeployment(right)) = (self, other) {
+            return left.cmp(right);
+        }
+        if let (Self::Reconnaissance(left), Self::Reconnaissance(right)) = (self, other) {
+            return left.cmp(right);
+        }
+        if let (Self::Support(left), Self::Support(right)) = (self, other) {
+            return left.cmp(right);
+        }
         if let (Self::SavedEconomy(left), Self::SavedEconomy(right)) = (self, other) {
             return left.cmp(right);
         }
@@ -1917,13 +1973,10 @@ fn portfolio_layout_conflict<Payload>(
 ) -> Option<AllocationConflict> {
     incompatible_layouts
         .iter()
-        .copied()
         .filter(|pair| pair.is_selected(selected, proposals))
         .min()
         .map(|pair| AllocationConflict::IncompatibleLayout {
-            first: pair.first,
-            second: pair.second,
-            third: pair.third,
+            keys: pair.keys.clone(),
         })
 }
 
@@ -2299,6 +2352,9 @@ impl FundingPriority {
                 | ObligationKey::ObservedBuilderWork { .. }
                 | ObligationKey::DeferredFoundation { .. }
                 | ObligationKey::ConnectedOffense { .. }
+                | ObligationKey::Support(_)
+                | ObligationKey::SupportDeployment(_)
+                | ObligationKey::Reconnaissance(_)
                 | ObligationKey::Legacy { .. } => 0,
             },
             owner,
@@ -2361,6 +2417,7 @@ struct ClaimState {
     producer_jobs: Vec<OwnedProducerJob>,
     deferrable_capital: Vec<OwnedDeferrableCapital>,
     buildings: std::collections::BTreeMap<BuildingId, ClaimOwner>,
+    paid_queue: std::collections::BTreeMap<PaidQueueClaim, ClaimOwner>,
 }
 
 struct ResolvedClaimState {
@@ -2458,6 +2515,20 @@ impl ClaimState {
                 return Err(AllocationConflict::Building { building, owner });
             }
             self.buildings.insert(building, owner);
+        }
+        for &claim in &claims.paid_queue {
+            let count = capacity
+                .paid_queue
+                .get(&(claim.producer, claim.kind))
+                .copied()
+                .unwrap_or(0);
+            if claim.occurrence >= count {
+                return Err(AllocationConflict::UnknownPaidQueue(claim));
+            }
+            if let Some(&owner) = self.paid_queue.get(&claim) {
+                return Err(AllocationConflict::PaidQueue { claim, owner });
+            }
+            self.paid_queue.insert(claim, owner);
         }
         if claims.deferrable_capital.is_none() {
             self.current_scrap = self
@@ -3354,7 +3425,11 @@ fn assign_joint_funding(
         JointFundingMode::PreserveCompatiblePortfolio => {
             let fresh_start = flexible.partition_point(|request| request.priority.tier < 2);
             let marginal_start = flexible.partition_point(|request| request.priority.tier <= 2);
-            funding.assign_preferred(&flexible[..fresh_start])?;
+            let before_retained = funding.clone();
+            if funding.assign_preferred(&flexible[..fresh_start]).is_none() {
+                funding = before_retained;
+                funding.assign_deadline_compatible(&flexible[..fresh_start])?;
+            }
 
             let before_fresh = funding.clone();
             if funding
@@ -4087,6 +4162,75 @@ mod tests {
     }
 
     #[test]
+    fn paid_queue_occurrences_are_exclusive_cost_free_and_transactional() {
+        let mut basis = capacity(0, 0, vec![], vec![]);
+        basis
+            .paid_queue
+            .insert((BuildingId(2), UnitKind::Kestrel), 2);
+        let claim = PaidQueueClaim {
+            producer: BuildingId(2),
+            kind: UnitKind::Kestrel,
+            occurrence: 0,
+        };
+        let first = ClaimOwner::Proposal(foundry(0, 0, vec![], ordinary_case()).key());
+        let second = ClaimOwner::Proposal(standing(UnitKind::Warden, 0, ordinary_case()).key());
+        let mut state = ClaimState::default();
+        state
+            .try_apply(
+                &basis,
+                first,
+                &ClaimBundle::default().with_paid_queue(vec![claim]),
+            )
+            .unwrap();
+        let checkpoint = state.clone();
+        assert_eq!(
+            state.current_scrap, 0,
+            "paid inventory is not charged a second time"
+        );
+        assert_eq!(
+            state
+                .try_apply(
+                    &basis,
+                    second,
+                    &ClaimBundle::default().with_paid_queue(vec![claim])
+                )
+                .unwrap_err(),
+            AllocationConflict::PaidQueue {
+                claim,
+                owner: first
+            }
+        );
+        assert_eq!(state, checkpoint);
+        let next = PaidQueueClaim {
+            occurrence: 1,
+            ..claim
+        };
+        state
+            .try_apply(
+                &basis,
+                second,
+                &ClaimBundle::default().with_paid_queue(vec![next]),
+            )
+            .unwrap();
+        let checkpoint = state.clone();
+        let absent = PaidQueueClaim {
+            occurrence: 2,
+            ..claim
+        };
+        assert_eq!(
+            state
+                .try_apply(
+                    &basis,
+                    second,
+                    &ClaimBundle::default().with_paid_queue(vec![absent])
+                )
+                .unwrap_err(),
+            AllocationConflict::UnknownPaidQueue(absent)
+        );
+        assert_eq!(state, checkpoint);
+    }
+
+    #[test]
     fn offline_income_uses_forecast_capacity_without_becoming_purchase_capital() {
         let basis = capacity(
             100,
@@ -4165,7 +4309,10 @@ mod tests {
         );
         let basis = capacity(300, 0, vec![], vec![]);
         let layouts =
-            [IncompatibleLayoutSet::triple([third.key(), first.key(), second.key()]).unwrap()];
+            [
+                IncompatibleLayoutSet::from_keys(vec![third.key(), first.key(), second.key()])
+                    .unwrap(),
+            ];
         let proposals = vec![first, second, third];
         for omitted in 0..3 {
             let pair = proposals
@@ -4196,10 +4343,78 @@ mod tests {
         assert!(result.decisions.iter().any(|decision| matches!(
             &decision.disposition,
             ProposalDisposition::Rejected(ProposalRejection::ConflictsWithSelected {
-                conflict: AllocationConflict::IncompatibleLayout { third: Some(_), .. },
+                conflict: AllocationConflict::IncompatibleLayout { keys },
                 ..
-            })
+            }) if keys.len() == 3
         )));
+    }
+
+    #[test]
+    fn a_four_member_layout_certificate_preserves_all_proper_subsets() {
+        let proposals = vec![
+            foundry(10, 0, vec![], ordinary_case()),
+            defense(
+                BuildingKind::Turret,
+                TilePos::new(18, 10),
+                0,
+                ordinary_case(),
+            ),
+            InvestmentProposal::fresh(
+                ProposalKey::Economy(crate::bot::utility::EconomicInvestmentKey::Build {
+                    kind: BuildingKind::Reclaimer,
+                    anchor: TilePos::new(24, 10),
+                }),
+                ordinary_case(),
+                bundle(0, vec![], vec![], vec![], vec![], vec![]),
+                "economy",
+            ),
+            InvestmentProposal::fresh(
+                ProposalKey::Support(crate::bot::utility::SupportKey {
+                    patient: crate::ids::Target::Building(BuildingId(8)),
+                    worker: UnitId(4),
+                }),
+                ordinary_case(),
+                bundle(0, vec![], vec![], vec![], vec![], vec![]),
+                "support",
+            ),
+        ];
+        let keys = proposals
+            .iter()
+            .map(InvestmentProposal::key)
+            .collect::<Vec<_>>();
+        let certificate = IncompatibleLayoutSet::from_keys(keys.clone()).unwrap();
+        let mut reversed = keys;
+        reversed.reverse();
+        assert_eq!(
+            IncompatibleLayoutSet::from_keys(reversed),
+            Some(certificate.clone())
+        );
+        for omitted in 0..4 {
+            let subset = proposals
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != omitted)
+                .map(|(_, proposal)| proposal.clone())
+                .collect();
+            let result = allocate_with_incompatible_layouts(
+                &capacity(0, 0, vec![], vec![]),
+                vec![],
+                subset,
+                AllocationPersonality::default(),
+                std::slice::from_ref(&certificate),
+            )
+            .unwrap();
+            assert_eq!(result.accepted.len(), 3);
+        }
+        let result = allocate_with_incompatible_layouts(
+            &capacity(0, 0, vec![], vec![]),
+            vec![],
+            proposals,
+            AllocationPersonality::default(),
+            &[certificate],
+        )
+        .unwrap();
+        assert_eq!(result.accepted.len(), 3);
     }
 
     #[test]
@@ -4228,7 +4443,7 @@ mod tests {
             vec![],
             vec![foundry, defense],
             AllocationPersonality::default(),
-            &[incompatible],
+            std::slice::from_ref(&incompatible),
         )
         .expect("layout incompatibility is a selectable portfolio conflict");
         assert_eq!(constrained.accepted.len(), 1);
@@ -4242,8 +4457,8 @@ mod tests {
                 | ProposalDisposition::Rejected(ProposalRejection::Infeasible(_))
                 | ProposalDisposition::Rejected(ProposalRejection::Outranked { .. }) => None,
             }),
-            Some(AllocationConflict::IncompatibleLayout { first, second, third: None })
-                if *first == incompatible.first && *second == incompatible.second
+            Some(AllocationConflict::IncompatibleLayout { keys })
+                if *keys == incompatible.keys
         ));
     }
 
@@ -4273,7 +4488,7 @@ mod tests {
             vec![],
             vec![foundry, compatible_defense, incompatible_defense],
             AllocationPersonality::default(),
-            &[incompatible],
+            std::slice::from_ref(&incompatible),
         )
         .expect("the compatible Foundry and Defense remain selectable together");
 
@@ -4288,9 +4503,7 @@ mod tests {
                 ProposalRejection::ConflictsWithSelected {
                     selected: vec![foundry_key, compatible_key],
                     conflict: AllocationConflict::IncompatibleLayout {
-                        first: incompatible.first,
-                        second: incompatible.second,
-                        third: None,
+                        keys: incompatible.keys.clone(),
                     },
                 }
             ))
@@ -4682,6 +4895,12 @@ mod tests {
                                                         unreachable!("the fixture has two kinds")
                                                     }
                                                     ProposalKey::Defense(_)
+                                                    | ProposalKey::Support(_)
+                                                    | ProposalKey::SupportProcurement(_)
+                                                    | ProposalKey::SupportConstruction(_)
+                                                    | ProposalKey::Reconnaissance(_)
+                                                    | ProposalKey::SupportDeployment(_)
+                                                    | ProposalKey::SupportRelief(_)
                                                     | ProposalKey::Economy(_) => {
                                                         unreachable!("the fixture has no defense")
                                                     }
@@ -6490,6 +6709,91 @@ mod tests {
     }
 
     #[test]
+    fn retained_future_jobs_keep_matured_income_against_later_capital_deadlines() {
+        let producer = BuildingId(7);
+        let kind = UnitKind::Harvester;
+        let cost = kind.stats().cost;
+        let enqueued_at = 24;
+        let ready_at = enqueued_at + u64::from(kind.stats().train_ticks) - 1;
+        let capital = ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: 0,
+            key: ObligationKey::SavedFoundry {
+                anchor: TilePos::new(42, 22),
+            },
+            claims: ClaimBundle::default()
+                .with_deferrable_capital(DeferrableCapitalClaim {
+                    through: 2000,
+                    amount: 300,
+                })
+                .unwrap(),
+        };
+        let production = ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: 5,
+            key: ObligationKey::ConnectedOffense {
+                objective: BuildingId(90),
+                anchor: TilePos::new(40, 10),
+            },
+            claims: bundle(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::fixed(
+                    producer,
+                    kind,
+                    enqueued_at,
+                    enqueued_at,
+                    ready_at,
+                    ready_at + 2,
+                )],
+            ),
+        };
+        for (now, bank) in [(0, 0), (12, cost)] {
+            let mut income = vec![ForecastAvailability {
+                available_at: 2000,
+                amount: 300,
+            }];
+            if bank == 0 {
+                income.insert(
+                    0,
+                    ForecastAvailability {
+                        available_at: 12,
+                        amount: cost,
+                    },
+                );
+            }
+            let lane = ProducerPlanningProjection::fixture(
+                producer,
+                now,
+                1,
+                now,
+                vec![now; QUEUE_CAP],
+                vec![kind],
+            )
+            .unwrap();
+            let basis = timed_capacity(bank, now, 2000, 1, income, vec![lane]);
+            let result = allocate::<()>(
+                &basis,
+                vec![capital.clone(), production.clone()],
+                vec![],
+                AllocationPersonality::default(),
+            )
+            .expect("arrival of promised income cannot invalidate retained deadlines");
+            let job = &result.producer_schedule[0];
+            assert_eq!(
+                (job.enqueued_at, job.starts_at, job.ready_at),
+                (enqueued_at, enqueued_at, ready_at)
+            );
+            assert_eq!(job.current_scrap, bank);
+            assert_eq!(job.forecast_scrap, cost - bank);
+            assert_eq!(result.capital_assignments[0].forecast_scrap, 300);
+        }
+    }
+
+    #[test]
     fn fixed_obligation_rebases_funding_without_changing_its_schedule() {
         let producer = BuildingId(7);
         let kind = UnitKind::Harvester;
@@ -7014,7 +7318,14 @@ mod tests {
                                             unreachable!("the oracle submits no standing proposal")
                                         }
                                         ClaimOwner::Proposal(
-                                            ProposalKey::Defense(_) | ProposalKey::Economy(_),
+                                            ProposalKey::Defense(_)
+                                            | ProposalKey::Economy(_)
+                                            | ProposalKey::Support(_)
+                                            | ProposalKey::SupportProcurement(_)
+                                            | ProposalKey::SupportConstruction(_)
+                                            | ProposalKey::Reconnaissance(_)
+                                            | ProposalKey::SupportDeployment(_)
+                                            | ProposalKey::SupportRelief(_),
                                         ) => {
                                             unreachable!("the oracle submits no defense proposal")
                                         }

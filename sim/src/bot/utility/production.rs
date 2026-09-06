@@ -4,27 +4,15 @@ use super::*;
 use crate::bot::executive::full_ground_strength;
 use crate::ids::BuildingId;
 use crate::stats::Role;
-use std::cmp::Reverse;
 
 /// Keep opening recovery shallow enough to react when the missing screen has
 /// been restored. Standing-force production owns all later combat demand.
 const PLANNING_DEPTH: usize = 2;
-const ALLY_DISCOUNT: usize = 2;
 
 #[derive(Debug, Clone, Copy)]
 struct Producer {
     id: BuildingId,
     depth: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ResidualFoundryDemand {
-    kind: UnitKind,
-    minimum_owned: usize,
-    target: usize,
-    own_floor: usize,
-    discount_allies: bool,
-    order: u8,
 }
 
 /// Exact ordinary-combat strength projected after the intents already emitted
@@ -133,71 +121,6 @@ pub(super) fn fill_combat_core_to_strength(
     combat_core_status_for_strength(obs, reserved, intents, target_strength)
 }
 
-/// Fill the Foundry roles that do not belong to standing-force allocation.
-///
-/// The shared allocator owns every ordinary combat and specialist purchase.
-/// This residual pass retains only economy growth after renewable income,
-/// tier-two workers, and the bounded raider roster. It spends current scrap
-/// left by allocation and never moves an accepted producer schedule.
-pub(super) fn fill_residual_foundry_roles(
-    dials: &Dials,
-    obs: &Observation,
-    capital_reserve: u32,
-    producer_lane_reservations: &ProducerLaneReservations,
-    budget: &mut u32,
-    intents: &mut Vec<Intent>,
-) {
-    if !dials.adaptive_composition {
-        return;
-    }
-
-    let mut foundries: Vec<_> = obs
-        .my_buildings
-        .iter()
-        .enumerate()
-        .filter(|(_, building)| building.built && building.kind == BuildingKind::Foundry)
-        .map(|(queue_index, building)| Producer {
-            id: building.id,
-            depth: obs
-                .my_queues
-                .get(queue_index)
-                .map_or(PLANNING_DEPTH, Vec::len)
-                .saturating_add(planned_at(intents, building.id)),
-        })
-        .collect();
-    foundries.sort_unstable_by_key(|producer| producer.id);
-
-    // Breadth before depth keeps multiple Foundries useful while retaining a
-    // shallow, reconsiderable queue. The finite role targets, current bank,
-    // and accepted producer lanes are the only limits on this pass.
-    for target_depth in 1..=PLANNING_DEPTH {
-        for foundry in &mut foundries {
-            if foundry.depth >= target_depth {
-                continue;
-            }
-            let Some(demand) =
-                best_residual_foundry_demand(dials, obs, capital_reserve, *budget, intents)
-            else {
-                continue;
-            };
-            let prior_immediate = planned_kinds_at(intents, foundry.id);
-            if !producer_lane_reservations.allows_raw_immediate_append(
-                foundry.id,
-                &prior_immediate,
-                demand.kind,
-            ) {
-                continue;
-            }
-            *budget -= demand.kind.stats().cost;
-            intents.push(Intent::TrainAt {
-                building: foundry.id,
-                kind: demand.kind,
-            });
-            foundry.depth += 1;
-        }
-    }
-}
-
 /// Measure an explicit Sentinel-equivalent floor without inferring ownership
 /// from army bookkeeping. Callers exclude only the exact units committed to a
 /// strategic operation; ordinary Executive armies therefore remain part of the
@@ -266,103 +189,6 @@ fn missing_core_scrap(missing_strength: u64, sentinel_strength: u64, sentinel_co
 
 fn ordinary_core_unit(kind: UnitKind) -> bool {
     matches!(kind.role(), Role::Sentinel | Role::Warden | Role::Breaker)
-}
-
-fn best_residual_foundry_demand(
-    dials: &Dials,
-    obs: &Observation,
-    capital_reserve: u32,
-    budget: u32,
-    intents: &[Intent],
-) -> Option<ResidualFoundryDemand> {
-    residual_foundry_demands(dials, obs)
-        .into_iter()
-        .filter(|demand| {
-            BuildingKind::Foundry
-                .base_stats()
-                .produces
-                .contains(&demand.kind)
-                && demand.kind.stats().requires.iter().all(|required| {
-                    obs.my_buildings
-                        .iter()
-                        .any(|building| building.built && building.kind == *required)
-                })
-        })
-        .filter(|demand| {
-            let own = own_role_count(obs, intents, demand.kind.role());
-            let allied = if demand.discount_allies {
-                ally_role_count(obs, demand.kind.role()) / ALLY_DISCOUNT
-            } else {
-                0
-            };
-            own >= demand.minimum_owned
-                && (own < demand.own_floor || own.saturating_add(allied) < demand.target)
-        })
-        .filter(|demand| {
-            let fighting_reserve = if demand.kind == UnitKind::Harvester {
-                0
-            } else {
-                UnitKind::Sentinel.stats().cost
-            };
-            budget
-                >= demand
-                    .kind
-                    .stats()
-                    .cost
-                    .saturating_add(capital_reserve)
-                    .saturating_add(fighting_reserve)
-        })
-        .min_by_key(|demand| {
-            let own = own_role_count(obs, intents, demand.kind.role());
-            let allied = if demand.discount_allies {
-                ally_role_count(obs, demand.kind.role()) / ALLY_DISCOUNT
-            } else {
-                0
-            };
-            let effective = own.saturating_add(allied);
-            (
-                u8::from(own >= demand.own_floor),
-                effective.saturating_mul(1_000) / demand.target.max(1),
-                Reverse(demand.target),
-                demand.order,
-                demand.kind,
-            )
-        })
-}
-
-fn residual_foundry_demands(dials: &Dials, obs: &Observation) -> Vec<ResidualFoundryDemand> {
-    vec![ResidualFoundryDemand {
-        kind: Role::Scuttler.unit_for(obs.faction),
-        minimum_owned: 0,
-        target: dials.raider_target,
-        own_floor: 1,
-        discount_allies: true,
-        order: 20,
-    }]
-}
-
-fn own_role_count(obs: &Observation, intents: &[Intent], role: Role) -> usize {
-    obs.my_units
-        .iter()
-        .filter(|unit| unit.kind.role() == role)
-        .count()
-        + obs
-            .my_queues
-            .iter()
-            .flatten()
-            .filter(|kind| kind.role() == role)
-            .count()
-        + intents
-            .iter()
-            .filter(|intent| matches!(intent, Intent::TrainAt { kind, .. } if kind.role() == role))
-            .count()
-}
-
-fn ally_role_count(obs: &Observation, role: Role) -> usize {
-    obs.ally_units
-        .iter()
-        .filter(|unit| unit.kind.role() == role)
-        .count()
 }
 
 pub(super) fn planned_at(intents: &[Intent], building: BuildingId) -> usize {

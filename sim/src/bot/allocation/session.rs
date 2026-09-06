@@ -132,6 +132,11 @@ impl<'a> PlannerClaims<'a> {
         prior_planner_claims(&[], self.air(), relief, self.raid_reservations(), None)
     }
 
+    /// External owners from the raid planner's point of view.
+    pub(crate) fn without_raid(&self, relief: &[UnitId]) -> Vec<UnitId> {
+        prior_planner_claims(self.enlisted, self.air(), relief, &[], self.lift())
+    }
+
     /// Every claim from every source.
     pub(crate) fn all(&self, relief: &[UnitId]) -> Vec<UnitId> {
         prior_planner_claims(
@@ -389,6 +394,11 @@ pub(crate) struct AllocationSession<'a> {
     participants: AllocationParticipants<'a>,
     advanced: AdvancedPlannerWork,
     trace: Option<&'a mut AllocationTrace>,
+    repair_work: Vec<crate::bot::standing_force::RepairWork>,
+    support_snapshot: Option<crate::bot::utility::SupportWorkSnapshot>,
+    protection_work: Vec<crate::bot::utility::ProtectionRequest>,
+    raid_work: Option<crate::bot::raid::RaidProcurementRequest>,
+    recon_paid_exclusions: Vec<(crate::ids::BuildingId, UnitKind, usize)>,
 }
 
 impl<'a> AllocationSession<'a> {
@@ -403,23 +413,79 @@ impl<'a> AllocationSession<'a> {
             participants,
             advanced,
             trace,
+            repair_work: Vec::new(),
+            support_snapshot: None,
+            protection_work: Vec::new(),
+            raid_work: None,
+            recon_paid_exclusions: Vec::new(),
         }
     }
 
     /// Runs the named prepare, resolve, and commit-or-restore phases exactly
     /// once. No domain is asked to rerank a payload after preparation.
     pub(crate) fn run(mut self) -> AllocationSessionOutcome {
+        let initial_claims = self.snapshot_claims();
+        let resources = ResourceSnapshot::from_observation(self.context.observation);
+        let observed_context = EconomicInvestmentContext {
+            obs: self.context.observation,
+            resources: &resources,
+            profile: self.context.profile,
+            briefing: self.context.public_map,
+            orientation: self.context.orientation,
+            unavailable: &initial_claims.planner_claims,
+            demands: &[],
+            cadence: self.context.dials.cadence,
+            unit_contacts: self.context.intelligence.units(),
+            building_contacts: self.context.intelligence.buildings(),
+            protected_scrap: 0,
+            air_work: &[],
+        };
+        let recon_intents = self
+            .participants
+            .policy
+            .observe_reconnaissance(observed_context, self.context.home);
+        self.recon_paid_exclusions = self.participants.policy.reconnaissance.paid_exclusions();
+        let support_snapshot = self
+            .participants
+            .policy
+            .support_work_snapshot(observed_context);
+        self.participants
+            .policy
+            .observe_support_work(&support_snapshot, self.context.observation.tick);
+        let support_intents = self
+            .participants
+            .policy
+            .observe_support_deployments(observed_context, &support_snapshot.protection);
+        self.support_snapshot = Some(support_snapshot);
         let snapshots = CommitSnapshots {
             policy: self.participants.policy.clone(),
         };
         let prepared = self.prepare();
         let resolved = self.resolve(prepared, snapshots);
-        self.commit_or_restore(resolved)
+        let mut outcome = self.commit_or_restore(resolved);
+        outcome.fresh_economy_intents.splice(0..0, recon_intents);
+        outcome.fresh_economy_intents.splice(0..0, support_intents);
+        outcome
     }
 
     /// Assembles one immutable resource picture, imports exact prior work, and
     /// asks each migrated domain for at most one already-ranked proposal.
     fn prepare(&mut self) -> PreparedAllocation {
+        if let Some(planner) = self.participants.raids.as_mut() {
+            planner.reconcile_procurement_routes(
+                self.context.observation,
+                Some(self.context.public_map),
+                Some(self.context.orientation),
+            );
+            self.recon_paid_exclusions.extend(
+                planner
+                    .paid_claims()
+                    .iter()
+                    .map(|claim| (claim.producer, claim.kind, claim.occurrence)),
+            );
+            self.recon_paid_exclusions.sort_unstable();
+            self.recon_paid_exclusions.dedup();
+        }
         let mut claims = self.snapshot_claims();
         let mut obligations = self.collect_legacy_obligations(&claims);
         if obligations.invalid_active_connected {
@@ -588,6 +654,112 @@ impl<'a> AllocationSession<'a> {
         }
         let prospective_carrier_floor =
             self.prospective_carrier_floor(&claims, obligations.coordinator_failure.is_none());
+        self.reconcile_unfundable_reconnaissance(&claims, &mut obligations);
+        let (fresh_support, fresh_support_construction) =
+            self.prepare_support(&claims, &mut obligations);
+        let fresh_support_relief = self.prepare_support_relief(&claims);
+        let fresh_support_deployments =
+            if claims.opening_core.ready && self.participants.policy.economic_saving().is_none() {
+                self.participants.policy.prepare_support_deployments(
+                    EconomicInvestmentContext {
+                        obs: self.context.observation,
+                        resources: &obligations.resources,
+                        profile: self.context.profile,
+                        briefing: self.context.public_map,
+                        orientation: self.context.orientation,
+                        unavailable: &claims.planner_claims,
+                        demands: &[],
+                        cadence: self.context.dials.cadence,
+                        unit_contacts: self.context.intelligence.units(),
+                        building_contacts: self.context.intelligence.buildings(),
+                        protected_scrap: 0,
+                        air_work: &[],
+                    },
+                    self.context.tuning,
+                    self.context.dials.minimum_core_equivalents,
+                )
+            } else {
+                vec![]
+            };
+        let recon_paid_unavailable = self.committed_standing_production();
+        let operational_scout_queues =
+            self.participants
+                .strategy
+                .as_ref()
+                .map_or_else(Vec::new, |planner| {
+                    planner.reconnaissance_paid_claims(
+                        self.context.observation,
+                        &obligations.resources,
+                        &self.recon_paid_exclusions,
+                    )
+                });
+        self.raid_work =
+            self.prepare_raid_procurement(&claims, &obligations, &recon_paid_unavailable);
+        let mut recon_unavailable = claims.planner_claims.clone();
+        if let Some(request) = &self.raid_work {
+            recon_unavailable.extend_from_slice(&request.members);
+        }
+        if let Some(team) = &self.participants.team {
+            recon_unavailable.extend(team.reservations());
+        }
+        self.protection_work = self
+            .participants
+            .policy
+            .discretionary_protection_work(self.context.observation.tick, self.context.tuning)
+            .into_iter()
+            .filter(|request| {
+                request.missing > 0
+                    && !fresh_support_deployments
+                        .iter()
+                        .any(|deployment| deployment.covers(request))
+                    && !self
+                        .participants
+                        .policy
+                        .support_deployments
+                        .active
+                        .iter()
+                        .any(|deployment| deployment.covers(request))
+            })
+            .take(self.context.tuning.attention_slots)
+            .collect();
+        self.participants.policy.reconnaissance.operational =
+            self.participants.strategy.as_ref().and_then(|planner| {
+                let operation = planner.air_operation()?;
+                if operation.phase == crate::bot::strategy::AirOperationPhase::Recover {
+                    return None;
+                }
+                Some(crate::bot::utility::OperationalReconWork {
+                    target: operation.target,
+                    scout: operation.scout,
+                    goal: operation.scout_dispatch.map(|(_, goal)| goal),
+                    deadline: planner.air_capacity_deadline()?,
+                    paid: operational_scout_queues.clone(),
+                })
+            });
+        let fresh_reconnaissance = if self.context.dials.scouting {
+            self.participants.policy.prepare_reconnaissance(
+                EconomicInvestmentContext {
+                    obs: self.context.observation,
+                    resources: &obligations.resources,
+                    profile: self.context.profile,
+                    briefing: self.context.public_map,
+                    orientation: self.context.orientation,
+                    unavailable: &recon_unavailable,
+                    demands: &[],
+                    cadence: self.context.dials.cadence,
+                    unit_contacts: self.context.intelligence.units(),
+                    building_contacts: self.context.intelligence.buildings(),
+                    protected_scrap: 0,
+                    air_work: &[],
+                },
+                self.context.tuning,
+                self.context.dials.minimum_core_equivalents,
+                claims.opening_core.ready && self.participants.policy.economic_saving().is_none(),
+                &operational_scout_queues,
+            )
+        } else {
+            Vec::new()
+        };
         let mut fresh =
             self.prepare_fresh_investments(&claims, &saved, &mut obligations, active_revision);
         self.downgrade_unfundable_active_revision(
@@ -616,6 +788,11 @@ impl<'a> AllocationSession<'a> {
             fresh_foundry: fresh.foundry,
             fresh_defense: fresh.defense,
             fresh_economy: fresh.economy,
+            fresh_support,
+            fresh_support_construction,
+            fresh_support_relief,
+            fresh_support_deployments,
+            fresh_reconnaissance,
             fresh_connected: fresh.connected,
             standing_force: fresh.standing_force,
             connected_accepted_at: fresh.connected_accepted_at,
@@ -637,6 +814,176 @@ impl<'a> AllocationSession<'a> {
         }
     }
 
+    fn reconcile_unfundable_reconnaissance(
+        &mut self,
+        claims: &ClaimSnapshot,
+        obligations: &mut ObligationPreparation,
+    ) {
+        let mut unpaid: Vec<_> = self
+            .participants
+            .policy
+            .reconnaissance
+            .assignments
+            .iter()
+            .filter(|(_, work)| work.unpaid)
+            .map(|(key, work)| (work.proposal.observed_at, *key))
+            .collect();
+        unpaid.sort_unstable();
+        for (_, key) in unpaid.into_iter().rev() {
+            let reason = if !claims.opening_core.ready {
+                crate::bot::trace::ReconReleaseReason::CoreRecovery
+            } else if residual_current_after_obligations(
+                &obligations.resources,
+                &obligations.obligations,
+                obligation_horizon(
+                    &obligations.obligations,
+                    self.context.observation.tick + self.context.dials.cadence,
+                ),
+                self.context.dials.cadence,
+            )
+            .is_none()
+            {
+                crate::bot::trace::ReconReleaseReason::Unfundable
+            } else {
+                break;
+            };
+            self.participants.policy.reconnaissance.release_unpaid(
+                key,
+                self.context.observation.tick,
+                reason,
+            );
+            obligations
+                .obligations
+                .retain(|obligation| obligation.key != ObligationKey::Reconnaissance(key));
+        }
+    }
+
+    fn prepare_support(
+        &mut self,
+        claims: &ClaimSnapshot,
+        obligations: &mut ObligationPreparation,
+    ) -> (
+        Vec<crate::bot::utility::RepairAssignment>,
+        Vec<EconomicInvestment>,
+    ) {
+        let available = residual_current_after_obligations(
+            &obligations.resources,
+            &obligations.obligations,
+            obligation_horizon(
+                &obligations.obligations,
+                self.context
+                    .observation
+                    .tick
+                    .saturating_add(self.context.dials.cadence),
+            ),
+            self.context.dials.cadence,
+        )
+        .unwrap_or(0)
+        .saturating_sub(self.participants.policy.shallow_sentinel_capital_reserve(
+            self.context.dials,
+            self.context.observation,
+            self.context.home,
+            self.context.public_map,
+            &[],
+        ));
+        let context = EconomicInvestmentContext {
+            obs: self.context.observation,
+            resources: &obligations.resources,
+            profile: self.context.profile,
+            briefing: self.context.public_map,
+            orientation: self.context.orientation,
+            unavailable: &claims.planner_claims,
+            demands: &[],
+            cadence: self.context.dials.cadence,
+            unit_contacts: self.context.intelligence.units(),
+            building_contacts: self.context.intelligence.buildings(),
+            protected_scrap: 0,
+            air_work: &[],
+        };
+        let allow_repair = claims.opening_core.ready && self.context.dials.repair;
+        let support_snapshot = self
+            .support_snapshot
+            .clone()
+            .unwrap_or_else(|| self.participants.policy.support_work_snapshot(context));
+        let renewal_unavailable: Vec<_> = claims
+            .planner_claims
+            .iter()
+            .copied()
+            .filter(|unit| {
+                !self
+                    .participants
+                    .policy
+                    .support_work
+                    .repairs
+                    .iter()
+                    .any(|repair| repair.key.worker == *unit)
+            })
+            .collect();
+        for repair in self.participants.policy.renew_prepared_repairs(
+            EconomicInvestmentContext {
+                unavailable: &renewal_unavailable,
+                ..context
+            },
+            &support_snapshot,
+            available,
+            allow_repair,
+        ) {
+            let observed_builder =
+                self.context.observation.my_units.iter().any(|unit| {
+                    unit.id == repair.key.worker && unit.kind.stats().harvest.is_some()
+                });
+            obligations.obligations.push(imported_obligation(
+                ObligationClass::PersistentPlan,
+                repair.accepted_at,
+                ObligationKey::Support(repair.key),
+                repair.claims(observed_builder),
+            ));
+        }
+        if allow_repair
+            && strategic_admission_tick(self.context.observation.tick)
+            && self.participants.policy.economic_saving().is_none()
+        {
+            let fresh = self.participants.policy.discretionary_support_work(
+                &support_snapshot,
+                self.context.observation.tick,
+                self.context.tuning,
+            );
+            self.repair_work = fresh.unit_work();
+            (
+                self.participants
+                    .policy
+                    .prepared_repair_assignments(context, &fresh),
+                self.participants
+                    .policy
+                    .prepared_repair_bays(context, &fresh),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        }
+    }
+
+    fn prepare_support_relief(
+        &mut self,
+        claims: &ClaimSnapshot,
+    ) -> Option<crate::bot::team::TeamReliefOperation> {
+        let planner = self.participants.team.as_mut()?;
+        planner.prepare_relief(crate::bot::team::TeamReliefPreparation {
+            tuning: self.context.tuning,
+            obs: self.context.observation,
+            home: self.context.home,
+            admission: crate::bot::team::TeamReliefAdmission {
+                additionally_reserved: &claims.planner_claims,
+                allow_new_operation: claims.opening_core.ready
+                    && self.participants.policy.economic_saving().is_none()
+                    && self.context.tuning.attention_slots > 0,
+                core_reservations: &claims.strategic_core_exclusions,
+                minimum_core_equivalents: u64::from(self.context.dials.minimum_core_equivalents),
+            },
+            map: self.context.public_map,
+            orientation: self.context.orientation,
+        })
+    }
+
     fn snapshot_claims(&self) -> ClaimSnapshot {
         let claims = PlannerClaims::new(
             self.context.enlisted,
@@ -649,8 +996,10 @@ impl<'a> AllocationSession<'a> {
             .team
             .as_ref()
             .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
-        let planner_claims = claims.all(&team_core_claims);
-        let strategic_core_exclusions = claims.core_exclusions(&team_core_claims);
+        let mut planner_claims = claims.all(&team_core_claims);
+        let mut strategic_core_exclusions = claims.core_exclusions(&team_core_claims);
+        self.append_utility_assignments(&mut planner_claims);
+        self.append_utility_assignments(&mut strategic_core_exclusions);
         let opening_core = combat_core_status(
             self.context.observation,
             &strategic_core_exclusions,
@@ -665,10 +1014,50 @@ impl<'a> AllocationSession<'a> {
         }
     }
 
+    fn append_utility_assignments(&self, claims: &mut Vec<UnitId>) {
+        claims.extend(self.participants.policy.reconnaissance.reservations());
+        claims.extend(self.participants.policy.support_reservations());
+        claims.sort_unstable();
+        claims.dedup();
+    }
+
     fn collect_legacy_obligations(&mut self, claims: &ClaimSnapshot) -> ObligationPreparation {
         let resources = ResourceSnapshot::from_observation(self.context.observation);
         let air_work = self.economic_air_work();
         let mut obligations = Vec::new();
+        if let Some(planner) = self.participants.raids.as_ref()
+            && !planner.paid_claims().is_empty()
+        {
+            obligations.push(imported_obligation(
+                ObligationClass::PersistentPlan,
+                planner
+                    .preparation_started_at()
+                    .unwrap_or(self.context.observation.tick),
+                ObligationKey::Legacy {
+                    channel: LegacyChannel::Raid,
+                    sequence: 2,
+                },
+                ClaimBundle::default().with_paid_queue(planner.paid_claims().to_vec()),
+            ));
+        }
+        for deployment in &self.participants.policy.support_deployments.active {
+            obligations.push(imported_obligation(
+                ObligationClass::PersistentPlan,
+                deployment.accepted_at,
+                ObligationKey::SupportDeployment(deployment.key),
+                deployment.claims(),
+            ));
+        }
+        for (key, work) in &self.participants.policy.reconnaissance.assignments {
+            if work.unit.is_some() || work.paid_claim.is_some() || work.unpaid {
+                obligations.push(imported_obligation(
+                    ObligationClass::PersistentPlan,
+                    work.proposal.observed_at,
+                    ObligationKey::Reconnaissance(*key),
+                    work.retained_claims(self.context.observation.tick),
+                ));
+            }
+        }
         let mut coordinator_failure = None;
         let mut observed_capital = self.context.observation.scrap;
         if self.participants.policy.economic_saving().is_some()
@@ -937,7 +1326,9 @@ impl<'a> AllocationSession<'a> {
             self.participants.lifts,
         );
         claims.planner_claims = refreshed.all(&claims.team_core_claims);
+        self.append_utility_assignments(&mut claims.planner_claims);
         claims.strategic_core_exclusions = refreshed.core_exclusions(&claims.team_core_claims);
+        self.append_utility_assignments(&mut claims.strategic_core_exclusions);
     }
 
     fn prepare_standing_army(
@@ -945,13 +1336,14 @@ impl<'a> AllocationSession<'a> {
         claims: &ClaimSnapshot,
         obligations: &mut ObligationPreparation,
     ) {
-        let planner_owned = PlannerClaims::new(
+        let mut planner_owned = PlannerClaims::new(
             self.context.enlisted,
             self.participants.strategy,
             self.participants.raids,
             self.participants.lifts,
         )
         .without_executive(&claims.team_core_claims);
+        self.append_utility_assignments(&mut planner_owned);
         let standing_army = self
             .context
             .enlisted
@@ -1470,12 +1862,71 @@ impl<'a> AllocationSession<'a> {
                 ),
             );
         }
-        SavedFoundryPreparation {
+        let mut saved = SavedFoundryPreparation {
             obligation,
             saving,
             blocked,
             preparation_need,
+        };
+        self.reconcile_lift_funding_after_saved_capital(&mut saved, obligations);
+        saved
+    }
+
+    fn reconcile_lift_funding_after_saved_capital(
+        &mut self,
+        saved: &mut SavedFoundryPreparation,
+        obligations: &mut ObligationPreparation,
+    ) {
+        let Some(active) = obligations.active_lift.as_ref() else {
+            return;
+        };
+        let accepted_at = active.accepted_at();
+        let owner = ClaimOwner::Obligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at,
+            key: ObligationKey::Legacy {
+                channel: LegacyChannel::Lift,
+                sequence: 2,
+            },
+        };
+        let horizon = obligation_horizon(
+            &obligations.obligations,
+            self.context
+                .observation
+                .tick
+                .saturating_add(self.context.dials.cadence),
+        );
+        let Ok(mut allocation) =
+            CrossDomainAllocation::new(&obligations.resources, horizon, self.context.dials.cadence)
+        else {
+            return;
+        };
+        for obligation in obligations.obligations.iter().cloned() {
+            allocation.import(obligation);
         }
+        let Err(AllocationError::ObligationConflict {
+            obligation,
+            conflict,
+        }) = allocation.resolve(AllocationPersonality::default(), None)
+        else {
+            return;
+        };
+        if obligation != owner || !connected_production_conflict(&conflict) {
+            return;
+        }
+        if self.defer_younger_saved_foundry(saved, obligations, accepted_at) {
+            self.reconcile_lift_funding_after_saved_capital(saved, obligations);
+            return;
+        }
+        self.participants
+            .lifts
+            .as_mut()
+            .expect("retained Lift production has a planner")
+            .recover_invalid_production(self.context.observation.tick);
+        obligations
+            .obligations
+            .retain(|obligation| obligation.owner() != owner);
+        obligations.active_lift = None;
     }
 
     fn stage_active_island(
@@ -1539,7 +1990,8 @@ impl<'a> AllocationSession<'a> {
                         orientation: self.context.orientation,
                     },
                 )
-                .with_producer_lanes(&prior_producer_intents, &producer_lane_reservations),
+                .with_producer_lanes(&prior_producer_intents, &producer_lane_reservations)
+                .with_paid_exclusions(&self.recon_paid_exclusions),
             )
         }) else {
             return;
@@ -1627,6 +2079,7 @@ impl<'a> AllocationSession<'a> {
                 orientation: self.context.orientation,
             },
         );
+        let request = request.with_paid_exclusions(&self.recon_paid_exclusions);
         let revision = self
             .participants
             .strategy
@@ -1749,32 +2202,35 @@ impl<'a> AllocationSession<'a> {
             && !obligations.invalid_active_connected
         {
             self.participants.strategy.as_ref().and_then(|planner| {
-                match planner.fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                    self.context.profile,
-                    self.context.tuning,
-                    self.context.observation,
-                    &obligations.resources,
-                    self.context.intelligence,
-                    self.context.home,
-                    StrategicCoordination {
-                        enlisted: &claims.planner_claims,
-                        lift_support: None,
-                        allow_new_operation: true,
-                        protected_current_scrap: current_reserve_at(
-                            &obligations.obligations,
-                            self.context.observation.tick,
-                        ),
-                        protected_forecast_scrap: forecast_reserve_through(
-                            &obligations.obligations,
-                            self.context
-                                .observation
-                                .tick
-                                .saturating_add(connected_preparation_horizon()),
-                        ),
-                        public_map: Some(self.context.public_map),
-                        orientation: self.context.orientation,
-                    },
-                )) {
+                match planner.fresh_connected_minimum_proposal(
+                    FreshConnectedProposalRequest::new(
+                        self.context.profile,
+                        self.context.tuning,
+                        self.context.observation,
+                        &obligations.resources,
+                        self.context.intelligence,
+                        self.context.home,
+                        StrategicCoordination {
+                            enlisted: &claims.planner_claims,
+                            lift_support: None,
+                            allow_new_operation: true,
+                            protected_current_scrap: current_reserve_at(
+                                &obligations.obligations,
+                                self.context.observation.tick,
+                            ),
+                            protected_forecast_scrap: forecast_reserve_through(
+                                &obligations.obligations,
+                                self.context
+                                    .observation
+                                    .tick
+                                    .saturating_add(connected_preparation_horizon()),
+                            ),
+                            public_map: Some(self.context.public_map),
+                            orientation: self.context.orientation,
+                        },
+                    )
+                    .with_paid_exclusions(&self.recon_paid_exclusions),
+                ) {
                     Ok(proposal) => proposal,
                     Err(rejected) => {
                         rejected_connected_candidate = Some(rejected);
@@ -1868,6 +2324,11 @@ impl<'a> AllocationSession<'a> {
         let standing_force_derivation = StandingForceDerivation {
             projection_targets: self.standing_force_projection_targets(),
             expansion_security_need,
+            raid: self.raid_work.clone().filter(|request| {
+                request.missing > 0
+                    || !request.newly_claimed.is_empty()
+                    || !request.new_paid_claims().is_empty()
+            }),
         };
         let mut capability_demands = None;
         let mut derive_standing_force =
@@ -2090,6 +2551,14 @@ impl<'a> AllocationSession<'a> {
 
     fn committed_standing_production(&mut self) -> Vec<StandingProductionCommitment> {
         let mut committed = Vec::new();
+        if let Some(planner) = self.participants.raids.as_ref() {
+            committed.extend(
+                planner
+                    .paid_claims()
+                    .iter()
+                    .map(|claim| StandingProductionCommitment::paid(claim.producer, claim.kind)),
+            );
+        }
         if let Some(planner) = self.participants.strategy.as_mut() {
             committed.extend(
                 planner
@@ -2130,7 +2599,18 @@ impl<'a> AllocationSession<'a> {
         }
         let owned_production =
             merged_production_commitments(committed_production, connected_paid_production);
+        let funded_repairers: Vec<_> = self
+            .participants
+            .policy
+            .support_work
+            .repairs
+            .iter()
+            .map(|repair| repair.key.worker)
+            .collect();
         let mut context = StandingForceContext::new(unit_exclusions, &owned_production)
+            .with_repair_work(&self.repair_work)
+            .with_funded_repairers(&funded_repairers)
+            .with_protection_work(&self.protection_work)
             .with_ground_routing(
                 StandingGroundTarget::footprint(
                     self.context.home,
@@ -2146,13 +2626,70 @@ impl<'a> AllocationSession<'a> {
                 target_strength,
             );
         }
-        derive_standing_force_with_demand(
+        let (mut proposals, mut demands) = derive_standing_force_with_demand(
             self.context.observation,
             self.context.intelligence,
             self.context.profile,
             self.context.tuning,
             &obligations.resources,
             context,
+        );
+        demands.extend_from_slice(self.participants.policy.reconnaissance.capability_demands());
+        if let Some(request) = derivation.raid.as_ref().filter(|request| {
+            request
+                .newly_claimed
+                .iter()
+                .all(|id| !unit_exclusions.contains(id))
+        }) {
+            proposals.push(StandingForceProposal::for_raid(
+                request.clone().with_paid_ownership(&owned_production),
+                self.context.profile,
+            ));
+        }
+        (proposals, demands)
+    }
+
+    fn prepare_raid_procurement(
+        &self,
+        claims: &ClaimSnapshot,
+        obligations: &ObligationPreparation,
+        committed_production: &[StandingProductionCommitment],
+    ) -> Option<crate::bot::raid::RaidProcurementRequest> {
+        let planner = self.participants.raids.as_ref()?;
+        let load = usize::from(
+            self.participants
+                .strategy
+                .as_ref()
+                .is_some_and(|planner| planner.air_operation().is_some()),
+        ) + usize::from(
+            self.participants
+                .team
+                .as_ref()
+                .is_some_and(|planner| planner.operation().is_some()),
+        ) + usize::from(
+            self.participants
+                .lifts
+                .as_ref()
+                .is_some_and(|planner| planner.operation().is_some()),
+        );
+        let admitted = claims.opening_core.ready
+            && obligations.coordinator_failure.is_none()
+            && self.participants.policy.economic_saving().is_none()
+            && (load == 0 || self.context.tuning.attention_slots >= (load + 1) * 2);
+        planner.muster_request(
+            crate::bot::raid::RaidPlanningContext::new(
+                self.context.profile,
+                self.context.tuning,
+                self.context.observation,
+                self.context.home,
+                self.context.enlisted,
+                &claims.planner_claims,
+            )
+            .with_admission(admitted)
+            .with_paid_production(committed_production),
+            &obligations.resources,
+            Some(self.context.public_map),
+            Some(self.context.orientation),
         )
     }
 
@@ -2502,6 +3039,92 @@ impl<'a> AllocationSession<'a> {
                     for obligation in prepared.obligations.iter().cloned() {
                         allocation.import(obligation);
                     }
+                    for (rank, recon) in prepared.fresh_reconnaissance.iter().cloned().enumerate() {
+                        allocation.offer(
+                            super::reconnaissance_investment_proposal(recon)
+                                .with_domain_preference(rank)
+                                .with_personality_preference(u16::from(
+                                    self.context.profile.traits.guile,
+                                ))
+                                .with_minimum_residual_scrap(prepared.prospective_carrier_floor)
+                                .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
+                        );
+                    }
+                    for (rank, repair) in prepared.fresh_support.iter().cloned().enumerate() {
+                        allocation.offer(
+                            super::InvestmentProposal::fresh(
+                                ProposalKey::Support(repair.key),
+                                repair.case,
+                                repair.claims(false),
+                                super::DomainPayload::Support(repair),
+                            )
+                            .with_domain_preference(rank)
+                            .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
+                        );
+                    }
+                    for (rank, deployment) in prepared
+                        .fresh_support_deployments
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                    {
+                        allocation.offer(
+                            super::InvestmentProposal::fresh(
+                                ProposalKey::SupportDeployment(deployment.key),
+                                deployment.case(),
+                                deployment.claims(),
+                                super::DomainPayload::SupportDeployment(deployment),
+                            )
+                            .with_domain_preference(rank)
+                            .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
+                        );
+                    }
+                    if let Some(relief) = prepared.fresh_support_relief.clone() {
+                        allocation.offer(
+                            super::InvestmentProposal::fresh(
+                                ProposalKey::SupportRelief(relief.foundry),
+                                super::ProposalCase {
+                                    urgency: super::Urgency::Pressing,
+                                    confidence: super::Confidence::Current,
+                                    value: super::StrategicValue::Decisive,
+                                    time_to_impact: super::TimeToImpact::Near,
+                                    safety: super::ExecutionSafety::Managed,
+                                },
+                                ClaimBundle::new(
+                                    0,
+                                    vec![],
+                                    vec![],
+                                    relief.members.clone(),
+                                    vec![],
+                                    vec![],
+                                )
+                                .expect("frozen relief members are canonical"),
+                                super::DomainPayload::SupportRelief(relief),
+                            )
+                            .with_personality_preference(u16::from(
+                                self.context.profile.traits.support,
+                            )),
+                        );
+                    }
+                    for (rank, bay) in prepared
+                        .fresh_support_construction
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                    {
+                        let claims = economic_investment_claims(&bay)
+                            .expect("a fully funded Bay has one builder and site");
+                        allocation.offer(
+                            super::InvestmentProposal::fresh(
+                                ProposalKey::SupportConstruction(bay.key),
+                                bay.case,
+                                claims,
+                                super::DomainPayload::SupportConstruction(bay),
+                            )
+                            .with_domain_preference(rank)
+                            .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
+                        );
+                    }
                     for (rank, proposal) in prepared.fresh_economy.iter().cloned().enumerate() {
                         match economic_investment_proposal(proposal) {
                             Ok(proposal) => allocation.offer(
@@ -2711,6 +3334,15 @@ impl<'a> AllocationSession<'a> {
                 .build()
                 .map(|build| (ProposalKey::Economy(economy.key), build))
         }));
+        layouts.extend(
+            prepared
+                .fresh_support_construction
+                .iter()
+                .filter_map(|bay| {
+                    bay.build()
+                        .map(|build| (ProposalKey::SupportConstruction(bay.key), build))
+                }),
+        );
         let safe = |builds: &[_]| {
             self.participants
                 .policy
@@ -2723,24 +3355,24 @@ impl<'a> AllocationSession<'a> {
                     builds,
                 )
         };
-        for (index, &(first_key, first)) in layouts.iter().enumerate() {
-            for (offset, &(second_key, second)) in layouts[index + 1..].iter().enumerate() {
-                if first_key.domain() == second_key.domain() {
+        let mut pending = vec![(0, Vec::<usize>::new())];
+        while let Some((start, selected)) = pending.pop() {
+            for index in start..layouts.len() {
+                if selected
+                    .iter()
+                    .any(|&prior| layouts[prior].0.domain() == layouts[index].0.domain())
+                {
                     continue;
                 }
-                if !safe(&[first, second]) {
-                    allocation.reject_incompatible_layout(first_key, second_key);
-                    continue;
-                }
-                for &(third_key, third) in &layouts[index + offset + 2..] {
-                    if third_key.domain() == first_key.domain()
-                        || third_key.domain() == second_key.domain()
-                    {
-                        continue;
-                    }
-                    if !safe(&[first, second, third]) {
-                        allocation.reject_incompatible_triple([first_key, second_key, third_key]);
-                    }
+                let mut next = selected.clone();
+                next.push(index);
+                if next.len() >= 2 && !safe(&next.iter().map(|&i| layouts[i].1).collect::<Vec<_>>())
+                {
+                    allocation.reject_incompatible_layout_set(
+                        next.iter().map(|&i| layouts[i].0).collect(),
+                    );
+                } else {
+                    pending.push((index + 1, next));
                 }
             }
         }
@@ -2822,6 +3454,60 @@ impl<'a> AllocationSession<'a> {
             allocation_ok,
         );
         self.commit_fresh_foundry(prepared, &mut payloads, &mut effects, allocation_ok);
+        for job in &producer_schedule {
+            if let ClaimOwner::Obligation {
+                key: ObligationKey::Reconnaissance(key),
+                ..
+            } = job.owner
+                && !self.participants.policy.bind_reconnaissance_funding(
+                    key,
+                    *job,
+                    self.context.observation,
+                )
+            {
+                *allocation_ok = false;
+                retain_first_coordinator_failure(
+                    &mut prepared.coordinator_failure,
+                    AllocationCoordinatorStageTrace::ObligationCollection,
+                    Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
+                );
+            }
+        }
+        if *allocation_ok && let Some(recon) = payloads.take_reconnaissance() {
+            let funding = producer_schedule
+                .iter()
+                .find(|job| {
+                    job.owner == ClaimOwner::Proposal(ProposalKey::Reconnaissance(recon.key()))
+                })
+                .copied();
+            let scheduled = match recon.observer {
+                crate::bot::utility::ReconObserver::Live(_) => true,
+                crate::bot::utility::ReconObserver::Queued { .. } => true,
+                crate::bot::utility::ReconObserver::Purchase { producer, kind, .. } => {
+                    producer_schedule.iter().any(|job| {
+                        job.owner == ClaimOwner::Proposal(ProposalKey::Reconnaissance(recon.key()))
+                            && job.producer == producer
+                            && job.kind == kind
+                            && job.ready_at < recon.funding_deadline()
+                    })
+                }
+            };
+            if !scheduled
+                || !self.participants.policy.commit_reconnaissance(
+                    recon,
+                    funding,
+                    self.context.observation,
+                    &mut effects.fresh_economy_intents,
+                )
+            {
+                retain_first_coordinator_failure(
+                    &mut prepared.coordinator_failure,
+                    AllocationCoordinatorStageTrace::ObligationCollection,
+                    Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
+                );
+                *allocation_ok = false;
+            }
+        }
         if *allocation_ok && let Some(economy) = payloads.take_economy() {
             let current = economy.current_capital;
             self.participants.policy.commit_economic_investment(
@@ -2830,10 +3516,40 @@ impl<'a> AllocationSession<'a> {
                 &mut effects.fresh_economy_intents,
             );
         }
+        if *allocation_ok
+            && let Some(deployment) = payloads.take_support_deployment()
+            && !self.participants.policy.commit_support_deployment(
+                deployment,
+                self.context.observation,
+                &mut effects.fresh_economy_intents,
+            )
+        {
+            *allocation_ok = false;
+            retain_first_coordinator_failure(
+                &mut prepared.coordinator_failure,
+                AllocationCoordinatorStageTrace::ObligationCollection,
+                Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
+            );
+        }
         if *allocation_ok && let Some(defense) = payloads.take_defense() {
             self.participants
                 .policy
                 .commit_adjudicated_defense(defense, &mut effects.fresh_defense_intents);
+        }
+        if *allocation_ok
+            && let Some(repair) = payloads.take_support()
+            && !self.participants.policy.commit_repair_assignment(
+                repair,
+                self.context.observation,
+                &mut effects.fresh_economy_intents,
+            )
+        {
+            retain_first_coordinator_failure(
+                &mut prepared.coordinator_failure,
+                AllocationCoordinatorStageTrace::ObligationCollection,
+                Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
+            );
+            *allocation_ok = false;
         }
         if let Some(standing_force) = payloads.take_standing_force() {
             let scheduled = producer_schedule.iter().any(|job| {
@@ -2841,7 +3557,80 @@ impl<'a> AllocationSession<'a> {
                     && job.enqueued_at == self.context.observation.tick
                     && job.kind == standing_force.key_kind()
             });
-            debug_assert_eq!(scheduled, standing_force.accumulation().is_none());
+            debug_assert_eq!(
+                scheduled,
+                standing_force.accumulation().is_none()
+                    && standing_force
+                        .raid
+                        .as_ref()
+                        .is_none_or(|raid| raid.missing > 0)
+            );
+            if *allocation_ok && let Some(request) = standing_force.raid {
+                let count = producer_schedule
+                    .iter()
+                    .filter(|job| {
+                        job.owner
+                            == ClaimOwner::Proposal(ProposalKey::StandingForce(
+                                crate::bot::allocation::StandingForceKey {
+                                    kind: UnitKind::Scuttler,
+                                    service: StandingGroundTarget::point(request.tile),
+                                },
+                            ))
+                            && job.enqueued_at == self.context.observation.tick
+                    })
+                    .count();
+                if count != request.missing
+                    || !self.participants.raids.as_mut().is_some_and(|planner| {
+                        planner.commit_procurement(request, self.context.observation.tick)
+                            && planner.bind_procurement(
+                                self.context.observation,
+                                &producer_schedule,
+                                self.context.public_map,
+                                self.context.orientation,
+                            )
+                    })
+                {
+                    retain_first_coordinator_failure(
+                        &mut prepared.coordinator_failure,
+                        AllocationCoordinatorStageTrace::ObligationCollection,
+                        Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
+                    );
+                    *allocation_ok = false;
+                }
+            }
+        }
+        if let Some(support) = payloads.take_support_procurement() {
+            let scheduled = producer_schedule.iter().any(|job| {
+                job.owner == ClaimOwner::Proposal(ProposalKey::SupportProcurement(support.key()))
+                    && job.enqueued_at == self.context.observation.tick
+                    && job.kind == support.key_kind()
+            });
+            debug_assert_eq!(scheduled, support.accumulation().is_none());
+        }
+        if *allocation_ok && let Some(bay) = payloads.take_support_construction() {
+            effects.fresh_economy_intents.push(bay.intent());
+        }
+        if *allocation_ok && let Some(relief) = payloads.take_support_relief() {
+            if let Some(decision) = self
+                .participants
+                .team
+                .as_mut()
+                .and_then(|planner| planner.commit_relief(relief))
+            {
+                prepared.team_decision = decision;
+            } else {
+                retain_first_coordinator_failure(
+                    &mut prepared.coordinator_failure,
+                    AllocationCoordinatorStageTrace::ObligationCollection,
+                    Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
+                );
+                *allocation_ok = false;
+            }
+        }
+        if *allocation_ok {
+            self.participants
+                .policy
+                .bind_reconnaissance_queue_order(&producer_schedule, self.context.observation);
         }
         effects
     }
@@ -3151,6 +3940,26 @@ impl<'a> AllocationSession<'a> {
             strategic_core_exclusions = restored_claims.core_exclusions(&restored_team_core);
         }
 
+        let committed = PlannerClaims::new(
+            self.context.enlisted,
+            self.participants.strategy,
+            self.participants.raids,
+            self.participants.lifts,
+        );
+        let team_members = self
+            .participants
+            .team
+            .as_ref()
+            .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
+        planner_claims.extend(committed.all(&team_members));
+        strategic_core_exclusions.extend(committed.core_exclusions(&team_members));
+        for claims in [&mut planner_claims, &mut strategic_core_exclusions] {
+            claims.extend(self.participants.policy.reconnaissance.reservations());
+            claims.extend(self.participants.policy.support_reservations());
+            claims.sort_unstable();
+            claims.dedup();
+        }
+
         AllocationSessionOutcome {
             opening_core: prepared.opening_core,
             allow_new_voluntary_operations: prepared.allow_new_voluntary_operations,
@@ -3312,6 +4121,7 @@ struct FreshInvestmentPreparation {
 struct StandingForceDerivation {
     projection_targets: Vec<StandingGroundTarget>,
     expansion_security_need: Option<(TilePos, u64)>,
+    raid: Option<crate::bot::raid::RaidProcurementRequest>,
 }
 
 enum StandingForcePreparation {
@@ -3388,6 +4198,11 @@ struct PreparedAllocation {
     fresh_foundry: Option<FreshFoundryProposal>,
     fresh_defense: Vec<FreshDefenseProposal>,
     fresh_economy: Vec<EconomicInvestment>,
+    fresh_support: Vec<crate::bot::utility::RepairAssignment>,
+    fresh_support_construction: Vec<EconomicInvestment>,
+    fresh_support_relief: Option<crate::bot::team::TeamReliefOperation>,
+    fresh_support_deployments: Vec<crate::bot::utility::SupportDeployment>,
+    fresh_reconnaissance: Vec<crate::bot::utility::ReconProposal>,
     fresh_connected: Option<FreshConnectedProposal>,
     standing_force: StandingForcePreparation,
     connected_accepted_at: Option<Tick>,
@@ -4504,6 +5319,120 @@ mod tests {
         (observation, lift, remaining)
     }
 
+    #[test]
+    fn unfundable_retained_lift_recovers_without_releasing_members() {
+        let (mut observation, mut lift, _) = active_lift_fixture();
+        observation.tick = 12;
+        observation.scrap = 300;
+        let operation = lift.operation().unwrap().clone();
+        let enqueued_at = 24;
+        lift.bind_producer_assignments(
+            operation.started_at,
+            operation.deadline,
+            vec![LiftProducerAssignment::new(
+                0,
+                BuildingId(2),
+                UnitKind::Skyhook,
+                LiftProducerTiming::new(
+                    enqueued_at,
+                    enqueued_at,
+                    enqueued_at + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
+                    operation.deadline,
+                ),
+                LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+            )],
+        )
+        .unwrap();
+        let members = lift.operation().unwrap().payload.clone();
+        let active = lift.active_production_obligation().unwrap();
+        let production = active_lift_production_obligation(&active).unwrap();
+        let protected = imported_obligation(
+            ObligationClass::PersistentPlan,
+            0,
+            ObligationKey::SavedFoundry {
+                anchor: TilePos::new(10, 22),
+            },
+            ClaimBundle::new(300, vec![], vec![], vec![], vec![], vec![]).unwrap(),
+        );
+        let resources = ResourceSnapshot::from_observation(&observation);
+        let mut proof = CrossDomainAllocation::new(&resources, operation.deadline, 12).unwrap();
+        proof.import(protected.clone());
+        proof.import(production.clone());
+        assert!(
+            matches!(proof.resolve(AllocationPersonality::default(), None),
+            Err(AllocationError::ObligationConflict { obligation, .. }) if obligation == production.owner())
+        );
+        let mut obligations = ObligationPreparation {
+            resources,
+            obligations: vec![protected.clone(), production],
+            coordinator_failure: None,
+            active_connected: None,
+            active_lift: Some(active),
+            invalid_active_connected: false,
+            invalid_active_lift: false,
+            legacy_air_claims: None,
+            staged_strategy: None,
+        };
+        let profile = prime_profile();
+        let tuning = DifficultyTuning::for_level(profile.difficulty);
+        let dials = Dials::scripted(&profile, tuning);
+        let briefing = connected_briefing(&observation);
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(&observation);
+        let mut policy = UtilityPolicy::new();
+        let mut strategy = None;
+        let mut lifts = Some(lift);
+        let mut team = None;
+        let mut raids = None;
+        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+        let mut session = AllocationSession::new(
+            AllocationSessionContext {
+                dials: &dials,
+                profile: &profile,
+                tuning,
+                observation: &observation,
+                home: TilePos::new(5, 15),
+                public_map: &briefing,
+                orientation: Orientation::for_home(&observation, TilePos::new(5, 15)),
+                intelligence: &intelligence,
+                enlisted: &[],
+                lift_support: None,
+            },
+            AllocationParticipants {
+                policy: &mut policy,
+                strategy: &mut strategy,
+                lifts: &mut lifts,
+                team: &mut team,
+                raids: &mut raids,
+            },
+            advanced(snapshots),
+            None,
+        );
+        session.reconcile_lift_funding_after_saved_capital(
+            &mut SavedFoundryPreparation {
+                obligation: None,
+                saving: 0,
+                blocked: false,
+                preparation_need: None,
+            },
+            &mut obligations,
+        );
+        assert!(obligations.active_lift.is_none());
+        assert_eq!(obligations.obligations.len(), 1);
+        assert_eq!(obligations.obligations[0].owner(), protected.owner());
+        let lift = session.participants.lifts.as_ref().unwrap();
+        assert_eq!(lift.operation().unwrap().phase, LiftPhase::Recover);
+        assert_eq!(lift.operation().unwrap().payload, members);
+        let mut allocation =
+            CrossDomainAllocation::new(&obligations.resources, operation.deadline, 12).unwrap();
+        allocation.import(protected);
+        assert!(
+            allocation
+                .resolve(AllocationPersonality::default(), None)
+                .is_ok()
+        );
+    }
+
     fn allocation_run_for(
         observation: &Observation,
         mut strategy: Option<StrategicPlanner>,
@@ -4591,6 +5520,11 @@ mod tests {
             fresh_foundry: None,
             fresh_defense: Vec::new(),
             fresh_economy: Vec::new(),
+            fresh_support: Vec::new(),
+            fresh_support_construction: Vec::new(),
+            fresh_support_relief: None,
+            fresh_support_deployments: Vec::new(),
+            fresh_reconnaissance: Vec::new(),
             fresh_connected: None,
             standing_force: StandingForcePreparation::default(),
             connected_accepted_at: None,
@@ -4912,6 +5846,119 @@ mod tests {
             StrategicDecision::default(),
             None,
         )
+    }
+
+    #[test]
+    fn retained_raid_queues_are_obligations_before_connected_package_derivation() {
+        use crate::bot::raid::RaidPlanningContext;
+        const HOME: TilePos = TilePos::new(3, 10);
+        for live in [0, 1] {
+            let mut obs = connected_observation(120, 10_000);
+            if live == 1 {
+                obs.my_units
+                    .push(owned_unit(101, UnitKind::Scuttler, HOME.offset(4, 0)));
+            }
+            obs.my_queues[0] = vec![UnitKind::Scuttler; 2 - live];
+            let profile = prime_profile();
+            let tuning = DifficultyTuning::for_level(profile.difficulty);
+            let map = connected_briefing(&obs);
+            let orientation = Orientation::for_home(&obs, HOME);
+            let resources = ResourceSnapshot::from_observation(&obs);
+            let mut raid = RaidPlanner::new();
+            let request = raid
+                .muster_request(
+                    RaidPlanningContext::new(&profile, tuning, &obs, HOME, &[], &[]),
+                    &resources,
+                    Some(&map),
+                    Some(orientation),
+                )
+                .unwrap();
+            assert_eq!(request.missing, 0);
+            assert!(raid.commit_procurement(request, obs.tick));
+            assert!(raid.bind_procurement(&obs, &[], &map, orientation));
+            let paid = raid.paid_claims().to_vec();
+            obs.tick += 24;
+            let dials = Dials::scripted(&profile, tuning);
+            let mut intelligence = StrategicIntelligence::new();
+            intelligence.update(&obs);
+            let mut policy = UtilityPolicy::new();
+            let mut strategy = Some(StrategicPlanner::new());
+            let mut lifts = None;
+            let mut team = None;
+            let mut raids = Some(raid);
+            let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+            let mut session = AllocationSession::new(
+                AllocationSessionContext {
+                    dials: &dials,
+                    profile: &profile,
+                    tuning,
+                    observation: &obs,
+                    home: HOME,
+                    public_map: &map,
+                    orientation,
+                    intelligence: &intelligence,
+                    enlisted: &[],
+                    lift_support: None,
+                },
+                AllocationParticipants {
+                    policy: &mut policy,
+                    strategy: &mut strategy,
+                    lifts: &mut lifts,
+                    team: &mut team,
+                    raids: &mut raids,
+                },
+                advanced(snapshots),
+                None,
+            );
+            let prepared = session.prepare();
+            assert!(prepared.coordinator_failure.is_none());
+            let claim = prepared
+                .obligations
+                .iter()
+                .find(|obligation| {
+                    matches!(
+                        obligation.key,
+                        ObligationKey::Legacy {
+                            channel: LegacyChannel::Raid,
+                            sequence: 2
+                        }
+                    )
+                })
+                .unwrap();
+            assert_eq!(claim.claims.paid_queue(), paid);
+            assert!(
+                session
+                    .committed_standing_production()
+                    .iter()
+                    .filter(|commitment| commitment.matches(BuildingId(10), UnitKind::Scuttler))
+                    .count()
+                    >= paid.len()
+            );
+            let connected = prepared
+                .fresh_connected
+                .as_ref()
+                .expect("a competing package remains feasible");
+            for provider in connected.minimum_claims().paid_providers() {
+                assert!(
+                    !paid
+                        .iter()
+                        .any(|claim| claim.producer == provider.producer()
+                            && claim.kind == provider.kind()
+                            && claim.occurrence == provider.occurrence())
+                );
+            }
+            let original_policy = session.participants.policy.clone();
+            let resolved = session.resolve(
+                prepared,
+                CommitSnapshots {
+                    policy: original_policy,
+                },
+            );
+            let outcome = session.commit_or_restore(resolved);
+            assert!(outcome.allocation_ok);
+            assert_eq!(raids.as_ref().unwrap().paid_claims(), paid);
+            assert_eq!(raids.as_ref().unwrap().reservations().len(), live);
+        }
     }
 
     fn run_connected_session_with_team_decision(
@@ -5786,6 +6833,73 @@ mod tests {
     }
 
     #[test]
+    fn fresh_recon_ownership_reaches_the_same_think_residual_planners() {
+        let mut observation = connected_observation(120, 200);
+        observation.enemy_buildings.clear();
+        observation.visible.fill(false);
+        observation.explored.fill(false);
+        let briefing = PublicMapBriefing {
+            map_width: observation.map_width,
+            map_height: observation.map_height,
+            starting_foundries: vec![crate::bot::StartingFoundry {
+                player: PlayerId(1),
+                anchor: TilePos::new(24, 10),
+            }],
+            teams: vec![None, None],
+            non_ground_terrain: vec![],
+            extractor_frames: vec![],
+            initial_scrap: vec![],
+        };
+        let profile = prime_profile();
+        let tuning = DifficultyTuning::for_level(profile.difficulty);
+        let dials = Dials::scripted(&profile, tuning);
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(&observation);
+        let mut policy = UtilityPolicy::new();
+        let mut strategy = None;
+        let mut team = None;
+        let mut lifts = None;
+        let mut raids = None;
+        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+        let mut trace = AllocationTrace::default();
+        let outcome = AllocationSession::new(
+            AllocationSessionContext {
+                dials: &dials,
+                profile: &profile,
+                tuning,
+                observation: &observation,
+                home: TilePos::new(3, 10),
+                public_map: &briefing,
+                orientation: Orientation::for_home(&observation, TilePos::new(3, 10)),
+                intelligence: &intelligence,
+                enlisted: &[],
+                lift_support: None,
+            },
+            AllocationParticipants {
+                policy: &mut policy,
+                strategy: &mut strategy,
+                team: &mut team,
+                lifts: &mut lifts,
+                raids: &mut raids,
+            },
+            advanced(snapshots),
+            Some(&mut trace),
+        )
+        .run();
+        assert!(outcome.allocation_ok);
+        assert_eq!(
+            policy.reconnaissance.reservations(),
+            [UnitId(100)],
+            "{trace:#?}"
+        );
+        assert!(
+            outcome.planner_claims.contains(&UnitId(100)),
+            "the legacy island operation must see the scout accepted earlier in this think"
+        );
+        assert!(outcome.strategic_core_exclusions.contains(&UnitId(100)));
+    }
+
+    #[test]
     fn successful_commit_retains_speculative_planners_and_prepared_output() {
         let observation = observation();
         let briefing = briefing();
@@ -6150,9 +7264,27 @@ mod tests {
                 &mut Vec::new(),
             )
             .expect("the fixture installs one exact saved Foundry");
+        let resources = ResourceSnapshot::from_observation(&observation);
+        let observed_context = EconomicInvestmentContext {
+            obs: &observation,
+            resources: &resources,
+            profile: &profile,
+            briefing: &briefing,
+            orientation: Orientation::for_home(&observation, TilePos::new(0, 0)),
+            unavailable: &[],
+            demands: &[],
+            cadence: dials.cadence,
+            unit_contacts: &[],
+            building_contacts: &[],
+            protected_scrap: 0,
+            air_work: &[],
+        };
+        policy.observe_reconnaissance(observed_context, TilePos::new(0, 0));
+        let support = policy.support_work_snapshot(observed_context);
+        policy.observe_support_work(&support, observation.tick);
+        policy.observe_support_deployments(observed_context, &support.protection);
         let original_policy = policy.clone();
         assert_ne!(original_policy, UtilityPolicy::new());
-        let resources = ResourceSnapshot::from_observation(&observation);
         let mut prepared_mutation = original_policy.clone();
         assert!(
             prepared_mutation
@@ -7217,16 +8349,76 @@ mod tests {
         assert!(matches!(
             &unsafe_proposal.disposition,
             ProposalDispositionTrace::ConflictsWithSelected {
-                conflict: AllocationConflictTrace::IncompatibleLayout {
-                    first: ProposalKeyTrace::FoundryExpansion { anchor: first },
-                    second: ProposalKeyTrace::Defense {
-                        kind: BuildingKind::Turret,
-                        anchor: second,
-                    },
-                    third: None,
-                },
+                conflict: AllocationConflictTrace::IncompatibleLayout { keys },
                 ..
-            } if *first == foundry_anchor && *second == unsafe_defense_anchor
+            } if *keys == vec![
+                ProposalKeyTrace::FoundryExpansion { anchor: foundry_anchor },
+                ProposalKeyTrace::Defense {
+                    kind: BuildingKind::Turret,
+                    anchor: unsafe_defense_anchor,
+                },
+            ]
+        ));
+    }
+
+    #[test]
+    fn four_foundations_can_close_an_exit_that_every_triple_preserves() {
+        let mut obs = observation();
+        let home = TilePos::new(7, 7);
+        obs.my_buildings = vec![observed_building(1, 0, BuildingKind::Foundry, home)];
+        obs.my_queues = vec![Vec::new()];
+        obs.my_queue_progress = vec![0];
+        obs.known_scrap.clear();
+        obs.known_rock = vec![
+            TilePos::new(6, 6),
+            TilePos::new(9, 6),
+            TilePos::new(6, 9),
+            TilePos::new(7, 9),
+            TilePos::new(8, 9),
+            TilePos::new(9, 9),
+        ];
+        obs.known_rock.sort_by_key(|tile| (tile.y, tile.x));
+        obs.my_units = vec![
+            owned_unit(10, UnitKind::Harvester, TilePos::new(11, 7)),
+            owned_unit(11, UnitKind::Harvester, TilePos::new(4, 7)),
+            owned_unit(12, UnitKind::Harvester, TilePos::new(7, 5)),
+            owned_unit(13, UnitKind::Harvester, TilePos::new(8, 5)),
+        ];
+        let builds = [
+            (BuildingKind::Foundry, TilePos::new(9, 7), UnitId(10)),
+            (BuildingKind::RepairBay, TilePos::new(5, 7), UnitId(11)),
+            (BuildingKind::Turret, TilePos::new(7, 6), UnitId(12)),
+            (BuildingKind::Reclaimer, TilePos::new(8, 6), UnitId(13)),
+        ];
+        let map = briefing();
+        let policy = UtilityPolicy::new();
+        let orientation = Orientation::for_home(&obs, home);
+        for omitted in 0..4 {
+            let triple = builds
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != omitted)
+                .map(|(_, build)| *build)
+                .collect::<Vec<_>>();
+            assert!(
+                policy.combined_build_layout_with_builders_is_safe(
+                    &obs,
+                    &map,
+                    &[],
+                    &[],
+                    orientation,
+                    &triple
+                ),
+                "the omitted foundation {omitted} retains an exit"
+            );
+        }
+        assert!(!policy.combined_build_layout_with_builders_is_safe(
+            &obs,
+            &map,
+            &[],
+            &[],
+            orientation,
+            &builds
         ));
     }
 

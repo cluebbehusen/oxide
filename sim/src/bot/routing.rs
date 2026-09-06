@@ -21,8 +21,8 @@ pub(super) struct RouteProjection<'a> {
     domain: Domain,
     require_explored: bool,
     blocked_ground_rect: Option<(TilePos, (i32, i32))>,
-    blocked_ground_tiles: Vec<bool>,
-    has_blocked_ground_tiles: bool,
+    blocked_tiles: Vec<bool>,
+    has_blocked_tiles: bool,
     labels: Vec<u32>,
     next_label: u32,
     /// Per-tile memo of the domain passability predicate: 0 unqueried,
@@ -52,8 +52,8 @@ impl<'a> RouteProjection<'a> {
             domain,
             require_explored: false,
             blocked_ground_rect: None,
-            blocked_ground_tiles: vec![false; cells],
-            has_blocked_ground_tiles: false,
+            blocked_tiles: vec![false; cells],
+            has_blocked_tiles: false,
             labels: vec![0; cells],
             next_label: 1,
             open_memo: std::cell::RefCell::new(vec![0; cells]),
@@ -124,16 +124,24 @@ impl<'a> RouteProjection<'a> {
     /// only path between them crosses a remembered kill zone.
     pub(super) fn ground_avoiding(
         obs: &'a Observation,
+        blocked: impl FnMut(TilePos) -> bool,
+    ) -> Self {
+        Self::avoiding(obs, Domain::Ground, blocked)
+    }
+
+    fn avoiding(
+        obs: &'a Observation,
+        domain: Domain,
         mut blocked: impl FnMut(TilePos) -> bool,
     ) -> Self {
-        let mut projection = Self::new(obs, Domain::Ground);
+        let mut projection = Self::new(obs, domain);
         for y in 0..obs.map_height {
             for x in 0..obs.map_width {
                 let tile = TilePos::new(x, y);
                 let index = projection.index(tile);
                 let is_blocked = blocked(tile);
-                projection.blocked_ground_tiles[index] = is_blocked;
-                projection.has_blocked_ground_tiles |= is_blocked;
+                projection.blocked_tiles[index] = is_blocked;
+                projection.has_blocked_tiles |= is_blocked;
             }
         }
         projection
@@ -145,7 +153,17 @@ impl<'a> RouteProjection<'a> {
         orientation: Orientation,
         blocked: impl FnMut(TilePos) -> bool,
     ) -> Self {
-        let mut projection = Self::ground_avoiding(obs, blocked);
+        Self::avoiding_with_public_terrain(obs, Domain::Ground, briefing, orientation, blocked)
+    }
+
+    pub(super) fn avoiding_with_public_terrain(
+        obs: &'a Observation,
+        domain: Domain,
+        briefing: &'a PublicMapBriefing,
+        orientation: Orientation,
+        blocked: impl FnMut(TilePos) -> bool,
+    ) -> Self {
+        let mut projection = Self::avoiding(obs, domain, blocked);
         projection.public_map = Some(briefing);
         projection.command_orientation = Some(orientation);
         projection
@@ -161,9 +179,7 @@ impl<'a> RouteProjection<'a> {
     /// from choosing a shorter route straight through a remembered kill zone.
     pub(super) fn direct_line_avoids_blocked(&self, from: TilePos, to: TilePos) -> bool {
         !chassis::path::line_blocked(from.center(), to.center(), |tile| {
-            !in_bounds(self.obs, tile)
-                || self.domain != Domain::Ground
-                || !self.blocked_ground_tiles[self.index(tile)]
+            !in_bounds(self.obs, tile) || !self.blocked_tiles[self.index(tile)]
         })
     }
 
@@ -173,7 +189,7 @@ impl<'a> RouteProjection<'a> {
     /// tiles needs no search; otherwise reproduce the simulation's A* path
     /// because even unobstructed terrain can have several equally short routes.
     pub(super) fn command_path_avoids_blocked(&self, from: TilePos, to: TilePos) -> bool {
-        if !self.has_blocked_ground_tiles {
+        if !self.has_blocked_tiles {
             return true;
         }
         if !in_bounds(self.obs, from) || !domain_open(self.obs, self.domain, to) {
@@ -195,6 +211,82 @@ impl<'a> RouteProjection<'a> {
             crate::stats::PATH_EXPANSION_CAP,
         )
         .is_some_and(|path| path.into_iter().all(|tile| self.open(transform(tile))))
+    }
+
+    /// Exact ordinary-command travel cost, optionally escaping an initial danger
+    /// region. A recall may leave danger, but cannot cross another danger region.
+    pub(super) fn safe_command_route_cost(
+        &self,
+        from: TilePos,
+        to: TilePos,
+        escape: bool,
+    ) -> Option<u32> {
+        if !in_bounds(self.obs, from) || !self.open(to) || (!escape && !self.open(from)) {
+            return None;
+        }
+        let transform = |tile| {
+            self.command_orientation
+                .map_or(tile, |orientation| orientation.tile(tile))
+        };
+        let path = chassis::path::astar(
+            self.obs.map_width,
+            self.obs.map_height,
+            transform(from),
+            transform(to),
+            |tile| {
+                let tile = transform(tile);
+                self.domain_open_memo(tile) && (!self.require_explored || self.obs.explored(tile))
+            },
+            crate::stats::PATH_EXPANSION_CAP,
+        )?;
+        let mut outside = !escape || self.open(from);
+        let mut previous = from;
+        let mut cost = 0_u32;
+        for tile in path.into_iter().map(transform) {
+            if self.open(tile) {
+                outside = true;
+            } else if outside {
+                return None;
+            }
+            cost = cost.saturating_add(if tile == previous {
+                0
+            } else if tile.x != previous.x && tile.y != previous.y {
+                14
+            } else {
+                10
+            });
+            previous = tile;
+        }
+        Some(cost)
+    }
+
+    /// Conservative exact approach for a not-yet-produced group. Both ordinary
+    /// spread orders must be serviceable before membership fixes their order.
+    pub(super) fn prospective_group_route_cost(
+        &self,
+        from: TilePos,
+        goal: TilePos,
+        count: usize,
+    ) -> Option<u32> {
+        let mut longest = 0;
+        for reverse in [false, true] {
+            let goals = command_goals(
+                CommandGoalProjection {
+                    obs: self.obs,
+                    public_map: self.public_map,
+                    domain: self.domain,
+                    require_explored: self.require_explored,
+                    orientation: self.command_orientation,
+                },
+                goal,
+                count,
+                reverse,
+            )?;
+            for assigned in goals {
+                longest = longest.max(self.safe_command_route_cost(from, assigned, false)?);
+            }
+        }
+        Some(longest)
     }
 
     pub(super) fn group_reaches_command_goal(&mut self, units: &[UnitId], goal: TilePos) -> bool {
@@ -337,9 +429,7 @@ impl<'a> RouteProjection<'a> {
                     (anchor.x..anchor.x + width).contains(&tile.x)
                         && (anchor.y..anchor.y + height).contains(&tile.y)
                 });
-        let blocked_by_tile = self.domain == Domain::Ground
-            && in_bounds(self.obs, tile)
-            && self.blocked_ground_tiles[self.index(tile)];
+        let blocked_by_tile = in_bounds(self.obs, tile) && self.blocked_tiles[self.index(tile)];
         self.domain_open_memo(tile)
             && !blocked_by_candidate
             && !blocked_by_tile
@@ -1297,6 +1387,44 @@ mod tests {
     }
 
     #[test]
+    fn air_projection_respects_public_peaks_and_a_shared_exposure_mask() {
+        let obs = observation();
+        let peaks = (0..obs.map_height)
+            .filter(|y| *y != 4)
+            .map(|y| (TilePos::new(6, y), Terrain::Peak))
+            .collect();
+        let map = public_map(&obs, peaks);
+        let orientation = Orientation::for_home(&obs, TilePos::new(2, 3));
+        let from = TilePos::new(2, 4);
+        let to = TilePos::new(9, 4);
+        let mut exposed = RouteProjection::avoiding_with_public_terrain(
+            &obs,
+            Domain::Air,
+            &map,
+            orientation,
+            |tile| tile == TilePos::new(6, 4),
+        );
+        assert!(
+            !exposed.reaches(from, to),
+            "the only pass through public Peaks is exposed"
+        );
+        assert!(!exposed.direct_line_avoids_blocked(from, to));
+        assert!(!exposed.command_path_avoids_blocked(from, to));
+        let mut safe = RouteProjection::avoiding_with_public_terrain(
+            &obs,
+            Domain::Air,
+            &map,
+            orientation,
+            |_| false,
+        );
+        assert!(safe.reaches(from, to));
+        assert!(
+            !safe.reaches(from, TilePos::new(6, 3)),
+            "Peaks are not legal air goals"
+        );
+    }
+
+    #[test]
     fn known_wall_refuses_the_group_but_a_gap_restores_the_exact_route() {
         let mut obs = observation();
         obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(6, y)).collect();
@@ -1499,6 +1627,41 @@ mod tests {
                 .group_reaches_command_goal(&[UnitId(1), UnitId(2)], goal),
             "the spread should preserve the observed blocker, skip the public Peak, and use a later goal"
         );
+    }
+
+    #[test]
+    fn command_cost_counts_public_detours_and_recall_cannot_reenter_danger() {
+        let obs = observation();
+        let from = TilePos::new(2, 2);
+        let goal = TilePos::new(9, 2);
+        let map = public_map(
+            &obs,
+            (0..6)
+                .map(|y| (TilePos::new(6, y), Terrain::Peak))
+                .collect(),
+        );
+        let route = RouteProjection::with_public_terrain(&obs, Domain::Air, &map);
+        assert!(route.safe_command_route_cost(from, goal, false).unwrap() > 70);
+
+        let map = public_map(&obs, vec![]);
+        let orientation = Orientation::for_home(&obs, TilePos::new(1, 1));
+        let escaping = RouteProjection::avoiding_with_public_terrain(
+            &obs,
+            Domain::Air,
+            &map,
+            orientation,
+            |tile| tile.x <= 3,
+        );
+        assert_eq!(escaping.safe_command_route_cost(from, goal, false), None);
+        assert_eq!(escaping.safe_command_route_cost(from, goal, true), Some(70));
+        let reentering = RouteProjection::avoiding_with_public_terrain(
+            &obs,
+            Domain::Air,
+            &map,
+            orientation,
+            |tile| tile.x <= 3 || tile.x == 7,
+        );
+        assert_eq!(reentering.safe_command_route_cost(from, goal, true), None);
     }
 
     #[test]

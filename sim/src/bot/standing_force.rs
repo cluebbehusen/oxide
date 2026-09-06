@@ -26,6 +26,9 @@ use crate::stats::{BuildingKind, Domain, Role, UnitKind};
 use chassis::Tick;
 use chassis::grid::TilePos;
 
+mod repair;
+pub(crate) use repair::{RepairWork, remaining_work as remaining_repair_work};
+
 /// One exact production commitment already owned by a strategic planner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct StandingProductionCommitment {
@@ -34,6 +37,9 @@ pub(crate) struct StandingProductionCommitment {
 }
 
 impl StandingProductionCommitment {
+    pub(crate) fn matches(self, producer: BuildingId, kind: UnitKind) -> bool {
+        self.producer == producer && self.kind == kind
+    }
     /// Excludes one matching already-paid queue item from standing inventory.
     ///
     /// Repeating the same `(producer, kind)` commitment excludes that many
@@ -53,6 +59,9 @@ pub(crate) struct StandingForceContext<'a> {
     orientation: Option<Orientation>,
     force_projection_targets: &'a [StandingGroundTarget],
     expansion_security: Option<ExpansionSecurityNeed>,
+    repair_work: Option<&'a [RepairWork]>,
+    protection_work: &'a [super::utility::ProtectionRequest],
+    funded_repairers: Option<&'a [UnitId]>,
 }
 
 impl<'a> StandingForceContext<'a> {
@@ -69,7 +78,28 @@ impl<'a> StandingForceContext<'a> {
             orientation: None,
             force_projection_targets: &[],
             expansion_security: None,
+            repair_work: None,
+            protection_work: &[],
+            funded_repairers: None,
         }
+    }
+
+    pub(crate) const fn with_repair_work(mut self, work: &'a [RepairWork]) -> Self {
+        self.repair_work = Some(work);
+        self
+    }
+
+    pub(crate) const fn with_funded_repairers(mut self, workers: &'a [UnitId]) -> Self {
+        self.funded_repairers = Some(workers);
+        self
+    }
+
+    pub(crate) const fn with_protection_work(
+        mut self,
+        work: &'a [super::utility::ProtectionRequest],
+    ) -> Self {
+        self.protection_work = work;
+        self
     }
 
     /// Adds the home defense location, public terrain, and useful ground work.
@@ -127,6 +157,10 @@ pub(crate) enum StandingForceReason {
     SiegePressure,
     /// Add mobile repair capacity for reachable wounded combatants.
     WoundedSupport,
+    /// Complete the exact pair for a currently viable raid objective.
+    RaidPreparation,
+    /// Supply information needed by an explicit reconnaissance question.
+    Reconnaissance,
     /// Grow a useful ordinary force while a reachable objective remains.
     ForceProjection,
 }
@@ -145,6 +179,7 @@ pub(crate) struct StandingForceProposal {
     eligible_producers: Vec<BuildingId>,
     minimum_residual_scrap: u32,
     funding: StandingForceFunding,
+    pub(crate) raid: Option<super::raid::RaidProcurementRequest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,7 +235,6 @@ impl StandingForceProposal {
     }
 
     /// Concrete need this request answers.
-    #[cfg(test)]
     pub(in crate::bot) const fn reason(&self) -> StandingForceReason {
         self.reason
     }
@@ -279,6 +313,7 @@ impl StandingForceProposal {
             eligible_producers,
             minimum_residual_scrap: 0,
             funding: StandingForceFunding::Immediate,
+            raid: None,
         }
     }
 }
@@ -335,7 +370,6 @@ struct Inventory {
     line_strength: u64,
     anti_air_strength: u64,
     siege_strength: u64,
-    tenders: u32,
 }
 
 impl Inventory {
@@ -354,7 +388,7 @@ impl Inventory {
                     self.siege_strength
                         .saturating_add(combat_strength(kind, hp, Domain::Ground));
             }
-            Role::Tender => self.tenders = self.tenders.saturating_add(1),
+            Role::Tender => {}
             Role::Harvester
             | Role::Scuttler
             | Role::AirGround
@@ -573,6 +607,9 @@ pub(crate) struct CapabilityDemand {
 
 impl CapabilityDemand {
     pub(crate) fn units_needed(&self) -> u64 {
+        if self.reason == StandingForceReason::Reconnaissance {
+            return u64::from(self.unmet);
+        }
         let (baseline, provider) = if self.reason == StandingForceReason::WoundedSupport {
             (1, 1)
         } else if self.reason == StandingForceReason::AirDefense {
@@ -847,17 +884,9 @@ pub(crate) fn derive_standing_force_with_demand(
         ));
     }
 
-    let support_work_per_tender = UnitKind::Tender.stats().max_hp.saturating_mul(2);
-    for (unmet_support, wounded_targets) in wounded_support_needs(
-        obs,
-        context.excluded_units,
-        resources,
-        &roster,
-        &mut component_inventory,
-        &mut routing,
-        support_work_per_tender,
-    ) {
-        candidates.extend(candidates_for_kinds(
+    for demand in repair::unmet_work(obs, context, resources, &mut routing) {
+        let wounded_targets = demand.targets;
+        let mut support = candidates_for_kinds(
             obs,
             resources,
             profile,
@@ -872,13 +901,127 @@ pub(crate) fn derive_standing_force_with_demand(
                         time_to_impact: TimeToImpact::Near,
                         safety: ExecutionSafety::Secure,
                     },
-                    unmet: unmet_support,
+                    unmet: 1,
                 },
                 kinds: &[UnitKind::Tender],
                 targets: &wounded_targets,
             },
             |_| Specialty::Support,
-            |_| 1,
+            |_| u128::from(demand.value),
+        );
+        for candidate in &mut support {
+            candidate
+                .eligible_producers
+                .retain(|producer| *producer == demand.producer);
+            candidate.ready_before = demand.ready_at;
+        }
+        candidates.extend(
+            support
+                .into_iter()
+                .filter(|candidate| !candidate.eligible_producers.is_empty()),
+        );
+    }
+
+    let mut credited_paid = BTreeMap::<(BuildingId, UnitKind), usize>::new();
+    for request in context.protection_work {
+        let domain = if request.key.air {
+            Domain::Air
+        } else {
+            Domain::Ground
+        };
+        let baseline = if request.key.air {
+            Role::AntiAir
+        } else {
+            Role::Sentinel
+        }
+        .unit_for(obs.faction);
+        let mut missing = request.missing;
+        for lane in resources.producers() {
+            let Some(building) = obs
+                .my_buildings
+                .iter()
+                .find(|building| building.id == lane.producer)
+            else {
+                continue;
+            };
+            let Some(origin) =
+                production_spawn_doorstep(obs, building, context.public_map, context.orientation)
+            else {
+                continue;
+            };
+            for (kind, ready_at) in lane.queued_readiness() {
+                let serves = if request.key.air {
+                    kind.role() == Role::AntiAir
+                } else {
+                    matches!(kind.role(), Role::Sentinel | Role::Warden | Role::Breaker)
+                };
+                if !serves {
+                    continue;
+                }
+                let owned = context
+                    .committed_production
+                    .iter()
+                    .filter(|owner| owner.matches(lane.producer, kind))
+                    .count();
+                let already = credited_paid
+                    .get(&(lane.producer, kind))
+                    .copied()
+                    .unwrap_or(0);
+                let total = lane.queued_kind_ready_before(kind, ready_at.saturating_add(1));
+                if total <= owned.saturating_add(already) {
+                    continue;
+                }
+                let Some(travel) = routing.repair_travel(origin, request.tile, kind) else {
+                    continue;
+                };
+                if ready_at.saturating_add(travel) >= obs.tick.saturating_add(1_800) {
+                    continue;
+                }
+                *credited_paid.entry((lane.producer, kind)).or_default() += 1;
+                missing =
+                    missing.saturating_sub(combat_strength(kind, kind.stats().max_hp, domain));
+                if missing == 0 {
+                    break;
+                }
+            }
+            if missing == 0 {
+                break;
+            }
+        }
+        if missing == 0 {
+            continue;
+        }
+        let basis = DemandBasis {
+            reason: if request.key.air {
+                StandingForceReason::AirDefense
+            } else {
+                StandingForceReason::GroundPressure
+            },
+            case: threat_case(Some(ContactEvidence::Current), StrategicValue::Material),
+            unmet: strength_equivalents(
+                missing,
+                combat_strength(baseline, baseline.stats().max_hp, domain).max(1),
+            ),
+        };
+        let targets = [StandingGroundTarget::point(request.tile)];
+        candidates.extend(candidates_for_kinds(
+            obs,
+            resources,
+            profile,
+            &mut routing,
+            CandidateSpec {
+                basis,
+                kinds: &[baseline],
+                targets: &targets,
+            },
+            |_| {
+                if request.key.air {
+                    Specialty::Fortification
+                } else {
+                    Specialty::Support
+                }
+            },
+            |_| u128::from(missing),
         ));
     }
 
@@ -1076,6 +1219,32 @@ fn diminishing_force_priority(
 }
 
 impl StandingForceProposal {
+    pub(crate) fn for_raid(
+        request: super::raid::RaidProcurementRequest,
+        profile: &ResolvedProfile,
+    ) -> Self {
+        Self {
+            observed_at: request.observed_at,
+            ready_before: request.production_deadline,
+            kind: UnitKind::Scuttler,
+            service: StandingGroundTarget::point(request.tile),
+            reason: StandingForceReason::RaidPreparation,
+            specialty: Specialty::Guile,
+            personality_emphasis: profile.traits.guile,
+            case: ProposalCase {
+                urgency: Urgency::Timely,
+                confidence: Confidence::Current,
+                value: StrategicValue::Material,
+                time_to_impact: TimeToImpact::Near,
+                safety: ExecutionSafety::Managed,
+            },
+            eligible_producers: request.eligible_producers.clone(),
+            minimum_residual_scrap: 0,
+            funding: StandingForceFunding::Immediate,
+            raid: Some(request),
+        }
+    }
+
     fn from_candidate(candidate: DemandCandidate, minimum_residual_scrap: u32) -> Self {
         Self {
             observed_at: candidate.observed_at,
@@ -1089,6 +1258,7 @@ impl StandingForceProposal {
             eligible_producers: candidate.eligible_producers,
             minimum_residual_scrap,
             funding: candidate.funding,
+            raid: None,
         }
     }
 }
@@ -1565,6 +1735,7 @@ pub(crate) struct ServiceRouting<'a> {
     ground_producer_components: BTreeMap<BuildingId, Option<usize>>,
     air_producer_components: BTreeMap<BuildingId, Option<usize>>,
     capability_demands: Vec<CapabilityDemand>,
+    travel: BTreeMap<(UnitKind, TilePos, TilePos), Option<Tick>>,
 }
 
 impl<'a> ServiceRouting<'a> {
@@ -1586,6 +1757,7 @@ impl<'a> ServiceRouting<'a> {
             ground_producer_components: BTreeMap::new(),
             air_producer_components: BTreeMap::new(),
             capability_demands: Vec::new(),
+            travel: BTreeMap::new(),
         }
     }
 
@@ -1601,6 +1773,27 @@ impl<'a> ServiceRouting<'a> {
         self.components_for_target(kind.stats().domain, service)
             .binary_search(&component)
             .is_ok()
+    }
+
+    fn repair_travel(&mut self, from: TilePos, goal: TilePos, kind: UnitKind) -> Option<Tick> {
+        let key = (kind, from, goal);
+        if let Some(travel) = self.travel.get(&key) {
+            return *travel;
+        }
+        let travel = self
+            .origin_serves(from, kind, StandingGroundTarget::point(goal))
+            .then(|| {
+                let cost = self
+                    .ground_routes
+                    .safe_command_route_cost(from, goal, false)?;
+                let speed = u128::try_from(kind.stats().speed.to_bits())
+                    .ok()
+                    .filter(|speed| *speed > 0)?;
+                u64::try_from((u128::from(cost) << 32).div_ceil(speed.checked_mul(10)?)).ok()
+            })
+            .flatten();
+        self.travel.insert(key, travel);
+        travel
     }
 
     fn inventory_origin_components(&mut self, member: InventoryMember) -> Vec<usize> {
@@ -1998,62 +2191,6 @@ fn hostile_defense_demands(now: Tick, intelligence: &StrategicIntelligence) -> V
             )
         })
         .collect()
-}
-
-fn wounded_support_needs(
-    obs: &Observation,
-    excluded_units: &[UnitId],
-    resources: &ResourceSnapshot,
-    roster: &InventoryRoster,
-    component_inventory: &mut ComponentInventory,
-    routing: &mut ServiceRouting<'_>,
-    work_per_tender: u32,
-) -> Vec<(u32, Vec<StandingGroundTarget>)> {
-    let fabricators = resources
-        .producers()
-        .iter()
-        .filter(|lane| lane.kind == BuildingKind::Fabricator)
-        .map(|lane| lane.producer)
-        .collect::<Vec<_>>();
-    let wounded = obs
-        .my_units
-        .iter()
-        .filter(|unit| !excluded_units.contains(&unit.id))
-        .filter(|unit| {
-            unit.kind.stats().domain == Domain::Ground
-                && unit.kind.stats().can_fight()
-                && unit.hp < unit.kind.stats().max_hp
-        })
-        .map(|unit| {
-            LocatedDemand::fixed(
-                StandingGroundTarget::point(unit.tile),
-                u64::from(unit.kind.stats().max_hp - unit.hp),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let mut needs = Vec::new();
-    for mut component in demand_components(Domain::Ground, wounded, routing) {
-        if !fabricators.iter().any(|producer| {
-            routing.producer_reaches_any(*producer, UnitKind::Tender, &component.targets)
-        }) {
-            continue;
-        }
-        let demand = u32::try_from(component.fixed.div_ceil(u64::from(work_per_tender.max(1))))
-            .unwrap_or(u32::MAX);
-        let serviceable = component_inventory
-            .serviceable(Domain::Ground, &component.targets, roster, routing)
-            .tenders;
-        let component_unmet = demand.saturating_sub(serviceable);
-        if component_unmet == 0 {
-            continue;
-        }
-        component.targets.sort_unstable();
-        component.targets.dedup();
-        needs.push((component_unmet, component.targets));
-    }
-    needs.sort_unstable_by_key(|(_, targets)| targets.first().copied());
-    needs
 }
 
 fn contact_confidence(evidence: Option<ContactEvidence>) -> Confidence {
@@ -3764,7 +3901,7 @@ mod tests {
         add_producer(&mut obs, 1, BuildingKind::Foundry, Vec::new());
         add_producer(&mut obs, 2, BuildingKind::Fabricator, Vec::new());
         fill_core(&mut obs, 9);
-        obs.my_units[0].hp = 1;
+        add_valuable_repair_work(&mut obs, 70, TilePos::new(8, 10));
         let (profile, tuning) = prime();
 
         let proposal = derive(
@@ -3793,12 +3930,54 @@ mod tests {
     }
 
     #[test]
+    fn exact_active_worker_repair_does_not_buy_a_duplicate_tender() {
+        let mut obs = observation(2_000);
+        add_producer(&mut obs, 1, BuildingKind::Foundry, Vec::new());
+        add_producer(&mut obs, 2, BuildingKind::Fabricator, Vec::new());
+        fill_core(&mut obs, 9);
+        add_valuable_repair_work(&mut obs, 70, TilePos::new(8, 10));
+        let patient = UnitId(70);
+        let mut worker = unit(80, UnitKind::Harvester);
+        worker.idle = false;
+        worker.repairing = true;
+        obs.my_units.push(worker);
+        obs.my_repair_targets = vec![(UnitId(80), crate::ids::Target::Unit(patient))];
+        let (profile, tuning) = prime();
+        assert!(
+            derive_all(
+                &obs,
+                &StrategicIntelligence::new(),
+                &profile,
+                tuning,
+                StandingForceContext::new(&[], &[])
+            )
+            .iter()
+            .all(|proposal| proposal.reason() != StandingForceReason::WoundedSupport)
+        );
+
+        obs.my_units.last_mut().unwrap().tile = TilePos::new(22, 10);
+        obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(16, y)).collect();
+        assert!(
+            derive_all(
+                &obs,
+                &StrategicIntelligence::new(),
+                &profile,
+                tuning,
+                StandingForceContext::new(&[], &[])
+            )
+            .iter()
+            .any(|proposal| proposal.reason() == StandingForceReason::WoundedSupport),
+            "an unreachable repair order supplies no service to this front"
+        );
+    }
+
+    #[test]
     fn a_tender_stranded_in_another_ground_component_does_not_satisfy_reachable_damage() {
         let mut obs = observation(2_000);
         add_producer(&mut obs, 1, BuildingKind::Foundry, Vec::new());
         add_producer(&mut obs, 2, BuildingKind::Fabricator, Vec::new());
         fill_core(&mut obs, 9);
-        obs.my_units[0].hp = 1;
+        add_valuable_repair_work(&mut obs, 70, TilePos::new(8, 10));
         let mut stranded = unit(80, UnitKind::Tender);
         stranded.tile = TilePos::new(22, 10);
         obs.my_units.push(stranded);
@@ -3825,11 +4004,8 @@ mod tests {
         add_producer(&mut obs, 2, BuildingKind::Fabricator, Vec::new());
         add_producer(&mut obs, 20, BuildingKind::Fabricator, Vec::new());
         fill_core(&mut obs, 9);
-        obs.my_units[0].hp = 1;
-        let mut remote_wounded = unit(80, UnitKind::Sentinel);
-        remote_wounded.tile = TilePos::new(22, 10);
-        remote_wounded.hp = 1;
-        obs.my_units.push(remote_wounded);
+        add_valuable_repair_work(&mut obs, 70, TilePos::new(8, 10));
+        add_valuable_repair_work(&mut obs, 75, TilePos::new(22, 10));
         let mut local_tender = unit(81, UnitKind::Tender);
         local_tender.tile = TilePos::new(8, 10);
         obs.my_units.push(local_tender);
@@ -3848,6 +4024,36 @@ mod tests {
         assert_eq!(proposal.reason(), StandingForceReason::WoundedSupport);
         assert_eq!(proposal.key_kind(), UnitKind::Tender);
         assert_eq!(proposal.eligible_producers(), &[BuildingId(20)]);
+    }
+
+    fn add_valuable_repair_work(obs: &mut Observation, first_id: u32, tile: TilePos) {
+        for offset in 0..2 {
+            let mut patient = unit(first_id + offset, UnitKind::Avalanche);
+            patient.hp = 1;
+            patient.tile = tile.offset(offset as i32, 0);
+            obs.my_units.push(patient);
+        }
+    }
+
+    #[test]
+    fn a_small_wound_does_not_amortize_a_dedicated_tender() {
+        let mut obs = observation(2_000);
+        add_producer(&mut obs, 1, BuildingKind::Foundry, vec![]);
+        add_producer(&mut obs, 2, BuildingKind::Fabricator, vec![]);
+        fill_core(&mut obs, 9);
+        obs.my_units[0].hp = 1;
+        let (profile, tuning) = prime();
+        assert!(
+            derive_all(
+                &obs,
+                &StrategicIntelligence::new(),
+                &profile,
+                tuning,
+                StandingForceContext::new(&[], &[])
+            )
+            .iter()
+            .all(|proposal| proposal.reason() != StandingForceReason::WoundedSupport)
+        );
     }
 
     #[test]

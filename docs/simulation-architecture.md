@@ -38,13 +38,13 @@ Player-facing bot decision traces have the same one-way boundary. An opt-in
 coordinator while returning the same ordinary commands as `Brain::act`. The
 trace recorder is local to that call; traces are not controller memory,
 authoritative state, replay input, or replay metadata. Overseer and ticks on
-which no player-facing decision occurs produce no trace. Trace schema version 9
+which no player-facing decision occurs produce no trace. Trace schema version 10
 reports current scrap separately from a bounded forecast based only on completed
 income sources, together with current builder and producer capacity. Proposal
 and allocation evidence records the coordinator's actual inputs and verdicts,
 including economic action and defensive proposal identities, exact building
-claims, refit income losses, and three-way layout conflicts, rather than
-reconstructing decisions after the fact.
+claims, exact repair ownership, refit income losses, and arbitrary-size layout
+conflicts, rather than reconstructing decisions after the fact.
 
 ## State construction and trust boundary
 
@@ -361,9 +361,12 @@ emits ordinary `PlayerCommand` values, which the shell or runner records before
 the simulation sees them. A configured seat carries one strict `BotConfig` with
 a difficulty, stance, and personality seed. `seat_bots` passes that exact setup
 and one shared immutable scenario briefing to the fog-honest `Brain::scripted`
-controller. Resume rebuilds that briefing from the scenario embedded in the
-replay before fast-forwarding controller memory, so it adds no hidden save state
-or ambient input.
+controller. Player-facing decisions stop when the own seat resigns or has no
+remaining Foundry, even while teammates keep the match alive; remnant units
+continue their ordinary simulation programs without new bot commands. Resume
+rebuilds that briefing from the scenario embedded in the replay before
+fast-forwarding controller memory, so it adds no hidden save state or ambient
+input.
 
 Profile resolution turns the seed into six bounded preferences: air, siege,
 support, fortification, greed, and guile. Stance bounds their strategic posture;
@@ -413,10 +416,12 @@ promotion to a current assault, and the start of a team-relief pressure watch
 use those common boundaries. This lets every rung freeze the same world snapshot
 before its own reaction and commitment delays take effect; private controller
 cadence never grants an earlier strategic observation boundary. A team-relief
-credibility watch admitted at such a boundary may persist while its exact
-assignment remains available even if the opening-core gate closes later. It does
-not become a new relief operation until admission reopens, and the fighters
-explicitly held home by that watch continue to count toward the protected core.
+credibility watch samples current pressure at such a boundary. It prepares an
+exact route-capable group without starting or owning a deployment. Only a
+successful Support allocation launches that frozen group; an active relief
+advances once per decision even when fresh admission is closed. Useful current
+pressure and protected home strength determine membership, with a two-member
+tactical minimum and no personality eligibility or group-size cap.
 
 The player-facing controller distinguishes current sight from remembered
 evidence in `StrategicIntelligence`. Persistent planners retain phased air,
@@ -473,9 +478,9 @@ extension only from the capacity left after its minimum and any compatible
 expansion, defense, or standing-force purchase. Any malformed input or failed
 exact commit freezes residual spending for that decision and restores
 speculative planner state; the decision trace records the allocator result or
-coordinator failure. Otherwise, still-unmigrated fresh team, lift, and raid work
-runs against the true residual bank, and future producer reservations prevent it
-or `UtilityPolicy` from occupying an accepted lane.
+coordinator failure. Otherwise, still-unmigrated fresh lift and raid work runs
+against the true residual bank, and future producer reservations prevent it or
+`UtilityPolicy` from occupying an accepted lane.
 
 Within the residual utility pass, a fresh `CommitmentLedger` imports upstream
 committed scrap, reserved units, strategic queue appends, persistent saving, and
@@ -546,6 +551,13 @@ units, and rederives unconditional Standing proposals against the remaining paid
 ownership. This downgrade is one allocation preparation transition; no context
 derived from the failed revision reaches portfolio selection.
 
+Retained funding first preserves the preferred allocation split, then tries a
+deadline-compatible split when forecast income matures into current scrap.
+Maturation alone must not invalidate an executable retained schedule. Protected
+current purchases remain mandatory; if they make an immutable Lift schedule
+unfundable, only its unpaid production obligation is released into bounded
+return-home recovery, with surviving members still owned.
+
 Economy competes through exact worker, foundation, or self-refit alternatives.
 Worker value is finite harvest output or recovery of orphaned paid construction,
 net of reachable existing and queued workers. Technology and factories serve
@@ -590,15 +602,53 @@ enough core strength reapplies the same gate.
 
 The residual Foundry pass no longer originates player-facing ordinary combat,
 siege, anti-air, or Tender orders. Residual construction no longer originates a
-player-facing Turret, Bastion, Flak Turret, Scuttle Charge, Barricade, or Array;
-it retains Repair Bays and recovery. During the strangler migration residual
-production retains the existing bounded Scuttler roster. It uses only current
-scrap and producer lanes left after allocation, keeps queues shallow, and leaves
-reconnaissance and support admission for their owning domains. Bomber,
-ground-attack-air, and transport cohorts remain owned by persistent operations.
-Their outstanding work and fixed deadlines contribute economic capacity demand;
-they do not impose an unowned factory reserve. The profile-free Overseer retains
-its legacy production and construction order.
+player-facing Turret, Bastion, Flak Turret, Scuttle Charge, Barricade, Array, or
+Repair Bay; it retains recovery. Support allocation compares finite own repair
+work, exact worker assignments, Tender purchases, and marginal Repair Bay sites.
+Repair programs reserve current scrap through their next decision boundary,
+renew without reissuing unchanged orders, and stop before purchases when
+unfunded. All selected foundations share one complete layout certificate.
+Existing workers, paid Tenders, and local built or pending Bays consume the same
+finite patient workload before procurement is valued. Repair cost and patient
+replacement value are distinct. Current threats to specific own assets produce
+protective deployment requests; Support retains exact deployment actors, while
+ordinary Standing Force owns any missing screen or anti-air procurement. An
+out-of-position protector returns with an ordinary Move order, even while busy,
+and resumes protection inside the service radius without renewing its deadline.
+Building-patient Bay coverage uses both complete footprint rectangles, matching
+the simulation's aura when valuing new and overlapping service. Reconnaissance
+is a separate allocation domain: the controller reconciles retained questions
+before proposing new work, then compares exact live observers, paid queue
+occurrences, and dedicated purchases. Each accepted question retains its
+consumer, evidence, goal, and useful deadline independently. An unpaid purchase
+retains its exact accepted producer schedule and current/forecast funding; only
+a current-funded append becomes a command. Question-local loss cooldowns and
+quiet intervals permit valuable safe reconsideration without requiring new enemy
+sight. Reconnaissance no longer uses one global scout slot. A completed paid
+occurrence binds only a newly observed eligible scout at its exact producer
+exit; a lost occurrence cannot adopt another assignment's later newborn. A
+surviving observer that can no longer arrive before its fixed deadline remains
+owned for recall, not recorded as lost. Operational and question-driven scouts
+share exact `(producer, kind, occurrence)` exclusions: excluded items still
+occupy the FIFO lane but cannot supply another assignment. Recent objective
+sightings suppress immediate repeat purchases; remembered positive buildings are
+not uncleared authored starts. Existing paid observers cover overlapping point
+questions only when their route and deadline serve the entire footprint. This
+overlap credit never replaces contested sweeps. Full-footprint negative evidence
+and contested-region sweep completion remain separate from safe return. It no
+longer originates residual scout purchases. Scuttlers enter Standing Force
+allocation only through a viable current raid objective's exact missing tactical
+pair. Paid and serviceable live supply reduce that request; its preparation
+deadline is fixed, and target loss does not revoke paid queues. Raid preparation
+retains exact paid queue occurrences as allocation obligations until they bind
+newly observed members at their producer exits. Residual advancement excludes
+other owners while retaining the raid's own muster, and launches only against
+the procurement objective. A missing paid member releases preparation into
+bounded recovery without adopting a later birth. Bomber, ground-attack-air, and
+transport cohorts remain owned by persistent operations. Their outstanding work
+and fixed deadlines contribute economic capacity demand; they do not impose an
+unowned factory reserve. The profile-free Overseer retains its legacy production
+and construction order.
 
 On connected ground, the air planner admits a force package only when current
 sight, the spendable current bank after prior reserves, completed recurring
@@ -703,16 +753,14 @@ does the same. Recovery releases factory capital, sends routable survivors home
 once, has a finite completion bound, and then observes the normal operation
 cooldown.
 
-The separate utility scouting channel may fund its first dedicated flyer when a
-public-start route is currently disconnected, when no current unit can perform a
-contested-region sweep, or after a ground probe proves that reconnaissance must
-cross severed terrain. The first two demands are recomputed from current
-knowledge and eligibility; only an actual failed or unsafe ground probe is
-persistent. If a dispatched flyer dies, the channel releases its Airworks claim
-and capital and stays suspended until actionable current enemy sight first goes
-dark after the loss and later returns. Persistent sight, remembered ghosts, and
-cross-sight between opposing dedicated scouts cannot restart the replacement
-cycle.
+Question-driven reconnaissance may propose a dedicated flyer when the exact
+useful question lacks a safe, timely live or paid observer. Losing a dispatched
+observer releases only that question's unpaid capital and enters a 3,600-tick
+loss cooldown. After a 300-tick quiet interval, an unanswered and still-useful
+question may compete again through a newly validated safe approach without fresh
+enemy sight. Neither timer expiry nor unchanged loss evidence automatically buys
+a replacement; independent questions and operational scouts retain their own
+assignments.
 
 The fog-honest observation carries the same bounded, anonymous salvage-danger
 incidents that authoritative vision records for autonomous Harvest. The

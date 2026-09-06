@@ -34,6 +34,18 @@ pub(crate) enum DomainPayload {
     Defense(FreshDefenseProposal),
     /// Exact economic purchase.
     Economy(EconomicInvestment),
+    /// Exact finite repair work.
+    Support(crate::bot::utility::RepairAssignment),
+    /// A Tender for finite reachable repair work.
+    SupportProcurement(StandingForceProposal),
+    /// Exact Repair Bay site, builder, and capital.
+    SupportConstruction(EconomicInvestment),
+    /// Exact deployment to a currently pressured allied Foundry.
+    SupportRelief(crate::bot::team::TeamReliefOperation),
+    /// Exact fighter deployment to an exposed own asset.
+    SupportDeployment(crate::bot::utility::SupportDeployment),
+    /// Exact question and live observer or dedicated purchase.
+    Reconnaissance(crate::bot::utility::ReconProposal),
 }
 
 /// Exact domain payloads compared during cross-domain allocation.
@@ -41,6 +53,17 @@ pub(crate) type DomainInvestmentProposal = InvestmentProposal<DomainPayload>;
 
 /// Allocation output retaining the exact selected domain plans.
 pub(crate) type DomainAllocationResult = AllocationResult<DomainPayload>;
+
+pub(crate) fn reconnaissance_investment_proposal(
+    proposal: crate::bot::utility::ReconProposal,
+) -> DomainInvestmentProposal {
+    InvestmentProposal::fresh(
+        ProposalKey::Reconnaissance(proposal.key()),
+        proposal.case(),
+        proposal.claims(),
+        DomainPayload::Reconnaissance(proposal),
+    )
+}
 
 pub(crate) fn economic_investment_proposal(
     proposal: EconomicInvestment,
@@ -187,16 +210,40 @@ pub(crate) fn standing_force_investment_proposal(
             proposal.ready_before(),
             proposal.eligible_producers().to_vec(),
         );
-        ClaimBundle::new(0, Vec::new(), Vec::new(), Vec::new(), Vec::new(), vec![job])?
+        ClaimBundle::new(
+            0,
+            Vec::new(),
+            Vec::new(),
+            proposal
+                .raid
+                .as_ref()
+                .map_or_else(Vec::new, |raid| raid.newly_claimed.clone()),
+            Vec::new(),
+            vec![job; proposal.raid.as_ref().map_or(1, |raid| raid.missing)],
+        )?
     }
     .with_minimum_residual_scrap(proposal.minimum_residual_scrap());
-    Ok(InvestmentProposal::fresh(
-        ProposalKey::StandingForce(proposal.key()),
-        proposal.case(),
-        claims,
-        DomainPayload::StandingForce(proposal),
-    )
-    .with_personality_preference(personality_preference))
+    let claims = claims.with_paid_queue(
+        proposal
+            .raid
+            .as_ref()
+            .map_or_else(Vec::new, |raid| raid.new_paid_claims()),
+    );
+    let case = proposal.case();
+    let (key, payload) =
+        if proposal.reason() == crate::bot::standing_force::StandingForceReason::WoundedSupport {
+            (
+                ProposalKey::SupportProcurement(proposal.key()),
+                DomainPayload::SupportProcurement(proposal),
+            )
+        } else {
+            (
+                ProposalKey::StandingForce(proposal.key()),
+                DomainPayload::StandingForce(proposal),
+            )
+        };
+    Ok(InvestmentProposal::fresh(key, case, claims, payload)
+        .with_personality_preference(personality_preference))
 }
 
 /// Retains the standing-force domain's deterministic best-first alternatives.
@@ -335,6 +382,15 @@ pub(crate) fn connected_marginal_claims(
 fn connected_claim_bundle(
     claims: &ConnectedOffenseClaims,
 ) -> Result<ClaimBundle, ClaimBundleError> {
+    let paid = claims
+        .paid_providers()
+        .iter()
+        .map(|provider| super::PaidQueueClaim {
+            producer: provider.producer(),
+            kind: provider.kind(),
+            occurrence: provider.occurrence(),
+        })
+        .collect();
     ClaimBundle::new(
         0,
         Vec::new(),
@@ -354,6 +410,7 @@ fn connected_claim_bundle(
             })
             .collect(),
     )
+    .map(|claims| claims.with_paid_queue(paid))
 }
 
 fn proposal_site(proposal: &FreshFoundryProposal) -> crate::bot::resources::SiteFootprint {
@@ -433,9 +490,35 @@ pub(crate) struct AcceptedDomainPayloads {
     standing_force: Option<StandingForceProposal>,
     defense: Option<FreshDefenseProposal>,
     economy: Option<EconomicInvestment>,
+    support: Option<crate::bot::utility::RepairAssignment>,
+    support_procurement: Option<StandingForceProposal>,
+    support_construction: Option<EconomicInvestment>,
+    support_relief: Option<crate::bot::team::TeamReliefOperation>,
+    support_deployment: Option<crate::bot::utility::SupportDeployment>,
+    reconnaissance: Option<crate::bot::utility::ReconProposal>,
 }
 
 impl AcceptedDomainPayloads {
+    pub(crate) fn take_support_deployment(
+        &mut self,
+    ) -> Option<crate::bot::utility::SupportDeployment> {
+        self.support_deployment.take()
+    }
+    pub(crate) fn take_reconnaissance(&mut self) -> Option<crate::bot::utility::ReconProposal> {
+        self.reconnaissance.take()
+    }
+    pub(crate) fn take_support_relief(&mut self) -> Option<crate::bot::team::TeamReliefOperation> {
+        self.support_relief.take()
+    }
+    pub(crate) fn take_support_construction(&mut self) -> Option<EconomicInvestment> {
+        self.support_construction.take()
+    }
+    pub(crate) fn take_support_procurement(&mut self) -> Option<StandingForceProposal> {
+        self.support_procurement.take()
+    }
+    pub(crate) fn take_support(&mut self) -> Option<crate::bot::utility::RepairAssignment> {
+        self.support.take()
+    }
     pub(crate) fn take_economy(&mut self) -> Option<EconomicInvestment> {
         self.economy.take()
     }
@@ -483,6 +566,12 @@ impl DomainAllocationResult {
                 ProposalKey::FoundryExpansion(_)
                 | ProposalKey::StandingForce(_)
                 | ProposalKey::Defense(_)
+                | ProposalKey::Support(_)
+                | ProposalKey::SupportProcurement(_)
+                | ProposalKey::SupportConstruction(_)
+                | ProposalKey::Reconnaissance(_)
+                | ProposalKey::SupportDeployment(_)
+                | ProposalKey::SupportRelief(_)
                 | ProposalKey::Economy(_) => None,
             }
         })
@@ -497,6 +586,12 @@ impl DomainAllocationResult {
                 DomainPayload::Foundry(_)
                 | DomainPayload::StandingForce(_)
                 | DomainPayload::Defense(_)
+                | DomainPayload::Support(_)
+                | DomainPayload::SupportProcurement(_)
+                | DomainPayload::SupportConstruction(_)
+                | DomainPayload::Reconnaissance(_)
+                | DomainPayload::SupportDeployment(_)
+                | DomainPayload::SupportRelief(_)
                 | DomainPayload::Economy(_) => None,
             }
         })
@@ -541,6 +636,12 @@ impl DomainAllocationResult {
                 DomainPayload::Foundry(_)
                 | DomainPayload::StandingForce(_)
                 | DomainPayload::Defense(_)
+                | DomainPayload::Support(_)
+                | DomainPayload::SupportProcurement(_)
+                | DomainPayload::SupportConstruction(_)
+                | DomainPayload::Reconnaissance(_)
+                | DomainPayload::SupportDeployment(_)
+                | DomainPayload::SupportRelief(_)
                 | DomainPayload::Economy(_) => None,
             });
         assert!(
@@ -587,6 +688,36 @@ impl DomainAllocationResult {
                     debug_assert!(payloads.economy.is_none());
                     payloads.economy = Some(payload);
                 }
+                (ProposalKey::Support(_), DomainPayload::Support(payload)) => {
+                    debug_assert!(payloads.support.is_none());
+                    payloads.support = Some(payload);
+                }
+                (ProposalKey::Reconnaissance(_), DomainPayload::Reconnaissance(payload)) => {
+                    debug_assert!(payloads.reconnaissance.is_none());
+                    payloads.reconnaissance = Some(payload);
+                }
+                (ProposalKey::SupportRelief(_), DomainPayload::SupportRelief(payload)) => {
+                    debug_assert!(payloads.support_relief.is_none());
+                    payloads.support_relief = Some(payload);
+                }
+                (ProposalKey::SupportDeployment(_), DomainPayload::SupportDeployment(payload)) => {
+                    debug_assert!(payloads.support_deployment.is_none());
+                    payloads.support_deployment = Some(payload);
+                }
+                (
+                    ProposalKey::SupportProcurement(_),
+                    DomainPayload::SupportProcurement(payload),
+                ) => {
+                    debug_assert!(payloads.support_procurement.is_none());
+                    payloads.support_procurement = Some(payload);
+                }
+                (
+                    ProposalKey::SupportConstruction(_),
+                    DomainPayload::SupportConstruction(payload),
+                ) => {
+                    debug_assert!(payloads.support_construction.is_none());
+                    payloads.support_construction = Some(payload);
+                }
                 _ => panic!("an accepted allocation payload must match its proposal domain"),
             }
         }
@@ -620,6 +751,27 @@ fn validate_payload_key(proposal: &DomainInvestmentProposal) {
                 )
                 | (ProposalKey::Defense(_), DomainPayload::Defense(_))
                 | (ProposalKey::Economy(_), DomainPayload::Economy(_))
+                | (ProposalKey::Support(_), DomainPayload::Support(_))
+                | (
+                    ProposalKey::SupportDeployment(_),
+                    DomainPayload::SupportDeployment(_)
+                )
+                | (
+                    ProposalKey::Reconnaissance(_),
+                    DomainPayload::Reconnaissance(_)
+                )
+                | (
+                    ProposalKey::SupportRelief(_),
+                    DomainPayload::SupportRelief(_)
+                )
+                | (
+                    ProposalKey::SupportConstruction(_),
+                    DomainPayload::SupportConstruction(_)
+                )
+                | (
+                    ProposalKey::SupportProcurement(_),
+                    DomainPayload::SupportProcurement(_)
+                )
         ),
         "an allocation payload must match its proposal domain"
     );
@@ -757,6 +909,12 @@ mod tests {
             DomainPayload::Connected(_)
             | DomainPayload::Economy(_)
             | DomainPayload::StandingForce(_)
+            | DomainPayload::Support(_)
+            | DomainPayload::SupportProcurement(_)
+            | DomainPayload::SupportConstruction(_)
+            | DomainPayload::Reconnaissance(_)
+            | DomainPayload::SupportDeployment(_)
+            | DomainPayload::SupportRelief(_)
             | DomainPayload::Defense(_) => {
                 panic!("the Foundry adapter returned the wrong domain payload");
             }
@@ -856,6 +1014,12 @@ mod tests {
             DomainPayload::Foundry(_)
             | DomainPayload::Connected(_)
             | DomainPayload::Defense(_)
+            | DomainPayload::Support(_)
+            | DomainPayload::SupportProcurement(_)
+            | DomainPayload::SupportConstruction(_)
+            | DomainPayload::Reconnaissance(_)
+            | DomainPayload::SupportDeployment(_)
+            | DomainPayload::SupportRelief(_)
             | DomainPayload::Economy(_) => {
                 panic!("the standing-force adapter returned the wrong domain payload");
             }

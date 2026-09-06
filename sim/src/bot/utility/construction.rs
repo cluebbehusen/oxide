@@ -2592,7 +2592,10 @@ impl UtilityPolicy {
         // High-support identities establish one repair point once the first
         // tech rung stands. It is sustain for a developed army, not opening
         // infrastructure.
-        if dials.adaptive_composition && (dials.support_target >= 3 || obs.tick >= 6_000) {
+        if !player_facing
+            && dials.adaptive_composition
+            && (dials.support_target >= 3 || obs.tick >= 6_000)
+        {
             let have_fabricator = obs
                 .my_buildings
                 .iter()
@@ -2776,6 +2779,7 @@ impl UtilityPolicy {
             .my_buildings
             .iter()
             .filter(|b| b.built)
+            .filter(|b| !self.support_work.repairs.iter().any(|repair| repair.key.patient == crate::ids::Target::Building(b.id)))
             .filter(|b| !intents.iter().any(|intent| matches!(intent, Intent::Upgrade { building } if *building == b.id)))
             .filter(|b| self.economic_saving.as_ref().is_none_or(|saving|
                 !matches!(saving.key, EconomicInvestmentKey::Upgrade { building, .. } if building == b.id)))
@@ -5759,7 +5763,7 @@ mod tests {
     }
 
     #[test]
-    fn repair_bay_requires_completed_tech_and_is_not_promised_twice() {
+    fn residual_player_facing_repair_bays_require_allocation() {
         let mut dials = focused_dials();
         dials.adaptive_composition = true;
         dials.support_target = 3;
@@ -5775,10 +5779,11 @@ mod tests {
 
         let mut developed = unfinished;
         developed.my_buildings.last_mut().unwrap().built = true;
-        let anchor = assert_build_kind(
-            &construction_intents(&mut UtilityPolicy::new(), &dials, &developed),
-            BuildingKind::RepairBay,
+        assert!(
+            construction_intents(&mut UtilityPolicy::new(), &dials, &developed).is_empty(),
+            "completed technology does not authorize a residual repair purchase"
         );
+        let anchor = HOME.offset(4, 4);
 
         developed.my_units.push(harvester(
             2,
@@ -5787,7 +5792,7 @@ mod tests {
         ));
         assert!(
             construction_intents(&mut UtilityPolicy::new(), &dials, &developed).is_empty(),
-            "a deferred Repair Bay already satisfies the one-bay plan"
+            "residual construction must not duplicate an admitted Repair Bay"
         );
     }
 

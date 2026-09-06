@@ -49,7 +49,7 @@ fn demonstrated_ground_strength(unit: &UnitObs) -> u64 {
     u64::from(stats.max_hp) * damage_per_100_ticks
 }
 
-fn utility_scout_preference(unit: &UnitObs, contested: bool) -> Option<(u8, u32)> {
+pub(super) fn utility_scout_preference(unit: &UnitObs, contested: bool) -> Option<(u8, u32)> {
     match unit.kind {
         UnitKind::Kestrel | UnitKind::Gnat => Some((0, 0)),
         UnitKind::Harvester if !contested => Some((1, unit.carrying)),
