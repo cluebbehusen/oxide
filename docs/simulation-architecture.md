@@ -38,13 +38,69 @@ Player-facing bot decision traces have the same one-way boundary. An opt-in
 coordinator while returning the same ordinary commands as `Brain::act`. The
 trace recorder is local to that call; traces are not controller memory,
 authoritative state, replay input, or replay metadata. Overseer and ticks on
-which no player-facing decision occurs produce no trace. Trace schema version 10
+which no player-facing decision occurs produce no trace. Trace schema version 11
 reports current scrap separately from a bounded forecast based only on completed
 income sources, together with current builder and producer capacity. Proposal
 and allocation evidence records the coordinator's actual inputs and verdicts,
 including economic action and defensive proposal identities, exact building
 claims, exact repair ownership, refit income losses, and arbitrary-size layout
-conflicts, rather than reconstructing decisions after the fact.
+conflicts, rather than reconstructing decisions after the fact. Battlefield
+evidence, Executive mission ownership, bounded episode reports, decayed
+preferences, and effective allocation return are separate trace fields. Raw
+proposal consequence, urgency, confidence, and safety are not rewritten to
+express historical preferences.
+
+### Controller-local battlefield loop
+
+Player-facing maintenance advances tactical armies first. The decision then
+observes battlefield evidence and work outcomes once, including on the early
+economy-recovery path, before preparing new investment alternatives. Spatial
+contact bins distinguish physical and target domains. Movement history stores
+two actual observations and their ticks, never an extrapolated position. Radar
+contributes unresolved regions rather than identified units. Reachable local
+service is credited once when describing uncovered asset pressure.
+
+The immutable assessment feeds reconnaissance, protective support, Array
+coverage, and general ground-mission selection. Fresh deployments are finalized
+after allocation, against its exact reservations. Army responsibilities belong
+to the Executive's existing `ArmyId`; they do not create another unit lease in
+the allocator. Exact formation and reorganization validate the complete change
+before modifying either body. Staging splits retain coherent groups and home
+strength. Engaged or withdrawing bodies are not split. Ordinary movement handles
+recovery so tactical reacquisition cannot restart an abandoned chase; observed
+return explicitly reopens reserve reinforcement. Tactical emergency withdrawal
+has precedence over a mission directive. Lowering receipts expose actual
+acceptance and refusal boundaries independently of command counts.
+
+Pressure objectives bind the observed owner, kind, and complete footprint, plus
+a live id only when current sight supplied one. Remembered placeholders are not
+entity identities: reacquiring the same site preserves its mission and fixed
+deadline, while another remembered site cannot keep it alive. Objective anchors
+use footprint orientation independently of movement goals. Outcome watches
+resolve current identity at that exact site before measuring observed damage.
+
+Operation and work owners submit bounded episode reports to `experience`.
+Ground, air, transport, raid, relief, reconnaissance, repair, harvest, and
+construction reporting use observed progress and owner-only presence. Carried
+units remain present but unavailable. Foundation observation continues after the
+builder leaves; a delivery watch continues without ownership of its landed
+troops. Shared coordination credits prevent these components from teaching the
+same outcome repeatedly. Stronger assault evidence may replace preliminary
+delivery credit. Ambiguous attribution cannot earn broad doctrine credit.
+
+Contextual return and corroborated doctrine preferences decay toward neutral;
+they alter candidate ranking and effective allocation return without rewriting
+raw consequence, urgency, confidence, or safety. Retry records for dispatched
+harvest and construction attempts expire and require fresh legal preparation.
+Current footprint occupation invalidates a construction attempt without a route
+penalty; remembered buildings alone cannot establish that occupation. Work
+observation also indexes active builders' occupied tiles once per decision.
+Fresh blocking foundations cannot displace those workers from their current work
+tiles; movement and completion release this protection without changing ordinary
+terrain routing or the frozen Overseer policy. Contested-harvest quarantine
+retains its separate complete-sweep and safe-return requirements. These
+components are reconstructed by replaying the observed command prefix, not
+serialized into authoritative `State`.
 
 ## State construction and trust boundary
 
@@ -331,7 +387,10 @@ memory, computed once per team and cloned to later seats.
 The bot `Observation` copies both masks in canonical row-major order. Policies
 therefore distinguish current sight from remembered terrain without consulting
 authoritative state; seat orientation transforms both masks with the rest of the
-observed world.
+observed world. Observation schema 17 also exposes each own carried unit's
+identity, kind, health, and carrier separately from available units. This is
+presence evidence, not permission to assign or command a passenger. Allied and
+enemy manifests remain opaque.
 
 The maintained player-facing controller also receives a `PublicMapBriefing`
 derived from the final authored `Scenario`. It contains static terrain,
@@ -823,18 +882,18 @@ second utility ranking pass runs.
 
 Arrays enter the Defense proposal group through a separate player-facing
 sensor-site scorer because information coverage is not weapon coverage.
-Candidate sites extend up to the Array's radar radius from the starting Foundry,
-preserve ordinary placement, producer-egress, and active resource-access rules,
-and bind the exact route-capable builder proven through public static terrain
-plus observed dynamic danger. An Array requires positive usable coverage not
-already reserved by another proposal. The scorer first extends radar area not
-already supplied by an allied Array, then retains usable in-map coverage;
-off-map tiles and Peaks contribute nothing because no unit can occupy them.
-Current contacts, remembered contacts, and uncleared public starting priors
-break otherwise equivalent sites toward credible hostile approaches. Sensor
-cases remain bounded below an immediate survival defense regardless of coverage,
-and compact maps may use a partial radar disc. The profile-free Overseer retains
-its legacy first-valid placement scan.
+Candidate sites extend up to the Array's radar radius from relevant owned
+assets, preserve ordinary placement, producer-egress, and active resource-access
+rules, and bind the exact route-capable builder proven through public static
+terrain plus observed dynamic danger. An Array requires positive usable coverage
+not already reserved by another proposal. The scorer first extends radar area
+not already supplied by own, allied, or pending Arrays, then retains usable
+in-map coverage; off-map tiles and Peaks contribute nothing because no unit can
+occupy them. Current contacts, remembered contacts, and uncleared public
+starting priors break otherwise equivalent sites toward credible hostile
+approaches. Sensor cases remain bounded below an immediate survival defense
+regardless of coverage, and compact maps may use a partial radar disc. The
+profile-free Overseer retains its legacy first-valid placement scan.
 
 The player-facing budget counts each unique deferred construction claim until
 its site is paid and stops voluntary repair programs that could drain that

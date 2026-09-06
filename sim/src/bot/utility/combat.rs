@@ -1,8 +1,10 @@
 //! Air raids, scouting, and ground-army strategy.
 
 use super::*;
+mod missions;
 use crate::bot::intelligence::MAX_CONFIDENCE;
 use crate::bot::observation::BuildingObs;
+pub(in crate::bot) use missions::GroundMissionInputs;
 
 const DEMONSTRATED_FORCE_RESERVE_PERCENT: u64 = 15;
 const SCOUT_STANDOFF: i32 = 5;
@@ -59,7 +61,11 @@ pub(super) fn utility_scout_preference(unit: &UnitObs, contested: bool) -> Optio
     }
 }
 
-fn ground_weapon_reaches_footprint(unit: &UnitObs, anchor: TilePos, size: (i32, i32)) -> bool {
+pub(in crate::bot) fn ground_weapon_reaches_footprint(
+    unit: &UnitObs,
+    anchor: TilePos,
+    size: (i32, i32),
+) -> bool {
     let (unit_min_x, unit_max_x) = (unit.tile.x, unit.tile.x + 1);
     let (unit_min_y, unit_max_y) = (unit.tile.y, unit.tile.y + 1);
     let (building_min_x, building_max_x) = (anchor.x, anchor.x + size.0);
@@ -1041,6 +1047,10 @@ impl UtilityPolicy {
         intents: &mut Vec<Intent>,
     ) {
         let player_facing = mode.player_facing;
+        if player_facing && self.ground_inputs.is_some() {
+            self.mission_army(dials, obs, armies, home, mode, intents);
+            return;
+        }
         let opponent_force_risk = if player_facing {
             self.voluntary_attack_force_risk(dials, obs)
         } else {
@@ -1163,7 +1173,8 @@ impl UtilityPolicy {
                 // interrupting members mid-swing — auto-acquire handles
                 // the last few tiles better than micromanagement does.
                 if should_march(player_facing, army, threat)
-                    && (!player_facing || self.army_reaches(obs, &mut known_routes, army, threat))
+                    && (!player_facing
+                        || self.army_reaches(obs, &mut known_routes, army, threat, None))
                 {
                     intents.push(Intent::PushArmy {
                         army: army.id,
@@ -1283,7 +1294,7 @@ impl UtilityPolicy {
                 })
             })
             && should_march(player_facing, army, target)
-            && (!player_facing || self.army_reaches(obs, &mut known_routes, army, target))
+            && (!player_facing || self.army_reaches(obs, &mut known_routes, army, target, None))
         {
             intents.push(Intent::PushArmy {
                 army: army.id,
@@ -1307,6 +1318,7 @@ impl UtilityPolicy {
         routes: &mut Option<crate::bot::routing::RouteProjection<'a>>,
         army: &Army,
         target: TilePos,
+        public_map: Option<&'a PublicMapBriefing>,
     ) -> bool {
         let mut members: Vec<_> = obs
             .my_units
@@ -1317,8 +1329,18 @@ impl UtilityPolicy {
         let Some(goals) = self.ground_attack_goals(obs, target, members.len()) else {
             return false;
         };
-        let routes =
-            routes.get_or_insert_with(|| crate::bot::routing::RouteProjection::known_ground(obs));
+        let routes = routes.get_or_insert_with(|| {
+            public_map.map_or_else(
+                || crate::bot::routing::RouteProjection::known_ground(obs),
+                |map| {
+                    crate::bot::routing::RouteProjection::with_public_terrain(
+                        obs,
+                        Domain::Ground,
+                        map,
+                    )
+                },
+            )
+        });
         !members.is_empty()
             && members
                 .iter()
@@ -1767,6 +1789,603 @@ mod tests {
             building_contacts: None,
             public_map: None,
         }
+    }
+
+    fn mission_fixture() -> (Observation, Vec<Army>, UtilityPolicy, Dials) {
+        let mut obs = Observation {
+            tick: 1200,
+            map_width: 64,
+            map_height: 32,
+            visible: vec![true; 2048],
+            explored: vec![true; 2048],
+            ..Observation::default()
+        };
+        obs.my_buildings = vec![
+            own_foundry(1, TilePos::new(3, 3)),
+            own_foundry(2, TilePos::new(28, 3)),
+        ];
+        let mut armies = Vec::new();
+        for (id, tile) in [
+            (0, TilePos::new(8, 8)),
+            (1, TilePos::new(31, 8)),
+            (2, TilePos::new(12, 22)),
+        ] {
+            let members: Vec<_> = (0..4)
+                .map(|offset| {
+                    let unit = fighter(
+                        id * 4 + offset,
+                        tile.offset(offset as i32 % 2, offset as i32 / 2),
+                    );
+                    let member = unit.id;
+                    obs.my_units.push(unit);
+                    member
+                })
+                .collect();
+            armies.push(Army {
+                id: ArmyId(id),
+                members,
+                state: ArmyState::Staging,
+                staging: tile,
+                target: None,
+                focus: None,
+                progress: None,
+                issued: None,
+                bounces: 0,
+            });
+        }
+        for (id, tile) in [(100, TilePos::new(10, 3)), (101, TilePos::new(35, 3))] {
+            let mut enemy = fighter(id, tile);
+            enemy.player = PlayerId(1);
+            obs.enemy_units.push(enemy);
+        }
+        let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
+        let mut battlefield = crate::bot::battlefield::Battlefield::default();
+        battlefield.observe(&obs, &armies, tuning, None);
+        let policy = UtilityPolicy {
+            battlefield: std::sync::Arc::new(battlefield.assessment().clone()),
+            ground_inputs: Some(GroundMissionInputs {
+                missions: Vec::new(),
+                unavailable: Vec::new(),
+                enlisted: armies
+                    .iter()
+                    .flat_map(|army| army.members.iter().copied())
+                    .collect(),
+                tuning,
+                relief: None,
+            }),
+            ..UtilityPolicy::default()
+        };
+        let mut dials = Dials::full();
+        dials.army_size = 3;
+        dials.minimum_core_equivalents = 2;
+        (obs, armies, policy, dials)
+    }
+
+    #[test]
+    fn mission_draft_skips_recovering_veterans_before_exact_lowering() {
+        let (mut obs, _, mut policy, dials) = mission_fixture();
+        obs.enemy_units.clear();
+        let home = TilePos::new(3, 3);
+        let mut executive = crate::bot::executive::Executive::new();
+        executive.apply_with_reservations(
+            obs.me,
+            &obs,
+            &[Intent::FormArmy {
+                staging: TilePos::new(8, 8),
+                size: 4,
+            }],
+            &[],
+        );
+        let veterans = executive.armies()[0].members.clone();
+        for unit in &mut obs.my_units {
+            if veterans.contains(&unit.id) {
+                unit.hp = unit.kind.stats().max_hp / 4;
+            }
+        }
+        executive.maintain_player_facing(obs.me, &obs, home);
+        assert!(executive.armies().is_empty());
+        obs.tick += 1_200;
+        executive.maintain_player_facing(obs.me, &obs, home);
+        assert!(executive.enlisted().next().is_none());
+        let unavailable: Vec<_> = executive.muster_exclusions().collect();
+        assert_eq!(unavailable, veterans);
+        policy.battlefield = Default::default();
+        let inputs = policy.ground_inputs.as_mut().unwrap();
+        inputs.enlisted.clear();
+        inputs.unavailable = unavailable;
+        let mut intents = Vec::new();
+        policy.mission_army(&dials, &obs, &[], home, player_mode(None), &mut intents);
+        let members = intents
+            .iter()
+            .find_map(|intent| match intent {
+                Intent::FormArmyWith { members, .. } => Some(members.clone()),
+                _ => None,
+            })
+            .expect("healthy reserve draft");
+        assert!(members.iter().all(|id| !veterans.contains(id)));
+        executive.apply_with_reservations(obs.me, &obs, &intents, &[]);
+        assert_eq!(executive.armies()[0].members, members);
+        assert!(
+            veterans
+                .iter()
+                .all(|id| !executive.enlisted().any(|member| member == *id))
+        );
+    }
+
+    #[test]
+    fn missions_answer_two_fronts_without_redirecting_the_third_body() {
+        use crate::bot::executive::ArmyPurpose;
+        let (obs, armies, mut policy, dials) = mission_fixture();
+        let mut intents = Vec::new();
+        policy.mission_army(
+            &dials,
+            &obs,
+            &armies,
+            TilePos::new(3, 3),
+            player_mode(None),
+            &mut intents,
+        );
+        let defense: Vec<_> = intents
+            .iter()
+            .filter_map(|intent| {
+                if let Intent::AssignArmyMission {
+                    army,
+                    members,
+                    mission,
+                } = intent
+                {
+                    Some((*army, members.clone(), mission.purpose))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(defense.len(), 2, "{intents:?}");
+        assert_eq!(
+            defense[0],
+            (
+                ArmyId(0),
+                armies[0].members.clone(),
+                ArmyPurpose::Defend(BuildingId(1))
+            )
+        );
+        assert_eq!(
+            defense[1],
+            (
+                ArmyId(1),
+                armies[1].members.clone(),
+                ArmyPurpose::Defend(BuildingId(2))
+            )
+        );
+        assert!(
+            defense
+                .iter()
+                .all(|(_, members, _)| members.iter().all(|id| !armies[2].members.contains(id)))
+        );
+    }
+
+    #[test]
+    fn an_accepted_defender_is_credited_before_a_nearer_unassigned_body() {
+        use crate::bot::executive::{ArmyMission, ArmyPurpose};
+        let (obs, armies, mut policy, dials) = mission_fixture();
+        policy.ground_inputs.as_mut().unwrap().missions = vec![(
+            ArmyId(2),
+            ArmyMission {
+                purpose: ArmyPurpose::Defend(BuildingId(1)),
+                goal: TilePos::new(10, 3),
+                accepted_at: obs.tick - 24,
+                deadline: obs.tick + 1700,
+                score: 1024,
+            },
+        )];
+        let mut intents = Vec::new();
+        policy.mission_army(
+            &dials,
+            &obs,
+            &armies,
+            TilePos::new(3, 3),
+            player_mode(None),
+            &mut intents,
+        );
+        assert!(
+            !intents.iter().any(|intent| matches!(intent,
+                Intent::AssignArmyMission { mission, .. } | Intent::FormArmyWith { mission, .. }
+                    if mission.purpose == ArmyPurpose::Defend(BuildingId(1))
+            )),
+            "existing arriving coverage must not recruit a second body: {intents:?}"
+        );
+        assert!(intents.iter().any(|intent| matches!(intent,
+            Intent::AssignArmyMission { army: ArmyId(1), mission, .. }
+                if mission.purpose == ArmyPurpose::Defend(BuildingId(2))
+        )));
+    }
+
+    #[test]
+    fn an_unreachable_front_does_not_hide_a_reachable_lower_ranked_response() {
+        use crate::bot::executive::ArmyPurpose;
+        let (mut obs, mut armies, mut policy, dials) = mission_fixture();
+        let removed = armies.remove(1);
+        obs.my_units
+            .retain(|unit| !removed.members.contains(&unit.id));
+        obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(20, y)).collect();
+        let mut assessment = (*policy.battlefield).clone();
+        assessment.pressure.reverse();
+        policy.battlefield = std::sync::Arc::new(assessment);
+        let mut intents = Vec::new();
+        policy.mission_army(
+            &dials,
+            &obs,
+            &armies,
+            TilePos::new(3, 3),
+            player_mode(None),
+            &mut intents,
+        );
+        let responses: Vec<_> = intents
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::AssignArmyMission { mission, .. }
+                | Intent::FormArmyWith { mission, .. } => Some(mission.purpose),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            responses.contains(&ArmyPurpose::Defend(BuildingId(1))),
+            "{intents:?}"
+        );
+        assert!(
+            !responses.contains(&ArmyPurpose::Defend(BuildingId(2))),
+            "{intents:?}"
+        );
+    }
+
+    #[test]
+    fn mission_ground_response_ignores_air_only_pressure_and_respects_reaction() {
+        let (obs, armies, mut policy, dials) = mission_fixture();
+        let mut assessment = (*policy.battlefield).clone();
+        assessment.pressure[0].air = assessment.pressure[0].ground;
+        assessment.pressure[0].ground = 0;
+        assessment.pressure[1].evidence_at = obs.tick;
+        policy.battlefield = std::sync::Arc::new(assessment);
+        policy.ground_inputs.as_mut().unwrap().tuning.reaction_delay = 40;
+        let mut intents = Vec::new();
+        policy.mission_army(
+            &dials,
+            &obs,
+            &armies,
+            TilePos::new(3, 3),
+            player_mode(None),
+            &mut intents,
+        );
+        assert!(
+            intents
+                .iter()
+                .all(|intent| !matches!(intent, Intent::AssignArmyMission { .. })),
+            "{intents:?}"
+        );
+    }
+
+    #[test]
+    fn retained_defense_recalls_after_lost_contact_without_fresh_attention() {
+        use crate::bot::executive::{ArmyMission, ArmyPurpose};
+        let (mut obs, mut armies, mut policy, dials) = mission_fixture();
+        obs.enemy_units.clear();
+        let inputs = policy.ground_inputs.as_mut().unwrap();
+        inputs.missions.push((
+            ArmyId(0),
+            ArmyMission {
+                purpose: ArmyPurpose::Defend(BuildingId(1)),
+                goal: TilePos::new(3, 3),
+                accepted_at: 1190,
+                deadline: 1800,
+                score: 1000,
+            },
+        ));
+        inputs.tuning.attention_slots = 0;
+        policy.battlefield = std::sync::Arc::new(Default::default());
+        armies[0].state = ArmyState::Engaging;
+        let mut intents = Vec::new();
+        policy.mission_army(
+            &dials,
+            &obs,
+            &armies,
+            TilePos::new(3, 3),
+            PolicyMode {
+                admit_voluntary_macro: false,
+                ..player_mode(None)
+            },
+            &mut intents,
+        );
+        assert!(
+            matches!(
+                intents.as_slice(),
+                [Intent::AssignArmyMission {
+                    army: ArmyId(0),
+                    mission: ArmyMission {
+                        purpose: ArmyPurpose::Recover,
+                        ..
+                    },
+                    ..
+                }]
+            ),
+            "{intents:?}"
+        );
+    }
+
+    #[test]
+    fn returned_mission_reopens_reserve_without_fresh_attention() {
+        use crate::bot::executive::{ArmyMission, ArmyPurpose};
+        let (mut obs, armies, mut policy, dials) = mission_fixture();
+        obs.enemy_units.clear();
+        policy.battlefield = std::sync::Arc::new(Default::default());
+        let inputs = policy.ground_inputs.as_mut().unwrap();
+        inputs.tuning.attention_slots = 0;
+        inputs.missions.push((
+            armies[0].id,
+            ArmyMission {
+                purpose: ArmyPurpose::Recover,
+                goal: armies[0].staging,
+                accepted_at: 1000,
+                deadline: 1800,
+                score: 0,
+            },
+        ));
+        let mut intents = Vec::new();
+        policy.mission_army(
+            &dials,
+            &obs,
+            &armies,
+            TilePos::new(3, 3),
+            PolicyMode {
+                admit_voluntary_macro: false,
+                ..player_mode(None)
+            },
+            &mut intents,
+        );
+        assert!(
+            matches!(
+                intents.as_slice(),
+                [Intent::AssignArmyMission {
+                    army: ArmyId(0),
+                    mission: ArmyMission {
+                        purpose: ArmyPurpose::Reserve,
+                        ..
+                    },
+                    ..
+                }]
+            ),
+            "{intents:?}"
+        );
+    }
+
+    #[test]
+    fn pressure_survives_reobserving_its_remembered_building() {
+        use crate::bot::executive::{ArmyMission, ArmyPurpose};
+        let (mut obs, armies, mut policy, dials) = mission_fixture();
+        obs.enemy_units.clear();
+        let objective = defense(200, BuildingKind::Foundry, TilePos::new(40, 6));
+        obs.enemy_buildings = vec![objective.clone()];
+        policy.battlefield = std::sync::Arc::new(Default::default());
+        policy.ground_inputs.as_mut().unwrap().missions = vec![(
+            armies[0].id,
+            ArmyMission {
+                purpose: ArmyPurpose::Pressure(
+                    crate::bot::executive::ArmyObjective::from_building(&BuildingObs {
+                        id: BuildingId(u32::MAX),
+                        seen: false,
+                        ..objective.clone()
+                    }),
+                ),
+                goal: objective.anchor,
+                accepted_at: obs.tick - 240,
+                deadline: obs.tick + 1560,
+                score: 1000,
+            },
+        )];
+        let mut intents = Vec::new();
+        policy.mission_army(
+            &dials,
+            &obs,
+            &armies,
+            TilePos::new(3, 3),
+            PolicyMode {
+                admit_voluntary_macro: false,
+                ..player_mode(None)
+            },
+            &mut intents,
+        );
+        assert!(
+            intents.is_empty(),
+            "reobserving the objective must retain its mission: {intents:?}"
+        );
+
+        let committed = policy.ground_inputs.as_ref().unwrap().missions.clone();
+        obs.enemy_buildings[0].id = BuildingId(u32::MAX);
+        obs.enemy_buildings[0].seen = false;
+        policy.mission_army(
+            &dials,
+            &obs,
+            &armies,
+            TilePos::new(3, 3),
+            PolicyMode {
+                admit_voluntary_macro: false,
+                ..player_mode(None)
+            },
+            &mut intents,
+        );
+        assert!(intents.is_empty(), "the same remembered site remains valid");
+        assert_eq!(policy.ground_inputs.as_ref().unwrap().missions, committed);
+
+        obs.enemy_buildings[0].anchor.x += 4;
+        policy.mission_army(
+            &dials,
+            &obs,
+            &armies,
+            TilePos::new(3, 3),
+            PolicyMode {
+                admit_voluntary_macro: false,
+                ..player_mode(None)
+            },
+            &mut intents,
+        );
+        assert!(
+            matches!(
+                intents.as_slice(),
+                [Intent::AssignArmyMission {
+                    mission: ArmyMission {
+                        purpose: ArmyPurpose::Recover,
+                        ..
+                    },
+                    ..
+                }]
+            ),
+            "another ghost with the same placeholder id cannot retain this objective: {intents:?}"
+        );
+    }
+
+    #[test]
+    fn valid_pressure_reassignment_requires_hold_and_material_improvement() {
+        use crate::bot::executive::{ArmyMission, ArmyPurpose};
+        let (mut obs, mut armies, mut policy, dials) = mission_fixture();
+        obs.enemy_units.clear();
+        obs.enemy_buildings = vec![
+            defense(200, BuildingKind::Foundry, TilePos::new(40, 6)),
+            defense(201, BuildingKind::Foundry, TilePos::new(48, 6)),
+        ];
+        armies[0].members = obs.my_units.iter().map(|unit| unit.id).collect();
+        armies.truncate(1);
+        policy.battlefield = std::sync::Arc::new(Default::default());
+        let choose = |policy: &mut UtilityPolicy| {
+            let mut intents = Vec::new();
+            policy.mission_army(
+                &dials,
+                &obs,
+                &armies,
+                TilePos::new(3, 3),
+                player_mode(None),
+                &mut intents,
+            );
+            intents.into_iter().find_map(|intent| match intent {
+                Intent::AssignArmyMission { mission, .. }
+                    if matches!(mission.purpose, ArmyPurpose::Pressure(target) if target.id == Some(BuildingId(200))) =>
+                {
+                    Some(mission)
+                }
+                _ => None,
+            })
+        };
+        let score = choose(&mut policy).expect("a useful fresh objective").score;
+        for (age, prior_score, redirect) in [
+            (299, 0, false),
+            (300, score, false),
+            (300, score * 4 / 5, true),
+        ] {
+            let mut trial = policy.clone();
+            trial.ground_inputs.as_mut().unwrap().missions = vec![(
+                armies[0].id,
+                ArmyMission {
+                    purpose: ArmyPurpose::Pressure(
+                        crate::bot::executive::ArmyObjective::from_building(
+                            &obs.enemy_buildings[1],
+                        ),
+                    ),
+                    goal: TilePos::new(48, 6),
+                    accepted_at: obs.tick - age,
+                    deadline: obs.tick + 1000,
+                    score: prior_score,
+                },
+            )];
+            assert_eq!(
+                choose(&mut trial).is_some(),
+                redirect,
+                "age={age} score={prior_score}"
+            );
+        }
+    }
+
+    #[test]
+    fn corroborated_assault_experience_changes_the_next_unpaid_objective_and_decays() {
+        use crate::bot::executive::ArmyPurpose;
+        use crate::bot::experience::{
+            Doctrine, EpisodeId, EpisodeOwner, EpisodeReport, Experience, ExperienceKey, Outcome,
+            OutcomeReason,
+        };
+        let (mut obs, mut armies, mut policy, dials) = mission_fixture();
+        obs.enemy_units.clear();
+        obs.enemy_buildings = vec![
+            defense(200, BuildingKind::Foundry, TilePos::new(40, 6)),
+            defense(201, BuildingKind::Foundry, TilePos::new(42, 6)),
+        ];
+        armies[0].members = obs.my_units.iter().map(|unit| unit.id).collect();
+        armies.truncate(1);
+        policy.battlefield = std::sync::Arc::new(Default::default());
+        let choice = |policy: &mut UtilityPolicy, obs: &Observation| {
+            let mut intents = Vec::new();
+            policy.mission_army(
+                &dials,
+                obs,
+                &armies,
+                TilePos::new(3, 3),
+                player_mode(None),
+                &mut intents,
+            );
+            intents.into_iter().find_map(|intent| {
+                if let Intent::AssignArmyMission { mission, .. } = intent {
+                    Some(mission.purpose)
+                } else {
+                    None
+                }
+            })
+        };
+        assert_eq!(
+            choice(&mut policy, &obs),
+            Some(ArmyPurpose::Pressure(
+                crate::bot::executive::ArmyObjective::from_building(&obs.enemy_buildings[0])
+            ))
+        );
+        let mut experience = Experience::default();
+        experience.observe(&obs, 6000);
+        for serial in [1, 2] {
+            let id = EpisodeId {
+                owner: EpisodeOwner::Ground,
+                serial,
+            };
+            experience.report(EpisodeReport {
+                id,
+                credit: id,
+                context: ExperienceKey {
+                    doctrine: Doctrine::Siege,
+                    x: 40,
+                    y: 6,
+                    subject: 200,
+                },
+                started_at: 0,
+                finished_at: obs.tick,
+                participants: vec![UnitId(100 + serial as u32)],
+                phase: 2,
+                outcome: Outcome::Ineffective,
+                reason: OutcomeReason::ObservedCounter,
+                observed_progress: 0,
+                own_lost_value: 100,
+                confidence: 1000,
+                doctrine_eligible: true,
+            });
+        }
+        policy.experience = std::sync::Arc::new(experience.clone());
+        assert_eq!(
+            choice(&mut policy, &obs),
+            Some(ArmyPurpose::Pressure(
+                crate::bot::executive::ArmyObjective::from_building(&obs.enemy_buildings[1])
+            ))
+        );
+        obs.tick += 6000;
+        experience.observe(&obs, 6000);
+        policy.experience = std::sync::Arc::new(experience);
+        assert_eq!(
+            choice(&mut policy, &obs),
+            Some(ArmyPurpose::Pressure(
+                crate::bot::executive::ArmyObjective::from_building(&obs.enemy_buildings[0])
+            ))
+        );
     }
 
     #[test]

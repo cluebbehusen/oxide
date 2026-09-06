@@ -207,6 +207,167 @@ impl Executive {
                         building: *building,
                     },
                 }),
+                Intent::FormArmyWith {
+                    army,
+                    members,
+                    staging,
+                    mission,
+                    minimum,
+                } => {
+                    let receipt = self.mission_decisions.len();
+                    self.mission_decisions.push(MissionDecision {
+                        army: army.map(|id| id.0),
+                        members: members.clone(),
+                        mission: mission.clone(),
+                        disposition: MissionDisposition::InvalidReorganization,
+                    });
+                    let reserve =
+                        matches!(mission.purpose, ArmyPurpose::Reserve | ArmyPurpose::Recover);
+                    if mission.deadline <= obs.tick
+                        || mission.accepted_at > obs.tick
+                        || (!reserve && members.len() < *minimum)
+                    {
+                        self.mission_decisions[receipt].disposition =
+                            if mission.deadline <= obs.tick || mission.accepted_at > obs.tick {
+                                MissionDisposition::InvalidDeadline
+                            } else {
+                                MissionDisposition::InvalidMembership
+                            };
+                        continue;
+                    }
+                    let mut unavailable = implicit_reserved.clone();
+                    unavailable.extend_from_slice(&claimed);
+                    if let Some(id) =
+                        self.form_exact_army(obs, *army, members, *staging, *minimum, &unavailable)
+                    {
+                        self.mission_decisions[receipt].army = Some(id.0);
+                        self.mission_decisions[receipt].disposition = MissionDisposition::Accepted;
+                        claimed.extend(members.iter().copied());
+                        self.missions.insert(id, mission.clone());
+                        self.watch_ground_mission(obs, id, mission);
+                        if reserve {
+                            out.push(PlayerCommand {
+                                player: me,
+                                command: Command::AttackMove {
+                                    units: members.clone(),
+                                    goal: *staging,
+                                    queue: false,
+                                },
+                            });
+                        } else {
+                            let body = self
+                                .armies
+                                .iter_mut()
+                                .find(|body| body.id == id)
+                                .expect("accepted exact body");
+                            body.target = Some(mission.goal);
+                            body.state = ArmyState::Pushing;
+                            body.issued = Some((
+                                obs.tick,
+                                vanguard_centroid(&body.members, obs, centroid_frame),
+                            ));
+                            march(me, obs, body, mission.goal, &mut out);
+                        }
+                    }
+                }
+                Intent::AssignArmyMission {
+                    army,
+                    members,
+                    mission,
+                } => {
+                    let receipt = self.mission_decisions.len();
+                    self.mission_decisions.push(MissionDecision {
+                        army: Some(army.0),
+                        members: members.clone(),
+                        mission: mission.clone(),
+                        disposition: MissionDisposition::MissingArmy,
+                    });
+                    let Some(body) = self.armies.iter_mut().find(|body| body.id == *army) else {
+                        continue;
+                    };
+                    let rejection = if body.state == ArmyState::Withdrawing {
+                        Some(MissionDisposition::EmergencyWithdrawal)
+                    } else if members.is_empty()
+                        || members.windows(2).any(|pair| pair[0] >= pair[1])
+                        || !body
+                            .members
+                            .iter()
+                            .filter(|id| !reserved.contains(id))
+                            .eq(members.iter())
+                    {
+                        Some(MissionDisposition::InvalidMembership)
+                    } else if members
+                        .iter()
+                        .any(|id| reserved.contains(id) || claimed.contains(id))
+                    {
+                        Some(MissionDisposition::OwnedElsewhere)
+                    } else if mission.deadline <= obs.tick || mission.accepted_at > obs.tick {
+                        Some(MissionDisposition::InvalidDeadline)
+                    } else if self.missions.get(army) == Some(mission) {
+                        Some(MissionDisposition::Unchanged)
+                    } else {
+                        None
+                    };
+                    if let Some(rejection) = rejection {
+                        self.mission_decisions[receipt].disposition = rejection;
+                        continue;
+                    }
+                    let recover =
+                        matches!(mission.purpose, ArmyPurpose::Recover | ArmyPurpose::Reserve);
+                    let already_returned = mission.purpose == ArmyPurpose::Reserve
+                        && body.state == ArmyState::Staging
+                        && vanguard_centroid(&body.members, obs, centroid_frame)
+                            .chebyshev(mission.goal)
+                            <= 2;
+                    if body.state == ArmyState::Engaging && !recover {
+                        self.mission_decisions[receipt].disposition = MissionDisposition::Engaged;
+                        if matches!(mission.purpose, ArmyPurpose::Defend(_))
+                            && body.members == *members
+                        {
+                            self.mission_decisions[receipt].disposition =
+                                MissionDisposition::Accepted;
+                            self.missions.insert(*army, mission.clone());
+                            claimed.extend(body.members.iter().copied());
+                            self.watch_ground_mission(obs, *army, mission);
+                        }
+                        continue;
+                    }
+                    self.mission_decisions[receipt].disposition = MissionDisposition::Accepted;
+                    self.missions.insert(*army, mission.clone());
+                    body.members.clone_from(members);
+                    body.target = if recover { None } else { Some(mission.goal) };
+                    body.focus = None;
+                    body.progress = None;
+                    body.issued = None;
+                    body.bounces = 0;
+                    if recover {
+                        body.staging = mission.goal;
+                        body.state = ArmyState::Staging;
+                        body.issued = Some((
+                            obs.tick,
+                            vanguard_centroid(&body.members, obs, centroid_frame),
+                        ));
+                        if !already_returned {
+                            out.push(PlayerCommand {
+                                player: me,
+                                command: Command::Move {
+                                    units: body.members.clone(),
+                                    goal: mission.goal,
+                                    queue: false,
+                                },
+                            });
+                        }
+                    } else {
+                        body.state = ArmyState::Pushing;
+                        body.issued = Some((
+                            obs.tick,
+                            vanguard_centroid(&body.members, obs, centroid_frame),
+                        ));
+                        march(me, obs, body, mission.goal, &mut out);
+                    }
+                    claimed.extend(body.members.iter().copied());
+                    self.watch_ground_mission(obs, *army, mission);
+                }
                 Intent::FormArmy { staging, size } => {
                     // `size` is a target strength, not an increment: an
                     // army already staging here only drafts the shortfall.
@@ -843,7 +1004,7 @@ fn canonical_owned_units(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::observation::OBSERVATION_VERSION;
+    use crate::bot::observation::{BuildingObs, OBSERVATION_VERSION};
     use crate::state::Faction;
 
     fn fighter(id: u32, tile: TilePos, idle: bool) -> UnitObs {
@@ -896,6 +1057,7 @@ mod tests {
             map_width: 40,
             map_height: 24,
             my_units: units,
+            my_carried_units: Vec::new(),
             my_buildings: Vec::new(),
             my_queues: Vec::new(),
             my_queue_progress: Vec::new(),
@@ -934,6 +1096,369 @@ mod tests {
             ..Executive::default()
         };
         (observation, executive)
+    }
+
+    #[test]
+    fn pressure_objective_identity_preserves_fog_but_refuses_observed_replacements() {
+        let current = BuildingObs {
+            id: BuildingId(900),
+            player: PlayerId(1),
+            kind: BuildingKind::Foundry,
+            anchor: TilePos::new(25, 9),
+            hp: 1000,
+            built: true,
+            seen: true,
+            tier: 0,
+        };
+        let target = ArmyObjective::from_building(&current);
+        let ghost = BuildingObs {
+            id: BuildingId(u32::MAX),
+            seen: false,
+            ..current.clone()
+        };
+        assert!(target.matches(&current));
+        assert!(target.matches(&ghost));
+        assert!(ArmyObjective::from_building(&ghost).matches(&current));
+        for replacement in [
+            BuildingObs {
+                id: BuildingId(901),
+                ..current.clone()
+            },
+            BuildingObs {
+                player: PlayerId(2),
+                ..current.clone()
+            },
+            BuildingObs {
+                kind: BuildingKind::Array,
+                ..current.clone()
+            },
+            BuildingObs {
+                anchor: current.anchor.offset(4, 0),
+                ..current.clone()
+            },
+        ] {
+            assert!(!target.matches(&replacement), "{replacement:?}");
+        }
+    }
+
+    #[test]
+    fn remembered_ground_objective_reacquisition_is_not_completion() {
+        use crate::bot::experience::Outcome;
+        let (mut obs, mut executive) = target_holding_position();
+        let mut building = BuildingObs {
+            id: BuildingId(u32::MAX),
+            player: PlayerId(1),
+            kind: BuildingKind::Foundry,
+            anchor: TilePos::new(25, 9),
+            hp: 1000,
+            built: true,
+            seen: false,
+            tier: 0,
+        };
+        let mission = ArmyMission {
+            purpose: ArmyPurpose::Pressure(ArmyObjective::from_building(&building)),
+            goal: building.anchor,
+            accepted_at: obs.tick,
+            deadline: obs.tick + 1800,
+            score: 100,
+        };
+        obs.enemy_buildings.push(building.clone());
+        executive.missions.insert(ArmyId(7), mission.clone());
+        executive.watch_ground_mission(&obs, ArmyId(7), &mission);
+        building.id = BuildingId(900);
+        building.seen = true;
+        obs.enemy_buildings[0] = building.clone();
+        obs.tick += 12;
+        executive.observe_ground_outcomes(&obs);
+        assert!(executive.ground_outcomes[&ArmyId(7)].pending.is_empty());
+        obs.enemy_buildings[0].hp -= 100;
+        executive.observe_ground_outcomes(&obs);
+        obs.enemy_buildings.clear();
+        obs.visible[9 * 40 + 25] = false;
+        executive.observe_ground_outcomes(&obs);
+        assert!(executive.ground_outcomes[&ArmyId(7)].pending.is_empty());
+        obs.visible[9 * 40 + 25] = true;
+        executive.observe_ground_outcomes(&obs);
+        let report = &executive.ground_outcomes[&ArmyId(7)].pending[0];
+        assert_eq!(report.outcome, Outcome::Complete);
+        assert_eq!(report.observed_progress, 100);
+        assert_eq!(executive.missions[&ArmyId(7)], mission);
+    }
+
+    #[test]
+    fn ghost_ground_credit_matches_the_site_not_the_placeholder_id() {
+        for (offset, current, shared) in [(0, false, true), (0, true, true), (4, false, false)] {
+            let (obs, mut executive) = target_holding_position();
+            let mut second = executive.armies[0].clone();
+            second.id = ArmyId(8);
+            second.members = (100..=104).map(UnitId).collect();
+            executive.armies.push(second);
+            let target = ArmyObjective {
+                id: None,
+                player: PlayerId(1),
+                kind: BuildingKind::Foundry,
+                anchor: TilePos::new(25, 9),
+            };
+            for (id, objective) in [
+                (ArmyId(7), target),
+                (
+                    ArmyId(8),
+                    ArmyObjective {
+                        id: current.then_some(BuildingId(900)),
+                        anchor: target.anchor.offset(offset, 0),
+                        ..target
+                    },
+                ),
+            ] {
+                let mission = ArmyMission {
+                    purpose: ArmyPurpose::Pressure(objective),
+                    goal: objective.anchor,
+                    accepted_at: obs.tick,
+                    deadline: obs.tick + 1800,
+                    score: 100,
+                };
+                executive.missions.insert(id, mission.clone());
+                executive.watch_ground_mission(&obs, id, &mission);
+            }
+            assert_eq!(
+                executive.ground_outcomes[&ArmyId(7)].episode_id()
+                    == executive.ground_outcomes[&ArmyId(8)].episode_id(),
+                shared,
+                "offset={offset} current={current}",
+            );
+        }
+    }
+
+    #[test]
+    fn an_expired_ground_mission_reports_its_fixed_deadline_once() {
+        use crate::bot::experience::{Outcome, OutcomeReason};
+        let (mut obs, mut executive) = target_holding_position();
+        let mission = ArmyMission {
+            purpose: ArmyPurpose::Pressure(ArmyObjective {
+                id: Some(BuildingId(900)),
+                player: PlayerId(1),
+                kind: BuildingKind::Foundry,
+                anchor: TilePos::new(25, 9),
+            }),
+            goal: TilePos::new(25, 9),
+            accepted_at: obs.tick,
+            deadline: obs.tick + 1800,
+            score: 100,
+        };
+        executive.missions.insert(ArmyId(7), mission.clone());
+        executive.watch_ground_mission(&obs, ArmyId(7), &mission);
+        obs.tick = mission.deadline;
+        executive.observe_ground_outcomes(&obs);
+        let report = &executive.ground_outcomes[&ArmyId(7)].pending[0];
+        assert_eq!(report.outcome, Outcome::Inconclusive);
+        assert_eq!(report.reason, OutcomeReason::Deadline);
+        assert!(!report.doctrine_eligible);
+        executive.observe_ground_outcomes(&obs);
+        assert_eq!(executive.ground_outcomes[&ArmyId(7)].pending.len(), 1);
+    }
+
+    #[test]
+    fn concurrent_ground_bodies_share_one_physical_objective_credit() {
+        use crate::bot::experience::{Doctrine, Experience};
+        let (mut obs, mut executive) = target_holding_position();
+        let mut second = executive.armies[0].clone();
+        second.id = ArmyId(8);
+        second.members = (100..=104).map(UnitId).collect();
+        executive.armies.push(second);
+        let mission = ArmyMission {
+            purpose: ArmyPurpose::Pressure(ArmyObjective {
+                id: Some(BuildingId(900)),
+                player: PlayerId(1),
+                kind: BuildingKind::Foundry,
+                anchor: TilePos::new(25, 9),
+            }),
+            goal: TilePos::new(25, 9),
+            accepted_at: obs.tick,
+            deadline: obs.tick + 1800,
+            score: 100,
+        };
+        for id in [ArmyId(7), ArmyId(8)] {
+            executive.missions.insert(id, mission.clone());
+            executive.watch_ground_mission(&obs, id, &mission);
+        }
+        obs.tick += 12;
+        obs.my_units.clear();
+        executive.observe_ground_outcomes(&obs);
+        let reports: Vec<_> = executive
+            .ground_outcomes
+            .values()
+            .flat_map(|journal| journal.pending.iter().cloned())
+            .collect();
+        assert_eq!(reports.len(), 2);
+        assert_ne!(reports[0].id, reports[1].id);
+        assert_eq!(reports[0].credit, reports[1].credit);
+        let mut experience = Experience::default();
+        experience.observe(&obs, 6000);
+        for report in reports {
+            experience.report(report);
+        }
+        assert_eq!(
+            experience.doctrine_score(Doctrine::Siege),
+            0,
+            "two bodies in one assault are not two corroborating episodes"
+        );
+    }
+
+    #[test]
+    fn defense_completion_requires_engagement_safe_asset_and_current_region() {
+        use crate::bot::experience::Outcome;
+        for (engaged, visible, threatened) in [
+            (true, true, false),
+            (false, true, false),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            let (mut obs, mut executive) = target_holding_position();
+            obs.my_buildings.push(BuildingObs {
+                id: BuildingId(900),
+                player: obs.me,
+                kind: BuildingKind::Foundry,
+                anchor: TilePos::new(20, 8),
+                hp: 100,
+                built: true,
+                seen: true,
+                tier: 0,
+            });
+            let mut mission = ArmyMission {
+                purpose: ArmyPurpose::Defend(BuildingId(900)),
+                goal: TilePos::new(19, 9),
+                accepted_at: obs.tick,
+                deadline: obs.tick + 1800,
+                score: 100,
+            };
+            executive.missions.insert(ArmyId(7), mission.clone());
+            executive.watch_ground_mission(&obs, ArmyId(7), &mission);
+            if engaged {
+                executive.armies[0].state = ArmyState::Engaging;
+                executive.observe_ground_outcomes(&obs);
+            }
+            obs.visible.fill(visible);
+            if threatened {
+                let mut enemy = fighter(900, mission.goal, false);
+                enemy.player = PlayerId(1);
+                obs.enemy_units.push(enemy);
+            }
+            mission.purpose = ArmyPurpose::Recover;
+            executive.watch_ground_mission(&obs, ArmyId(7), &mission);
+            let report = &executive.ground_outcomes[&ArmyId(7)].pending[0];
+            let completed = engaged && visible && !threatened;
+            assert_eq!(
+                report.outcome,
+                if completed {
+                    Outcome::Complete
+                } else {
+                    Outcome::Invalidated
+                }
+            );
+            assert_eq!(report.doctrine_eligible, completed);
+        }
+    }
+
+    #[test]
+    fn ground_outcomes_distinguish_precontact_abort_from_engagement_and_loss() {
+        use crate::bot::experience::{Outcome, OutcomeReason};
+        for (engaged, lost, expected) in [
+            (false, false, Outcome::Aborted),
+            (true, false, Outcome::Ineffective),
+            (false, true, Outcome::Ineffective),
+        ] {
+            let (mut obs, mut executive) = target_holding_position();
+            let mission = ArmyMission {
+                purpose: ArmyPurpose::Pressure(ArmyObjective {
+                    id: Some(BuildingId(900)),
+                    player: PlayerId(1),
+                    kind: BuildingKind::Foundry,
+                    anchor: TilePos::new(25, 9),
+                }),
+                goal: TilePos::new(25, 9),
+                accepted_at: obs.tick,
+                deadline: obs.tick + 1800,
+                score: 100,
+            };
+            executive.missions.insert(ArmyId(7), mission.clone());
+            executive.watch_ground_mission(&obs, ArmyId(7), &mission);
+            if engaged {
+                executive.armies[0].state = ArmyState::Engaging;
+                executive.observe_ground_outcomes(&obs);
+            }
+            if lost {
+                obs.my_units.retain(|unit| unit.id != UnitId(1));
+            }
+            obs.tick += 12;
+            executive.armies[0].state = ArmyState::Withdrawing;
+            executive.observe_ground_outcomes(&obs);
+            let report = &executive.ground_outcomes[&ArmyId(7)].pending[0];
+            assert_eq!(report.outcome, expected);
+            assert_eq!(report.reason, OutcomeReason::UnsafeApproach);
+            assert_eq!(report.doctrine_eligible, engaged || lost);
+            assert_eq!(report.phase, ArmyState::Withdrawing as u8);
+            assert_eq!(report.own_lost_value > 0, lost);
+            executive.observe_ground_outcomes(&obs);
+            assert_eq!(executive.ground_outcomes[&ArmyId(7)].pending.len(), 1);
+        }
+    }
+
+    #[test]
+    fn returned_mission_can_accept_exact_reinforcements_without_reissuing_return() {
+        let (mut obs, mut executive) = target_holding_position();
+        let goal = obs.my_units[0].tile;
+        let id = ArmyId(7);
+        executive.armies[0].target = None;
+        executive.armies[0].staging = goal;
+        for unit in &mut obs.my_units {
+            unit.tile = goal;
+        }
+        let mut mission = ArmyMission {
+            purpose: ArmyPurpose::Recover,
+            goal,
+            accepted_at: 0,
+            deadline: obs.tick + 1800,
+            score: 0,
+        };
+        executive.missions.insert(id, mission.clone());
+        mission.purpose = ArmyPurpose::Reserve;
+        let commands = executive.apply_with_reservations(
+            PlayerId(0),
+            &obs,
+            &[Intent::AssignArmyMission {
+                army: id,
+                members: (1..=6).map(UnitId).collect(),
+                mission: mission.clone(),
+            }],
+            &[],
+        );
+        assert!(commands.is_empty(), "{commands:?}");
+        let commands = executive.apply_with_reservations(
+            PlayerId(0),
+            &obs,
+            &[Intent::FormArmyWith {
+                army: Some(id),
+                members: vec![UnitId(100), UnitId(101)],
+                staging: goal,
+                mission,
+                minimum: 2,
+            }],
+            &[],
+        );
+        assert_eq!(commands.len(), 1);
+        assert_eq!(
+            executive.armies[0].members,
+            vec![
+                UnitId(1),
+                UnitId(2),
+                UnitId(3),
+                UnitId(4),
+                UnitId(5),
+                UnitId(6),
+                UnitId(100),
+                UnitId(101)
+            ]
+        );
     }
 
     #[test]
@@ -990,6 +1515,7 @@ mod tests {
             map_width: 40,
             map_height: 24,
             my_units: units,
+            my_carried_units: Vec::new(),
             my_buildings: Vec::new(),
             my_queues: Vec::new(),
             my_queue_progress: Vec::new(),

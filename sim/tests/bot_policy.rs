@@ -92,6 +92,7 @@ fn construction_observation(scrap: u32) -> Observation {
         map_width,
         map_height,
         my_units: units,
+        my_carried_units: Vec::new(),
         my_buildings: Vec::new(),
         my_queues: Vec::new(),
         my_queue_progress: Vec::new(),

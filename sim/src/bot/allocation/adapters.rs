@@ -51,6 +51,80 @@ pub(crate) enum DomainPayload {
 /// Exact domain payloads compared during cross-domain allocation.
 pub(crate) type DomainInvestmentProposal = InvestmentProposal<DomainPayload>;
 
+pub(super) fn experience_context(
+    key: ProposalKey,
+) -> Option<crate::bot::experience::ExperienceKey> {
+    use super::StandingForceServiceKey;
+    use crate::bot::experience::{Doctrine, ExperienceKey};
+    use crate::stats::{Domain, Role};
+    let (doctrine, anchor, subject) = match key {
+        ProposalKey::FoundryExpansion(key) => (
+            Doctrine::Expansion,
+            key.anchor,
+            BuildingKind::Foundry as u64,
+        ),
+        ProposalKey::ConnectedOffenseMinimum(key) => {
+            (Doctrine::Air, key.anchor, u64::from(key.objective.0))
+        }
+        ProposalKey::Defense(key) => (Doctrine::Fortification, key.anchor, key.kind as u64),
+        ProposalKey::StandingForce(key) | ProposalKey::SupportProcurement(key) => {
+            let doctrine = if matches!(
+                key.kind.role(),
+                Role::Lancer | Role::Bombard | Role::Avalanche
+            ) {
+                Doctrine::Siege
+            } else if key.kind.role() == Role::Tender {
+                Doctrine::Sustain
+            } else if key.kind.stats().domain == Domain::Air {
+                Doctrine::Air
+            } else {
+                Doctrine::Pressure
+            };
+            let anchor = match key.service {
+                StandingForceServiceKey::Point(tile) => tile,
+                StandingForceServiceKey::Footprint { anchor, .. } => anchor,
+            };
+            (doctrine, anchor, key.kind as u64)
+        }
+        ProposalKey::Economy(key) | ProposalKey::SupportConstruction(key) => {
+            let doctrine = if matches!(
+                key,
+                EconomicInvestmentKey::Build {
+                    kind: BuildingKind::RepairBay,
+                    ..
+                }
+            ) {
+                Doctrine::Sustain
+            } else {
+                Doctrine::Expansion
+            };
+            match key {
+                EconomicInvestmentKey::Build { kind, anchor } => (doctrine, anchor, kind as u64),
+                EconomicInvestmentKey::Train { kind, service, .. } => {
+                    (doctrine, service, kind as u64)
+                }
+                EconomicInvestmentKey::Upgrade { building, .. } => (
+                    doctrine,
+                    chassis::grid::TilePos::new(0, 0),
+                    u64::from(building.0),
+                ),
+            }
+        }
+        // Information and current exact protective service do not inherit a
+        // preference against the strategy whose uncertainty they resolve.
+        ProposalKey::Support(_)
+        | ProposalKey::SupportRelief(_)
+        | ProposalKey::SupportDeployment(_)
+        | ProposalKey::Reconnaissance(_) => return None,
+    };
+    Some(ExperienceKey {
+        doctrine,
+        y: anchor.y,
+        x: anchor.x,
+        subject,
+    })
+}
+
 /// Allocation output retaining the exact selected domain plans.
 pub(crate) type DomainAllocationResult = AllocationResult<DomainPayload>;
 

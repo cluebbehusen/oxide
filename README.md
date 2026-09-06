@@ -27,7 +27,10 @@ access, or combat advantages. Economic investment follows reachable work,
 production bottlenecks, and useful capability demand rather than fixed worker or
 factory quotas. Reconnaissance pursues explicit information questions with
 independently owned observers. Repair assignments and allied relief share the
-same resource allocation as economic and military investments.
+same resource allocation as economic and military investments. Ground armies
+take specific defensive, pressure, reserve, or recovery responsibilities.
+Observed movement and bounded experience inform later choices; lost contacts
+never become predicted positions inside fog.
 
 ## The game
 

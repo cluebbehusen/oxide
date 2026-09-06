@@ -21,6 +21,8 @@ use chassis::grid::TilePos;
 
 mod armies;
 mod lowering;
+mod missions;
+pub use missions::{ArmyMission, ArmyObjective, ArmyPurpose, MissionDecision, MissionDisposition};
 
 pub(super) use armies::{catastrophically_outmatched_near, locally_overmatches_near};
 
@@ -116,6 +118,28 @@ pub enum Intent {
         staging: TilePos,
         /// How many fighters to draft.
         size: u32,
+    },
+    /// Form or reinforce an army with exactly the selected members.
+    FormArmyWith {
+        /// Existing destination army, or a fresh army identity.
+        army: Option<ArmyId>,
+        /// Exact new members; never replaced by an implicit draft.
+        members: Vec<UnitId>,
+        /// Frozen gather point.
+        staging: TilePos,
+        /// Purpose shared by the resulting group.
+        mission: ArmyMission,
+        /// Coherent minimum for any source army left after a staging transfer.
+        minimum: usize,
+    },
+    /// Replace one army's responsibility without changing its membership.
+    AssignArmyMission {
+        /// Exact existing army.
+        army: ArmyId,
+        /// Exact surviving Executive members after accepted operational transfers.
+        members: Vec<UnitId>,
+        /// Frozen mission and deadline.
+        mission: ArmyMission,
     },
     /// Commit a staged (or withdrawn) army against a target.
     PushArmy {
@@ -236,6 +260,10 @@ struct PlayerFacingTactics {
 /// ticks because armies are controller memory rather than simulation state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Executive {
+    pub(crate) ground_outcomes:
+        std::collections::BTreeMap<ArmyId, super::experience::OutcomeJournal>,
+    pub(crate) missions: std::collections::BTreeMap<ArmyId, ArmyMission>,
+    pub(crate) mission_decisions: Vec<missions::MissionDecision>,
     armies: Vec<Army>,
     next_army: u32,
     /// Rear-line members temporarily kept out of drafts.
@@ -268,6 +296,13 @@ impl Executive {
             .iter()
             .flat_map(|a| a.members.iter().copied())
             .chain(self.rear.iter().map(|unit| unit.id))
+    }
+
+    pub(super) fn muster_exclusions(&self) -> impl Iterator<Item = UnitId> + '_ {
+        self.rear
+            .iter()
+            .map(|unit| unit.id)
+            .chain(self.exhausted_rear.iter().copied())
     }
 }
 

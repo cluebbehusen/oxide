@@ -408,11 +408,12 @@ fn array_proposal(
                 .build_ticks
                 .div_ceil(builder.kind.stats().build_rate.max(1)),
         ));
-    let value = if quote.novel_radar.saturating_mul(2) >= quote.usable_radar {
-        StrategicValue::Material
-    } else {
-        StrategicValue::Incremental
-    };
+    let value =
+        if quote.strategic_radar > 0 || quote.novel_radar.saturating_mul(2) >= quote.usable_radar {
+            StrategicValue::Material
+        } else {
+            StrategicValue::Incremental
+        };
     let urgency = match quote.evidence {
         DefenseOpportunityEvidence::CurrentArmed
         | DefenseOpportunityEvidence::CurrentFoothold
@@ -1185,6 +1186,7 @@ mod tests {
                     builder: UnitId(1),
                     usable_radar: 100,
                     novel_radar: 1,
+                    strategic_radar: 0,
                     builder_travel_cost: 0,
                     evidence: DefenseOpportunityEvidence::PublicPrior,
                     evidence_count: 1,
@@ -1397,6 +1399,7 @@ mod tests {
                 builder: UnitId(3),
                 usable_radar: 100,
                 novel_radar: 60,
+                strategic_radar: 0,
                 builder_travel_cost: 10,
                 evidence: DefenseOpportunityEvidence::CurrentArmed,
                 evidence_count: 1,

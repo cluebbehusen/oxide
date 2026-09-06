@@ -914,6 +914,7 @@ impl ClaimBundle {
 pub(crate) struct InvestmentProposal<Payload> {
     key: ProposalKey,
     case: ProposalCase,
+    experience: i16,
     personality_preference: Option<u16>,
     domain_preference: usize,
     accepted_at: Option<Tick>,
@@ -934,6 +935,7 @@ impl<Payload> InvestmentProposal<Payload> {
         Self {
             key,
             case,
+            experience: 0,
             personality_preference: None,
             domain_preference: 0,
             accepted_at: None,
@@ -955,6 +957,7 @@ impl<Payload> InvestmentProposal<Payload> {
         Self {
             key,
             case,
+            experience: 0,
             personality_preference: None,
             domain_preference: 0,
             accepted_at: Some(accepted_at),
@@ -973,6 +976,26 @@ impl<Payload> InvestmentProposal<Payload> {
     /// Named comparison case supplied by the owning domain.
     pub(crate) const fn case(&self) -> ProposalCase {
         self.case
+    }
+
+    pub(crate) const fn experience(&self) -> i16 {
+        self.experience
+    }
+
+    pub(crate) fn effective_value(&self) -> StrategicValue {
+        match (value_index(self.case.value) as i32 - i32::from(self.experience / 512).clamp(-1, 1))
+            .clamp(0, 2)
+        {
+            0 => StrategicValue::Decisive,
+            1 => StrategicValue::Material,
+            _ => StrategicValue::Incremental,
+        }
+    }
+
+    fn experience_remainder(&self) -> i16 {
+        let bands =
+            value_index(self.case.value) as i16 - value_index(self.effective_value()) as i16;
+        self.experience - bands * 512
     }
 
     /// Zero-based preference among mutually exclusive choices from one domain.
@@ -1460,6 +1483,8 @@ pub(crate) enum OutrankingBasis {
     TimeToImpact,
     /// The selected portfolio had the stronger execution-safety histogram.
     Safety,
+    /// Bounded experience broke an effective-return semantic tie.
+    Experience,
     /// Semantic bands tied and positive personality emphasis broke the tie.
     Personality,
     /// Cross-domain rank tied and one domain preferred this exact alternative.
@@ -2166,6 +2191,7 @@ pub(super) type PortfolioRank = (
     BandHistogram,
     BandHistogram,
     BandHistogram,
+    i64,
     u128,
     Reverse<usize>,
     Reverse<u128>,
@@ -2192,12 +2218,14 @@ fn outranking_basis(winner: &PortfolioRank, loser: &PortfolioRank) -> Option<Out
     } else if winner.4 != loser.4 {
         Some(OutrankingBasis::Safety)
     } else if winner.5 != loser.5 {
-        Some(OutrankingBasis::Personality)
+        Some(OutrankingBasis::Experience)
     } else if winner.6 != loser.6 {
-        Some(OutrankingBasis::DomainPreference)
+        Some(OutrankingBasis::Personality)
     } else if winner.7 != loser.7 {
-        Some(OutrankingBasis::LowerCapital)
+        Some(OutrankingBasis::DomainPreference)
     } else if winner.8 != loser.8 {
+        Some(OutrankingBasis::LowerCapital)
+    } else if winner.9 != loser.9 {
         Some(OutrankingBasis::StructuralKey)
     } else {
         None
@@ -2215,6 +2243,7 @@ fn portfolio_rank<Payload>(
     let mut time_to_impact = [0_u8; 3];
     let mut safety = [0_u8; 3];
     let mut personality_weight = 0_u128;
+    let mut experience = 0_i64;
     let mut domain_preference = 0_usize;
     let mut capital = 0_u128;
     let mut keys = Vec::new();
@@ -2223,7 +2252,8 @@ fn portfolio_rank<Payload>(
         let case = proposal.case();
         add_band(&mut urgency, urgency_index(case.urgency));
         add_band(&mut confidence, confidence_index(case.confidence));
-        add_band(&mut value, value_index(case.value));
+        add_band(&mut value, value_index(proposal.effective_value()));
+        experience += i64::from(proposal.experience_remainder());
         add_band(
             &mut time_to_impact,
             time_to_impact_index(case.time_to_impact),
@@ -2242,6 +2272,7 @@ fn portfolio_rank<Payload>(
         value,
         time_to_impact,
         safety,
+        experience,
         personality_weight,
         Reverse(domain_preference),
         Reverse(capital),
@@ -5346,6 +5377,61 @@ mod tests {
             result.decisions[0].disposition,
             ProposalDisposition::Accepted
         );
+    }
+
+    #[test]
+    fn experience_uses_one_effective_band_and_only_the_continuous_remainder() {
+        let raw = ordinary_case();
+        let mut proposal = foundry(10, 0, vec![], raw);
+        for (score, effective, remainder) in [
+            (-1024, StrategicValue::Incremental, -512),
+            (-512, StrategicValue::Incremental, 0),
+            (-511, StrategicValue::Material, -511),
+            (0, StrategicValue::Material, 0),
+            (511, StrategicValue::Material, 511),
+            (512, StrategicValue::Decisive, 0),
+            (1024, StrategicValue::Decisive, 512),
+        ] {
+            proposal.experience = score;
+            assert_eq!(proposal.case(), raw);
+            assert_eq!(proposal.effective_value(), effective);
+            assert_eq!(proposal.experience_remainder(), remainder);
+        }
+    }
+
+    #[test]
+    fn experience_breaks_a_return_tie_but_never_overrides_urgency_or_funding() {
+        let mut favored = foundry(10, 100, vec![], ordinary_case());
+        let other = foundry(20, 100, vec![], ordinary_case());
+        favored.experience = -100;
+        let choices = vec![favored.clone(), other.clone()];
+        assert!(
+            portfolio_rank(&[1], &choices, AllocationPersonality::default())
+                > portfolio_rank(&[0], &choices, AllocationPersonality::default())
+        );
+        favored.experience = 1024;
+        let urgent = foundry(
+            20,
+            100,
+            vec![],
+            ProposalCase {
+                urgency: Urgency::Pressing,
+                ..ordinary_case()
+            },
+        );
+        let choices = vec![favored.clone(), urgent];
+        assert!(
+            portfolio_rank(&[1], &choices, AllocationPersonality::default())
+                > portfolio_rank(&[0], &choices, AllocationPersonality::default())
+        );
+        let result = allocate(
+            &capacity(0, 0, vec![], vec![]),
+            vec![],
+            vec![favored],
+            AllocationPersonality::default(),
+        )
+        .unwrap();
+        assert!(result.accepted.is_empty());
     }
 
     #[test]

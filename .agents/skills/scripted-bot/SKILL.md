@@ -41,9 +41,10 @@ The maintained path is:
 ```text
 immutable PublicMapBriefing + fog-honest Observation
   -> oriented public priors + StrategicIntelligence
-  -> persistent playbooks + exact domain proposals and obligations
+  -> once-per-decision battlefield assessment + grounded outcome experience
+  -> persistent playbooks + mission demand + exact domain proposals and obligations
   -> AllocationSession shared portfolio and residual capacity
-  -> committed planner intents + UtilityPolicy Intent
+  -> committed planner intents + exact ground missions + UtilityPolicy Intent
   -> Executive
   -> PlayerCommand[]
 ```
@@ -88,6 +89,50 @@ evidence, useful deadline, and dispatch identity at acceptance. An accepted
 future purchase retains its producer schedule and must not emit a command from
 forecast credit. Releasing unpaid demand never cancels a paid queue item. Keep
 contested observers owned until their safe return is actually observed.
+
+For battlefield adaptation, derive shared observed concentrations and movement
+history once before proposing fresh work. Record displacement only between
+actual sightings; never advance an unseen enemy through fog. Anonymous radar
+must not provide composition. Exercise the full observation history with hidden
+state twins, not merely two identical snapshots at one tick.
+
+Keep general ground missions Executive-owned. Exact staging reorganization must
+validate all members and both resulting minimums before mutating anything.
+Exercise partial operational transfers through the coordinator: retained lift
+payloads must not immobilize the unreserved defensive remainder. Test two
+pressured fronts, an unreachable higher-ranked candidate, unchanged pressure
+elsewhere, and ordinary recovery movement that does not reacquire a chase.
+Maintenance withdrawal commands win over same-decision mission directives.
+Pressure must retain its exact building site across current-to-remembered and
+remembered-to-current observations. Ghosts share a placeholder id, so test
+multiple remembered objectives, changed ownership, real-id replacement, and
+footprint orientation separately from movement goals. Reacquisition must not
+recall an army, renew its deadline, or complete its outcome journal.
+
+Treat outcome journals as owner reports, never as trace-derived intelligence.
+Test completed service, actual progress, aborted preparation, execution loss,
+invalidation, and inconclusive results separately. Keep paid queues and
+foundations alive when unpaid work cancels. Own cargo identity and health prove
+presence but never availability. Shared air/lift credit and a post-delivery
+objective watch must not reward delivery as a kill or claim handed-off units.
+
+Validate experience at neutral, both one-band thresholds, bounded saturation,
+decay, and counterevidence. One route failure stays contextual; broader doctrine
+requires corroborating attributable episodes. Exercise retries from exact
+dispatched worker/target receipts, distinguishing death, preemption, exhaustion,
+missing funding, and currently occupied footprints from blocked paths.
+Remembered buildings alone cannot establish current site occupation. Fresh
+blocking foundations must not displace active builders from their current work
+tiles; test movement and completion release, nonblocking charges, and unchanged
+legacy placement. General retry expiry cannot clear contested-harvest
+quarantine. Preserve the frozen Overseer path.
+
+Run the focused `battlefield_adaptation` integration suite alongside
+`recon_support`, owning planner tests, and required repository gates. Review
+native defense, lost-contact restraint, recon, successor assault choices, and
+recovery against exact fog-seat replay evidence. Compare isolated before/after
+performance medians without concurrent builds or coverage; investigate overhead
+above 10%. Automated results do not establish human fun or final calibration.
 
 Match paid reconnaissance to the exact producer exit and queue occurrence. An
 absent completed observer releases that question into bounded recovery; never
@@ -381,13 +426,13 @@ sequential ladder separate from this player-facing policy.
 
 Treat an Array as a persistent sensor, not as an unarmed defense. Its
 alternative shares the Defense portfolio domain but uses positive novel usable
-radar coverage as its value. Search within its radar radius of home for the most
-usable map coverage, preferring coverage not already supplied by an allied Array
-and using current contacts, remembered contacts, then uncleared public starts to
-break equally useful ties toward a credible approach. Off-map area and Peaks
-provide no detection value because no unit can occupy them. Preserve active
-resource access and bind the exact ordinary route-capable builder proven through
-public terrain and current dynamic danger. Keep sensor proposals below immediate
+radar coverage as its value. Search around relevant owned assets for useful
+coverage of strategic approaches, discounting own, allied, and pending Arrays.
+Use current contacts, remembered contacts, then uncleared public starts to break
+equally useful ties toward a credible approach. Off-map area and Peaks provide
+no detection value because no unit can occupy them. Preserve active resource
+access and bind the exact ordinary route-capable builder proven through public
+terrain and current dynamic danger. Keep sensor proposals below immediate
 survival defense, allow partial coverage on maps smaller than the radar
 diameter, and keep the frozen Overseer's first-valid Array placement unchanged.
 
@@ -594,14 +639,15 @@ player-facing controller's runtime decisions with
 `--decision-trace-out replays/bot-eval-trace.jsonl`. The trace sidecar requires
 `--out` and `--candidate`, joins each record to its exact evaluation leg, and
 contains only fog-honest facts the current coordinator can state directly.
-Schema version 10 includes exact economic, defensive, and support identities,
-building and repair-worker ownership, refit forecast losses, and complete
-combined-layout conflict sets. Test four-way closures even when every triple
-retains a route. Verify voluntary repair funding and preemption against ordinary
-commands, including decisions between macro-admission boundaries. It does not
-reconstruct explanations from a replay, infer reasons from absent planner
-output, or trace the frozen Overseer. Treat the sidecar as disposable diagnostic
-evidence and keep it out of production commits.
+Schema version 11 includes battlefield evidence, mission ownership, grounded
+outcomes and adjusted return, alongside exact economic, defensive, and support
+identities, building and repair-worker ownership, refit forecast losses, and
+complete combined-layout conflict sets. Test four-way closures even when every
+triple retains a route. Verify voluntary repair funding and preemption against
+ordinary commands, including decisions between macro-admission boundaries. It
+does not reconstruct explanations from a replay, infer reasons from absent
+planner output, or trace the frozen Overseer. Treat the sidecar as disposable
+diagnostic evidence and keep it out of production commits.
 
 For the maintained Prime-versus-Overseer yardstick, keep Overseer confined to
 the evaluation-only `--against-overseer` path. Do not encode it in `BotConfig`,

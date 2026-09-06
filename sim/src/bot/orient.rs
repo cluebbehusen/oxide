@@ -83,6 +83,13 @@ impl Orientation {
         )
     }
 
+    pub(crate) fn mission(&self, mission: &mut super::executive::ArmyMission) {
+        mission.goal = self.tile(mission.goal);
+        if let super::executive::ArmyPurpose::Pressure(target) = &mut mission.purpose {
+            target.anchor = self.anchor(target.anchor, target.kind.base_stats().size);
+        }
+    }
+
     /// A copy of the observation with every position oriented. Sorted
     /// fields are re-sorted so iteration order is oriented too — that
     /// is the point.
@@ -243,6 +250,34 @@ impl Orientation {
                     staging: self.tile(staging),
                     size,
                 },
+                Intent::FormArmyWith {
+                    army,
+                    members,
+                    staging,
+                    mut mission,
+                    minimum,
+                } => {
+                    self.mission(&mut mission);
+                    Intent::FormArmyWith {
+                        army,
+                        members,
+                        staging: self.tile(staging),
+                        mission,
+                        minimum,
+                    }
+                }
+                Intent::AssignArmyMission {
+                    army,
+                    members,
+                    mut mission,
+                } => {
+                    self.mission(&mut mission);
+                    Intent::AssignArmyMission {
+                        army,
+                        members,
+                        mission,
+                    }
+                }
                 Intent::PushArmy { army, target } => Intent::PushArmy {
                     army,
                     target: self.tile(target),
@@ -362,6 +397,12 @@ mod tests {
             my_queue_progress: vec![17],
             my_queued_units: vec![UnitId(1)],
             my_repair_targets: vec![(UnitId(1), crate::ids::Target::Building(BuildingId(2)))],
+            my_carried_units: vec![super::super::observation::CarriedUnitObs {
+                carrier: UnitId(4),
+                id: UnitId(5),
+                kind: UnitKind::Sentinel,
+                hp: 30,
+            }],
             ally_units: vec![unit(2, 1, UnitKind::Wisp, TilePos::new(2, 3), None)],
             ally_buildings: vec![building(2, 1, BuildingKind::Array, TilePos::new(2, 1))],
             enemy_units: vec![unit(3, 2, UnitKind::Darter, TilePos::new(3, 4), None)],
@@ -379,6 +420,43 @@ mod tests {
             my_shells: 2,
             incoming_shells: vec![TilePos::new(1, 5), TilePos::new(5, 5)],
         }
+    }
+
+    #[test]
+    fn mission_objective_uses_footprint_orientation_without_changing_its_deadline() {
+        use crate::bot::executive::{ArmyMission, ArmyObjective, ArmyPurpose};
+        let obs = Observation {
+            map_width: 40,
+            map_height: 32,
+            ..Default::default()
+        };
+        let orientation = Orientation::for_home(&obs, TilePos::new(35, 27));
+        let objective = ArmyObjective::from_building(&building(
+            17,
+            1,
+            BuildingKind::Foundry,
+            TilePos::new(5, 6),
+        ));
+        let mut mission = ArmyMission {
+            purpose: ArmyPurpose::Pressure(objective),
+            goal: objective.anchor,
+            accepted_at: 300,
+            deadline: 2100,
+            score: 400,
+        };
+        let original = mission.clone();
+        orientation.mission(&mut mission);
+        let ArmyPurpose::Pressure(transformed) = mission.purpose else {
+            panic!("pressure mission")
+        };
+        assert_eq!(
+            transformed.anchor,
+            orientation.anchor(objective.anchor, objective.kind.base_stats().size)
+        );
+        assert_ne!(transformed.anchor, mission.goal);
+        assert_eq!(mission.deadline, original.deadline);
+        orientation.mission(&mut mission);
+        assert_eq!(mission, original);
     }
 
     #[test]

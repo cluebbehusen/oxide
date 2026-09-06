@@ -159,6 +159,7 @@ pub struct RaidOperation {
 /// Controller-local owner of a guile raid and its cooldown.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RaidPlanner {
+    pub(in crate::bot) outcomes: super::experience::OutcomeJournal,
     active: Option<RaidOperation>,
     muster: Vec<UnitId>,
     cooldown_until: Tick,
@@ -260,6 +261,32 @@ impl RaidPlanner {
             };
         };
 
+        use super::experience::{
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+        };
+        let subject = match raid.objective {
+            RaidObjective::Unit { id, .. } => u64::from(id.0),
+            RaidObjective::Building { id, .. } => u64::from(id.0),
+        };
+        self.outcomes.watch(
+            obs,
+            EpisodeId {
+                owner: EpisodeOwner::Raid,
+                serial: raid.started_at,
+            },
+            ExperienceKey {
+                doctrine: Doctrine::Pressure,
+                y: raid.last_tile.y,
+                x: raid.last_tile.x,
+                subject,
+            },
+            &raid.members,
+            raid.phase as u8,
+        );
+        let objective_gone = match raid.objective {
+            RaidObjective::Building { id, .. } => self.outcomes.observe_objective(obs, id),
+            RaidObjective::Unit { .. } => false,
+        };
         raid.members.retain(|id| own_unit(obs, *id).is_some());
         let current = current_objective(obs, &raid);
         if let Some((_, tile)) = current {
@@ -354,6 +381,39 @@ impl RaidPlanner {
             }
         }
         decision.reservations = raid.members.clone();
+        if let Some(reason) = raid.exit_reason {
+            let (outcome, reason, confidence, doctrine) = match reason {
+                RaidExitReason::Complete if objective_gone => (
+                    Outcome::Complete,
+                    OutcomeReason::ObjectiveObservedGone,
+                    750,
+                    false,
+                ),
+                RaidExitReason::Complete | RaidExitReason::LostContact => {
+                    (Outcome::Inconclusive, OutcomeReason::LostContact, 0, false)
+                }
+                RaidExitReason::LossBudget => (
+                    Outcome::Ineffective,
+                    OutcomeReason::RequiredUnitLost,
+                    1000,
+                    true,
+                ),
+                RaidExitReason::EnemyResponse => (
+                    Outcome::Aborted,
+                    OutcomeReason::ObservedCounter,
+                    1000,
+                    false,
+                ),
+                RaidExitReason::Timeout => {
+                    (Outcome::Ineffective, OutcomeReason::Deadline, 750, false)
+                }
+                RaidExitReason::Unreachable => {
+                    (Outcome::Aborted, OutcomeReason::BlockedRoute, 1000, false)
+                }
+            };
+            self.outcomes
+                .finish(obs, outcome, reason, confidence, doctrine);
+        }
 
         let home_safe = raid.phase == RaidPhase::Egress
             && (raid.members.is_empty()

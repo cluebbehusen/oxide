@@ -104,6 +104,7 @@ struct PressureWatch {
 /// Controller-local owner of team-pressure evidence, relief, and cooldown.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TeamReliefPlanner {
+    pub(in crate::bot) outcomes: super::experience::OutcomeJournal,
     active: Option<TeamReliefOperation>,
     watch: Option<PressureWatch>,
     cooldown_until: Tick,
@@ -242,6 +243,24 @@ impl TeamReliefPlanner {
             };
         };
 
+        use super::experience::{
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+        };
+        self.outcomes.watch(
+            obs,
+            EpisodeId {
+                owner: EpisodeOwner::Relief,
+                serial: relief.started_at,
+            },
+            ExperienceKey {
+                doctrine: Doctrine::Sustain,
+                y: relief.anchor.y,
+                x: relief.anchor.x,
+                subject: u64::from(relief.foundry.0),
+            },
+            &relief.members,
+            relief.phase as u8,
+        );
         relief.members.retain(|id| own_unit(obs, *id).is_some());
         relief
             .home_defenders
@@ -332,6 +351,58 @@ impl TeamReliefPlanner {
             }
         }
         decision.reservations = relief.members.clone();
+        if relief.phase == TeamReliefPhase::Holding {
+            self.outcomes.progress(1);
+        }
+        if let Some(reason) = relief.exit_reason {
+            let (outcome, reason, confidence, doctrine) = match reason {
+                TeamReliefExitReason::PressureEnded
+                    if self.outcomes.has_progress()
+                        && (-4..=4).all(|dy| {
+                            (-4..=4).all(|dx| obs.visible(relief.anchor.offset(dx, dy)))
+                        }) =>
+                {
+                    (
+                        Outcome::Complete,
+                        OutcomeReason::ServiceCompleted,
+                        750,
+                        true,
+                    )
+                }
+                TeamReliefExitReason::PressureEnded => (
+                    Outcome::Inconclusive,
+                    OutcomeReason::LostContact,
+                    500,
+                    false,
+                ),
+                TeamReliefExitReason::LossBudget | TeamReliefExitReason::HealthBudget => (
+                    Outcome::Ineffective,
+                    OutcomeReason::RequiredUnitLost,
+                    1000,
+                    true,
+                ),
+                TeamReliefExitReason::FoundryLost if self.outcomes.has_progress() => (
+                    Outcome::Ineffective,
+                    OutcomeReason::ObjectiveObservedGone,
+                    1000,
+                    true,
+                ),
+                TeamReliefExitReason::FoundryLost => (
+                    Outcome::Invalidated,
+                    OutcomeReason::ObjectiveObservedGone,
+                    1000,
+                    false,
+                ),
+                TeamReliefExitReason::Timeout => {
+                    (Outcome::Inconclusive, OutcomeReason::Deadline, 500, false)
+                }
+                TeamReliefExitReason::Unreachable => {
+                    (Outcome::Aborted, OutcomeReason::BlockedRoute, 1000, false)
+                }
+            };
+            self.outcomes
+                .finish(obs, outcome, reason, confidence, doctrine);
+        }
 
         let returned = relief.phase == TeamReliefPhase::Withdrawing
             && (relief.members.is_empty()

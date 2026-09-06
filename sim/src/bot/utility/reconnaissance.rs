@@ -19,6 +19,7 @@ pub(crate) enum ReconConsumer {
     Economy,
     HarvestRecovery,
     Defense(BuildingId),
+    Approach(BuildingId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -187,6 +188,7 @@ pub(crate) struct ReconAssignment {
     pub(crate) unit: Option<UnitId>,
     pub(crate) phase: ReconPhase,
     pub(crate) dispatch: Option<TilePos>,
+    pub(crate) inspected: std::collections::BTreeSet<TilePos>,
     known_units: Vec<UnitId>,
     pub(crate) paid_claim: Option<crate::bot::allocation::PaidQueueClaim>,
     pub(crate) unpaid: bool,
@@ -465,7 +467,14 @@ impl<'a> ReconRoutes<'a> {
         kind: UnitKind,
         question: &ReconQuestion,
     ) -> Option<TilePos> {
-        let tile = question.key.tile();
+        let tile = if matches!(question.key.consumer, ReconConsumer::Approach(_)) {
+            question
+                .key
+                .tile()
+                .offset(question.size.0 / 2, question.size.1 / 2)
+        } else {
+            question.key.tile()
+        };
         let sight = (kind.stats().vision - question.size.0.max(question.size.1) - 1).max(1);
         let mut goals: Vec<_> = (-sight..=sight)
             .flat_map(|dy| {
@@ -660,6 +669,28 @@ impl UtilityPolicy {
                 );
             }
         }
+        for question in &self.battlefield.questions {
+            let key = ReconQuestionKey::new(
+                if question.anonymous {
+                    ReconConsumer::Defense(question.asset)
+                } else {
+                    ReconConsumer::Approach(question.asset)
+                },
+                question.anchor,
+            );
+            questions.push(ReconQuestion {
+                key,
+                size: question.size,
+                evidence_at: self
+                    .reconnaissance
+                    .questions
+                    .get(&key)
+                    .map_or(question.evidence_at, |prior| prior.evidence_at),
+                confidence: Confidence::Supported,
+                value: StrategicValue::Material,
+                urgency: Urgency::Timely,
+            });
+        }
         questions.sort_by_key(|question| question.key);
         questions.dedup_by_key(|question| question.key);
         let mut footprints = std::collections::BTreeSet::new();
@@ -667,7 +698,7 @@ impl UtilityPolicy {
         questions
     }
 
-    fn recon_answered(&self, obs: &Observation, question: &ReconQuestion) -> bool {
+    pub(super) fn recon_answered(&self, obs: &Observation, question: &ReconQuestion) -> bool {
         let tile = question.key.tile();
         if question.key.consumer == ReconConsumer::HarvestRecovery {
             return !self
@@ -677,10 +708,13 @@ impl UtilityPolicy {
         }
         (0..question.size.1)
             .all(|dy| (0..question.size.0).all(|dx| obs.visible(tile.offset(dx, dy))))
-            || obs
+            || (matches!(
+                question.key.consumer,
+                ReconConsumer::Objective(..) | ReconConsumer::HostileStart(_)
+            ) && obs
                 .enemy_buildings
                 .iter()
-                .any(|building| building.seen && building.anchor == tile)
+                .any(|building| building.seen && building.anchor == tile))
     }
 
     /// Reconcile every retained assignment, even when no discretionary attention remains.
@@ -805,6 +839,18 @@ impl UtilityPolicy {
         });
         for (key, mut work) in prior {
             let answered = self.recon_answered(obs, &work.proposal.question);
+            let regional = matches!(key.consumer, ReconConsumer::Approach(_));
+            if regional && work.unit.is_some() && work.phase == ReconPhase::Outbound {
+                let size = work.proposal.question.size;
+                work.inspected.extend(
+                    (0..size.1)
+                        .flat_map(|dy| (0..size.0).map(move |dx| key.tile().offset(dx, dy)))
+                        .filter(|tile| obs.visible(*tile)),
+                );
+                if work.inspected.len() == (size.0 * size.1) as usize {
+                    work.phase = ReconPhase::Recall;
+                }
+            }
             let useful = self.reconnaissance.questions.contains_key(&key);
             if work.phase == ReconPhase::Preparation {
                 if answered
@@ -937,6 +983,18 @@ impl UtilityPolicy {
                     }
                 } else {
                     let mut question = work.proposal.question.clone();
+                    if regional
+                        && let Some(tile) = (0..question.size.1)
+                            .flat_map(|dy| {
+                                (0..question.size.0).map(move |dx| key.tile().offset(dx, dy))
+                            })
+                            .filter(|tile| !work.inspected.contains(tile))
+                            .min_by_key(|tile| (tile.chebyshev(unit.tile), tile.y, tile.x))
+                    {
+                        question.key.x = tile.x;
+                        question.key.y = tile.y;
+                        question.size = (1, 1);
+                    }
                     if key.consumer == ReconConsumer::HarvestRecovery
                         && let Some(tile) = Self::contested_region_tiles(obs, key.tile())
                             .filter(|tile| {
@@ -1535,6 +1593,7 @@ impl UtilityPolicy {
             proposal.question.key,
             ReconAssignment {
                 proposal,
+                inspected: Default::default(),
                 unit,
                 phase,
                 dispatch,
@@ -1689,6 +1748,34 @@ mod tests {
             map,
             BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 7).resolve_profile(),
         )
+    }
+
+    #[test]
+    fn approach_requires_the_region_not_a_visible_last_tile_or_building() {
+        let (mut obs, _, _) = fixture();
+        let policy = UtilityPolicy::default();
+        let anchor = TilePos::new(15, 10);
+        let question = ReconQuestion {
+            key: ReconQuestionKey::new(ReconConsumer::Approach(BuildingId(1)), anchor),
+            size: (9, 9),
+            evidence_at: 100,
+            confidence: Confidence::Supported,
+            value: StrategicValue::Material,
+            urgency: Urgency::Timely,
+        };
+        obs.visible[(anchor.y * obs.map_width + anchor.x) as usize] = true;
+        let mut building = obs.my_buildings[0].clone();
+        building.player = PlayerId(1);
+        building.anchor = anchor;
+        building.seen = true;
+        obs.enemy_buildings.push(building);
+        assert!(!policy.recon_answered(&obs, &question));
+        for dy in 0..9 {
+            for dx in 0..9 {
+                obs.visible[((anchor.y + dy) * obs.map_width + anchor.x + dx) as usize] = true;
+            }
+        }
+        assert!(policy.recon_answered(&obs, &question));
     }
 
     fn context<'a>(

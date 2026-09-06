@@ -53,20 +53,30 @@ an ordinary command source rather than a separate ruleset.
   question-local loss recovery. Dedicated purchases share the producer scheduler
   and retain their accepted funding schedule. Exact paid-occurrence ownership is
   shared with operational scouts. Recent answers and reachable overlapping
-  coverage reduce redundant reconnaissance. All seven domains compete in shared
-  allocation, and forecast income never funds a command. Current-threat
-  emergency defense remains exact survival work with precedence over voluntary
-  proposals, and admitted island-air work advances through the same transaction.
-  Accepted domain payloads keep their exact choices; compatible work may proceed
-  together, while unmigrated planners and utility use only the residual
-  capacity. Connected air-and-siege operations derive opportunity-scaled
-  reconnaissance, suppression, direct strike, and current-visible
-  non-suppression bombing value, then freeze exact members at commitment. Their
-  route and queue preflight covers the complete admitted target cluster, whose
-  canonical anchors are exposed in optional decision traces without entering
-  controller state. See [Bot Strategy](../docs/bot-strategy.md) for the policy
-  direction and [Simulation Architecture](../docs/simulation-architecture.md)
-  for the current implementation contracts.
+  coverage reduce redundant reconnaissance. A shared battlefield assessment
+  groups current contacts, records directly observed displacement, and supplies
+  consequential approach questions and weighted Array coverage. Executive-owned
+  ground missions retain exact membership and deadlines while tactical combat
+  remains in the Executive. Controller-local outcome journals distinguish
+  service, progress, losses, preemption, and uncertainty; decaying contextual
+  and corroborated doctrine preferences affect future unpaid alternatives, not
+  ordinary rules. Observation schema 17 includes owner-only carried identities
+  and health separately from available units. Decision trace schema 11 separates
+  raw evidence from adjusted return, mission ownership, and bounded experience.
+  All seven domains compete in shared allocation, and forecast income never
+  funds a command. Current-threat emergency defense remains exact survival work
+  with precedence over voluntary proposals, and admitted island-air work
+  advances through the same transaction. Accepted domain payloads keep their
+  exact choices; compatible work may proceed together, while unmigrated planners
+  and utility use only the residual capacity. Connected air-and-siege operations
+  derive opportunity-scaled reconnaissance, suppression, direct strike, and
+  current-visible non-suppression bombing value, then freeze exact members at
+  commitment. Their route and queue preflight covers the complete admitted
+  target cluster, whose canonical anchors are exposed in optional decision
+  traces without entering controller state. See
+  [Bot Strategy](../docs/bot-strategy.md) for the policy direction and
+  [Simulation Architecture](../docs/simulation-architecture.md) for the current
+  implementation contracts.
 - `vision` provides visibility and explored-world state.
 
 Repair and salvage share one damage-first building-work resolver and remain

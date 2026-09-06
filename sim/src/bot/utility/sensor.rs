@@ -17,6 +17,7 @@ pub(super) struct StrategicArrayQuote {
     pub(super) builder: UnitId,
     pub(super) usable_radar: u32,
     pub(super) novel_radar: u32,
+    pub(super) strategic_radar: u32,
     pub(super) builder_travel_cost: u32,
     pub(super) evidence: DefenseOpportunityEvidence,
     pub(super) evidence_count: usize,
@@ -27,6 +28,7 @@ struct ArraySiteCandidate {
     anchor: TilePos,
     usable_radar: u32,
     novel_radar: u32,
+    strategic_radar: u32,
     threat_distance: i32,
     unexplored_sight: u32,
     builder_distance: i32,
@@ -36,6 +38,7 @@ struct ArraySiteCandidate {
 impl ArraySiteCandidate {
     fn key(self) -> impl Ord {
         (
+            self.strategic_radar,
             self.novel_radar,
             self.usable_radar,
             Reverse(self.threat_distance),
@@ -184,49 +187,92 @@ impl UtilityPolicy {
         // prefixes, so the equally large radar disc is not rescanned for
         // every survivor.
         self.prepare_ground_producer_egress(obs);
-        let coverage = ArrayCoverageIndex::new(obs, briefing, &existing_arrays);
+        let coverage = ArrayCoverageIndex::new(obs, briefing, &existing_arrays)
+            .with_demand(&self.battlefield.coverage, obs.tick);
 
         let mut candidates = Vec::new();
-        for radius in minimum_radius..=maximum_radius {
-            for dy in -radius..=radius {
-                for dx in -radius..=radius {
-                    if dx.abs().max(dy.abs()) != radius {
-                        continue;
+        let mut centers = std::collections::BTreeSet::from([(home_center.y, home_center.x)]);
+        for question in &self.battlefield.coverage {
+            if let Some(asset) = obs
+                .my_buildings
+                .iter()
+                .find(|asset| asset.id == question.asset)
+            {
+                let size = asset.kind.base_stats().size;
+                centers.insert((asset.anchor.y + size.1 / 2, asset.anchor.x + size.0 / 2));
+            }
+        }
+        let mut considered = std::collections::BTreeSet::new();
+        for (center_y, center_x) in centers {
+            let center = TilePos::new(center_x, center_y);
+            for radius in minimum_radius..=maximum_radius {
+                for dy in -radius..=radius {
+                    for dx in -radius..=radius {
+                        if dx.abs().max(dy.abs()) != radius {
+                            continue;
+                        }
+                        let anchor = center.offset(dx, dy);
+                        if !considered.insert((anchor.y, anchor.x))
+                            || !self.placement_valid_prepared(obs, kind, anchor)
+                        {
+                            continue;
+                        }
+                        let (usable_radar, novel_radar, unexplored_sight) =
+                            coverage.coverage(anchor);
+                        let threat_distance = threats
+                            .iter()
+                            .map(|threat| threat.manhattan(anchor))
+                            .min()
+                            .unwrap_or(i32::MAX);
+                        let builder_distance = builders
+                            .iter()
+                            .map(|builder| builder.tile.manhattan(anchor))
+                            .min()
+                            .unwrap_or(i32::MAX);
+                        candidates.push(ArraySiteCandidate {
+                            anchor,
+                            usable_radar,
+                            novel_radar,
+                            strategic_radar: coverage.circle_sum(
+                                &coverage.strategic,
+                                anchor,
+                                &coverage.radar_half_widths,
+                            ),
+                            threat_distance,
+                            unexplored_sight,
+                            builder_distance,
+                            home_distance: home_center.chebyshev(anchor),
+                        });
                     }
-                    let anchor = home_center.offset(dx, dy);
-                    if !self.placement_valid_prepared(obs, kind, anchor) {
-                        continue;
-                    }
-                    let (usable_radar, novel_radar, unexplored_sight) = coverage.coverage(anchor);
-                    let threat_distance = threats
-                        .iter()
-                        .map(|threat| threat.manhattan(anchor))
-                        .min()
-                        .unwrap_or(i32::MAX);
-                    let builder_distance = builders
-                        .iter()
-                        .map(|builder| builder.tile.manhattan(anchor))
-                        .min()
-                        .unwrap_or(i32::MAX);
-                    candidates.push(ArraySiteCandidate {
-                        anchor,
-                        usable_radar,
-                        novel_radar,
-                        threat_distance,
-                        unexplored_sight,
-                        builder_distance,
-                        home_distance: home_center.chebyshev(anchor),
-                    });
                 }
             }
         }
-
         candidates.sort_unstable_by_key(|candidate| candidate.key());
         candidates.into_iter().rev().find_map(|candidate| {
             if candidate.novel_radar == 0 {
                 return None;
             }
             quote_candidate(candidate.anchor).map(|(builder, builder_travel_cost)| {
+                let ready_at =
+                    builders
+                        .iter()
+                        .find(|unit| unit.id == builder)
+                        .map_or(u64::MAX, |worker| {
+                            obs.tick
+                                .saturating_add(super::defense::travel_ticks(
+                                    builder_travel_cost,
+                                    worker.kind.stats().speed,
+                                ))
+                                .saturating_add(u64::from(
+                                    kind.base_stats()
+                                        .construction
+                                        .expect("Array construction")
+                                        .build_ticks
+                                        .div_ceil(worker.kind.stats().build_rate.max(1)),
+                                ))
+                        });
+                let strategic_radar =
+                    coverage.ready_demand(candidate.anchor, &self.battlefield.coverage, ready_at);
                 let (evidence, evidence_count) = array_opportunity_evidence(
                     obs,
                     unit_contacts,
@@ -239,6 +285,7 @@ impl UtilityPolicy {
                     builder,
                     usable_radar: candidate.usable_radar,
                     novel_radar: candidate.novel_radar,
+                    strategic_radar,
                     builder_travel_cost,
                     evidence,
                     evidence_count,
@@ -374,6 +421,7 @@ struct ArrayCoverageIndex {
     usable: Vec<u32>,
     novel: Vec<u32>,
     unexplored: Vec<u32>,
+    strategic: Vec<u32>,
     radar_half_widths: Vec<i32>,
     sight_half_widths: Vec<i32>,
 }
@@ -432,6 +480,7 @@ impl ArrayCoverageIndex {
             usable,
             novel,
             unexplored,
+            strategic: vec![0; slots],
             radar_half_widths: circle_half_widths(RADAR_DETECT_RADIUS),
             sight_half_widths: circle_half_widths(sight_radius),
         }
@@ -443,6 +492,78 @@ impl ArrayCoverageIndex {
             self.circle_sum(&self.novel, anchor, &self.radar_half_widths),
             self.circle_sum(&self.unexplored, anchor, &self.sight_half_widths),
         )
+    }
+
+    fn with_demand(
+        mut self,
+        questions: &[crate::bot::battlefield::CoverageDemand],
+        now: chassis::Tick,
+    ) -> Self {
+        let mut tiles = std::collections::BTreeMap::new();
+        for question in questions {
+            if question.deadline <= now {
+                continue;
+            }
+            for dy in 0..question.size.1 {
+                for dx in 0..question.size.0 {
+                    let tile = question.anchor.offset(dx, dy);
+                    tiles
+                        .entry((tile.y, tile.x))
+                        .and_modify(|weight: &mut u32| *weight = (*weight).max(question.weight))
+                        .or_insert(question.weight);
+                }
+            }
+        }
+        for ((y, x), weight) in tiles {
+            if x >= 0 && y >= 0 && x < self.width && y < self.height {
+                let offset = y as usize * self.row_stride + x as usize + 1;
+                if self.novel[offset] > self.novel[offset - 1] {
+                    self.strategic[offset] = weight;
+                }
+            }
+        }
+        for row in self.strategic.chunks_exact_mut(self.row_stride) {
+            for index in 1..row.len() {
+                row[index] += row[index - 1];
+            }
+        }
+        self
+    }
+
+    fn ready_demand(
+        &self,
+        anchor: TilePos,
+        demands: &[crate::bot::battlefield::CoverageDemand],
+        ready_at: chassis::Tick,
+    ) -> u32 {
+        let mut tiles = std::collections::BTreeMap::new();
+        for demand in demands.iter().filter(|demand| ready_at < demand.deadline) {
+            for dy in 0..demand.size.1 {
+                for dx in 0..demand.size.0 {
+                    let tile = demand.anchor.offset(dx, dy);
+                    let row = tile.y.abs_diff(anchor.y) as usize;
+                    if tile.x < 0
+                        || tile.y < 0
+                        || tile.x >= self.width
+                        || tile.y >= self.height
+                        || self
+                            .radar_half_widths
+                            .get(row)
+                            .is_none_or(|half| tile.x.abs_diff(anchor.x) > *half as u32)
+                    {
+                        continue;
+                    }
+                    let index = tile.y as usize * self.row_stride + tile.x as usize + 1;
+                    if self.novel[index] > self.novel[index - 1] {
+                        tiles
+                            .entry((tile.y, tile.x))
+                            .and_modify(|weight: &mut u32| *weight = (*weight).max(demand.weight))
+                            .or_insert(demand.weight);
+                    }
+                }
+            }
+        }
+        tiles.values().sum()
     }
 
     fn circle_sum(&self, rows: &[u32], anchor: TilePos, half_widths: &[i32]) -> u32 {
@@ -587,6 +708,43 @@ mod tests {
         let (_, novel, _) = ArrayCoverageIndex::new(&obs, &map, &[anchor]).coverage(anchor);
 
         assert_eq!(novel, 0);
+    }
+
+    #[test]
+    fn strategic_coverage_is_marginal_deadline_bound_and_overlap_deduplicated() {
+        use crate::bot::battlefield::CoverageDemand;
+        let obs = Observation {
+            map_width: 7,
+            map_height: 7,
+            visible: vec![false; 49],
+            explored: vec![false; 49],
+            ..Observation::default()
+        };
+        let anchor = TilePos::new(3, 3);
+        let demand = CoverageDemand {
+            asset: BuildingId(1),
+            anchor,
+            size: (1, 1),
+            weight: 5,
+            deadline: 200,
+        };
+        let mut duplicate = demand.clone();
+        duplicate.asset = BuildingId(2);
+        duplicate.weight = 3;
+        let demands = [demand, duplicate];
+        let map = briefing_with('.');
+        let index = ArrayCoverageIndex::new(&obs, &map, &[]).with_demand(&demands, 100);
+        assert_eq!(index.ready_demand(anchor, &demands, 199), 5);
+        assert_eq!(index.ready_demand(anchor, &demands, 200), 0);
+        assert_eq!(
+            index.circle_sum(&index.strategic, anchor, &index.radar_half_widths),
+            5
+        );
+        let overlap = ArrayCoverageIndex::new(&obs, &map, &[anchor]).with_demand(&demands, 100);
+        assert_eq!(overlap.ready_demand(anchor, &demands, 100), 0);
+        let peaks = briefing_with('^');
+        let blocked = ArrayCoverageIndex::new(&obs, &peaks, &[]).with_demand(&demands, 100);
+        assert_eq!(blocked.ready_demand(anchor, &demands, 100), 0);
     }
 
     #[test]

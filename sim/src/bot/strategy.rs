@@ -2557,6 +2557,8 @@ pub(super) struct ConnectedPackageDiagnostics {
 /// Controller-local owner of the active operation and its cooldown.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StrategicPlanner {
+    pub(in crate::bot) outcomes: super::experience::OutcomeJournal,
+    pub(in crate::bot) experience: std::sync::Arc<super::experience::Experience>,
     air: Option<ActiveAirOperation>,
     standby: AirStandby,
     cooldown_until: Tick,
@@ -2738,10 +2740,27 @@ impl StrategicPlanner {
         {
             return Ok(None);
         }
-        let current = select_target_candidates(intel, obs.tick, tuning.tactical_memory)
+        let mut current = select_target_candidates(intel, obs.tick, tuning.tactical_memory)
             .into_iter()
             .filter(|target| target.evidence == ContactEvidence::Current)
             .collect::<Vec<_>>();
+        current.sort_unstable_by_key(|target| {
+            let context = super::experience::ExperienceKey {
+                doctrine: super::experience::Doctrine::Air,
+                x: target.anchor.x,
+                y: target.anchor.y,
+                subject: target.id.map_or(0, |id| u64::from(id.0)),
+            };
+            let preference = (1024 + i32::from(self.experience.score(context)) / 2) as u64;
+            (
+                Reverse(u64::from(building_value(target.kind)) * preference),
+                Reverse(target.confidence_at(obs.tick)),
+                target.anchor.y,
+                target.anchor.x,
+                target.player,
+                target.kind,
+            )
+        });
         let Some(first) = current.first().copied() else {
             return Ok(None);
         };
@@ -3552,6 +3571,34 @@ impl StrategicPlanner {
         let Some(ActiveAirOperation { mut op, mut plan }) = self.air.take() else {
             return StrategicThinkResult::default();
         };
+        use super::experience::{
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+        };
+        let members: Vec<_> = op
+            .scout
+            .into_iter()
+            .chain(op.artillery.iter().copied())
+            .chain(op.strike_aircraft.iter().copied())
+            .chain(plan.screen.iter().copied())
+            .collect();
+        self.outcomes.watch(
+            obs,
+            EpisodeId {
+                owner: EpisodeOwner::Air,
+                serial: plan.admitted_at,
+            },
+            ExperienceKey {
+                doctrine: Doctrine::Air,
+                y: op.target.y,
+                x: op.target.x,
+                subject: op.target_id.map_or(0, |id| u64::from(id.0)),
+            },
+            &members,
+            op.phase as u8,
+        );
+        let objective_gone = op
+            .target_id
+            .is_some_and(|id| self.outcomes.observe_objective(obs, id));
         plan.screen.retain(|id| {
             unit(obs, *id)
                 .is_some_and(|member| member.kind == Role::AirGround.unit_for(obs.faction))
@@ -3717,6 +3764,51 @@ impl StrategicPlanner {
             && (out.reservations.is_empty()
                 || settled
                 || elapsed(op.phase_started_at, obs.tick) >= 500);
+        if let Some(reason) = op.recovery_reason {
+            let (outcome, reason, confidence, doctrine) = match reason {
+                AirRecoveryReason::Complete if objective_gone => (
+                    Outcome::Complete,
+                    OutcomeReason::ObjectiveObservedGone,
+                    750,
+                    false,
+                ),
+                AirRecoveryReason::RequiredUnitLost => (
+                    Outcome::Ineffective,
+                    OutcomeReason::RequiredUnitLost,
+                    1000,
+                    op.membership_frozen_at.is_some(),
+                ),
+                AirRecoveryReason::NewAirDefense => (
+                    Outcome::Aborted,
+                    OutcomeReason::ObservedCounter,
+                    1000,
+                    false,
+                ),
+                AirRecoveryReason::Timeout
+                    if op.membership_frozen_at.is_none()
+                        && !self.outcomes.has_progress()
+                        && self.outcomes.own_lost_value(obs) == 0 =>
+                {
+                    (Outcome::Aborted, OutcomeReason::Deadline, 1000, false)
+                }
+                AirRecoveryReason::Timeout => {
+                    (Outcome::Ineffective, OutcomeReason::Deadline, 750, false)
+                }
+                AirRecoveryReason::Complete
+                | AirRecoveryReason::ObjectiveLost
+                | AirRecoveryReason::StaleIntelligence => {
+                    (Outcome::Inconclusive, OutcomeReason::LostContact, 0, false)
+                }
+                AirRecoveryReason::UnreachableStaging | AirRecoveryReason::UnreachableAirRoute => {
+                    (Outcome::Aborted, OutcomeReason::BlockedRoute, 1000, false)
+                }
+                AirRecoveryReason::PreparationInfeasible => {
+                    (Outcome::Invalidated, OutcomeReason::Preempted, 1000, false)
+                }
+            };
+            self.outcomes
+                .finish(obs, outcome, reason, confidence, doctrine);
+        }
         if settled && !out.reservations.is_empty() && reusable_survivors(op.recovery_reason) {
             self.standby = AirStandby::from_operation(&op, obs);
         } else if recovered {
@@ -8004,6 +8096,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         }
     }
 
@@ -8050,6 +8144,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         (battle, planner)
     }
@@ -8354,6 +8450,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
 
         assert!(
@@ -8467,6 +8565,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         planner.mark_current_connected_providers_issued(issued_at);
 
@@ -8604,6 +8704,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         proposal
             .bind_producer_assignments(vec![retained])
@@ -10378,6 +10480,23 @@ mod tests {
     }
 
     #[test]
+    fn preparation_timeout_does_not_report_an_executed_assault_failure() {
+        use crate::bot::experience::{Outcome, OutcomeReason};
+        let observation = obs(10_000);
+        let intel = knowledge(&observation);
+        for phase in [AirOperationPhase::Recon, AirOperationPhase::Assemble] {
+            let mut planner = with_operation(phase, observation.tick);
+            planner.air_op_mut().unwrap().started_at = 0;
+            think(&mut planner, &observation, &intel);
+            let report = &planner.outcomes.pending[0];
+            assert_eq!(report.outcome, Outcome::Aborted);
+            assert_eq!(report.reason, OutcomeReason::Deadline);
+            assert_eq!(report.own_lost_value, 0);
+            assert!(!report.doctrine_eligible);
+        }
+    }
+
+    #[test]
     fn recovery_trusts_terminal_move_orders_instead_of_recalling_every_think() {
         let mut settled = obs(408);
         settled.faction = Faction::Cupric;
@@ -11716,6 +11835,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
 
         let mut after_destruction = initial;
@@ -14706,6 +14827,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let run = |retain_extractor: bool, current_scrap: u32| {
             let mut hidden = initial.clone();
@@ -14783,6 +14906,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
 
         let decision = think(&mut planner, &hidden, &intelligence);
@@ -14906,6 +15031,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
 
         let decision = think(&mut planner, &hidden, &intelligence);
@@ -14994,6 +15121,8 @@ mod tests {
                 standby: AirStandby::default(),
                 cooldown_until: 0,
                 terminal_outcome: None,
+                outcomes: Default::default(),
+                experience: Default::default(),
             };
             let mut intelligence = knowledge(&initial);
 
@@ -15164,6 +15293,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
 
         let decision = think(&mut planner, &observation, &intelligence);
@@ -15205,6 +15336,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let mut intelligence = knowledge(&battle);
 
@@ -15258,6 +15391,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let intel = knowledge(&battle);
@@ -15855,6 +15990,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
 
         assert!(
@@ -15928,6 +16065,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
 
         assert!(
@@ -16238,6 +16377,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
 
         assert_eq!(
@@ -16400,6 +16541,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
 
         add_renewable_economy(&mut battle, 12);
@@ -16460,6 +16603,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let intel = knowledge(&battle);
 
@@ -16553,6 +16698,8 @@ mod tests {
                 standby: AirStandby::default(),
                 cooldown_until: 0,
                 terminal_outcome: None,
+                outcomes: Default::default(),
+                experience: Default::default(),
             }
         };
         let status = |planner: &StrategicPlanner,
@@ -16684,6 +16831,8 @@ mod tests {
                 standby: AirStandby::default(),
                 cooldown_until: 0,
                 terminal_outcome: None,
+                outcomes: Default::default(),
+                experience: Default::default(),
             }
         };
 
@@ -16868,6 +17017,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let intel = knowledge(&battle);
 
@@ -17047,6 +17198,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let request = LiftSupportRequest {
             player: PlayerId(1),
@@ -17195,6 +17348,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let intel = knowledge(&battle);
 
@@ -17224,6 +17379,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
 
         let first = think(&mut planner, &battle, &knowledge(&battle));
@@ -17284,6 +17441,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let mut intel = knowledge(&battle);
 
@@ -17355,6 +17514,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let request = LiftSupportRequest {
             player: PlayerId(1),
@@ -17501,6 +17662,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let intel = knowledge(&battle);
 
@@ -17578,6 +17741,8 @@ mod tests {
             },
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let before = planner.clone();
 
@@ -17609,6 +17774,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let intel = knowledge(&battle);
 
@@ -17683,6 +17850,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let intel = knowledge(&battle);
 
@@ -17726,6 +17895,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let intel = knowledge(&battle);
 
@@ -18161,6 +18332,8 @@ mod tests {
                 standby: AirStandby::default(),
                 cooldown_until: 0,
                 terminal_outcome: None,
+                outcomes: Default::default(),
+                experience: Default::default(),
             };
 
             let decision = planner.think(
@@ -18226,6 +18399,8 @@ mod tests {
                 standby: AirStandby::default(),
                 cooldown_until: 0,
                 terminal_outcome: None,
+                outcomes: Default::default(),
+                experience: Default::default(),
             };
 
             let decision = planner.think(&identity, tuning, &battle, &intel, HOME, &[]);
@@ -18370,6 +18545,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
         let intel = knowledge(&battle);
 
@@ -18411,6 +18588,8 @@ mod tests {
             standby: AirStandby::default(),
             cooldown_until: 0,
             terminal_outcome: None,
+            outcomes: Default::default(),
+            experience: Default::default(),
         };
 
         let completion = think(&mut planner, &battle, &knowledge(&battle));

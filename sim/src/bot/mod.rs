@@ -5,11 +5,11 @@
 //!
 //! ```text
 //! immutable PublicMapBriefing + fog-honest Observation
-//!   -> oriented public priors + StrategicIntelligence
+//!   -> oriented public priors + StrategicIntelligence + battlefield assessment
 //!   -> persistent playbooks + UtilityPolicy proposals
-//!   -> AllocationSession (Foundry + connected offense + Defense + StandingForce)
+//!   -> AllocationSession (seven domains, bounded experience-adjusted return)
 //!   -> admitted Intent[]
-//!   -> Executive
+//!   -> Executive (exact ground missions and tactical combat)
 //!   -> PlayerCommand[]
 //! ```
 //!
@@ -23,10 +23,12 @@
 //! [`Brain::overseer`] remains a separate QA yardstick.
 
 mod allocation;
+pub mod battlefield;
 pub mod brain;
 pub mod briefing;
 pub mod difficulty;
 pub mod executive;
+mod experience;
 pub mod intelligence;
 pub mod lift;
 pub mod observation;
@@ -51,7 +53,7 @@ pub use intelligence::{
     ContactEvidence, StrategicIntelligence, UnitContact,
 };
 pub use lift::{LiftAirSupport, LiftManifest, LiftOperation, LiftPhase, LiftPlanner};
-pub use observation::{BuildingObs, Observation, UnitObs};
+pub use observation::{BuildingObs, CarriedUnitObs, Observation, UnitObs};
 pub use orient::Orientation;
 pub use profile::{PersonalityTraits, ResolvedProfile, Specialty};
 pub use raid::{RaidExitReason, RaidObjective, RaidOperation, RaidPhase, RaidPlanner};
