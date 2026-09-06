@@ -178,6 +178,13 @@ pub enum Intent {
         /// The patient.
         building: crate::ids::BuildingId,
     },
+    /// Weld an own building with the exact worker admitted by allocation.
+    RepairWith {
+        /// The allocated worker.
+        worker: UnitId,
+        /// The exact patient.
+        building: crate::ids::BuildingId,
+    },
     /// Strip an own built building for scrap (the executive picks the
     /// crew; the sim refuses Foundries).
     Salvage {

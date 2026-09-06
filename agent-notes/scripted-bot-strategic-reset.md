@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02T05:47:32
-updated: 2026-09-05T12:16:22
+updated: 2026-09-05T20:42:57
 ---
 
 # Scripted Bot Strategic Reset
@@ -70,6 +70,22 @@ without arbitrary controller caps.
 - Hash and version approval is an implementing-agent responsibility. Reviewers
   should assess technical compatibility, not flag missing approval that may have
   been granted outside their context.
+- Approved concurrent independent reconnaissance questions, bounded value- and
+  safety-based retries without mandatory fresh enemy sight, and demand-driven
+  raid procurement while retaining raid execution and its tactical pair minimum.
+  The implementation remains unpublished until separately authorized.
+- Authorized committing, pushing, and opening the reconnaissance/support PR
+  after implementation, complete validation, replay/native review, and recorded
+  limitations. Keep the PR description empty under the repository workflow.
+- Approved removing only the defense integration test requirement that
+  construction precede first enemy contact, because question-driven
+  reconnaissance legitimately discovers the enemy earlier. Preserve the
+  six-minute bound, exact allocation and command ownership, legal placement, and
+  forward-approach checks.
+- Authorized fixing bugs discovered during implementation and final review
+  without an additional permission checkpoint. Include the narrow player-facing
+  eliminated-seat guard now; retain the frozen Overseer and ordinary simulation
+  command rules.
 
 ## Findings
 
@@ -485,7 +501,7 @@ without arbitrary controller caps.
     0x841e2003b70e81e5. The isolated Terminal Basin 3400-tick benchmark takes
     13.54 seconds versus 13.31 before the fixes, with identical hashes and zero
     rejections or stalls.
-- [ ] 8. Migrate reconnaissance and support to information value and concrete
+- [x] 8. Migrate reconnaissance and support to information value and concrete
       operational demand.
   - Scout when resolving uncertainty could change a decision, and build repair,
     anti-air, escort, or relief support for concrete forces and threats;
@@ -497,6 +513,54 @@ without arbitrary controller caps.
     them, stale and invalidated evidence, public-map priors, current threats,
     remembered uncertainty, repair demand, escorts, anti-air, allied relief,
     cancellation, and bounded retry.
+  - Implemented seven-domain allocation with exact question and support
+    ownership, owner-only repair-target observation schema 16, trace schema 10,
+    cadence-funded exact-worker repairs, finite shared repair service, marginal
+    Repair Bays, complete selected-layout validation, protective deployment,
+    allocated pressure-driven relief, and objective-bound Scuttler procurement.
+    Removed the migrated residual purchasers while preserving core protection,
+    ordinary simulation rules, frozen Overseer, and operation execution.
+  - Closed replay-discovered ownership and funding gaps: refresh outgoing claims
+    after commit and rollback, exclude exact paid scout occurrences across
+    operational and question planners, retain late living observers for recall,
+    preserve fixed question deadlines, mature forecast funding beside older
+    current-capital claims, and recover genuinely unfundable Lift schedules
+    without releasing surviving payload membership. Concurrent questions retain
+    independent loss, retry, recall, and safe-return evidence.
+  - Reviewed fourteen cells: two Prime seeds each on Skirmish, Twin Forges,
+    Skyhook, and Terminal Basin, plus two Skirmish seeds each for
+    Scrapheap/Turtle, Standard/Balanced, and Veteran/Aggressive. All final cells
+    have zero rejected commands, with at most three repeats of one stall reason
+    on any unit. The corrected Twin Forges and Terminal Basin reruns remove
+    exactly 196 and six post-elimination commands while preserving every other
+    command and final hashes 0xc503daaa73583f91 and 0x37b81f7c6b0ea251. The
+    guard covers Foundry loss and surrender at every difficulty, suppresses
+    traced/untraced planner advancement, and leaves allies and frozen Overseer
+    intact.
+  - Preserved review evidence in /tmp/oxide-pr8.eWmKwE. Exact fog-seat snapshots
+    and native playback cover post-loss observer reuse and recall, one Tender
+    repair order taking an Avalanche from 180 to 300 HP, and exact relief
+    deployment/withdrawal. The two Skyhook legs recorded 47 and 30 Load
+    commands; the reviewed scout roster stabilized and reused survivors rather
+    than endlessly purchasing replacements. Selected Standard, Skyhook, Twin
+    Forges, and Terminal Basin replays reconstruct to their recorded hashes.
+    Large-map outcome, late-tier and defense-routing limitations remain recorded
+    under Action 10; no automated result establishes human fun or final
+    difficulty calibration.
+  - Passed final full workspace tests, focused and composed regressions, Clippy,
+    cargo check, warnings-denied rustdoc, rustfmt, Markdown, all eight canonical
+    skill validators, and sequential coverage: 90.45% unit and 91.94% combined
+    lines. The approved player-facing fixture refresh passes unblessed,
+    including after the elimination guard; frozen state hashes and
+    workspace/simulation version 0.16.0 remain unchanged. The approved
+    defense-test migration removes only pre-contact timing, retaining the
+    six-minute bound, exact ownership, legality, and forward placement.
+  - Repeated the isolated debug Terminal Basin 3400-tick benchmark after all
+    code changes: 7.83 seconds versus the verified 13.54-second prior baseline,
+    with zero rejected commands or stalls. Late Skyhook profiling still
+    attributes most sampled bot time to existing defensive approach pathfinding;
+    broader routing/cache changes remain a measured performance follow-up rather
+    than part of this admission migration.
 - [ ] 9. Feed bounded deterministic outcome evidence back into future strategic
       decisions.
   - Record operation, route, harvest, and defense outcomes with confidence,
@@ -533,5 +597,13 @@ without arbitrary controller caps.
     oversized inline test modules. Preserve behavioral tripwires before deleting
     legacy tests; do not invent a generic operation framework or perform
     mechanical container rewrites without measured value.
+  - Retain final large-map evidence for outcome learning and calibration:
+    Skyhook scouts recover and transports launch, but repeated defended landings
+    fail, idle paid observers accumulate after questions finish, and large
+    defensive rosters persist. Terminal Basin still has late and uneven
+    technology and mostly tier-one armies. Late Skyhook samples concentrate in
+    existing defensive approach pathfinding. Revisit these measured outcomes and
+    routing cost in Actions 9-10; automated legality and coverage do not
+    establish human fun or final difficulty quality.
 
 ## Open Questions

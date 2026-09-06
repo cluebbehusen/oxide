@@ -20,7 +20,7 @@ use super::profile::{ResolvedProfile, Specialty};
 use super::resources::{
     ProducerEgress, ProducerLaneReservations, ProductionAccess, ProductionDemand,
     ReservedProducerJob, ResourceSnapshot, count_paid_queued_ready_with_access,
-    paid_queued_ready_producers_with_access, plan_production_with_access,
+    paid_queued_ready_occurrences_with_access, plan_production_with_access,
     production_demands_fit_horizon_with_access,
 };
 use super::routing::{self, RouteProjection, production_spawn_doorstep};
@@ -101,6 +101,7 @@ struct ConnectedPlanningContext<'a> {
 
 #[derive(Debug, Clone, Copy)]
 struct ConnectedRouteContext<'a> {
+    unavailable_paid: &'a [(BuildingId, UnitKind, usize)],
     intel: &'a StrategicIntelligence,
     home: TilePos,
     target: TilePos,
@@ -542,6 +543,7 @@ fn derive_connected_package_options(
         return Err(ConnectedPlanRejection::DisconnectedGroundRoute);
     }
     let route = ConnectedRouteContext {
+        unavailable_paid: &[],
         intel,
         home,
         target: target.anchor,
@@ -745,7 +747,7 @@ fn connected_paid_provider_claims(
 
     let mut paid = Vec::new();
     for (kind, count) in needed {
-        let producers = paid_queued_ready_producers_with_access(
+        let producers = paid_queued_ready_occurrences_with_access(
             &resources.snapshot,
             kind,
             package.preparation_deadline,
@@ -759,7 +761,11 @@ fn connected_paid_provider_claims(
             producers
                 .into_iter()
                 .take(count)
-                .map(|producer| ConnectedPaidProvider { producer, kind }),
+                .map(|(producer, occurrence)| ConnectedPaidProvider {
+                    producer,
+                    kind,
+                    occurrence,
+                }),
         );
     }
     paid.sort_unstable();
@@ -1061,6 +1067,7 @@ struct AirPlanningContext<'a> {
 
 #[derive(Clone, Copy)]
 struct StrategicProductionContext<'a> {
+    unavailable_paid: &'a [(BuildingId, UnitKind, usize)],
     prior_intents: &'a [Intent],
     lane_reservations: &'a ProducerLaneReservations,
 }
@@ -1069,6 +1076,7 @@ impl StrategicProductionContext<'static> {
     fn empty() -> Self {
         Self {
             prior_intents: &[],
+            unavailable_paid: &[],
             lane_reservations: ProducerLaneReservations::empty(),
         }
     }
@@ -1304,9 +1312,13 @@ pub(in crate::bot) struct ConnectedOffenseClaims {
 pub(in crate::bot) struct ConnectedPaidProvider {
     producer: BuildingId,
     kind: UnitKind,
+    occurrence: usize,
 }
 
 impl ConnectedPaidProvider {
+    pub(in crate::bot) const fn occurrence(self) -> usize {
+        self.occurrence
+    }
     pub(in crate::bot) const fn producer(self) -> BuildingId {
         self.producer
     }
@@ -2154,7 +2166,16 @@ impl<'a> StrategicThinkContext<'a> {
         self.production = StrategicProductionContext {
             prior_intents,
             lane_reservations,
+            ..self.production
         };
+        self
+    }
+
+    pub(in crate::bot) fn with_paid_exclusions(
+        mut self,
+        excluded: &'a [(BuildingId, UnitKind, usize)],
+    ) -> Self {
+        self.production.unavailable_paid = excluded;
         self
     }
 }
@@ -2162,6 +2183,7 @@ impl<'a> StrategicThinkContext<'a> {
 /// Complete same-observation evidence for one pure connected-offense proposal.
 #[derive(Clone, Copy)]
 pub(in crate::bot) struct FreshConnectedProposalRequest<'a> {
+    unavailable_paid: &'a [(BuildingId, UnitKind, usize)],
     profile: &'a ResolvedProfile,
     tuning: DifficultyTuning,
     obs: &'a Observation,
@@ -2172,6 +2194,13 @@ pub(in crate::bot) struct FreshConnectedProposalRequest<'a> {
 }
 
 impl<'a> FreshConnectedProposalRequest<'a> {
+    pub(in crate::bot) fn with_paid_exclusions(
+        mut self,
+        excluded: &'a [(BuildingId, UnitKind, usize)],
+    ) -> Self {
+        self.unavailable_paid = excluded;
+        self
+    }
     pub(in crate::bot) const fn new(
         profile: &'a ResolvedProfile,
         tuning: DifficultyTuning,
@@ -2186,6 +2215,7 @@ impl<'a> FreshConnectedProposalRequest<'a> {
             tuning,
             obs,
             resource_snapshot,
+            unavailable_paid: &[],
             intel,
             home,
             coordination,
@@ -2195,6 +2225,7 @@ impl<'a> FreshConnectedProposalRequest<'a> {
 
 #[derive(Clone, Copy)]
 struct FreshConnectedDerivationContext<'a> {
+    unavailable_paid: &'a [(BuildingId, UnitKind, usize)],
     profile: &'a ResolvedProfile,
     tuning: DifficultyTuning,
     obs: &'a Observation,
@@ -2289,6 +2320,7 @@ fn derive_fresh_connected_proposal(
     origin: ConnectedProposalOrigin,
 ) -> Result<FreshConnectedProposal, ConnectedPlanRejection> {
     let route = ConnectedRouteContext {
+        unavailable_paid: context.unavailable_paid,
         intel: context.intel,
         home: context.home,
         target: target.anchor,
@@ -2323,6 +2355,7 @@ fn derive_connected_proposal_with_resources(
     preparation_deadline: Tick,
 ) -> Result<FreshConnectedProposal, ConnectedPlanRejection> {
     let FreshConnectedDerivationContext {
+        unavailable_paid,
         profile,
         tuning,
         obs,
@@ -2334,6 +2367,7 @@ fn derive_connected_proposal_with_resources(
         preferred_artillery,
     } = context;
     let route = ConnectedRouteContext {
+        unavailable_paid,
         intel,
         home,
         target: target.anchor,
@@ -2642,6 +2676,7 @@ impl StrategicPlanner {
         request: FreshConnectedProposalRequest<'_>,
     ) -> Result<Option<FreshConnectedProposal>, RejectedConnectedCandidate> {
         let FreshConnectedProposalRequest {
+            unavailable_paid,
             profile,
             tuning,
             obs,
@@ -2675,6 +2710,7 @@ impl StrategicPlanner {
             let unavailable = excluding_owned(coordination.enlisted, &owned);
             return derive_fresh_connected_proposal(
                 FreshConnectedDerivationContext {
+                    unavailable_paid,
                     profile,
                     tuning,
                     obs,
@@ -2731,6 +2767,7 @@ impl StrategicPlanner {
         for target in current {
             match derive_fresh_connected_proposal(
                 FreshConnectedDerivationContext {
+                    unavailable_paid,
                     profile,
                     tuning,
                     obs,
@@ -2765,6 +2802,7 @@ impl StrategicPlanner {
         request: FreshConnectedProposalRequest<'_>,
     ) -> Result<Option<FreshConnectedProposal>, RejectedConnectedCandidate> {
         let FreshConnectedProposalRequest {
+            unavailable_paid,
             profile,
             tuning,
             obs,
@@ -2796,6 +2834,7 @@ impl StrategicPlanner {
         let owned = reservations(&active.op, &active.plan, obs);
         let unavailable = excluding_owned(coordination.enlisted, &owned);
         let route = ConnectedRouteContext {
+            unavailable_paid,
             intel,
             home,
             target: target.anchor,
@@ -2827,6 +2866,7 @@ impl StrategicPlanner {
         };
         let mut proposal = derive_connected_proposal_with_resources(
             FreshConnectedDerivationContext {
+                unavailable_paid,
                 profile,
                 tuning,
                 obs,
@@ -2988,6 +3028,48 @@ impl StrategicPlanner {
             units: reservations(&active.op, &active.plan, obs),
             provider_jobs,
         })
+    }
+
+    pub(in crate::bot) fn reconnaissance_paid_claims(
+        &self,
+        obs: &Observation,
+        resources: &ResourceSnapshot,
+        unavailable: &[(BuildingId, UnitKind, usize)],
+    ) -> Vec<super::allocation::PaidQueueClaim> {
+        let Some(active) = self.air.as_ref().filter(|active| {
+            active.op.scout.is_none()
+                && matches!(
+                    active.op.phase,
+                    AirOperationPhase::Recon | AirOperationPhase::Assemble
+                )
+        }) else {
+            return Vec::new();
+        };
+        let deadline = self.air_capacity_deadline().unwrap_or(active.op.started_at);
+        let kind = Role::Scout.unit_for(obs.faction);
+        resources
+            .producers()
+            .iter()
+            .flat_map(|lane| {
+                lane.queued_readiness()
+                    .filter(move |(queued, _)| *queued == kind)
+                    .enumerate()
+                    .filter_map(move |(occurrence, (_, ready_at))| {
+                        (ready_at < deadline
+                            && !unavailable.contains(&(lane.producer, kind, occurrence)))
+                        .then_some((ready_at, lane.producer, occurrence))
+                    })
+            })
+            .min()
+            .map(
+                |(_, producer, occurrence)| super::allocation::PaidQueueClaim {
+                    producer,
+                    kind,
+                    occurrence,
+                },
+            )
+            .into_iter()
+            .collect()
     }
 
     /// Allocator-owned provider purchases that still occupy an observed
@@ -3511,6 +3593,7 @@ impl StrategicPlanner {
                     current_target,
                     &connected_package,
                     ConnectedRouteContext {
+                        unavailable_paid: production.unavailable_paid,
                         intel,
                         home,
                         target: current_target.anchor,
@@ -3540,6 +3623,7 @@ impl StrategicPlanner {
             && op.phase <= AirOperationPhase::Assemble
         {
             let route = ConnectedRouteContext {
+                unavailable_paid: production.unavailable_paid,
                 intel,
                 home,
                 target: op.target,
@@ -3756,9 +3840,31 @@ fn remembered_recon(
     }
     schedule(
         context,
-        &[(scout_kind, usize::from(op.scout.is_none()))],
+        &[(
+            scout_kind,
+            usize::from(op.scout.is_none())
+                .saturating_sub(unowned_queued_scouts(context, scout_kind)),
+        )],
         out,
     );
+}
+
+fn unowned_queued_scouts(context: &AirPlanningContext<'_>, scout: UnitKind) -> usize {
+    let prior = context
+        .production
+        .prior_intents
+        .iter()
+        .filter(|intent| matches!(intent, Intent::TrainAt { kind, .. } if *kind == scout))
+        .count();
+    let unavailable = context
+        .production
+        .unavailable_paid
+        .iter()
+        .filter(|(_, kind, _)| *kind == scout)
+        .count();
+    queued(context.obs, |kind| kind == scout)
+        .saturating_add(prior)
+        .saturating_sub(unavailable)
 }
 
 fn remembered_recon_scout(
@@ -3806,6 +3912,7 @@ fn recon(
             &resources.targets,
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel,
                 home: context.home,
                 target: op.target,
@@ -3907,6 +4014,7 @@ fn assemble(
             &resources.targets,
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel,
                 home: *home,
                 target: op.target,
@@ -5483,6 +5591,7 @@ fn connected_production_access<'a>(
     }
 
     ProductionAccess::restricted_kinds_with_paid(allowed, paid_allowed)
+        .excluding_paid(route.unavailable_paid)
 }
 
 fn connected_target_selection<'a>(
@@ -6258,8 +6367,9 @@ fn schedule_missing_members(
     }
 
     let bomber_kind = Role::Bomber.unit_for(obs.faction);
-    let missing_scout =
-        1usize.saturating_sub(usize::from(op.scout.is_some()) + queued(obs, |k| k == scout_kind));
+    let missing_scout = 1usize.saturating_sub(
+        usize::from(op.scout.is_some()) + unowned_queued_scouts(context, scout_kind),
+    );
     let missing_artillery = plan
         .desired_artillery
         .saturating_sub(op.artillery.len() + queued(obs, is_artillery));
@@ -7590,6 +7700,7 @@ mod tests {
                 target,
                 &[],
                 ConnectedRouteContext {
+                    unavailable_paid: &[],
                     intel: intelligence,
                     home: HOME,
                     target: target.anchor,
@@ -7780,6 +7891,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
                 target: target.anchor,
@@ -10110,6 +10222,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
                 target: target.anchor,
@@ -10598,6 +10711,7 @@ mod tests {
         let orientation = Orientation::for_home(&observation, home);
         let intelligence = knowledge(&observation);
         let route = ConnectedRouteContext {
+            unavailable_paid: &[],
             intel: &intelligence,
             home,
             target,
@@ -10849,6 +10963,7 @@ mod tests {
         let orientation = Orientation::for_home(&observation, home);
         let intelligence = knowledge(&observation);
         let route = ConnectedRouteContext {
+            unavailable_paid: &[],
             intel: &intelligence,
             home,
             target,
@@ -11533,6 +11648,7 @@ mod tests {
             initial_target,
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
                 target: TARGET,
@@ -11556,6 +11672,7 @@ mod tests {
             &[],
             &initial_resources.targets,
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
                 target: TARGET,
@@ -11974,6 +12091,67 @@ mod tests {
         assert!(
             result.is_err(),
             "strategy must not reconstruct the rich bank from Observation behind the coordinator"
+        );
+    }
+
+    #[test]
+    fn connected_scout_credit_keeps_the_unowned_queue_occurrence_identity() {
+        let mut battle = production_hungry_connected_obs(120, 1000);
+        battle
+            .my_units
+            .retain(|unit| unit.kind != UnitKind::Kestrel);
+        let factory = battle
+            .my_buildings
+            .iter()
+            .position(|building| building.kind == BuildingKind::Airworks)
+            .unwrap();
+        let producer = battle.my_buildings[factory].id;
+        battle.my_queues[factory] = vec![UnitKind::Kestrel, UnitKind::Kestrel];
+        let intelligence = knowledge(&battle);
+        let resources = ResourceSnapshot::from_observation(&battle);
+        let proposal = StrategicPlanner::new()
+            .fresh_connected_minimum_proposal(
+                FreshConnectedProposalRequest::new(
+                    &profile(),
+                    DifficultyTuning::for_level(BotDifficulty::Prime),
+                    &battle,
+                    &resources,
+                    &intelligence,
+                    HOME,
+                    coordination(None),
+                )
+                .with_paid_exclusions(&[(producer, UnitKind::Kestrel, 0)]),
+            )
+            .unwrap()
+            .unwrap();
+        let scouts: Vec<_> = proposal
+            .minimum_claims()
+            .paid_providers()
+            .iter()
+            .filter(|provider| provider.kind() == UnitKind::Kestrel)
+            .map(|provider| (provider.producer(), provider.occurrence()))
+            .collect();
+        assert_eq!(scouts, [(producer, 1)]);
+        assert!(
+            proposal
+                .minimum_claims()
+                .provider_jobs()
+                .iter()
+                .all(|job| job.kind() != UnitKind::Kestrel)
+        );
+        let mut planner = StrategicPlanner::new();
+        planner.air = Some(proposal.variants[0].active.clone());
+        assert_eq!(
+            planner.reconnaissance_paid_claims(
+                &battle,
+                &resources,
+                &[(producer, UnitKind::Kestrel, 0)]
+            ),
+            [super::super::allocation::PaidQueueClaim {
+                producer,
+                kind: UnitKind::Kestrel,
+                occurrence: 1
+            }]
         );
     }
 
@@ -12822,6 +13000,7 @@ mod tests {
             &targets,
             &resources,
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intelligence,
                 home,
                 target,
@@ -12878,6 +13057,7 @@ mod tests {
             },
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intelligence,
                 home,
                 target,
@@ -12969,6 +13149,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intelligence,
                 home,
                 target: primary,
@@ -13122,6 +13303,7 @@ mod tests {
             &target,
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
                 target: target.anchor,
@@ -13221,6 +13403,7 @@ mod tests {
             .find(|contact| contact.anchor == TARGET)
             .expect("current target");
         let optimistic_route = ConnectedRouteContext {
+            unavailable_paid: &[],
             intel: &intelligence,
             home: HOME,
             target: TARGET,
@@ -13228,6 +13411,7 @@ mod tests {
             orientation: test_orientation(),
         };
         let public_route = ConnectedRouteContext {
+            unavailable_paid: &[],
             public_map: Some(&public_map),
             ..optimistic_route
         };
@@ -13317,6 +13501,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
                 target: TARGET,
@@ -13333,6 +13518,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
                 target: TARGET,
@@ -13347,6 +13533,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
                 target: TARGET,
@@ -13563,6 +13750,7 @@ mod tests {
             .find(|contact| contact.anchor == primary)
             .expect("current primary target");
         let route = ConnectedRouteContext {
+            unavailable_paid: &[],
             intel: &intelligence,
             home: HOME,
             target: primary,
@@ -13622,6 +13810,7 @@ mod tests {
             .find(|contact| contact.anchor == primary)
             .expect("current primary target");
         let route = ConnectedRouteContext {
+            unavailable_paid: &[],
             intel: &intelligence,
             home: HOME,
             target: primary,
@@ -13741,6 +13930,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
                 target: TARGET,
@@ -15533,6 +15723,57 @@ mod tests {
             after.intents.is_empty(),
             "the accepted flight should persist"
         );
+    }
+
+    #[test]
+    fn remembered_recon_buys_only_the_scout_not_owned_by_another_question() {
+        let first_sighting = wealthy_island_obs(4800, 1);
+        let mut intelligence = knowledge(&first_sighting);
+        let mut ghost = wealthy_island_obs(4992, 1);
+        ghost.enemy_buildings[0].seen = false;
+        ghost.my_units.retain(|unit| unit.kind != UnitKind::Kestrel);
+        let factory = ghost
+            .my_buildings
+            .iter()
+            .position(|building| building.kind == BuildingKind::Airworks)
+            .unwrap();
+        let producer = ghost.my_buildings[factory].id;
+        ghost.my_queues[factory] = vec![UnitKind::Kestrel];
+        intelligence.update(&ghost);
+        let identity = profile();
+        let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
+        for (foreign, expected) in [(vec![], 0), (vec![(producer, UnitKind::Kestrel, 0)], 1)] {
+            let mut planner = StrategicPlanner::new();
+            let result = planner.think_after_connected_adjudication(
+                StrategicThinkContext::new(
+                    &identity,
+                    tuning,
+                    &ghost,
+                    &intelligence,
+                    HOME,
+                    coordination(None),
+                )
+                .with_paid_exclusions(&foreign),
+            );
+            assert!(planner.air_operation().is_some());
+            assert_eq!(
+                result
+                    .decision
+                    .intents
+                    .iter()
+                    .filter(|intent| {
+                        matches!(
+                            intent,
+                            Intent::TrainAt {
+                                kind: UnitKind::Kestrel,
+                                ..
+                            }
+                        )
+                    })
+                    .count(),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -17778,6 +18019,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                unavailable_paid: &[],
                 intel: &intel,
                 home: HOME,
                 target: primary,

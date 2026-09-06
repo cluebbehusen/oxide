@@ -67,6 +67,7 @@ pub(crate) enum ProductionAccess {
     RestrictedKinds {
         allowed: Vec<(BuildingId, UnitKind)>,
         paid_allowed: Vec<(BuildingId, UnitKind)>,
+        paid_exclusions: Vec<(BuildingId, UnitKind, usize)>,
     },
 }
 
@@ -89,6 +90,39 @@ impl ProductionAccess {
         Self::RestrictedKinds {
             allowed,
             paid_allowed,
+            paid_exclusions: Vec::new(),
+        }
+    }
+
+    pub(crate) fn excluding_paid(mut self, excluded: &[(BuildingId, UnitKind, usize)]) -> Self {
+        match &mut self {
+            Self::RestrictedKinds {
+                paid_exclusions, ..
+            } => {
+                paid_exclusions.extend_from_slice(excluded);
+                paid_exclusions.sort_unstable();
+                paid_exclusions.dedup();
+            }
+            #[cfg(test)]
+            Self::Unrestricted => assert!(excluded.is_empty()),
+        }
+        self
+    }
+
+    fn allows_paid_occurrence(
+        &self,
+        producer: BuildingId,
+        kind: UnitKind,
+        occurrence: usize,
+    ) -> bool {
+        match self {
+            #[cfg(test)]
+            Self::Unrestricted => true,
+            Self::RestrictedKinds {
+                paid_exclusions, ..
+            } => paid_exclusions
+                .binary_search(&(producer, kind, occurrence))
+                .is_err(),
         }
     }
 
@@ -965,6 +999,18 @@ pub(crate) fn paid_queued_ready_producers_with_access(
     deadline: Tick,
     access: &ProductionAccess,
 ) -> Vec<BuildingId> {
+    paid_queued_ready_occurrences_with_access(resources, kind, deadline, access)
+        .into_iter()
+        .map(|(producer, _)| producer)
+        .collect()
+}
+
+pub(crate) fn paid_queued_ready_occurrences_with_access(
+    resources: &ResourceSnapshot,
+    kind: UnitKind,
+    deadline: Tick,
+    access: &ProductionAccess,
+) -> Vec<(BuildingId, usize)> {
     resources
         .producers()
         .iter()
@@ -977,6 +1023,7 @@ pub(crate) fn paid_queued_ready_producers_with_access(
 
             let mut preceding_ticks = 0_u64;
             let mut producers = Vec::new();
+            let mut occurrence = 0;
             for (index, queued) in lane.queued.iter().enumerate() {
                 let train_ticks = queued.stats().train_ticks;
                 let item_ticks = if index == 0 {
@@ -1002,7 +1049,10 @@ pub(crate) fn paid_queued_ready_producers_with_access(
                     break;
                 }
                 if *queued == kind {
-                    producers.push(lane.producer);
+                    if access.allows_paid_occurrence(lane.producer, kind, occurrence) {
+                        producers.push((lane.producer, occurrence));
+                    }
+                    occurrence += 1;
                 }
             }
             producers
@@ -1847,6 +1897,48 @@ mod tests {
         assert!(access.allows(producer, UnitKind::Bombard));
         assert!(!access.allows(producer, UnitKind::Lancer));
         assert!(!access.allows(BuildingId(8), UnitKind::Bombard));
+    }
+
+    #[test]
+    fn foreign_paid_occurrences_remain_in_the_lane_without_supplying_capability() {
+        let producer = BuildingId(7);
+        let scout = UnitKind::Kestrel;
+        let resources = snapshot(
+            1000,
+            vec![lane(
+                producer.0,
+                BuildingKind::Airworks,
+                vec![scout, UnitKind::Condor, scout],
+                vec![scout],
+                ProducerEgress::NotRequired,
+            )],
+        );
+        let access = ProductionAccess::restricted_kinds(vec![(producer, scout)])
+            .excluding_paid(&[(producer, scout, 0)]);
+        assert_eq!(
+            paid_queued_ready_occurrences_with_access(&resources, scout, Tick::MAX, &access,),
+            [(producer, 1)]
+        );
+        let first_ready = OBSERVED_AT + u64::from(scout.stats().train_ticks);
+        assert_eq!(
+            count_paid_queued_ready_with_access(&resources, scout, first_ready, &access),
+            0
+        );
+        let append = plan_production_with_access(
+            &resources,
+            &[ProductionDemand {
+                kind: scout,
+                count: 1,
+            }],
+            Tick::MAX,
+            1000,
+            &access,
+        );
+        assert_eq!(append.appends.len(), 1);
+        assert!(
+            append.appends[0].timing.no_block_latest_ready_tick
+                > first_ready + u64::from(UnitKind::Condor.stats().train_ticks)
+        );
     }
 
     #[test]

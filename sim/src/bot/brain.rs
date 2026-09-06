@@ -226,8 +226,9 @@ impl Brain {
 
     /// Commands plus an observational trace for a player-facing decision tick.
     ///
-    /// Overseer, post-result calls, and cadence skips return no trace. The
-    /// recorder is stack-local and cannot become controller or replay state.
+    /// Overseer, command-ineligible seats, post-result calls, and cadence skips
+    /// return no trace. The recorder is stack-local and cannot become controller
+    /// or replay state.
     pub fn act_traced(&mut self, state: &State) -> TracedBotAct {
         let mut recorder = matches!(&self.controller, Controller::PlayerFacing(_))
             .then(DecisionTraceRecorder::default);
@@ -251,6 +252,15 @@ impl Brain {
         } else {
             Observation::omniscient(state, self.player)
         };
+        if matches!(self.controller, Controller::PlayerFacing(_))
+            && (state.player(self.player).resigned
+                || !obs
+                    .my_buildings
+                    .iter()
+                    .any(|building| building.kind == crate::stats::BuildingKind::Foundry))
+        {
+            return Vec::new();
+        }
         if let Some(recorder) = recorder.as_deref_mut() {
             recorder.begin(&obs);
         }
@@ -435,8 +445,14 @@ impl Brain {
             .unwrap_or(oriented.tick);
 
         let initial_claims = PlannerClaims::new(&enlisted, strategy, raids, lifts);
-        let initial_team_external = initial_claims.external_to_team();
-        let initial_team_core_exclusions = initial_claims.core_exclusions(&[]);
+        let mut initial_team_external = initial_claims.external_to_team();
+        initial_team_external.extend(self.policy.reconnaissance.reservations());
+        initial_team_external.extend(self.policy.support_reservations());
+        initial_team_external.sort_unstable();
+        initial_team_external.dedup();
+        let mut initial_team_core_exclusions = initial_claims.core_exclusions(&[]);
+        initial_team_core_exclusions.extend(self.policy.reconnaissance.reservations());
+        initial_team_core_exclusions.extend(self.policy.support_reservations());
         let team_decision = if team_was_active {
             team.as_mut()
                 .expect("an active team planner exists")
@@ -485,10 +501,16 @@ impl Brain {
         let team_claims = team
             .as_ref()
             .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
-        let prior_non_lift_claims = claims_after_team.without_lift(&team_claims);
+        let mut prior_non_lift_claims = claims_after_team.without_lift(&team_claims);
+        prior_non_lift_claims.extend(self.policy.reconnaissance.reservations());
+        prior_non_lift_claims.extend(self.policy.support_reservations());
+        prior_non_lift_claims.sort_unstable();
+        prior_non_lift_claims.dedup();
         let lift_unavailable_before =
             lift_unavailable(&oriented, &armies, &enlisted, &prior_non_lift_claims);
-        let preliminary_core_exclusions = claims_after_team.core_exclusions(&team_claims);
+        let mut preliminary_core_exclusions = claims_after_team.core_exclusions(&team_claims);
+        preliminary_core_exclusions.extend(self.policy.reconnaissance.reservations());
+        preliminary_core_exclusions.extend(self.policy.support_reservations());
         let preliminary_core = combat_core_status(
             &oriented,
             &preliminary_core_exclusions,
@@ -637,7 +659,8 @@ impl Brain {
                         orientation,
                     },
                 )
-                .with_producer_lanes(&allocated_producer_intents, &producer_lane_reservations),
+                .with_producer_lanes(&allocated_producer_intents, &producer_lane_reservations)
+                .with_paid_exclusions(&self.policy.reconnaissance.paid_exclusions()),
             )
         } else {
             Default::default()
@@ -790,6 +813,8 @@ impl Brain {
             &allocation_observation,
         );
         let mut utility_reservations = reservations.clone();
+        utility_reservations.extend(self.policy.reconnaissance.reservations());
+        utility_reservations.extend(self.policy.support_reservations());
         utility_reservations.extend(fresh_defense_builders);
         utility_reservations.sort_unstable();
         utility_reservations.dedup();
@@ -818,6 +843,8 @@ impl Brain {
             utility_context,
         );
         reservations.extend_from_slice(self.policy.worker_safety_reservations());
+        reservations.extend(self.policy.reconnaissance.reservations());
+        reservations.extend(self.policy.support_reservations());
         reservations.sort_unstable();
         reservations.dedup();
         self.policy.bind_player_facing_builders(
@@ -836,6 +863,10 @@ impl Brain {
             )
         });
         if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.trace_mut().support =
+                super::trace::SupportTrace::from_policy(&self.policy, oriented.tick);
+            recorder.trace_mut().reconnaissance =
+                super::trace::ReconnaissanceTrace::from_policy(&self.policy);
             recorder.trace_mut().utility = UtilityTrace {
                 input_intents: bounded_count(strategic_intents),
                 output_intents: bounded_count(intents.len()),
@@ -1128,6 +1159,62 @@ mod tests {
 
     fn scripted_brain(scenario: &Scenario, player: PlayerId, config: BotConfig) -> Brain {
         Brain::scripted(player, config, public_map(scenario))
+    }
+
+    #[test]
+    fn eliminated_scripted_seat_does_not_command_remnants_or_advance_planners() {
+        let scenario = opening_core_team_relief_scenario();
+        for difficulty in [
+            BotDifficulty::Scrapheap,
+            BotDifficulty::Standard,
+            BotDifficulty::Veteran,
+            BotDifficulty::Prime,
+        ] {
+            for surrender in [false, true] {
+                let mut state = scenario.build().unwrap();
+                let config = BotConfig::scripted(difficulty, BotStance::Balanced, 9000);
+                let mut brain = scripted_brain(&scenario, PlayerId(0), config);
+                let initial = brain.act_traced(&state);
+                assert!(initial.trace.is_some());
+                state.tick(&initial.commands);
+                if surrender {
+                    state.tick(&[PlayerCommand {
+                        player: PlayerId(0),
+                        command: Command::Surrender,
+                    }]);
+                } else {
+                    let foundries: Vec<_> = state
+                        .buildings()
+                        .iter()
+                        .filter(|building| {
+                            building.player == PlayerId(0) && building.kind == BuildingKind::Foundry
+                        })
+                        .map(|building| building.id)
+                        .collect();
+                    for foundry in foundries {
+                        state.building_mut(foundry).unwrap().hp = 0;
+                    }
+                    state.tick(&[]);
+                }
+                assert!(
+                    state.result().is_none(),
+                    "the teammate keeps the match alive"
+                );
+                assert!(state.player(PlayerId(0)).eliminated_at.is_some());
+                assert!(state.units().iter().any(|unit| unit.player == PlayerId(0)));
+                while !state.current_tick().is_multiple_of(brain.dials.cadence) {
+                    state.tick(&[]);
+                }
+                let before = brain.clone();
+                assert!(brain.act(&state).is_empty());
+                let traced = brain.act_traced(&state);
+                assert!(traced.commands.is_empty());
+                assert!(traced.trace.is_none());
+                assert_brain_unchanged(&before, &brain);
+                let mut ally = scripted_brain(&scenario, PlayerId(1), config);
+                assert!(ally.act_traced(&state).trace.is_some());
+            }
+        }
     }
 
     fn operation_identity_brain(player: PlayerId, scenario: &Scenario) -> Brain {
@@ -2689,7 +2776,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_team_watch_enters_the_prior_planner_ledger() {
+    fn a_pending_team_watch_does_not_own_units_before_deployment_acceptance() {
         let mut obs = test_island_observation();
         obs.known_rock.clear();
         obs.enemy_buildings.clear();
@@ -2725,16 +2812,21 @@ mod tests {
         assert!(relief.operation().is_none());
         assert!(!pending.reservations.is_empty());
         assert_eq!(
-            prior_planner_claims(&[], None, &relief.reservations(), &[], None),
-            pending.reservations,
-            "the earlier air planner must see every exact unit frozen by the credibility watch"
+            prior_planner_claims(&[], None, &relief.core_reservations(), &[], None),
+            [],
+            "an observed watch cannot claim a proposed group before allocation accepts it"
         );
         assert_eq!(
             relief.core_reservations(),
-            [UnitId(3), UnitId(4), UnitId(5)],
-            "only the outbound group leaves the opening core; the two reserved home defenders \
-             remain its screen"
+            [],
+            "an unaccepted proposal leaves the opening core available"
         );
+        obs.tick += tuning.reaction_delay + crate::TICKS_PER_SECOND as u64;
+        let accepted = relief.think(&profile, tuning, &obs, TEST_HOME, &[], &[]);
+        assert_eq!(relief.core_reservations(), accepted.reservations);
+        assert_eq!(accepted.reservations.len(), 2);
+        assert!(!accepted.reservations.contains(&UnitId(1)));
+        assert!(!accepted.reservations.contains(&UnitId(2)));
     }
 
     #[test]

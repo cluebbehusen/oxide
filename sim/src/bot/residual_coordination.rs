@@ -14,7 +14,9 @@ use super::profile::ResolvedProfile;
 use super::raid::{RaidPlanner, RaidPlanningContext};
 use super::resources::ProducerLaneReservations;
 use super::strategy::{AirOperationPhase, StrategicDecision, StrategicPlanner};
-use super::team::{TeamReliefAdmission, TeamReliefPlanner};
+#[cfg(test)]
+use super::team::TeamReliefAdmission;
+use super::team::TeamReliefPlanner;
 use super::utility::combat_core_status;
 use crate::ids::UnitId;
 use chassis::grid::TilePos;
@@ -92,7 +94,7 @@ pub(super) fn coordinate_residual_work(
     } = participants;
     let ResidualPlannerWork {
         mut strategic,
-        mut team_decision,
+        team_decision,
         mut lift_decision,
         mut raid_decision,
         allocated_producer_intents,
@@ -113,60 +115,20 @@ pub(super) fn coordinate_residual_work(
     }
     strategic.intents.splice(0..0, allocated_producer_intents);
 
-    let mut team_relief_core_ready = None;
-    let mut team_relief_rolled_back = false;
-    if !team_was_active {
+    let team_relief_core_ready = (!team_was_active).then(|| {
         let claims = PlannerClaims::new(context.enlisted, strategy, raids, lifts);
-        let prior_team_claims = team
+        let team_claims = team
             .as_ref()
             .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
-        let external = claims.external_to_team();
-        let core_before = claims.core_exclusions(&prior_team_claims);
-        let team_core_ready = combat_core_status(
+        combat_core_status(
             context.observation,
-            &core_before,
+            &claims.core_exclusions(&team_claims),
             &[],
             context.minimum_core_equivalents,
         )
-        .ready;
-        let team_gate = team_relief_gate(context.allocation_ok, team_core_ready);
-        team_relief_core_ready = Some(team_gate.core_ready);
-        let snapshot = team.clone();
-        if let Some(planner) = team.as_mut() {
-            team_decision = planner.think_with_admission(
-                context.profile,
-                context.tuning,
-                context.observation,
-                context.home,
-                &external,
-                TeamReliefAdmission {
-                    additionally_reserved: &[],
-                    allow_new_operation: team_gate.allow_new_operation,
-                    core_reservations: &core_before,
-                    minimum_core_equivalents: context.minimum_core_equivalents,
-                },
-            );
-        }
-        let mut resulting_core = team
-            .as_ref()
-            .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
-        if prior_team_claims.is_empty() && !resulting_core.is_empty() {
-            let after = PlannerClaims::new(context.enlisted, strategy, raids, lifts);
-            let exclusions = after.core_exclusions(&resulting_core);
-            team_relief_rolled_back = roll_back_unless_core_ready(
-                context.observation,
-                &exclusions,
-                context.minimum_core_equivalents,
-                team,
-                snapshot,
-                &mut team_decision,
-                Some(&mut resulting_core),
-            );
-        }
-        post_allocation_commitment =
-            post_allocation_commitment.saturating_add(team_decision.committed_scrap);
-        merge_strategic(&mut strategic, team_decision.clone());
-    }
+        .ready
+    });
+    let team_relief_rolled_back = false;
 
     let claims_before_lift = PlannerClaims::new(context.enlisted, strategy, raids, lifts);
     let team_core_claims = team
@@ -391,12 +353,14 @@ fn can_admit_optional_raid(tuning: DifficultyTuning, strategic_load: usize) -> b
     strategic_load == 0 || tuning.attention_slots >= (strategic_load + 1).saturating_mul(2)
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TeamReliefGate {
     core_ready: bool,
     allow_new_operation: bool,
 }
 
+#[cfg(test)]
 const fn team_relief_gate(allocation_ok: bool, core_ready: bool) -> TeamReliefGate {
     TeamReliefGate {
         core_ready,
@@ -605,7 +569,7 @@ mod tests {
 
     #[test]
     fn team_candidate_rolls_back_when_derived_claims_break_the_core() {
-        let obs = team_relief_observation();
+        let mut obs = team_relief_observation();
         let home = HOME;
         let mut profile = ResolvedProfile::resolve(BotConfig::scripted(
             BotDifficulty::Prime,
@@ -632,6 +596,21 @@ mod tests {
                     minimum_core_equivalents: 0,
                 },
             );
+        assert!(decision.intents.is_empty());
+        obs.tick += tuning.reaction_delay + crate::TICKS_PER_SECOND as u64;
+        decision = planner.as_mut().unwrap().think_with_admission(
+            &profile,
+            tuning,
+            &obs,
+            home,
+            &[],
+            TeamReliefAdmission {
+                additionally_reserved: &[],
+                allow_new_operation: true,
+                core_reservations: &[],
+                minimum_core_equivalents: 0,
+            },
+        );
         let candidate_reservations = planner
             .as_ref()
             .expect("the candidate owns a team planner")

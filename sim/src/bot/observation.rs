@@ -16,7 +16,7 @@
 //! pins the guarantee that unseen enemy activity cannot change a single
 //! serialized byte of a fog-honest observation.
 
-use crate::ids::{BuildingId, PlayerId, UnitId};
+use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::state::{Faction, Order, State};
 use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::Tick;
@@ -32,8 +32,8 @@ use serde::{Deserialize, Serialize};
 /// Harvester's current work node without revealing allied or enemy orders.
 /// Version 14 exposes which own units have queued or looping programs. Version
 /// 15 exposes exact owner-visible progress for the front of each training
-/// queue.
-pub const OBSERVATION_VERSION: u32 = 15;
+/// queue. Version 16 exposes exact own active repair targets.
+pub const OBSERVATION_VERSION: u32 = 16;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +156,9 @@ pub struct Observation {
     /// player's existing program with a non-queued command.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub my_queued_units: Vec<UnitId>,
+    /// Active repair targets of own workers, sorted by worker id. Allied and
+    /// hostile programs remain opaque even when their bodies are visible.
+    pub my_repair_targets: Vec<(UnitId, Target)>,
     /// Teammates' units — always in team sight, never commandable.
     /// Their intent is as opaque as an enemy's: allies coordinate by
     /// position, not telepathy.
@@ -238,6 +241,7 @@ impl Default for Observation {
             my_queues: Vec::new(),
             my_queue_progress: Vec::new(),
             my_queued_units: Vec::new(),
+            my_repair_targets: Vec::new(),
             ally_units: Vec::new(),
             ally_buildings: Vec::new(),
             enemy_units: Vec::new(),
@@ -263,6 +267,14 @@ impl Observation {
     /// is running a looping program.
     pub fn has_queued_program(&self, unit: UnitId) -> bool {
         self.my_queued_units.binary_search(&unit).is_ok()
+    }
+
+    /// The active own repair program, if the observation contains one.
+    pub fn repair_target(&self, unit: UnitId) -> Option<Target> {
+        self.my_repair_targets
+            .binary_search_by_key(&unit, |(worker, _)| *worker)
+            .ok()
+            .map(|index| self.my_repair_targets[index].1)
     }
 
     /// Exact progress for one own building's front training item. Malformed
@@ -338,6 +350,9 @@ impl Observation {
             }
             if u.player == me {
                 obs.my_units.push(own_unit(u));
+                if let Some(target) = own_repair_target(&u.order) {
+                    obs.my_repair_targets.push((u.id, target));
+                }
                 if !u.queue.is_empty() || u.looping {
                     obs.my_queued_units.push(u.id);
                 }
@@ -420,6 +435,9 @@ impl Observation {
             }
             if u.player == me {
                 obs.my_units.push(own_unit(u));
+                if let Some(target) = own_repair_target(&u.order) {
+                    obs.my_repair_targets.push((u.id, target));
+                }
                 if !u.queue.is_empty() || u.looping {
                     obs.my_queued_units.push(u.id);
                 }
@@ -555,6 +573,7 @@ impl Observation {
             my_queue_progress: Vec::new(),
             my_queued_units: Vec::new(),
             ally_units: Vec::new(),
+            my_repair_targets: Vec::new(),
             ally_buildings: Vec::new(),
             enemy_units: Vec::new(),
             enemy_buildings: Vec::new(),
@@ -577,6 +596,14 @@ impl Observation {
             my_shells: 0,
             incoming_shells: Vec::new(),
         }
+    }
+}
+
+fn own_repair_target(order: &Order) -> Option<Target> {
+    match order {
+        Order::Repair { building } => Some(Target::Building(*building)),
+        Order::RepairUnit { unit } => Some(Target::Unit(*unit)),
+        _ => None,
     }
 }
 
@@ -681,6 +708,53 @@ mod tests {
             },
         ];
         scenario
+    }
+
+    #[test]
+    fn exact_repair_targets_are_owner_only_and_round_trip() {
+        let mut state = Scenario::skirmish().build().unwrap();
+        let worker = state
+            .units()
+            .iter()
+            .find(|unit| unit.player == PlayerId(0))
+            .unwrap()
+            .id;
+        let patient = state
+            .buildings()
+            .iter()
+            .find(|building| building.player == PlayerId(0))
+            .unwrap()
+            .id;
+        state.unit_mut(worker).unwrap().order = Order::Repair { building: patient };
+        for own in [
+            Observation::fog_honest(&state, PlayerId(0)),
+            Observation::omniscient(&state, PlayerId(0)),
+        ] {
+            assert_eq!(own.repair_target(worker), Some(Target::Building(patient)));
+            assert_eq!(own.version, 16);
+            let mut missing_targets = serde_json::to_value(&own).unwrap();
+            missing_targets
+                .as_object_mut()
+                .unwrap()
+                .remove("my_repair_targets");
+            assert!(serde_json::from_value::<Observation>(missing_targets).is_err());
+            assert_eq!(
+                serde_json::from_str::<Observation>(&serde_json::to_string(&own).unwrap()).unwrap(),
+                own
+            );
+        }
+        for other in [
+            Observation::fog_honest(&state, PlayerId(1)),
+            Observation::omniscient(&state, PlayerId(1)),
+        ] {
+            assert_eq!(other.repair_target(worker), None);
+            assert!(!other.enemy_units.iter().any(|unit| unit.repairing));
+        }
+        state.unit_mut(worker).unwrap().order = Order::Idle;
+        assert_eq!(
+            Observation::fog_honest(&state, PlayerId(0)).repair_target(worker),
+            None
+        );
     }
 
     #[test]

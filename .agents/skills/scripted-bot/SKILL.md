@@ -62,13 +62,13 @@ immutable PublicMapBriefing + fog-honest Observation
   current-threat emergency-defense, and supported legacy-planner claims; then
   resolves the current cross-domain portfolio atomically. An admitted island
   operation advances once and contributes its exact same-think claims here. Its
-  current proposal set compares at most one exact Foundry proposal, one
-  connected-offense proposal, one best-first group of mutually exclusive exact
-  defensive alternatives, mutually exclusive economic actions, and a best-first
-  group of mutually exclusive standing-force alternatives. The allocator
-  evaluates every zero-or-one choice from each domain without a proposal-count
-  or machine-word cutoff. Fresh team, lift, raid, and utility work consume only
-  the resulting residual.
+  current proposal set compares Foundry, connected offense, standing force,
+  defense, economy, reconnaissance, and support. Each domain admits at most one
+  fresh alternative per pass; retained assignments can run concurrently. The
+  allocator evaluates every zero-or-one choice from each domain without a
+  proposal-count or machine-word cutoff. Only accepted Support relief starts a
+  new team operation. Fresh lift, tactical raid execution, and unmigrated
+  utility work consume the resulting residual.
 - `sim/src/bot/strategy.rs` owns air operations, `sim/src/bot/lift.rs` owns
   severed-ground transport operations, and `sim/src/bot/routing.rs` owns their
   fog-honest route projection and exact command-subset checks.
@@ -80,6 +80,40 @@ immutable PublicMapBriefing + fog-honest Observation
 - Replays preserve the exact configuration and emitted commands, so playback
   does not rerun the controller.
 
+Keep reconnaissance ownership question-local. Reconcile existing preparation,
+outbound work, recalls, and cooldowns independently of discretionary attention.
+Compare live observers, exact paid queue occurrences, and dedicated purchases;
+one occurrence cannot satisfy two independent assignments. Freeze the consumer,
+evidence, useful deadline, and dispatch identity at acceptance. An accepted
+future purchase retains its producer schedule and must not emit a command from
+forecast credit. Releasing unpaid demand never cancels a paid queue item. Keep
+contested observers owned until their safe return is actually observed.
+
+Match paid reconnaissance to the exact producer exit and queue occurrence. An
+absent completed observer releases that question into bounded recovery; never
+wait for a later occurrence and steal another question's newborn. Authored
+hostile starts are pre-match priors, so free bootstrap observation need not wait
+for a reaction to newly seen evidence. Dynamic questions retain reaction delays.
+When a paid observer is alive but cannot arrive in time, keep its exact recall
+ownership; do not record a death or extend the question deadline. Use one viable
+raid muster request to exclude its exact raiders from observer selection and to
+procure only missing serviceable members.
+
+Carry exact paid occurrence exclusions across operational and question-driven
+reconnaissance. Excluded items still delay the FIFO lane; never count them as
+free capability or append a duplicate while an owned scout is already queued.
+Credit overlapping point questions only when the same route can answer their
+whole footprints before both deadlines. Never use this credit for contested
+sweeps, or turn a recent positive sighting into an immediate replacement scout.
+
+Support compares finite repair work after reachable live and delayed service.
+Price ordinary repair debits separately from patient replacement value. Retain
+exact funded repair workers through residual allocation, including their
+observed repair obligation; never import an active repair worker as free. Stop
+unfunded voluntary programs before protected purchases. Protective deployments
+own exact fighters and assets; their current requests feed ordinary Standing
+Force screen and anti-air procurement without creating another purchaser.
+
 Keep allocation as a coordination seam. For every migrated domain, build its
 proposal and obligations from the same `ResourceSnapshot`; do not manufacture a
 reduced observation to represent a budget. A domain owns its evidence, ranking,
@@ -89,6 +123,11 @@ without reranking it. Retained jobs keep their exact producer and timing, while
 current-versus-forecast funding is refreshed from the latest observation. Pass
 the accepted future-lane reservations into residual production instead of
 fabricating queued units.
+
+Test retained funding across forecast-to-current maturation. A deadline-safe
+funding split must remain possible without moving fixed producer times. If older
+protected current capital truly makes a retained lift unfundable, use bounded
+recovery rather than extending its deadline or starving other domains.
 
 Unmigrated `UtilityPolicy` channels still consume a reduced-observation budget
 adapter. Treat that as explicit strangler debt: do not extend it, and remove
@@ -105,8 +144,9 @@ Test expiry, core loss, changed site knowledge, exact founder ownership, and
 preservation of paid work. A newly shallow Sentinel cannot repeatedly revoke
 already accepted construction; preserve its required escrow through the deferred
 interval. Ensure prior-based demand cannot borrow the confidence of a smaller
-current need already covered by existing resources. Test combined
-three-foundation layouts even when every pair is individually safe.
+current need already covered by existing resources. Test combined complete
+selected foundation sets, including a fourth Support site when every pair and
+triple is individually safe.
 
 Treat a current-threat emergency Turret or Flak Turret as a survival obligation
 when the opening core is deficient. Freeze the scorer-selected kind, site,
@@ -243,12 +283,20 @@ unconditional Standing proposals against the remaining exact paid ownership
 before allocation. Never let a failed revision leave contextual inventory or a
 paid queue occurrence stranded between the two domains.
 
-The temporary residual Foundry pass owns only the existing bounded Scuttler
-roster. Worker investment belongs to typed Economy. The residual pass spends
-only current scrap and producer capacity left by allocation, and must not
-originate ordinary combat, anti-air, siege, or Tender orders. Migrate those
-residual roles with their economy, reconnaissance, and support domains rather
-than growing this bridge.
+Worker investment belongs to typed Economy. Scuttler procurement must answer a
+viable current raid objective and only the missing serviceable tactical pair.
+Count paid occurrences once, exclude other operations' ownership, and keep the
+preparation deadline fixed. The Standing Force adapter requests the missing pair
+atomically from current scrap and compatible producer lanes. Do not restore the
+residual Scuttler quota or change raid execution when changing procurement.
+
+Prepare allied relief from current pressure and a credibility watch, then let
+Support allocation accept the exact deployment. Observation and proposal
+preparation must not launch it. Size service against pressure while preserving
+home strength and the two-member tactical minimum; personality may rank useful
+work but never gate relief or impose a group-size ceiling. Keep the selection
+pass bounded as the roster grows, and always service active withdrawal and
+release even when discretionary attention is unavailable.
 
 Persistent air and lift operations own partial bomber, ground-attack-air, and
 transport cohorts and their accepted producer work. Outstanding work contributes
@@ -413,17 +461,16 @@ respect a cooldown rather than drafting a replacement into an endless probe
 loop. Cover Recon and Assemble separately because both phases can otherwise
 replace a missing unit before loss handling observes it.
 
-Audit the utility scout separately from the persistent air planner. After the
-first dedicated flyer is dispatched and lost, suspend that production channel
-and release its Airworks capital. Rearm only after actionable current enemy
-sight has gone dark after the loss and later returns; persistent sight,
-remembered ghosts, and cross-sight between opposing dedicated scouts do not
-count. Keep recomputable demand from public-start connectivity and current
-contested-recon eligibility separate from the persistent latch set by a proven
-ground-probe failure. Temporary map priors must clear when current sight changes
-their route, while a lost or unsafe probe must remain learned. Exercise this
-through the whole `Brain` or utility economy path because an isolated
-strategic-planner test cannot see the solo scout conveyor.
+Audit question-owned reconnaissance separately from the persistent air planner.
+A dispatched observer's loss releases only its question's unpaid capital and
+starts its 3,600-tick cooldown. Reconsider it after the cooldown and a 300-tick
+quiet interval only when an unanswered, useful question has a newly validated
+safe approach; fresh enemy sight is not required. No timer automatically buys a
+replacement, and one failed question must not suspend unrelated reconnaissance.
+Keep temporary public-route priors separate from observed losses and exact
+contested-sweep evidence. Exercise recovery through the whole `Brain`, including
+paid occurrence completion and concurrent questions, because isolated
+air-planner tests cannot detect a cross-planner replacement conveyor.
 
 ## Keep identity and difficulty honest
 
@@ -547,8 +594,11 @@ player-facing controller's runtime decisions with
 `--decision-trace-out replays/bot-eval-trace.jsonl`. The trace sidecar requires
 `--out` and `--candidate`, joins each record to its exact evaluation leg, and
 contains only fog-honest facts the current coordinator can state directly.
-Schema version 9 includes exact economic and defensive identities, building
-ownership, refit forecast losses, and combined three-site conflicts. It does not
+Schema version 10 includes exact economic, defensive, and support identities,
+building and repair-worker ownership, refit forecast losses, and complete
+combined-layout conflict sets. Test four-way closures even when every triple
+retains a route. Verify voluntary repair funding and preemption against ordinary
+commands, including decisions between macro-admission boundaries. It does not
 reconstruct explanations from a replay, infer reasons from absent planner
 output, or trace the frozen Overseer. Treat the sidecar as disposable diagnostic
 evidence and keep it out of production commits.

@@ -96,6 +96,7 @@ fn construction_observation(scrap: u32) -> Observation {
         my_queues: Vec::new(),
         my_queue_progress: Vec::new(),
         my_queued_units: Vec::new(),
+        my_repair_targets: Vec::new(),
         ally_units: Vec::new(),
         ally_buildings: Vec::new(),
         enemy_units: Vec::new(),

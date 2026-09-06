@@ -958,7 +958,11 @@ impl UtilityPolicy {
         // Current public-map or contested work may require air, while a failed
         // ground look preserves the same demand durably. Keep exactly one
         // faction scout alive or queued once an Airworks can build it.
-        if dials.scouting && self.air_scout_needed() && !self.solo_air_scout_suspended {
+        if self.reconnaissance.observed_at.is_none()
+            && dials.scouting
+            && self.air_scout_needed()
+            && !self.solo_air_scout_suspended
+        {
             let scout_kind = crate::stats::Role::Scout.unit_for(obs.faction);
             let planned_scouts = intents
                 .iter()
@@ -1080,17 +1084,6 @@ impl UtilityPolicy {
                 building: foundry.id,
                 kind: UnitKind::Sentinel,
             });
-        }
-
-        if player_facing {
-            super::production::fill_residual_foundry_roles(
-                dials,
-                obs,
-                capital,
-                producer_lane_reservations,
-                budget,
-                intents,
-            );
         }
 
         if !dials.tech {
@@ -4267,13 +4260,13 @@ mod tests {
             &mut fixture.obs,
             101,
             UnitKind::Tender,
-            fixture.home.offset(2, 2),
+            fixture.home.offset(7, 5),
         );
         add_unit(
             &mut fixture.obs,
             102,
             UnitKind::Bombard,
-            fixture.home.offset(3, 2),
+            fixture.home.offset(8, 5),
         );
         fixture
             .obs
@@ -4324,6 +4317,13 @@ mod tests {
         policy
             .commit_adjudicated_foundry(proposal, fixture.obs.tick, &mut prelude)
             .expect("there is no prior expansion obligation");
+        policy.admit_test_repair(
+            &fixture.obs,
+            &fixture.public_map,
+            UnitId(101),
+            crate::ids::Target::Unit(UnitId(102)),
+            &mut prelude,
+        );
 
         let intents = policy.think_with_intelligence(
             &fixture.dials,

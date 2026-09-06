@@ -25,7 +25,9 @@ Balanced, or Aggressive stances. A hidden seeded identity varies each opponent's
 strategic preferences. They receive no extra resources, information, build
 access, or combat advantages. Economic investment follows reachable work,
 production bottlenecks, and useful capability demand rather than fixed worker or
-factory quotas.
+factory quotas. Reconnaissance pursues explicit information questions with
+independently owned observers. Repair assignments and allied relief share the
+same resource allocation as economic and military investments.
 
 ## The game
 

@@ -16,6 +16,9 @@ use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::Tick;
 use chassis::grid::TilePos;
 
+mod procurement;
+pub(crate) use procurement::RaidProcurementRequest;
+
 const RAID_GROUP_SIZE: usize = 2;
 const HOME_SCREEN_RADIUS: i32 = 8;
 // The team planner keeps its own deliberately different pair (3 tiles,
@@ -32,6 +35,7 @@ pub(super) struct RaidPlanningContext<'a> {
     enlisted: &'a [UnitId],
     additionally_reserved: &'a [UnitId],
     allow_new_operation: bool,
+    paid_production: &'a [super::standing_force::StandingProductionCommitment],
 }
 
 impl<'a> RaidPlanningContext<'a> {
@@ -51,11 +55,20 @@ impl<'a> RaidPlanningContext<'a> {
             enlisted,
             additionally_reserved,
             allow_new_operation: true,
+            paid_production: &[],
         }
     }
 
     pub(super) const fn with_admission(mut self, allow_new_operation: bool) -> Self {
         self.allow_new_operation = allow_new_operation;
+        self
+    }
+
+    pub(super) const fn with_paid_production(
+        mut self,
+        paid: &'a [super::standing_force::StandingProductionCommitment],
+    ) -> Self {
+        self.paid_production = paid;
         self
     }
 }
@@ -149,6 +162,7 @@ pub struct RaidPlanner {
     active: Option<RaidOperation>,
     muster: Vec<UnitId>,
     cooldown_until: Tick,
+    preparation: Option<RaidProcurementRequest>,
 }
 
 impl RaidPlanner {
@@ -208,7 +222,9 @@ impl RaidPlanner {
             enlisted,
             additionally_reserved,
             allow_new_operation,
+            paid_production: _,
         } = context;
+        self.reconcile_procurement(obs);
         let mut routes = RouteProjection::new(obs, Domain::Ground);
         self.muster.retain(|id| own_unit(obs, *id).is_some());
         if allow_new_operation
@@ -227,6 +243,7 @@ impl RaidPlanner {
             {
                 self.active = Some(operation);
                 self.muster.clear();
+                self.preparation = None;
             }
         }
         let Some(mut raid) = self.active.take() else {
@@ -683,6 +700,158 @@ mod tests {
             explored: vec![true; 24 * 16],
             ..Observation::default()
         }
+    }
+
+    #[test]
+    fn procurement_quotes_only_the_missing_serviceable_pair_for_current_work() {
+        use crate::bot::resources::ResourceSnapshot;
+        let mut obs = observation(200);
+        obs.visible.fill(true);
+        obs.scrap = 1_000;
+        obs.my_units.retain(|unit| unit.kind != UnitKind::Scuttler);
+        obs.my_buildings.push(building(
+            1,
+            0,
+            BuildingKind::Foundry,
+            TilePos::new(2, 2),
+            true,
+        ));
+        obs.my_queues.push(Vec::new());
+        let identity = profile(0);
+        let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
+        let mut planner = RaidPlanner::new();
+        let quote = |planner: &RaidPlanner, obs: &Observation| {
+            planner.procurement_request(
+                RaidPlanningContext::new(&identity, tuning, obs, HOME, &[], &[]),
+                &ResourceSnapshot::from_observation(obs),
+                None,
+                None,
+            )
+        };
+        let pair =
+            quote(&planner, &obs).expect("current economic objective justifies its missing pair");
+        assert_eq!(pair.missing, 2);
+        assert_eq!(pair.eligible_producers, [BuildingId(1)]);
+        for (bank, expected_jobs) in [(80, 2), (79, 0)] {
+            let mut funded = obs.clone();
+            funded.scrap = bank;
+            let resources = ResourceSnapshot::from_observation(&funded);
+            let mut allocation = crate::bot::allocation::CrossDomainAllocation::new(
+                &resources,
+                pair.deadline,
+                tuning.cadence,
+            )
+            .unwrap();
+            let proposal = crate::bot::allocation::standing_force_investment_proposal(
+                crate::bot::standing_force::StandingForceProposal::for_raid(
+                    pair.clone(),
+                    &identity,
+                ),
+            )
+            .unwrap();
+            assert_eq!(proposal.claims().producer_jobs().len(), 2);
+            assert!(
+                proposal
+                    .claims()
+                    .producer_jobs()
+                    .iter()
+                    .all(|job| job.requires_current_funding())
+            );
+            allocation.offer(proposal);
+            let settlement = allocation.resolve(Default::default(), None).unwrap();
+            assert_eq!(
+                settlement.producer_schedule().len(),
+                expected_jobs,
+                "a concrete pair is funded atomically, not half-purchased with forecast credit"
+            );
+        }
+        assert!(
+            planner.preparation.is_none(),
+            "quoting does not commit a preparation"
+        );
+        assert!(planner.commit_procurement(pair.clone(), obs.tick));
+        obs.tick += 24;
+        let retained = quote(&planner, &obs).unwrap();
+        assert_eq!(
+            retained.deadline, pair.deadline,
+            "reconsideration cannot extend the horizon"
+        );
+
+        obs.my_queues[0].push(UnitKind::Scuttler);
+        assert_eq!(quote(&planner, &obs).unwrap().missing, 1);
+        let reserved = [
+            crate::bot::standing_force::StandingProductionCommitment::paid(
+                BuildingId(1),
+                UnitKind::Scuttler,
+            ),
+        ];
+        assert_eq!(
+            quote(&planner, &obs)
+                .unwrap()
+                .with_paid_ownership(&reserved)
+                .missing,
+            2,
+            "connected-operation ownership must remove the paid occurrence from raid credit"
+        );
+        obs.my_units.push(unit(1, 0, UnitKind::Scuttler, HOME));
+        assert!(
+            quote(&planner, &obs).is_none(),
+            "one live and one paid occurrence complete the pair"
+        );
+        obs.my_units.last_mut().unwrap().tile = TilePos::new(22, 8);
+        obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(20, y)).collect();
+        assert_eq!(
+            quote(&planner, &obs).unwrap().missing,
+            1,
+            "a stranded hull cannot serve the target"
+        );
+
+        obs.enemy_units.clear();
+        planner.reconcile_procurement(&obs);
+        assert!(quote(&planner, &obs).is_none());
+        assert!(planner.preparation.is_none());
+        assert_eq!(
+            obs.my_queues[0],
+            [UnitKind::Scuttler],
+            "invalidating unpaid demand preserves paid units"
+        );
+    }
+
+    #[test]
+    fn procurement_preserves_admission_home_protection_and_known_route_limits() {
+        use crate::bot::resources::ResourceSnapshot;
+        let mut obs = observation(200);
+        obs.visible.fill(true);
+        obs.my_units.retain(|unit| unit.kind != UnitKind::Scuttler);
+        obs.my_buildings.push(building(
+            1,
+            0,
+            BuildingKind::Foundry,
+            TilePos::new(2, 2),
+            true,
+        ));
+        obs.my_queues.push(Vec::new());
+        let identity = profile(0);
+        let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
+        let planner = RaidPlanner::new();
+        let quote = |obs: &Observation, allow| {
+            planner.procurement_request(
+                RaidPlanningContext::new(&identity, tuning, obs, HOME, &[], &[])
+                    .with_admission(allow),
+                &ResourceSnapshot::from_observation(obs),
+                None,
+                None,
+            )
+        };
+        assert!(quote(&obs, false).is_none());
+        assert!(quote(&obs, true).is_some());
+        obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(12, y)).collect();
+        assert!(quote(&obs, true).is_none());
+        obs.known_rock.clear();
+        obs.my_units.clear();
+        assert!(quote(&obs, true).is_none());
+        obs.enemy_units.clear();
+        assert!(quote(&obs, true).is_none());
     }
 
     #[test]
