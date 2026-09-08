@@ -1182,6 +1182,7 @@ mod tests {
             tick: 8,
             events: vec![
                 Event::ShellLaunched {
+                    unit_pose: None,
                     shooter: Target::Unit(UnitId(7)),
                     target: Target::Unit(UnitId(8)),
                     player: PlayerId(0),
@@ -1190,6 +1191,7 @@ mod tests {
                     flight: 10,
                 },
                 Event::ShellLaunched {
+                    unit_pose: None,
                     shooter: Target::Building(BuildingId(9)),
                     target: Target::Unit(UnitId(8)),
                     player: PlayerId(0),
@@ -1920,6 +1922,7 @@ mod tests {
             &[Event::TurretFired {
                 turret: BuildingId(u32::MAX),
                 kind: BuildingKind::Turret,
+                tier: 0,
                 target: Target::Unit(UnitId(0)),
                 turret_pos: point(),
                 target_pos: point(),

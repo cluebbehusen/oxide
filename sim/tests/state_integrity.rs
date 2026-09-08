@@ -188,6 +188,40 @@ fn the_base_snapshot_is_accepted() {
 }
 
 #[test]
+fn projectile_kind_checks_include_shooters_inside_transports() {
+    let mut scenario = arena();
+    scenario.units = vec![
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Bombard,
+            x: 8,
+            y: 4,
+        },
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Skyhook,
+            x: 9,
+            y: 4,
+        },
+    ];
+    let mut base = doc(&scenario.build().unwrap());
+    base["shells"] = json!([shell(json!({"kind": "unit", "id": 0}), 0, 4294967296)]);
+    let mut rider = base["units"].as_array_mut().unwrap().remove(0);
+    rider["pos"] = base["units"][0]["pos"].clone();
+    base["units"][0]["cargo"] = json!([rider]);
+    let restored: State =
+        serde_json::from_value(base.clone()).expect("a carried shooter's shell remains valid");
+    assert_eq!(doc(&restored), base);
+    for kind in ["bomb", "missile"] {
+        let mut forged = base.clone();
+        forged["shells"][0]["kind"] = json!(kind);
+        assert!(refusal(forged).contains("projectile kind inconsistent with its shooter"));
+    }
+    base["units"][0]["cargo"] = json!([]);
+    serde_json::from_value::<State>(base).expect("a shell outlives its destroyed shooter");
+}
+
+#[test]
 fn well_formed_additions_are_accepted() {
     // The hand-written shell, ghost, and contact shapes the forgeries
     // mutate must themselves be legal — otherwise a fixture could be

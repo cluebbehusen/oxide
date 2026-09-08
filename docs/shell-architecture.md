@@ -274,7 +274,9 @@ shortest angular interval between ticks. Attack effects do not override that
 orientation. Avalanche launch reports show an empty rail, and its cooldown holds
 that pose until the final reload interval. Serialized projectile kind
 distinguishes shells, missiles, and belly-released bombs even after the shooter
-dies.
+dies. Launch reports retain unit kind and heading from the firing phase, before
+egress steering or movement. Turret reports likewise retain the firing tier so
+same-tick destruction cannot change the final volley's presentation.
 
 Avalanche missiles draw as compact finned payloads, 0.375 tiles long, with a
 short motor flame and a trailing smoke segment. Their visual origin is ahead of

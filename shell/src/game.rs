@@ -733,6 +733,7 @@ impl Game {
         self.drop_presentation();
         self.remember_previous_tick();
         self.facing.clear();
+        self.refresh_facing();
     }
 
     /// Advances a small number of ticks while retaining presentation
@@ -891,11 +892,17 @@ impl Game {
     }
 
     pub(crate) fn draw_hull_heading(&self, id: UnitId, alpha: f32) -> f32 {
-        self.hull_heading
-            .get(&id.0)
-            .map_or(0.0, |(previous, current)| {
+        self.hull_heading.get(&id.0).map_or_else(
+            || {
+                self.state.unit(id).map_or(0.0, |unit| {
+                    f32::from(unit.heading) * std::f32::consts::TAU / 256.0
+                        + std::f32::consts::FRAC_PI_2
+                })
+            },
+            |(previous, current)| {
                 previous + angle_delta(*previous, *current) * alpha.clamp(0.0, 1.0)
-            })
+            },
+        )
     }
 }
 
@@ -1094,7 +1101,37 @@ mod tests {
         );
         assert!(angle_delta(6.2, 0.1) > 0.0);
         game.drop_presentation();
-        assert_eq!(game.draw_hull_heading(id, 0.5), 0.0);
+        let heading = f32::from(game.state.unit(id).unwrap().heading) * std::f32::consts::TAU
+            / 256.0
+            + std::f32::consts::FRAC_PI_2;
+        assert_eq!(game.draw_hull_heading(id, 0.5), heading);
+    }
+
+    #[test]
+    fn articulated_hulls_keep_authoritative_bearings_when_paused_or_jumped() {
+        for kind in [UnitKind::Sentinel, UnitKind::Warden, UnitKind::Lancer] {
+            let mut scenario = Scenario::skirmish();
+            scenario.units[0].kind = kind;
+            let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+            let id = game.state.units()[0].id;
+            let assert_bearing = |game: &Game| {
+                let expected =
+                    f32::from(game.state.unit(id).unwrap().heading) * std::f32::consts::TAU / 256.0
+                        + std::f32::consts::FRAC_PI_2;
+                for alpha in [0.0, 0.5, 1.0] {
+                    assert_eq!(game.draw_hull_heading(id, alpha), expected, "{kind:?}");
+                }
+            };
+            assert_bearing(&game);
+            game.advance_ticks(1);
+            assert_bearing(&game);
+            let mut snapshot = serde_json::to_value(&*game.state).unwrap();
+            snapshot["units"][0]["heading"] = serde_json::json!(96);
+            game.replace_state_after_jump(&serde_json::from_value(snapshot).unwrap());
+            assert_bearing(&game);
+            game.drop_presentation();
+            assert_bearing(&game);
+        }
     }
 
     #[test]
@@ -1352,7 +1389,11 @@ mod tests {
 
         game.advance_ticks(1);
 
-        assert!(game.facing.is_empty());
+        let expected = f32::from(game.state.unit(UnitId(unit)).unwrap().heading)
+            * std::f32::consts::TAU
+            / 256.0
+            + std::f32::consts::FRAC_PI_2;
+        assert_eq!(game.facing.get(&unit), Some(&expected));
         assert!(game.aim_units.is_empty());
         assert!(game.aim_buildings.is_empty());
         assert!(game.aim_building_targets.is_empty());

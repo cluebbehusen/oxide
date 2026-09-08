@@ -26,23 +26,23 @@ impl ProjectileReleases {
         for event in events {
             if let Event::ShellLaunched {
                 shooter: Target::Unit(id),
+                unit_pose: Some(pose),
                 flight,
                 ..
             } = event
-                && let Some(unit) = state.unit(*id)
                 && matches!(
-                    unit.kind,
+                    pose.kind,
                     UnitKind::Condor | UnitKind::Moth | UnitKind::Bombard
                 )
             {
-                let heading = chassis::compass::dir(unit.heading);
+                let heading = chassis::compass::dir(pose.heading);
                 let slot = slots.entry(*id).or_default();
                 self.releases
                     .entry((*id, state.current_tick() - 1 + flight))
                     .or_default()
                     .push(LaunchPose {
                         heading: vec2(heading.x.to_num::<f32>(), heading.y.to_num::<f32>()),
-                        kind: unit.kind,
+                        kind: pose.kind,
                         slot: *slot,
                     });
                 *slot += 1;
@@ -92,6 +92,59 @@ mod tests {
     use crate::game::Game;
     use chassis::grid::TilePos;
     use oxide_sim::{Command, PlayerCommand, PlayerId, Scenario};
+
+    #[test]
+    fn edge_release_uses_the_firing_pose_before_egress_and_survives_shooter_loss() {
+        for kind in [UnitKind::Condor, UnitKind::Moth] {
+            let mut map = vec!["........................".to_string(); 20];
+            map[1] = ".1......................".into();
+            map[17] = ".....................2..".into();
+            let scenario: Scenario = serde_json::from_value(serde_json::json!({
+                "name": "Edge release", "seed": 42, "map": map,
+                "players": [
+                    {"name":"Own", "faction":"ferrous", "scrap":0, "bot":false},
+                    {"name":"Enemy", "faction":"cupric", "scrap":0, "bot":false}
+                ],
+                "units": [{"player":0, "kind":kind, "x":20, "y":10}],
+                "buildings": [{"player":1, "kind":"barricade", "x":22, "y":10}]
+            }))
+            .unwrap();
+            let mut value = serde_json::to_value(scenario.build().unwrap()).unwrap();
+            value["units"][0]["heading"] = serde_json::json!(0);
+            let mut state: State = serde_json::from_value(value).unwrap();
+            let report = state.tick(&[PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Attack {
+                    units: vec![UnitId(0)],
+                    target: Target::Building(oxide_sim::BuildingId(2)),
+                    queue: false,
+                },
+            }]);
+            assert_ne!(
+                state.unit(UnitId(0)).unwrap().heading,
+                0,
+                "egress bends at the edge"
+            );
+            assert!(!state.shells().is_empty());
+            let mut releases = ProjectileReleases::default();
+            releases.observe(&state, &report.events);
+            let check = |releases: &ProjectileReleases, state: &State| {
+                for i in 0..state.shells().len() {
+                    let pose = releases.release(state.shells(), i).unwrap();
+                    assert_eq!(pose.heading, vec2(1.0, 0.0));
+                    assert_eq!(pose.kind, kind);
+                    assert_eq!(pose.slot, i);
+                }
+            };
+            check(&releases, &state);
+            let mut value = serde_json::to_value(&state).unwrap();
+            value["units"] = serde_json::json!([]);
+            let after_loss: State = serde_json::from_value(value).unwrap();
+            let mut releases = ProjectileReleases::default();
+            releases.observe(&after_loss, &report.events);
+            check(&releases, &after_loss);
+        }
+    }
 
     #[test]
     fn saved_projectile_releases_retain_heading_slots_and_simulation_parity() {
