@@ -8,7 +8,7 @@ use oxide_sim::{Command, Event, Order, PlayerId, Scenario, State, Target, UnitId
 
 use common::*;
 
-fn pocketed_founder_state() -> State {
+fn pocketed_founder_scenario() -> Scenario {
     let mut scenario = open_arena_with(
         16,
         12,
@@ -23,7 +23,62 @@ fn pocketed_founder_state() -> State {
         },
     );
     scenario.players[0].scrap = 300;
-    scenario.build().unwrap()
+    scenario
+}
+
+fn pocketed_founder_state() -> State {
+    pocketed_founder_scenario().build().unwrap()
+}
+
+#[test]
+fn enclosed_founder_relocation_respects_a_map_half_turn() {
+    use oxide_sim::stats::BuildingKind;
+    let scenario = pocketed_founder_scenario();
+    let mut rotated = scenario.clone();
+    let mut rows = vec![vec!['.'; 16]; 12];
+    for (y, row) in scenario.map.iter().enumerate() {
+        for (x, cell) in row.chars().enumerate() {
+            match cell {
+                '1' | '2' => rows[12 - 2 - y][16 - 2 - x] = cell,
+                '.' => {}
+                _ => rows[11 - y][15 - x] = cell,
+            }
+        }
+    }
+    rotated.map = rows
+        .into_iter()
+        .map(|row| row.into_iter().collect())
+        .collect();
+    for unit in &mut rotated.units {
+        unit.x = 15 - unit.x;
+        unit.y = 11 - unit.y;
+    }
+    let relocate = |scenario: Scenario, anchor| {
+        let state = scenario.build().unwrap();
+        let founder = state.units()[0].id;
+        let before = state.unit(founder).unwrap().tile();
+        let after = state.inspect_command_phase(
+            &[cmd(
+                0,
+                Command::Build {
+                    units: vec![founder],
+                    kind: BuildingKind::Fabricator,
+                    anchor,
+                    queue: false,
+                    defer: false,
+                },
+            )],
+            |view| view.unit(founder).unwrap().tile(),
+        );
+        assert_ne!(
+            before, after,
+            "the enclosed founder is relocated on acceptance"
+        );
+        after
+    };
+    let original = relocate(scenario, TilePos::new(5, 3));
+    let mirrored = relocate(rotated, TilePos::new(9, 7));
+    assert_eq!(mirrored, TilePos::new(15 - original.x, 11 - original.y));
 }
 
 #[test]
