@@ -399,6 +399,8 @@ fn scrapheap_and_prime_reach_their_opening_core_before_the_first_fabricator() {
 #[test]
 fn prime_skirmish_places_an_accepted_defense_on_the_hostile_approach() {
     let mut scenario = Scenario::skirmish();
+    // Isolate defense placement from the opening harvest and investment cadence.
+    scenario.players[0].scrap = 1_000;
     scenario.players[0].bot = true;
     scenario.players[0].bot_config = Some(BotConfig::scripted(
         BotDifficulty::Prime,

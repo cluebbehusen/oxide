@@ -318,14 +318,17 @@ map-relative half-turn frame.
 ## Economy, construction, salvage, and repair
 
 Scrap nodes block ground until exhausted. Harvesters work a bounded zone, carry
-a finite load, and deposit at a Foundry. Destroyed eligible entities leave
-decaying wreck salvage; wrecks do not block movement. Recurring economy runs in
-the production phase: Reclaimers and Refineries pay on their cadences, restored
-Extractors provide fixed remote income, and a completed same-owner Foundry
-within the support radius raises an Extractor's fixed yield without stacking.
-Completed Foundries also provide the baseline drip and a finite recovery
-entitlement for a stranded seat. Crucibles consume nearby wreck salvage for
-income. These are ordinary authoritative rules, not shell conveniences.
+a finite load, and deposit at a Foundry. Gathering and unloading require the
+worker's center to be within 0.75 tiles of the footprint edge, including
+diagonal doorsteps; merely entering a neighboring tile does not start work.
+Destroyed eligible entities leave decaying wreck salvage; wrecks do not block
+movement. Recurring economy runs in the production phase: Reclaimers and
+Refineries pay on their cadences, restored Extractors provide fixed remote
+income, and a completed same-owner Foundry within the support radius raises an
+Extractor's fixed yield without stacking. Completed Foundries also provide the
+baseline drip and a finite recovery entitlement for a stranded seat. Crucibles
+consume nearby wreck salvage for income. These are ordinary authoritative rules,
+not shell conveniences.
 
 Extractor frames are immutable authored map features. Only an Extractor may
 claim one, other foundations cannot cover one, and destroying an Extractor

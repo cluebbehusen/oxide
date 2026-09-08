@@ -666,7 +666,12 @@ pub(super) fn harvest(
         SourceKind::Scrap => {
             let authoritative = node == anchor;
             let safe_footing = authoritative || !danger.contains(tile);
-            if tile_adjacent_to_rect(tile, node, (1, 1)) && safe_footing {
+            if state
+                .unit(id)
+                .expect("caller checked")
+                .in_harvest_reach(node, (1, 1))
+                && safe_footing
+            {
                 extract(state, id, node, hstats.ticks_per_scrap, events);
             } else if !approach_source(state, danger, id, current, authoritative) {
                 source_route_failed(state, danger, id, node, anchor, events);
@@ -860,6 +865,19 @@ fn source_route_len(
     safe_source_route(state, danger, id, source).map(|(_, route)| route.len())
 }
 
+fn work_position_path(goal: TilePos, mut waypoints: Vec<TilePos>) -> PathFollow {
+    // A tile-level route can be empty while the body still needs to close
+    // the distance from its current tile edge to the work position.
+    if waypoints.is_empty() {
+        waypoints.push(goal);
+    }
+    PathFollow {
+        goal,
+        waypoints,
+        next: 0,
+    }
+}
+
 /// Keep or create a path whose near remaining segment is outside every
 /// fog-honest danger envelope. Re-evaluating that bounded lookahead each
 /// tick lets a new sighting or radar contact divert a worker before it
@@ -894,11 +912,7 @@ fn approach_source(
         state.unit_mut(id).expect("caller checked").path = None;
         return false;
     };
-    state.unit_mut(id).expect("caller checked").path = Some(PathFollow {
-        goal,
-        waypoints,
-        next: 0,
-    });
+    state.unit_mut(id).expect("caller checked").path = Some(work_position_path(goal, waypoints));
     true
 }
 
@@ -929,11 +943,8 @@ fn approach_authoritative_source(
             return true;
         }
         if let Some((goal, waypoints)) = authoritative_source_route(state, danger, id, source) {
-            state.unit_mut(id).expect("caller checked").path = Some(PathFollow {
-                goal,
-                waypoints,
-                next: 0,
-            });
+            state.unit_mut(id).expect("caller checked").path =
+                Some(work_position_path(goal, waypoints));
         }
         // No safe detour means the explicitly ordered route remains in
         // force. This is the only path allowed to cross known danger.
@@ -941,11 +952,8 @@ fn approach_authoritative_source(
     }
 
     if let Some((goal, waypoints)) = authoritative_source_route(state, danger, id, source) {
-        state.unit_mut(id).expect("caller checked").path = Some(PathFollow {
-            goal,
-            waypoints,
-            next: 0,
-        });
+        state.unit_mut(id).expect("caller checked").path =
+            Some(work_position_path(goal, waypoints));
         return true;
     }
 
@@ -1171,11 +1179,8 @@ fn try_drop_offs(
         if let Some((goal, waypoints)) =
             known_rect_route(state, danger, id, anchor, size, true, Some(&mut scan))
         {
-            state.unit_mut(id).expect("caller checked").path = Some(PathFollow {
-                goal,
-                waypoints,
-                next: 0,
-            });
+            state.unit_mut(id).expect("caller checked").path =
+                Some(work_position_path(goal, waypoints));
             return true;
         }
         if !path_cleared {
@@ -1360,12 +1365,12 @@ fn deliver(
     retiring: bool,
 ) {
     let unit = state.unit(id).expect("caller checked");
-    let (tile, me, carrying) = (unit.tile(), unit.player, unit.carrying);
+    let (me, carrying) = (unit.player, unit.carrying);
     let drop_offs = drop_offs_by_distance(state, id);
     let at_drop_off = drop_offs.iter().any(|foundry_id| {
-        state.building(*foundry_id).is_some_and(|foundry| {
-            tile_adjacent_to_rect(tile, foundry.anchor, foundry.stats().size)
-        })
+        state
+            .building(*foundry_id)
+            .is_some_and(|foundry| unit.in_harvest_reach(foundry.anchor, foundry.stats().size))
     });
     if at_drop_off {
         let unit = state.unit_mut(id).expect("caller checked");
