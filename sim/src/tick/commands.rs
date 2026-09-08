@@ -864,15 +864,15 @@ pub(super) fn found_site(
     // doorstep *around the now-blocking footprint* — otherwise
     // undo for free. Charging for a site nobody can ever touch
     // would burn 80% of the price through the hp-scaled refund.
-    // (A* tolerates a blocked start, so a founder standing inside
-    // the fresh footprint routes out of it like any unit on newly
-    // claimed ground.)
     let site = state.place_site(player, kind, anchor);
     let from = state.unit(builder).expect("caller checked").tile();
     let size = kind.base_stats().size;
+    // An enclosed founder uses the same post-acceptance perimeter relocation
+    // as other friendly bodies trapped by a newly claimed footprint.
+    let inside = state.building(site).expect("just placed").contains(from);
     let reachable = super::rect_adjacent_tiles(anchor, size)
         .filter(|&t| state.passable(t))
-        .any(|t| from == t || super::astar_for(state, from, t).is_some());
+        .any(|t| inside || from == t || super::astar_for(state, from, t).is_some());
     if !reachable {
         state.retract_site(site);
         return Err(RejectReason::UnreachableGoal);
