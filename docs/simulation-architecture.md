@@ -456,7 +456,11 @@ again. Scrap and wreck amounts likewise freeze at the last visible value. Arrays
 add sorted, deduplicated radar contact tiles outside true sight; a contact
 carries no owner, type, program, or persistent memory. Salvage-relevant hostile
 incidents, such as a Harvester hit or an allied loss, remember only the victim's
-tile for a bounded caution period, never the attacker's identity or location.
+tile for a bounded caution period, never the attacker's identity or location. A
+worker already inside a remembered static firing envelope may retreat laterally
+or outward, without approaching any overlapping gun. This escape rule never
+makes the source eligible for work and does not permit crossing mobile or radar
+pressure.
 
 All allegiance checks route through normalized team ids. Teammates share vision,
 cannot target one another, and win or lose as a team. Resignation makes a seat
