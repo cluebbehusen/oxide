@@ -939,7 +939,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 crate::presentation_animation::PropulsionState::None => {
                     match animation.locomotion {
                         crate::presentation_animation::LocomotionState::Moving { cycle } => {
-                            1 + usize::from(cycle >= 0.5)
+                            motion::tread_phase(cycle)
                         }
                         crate::presentation_animation::LocomotionState::Rest => 0,
                     }
