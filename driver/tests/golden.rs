@@ -138,7 +138,7 @@ const FIGHT_TICKS: u64 = 24;
 
 /// Total ticks. Sized so the worked node lands in the renderer's
 /// depleted tint without mining out.
-const SHOWCASE_TICKS: u64 = 400;
+const SHOWCASE_TICKS: u64 = 480;
 
 /// The crew steps off the node before the picture is taken — eight
 /// harvesters ringing a tile would hide the very thing they mined.
@@ -425,7 +425,7 @@ fn walk(player: u8, units: Vec<UnitId>, x: i32, y: i32) -> PlayerCommand {
 /// The tick the construction yard founds its seven scaffolds. Late
 /// enough that abandonment decay (one hp per SITE_DECAY_PERIOD) cannot
 /// finish off even the frailest site before the picture is taken.
-const YARD_FOUNDS: u64 = 200;
+const YARD_FOUNDS: u64 = SHOWCASE_TICKS - 200;
 
 /// Seven sites, founded and then abandoned: the builder's order is
 /// replaced each time, but the ground is claimed on placement.

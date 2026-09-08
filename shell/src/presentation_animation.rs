@@ -883,7 +883,7 @@ fn active_harvesting(state: &State, unit: &Unit) -> Option<Vec2Fx> {
     }
     let tile = unit.tile();
     let active = if state.map().scrap_at(node) > 0 {
-        tile != node && tile.chebyshev(node) <= 1
+        unit.in_harvest_reach(node, (1, 1))
     } else {
         state.map().wreck_at(node) > 0 && tile == node
     };

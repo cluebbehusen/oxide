@@ -2158,6 +2158,10 @@ pub const PATH_EXPANSION_CAP: u32 = 20_000;
 /// into another patch.
 pub const HARVEST_ZONE_RADIUS: i32 = 7;
 
+/// Maximum worker-center distance from a scrap or drop-off footprint edge.
+/// Includes diagonal doorstep centers while excluding the far side of their tile.
+pub const HARVEST_REACH: Fx = Fx::lit("0.75");
+
 /// A radar blip only makes salvage unsafe when it is this close to a
 /// candidate source. Contacts carry no identity or range, so a distant
 /// blip must not retire an otherwise healthy work zone.

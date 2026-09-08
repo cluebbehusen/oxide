@@ -330,6 +330,24 @@ impl Unit {
         TilePos::containing(self.pos)
     }
 
+    /// Whether the worker is physically close enough to gather or unload.
+    pub fn in_harvest_reach(&self, anchor: TilePos, size: (i32, i32)) -> bool {
+        if !crate::tick::tile_adjacent_to_rect(self.tile(), anchor, size) {
+            return false;
+        }
+        let min = anchor.center() - Vec2Fx::new(chassis::fx::HALF, chassis::fx::HALF);
+        let max = min
+            + Vec2Fx::new(
+                chassis::fx::Fx::from_num(size.0),
+                chassis::fx::Fx::from_num(size.1),
+            );
+        let closest = Vec2Fx::new(
+            self.pos.x.clamp(min.x, max.x),
+            self.pos.y.clamp(min.y, max.y),
+        );
+        self.pos.dist_sq(closest) <= crate::stats::HARVEST_REACH * crate::stats::HARVEST_REACH
+    }
+
     /// The movement layer this body occupies right now: a landed airframe
     /// is a ground body for targeting, collision, charges, and footprints,
     /// whatever its kind flies as.

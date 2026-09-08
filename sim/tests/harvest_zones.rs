@@ -61,6 +61,133 @@ fn a_loaded_worker_inside_static_pressure_leaves_and_deposits() {
     assert!(state.unit(worker).unwrap().hp > 0);
 }
 
+#[test]
+fn a_worker_displaced_to_the_far_edge_of_its_doorstep_closes_the_gap() {
+    use chassis::fx::{Fx, Vec2Fx};
+    let node = TilePos::new(10, 6);
+    let mut state = state_with_salvage(
+        24,
+        &[(node, 100)],
+        &[],
+        vec![unit(0, UnitKind::Harvester, 9, 7)],
+        vec![],
+    );
+    let worker = state.units()[0].id;
+    let mut data = serde_json::to_value(&state).unwrap();
+    data["units"][0]["pos"] =
+        serde_json::to_value(Vec2Fx::new(Fx::lit("9.03"), Fx::lit("7.95"))).unwrap();
+    state = serde_json::from_value(data).unwrap();
+    assert!(!state.unit(worker).unwrap().in_harvest_reach(node, (1, 1)));
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![worker],
+            node,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 200, |s, _| s.unit(worker).unwrap().carrying > 0);
+    assert!(state.unit(worker).unwrap().in_harvest_reach(node, (1, 1)));
+}
+
+#[test]
+fn harvesting_waits_for_physical_reach_from_each_approach() {
+    let node = TilePos::new(10, 6);
+    for kind in [UnitKind::Harvester, UnitKind::Excavator] {
+        for start in [(5, 6), (15, 6), (10, 2), (10, 10), (6, 2), (14, 10)] {
+            let mut state = state_with_salvage(
+                24,
+                &[(node, 100)],
+                &[],
+                vec![unit(0, kind, start.0, start.1)],
+                vec![],
+            );
+            let worker = state.units()[0].id;
+            state.tick(&[cmd(
+                0,
+                Command::Harvest {
+                    units: vec![worker],
+                    node,
+                    queue: false,
+                },
+            )]);
+            run_until(&mut state, 600, |s, _| s.unit(worker).unwrap().carrying > 0);
+            let worker = state.unit(worker).unwrap();
+            assert!(
+                worker.carrying > 0,
+                "{kind:?} never reached scrap from {start:?}"
+            );
+            let dx = (worker.pos.x - chassis::fx::Fx::from_num(10)).min(chassis::fx::Fx::ZERO)
+                + (worker.pos.x - chassis::fx::Fx::from_num(11)).max(chassis::fx::Fx::ZERO);
+            let dy = (worker.pos.y - chassis::fx::Fx::from_num(6)).min(chassis::fx::Fx::ZERO)
+                + (worker.pos.y - chassis::fx::Fx::from_num(7)).max(chassis::fx::Fx::ZERO);
+            assert!(
+                dx * dx + dy * dy <= chassis::fx::Fx::lit("0.5625"),
+                "{kind:?} gathered from the far side of a neighboring tile: {:?}",
+                worker.pos
+            );
+        }
+    }
+}
+
+#[test]
+fn unloading_waits_for_physical_reach_on_each_foundry_side() {
+    for kind in [UnitKind::Harvester, UnitKind::Excavator] {
+        for (start, node) in [
+            ((8, 5), (7, 5)),
+            ((18, 5), (19, 5)),
+            ((13, 2), (13, 1)),
+            ((13, 9), (13, 10)),
+        ] {
+            let node = TilePos::new(node.0, node.1);
+            let mut state = state_with_salvage(
+                24,
+                &[(node, 100)],
+                &[],
+                vec![unit(0, kind, start.0, start.1)],
+                vec![BuildingSpec {
+                    player: 0,
+                    kind: BuildingKind::Foundry,
+                    x: 12,
+                    y: 4,
+                }],
+            );
+            let worker = state.units()[0].id;
+            state = set_cargo(state, worker, kind.stats().harvest.unwrap().capacity);
+            let report = state.tick(&[cmd(
+                0,
+                Command::Harvest {
+                    units: vec![worker],
+                    node,
+                    queue: false,
+                },
+            )]);
+            assert!(
+                !report
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, Event::CommandRejected { .. }))
+            );
+            run_until(&mut state, 600, |s, _| {
+                s.unit(worker).unwrap().carrying == 0
+            });
+            let worker = state.unit(worker).unwrap();
+            assert_eq!(worker.carrying, 0, "{kind:?} never unloaded from {start:?}");
+            let foundry = state
+                .buildings()
+                .iter()
+                .find(|b| b.anchor == TilePos::new(12, 4))
+                .unwrap();
+            assert!(
+                worker.pos.dist_sq(foundry.closest_point_to(worker.pos))
+                    <= chassis::fx::Fx::lit("0.5625"),
+                "{kind:?} unloaded before reaching the foundation: {:?}",
+                worker.pos
+            );
+        }
+    }
+}
+
 fn state_with_salvage(
     width: usize,
     sources: &[(TilePos, u32)],
