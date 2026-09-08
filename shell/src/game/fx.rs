@@ -187,7 +187,9 @@ fn unit_shot_style(kind: oxide_sim::UnitKind, weapon: usize) -> ShotStyle {
     match (kind, weapon) {
         (UnitKind::Scuttler, _) => ShotStyle::Contact,
         (UnitKind::Sentinel, _) => ShotStyle::Kinetic { heavy: false },
-        (UnitKind::Warden | UnitKind::Breaker, _) => ShotStyle::Kinetic { heavy: true },
+        (UnitKind::Buzzard | UnitKind::Warden | UnitKind::Breaker, _) => {
+            ShotStyle::Kinetic { heavy: true }
+        }
         (UnitKind::Lancer, _) => ShotStyle::Rail,
         (UnitKind::Flakhound, _) => ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::OneTick,
@@ -1089,7 +1091,10 @@ mod tests {
             unit_shot_style(UnitKind::Breaker, 0),
             ShotStyle::Kinetic { heavy: true }
         );
-        assert_eq!(unit_shot_style(UnitKind::Buzzard, 0), ShotStyle::ForgeSpot);
+        assert_eq!(
+            unit_shot_style(UnitKind::Buzzard, 0),
+            ShotStyle::Kinetic { heavy: true }
+        );
         assert_eq!(unit_shot_style(UnitKind::Darter, 0), ShotStyle::ForgeSpot);
         assert_eq!(unit_shot_style(UnitKind::Talon, 0), ShotStyle::ForgeSpot);
         assert_eq!(unit_shot_style(UnitKind::Wisp, 0), ShotStyle::ForgeSpot);

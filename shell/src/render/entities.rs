@@ -1404,7 +1404,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                         let direction = (b - a).normalize_or_zero();
                         let zoom = game.camera.zoom;
                         let round = a.lerp(b, travel);
-                        let length = zoom * if heavy { 0.19 } else { 0.12 };
+                        let length = zoom * if heavy { 0.19 } else { 0.09 };
                         let tail = round - direction * length.min(round.distance(a));
                         let alpha = 1.0 - impact;
                         draw_line(
@@ -1412,7 +1412,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                             tail.y,
                             round.x,
                             round.y,
-                            (zoom * if heavy { 0.065 } else { 0.04 }).max(1.0),
+                            (zoom * if heavy { 0.065 } else { 0.03 }).max(1.0),
                             Color::new(0.91, 0.79, 0.57, alpha),
                         );
                         if impact > 0.0 {
