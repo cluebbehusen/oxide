@@ -282,6 +282,11 @@ invalid path is dropped and behavior may route again on the next tick. When a
 site appears under a pathless ground body, the eviction pre-pass gives it a real
 escape path while preserving its order and work progress.
 
+If a newly accepted foundation leaves a body without an escape route, make-way
+relocates it to a passable perimeter tile. That ring is ordered in the founder's
+approach frame, so rotating the map rotates the fallback destinations too.
+Relocation happens only after acceptance and payment.
+
 Approaching a footprint orders passable doorsteps in the body's local approach
 frame, then uses an owner-local unit rank to spread equivalent workers.
 Ground-production orders spawn doorsteps in the producer's radial frame around

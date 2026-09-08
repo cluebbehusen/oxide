@@ -187,7 +187,9 @@ fn unit_shot_style(kind: oxide_sim::UnitKind, weapon: usize) -> ShotStyle {
     match (kind, weapon) {
         (UnitKind::Scuttler, _) => ShotStyle::Contact,
         (UnitKind::Sentinel, _) => ShotStyle::Kinetic { heavy: false },
-        (UnitKind::Warden | UnitKind::Breaker, _) => ShotStyle::Kinetic { heavy: true },
+        (UnitKind::Buzzard | UnitKind::Warden | UnitKind::Breaker, _) => {
+            ShotStyle::Kinetic { heavy: true }
+        }
         (UnitKind::Lancer, _) => ShotStyle::Rail,
         (UnitKind::Flakhound, _) => ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::OneTick,
@@ -595,6 +597,7 @@ impl Game {
                 }
                 Event::TurretFired {
                     kind,
+                    tier,
                     turret,
                     turret_pos,
                     target_pos,
@@ -645,10 +648,7 @@ impl Game {
                     }
                     push_direct_report(
                         &mut self.fx,
-                        defense_shot_style(
-                            *kind,
-                            self.state.building(*turret).map_or(0, |b| b.tier),
-                        ),
+                        defense_shot_style(*kind, *tier),
                         visual_shot_origin(
                             world_vec(*turret_pos),
                             world_vec(*target_pos),
@@ -1007,6 +1007,60 @@ mod tests {
     use super::*;
     use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
 
+    #[test]
+    fn destroyed_upgraded_flak_keeps_its_final_six_round_volley() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.units = vec![oxide_sim::scenario::UnitSpec {
+            player: 1,
+            kind: UnitKind::Buzzard,
+            x: 13,
+            y: 10,
+        }];
+        scenario.buildings = vec![oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::FlakTurret,
+            x: 11,
+            y: 10,
+        }];
+        let mut game =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .unwrap();
+        let mut value = serde_json::to_value(&*game.state).unwrap();
+        value["units"][0]["heading"] = serde_json::json!(128);
+        value["buildings"][2]["tier"] = serde_json::json!(1);
+        value["buildings"][2]["hp"] = serde_json::json!(1);
+        let mut state: oxide_sim::State = serde_json::from_value(value).unwrap();
+        game.replace_state_after_jump(&state);
+        let report = state.tick(&[oxide_sim::PlayerCommand {
+            player: oxide_sim::PlayerId(1),
+            command: oxide_sim::Command::Attack {
+                units: vec![UnitId(0)],
+                target: Target::Building(BuildingId(2)),
+                queue: false,
+            },
+        }]);
+        game.playback_present(&state, &report.events);
+        assert!(game.state.building(BuildingId(2)).is_none());
+        assert!(report.events.iter().any(|event| matches!(
+            event,
+            Event::TurretFired {
+                turret: BuildingId(2),
+                tier: 1,
+                ..
+            }
+        )));
+        assert!(game.fx.iter().any(|effect| matches!(
+            effect.kind,
+            EffectKind::DirectShot {
+                style: ShotStyle::FlakBurst {
+                    rounds_per_yoke: 3,
+                    ..
+                },
+                ..
+            }
+        )));
+    }
+
     fn face_south(game: &mut crate::game::Game, id: UnitId) {
         let mut value = serde_json::to_value(&*game.state).unwrap();
         let unit = value["units"]
@@ -1089,7 +1143,10 @@ mod tests {
             unit_shot_style(UnitKind::Breaker, 0),
             ShotStyle::Kinetic { heavy: true }
         );
-        assert_eq!(unit_shot_style(UnitKind::Buzzard, 0), ShotStyle::ForgeSpot);
+        assert_eq!(
+            unit_shot_style(UnitKind::Buzzard, 0),
+            ShotStyle::Kinetic { heavy: true }
+        );
         assert_eq!(unit_shot_style(UnitKind::Darter, 0), ShotStyle::ForgeSpot);
         assert_eq!(unit_shot_style(UnitKind::Talon, 0), ShotStyle::ForgeSpot);
         assert_eq!(unit_shot_style(UnitKind::Wisp, 0), ShotStyle::ForgeSpot);

@@ -114,7 +114,10 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
             | UnitWorkState::Repairing { cycle, .. }
             | UnitWorkState::Salvaging { cycle, .. } => harvester_work_frame(cycle),
             UnitWorkState::Idle => match state.locomotion {
-                LocomotionState::Moving { cycle } => HarvesterPose::Moving(cycle_index(cycle, 2)),
+                LocomotionState::Moving { cycle } => match tread_phase(cycle) {
+                    0 => HarvesterPose::Idle,
+                    phase => HarvesterPose::Moving(phase - 1),
+                },
                 LocomotionState::Rest => HarvesterPose::Idle,
             },
         };
@@ -129,7 +132,10 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
             | UnitWorkState::Repairing { cycle, .. }
             | UnitWorkState::Salvaging { cycle, .. } => excavator_work_frame(cycle),
             UnitWorkState::Idle => match state.locomotion {
-                LocomotionState::Moving { cycle } => ExcavatorPose::Moving(cycle_index(cycle, 2)),
+                LocomotionState::Moving { cycle } => match tread_phase(cycle) {
+                    0 => ExcavatorPose::Idle,
+                    phase => ExcavatorPose::Moving(phase - 1),
+                },
                 LocomotionState::Rest => ExcavatorPose::Idle,
             },
         };
@@ -145,6 +151,10 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
     if let LocomotionState::Moving { cycle } = state.locomotion {
         return match state.propulsion {
             PropulsionState::LiftRotors { cycle } => lift_rotor_frame(kind, cycle),
+            PropulsionState::None if has_treads(kind) => match tread_phase(cycle) {
+                0 => UnitFrame::Idle,
+                phase => UnitFrame::Moving(phase - 1),
+            },
             PropulsionState::None => UnitFrame::Moving(cycle_index(cycle, 2)),
         };
     }
@@ -160,6 +170,26 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
     preparation.map_or(UnitFrame::Idle, |progress| {
         UnitFrame::Action(unit_preparation_frame(kind, progress))
     })
+}
+
+fn has_treads(kind: UnitKind) -> bool {
+    matches!(
+        kind,
+        UnitKind::Sentinel
+            | UnitKind::Warden
+            | UnitKind::Lancer
+            | UnitKind::Breaker
+            | UnitKind::Avalanche
+            | UnitKind::Bombard
+            | UnitKind::Flakhound
+            | UnitKind::Stinger
+            | UnitKind::Tender
+    )
+}
+
+/// Base, tread one, tread two form one forward belt loop.
+pub(super) fn tread_phase(cycle: f32) -> usize {
+    cycle_index(cycle, 3)
 }
 
 fn lift_rotor_frame(kind: UnitKind, cycle: f32) -> UnitFrame {
@@ -440,6 +470,65 @@ mod tests {
 
     use super::*;
     use crate::presentation_animation::{ConstructionState, PropulsionState};
+
+    #[test]
+    fn tread_loop_includes_the_base_phase_instead_of_reversing_between_two_frames() {
+        for kind in [
+            UnitKind::Sentinel,
+            UnitKind::Warden,
+            UnitKind::Lancer,
+            UnitKind::Breaker,
+            UnitKind::Avalanche,
+            UnitKind::Bombard,
+            UnitKind::Flakhound,
+            UnitKind::Stinger,
+            UnitKind::Tender,
+        ] {
+            let mut state = unit_state();
+            let frames = [0.0, 0.34, 0.67, 0.99, 0.0].map(|cycle| {
+                state.locomotion = LocomotionState::Moving { cycle };
+                unit_frame(kind, state)
+            });
+            assert_eq!(
+                frames,
+                [
+                    UnitFrame::Idle,
+                    UnitFrame::Moving(0),
+                    UnitFrame::Moving(1),
+                    UnitFrame::Moving(1),
+                    UnitFrame::Idle,
+                ],
+                "{kind:?}",
+            );
+        }
+        for (cycle, expected) in [(0.0, 0), (0.34, 1), (0.67, 2)] {
+            let mut state = unit_state();
+            state.locomotion = LocomotionState::Moving { cycle };
+            assert_eq!(tread_phase(cycle), expected);
+            assert_eq!(
+                unit_frame(UnitKind::Harvester, state),
+                UnitFrame::Harvester {
+                    cargo: 0,
+                    pose: if expected == 0 {
+                        HarvesterPose::Idle
+                    } else {
+                        HarvesterPose::Moving(expected - 1)
+                    },
+                },
+            );
+            assert_eq!(
+                unit_frame(UnitKind::Excavator, state),
+                UnitFrame::Excavator {
+                    cargo: 0,
+                    pose: if expected == 0 {
+                        ExcavatorPose::Idle
+                    } else {
+                        ExcavatorPose::Moving(expected - 1)
+                    },
+                },
+            );
+        }
+    }
 
     fn unit_state() -> UnitAnimationState {
         UnitAnimationState {

@@ -8,7 +8,7 @@ use super::super::landing;
 use super::super::route_for;
 use super::PendingHit;
 use super::locomotion::{approach_rect, walk};
-use crate::event::{Event, StallReason};
+use crate::event::{Event, StallReason, UnitLaunchPose};
 use crate::ids::{PlayerId, Target, UnitId};
 use crate::state::{Order, PathFollow, State};
 use crate::stats::{Domain, WeaponStats};
@@ -442,8 +442,14 @@ pub(super) fn turret_fire(
         if !b.built || b.hp == 0 {
             continue;
         }
-        let (me, center, cooling, kind, focus) =
-            (b.player, b.center(), b.cooldown > 0, b.kind, b.focus);
+        let (me, center, cooling, kind, tier, focus) = (
+            b.player,
+            b.center(),
+            b.cooldown > 0,
+            b.kind,
+            b.tier,
+            b.focus,
+        );
         let focus_domain = focus.and_then(|target| {
             state
                 .visible_hostile_target_domain(me, target)
@@ -548,6 +554,7 @@ pub(super) fn turret_fire(
             let flight = launch_shell(state, launches, Target::Building(id), me, center, aim, atk);
             events.push(Event::ShellLaunched {
                 shooter: Target::Building(id),
+                unit_pose: None,
                 target: victim,
                 player: me,
                 from: center,
@@ -559,6 +566,7 @@ pub(super) fn turret_fire(
             events.push(Event::TurretFired {
                 turret: id,
                 kind,
+                tier,
                 target: victim,
                 turret_pos: center,
                 target_pos: aim,
@@ -949,6 +957,9 @@ pub(super) fn advance(
         let flight = launch_shell(state, launches, Target::Unit(id), me, pos, aim, &weapon);
         events.push(Event::ShellLaunched {
             shooter: Target::Unit(id),
+            unit_pose: Some(UnitLaunchPose::from(
+                state.unit(id).expect("shooter exists during combat"),
+            )),
             target,
             player: me,
             from: pos,
@@ -1244,6 +1255,9 @@ fn bomber_attack(
             let flight = launch_shell(state, launches, Target::Unit(id), me, pos, impact, weapon);
             events.push(Event::ShellLaunched {
                 shooter: Target::Unit(id),
+                unit_pose: Some(UnitLaunchPose::from(
+                    state.unit(id).expect("shooter exists during combat"),
+                )),
                 target,
                 player: me,
                 from: pos,
@@ -1580,6 +1594,9 @@ pub(super) fn attack(
                 );
                 events.push(Event::ShellLaunched {
                     shooter: Target::Unit(id),
+                    unit_pose: Some(UnitLaunchPose::from(
+                        state.unit(id).expect("shooter exists during combat"),
+                    )),
                     target,
                     player: me,
                     from: pos,

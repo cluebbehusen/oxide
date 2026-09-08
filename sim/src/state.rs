@@ -1174,6 +1174,12 @@ impl State {
             let expected = match s.shooter {
                 Target::Unit(id) => self
                     .unit(id)
+                    .or_else(|| {
+                        self.units
+                            .iter()
+                            .flat_map(|carrier| &carrier.cargo)
+                            .find(|rider| rider.id == id)
+                    })
                     .map(|unit| ProjectileKind::for_unit(unit.kind)),
                 Target::Building(_) => Some(ProjectileKind::Shell),
             };
