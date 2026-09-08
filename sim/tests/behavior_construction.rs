@@ -8,6 +8,170 @@ use oxide_sim::{Command, Event, Order, PlayerId, Scenario, State, Target, UnitId
 
 use common::*;
 
+fn pocketed_founder_scenario() -> Scenario {
+    let mut scenario = open_arena_with(
+        16,
+        12,
+        vec![
+            unit(0, UnitKind::Harvester, 6, 4),
+            unit(0, UnitKind::Harvester, 4, 3),
+        ],
+        |rows| {
+            rows[3][7] = '#';
+            rows[4][7] = '#';
+            rows[5][5..=7].fill('#');
+        },
+    );
+    scenario.players[0].scrap = 300;
+    scenario
+}
+
+fn pocketed_founder_state() -> State {
+    pocketed_founder_scenario().build().unwrap()
+}
+
+#[test]
+fn enclosed_founder_relocation_respects_a_map_half_turn() {
+    use oxide_sim::stats::BuildingKind;
+    let scenario = pocketed_founder_scenario();
+    let mut rotated = scenario.clone();
+    let mut rows = vec![vec!['.'; 16]; 12];
+    for (y, row) in scenario.map.iter().enumerate() {
+        for (x, cell) in row.chars().enumerate() {
+            match cell {
+                '1' | '2' => rows[12 - 2 - y][16 - 2 - x] = cell,
+                '.' => {}
+                _ => rows[11 - y][15 - x] = cell,
+            }
+        }
+    }
+    rotated.map = rows
+        .into_iter()
+        .map(|row| row.into_iter().collect())
+        .collect();
+    for unit in &mut rotated.units {
+        unit.x = 15 - unit.x;
+        unit.y = 11 - unit.y;
+    }
+    let relocate = |scenario: Scenario, anchor| {
+        let state = scenario.build().unwrap();
+        let founder = state.units()[0].id;
+        let before = state.unit(founder).unwrap().tile();
+        let after = state.inspect_command_phase(
+            &[cmd(
+                0,
+                Command::Build {
+                    units: vec![founder],
+                    kind: BuildingKind::Fabricator,
+                    anchor,
+                    queue: false,
+                    defer: false,
+                },
+            )],
+            |view| view.unit(founder).unwrap().tile(),
+        );
+        assert_ne!(
+            before, after,
+            "the enclosed founder is relocated on acceptance"
+        );
+        after
+    };
+    let original = relocate(scenario, TilePos::new(5, 3));
+    let mirrored = relocate(rotated, TilePos::new(9, 7));
+    assert_eq!(mirrored, TilePos::new(15 - original.x, 11 - original.y));
+}
+
+#[test]
+fn a_pocketed_canonical_founder_uses_the_existing_make_way_fallback() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = pocketed_founder_state();
+    let founder = state.units()[0].id;
+    let other = state.units()[1].id;
+    let anchor = TilePos::new(5, 3);
+    let report = state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![other, founder, founder],
+            kind: BuildingKind::Fabricator,
+            anchor,
+            queue: false,
+            defer: false,
+        },
+    )]);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::CommandRejected { .. }))
+    );
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .expect("site accepted");
+    assert!(!site.contains(state.unit(founder).unwrap().tile()));
+    assert!(
+        matches!(state.unit(founder).unwrap().order, Order::Build { site: id } if id == site.id)
+    );
+    let site_id = site.id;
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        300 - BuildingKind::Fabricator
+            .base_stats()
+            .construction
+            .unwrap()
+            .cost
+    );
+    run_until(&mut state, 600, |s, _| s.building(site_id).unwrap().built);
+    state.validate_invariants().unwrap();
+}
+
+#[test]
+fn a_pocketed_founder_with_a_full_queue_is_not_moved_or_charged() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = pocketed_founder_state();
+    let founder = state.units()[0].id;
+    let mut commands = vec![cmd(
+        0,
+        Command::Move {
+            units: vec![founder],
+            goal: TilePos::new(4, 3),
+            queue: false,
+        },
+    )];
+    commands.extend((0..32).map(|_| {
+        cmd(
+            0,
+            Command::Move {
+                units: vec![founder],
+                goal: TilePos::new(4, 3),
+                queue: true,
+            },
+        )
+    }));
+    state.tick(&commands);
+    let mut control = state.clone();
+    control.tick(&[]);
+    let report = state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![founder],
+            kind: BuildingKind::Fabricator,
+            anchor: TilePos::new(5, 3),
+            queue: true,
+            defer: false,
+        },
+    )]);
+    assert!(report.events.iter().any(|e| matches!(
+        e,
+        Event::CommandRejected {
+            reason: RejectReason::QueueFull,
+            ..
+        }
+    )));
+    assert_eq!(state.hash(), control.hash());
+}
+
 #[test]
 fn construction_ramps_and_completes() {
     use oxide_sim::stats::BuildingKind;

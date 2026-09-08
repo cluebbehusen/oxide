@@ -864,15 +864,15 @@ pub(super) fn found_site(
     // doorstep *around the now-blocking footprint* — otherwise
     // undo for free. Charging for a site nobody can ever touch
     // would burn 80% of the price through the hp-scaled refund.
-    // (A* tolerates a blocked start, so a founder standing inside
-    // the fresh footprint routes out of it like any unit on newly
-    // claimed ground.)
     let site = state.place_site(player, kind, anchor);
     let from = state.unit(builder).expect("caller checked").tile();
     let size = kind.base_stats().size;
+    // An enclosed founder uses the same post-acceptance perimeter relocation
+    // as other friendly bodies trapped by a newly claimed footprint.
+    let inside = state.building(site).expect("just placed").contains(from);
     let reachable = super::rect_adjacent_tiles(anchor, size)
         .filter(|&t| state.passable(t))
-        .any(|t| from == t || super::astar_for(state, from, t).is_some());
+        .any(|t| inside || from == t || super::astar_for(state, from, t).is_some());
     if !reachable {
         state.retract_site(site);
         return Err(RejectReason::UnreachableGoal);
@@ -893,17 +893,24 @@ pub(super) fn found_site(
     // sim rule expects a resting unit on a claimed footprint. The
     // builders' own approach and the eviction pre-pass both route out
     // of the footprint, so only a body with no escape route takes the instant deal
-    // onto the passable perimeter ring, round-robin in (y, x)
-    // order, id order among the dealt: nothing may end up inside a
+    // onto the passable perimeter ring in the founder's approach frame,
+    // round-robin in id order among the dealt: nothing may end up inside a
     // finished building. Strictly after the last rejection path and
     // the payment — a rejected command must not move the state hash
     // (retract_site's contract). Hostiles can't be here: the
     // caller's placement predicate refused them.
     let ring: Vec<TilePos> = {
+        let approach = super::rect_approach_origin(state, player, from, anchor, size);
         let mut ring: Vec<TilePos> = super::rect_adjacent_tiles(anchor, size)
             .filter(|&t| state.passable(t))
             .collect();
-        ring.sort_unstable_by_key(|t| (t.y, t.x));
+        ring.sort_unstable_by_key(|&t| {
+            (
+                super::rect_approach_key_from(from, approach, anchor, size, t),
+                t.y,
+                t.x,
+            )
+        });
         ring
     };
     let inside = |t: TilePos| {
