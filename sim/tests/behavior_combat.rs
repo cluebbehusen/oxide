@@ -9,6 +9,486 @@ use oxide_sim::{BuildingKind, Command, Event, Order, Scenario, Target, UnitId, U
 use common::*;
 
 #[test]
+fn turn_limited_weapons_align_before_firing_and_resume_identically() {
+    for kind in [
+        UnitKind::Breaker,
+        UnitKind::Avalanche,
+        UnitKind::Buzzard,
+        UnitKind::Bombard,
+    ] {
+        let target_x = if kind == UnitKind::Avalanche { 13 } else { 9 };
+        let rate = kind.ground_turn_rate().max(kind.turret_turn_rate());
+        let mut scenario = open_arena_with(
+            26,
+            18,
+            vec![unit(0, kind, 6, 8), unit(0, UnitKind::Kestrel, 12, 6)],
+            |_| {},
+        );
+        scenario.buildings.push(BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Fabricator,
+            x: target_x,
+            y: 8,
+        });
+        let mut state = scenario.build().unwrap();
+        let mut document = serde_json::to_value(&state).unwrap();
+        document["units"][0]["heading"] = serde_json::json!(128);
+        state = serde_json::from_value(document).unwrap();
+        let id = state.units()[0].id;
+        let target = state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == BuildingKind::Fabricator)
+            .unwrap()
+            .id;
+        let initial = state.unit(id).unwrap().pos;
+        assert_eq!(state.unit(id).unwrap().heading, 128);
+        let mut previous = 128u8;
+        let mut shot_tick = None;
+        let mut resumed = None;
+        for tick in 0..60 {
+            let commands = if tick == 0 {
+                vec![cmd(
+                    0,
+                    Command::Attack {
+                        units: vec![id],
+                        target: Target::Building(target),
+                        queue: false,
+                    },
+                )]
+            } else {
+                vec![]
+            };
+            let report = state.tick(&commands);
+            if let Some(copy) = resumed.as_mut() {
+                let copy: &mut oxide_sim::State = copy;
+                assert_eq!(copy.tick(&commands).events, report.events);
+                assert_eq!(copy.hash(), state.hash());
+            }
+            if tick == 12 {
+                resumed = Some(
+                    serde_json::from_slice::<oxide_sim::State>(
+                        &serde_json::to_vec(&state).unwrap(),
+                    )
+                    .unwrap(),
+                );
+            }
+            let unit = state.unit(id).unwrap();
+            assert_eq!(
+                unit.pos, initial,
+                "turning must not chase an in-range target"
+            );
+            assert!(
+                unit.heading
+                    .wrapping_sub(previous)
+                    .cast_signed()
+                    .unsigned_abs()
+                    <= rate
+            );
+            previous = unit.heading;
+            let fired = report.events.iter().any(|event| match event {
+                Event::AttackHit { attacker, .. } => *attacker == id,
+                Event::ShellLaunched { shooter, .. } => *shooter == Target::Unit(id),
+                _ => false,
+            });
+            if fired {
+                assert!(unit.heading.cast_signed().unsigned_abs() <= 2);
+                if kind == UnitKind::Avalanche {
+                    assert_eq!(state.shells()[0].kind, oxide_sim::ProjectileKind::Missile);
+                    let document = serde_json::to_value(&state).unwrap();
+                    let restored: oxide_sim::State =
+                        serde_json::from_value(document.clone()).unwrap();
+                    assert_eq!(restored.hash(), state.hash());
+                    let mut forged = document.clone();
+                    forged["shells"][0]["kind"] = serde_json::json!("bomb");
+                    let error = serde_json::from_value::<oxide_sim::State>(forged)
+                        .unwrap_err()
+                        .to_string();
+                    assert!(error.contains("projectile kind inconsistent with its shooter"));
+                    let mut orphaned = document;
+                    orphaned["units"]
+                        .as_array_mut()
+                        .unwrap()
+                        .retain(|unit| unit["id"] != serde_json::json!(id));
+                    let restored: oxide_sim::State = serde_json::from_value(orphaned).unwrap();
+                    assert_eq!(
+                        restored.shells()[0].kind,
+                        oxide_sim::ProjectileKind::Missile
+                    );
+                }
+                shot_tick = Some(tick);
+                break;
+            }
+            assert_eq!(unit.cooldowns[0], 0, "turning must not consume the shot");
+        }
+        let deployment = if kind == UnitKind::Bombard {
+            u32::from(oxide_sim::stats::BOMBARD_BRACE_TICKS)
+        } else {
+            0
+        };
+        assert_eq!(
+            shot_tick,
+            Some(126u32.div_ceil(u32::from(rate)) - 1 + deployment)
+        );
+    }
+}
+
+#[test]
+fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
+    let mut scenario = open_arena_with(28, 24, vec![unit(0, UnitKind::Bombard, 8, 10)], |_| {});
+    for (x, y) in [(11, 10), (7, 7)] {
+        scenario.buildings.push(BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Fabricator,
+            x,
+            y,
+        });
+    }
+    let mut state = scenario.build().unwrap();
+    let id = state.units()[0].id;
+    let targets: Vec<_> = state
+        .buildings()
+        .iter()
+        .filter(|b| b.kind == BuildingKind::Fabricator)
+        .map(|b| b.id)
+        .collect();
+    face_target(&mut state, id, Target::Building(targets[0]));
+    let fire = |target| {
+        cmd(
+            0,
+            Command::Attack {
+                units: vec![id],
+                target: Target::Building(target),
+                queue: false,
+            },
+        )
+    };
+    let fired = |events: &[Event]| {
+        events.iter().any(
+            |e| matches!(e, Event::ShellLaunched { shooter, .. } if *shooter == Target::Unit(id)),
+        )
+    };
+    for tick in 0..6 {
+        let commands = if tick == 0 {
+            vec![fire(targets[0])]
+        } else {
+            vec![]
+        };
+        let report = state.tick(&commands);
+        assert!(!fired(&report.events));
+        assert_eq!(state.unit(id).unwrap().heading, 0);
+        assert_eq!(state.unit(id).unwrap().brace_ticks, tick + 1);
+    }
+    let document = serde_json::to_value(&state).unwrap();
+    let mut resumed: oxide_sim::State = serde_json::from_value(document.clone()).unwrap();
+    let mut forged = document;
+    forged["units"][0]["brace_ticks"] = serde_json::json!(13);
+    assert!(
+        serde_json::from_value::<oxide_sim::State>(forged)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid spade deployment")
+    );
+    for tick in 6..12 {
+        let report = state.tick(&[]);
+        assert_eq!(report.events, resumed.tick(&[]).events);
+        assert_eq!(state.hash(), resumed.hash());
+        assert_eq!(fired(&report.events), tick == 11);
+        assert_eq!(state.unit(id).unwrap().heading, 0);
+    }
+    let planted = state.unit(id).unwrap().pos;
+    let mut moving = state.clone();
+    for tick in 0..12 {
+        let commands = if tick == 0 {
+            vec![fire(targets[1])]
+        } else {
+            vec![]
+        };
+        let report = state.tick(&commands);
+        assert!(!fired(&report.events));
+        assert_eq!(state.unit(id).unwrap().pos, planted);
+        let u = state.unit(id).unwrap();
+        if tick < 11 {
+            assert_eq!(
+                u.heading, 0,
+                "recoil and retraction must finish before turning"
+            );
+        } else {
+            assert_ne!(u.heading, 0);
+            assert_eq!(u.brace_ticks, 0);
+        }
+    }
+    for tick in 0..12 {
+        let commands = if tick == 0 {
+            vec![cmd(
+                0,
+                Command::Move {
+                    units: vec![id],
+                    goal: TilePos::new(16, 10),
+                    queue: false,
+                },
+            )]
+        } else {
+            vec![]
+        };
+        moving.tick(&commands);
+        let u = moving.unit(id).unwrap();
+        if tick < 10 {
+            assert_eq!(
+                u.pos, planted,
+                "spades must leave the ground before translation"
+            );
+        } else {
+            assert_eq!(u.brace_ticks, 0);
+            assert!(u.pos.x > planted.x);
+        }
+    }
+    for _ in 0..100 {
+        let before = state.unit(id).unwrap().heading;
+        let report = state.tick(&[]);
+        let u = state.unit(id).unwrap();
+        if u.brace_ticks > 0 {
+            assert_eq!(u.heading, before);
+        }
+        if fired(&report.events) {
+            assert_eq!(u.brace_ticks, oxide_sim::stats::BOMBARD_BRACE_TICKS);
+            return;
+        }
+    }
+    panic!("retargeted Bombard never finished its new firing stance");
+}
+
+#[test]
+fn bombard_cannot_fire_unbraced_advance_potshots() {
+    let mut scenario = open_arena_with(28, 18, vec![unit(0, UnitKind::Bombard, 8, 8)], |_| {});
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Fabricator,
+        x: 11,
+        y: 8,
+    });
+    let mut state = scenario.build().unwrap();
+    let id = state.units()[0].id;
+    let start = state.unit(id).unwrap().pos;
+    for tick in 0..30 {
+        let commands = if tick == 0 {
+            vec![cmd(
+                0,
+                Command::Advance {
+                    units: vec![id],
+                    goal: TilePos::new(8, 14),
+                    queue: false,
+                },
+            )]
+        } else {
+            vec![]
+        };
+        let report = state.tick(&commands);
+        assert!(
+            !report
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::ShellLaunched { .. }))
+        );
+        assert_eq!(state.unit(id).unwrap().brace_ticks, 0);
+    }
+    assert!(state.unit(id).unwrap().pos.y > start.y);
+}
+
+#[test]
+fn buzzard_tracks_a_new_target_during_reload_without_spending_another_shot() {
+    let mut scenario = open_arena_with(26, 18, vec![unit(0, UnitKind::Buzzard, 6, 8)], |_| {});
+    for (x, y) in [(9, 8), (5, 5)] {
+        scenario.buildings.push(BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Fabricator,
+            x,
+            y,
+        });
+    }
+    let mut state = scenario.build().unwrap();
+    let id = state.units()[0].id;
+    let targets: Vec<_> = state
+        .buildings()
+        .iter()
+        .filter(|b| b.kind == BuildingKind::Fabricator)
+        .map(|b| b.id)
+        .collect();
+    let attack = |target| {
+        cmd(
+            0,
+            Command::Attack {
+                units: vec![id],
+                target: Target::Building(target),
+                queue: false,
+            },
+        )
+    };
+    let mut fired = false;
+    for tick in 0..30 {
+        let report = state.tick(&if tick == 0 {
+            vec![attack(targets[0])]
+        } else {
+            vec![]
+        });
+        if report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::AttackHit { attacker, .. } if *attacker == id))
+        {
+            fired = true;
+            break;
+        }
+    }
+    assert!(fired);
+    let previous = state.unit(id).unwrap().heading;
+    let cooldown = state.unit(id).unwrap().cooldowns[0];
+    let report = state.tick(&[attack(targets[1])]);
+    let unit = state.unit(id).unwrap();
+    assert_ne!(
+        unit.heading, previous,
+        "reload must not freeze target tracking"
+    );
+    assert_eq!(unit.cooldowns[0], cooldown - 1);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::AttackHit { attacker, .. } if *attacker == id))
+    );
+    for _ in 0..12 {
+        state.tick(&[]);
+    }
+    assert_eq!(state.unit(id).unwrap().heading, 192);
+    assert_eq!(state.unit(id).unwrap().cooldowns[0], cooldown - 13);
+}
+
+#[test]
+fn advancing_buzzard_traverses_independently_and_does_not_track_hidden_charges() {
+    for target_kind in [BuildingKind::Fabricator, BuildingKind::ScuttleCharge] {
+        let mut scenario = open_arena_with(26, 20, vec![unit(0, UnitKind::Buzzard, 7, 8)], |_| {});
+        scenario.buildings.push(BuildingSpec {
+            player: 1,
+            kind: target_kind,
+            x: 9,
+            y: 8,
+        });
+        let mut state = scenario.build().unwrap();
+        let id = state.units()[0].id;
+        let initial = state.unit(id).unwrap().pos;
+        let mut previous = state.unit(id).unwrap().heading;
+        let mut fired = false;
+        let mut firing_heading = None;
+        for tick in 0..20 {
+            let report = state.tick(&if tick == 0 {
+                vec![cmd(
+                    0,
+                    Command::Advance {
+                        units: vec![id],
+                        goal: TilePos::new(7, 17),
+                        queue: false,
+                    },
+                )]
+            } else {
+                vec![]
+            });
+            let unit = state.unit(id).unwrap();
+            assert_eq!(unit.pos.x, initial.x);
+            assert!(unit.pos.y > initial.y);
+            assert!(matches!(unit.order, Order::Advance { .. }));
+            assert!(
+                unit.heading
+                    .wrapping_sub(previous)
+                    .cast_signed()
+                    .unsigned_abs()
+                    <= 6
+            );
+            previous = unit.heading;
+            let shot = report
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::AttackHit { attacker, .. } if *attacker == id));
+            if shot {
+                firing_heading = Some(unit.heading);
+                fired = true;
+            }
+            if target_kind == BuildingKind::ScuttleCharge {
+                assert_eq!(unit.heading, 192, "hidden charge must not steer the turret");
+                assert_eq!(unit.cooldowns[0], 0);
+            }
+        }
+        assert_eq!(fired, target_kind == BuildingKind::Fabricator);
+        if let Some(heading) = firing_heading {
+            assert_ne!(
+                state.unit(id).unwrap().heading,
+                heading,
+                "an advancing turret must continue tracking during cooldown"
+            );
+        }
+    }
+}
+
+#[test]
+fn advancing_heavy_units_keep_moving_but_cannot_fire_before_alignment() {
+    for kind in [UnitKind::Breaker, UnitKind::Avalanche] {
+        let target_x = if kind == UnitKind::Breaker { 10 } else { 14 };
+        let scenario = open_arena_with(
+            28,
+            18,
+            vec![
+                unit(0, kind, 6, 8),
+                unit(0, UnitKind::Kestrel, 12, 6),
+                unit(1, UnitKind::Harvester, target_x, 8),
+            ],
+            |_| {},
+        );
+        let mut state = scenario.build().unwrap();
+        let id = state.units()[0].id;
+        let initial = state.unit(id).unwrap().pos;
+        let mut fired = false;
+        for tick in 0..90 {
+            let previous = state.unit(id).unwrap().heading;
+            let commands = if tick == 0 {
+                vec![cmd(
+                    0,
+                    Command::Advance {
+                        units: vec![id],
+                        goal: TilePos::new(22, 8),
+                        queue: false,
+                    },
+                )]
+            } else {
+                vec![]
+            };
+            let report = state.tick(&commands);
+            let heavy = state.unit(id).unwrap();
+            assert!(
+                heavy
+                    .heading
+                    .wrapping_sub(previous)
+                    .cast_signed()
+                    .unsigned_abs()
+                    <= kind.ground_turn_rate()
+            );
+            assert!(matches!(heavy.order, Order::Advance { .. }));
+            fired = report.events.iter().any(|event| match event {
+                Event::AttackHit { attacker, .. } => *attacker == id,
+                Event::ShellLaunched { shooter, .. } => *shooter == Target::Unit(id),
+                _ => false,
+            });
+            if fired {
+                assert!(tick > 0, "advance must not bypass initial weapon alignment");
+                assert!(previous.cast_signed().unsigned_abs() <= 2);
+                assert!(heavy.pos.x > initial.x, "firing must retain the advance");
+                break;
+            }
+            assert_eq!(heavy.cooldowns[0], 0);
+        }
+        assert!(fired, "{kind:?} must take its available forward shot");
+    }
+}
+
+#[test]
 fn attack_command_kills_and_reports() {
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 4, 6),
@@ -265,6 +745,7 @@ fn advance_moves_and_fires_without_replacing_its_route() {
     .build()
     .unwrap();
     let (mover, target) = (state.units()[0].id, state.units()[1].id);
+    face_target(&mut state, mover, Target::Unit(target));
     let before_pos = state.unit(mover).unwrap().pos;
     let before_hp = state.unit(target).unwrap().hp;
     let goal = TilePos::new(14, 4);
@@ -311,6 +792,7 @@ fn advance_chooses_equal_range_targets_by_id() {
         state.units()[1].id,
         state.units()[2].id,
     );
+    face_target(&mut state, mover, Target::Unit(lower));
     let full = UnitKind::Harvester.stats().max_hp;
 
     state.tick(&[cmd(
@@ -425,15 +907,16 @@ fn advance_projectiles_launch_unguided_without_stopping() {
         24,
         14,
         vec![
-            unit(0, UnitKind::Bombard, 4, 5),
+            unit(0, UnitKind::Avalanche, 4, 5),
             unit(0, UnitKind::Sentinel, 9, 7),
             unit(1, UnitKind::Harvester, 11, 5),
         ],
     )
     .build()
     .unwrap();
-    let (bombard, victim) = (state.units()[0].id, state.units()[2].id);
-    let before_pos = state.unit(bombard).unwrap().pos;
+    let (launcher, victim) = (state.units()[0].id, state.units()[2].id);
+    face_target(&mut state, launcher, Target::Unit(victim));
+    let before_pos = state.unit(launcher).unwrap().pos;
     let before_hp = state.unit(victim).unwrap().hp;
     assert!(
         state.can_see(oxide_sim::PlayerId(0), state.unit(victim).unwrap().tile()),
@@ -443,7 +926,7 @@ fn advance_projectiles_launch_unguided_without_stopping() {
     let report = state.tick(&[cmd(
         0,
         Command::Advance {
-            units: vec![bombard],
+            units: vec![launcher],
             goal: TilePos::new(17, 5),
             queue: false,
         },
@@ -455,9 +938,9 @@ fn advance_projectiles_launch_unguided_without_stopping() {
             Event::ShellLaunched {
                 shooter: Target::Unit(id),
                 ..
-            } if *id == bombard
+            } if *id == launcher
         )),
-        "the Bombard's primary uses the ordinary projectile pipeline"
+        "the Avalanche primary uses the ordinary projectile pipeline"
     );
     assert_eq!(
         state.unit(victim).unwrap().hp,
@@ -465,12 +948,12 @@ fn advance_projectiles_launch_unguided_without_stopping() {
         "an unguided shell does not deal launch-tick damage"
     );
     assert_ne!(
-        state.unit(bombard).unwrap().pos,
+        state.unit(launcher).unwrap().pos,
         before_pos,
         "launching does not stop the Advance"
     );
     assert!(matches!(
-        state.unit(bombard).unwrap().order,
+        state.unit(launcher).unwrap().order,
         Order::Advance { .. }
     ));
 }
@@ -481,7 +964,7 @@ fn advance_never_fires_into_fog() {
         26,
         14,
         vec![
-            unit(0, UnitKind::Bombard, 4, 5),
+            unit(0, UnitKind::Avalanche, 4, 5),
             unit(1, UnitKind::Harvester, 12, 5),
         ],
     )
@@ -691,6 +1174,7 @@ fn buildings_are_not_cover_only_terrain_is() {
     };
     let mut state = scenario.build().unwrap();
     let (attacker, victim) = (state.units()[0].id, state.units()[1].id);
+    face_target(&mut state, attacker, Target::Unit(victim));
     let start_tile = state.unit(attacker).unwrap().tile();
     let events = state
         .tick(&[cmd(
@@ -791,6 +1275,7 @@ fn an_unbuilt_site_is_no_sandbag() {
         state.units()[1].id,
         state.units()[2].id,
     );
+    face_target(&mut state, attacker, Target::Unit(victim));
     let start_tile = state.unit(attacker).unwrap().tile();
     // The site claims the line tile on the command tick.
     state.tick(&[cmd(
@@ -852,13 +1337,19 @@ fn lancer_fires_from_beyond_bombard_sight_and_retaliation_answers() {
     // The first hit turns the victim on its attacker; the rail wins the
     // duel it opened, but the answer — one arcing shell already in
     // flight — lands after its shooter is dead. Shells outlive shooters.
-    let mut state = arena(vec![
-        unit(0, UnitKind::Bombard, 3, 6),
-        unit(1, UnitKind::Lancer, 8, 4),
-    ])
+    let mut state = open_arena(
+        16,
+        9,
+        vec![
+            unit(0, UnitKind::Bombard, 3, 6),
+            unit(1, UnitKind::Lancer, 8, 4),
+        ],
+    )
     .build()
     .unwrap();
     let (victim, lancer) = (state.units()[0].id, state.units()[1].id);
+    face_target(&mut state, lancer, Target::Unit(victim));
+    face_target(&mut state, victim, Target::Unit(lancer));
     let d2 = {
         let a = state.unit(victim).unwrap().pos;
         let b = state.unit(lancer).unwrap().pos;
@@ -876,7 +1367,7 @@ fn lancer_fires_from_beyond_bombard_sight_and_retaliation_answers() {
         },
     )]);
     // The lancer needs no approach: the first hit lands within a tick or
-    // two, and the bombard's answer must be immediate.
+    // two; retaliation adopts the shooter before the spades deploy.
     run_until(&mut state, 10, |s, _| {
         s.unit(victim).unwrap().hp < UnitKind::Bombard.stats().max_hp
     });
@@ -1461,6 +1952,9 @@ fn retaliation_interrupts_an_attack_on_a_corpse() {
     .unwrap();
     let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
     let (bait, sniper, c1, c2, v) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+    for (shooter, target) in [(sniper, v), (c1, bait), (c2, bait)] {
+        face_target(&mut state, shooter, Target::Unit(target));
+    }
     state.tick(&[
         cmd(
             1,

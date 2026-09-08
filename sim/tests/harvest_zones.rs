@@ -448,10 +448,7 @@ fn a_hidden_artillery_hit_diverts_autonomous_work_without_revealing_the_gun() {
             queue: false,
         },
     )]);
-    assert!(
-        !state.shells().is_empty(),
-        "the hidden gun launched through its spotter"
-    );
+    run_until(&mut state, 64, |state, _| !state.shells().is_empty());
     state.tick(&[cmd(
         1,
         Command::Stop {

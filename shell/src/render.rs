@@ -218,7 +218,7 @@ pub(crate) const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
 const BONE: Color = color_u8!(232, 228, 216, 255);
 const BONE_FAINT: Color = color_u8!(232, 228, 216, 90);
 const DEFAULT_UNIT_DRAW_SCALE: f32 = 1.05;
-const HEAVY_UNIT_DRAW_SCALE: f32 = 1.5;
+const HEAVY_UNIT_DRAW_SCALE: f32 = 1.4;
 const LARGE_UNIT_DRAW_SCALE: f32 = 2.0;
 const SCRAP_COLOR: Color = crate::theme::TEXT_ACCENT;
 const HP_BACK: Color = color_u8!(20, 20, 24, 220);
@@ -576,9 +576,9 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     environment::draw_backdrop(game);
     let alpha = game.render_alpha();
     draw_tiles(game, sprites);
-    pits::draw_pits(game);
+    pits::draw_pits(game, sprites.quarry_dressing(0).is_some());
     crate::render::world::draw_extractor_frames(game, sprites);
-    environment::draw_boundary(game);
+    environment::draw_boundary(game, sprites.quarry_dressing(0).is_some());
     draw_scorches(game, sprites);
     draw_buildings(game, sprites);
     draw_units(game, sprites, alpha);
@@ -612,7 +612,7 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
 }
 
 const FOG_UNEXPLORED: Color = color_u8!(13, 13, 17, 255);
-const FOG_EXPLORED: Color = color_u8!(22, 28, 44, 135);
+const FOG_EXPLORED: Color = color_u8!(13, 13, 17, 135);
 
 fn visible_tiles(game: &Game) -> (TilePos, TilePos) {
     let (lo, hi) = game.camera.world_rect();
@@ -678,11 +678,13 @@ pub(crate) fn unit_draw_scale(kind: oxide_sim::UnitKind) -> f32 {
         | oxide_sim::UnitKind::Avalanche
         | oxide_sim::UnitKind::Skyhook => LARGE_UNIT_DRAW_SCALE,
         oxide_sim::UnitKind::Warden => HEAVY_UNIT_DRAW_SCALE,
+        oxide_sim::UnitKind::Excavator | oxide_sim::UnitKind::Shrike => 1.3,
+        oxide_sim::UnitKind::Sylph => 1.2,
         _ => DEFAULT_UNIT_DRAW_SCALE,
     }
 }
 
-fn air_presentation(kind: oxide_sim::UnitKind, zoom: f32) -> (Vec2, Vec2, f32) {
+pub(crate) fn air_presentation(kind: oxide_sim::UnitKind, zoom: f32) -> (Vec2, Vec2, f32) {
     match kind {
         oxide_sim::UnitKind::Condor => (
             vec2(zoom * 1.75, zoom * 1.1875),
@@ -705,6 +707,51 @@ fn air_presentation(kind: oxide_sim::UnitKind, zoom: f32) -> (Vec2, Vec2, f32) {
             zoom * 0.18,
         ),
     }
+}
+
+fn tracked_mount_angle(game: &Game, unit: &oxide_sim::Unit, alpha: f32) -> Option<f32> {
+    let target = game.aim_unit_targets.get(&unit.id.0).copied().or_else(|| {
+        if unit.kind == oxide_sim::UnitKind::Sapper
+            && let oxide_sim::Order::Attack { target, .. } = unit.order
+        {
+            Some(target)
+        } else {
+            None
+        }
+    })?;
+    let position = match target {
+        oxide_sim::Target::Unit(id) => {
+            let target = game.state.unit(id)?;
+            if target.player != game.human
+                && !game.all_seeing()
+                && !game.my_vision().visible(target.tile())
+            {
+                return None;
+            }
+            game.draw_pos(target.id, target.pos, alpha)
+        }
+        oxide_sim::Target::Building(id) => {
+            let target = game.state.building(id)?;
+            if !game.all_seeing()
+                && (!target.tiles().any(|tile| game.my_vision().visible(tile))
+                    || !game.state.building_apparent(game.human, target))
+            {
+                return None;
+            }
+            let from = game.draw_pos(unit.id, unit.pos, alpha);
+            let (width, height) = target.stats().size;
+            from.clamp(
+                vec2(target.anchor.x as f32, target.anchor.y as f32),
+                vec2(
+                    (target.anchor.x + width) as f32,
+                    (target.anchor.y + height) as f32,
+                ),
+            )
+        }
+    };
+    let direction = position - game.draw_pos(unit.id, unit.pos, alpha);
+    (direction.length_squared() > 1e-6)
+        .then(|| direction.y.atan2(direction.x) + std::f32::consts::FRAC_PI_2)
 }
 
 fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim::stats::Domain) {
@@ -742,7 +789,11 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             .get(&unit.id.0)
             .is_some_and(|previous| (*previous - current).length_squared() > 1e-6);
         let animation = game.animations.unit_state(
-            crate::presentation_animation::UnitAnimationFacts::capture(&game.state, unit, moving),
+            crate::presentation_animation::UnitAnimationFacts::capture(
+                &game.state,
+                unit,
+                moving || game.chassis_turning(unit),
+            ),
             crate::presentation_animation::AnimationClock::from_state(
                 &game.state,
                 game.tick_fraction(),
@@ -761,21 +812,42 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         // Report/recovery owns the heading. A stationary heavy weapon
         // then keeps that aim throughout its physical reload; real
         // locomotion resumes movement facing instead of sliding sideways.
-        let aim = game.aim_units.get(&unit.id.0).copied();
-        let work_facing = unit_work_facing(unit.pos, animation.work);
-        let rotation = match aim {
-            Some((angle, at))
-                if animation.attack.is_some()
-                    || !moving && (preparing || game.fx_time() - at < 1.2) =>
-            {
+        let rig = sprites.unit_rig(unit.kind);
+        let aim = game.aim_units.get(&unit.id.0).copied().map(|(angle, at)| {
+            let angle = if rig.is_some() && animation.attack.is_none() {
+                tracked_mount_angle(game, unit, alpha).unwrap_or(angle)
+            } else {
                 angle
+            };
+            (angle, at)
+        });
+        let work_facing = unit_work_facing(unit.pos, animation.work);
+        let contact_facing = animation
+            .demolition_preparation
+            .and_then(|_| tracked_mount_angle(game, unit, alpha));
+        let rotation = if unit.kind.stats().turn_rate > 0
+            || unit.kind.ground_turn_rate() > 0
+            || unit.kind.turret_turn_rate() > 0
+        {
+            game.draw_heading(unit.id, unit.weapon_heading(), alpha)
+        } else if let Some(angle) = contact_facing {
+            angle
+        } else {
+            match aim {
+                Some((angle, at))
+                    if animation.attack.is_some()
+                        || (rig.is_some() || !moving)
+                            && (preparing || game.fx_time() - at < 1.2) =>
+                {
+                    angle
+                }
+                _ => work_facing
+                    .unwrap_or_else(|| game.facing.get(&unit.id.0).copied().unwrap_or(0.0)),
             }
-            _ => work_facing.unwrap_or_else(|| game.facing.get(&unit.id.0).copied().unwrap_or(0.0)),
         };
         if airborne {
             let (shadow_size, shadow_offset, body_lift) = air_presentation(unit.kind, zoom);
-            draw_texture_ex(
-                sprites.texture(),
+            sprites.draw(
                 screen.x - shadow_size.x * 0.5 + shadow_offset.x,
                 screen.y - shadow_size.y * 0.5 + shadow_offset.y,
                 WHITE,
@@ -859,15 +931,48 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 )
             }
         };
-        draw_texture_ex(
-            sprites.texture(),
+        let (source, accent, body_rotation) = if let Some(rig) = rig {
+            let phase = match animation.propulsion {
+                crate::presentation_animation::PropulsionState::LiftRotors { cycle } => {
+                    ((cycle * 3.0) as usize).min(2)
+                }
+                crate::presentation_animation::PropulsionState::None => {
+                    match animation.locomotion {
+                        crate::presentation_animation::LocomotionState::Moving { cycle } => {
+                            1 + usize::from(cycle >= 0.5)
+                        }
+                        crate::presentation_animation::LocomotionState::Rest => 0,
+                    }
+                }
+            };
+            let (source, accent) = rig.hull(faction, phase);
+            (source, accent, game.draw_hull_heading(unit.id, alpha))
+        } else {
+            (source, accent, rotation)
+        };
+        if unit.kind == oxide_sim::UnitKind::Bombard
+            && let Some(source) = sprites.bombard_spades(unit.brace_ticks)
+        {
+            sprites.draw(
+                body.x - body_size.x * 0.5,
+                body.y - body_size.y * 0.5,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(body_size),
+                    source: Some(source),
+                    rotation,
+                    ..Default::default()
+                },
+            );
+        }
+        sprites.draw(
             body.x - body_size.x * 0.5,
             body.y - body_size.y * 0.5,
             WHITE,
             DrawTextureParams {
                 dest_size: Some(body_size),
                 source: Some(source),
-                rotation,
+                rotation: body_rotation,
                 ..Default::default()
             },
         );
@@ -875,22 +980,64 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         // pose, same frame — and draws UNCONDITIONALLY for non-own
         // machines: selection must never repaint a foe as a friend.
         if let Some(tint) = seat_identity_tint(game, unit.player) {
-            draw_texture_ex(
-                sprites.texture(),
+            sprites.draw(
                 body.x - body_size.x * 0.5,
                 body.y - body_size.y * 0.5,
                 tint,
                 DrawTextureParams {
                     dest_size: Some(body_size),
                     source: Some(accent),
-                    rotation,
+                    rotation: body_rotation,
                     ..Default::default()
                 },
             );
         }
+        if let Some(cycle) = animation.scanner
+            && let Some(source) = sprites.scout_radar()
+        {
+            let mount_y = if unit.kind == oxide_sim::UnitKind::Kestrel {
+                47.0
+            } else {
+                44.0
+            };
+            let offset = (mount_y - 64.0) / 128.0 * body_size.y;
+            let center = body + vec2(-body_rotation.sin(), body_rotation.cos()) * offset;
+            sprites.draw(
+                center.x - body_size.x * 0.5,
+                center.y - body_size.y * 0.5,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(body_size),
+                    source: Some(source),
+                    rotation: body_rotation + cycle * std::f32::consts::TAU,
+                    ..Default::default()
+                },
+            );
+        }
+        if let Some(rig) = rig {
+            let action = match motion::unit_mount_frame(unit.kind, animation) {
+                motion::UnitFrame::Action(action) => Some(action),
+                _ => None,
+            };
+            let (mount, accent) = rig.mount(faction, action);
+            for (source, tint) in std::iter::once((mount, WHITE))
+                .chain(seat_identity_tint(game, unit.player).map(|tint| (accent, tint)))
+            {
+                sprites.draw(
+                    body.x - dest * 0.5,
+                    body.y - dest * 0.5,
+                    tint,
+                    DrawTextureParams {
+                        dest_size: Some(body_size),
+                        source: Some(source),
+                        rotation,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
         if let Some(cargo_meter) = cargo_meter {
-            draw_texture_ex(
-                sprites.texture(),
+            sprites.draw(
                 body.x - body_size.x * 0.5,
                 body.y - body_size.y * 0.5,
                 WHITE,
@@ -1035,6 +1182,73 @@ mod tests {
     use macroquad::prelude::vec2;
 
     #[test]
+    fn articulated_mount_tracks_interpolated_positions_without_reading_hidden_targets() {
+        let mut game =
+            crate::game::Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0))
+                .unwrap();
+        let unit = game
+            .state
+            .units()
+            .iter()
+            .find(|unit| unit.player == game.human)
+            .unwrap()
+            .clone();
+        let own = game.home_foundry().unwrap().id;
+        let enemy = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| building.player != game.human)
+            .unwrap();
+        assert!(!enemy.tiles().any(|tile| game.my_vision().visible(tile)));
+        let hidden = enemy.id;
+        game.aim_unit_targets
+            .insert(unit.id.0, oxide_sim::Target::Building(own));
+        game.prev_pos.insert(
+            unit.id.0,
+            vec2(
+                unit.pos.x.to_num::<f32>() + 1.0,
+                unit.pos.y.to_num::<f32>() + 1.0,
+            ),
+        );
+        let before = super::tracked_mount_angle(&game, &unit, 0.0).unwrap();
+        let after = super::tracked_mount_angle(&game, &unit, 1.0).unwrap();
+        assert!((before - after).abs() > 0.01);
+        let hit = game.state.building(own).unwrap().closest_point_to(unit.pos);
+        let direction = hit - unit.pos;
+        let expected = direction
+            .y
+            .to_num::<f32>()
+            .atan2(direction.x.to_num::<f32>())
+            + std::f32::consts::FRAC_PI_2;
+        assert!(
+            (after - expected).abs() < 1e-5,
+            "mount aims at the same near edge as combat"
+        );
+        game.aim_unit_targets
+            .insert(unit.id.0, oxide_sim::Target::Building(hidden));
+        assert_eq!(super::tracked_mount_angle(&game, &unit, 1.0), None);
+        game.aim_unit_targets.insert(
+            unit.id.0,
+            oxide_sim::Target::Unit(oxide_sim::UnitId(u32::MAX)),
+        );
+        assert_eq!(super::tracked_mount_angle(&game, &unit, 1.0), None);
+        game.aim_unit_targets.clear();
+        let mut sapper = unit;
+        sapper.kind = oxide_sim::UnitKind::Sapper;
+        sapper.order = oxide_sim::Order::Attack {
+            target: oxide_sim::Target::Building(own),
+            resume: None,
+        };
+        assert!((super::tracked_mount_angle(&game, &sapper, 1.0).unwrap() - expected).abs() < 1e-5);
+        sapper.order = oxide_sim::Order::Attack {
+            target: oxide_sim::Target::Building(hidden),
+            resume: None,
+        };
+        assert_eq!(super::tracked_mount_angle(&game, &sapper, 1.0), None);
+    }
+
+    #[test]
     fn active_work_faces_its_physical_target() {
         use crate::presentation_animation::UnitWorkState;
         use chassis::grid::TilePos;
@@ -1146,7 +1360,7 @@ mod tests {
     #[test]
     fn warden_is_larger_than_standard_armor_but_smaller_than_crucible_heavies() {
         let zoom = 64.0;
-        assert_eq!(super::unit_draw_scale(oxide_sim::UnitKind::Warden), 1.5);
+        assert_eq!(super::unit_draw_scale(oxide_sim::UnitKind::Warden), 1.4);
         assert!(
             super::unit_selection_radius(oxide_sim::UnitKind::Warden, zoom, 4.0)
                 > super::unit_selection_radius(oxide_sim::UnitKind::Sentinel, zoom, 4.0)

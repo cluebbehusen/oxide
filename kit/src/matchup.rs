@@ -738,8 +738,8 @@ mod tests {
         // This is a measured result under the current movement and combat
         // rules. Keep both physical legs visible even when the same logical
         // roster wins from either seat.
-        assert_eq!(out.a_as_player_0.verdict(), Some(DuelVerdict::B), "{out:?}");
-        assert_eq!(out.a_as_player_1.verdict(), Some(DuelVerdict::B), "{out:?}");
+        assert_eq!(out.a_as_player_0.verdict(), Some(DuelVerdict::A), "{out:?}");
+        assert_eq!(out.a_as_player_1.verdict(), Some(DuelVerdict::A), "{out:?}");
         assert_eq!(
             out.verdict_flips_on_swap(),
             Some(false),

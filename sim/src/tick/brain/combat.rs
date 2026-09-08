@@ -245,6 +245,12 @@ fn launch_shell(
 ) -> u64 {
     let flight = shell_flight(from, aim);
     launches.push(crate::state::Shell {
+        kind: match attacker {
+            Target::Unit(id) => {
+                crate::state::ProjectileKind::for_unit(state.unit(id).expect("live shooter").kind)
+            }
+            Target::Building(_) => crate::state::ProjectileKind::Shell,
+        },
         shooter: attacker,
         player: attacker_owner,
         launch: from,
@@ -840,7 +846,11 @@ pub(super) fn advance(
     let Some(weapon) = stats.weapons.first().copied() else {
         return;
     };
-    if unit.cooldowns[0] > 0 {
+    let cooldown = unit.cooldowns[0];
+    if unit.kind == crate::UnitKind::Bombard {
+        return;
+    }
+    if cooldown > 0 && unit.kind.turret_turn_rate() == 0 {
         return;
     }
     let (pos, home, me, kind) = (unit.pos, unit.tile(), unit.player, unit.kind);
@@ -856,6 +866,7 @@ pub(super) fn advance(
                 || !state.hostile(me, target.player)
                 || !weapon.targets.covers(domain)
                 || !state.can_see(me, target.tile())
+                || !super::super::movement::advancing_weapon_aligned(unit, target.pos - pos)
             {
                 continue;
             }
@@ -884,6 +895,7 @@ pub(super) fn advance(
                 .iter()
                 .filter(|b| b.hp > 0 && state.hostile(me, b.player))
                 .filter(|b| b.tiles().any(|tile| state.can_see(me, tile)))
+                .filter(|b| state.building_apparent(me, b))
                 .map(|b| {
                     let aim = b.closest_point_to(pos);
                     (pos.dist_sq(aim), b.id, aim)
@@ -891,6 +903,7 @@ pub(super) fn advance(
                 .filter(|(dist, _, aim)| {
                     let full = traces_terrain(&weapon, stats.domain, Domain::Ground);
                     within_weapon_reach(&weapon, *dist)
+                        && super::super::movement::advancing_weapon_aligned(unit, *aim - pos)
                         && shot_open(TilePos::containing(*aim), full)
                         && !chassis::path::line_blocked(pos, *aim, |t| shot_open(t, full))
                 })
@@ -915,6 +928,21 @@ pub(super) fn advance(
             &weapon,
         )
     });
+    if !super::super::movement::advancing_weapon_aligned(unit, projectile_aim.unwrap_or(aim) - pos)
+    {
+        return;
+    }
+    if kind.turret_turn_rate() > 0
+        && !super::super::movement::steer_weapon_heading(
+            state.unit_mut(id).expect("caller checked"),
+            projectile_aim.unwrap_or(aim) - pos,
+        )
+    {
+        return;
+    }
+    if cooldown > 0 {
+        return;
+    }
     state.unit_mut(id).expect("caller checked").cooldowns[0] = weapon.cooldown_ticks;
     if weapon.projectile {
         let aim = projectile_aim.expect("projectile aim computed");
@@ -986,6 +1014,11 @@ fn sapper_attack(
     }
     let reach = crate::stats::SAPPER_CONTACT_RANGE;
     if pos.dist_sq(aim_point) <= reach * reach {
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.path = None;
+        if !super::super::movement::steer_weapon_heading(unit, aim_point - pos) {
+            return;
+        }
         let direct = match target {
             Target::Building(_) => crate::stats::SAPPER_STRUCTURE_DAMAGE,
             Target::Unit(_) => crate::stats::SAPPER_SPLASH_DAMAGE,
@@ -1377,6 +1410,8 @@ pub(super) fn attack(
     hits: &mut Vec<PendingHit>,
     launches: &mut Vec<crate::state::Shell>,
 ) {
+    let previous_braces = state.unit(id).expect("caller checked").brace_ticks;
+    state.unit_mut(id).expect("caller checked").retract_braces();
     let unit = state.unit(id).expect("caller checked");
     let stats = unit.kind.stats();
     if !stats.can_fight() {
@@ -1522,6 +1557,13 @@ pub(super) fn attack(
             && let Some(leash) = unit.leash.as_mut()
         {
             leash.patience = crate::stats::LEASH_PATIENCE;
+        }
+        unit.brace_ticks = previous_braces;
+        if !super::super::movement::steer_weapon_heading(
+            unit,
+            projectile_aim.unwrap_or(aim_point) - pos,
+        ) {
+            return;
         }
         if cooldowns[pi] == 0 {
             unit.cooldowns[pi] = weapon.cooldown_ticks;
@@ -1792,6 +1834,12 @@ fn fire_sidearms(
         let Some((_, uid, upos, _)) = victim else {
             continue;
         };
+        if !super::super::movement::ground_weapon_aligned(
+            state.unit(id).expect("caller checked"),
+            upos - pos,
+        ) {
+            continue;
+        }
         state.unit_mut(id).expect("caller checked").cooldowns[wi] = weapon.cooldown_ticks;
         buffer_shot(
             state,

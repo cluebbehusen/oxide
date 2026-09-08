@@ -12,21 +12,15 @@ from tools.production_sprite_sources import (
     air_support_final,
     airworks_scouts_final,
     construction_final,
-    core_unit_art_final,
-    crucible_final,
     environment_final,
     excavator_final,
-    extractor_reclaimer_final,
-    field_structures_final,
     finalized,
-    flak_array_final,
-    heavy_structures,
-    moth_warden_final,
-    shrike_sylph_final,
+    installed_defenses_final,
+    mechanical_final,
+    quarry_final,
     skyhook_sapper_crucible_final,
-    tender_condor_final,
+    specialists_final,
     tier_one_combat_final,
-    turret_family,
 )
 
 
@@ -61,6 +55,9 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         try:
             gen.OUT = cls.out
             gen.REGISTRY = cls.registry
+            for phase in range(6):
+                gen.ground(phase)
+            cls.ground_controls = cls.registry.copy()
             for faction in gen.FACTIONS:
                 gen.harvester(faction)
                 gen.harvester(faction, dig=1)
@@ -89,17 +86,53 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         self.assertNotIn("gen._review", production_sources)
         self.assertNotIn("gen.REVIEW_ROUTE", production_sources)
 
-    def test_promoted_field_structures_match_the_approved_rgba_source(self) -> None:
-        self.assertEqual(
-            field_structures_final.barricade_source_rgba_digest(),
-            field_structures_final.BARRICADE_SOURCE_RGBA_SHA256,
-        )
-        self.assertEqual(
-            field_structures_final.scuttle_charge_source_rgba_digest(),
-            field_structures_final.SCUTTLE_CHARGE_SOURCE_RGBA_SHA256,
-        )
-        for key, image in field_structures_final.source_frames():
+    def test_articulated_machine_bank_matches_approved_pixels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            frames = {}
+            mechanical_final.install_machines(frames, Path(directory))
+        self.assertEqual(len(frames), 499)
+        digest = hashlib.sha256()
+        for key, image in sorted(frames.items()):
             self.assertEqual(self.registry[key].tobytes(), image.tobytes(), key)
+            digest.update(key.encode())
+            digest.update(image.tobytes())
+        self.assertEqual(
+            digest.hexdigest(),
+            "2bbd5c9c9139a5a88d67ae0a6b4a3dfeefd00a6bf67a6ea73dbfb82b2d012440",
+        )
+
+    def test_promoted_quarry_matches_approved_pixels(self) -> None:
+        digest = hashlib.sha256()
+        for key, image in sorted(quarry_final.source_frames(self.ground_controls)):
+            self.assertEqual(self.registry[key].tobytes(), image.tobytes(), key)
+            digest.update(key.encode())
+            digest.update(image.tobytes())
+        self.assertEqual(
+            digest.hexdigest(),
+            "c4d211b58f896f010e6169f2e5730821430af0e8e02723f4cf0c530d46231874",
+        )
+
+    def test_promoted_specialists_match_approved_pixels(self) -> None:
+        digest = hashlib.sha256()
+        for key, image in sorted(specialists_final.source_frames()):
+            self.assertEqual(self.registry[key].tobytes(), image.tobytes(), key)
+            digest.update(key.encode())
+            digest.update(image.tobytes())
+        self.assertEqual(
+            digest.hexdigest(),
+            "a3887ffc13de6447106bbd757a3aa3f5e6ffa2d2b29954b6adb9de1e4f7400dd",
+        )
+
+    def test_promoted_defenses_match_approved_pixels(self) -> None:
+        digest = hashlib.sha256()
+        for key, image in sorted(installed_defenses_final.source_frames()):
+            self.assertEqual(self.registry[key].tobytes(), image.tobytes(), key)
+            digest.update(key.encode())
+            digest.update(image.tobytes())
+        self.assertEqual(
+            digest.hexdigest(),
+            "3711c93033f318f198d469c81c136a9eddbc31df1f40f83ce76a156441025d3f",
+        )
 
     def test_construction_bank_covers_every_building(self) -> None:
         self.assertEqual(
@@ -153,7 +186,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             digest.update(image.tobytes())
         self.assertEqual(
             digest.hexdigest(),
-            "a80200d8332879e8fc53a81c5469861d1512a03b13de9835925276c3ad0920ee",
+            "b2a1438a5ee46f53243ba66666a2424b4972763113efa54d6b162a5ff27e92c9",
         )
 
     def test_peak_bank_covers_every_fog_honest_connectivity_mask(self) -> None:
@@ -215,94 +248,16 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 for suffix in frame_set.suffixes:
                     frame = self.registry[f"{stem}_{faction}{suffix}"]
                     self.assertEqual(frame.size, base.size)
-                    self.assertGreater(_changed_pixels(base, frame), 2)
-
-    def test_promoted_tender_and_condor_match_the_production_rgba_source(self) -> None:
-        digest = hashlib.sha256()
-        for faction in ("ferrous", "cupric"):
-            for state in tender_condor_final.TENDER_STATES:
-                key = f"tender/{faction}/{state}"
-                digest.update(key.encode())
-                digest.update(
-                    tender_condor_final.render_tender(faction, state).tobytes()
-                )
-            for phase in (1, 2):
-                key = f"tender/{faction}/move{phase}"
-                digest.update(key.encode())
-                digest.update(
-                    tender_condor_final.render_tender(
-                        faction, move_phase=phase
-                    ).tobytes()
-                )
-        for state in tender_condor_final.CONDOR_STATES:
-            key = f"condor/ferrous/{state}"
-            digest.update(key.encode())
-            digest.update(tender_condor_final.render_condor("ferrous", state).tobytes())
-        self.assertEqual(
-            digest.hexdigest(), tender_condor_final.PRODUCTION_SOURCE_RGBA_SHA256
-        )
-
-        tender_states = ("idle", "deploy", "contact", "weld", "recover")
-        tender_suffixes = ("", "_action1", "_action2", "_action3", "_action4")
-        condor_states = ("idle", "crack", "open", "release", "recover")
-        condor_suffixes = ("", "_action1", "_action2", "_action3", "_action4")
-        for faction in ("ferrous", "cupric"):
-            for state, suffix in zip(tender_states, tender_suffixes, strict=True):
-                self.assertEqual(
-                    self.registry[f"tender_{faction}{suffix}"].tobytes(),
-                    tender_condor_final.render_tender(faction, state).tobytes(),
-                )
-            for state, suffix in zip(condor_states, condor_suffixes, strict=True):
-                self.assertEqual(
-                    self.registry[f"condor_{faction}{suffix}"].tobytes(),
-                    tender_condor_final.render_condor(faction, state).tobytes(),
-                )
-
-    def test_promoted_air_support_art_matches_the_approved_rgba_source(self) -> None:
-        self.assertEqual(
-            air_support_final.source_rgba_digest(),
-            air_support_final.APPROVED_SOURCE_RGBA_SHA256,
-        )
-        builders = (
-            ("buzzard", air_support_final.buzzard_sequence),
-            ("darter", air_support_final.darter_sequence),
-            ("talon", air_support_final.talon_sequence),
-            ("wisp", air_support_final.wisp_sequence),
-        )
-        for faction in ("ferrous", "cupric"):
-            with finalized._faction_palette(faction):
-                for stem, builder in builders:
-                    sequence = builder()
-                    keys = (
-                        f"{stem}_{faction}",
-                        *(
-                            f"{stem}_{faction}{suffix}"
-                            for suffix in finalized.UNIT_MOVEMENT[stem].suffixes
-                        ),
-                        None,
-                        *(
-                            f"{stem}_{faction}{suffix}"
-                            for suffix in finalized.UNIT_ACTIONS[stem].suffixes
-                        ),
-                    )
-                    for key, frame in zip(keys, sequence.frames, strict=True):
-                        if key is not None:
-                            self.assertEqual(
-                                self.registry[key].tobytes(), frame.image.tobytes(), key
-                            )
-
-                fabricator = air_support_final.fabricator_frames()
-                keys = (
-                    f"fabricator_{faction}",
-                    *(
-                        f"fabricator_{faction}{suffix}"
-                        for suffix in finalized.BUILDING_WORK["fabricator"].suffixes
+                self.assertTrue(
+                    any(
+                        _changed_pixels(
+                            base, self.registry[f"{stem}_{faction}{suffix}"]
+                        )
+                        > 2
+                        for suffix in frame_set.suffixes
                     ),
+                    stem,
                 )
-                for key, frame in zip(keys, fabricator, strict=True):
-                    self.assertEqual(
-                        self.registry[key].tobytes(), frame.image.tobytes(), key
-                    )
 
     def test_air_support_detail_passes_preserve_the_approved_silhouettes(self) -> None:
         for faction in ("ferrous", "cupric"):
@@ -335,74 +290,6 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 self.assertLess(bbox[2], image.width)
                 self.assertLess(bbox[3], image.height)
 
-    def test_promoted_airworks_scouts_match_the_approved_rgba_source(self) -> None:
-        self.assertEqual(
-            airworks_scouts_final.source_rgba_digest(),
-            airworks_scouts_final.APPROVED_SOURCE_RGBA_SHA256,
-        )
-        unit_states = (("", 1), ("_move1", 0), ("_move2", 2))
-        for faction in ("ferrous", "cupric"):
-            for suffix, phase in unit_states:
-                for stem, renderer in (
-                    ("gnat", airworks_scouts_final.render_gnat),
-                    ("kestrel", airworks_scouts_final.render_kestrel),
-                ):
-                    image = renderer(faction, phase)
-                    self.assertEqual(image.size, (64, 64))
-                    self.assertEqual(
-                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
-                        image.tobytes(),
-                    )
-            for stage in range(5):
-                suffix = "" if stage == 0 else f"_work{stage}"
-                image = airworks_scouts_final.render_airworks(faction, stage)
-                self.assertEqual(image.size, (128, 128))
-                self.assertEqual(
-                    self.registry[f"airworks_{faction}{suffix}"].tobytes(),
-                    image.tobytes(),
-                )
-
-    def test_promoted_core_unit_art_matches_the_approved_rgba_source(self) -> None:
-        self.assertEqual(
-            core_unit_art_final.source_rgba_digest(),
-            core_unit_art_final.APPROVED_SOURCE_RGBA_SHA256,
-        )
-        for key, image in core_unit_art_final.source_frames():
-            self.assertEqual(self.registry[key].tobytes(), image.tobytes(), key)
-
-    def test_promoted_tier_one_combat_art_matches_the_approved_source(self) -> None:
-        self.assertEqual(
-            tier_one_combat_final.source_rgba_digest(),
-            tier_one_combat_final.APPROVED_SOURCE_RGBA_SHA256,
-        )
-        builders = (
-            ("lancer", tier_one_combat_final.lancer_sequence),
-            ("bombard", tier_one_combat_final.bombard_sequence),
-            ("flakhound", tier_one_combat_final.flakhound_sequence),
-            ("stinger", tier_one_combat_final.stinger_sequence),
-        )
-        for faction in ("ferrous", "cupric"):
-            with finalized._faction_palette(faction):
-                for stem, builder in builders:
-                    sequence = builder()
-                    keys = (
-                        f"{stem}_{faction}",
-                        *(
-                            f"{stem}_{faction}{suffix}"
-                            for suffix in finalized.UNIT_MOVEMENT[stem].suffixes
-                        ),
-                        None,
-                        *(
-                            f"{stem}_{faction}{suffix}"
-                            for suffix in finalized.UNIT_ACTIONS[stem].suffixes
-                        ),
-                    )
-                    for key, frame in zip(keys, sequence.frames, strict=True):
-                        if key is not None:
-                            self.assertEqual(
-                                self.registry[key].tobytes(), frame.image.tobytes(), key
-                            )
-
     def test_tier_one_combat_art_preserves_motion_and_attack_contracts(self) -> None:
         for builder in (
             tier_one_combat_final.lancer_sequence,
@@ -418,26 +305,6 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             damage_frames = [frame for frame in sequence.frames if frame.logical_damage]
             self.assertEqual(len(damage_frames), 1)
             self.assertGreaterEqual(damage_frames[0].report_count, 1)
-
-    def test_promoted_extractor_reclaimer_family_matches_approved_source(self) -> None:
-        self.assertEqual(
-            extractor_reclaimer_final.source_rgba_digest(),
-            extractor_reclaimer_final.APPROVED_SOURCE_RGBA_SHA256,
-        )
-        for faction in ("ferrous", "cupric"):
-            for phase, suffix in enumerate(extractor_reclaimer_final.WORK_SUFFIXES):
-                for stem, renderer in (
-                    ("extractor", extractor_reclaimer_final.render_extractor),
-                    ("reclaimer", extractor_reclaimer_final.render_reclaimer),
-                    ("reclaimer_t1", extractor_reclaimer_final.render_refinery),
-                ):
-                    image = renderer(faction, phase)
-                    expected_size = (128, 128) if stem == "extractor" else (64, 64)
-                    self.assertEqual(image.size, expected_size)
-                    self.assertEqual(
-                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
-                        image.tobytes(),
-                    )
 
     def test_kestrel_sequence_keeps_its_airframe_fixed(self) -> None:
         for faction in ("ferrous", "cupric"):
@@ -468,72 +335,6 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             self.assertNotEqual(frames[3].crop(door_box).tobytes(), closed)
             self.assertNotEqual(frames[4].crop(door_box).tobytes(), closed)
 
-    def test_promoted_crucible_units_match_the_approved_rgba_source(self) -> None:
-        digest = hashlib.sha256()
-        renderers = (
-            ("breaker", crucible_final.render_breaker),
-            ("avalanche", crucible_final.render_avalanche),
-        )
-        states = (
-            ("idle", 0, 0, ""),
-            ("move1", 1, 0, "_move1"),
-            ("move2", 2, 0, "_move2"),
-            ("action1", 0, 1, "_action1"),
-            ("action2", 0, 2, "_action2"),
-            ("action3", 0, 3, "_action3"),
-            ("action4", 0, 4, "_action4"),
-        )
-        for faction in ("ferrous", "cupric"):
-            for stem, renderer in renderers:
-                for label, move_phase, action, suffix in states:
-                    key = f"{stem}/{faction}/{label}"
-                    image = renderer(faction, move_phase, action)
-                    digest.update(key.encode())
-                    digest.update(image.tobytes())
-                    self.assertEqual(image.size, (128, 128))
-                    self.assertEqual(
-                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
-                        image.tobytes(),
-                    )
-        self.assertEqual(digest.hexdigest(), crucible_final.APPROVED_SOURCE_RGBA_SHA256)
-
-    def test_promoted_skyhook_sapper_and_crucible_match_the_approved_source(
-        self,
-    ) -> None:
-        source = skyhook_sapper_crucible_final
-        self.assertEqual(
-            source.source_rgba_digest(), source.APPROVED_SOURCE_RGBA_SHA256
-        )
-        for faction in ("ferrous", "cupric"):
-            for stem, renderer, size, action_count in (
-                ("skyhook", source.render_skyhook, 128, 4),
-                ("sapper", source.render_sapper, 64, 3),
-            ):
-                states = [
-                    ("", 0, 0),
-                    ("_move1", 1, 0),
-                    ("_move2", 2, 0),
-                    *(
-                        (f"_action{action}", action - 1, action)
-                        for action in range(1, action_count + 1)
-                    ),
-                ]
-                for suffix, move_phase, action in states:
-                    image = renderer(faction, move_phase, action)
-                    self.assertEqual(image.size, (size, size))
-                    self.assertEqual(
-                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
-                        image.tobytes(),
-                    )
-            for work in range(4):
-                suffix = "" if work == 0 else f"_work{work}"
-                image = source.render_crucible(faction, work)
-                self.assertEqual(image.size, (128, 128))
-                self.assertEqual(
-                    self.registry[f"crucible_{faction}{suffix}"].tobytes(),
-                    image.tobytes(),
-                )
-
     def test_skyhook_rotors_and_sapper_legs_have_real_movement(self) -> None:
         for faction in ("ferrous", "cupric"):
             for stem in ("skyhook", "sapper"):
@@ -548,16 +349,25 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 .getbbox()
             )
 
-    def test_crucible_work_row_moves_the_hammers_and_heat(self) -> None:
-        for faction in ("ferrous", "cupric"):
+    def test_crucible_opens_and_closes_its_segmented_lid(self) -> None:
+        for faction in gen.FACTIONS:
             frames = [
-                self.registry[f"crucible_{faction}"],
-                *(
-                    self.registry[f"crucible_{faction}_work{work}"]
-                    for work in range(1, 4)
-                ),
+                self.registry[f"crucible_{faction}" + (f"_work{i}" if i else "")]
+                for i in range(4)
             ]
-            self.assertEqual(len({frame.tobytes() for frame in frames}), 4)
+            self.assertEqual(frames[1].tobytes(), frames[3].tobytes())
+            self.assertEqual(len({frame.tobytes() for frame in frames}), 3)
+            for frame in frames[1:]:
+                self.assertEqual(
+                    frame.crop((0, 0, 128, 40)).tobytes(),
+                    frames[0].crop((0, 0, 128, 40)).tobytes(),
+                )
+                self.assertGreater(
+                    _changed_pixels(
+                        frames[0].crop((45, 50, 85, 90)), frame.crop((45, 50, 85, 90))
+                    ),
+                    20,
+                )
 
     def test_crucible_units_animate_treads_without_wobbling_the_hull(self) -> None:
         for stem in ("breaker", "avalanche"):
@@ -574,143 +384,34 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 self.assertNotEqual(idle.tobytes(), move1.tobytes())
                 self.assertNotEqual(move1.tobytes(), move2.tobytes())
 
-    def test_promoted_interceptors_match_the_approved_rgba_source(self) -> None:
-        self.assertEqual(
-            shrike_sylph_final.source_rgba_digest(),
-            shrike_sylph_final.APPROVED_SOURCE_RGBA_SHA256,
-        )
-        renderers = (
-            ("shrike", shrike_sylph_final.render_shrike),
-            ("sylph", shrike_sylph_final.render_sylph),
-        )
-        suffixes = (
-            "",
-            "_move1",
-            "_move2",
-            "_action1",
-            "_action2",
-            "_action3",
-            "_action4",
-        )
-        for faction in ("ferrous", "cupric"):
-            for stem, renderer in renderers:
-                frames = tuple(
-                    renderer(faction, state) for state in shrike_sylph_final.STATES
-                )
-                for suffix, frame in zip(suffixes, frames, strict=True):
-                    self.assertEqual(frame.size, (64, 64))
-                    self.assertEqual(
-                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
-                        frame.tobytes(),
-                    )
-                idle, move1, move2 = frames[:3]
-                self.assertEqual(
-                    idle.getchannel("A").tobytes(), move1.getchannel("A").tobytes()
-                )
-                self.assertEqual(
-                    idle.getchannel("A").tobytes(), move2.getchannel("A").tobytes()
-                )
-                self.assertNotEqual(idle.tobytes(), move1.tobytes())
-                self.assertNotEqual(move1.tobytes(), move2.tobytes())
-
-    def test_crucible_unit_actions_preserve_one_decisive_report(self) -> None:
-        for stem in ("breaker", "avalanche"):
-            for faction in ("ferrous", "cupric"):
-                frames = [
-                    self.registry[f"{stem}_{faction}_action{action}"]
-                    for action in range(1, 5)
-                ]
-                self.assertGreaterEqual(len({frame.tobytes() for frame in frames}), 3)
-                self.assertIn(
-                    (*crucible_final.FLASH, 255),
-                    set(frames[1].get_flattened_data()),
-                )
-
-    def test_tender_treads_move_without_shifting_the_chassis(self) -> None:
-        for faction in ("ferrous", "cupric"):
-            idle = self.registry[f"tender_{faction}"]
-            phases = [
-                self.registry[f"tender_{faction}_move{phase}"] for phase in (1, 2)
-            ]
-            self.assertEqual(idle.size, (64, 64))
-            for frame in phases:
-                self.assertEqual(
-                    idle.getchannel("A").tobytes(), frame.getchannel("A").tobytes()
-                )
-                changed = ImageChops.difference(idle, frame)
-                changed_points = [
-                    (index % idle.width, index // idle.width)
-                    for index, pixel in enumerate(changed.get_flattened_data())
-                    if pixel != (0, 0, 0, 0)
-                ]
-                self.assertGreater(len(changed_points), 8)
-                self.assertTrue(
-                    all(
-                        (7 <= x <= 19 or 45 <= x <= 57) and 17 <= y <= 58
-                        for x, y in changed_points
-                    ),
-                    "Tender locomotion must move its tread cleats, not wobble the hull",
-                )
-            self.assertNotEqual(phases[0].tobytes(), phases[1].tobytes())
-
-    def test_promoted_moth_and_warden_match_the_approved_rgba_source(self) -> None:
-        self.assertEqual(
-            moth_warden_final.source_rgba_digest(),
-            moth_warden_final.APPROVED_SOURCE_RGBA_SHA256,
-        )
-        for faction in ("ferrous", "cupric"):
-            for stem, renderer, action_count in (
-                ("moth", moth_warden_final.render_moth, 6),
-                ("warden", moth_warden_final.render_warden, 4),
-            ):
-                states = (
-                    ("", 0, 0),
-                    ("_move1", 1, 0),
-                    ("_move2", 2, 0),
-                    *(
-                        (f"_action{action}", 0, action)
-                        for action in range(1, action_count + 1)
-                    ),
-                )
-                for suffix, move_phase, action in states:
-                    image = renderer(faction, move_phase, action)
-                    self.assertEqual(image.size, (128, 128))
-                    self.assertEqual(
-                        self.registry[f"{stem}_{faction}{suffix}"].tobytes(),
-                        image.tobytes(),
-                    )
-
-    def test_promoted_excavator_matches_candidate_423_and_keeps_channels_independent(
+    def test_heavy_weapon_actions_preserve_distinct_launch_and_recovery_poses(
         self,
     ) -> None:
-        self.assertEqual(
-            excavator_final.source_rgba_digest(),
-            excavator_final.APPROVED_SOURCE_RGBA_SHA256,
-        )
-        for faction in ("ferrous", "cupric"):
-            states = (
-                ("", 0, 0),
-                ("_move1", 1, 0),
-                ("_move2", 2, 0),
-                *((f"_action{phase}", 0, phase) for phase in range(1, 5)),
-            )
-            for suffix, move_phase, work_phase in states:
-                image = excavator_final.render_excavator(
-                    faction, move_phase, work_phase
-                )
-                self.assertEqual(image.size, (128, 128))
-                self.assertEqual(
-                    self.registry[f"excavator_{faction}{suffix}"].tobytes(),
-                    image.tobytes(),
-                )
-            idle = self.registry[f"excavator_{faction}"]
-            for phase in (1, 2):
-                moving = self.registry[f"excavator_{faction}_move{phase}"]
-                self.assertEqual(
-                    idle.getchannel("A").tobytes(),
-                    moving.getchannel("A").tobytes(),
-                )
-                self.assertNotEqual(idle.tobytes(), moving.tobytes())
+        for stem in ("breaker", "avalanche"):
+            for faction in gen.FACTIONS:
+                frames = [
+                    self.registry[f"{stem}_{faction}_action{i}"] for i in range(1, 5)
+                ]
+                self.assertGreaterEqual(len({frame.tobytes() for frame in frames}), 3)
+                self.assertNotEqual(frames[0].tobytes(), frames[1].tobytes())
+
+    def test_tracked_workers_move_only_their_treads(self) -> None:
+        for stem in ("tender", "excavator"):
+            for faction in gen.FACTIONS:
+                idle = self.registry[f"{stem}_{faction}"]
+                for phase in (1, 2):
+                    frame = self.registry[f"{stem}_{faction}_move{phase}"]
+                    self.assertEqual(
+                        idle.getchannel("A").tobytes(), frame.getchannel("A").tobytes()
+                    )
+                    self.assertEqual(
+                        idle.crop((38, 0, 90, 128)).tobytes(),
+                        frame.crop((38, 0, 90, 128)).tobytes(),
+                    )
+                    for tread in ((10, 36, 38, 117), (90, 36, 118, 117)):
+                        self.assertGreater(
+                            _changed_pixels(idle.crop(tread), frame.crop(tread)), 8
+                        )
 
     def test_excavator_meter_matches_the_harvesters_five_load_levels(self) -> None:
         frames = [
@@ -719,12 +420,11 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         ]
         self.assertEqual(len({frame.tobytes() for frame in frames}), 5)
         self.assertIsNone(frames[0].getchannel("A").getbbox())
-        widths = []
-        for frame in frames:
-            bbox = frame.getchannel("A").getbbox()
-            widths.append(0 if bbox is None else bbox[2] - bbox[0])
-        self.assertTrue(all(left <= right for left, right in pairwise(widths)))
-        self.assertGreater(widths[-1], widths[1])
+        areas = [
+            sum(value > 0 for value in frame.getchannel("A").get_flattened_data())
+            for frame in frames
+        ]
+        self.assertTrue(all(left < right for left, right in pairwise(areas)))
 
     def test_moth_and_warden_move_without_wobbling_the_hull(self) -> None:
         for stem in ("moth", "warden"):
@@ -743,44 +443,37 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 )
                 self.assertNotEqual(phases[0].tobytes(), phases[1].tobytes())
 
-    def test_moth_empties_all_six_bays_and_warden_reports_once(self) -> None:
-        bomb_centers = ((49, 45), (79, 45), (49, 59), (79, 59), (49, 73), (79, 73))
-        for faction in ("ferrous", "cupric"):
-            for action in range(1, 7):
+    def test_moth_reloads_its_six_racks_in_pairs(self) -> None:
+        centers = ((49, 45), (79, 45), (49, 59), (79, 59), (49, 73), (79, 73))
+        for faction in gen.FACTIONS:
+            idle = self.registry[f"moth_{faction}"]
+            for action, expected in enumerate((0, 0, 0, 2, 4, 6), start=1):
                 frame = self.registry[f"moth_{faction}_action{action}"]
-                remaining = sum(
-                    frame.getpixel(center) == (*moth_warden_final.BONE, 255)
-                    for center in bomb_centers
+                loaded = sum(
+                    frame.getpixel(center) == idle.getpixel(center)
+                    for center in centers
                 )
-                self.assertEqual(remaining, 6 - action)
-            for action in range(1, 5):
-                pixels = set(
-                    self.registry[
-                        f"warden_{faction}_action{action}"
-                    ].get_flattened_data()
-                )
-                self.assertEqual(
-                    (*moth_warden_final.FLASH, 255) in pixels,
-                    action == 2,
-                )
+                self.assertEqual(loaded, expected)
 
-    def test_tender_reserves_its_bright_tool_color_for_welding(self) -> None:
-        bright_tool = (*tender_condor_final.WELD, 255)
-        bright_scrap = (*tender_condor_final.SCRAP, 255)
-        for faction in ("ferrous", "cupric"):
-            idle_pixels = set(self.registry[f"tender_{faction}"].get_flattened_data())
-            self.assertNotIn(bright_tool, idle_pixels)
-            self.assertNotIn(bright_scrap, idle_pixels)
-            self.assertIn(
-                bright_tool,
-                set(self.registry[f"tender_{faction}_action3"].get_flattened_data()),
+    def test_tender_adds_sparks_only_at_welding_contact(self) -> None:
+        for faction in gen.FACTIONS:
+            contact = self.registry[f"tender_{faction}_action2"]
+            weld = self.registry[f"tender_{faction}_action3"]
+            self.assertEqual(
+                contact.crop((0, 32, 128, 128)).tobytes(),
+                weld.crop((0, 32, 128, 128)).tobytes(),
+            )
+            self.assertGreater(
+                _changed_pixels(
+                    contact.crop((50, 0, 80, 25)), weld.crop((50, 0, 80, 25))
+                ),
+                5,
             )
 
-    def test_condor_uses_a_fixed_large_silhouette_without_move_wobble(self) -> None:
-        for faction in ("ferrous", "cupric"):
+    def test_condor_keeps_its_wing_fixed_while_the_nose_opens(self) -> None:
+        for faction in gen.FACTIONS:
             idle = self.registry[f"condor_{faction}"]
             self.assertEqual(idle.size, (128, 128))
-            self.assertEqual(idle.getbbox(), (8, 18, 121, 96))
             for phase in (1, 2):
                 self.assertEqual(
                     idle.tobytes(),
@@ -788,10 +481,12 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 )
             for action in range(1, 5):
                 frame = self.registry[f"condor_{faction}_action{action}"]
-                self.assertEqual(frame.size, idle.size)
                 self.assertEqual(
-                    frame.getchannel("A").tobytes(), idle.getchannel("A").tobytes()
+                    frame.crop((0, 40, 128, 128)).tobytes(),
+                    idle.crop((0, 40, 128, 128)).tobytes(),
                 )
+            open_nose = self.registry[f"condor_{faction}_action2"]
+            self.assertLess(open_nose.getpixel((64, 24))[3], idle.getpixel((64, 24))[3])
 
     def test_unit_metadata_matches_source_sequences(self) -> None:
         for stem, builder in finalized._unit_sequences().items():
@@ -848,138 +543,41 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 )
                 self.assertGreater(_changed_pixels(ferrous, cupric), 8)
 
-    def test_promoted_bastion_and_turret_family_match_approved_sources(self) -> None:
-        self.assertEqual(
-            heavy_structures.bastion_source_visible_digest(),
-            heavy_structures.BASTION_APPROVED_VISIBLE_RGBA_SHA256,
-        )
-        self.assertEqual(
-            turret_family.turret_source_visible_digest(),
-            turret_family.TURRET_APPROVED_VISIBLE_RGBA_SHA256,
-        )
+    def test_harvester_keeps_cargo_separate_from_tracks_and_grapple(self) -> None:
         for faction in gen.FACTIONS:
-            for tier, (base_stem, mount_stem) in enumerate(
-                (
-                    ("turret", "turret_barrel"),
-                    ("turret_t1", "turret_barrel_t1"),
-                    ("turret_t2", "turret_barrel_t2"),
-                )
-            ):
-                for phase in range(5):
-                    suffix = "" if phase == 0 else f"_action{phase}"
-                    frame = self.registry[f"{base_stem}_{faction}"].copy()
-                    frame.alpha_composite(
-                        self.registry[f"{mount_stem}_{faction}{suffix}"]
-                    )
-                    self.assertEqual(
-                        turret_family._visible_rgba_bytes(frame),
-                        turret_family._visible_rgba_bytes(
-                            turret_family.turret_frame(faction, tier, phase)
-                        ),
-                        f"{mount_stem}_{faction}{suffix}",
-                    )
-
-    def test_promoted_flak_and_deep_array_match_approved_sources(self) -> None:
-        self.assertEqual(
-            flak_array_final.flak_source_visible_digest(),
-            flak_array_final.FLAK_APPROVED_VISIBLE_RGBA_SHA256,
-        )
-        self.assertEqual(
-            flak_array_final.deep_array_source_visible_digest(),
-            flak_array_final.DEEP_ARRAY_APPROVED_VISIBLE_RGBA_SHA256,
-        )
-        for faction in gen.FACTIONS:
-            for tier, (base_stem, mount_stem) in enumerate(
-                (("flak_turret", "flak_mount"), ("flak_turret_t1", "flak_mount_t1"))
-            ):
-                for phase in range(9):
-                    suffix = "" if phase == 0 else f"_action{phase}"
-                    frame = self.registry[f"{base_stem}_{faction}"].copy()
-                    frame.alpha_composite(
-                        self.registry[f"{mount_stem}_{faction}{suffix}"]
-                    )
-                    self.assertEqual(
-                        flak_array_final._visible_rgba_bytes(frame),
-                        flak_array_final._visible_rgba_bytes(
-                            flak_array_final.flak_frame(faction, tier, phase)
-                        ),
-                        f"{mount_stem}_{faction}{suffix}",
-                    )
-                    self.assertTrue(
-                        flak_array_final.factions_share_silhouette("flak", tier, phase)
-                    )
-
-            for phase in range(7):
-                suffix = "" if phase == 0 else f"_work{phase}"
-                self.assertEqual(
-                    flak_array_final._visible_rgba_bytes(
-                        self.registry[f"array_t1_{faction}{suffix}"]
-                    ),
-                    flak_array_final._visible_rgba_bytes(
-                        flak_array_final.deep_array_frame(faction, phase)
-                    ),
-                    f"array_t1_{faction}{suffix}",
-                )
-                self.assertTrue(
-                    flak_array_final.factions_share_silhouette("array", 1, phase)
-                )
-
-    def test_harvester_preserves_every_cargo_motion_and_bite_combination(self) -> None:
-        for faction in gen.FACTIONS:
-            cargo_images = []
+            loads = []
             for cargo in range(finalized.HARVESTER_CARGO_LEVELS):
                 prefix = f"harvester_{faction}_cargo{cargo}"
-                cargo_images.append(self.registry[prefix])
+                idle = self.registry[prefix]
+                loads.append(idle.crop((44, 67, 84, 101)).tobytes())
                 for suffix in ("_tread1", "_tread2", "_scoop1", "_scoop2"):
-                    self.assertIn(prefix + suffix, self.registry)
-                self.assertEqual(
-                    self.registry[prefix].crop((8, 0, 56, 14)).tobytes(),
-                    self.registry[prefix + "_tread1"].crop((8, 0, 56, 14)).tobytes(),
-                    "movement must retain the approved tool",
-                )
-                self.assertEqual(
-                    self.registry[prefix].crop((25, 7, 40, 16)).tobytes(),
-                    self.registry[prefix + "_scoop1"].crop((25, 7, 40, 16)).tobytes(),
-                    "the bucket stays tucked while the pincers deploy",
-                )
-                for pincer_box in ((5, 5, 23, 32), (41, 5, 59, 32)):
+                    frame = self.registry[prefix + suffix]
+                    self.assertEqual(
+                        idle.crop((44, 67, 84, 101)).tobytes(),
+                        frame.crop((44, 67, 84, 101)).tobytes(),
+                    )
+                    self.assertNotEqual(idle.tobytes(), frame.tobytes())
+                for suffix in ("_tread1", "_tread2"):
+                    self.assertEqual(
+                        idle.crop((0, 0, 128, 32)).tobytes(),
+                        self.registry[prefix + suffix].crop((0, 0, 128, 32)).tobytes(),
+                    )
+                for claw in ((30, 3, 64, 55), (64, 3, 98, 55)):
                     self.assertGreater(
                         _changed_pixels(
-                            self.registry[prefix].crop(pincer_box),
-                            self.registry[prefix + "_scoop1"].crop(pincer_box),
+                            idle.crop(claw),
+                            self.registry[prefix + "_scoop1"].crop(claw),
                         ),
-                        100,
-                        "both pincers must deploy before the bucket advances",
+                        20,
                     )
-                self.assertGreater(
-                    _changed_pixels(
-                        self.registry[prefix + "_scoop1"].crop((23, 5, 42, 25)),
-                        self.registry[prefix + "_scoop2"].crop((23, 5, 42, 25)),
-                    ),
-                    20,
-                    "the bucket advances only after the pincers deploy",
-                )
-                self.assertGreater(
-                    _changed_pixels(
-                        self.registry[prefix], self.registry[prefix + "_scoop2"]
-                    ),
-                    30,
-                )
-            for lower, higher in pairwise(cargo_images):
-                self.assertGreater(
-                    _changed_pixels(
-                        lower.crop((23, 44, 41, 55)),
-                        higher.crop((23, 44, 41, 55)),
-                    ),
-                    2,
-                )
+            self.assertEqual(len(set(loads)), 5)
 
     def test_defense_foundations_and_mounts_are_separate_square_layers(self) -> None:
         pairs = (
-            ("turret", "turret_barrel", 64),
-            ("turret_t1", "turret_barrel_t1", 64),
-            ("turret_t2", "turret_barrel_t2", 64),
-            ("flak_turret", "flak_mount", 64),
+            ("turret", "turret_barrel", 128),
+            ("turret_t1", "turret_barrel_t1", 128),
+            ("turret_t2", "turret_barrel_t2", 128),
+            ("flak_turret", "flak_mount", 128),
             ("bastion", "bastion_mount", 128),
         )
         for faction in gen.FACTIONS:
@@ -1109,21 +707,6 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                         )
                     )
 
-    def test_reclaimer_is_the_exact_approved_guarded_feed_sequence(self) -> None:
-        expected = (
-            "13b9f75a7086f79676776d7a28e9542bd86ef29ce14af013348c5ec7554581b5",
-            "5ac8b3f9486beeacfe959a5e0590813bd91c88d48349e93221c41ea5cc6bc84d",
-            "ac6ea8df80b1d7a2183b081beee261060ea82c7cf2b99d1889219e3f4645170f",
-            "879f3ae9ac5a271e03aabe77f41d50e2427f328aadb4a46d557c2189166c5c42",
-        )
-        actual = tuple(
-            hashlib.sha256(
-                self.registry[f"reclaimer_ferrous{suffix}"].convert("RGBA").tobytes()
-            ).hexdigest()
-            for suffix in ("", "_work1", "_work2", "_work3")
-        )
-        self.assertEqual(actual, expected)
-
     def test_buzzard_matches_the_approved_armored_quad_fan_sequence(self) -> None:
         expected = (
             "1143a769ec064862af3d9fe9837b15434bd60326b45af2415fe267e3c80cb56d",
@@ -1148,34 +731,28 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             edge = list(frame.crop((0, 0, frame.width, 1)).get_flattened_data())
             self.assertFalse(any(edge), f"{faction} muzzle flare is clipped")
 
-    def test_foundry_work_frames_move_the_crane_and_sequence_the_lights(self) -> None:
-        frames = [
-            self.registry[f"foundry_ferrous{suffix}"].convert("RGBA")
-            for suffix in ("", "_work1", "_work2", "_work3", "_work4")
-        ]
-        self.assertEqual(len({frame.tobytes() for frame in frames}), len(frames))
-        for frame in frames[1:]:
-            self.assertGreater(
-                _changed_pixels(
-                    frames[0].crop((20, 12, 108, 58)), frame.crop((20, 12, 108, 58))
-                ),
-                20,
-                "the Foundry crane must travel while production advances",
-            )
-
-        center_values = [sum(frame.getpixel((64, 72))[:3]) for frame in frames]
-        self.assertLess(center_values[0], center_values[1])
-        self.assertLess(center_values[1], center_values[2])
-        self.assertEqual(center_values[1], center_values[3])
-        self.assertEqual(center_values[0], center_values[4])
-
-        lit_positions = ((19, 27), (19, 45), (19, 63), (19, 81))
-        for work, frame in enumerate(frames[1:], start=1):
-            values = [sum(frame.getpixel(position)[:3]) for position in lit_positions]
-            self.assertEqual(values.index(max(values)), work - 1)
+    def test_foundry_gantry_moves_over_a_fixed_foundation(self) -> None:
+        for faction in gen.FACTIONS:
+            frames = [
+                self.registry[f"foundry_{faction}" + (f"_work{i}" if i else "")]
+                for i in range(5)
+            ]
+            self.assertEqual(len({frame.tobytes() for frame in frames}), 5)
+            for frame in frames[1:]:
+                self.assertEqual(
+                    frame.crop((0, 0, 128, 30)).tobytes(),
+                    frames[0].crop((0, 0, 128, 30)).tobytes(),
+                )
+                self.assertGreater(
+                    _changed_pixels(
+                        frames[0].crop((30, 34, 100, 100)),
+                        frame.crop((30, 34, 100, 100)),
+                    ),
+                    100,
+                )
 
     def test_bastion_ready_and_reload_frames_have_physical_charge_cells(self) -> None:
-        centers = [(19, 54 + index * 10) for index in range(5)]
+        centers = [(25, 53 + index * 8) for index in range(5)]
         expected = {
             "": 5,
             "_action1": 1,
@@ -1192,34 +769,34 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             for suffix, count in expected.items():
                 image = self.registry[f"bastion_{faction}{suffix}"]
                 lit = sum(
-                    image.getpixel(center)[:3] == gen.SCRAP_LIGHT for center in centers
+                    sum(
+                        (a - b) ** 2
+                        for a, b in zip(
+                            image.getpixel(center)[:3], installed_defenses_final.BRASS
+                        )
+                    )
+                    < 100
+                    for center in centers
                 )
                 with self.subTest(faction=faction, suffix=suffix):
                     self.assertEqual(lit, count)
 
     def test_bastion_recoils_after_report_then_returns_quickly(self) -> None:
         for faction in gen.FACTIONS:
-            centers = [
-                _alpha_centroid_y(
-                    self.registry[f"bastion_mount_{faction}{suffix}"],
-                    (31, 0, 98, 96),
-                )
-                for suffix in (
-                    "_action5",
-                    "_action6",
-                    "_action7",
-                    "_action8",
-                    "_action9",
-                )
+            muzzle_tops = [
+                self.registry[f"bastion_mount_{faction}{suffix}"]
+                .crop((55, 0, 73, 40))
+                .getchannel("A")
+                .getbbox()[1]
+                for suffix in ("_action5", "_action7", "_action8", "_action9")
             ]
             with self.subTest(faction=faction):
-                self.assertAlmostEqual(centers[0], centers[1], delta=1.0)
-                self.assertGreater(centers[2] - centers[1], 4.0)
-                self.assertGreater(centers[2], centers[3])
-                self.assertGreater(centers[3], centers[4])
+                ready, recoil, settling, returned = muzzle_tops
+                self.assertEqual(recoil - ready, 7)
+                self.assertEqual(settling - ready, 3)
+                self.assertEqual(returned, ready)
 
-    def test_flakhound_ready_and_reload_frames_have_physical_charge_cells(self) -> None:
-        centers = [(23 + index * 6, 52) for index in range(4)]
+    def test_flakhound_magazines_fill_during_reload(self) -> None:
         expected = {
             "": 4,
             "_tread1": 4,
@@ -1229,49 +806,40 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             "_action3": 2,
             "_action4": 3,
             "_action5": 4,
-            "_action6": 4,
-            "_action7": 2,
-            "_action8": 0,
-            "_action9": 0,
+            "_action6": 1,
+            "_action7": 1,
+            "_action8": 1,
+            "_action9": 1,
         }
         for faction in gen.FACTIONS:
-            palette = gen.FACTIONS[faction]
             for suffix, count in expected.items():
                 image = self.registry[f"flakhound_{faction}{suffix}"]
-                lit = sum(
-                    sum(
-                        (channel - target) ** 2
-                        for channel, target in zip(
-                            image.getpixel(center)[:3], palette["light"], strict=True
+                for x in (34, 94):
+                    loaded = 0
+                    for index in range(4):
+                        pixel = image.getpixel((x, 73 + index * 3))[:3]
+                        brass = sum(
+                            (a - b) ** 2 for a, b in zip(pixel, specialists_final.BRASS)
                         )
-                    )
-                    < sum(
-                        (channel - target) ** 2
-                        for channel, target in zip(
-                            image.getpixel(center)[:3], palette["dark"], strict=True
+                        empty = sum(
+                            (a - b) ** 2 for a, b in zip(pixel, specialists_final.DEEP)
                         )
-                    )
-                    for center in centers
-                )
-                with self.subTest(faction=faction, suffix=suffix):
-                    self.assertEqual(lit, count)
+                        loaded += brass < empty
+                    self.assertEqual(loaded, count, (faction, suffix, x))
 
-    def test_bombard_report_and_deployed_spades_stay_inside_one_sprite(self) -> None:
+    def test_bombard_spades_and_muzzle_report_fit_their_canvases(self) -> None:
+        for phase in range(5):
+            image = self.registry[f"bombard_spades_{phase}"]
+            left, top, right, bottom = image.getbbox()
+            self.assertTrue(0 < left < right < image.width)
+            self.assertTrue(0 < top < bottom < image.height)
         for faction in gen.FACTIONS:
-            for suffix in ("_action3", "_action4", "_action5"):
-                image = self.registry[f"bombard_{faction}{suffix}"]
-                left, _, right, _ = image.getbbox()
-                with self.subTest(faction=faction, suffix=suffix):
-                    self.assertGreater(left, 0)
-                    self.assertLess(right, image.width)
-
             report = self.registry[f"bombard_{faction}_action4"]
-            for y in range(8, 18):
-                with self.subTest(faction=faction, report_row=y):
-                    self.assertGreaterEqual(
-                        max(report.getpixel((x, y))[3] for x in range(24, 41)),
-                        128,
-                    )
+            flashes = sum(
+                pixel[0] > 200 and pixel[1] > 130 and pixel[3] > 128
+                for pixel in report.crop((50, 8, 79, 35)).get_flattened_data()
+            )
+            self.assertGreater(flashes, 0)
 
 
 if __name__ == "__main__":

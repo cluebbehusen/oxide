@@ -85,6 +85,20 @@ seat holding a Bastion:
 Repeat the unit spec at distinct standable tiles for each extra unit. Kind
 strings are the lowercase names from `sim/src/stats.rs`.
 
+## Stage a manual art review
+
+Default human review scenes to a spacious proving ground, around 80 by 52 tiles,
+with units spread out and enemy targets across a wide empty approach. Start
+paused with no opening commands. A passive opponent still auto-defends, so check
+sight and weapon ranges and run an idle interval to prove there is no opening
+combat. Preserve normal aircraft idle flight.
+
+Keep several previously reviewed units for comparison and enemy buildings for
+manual target practice. Frame the friendly staging area at a readable zoom;
+allow the player to move one unit into range at a time. Keep close-range
+scripted firing and animation diagnostics in separate replays, and return the
+final review window to the quiet scene before handing it over.
+
 ## Launch it
 
 The shell takes a scenario path directly and skips the menu:

@@ -1,19 +1,19 @@
 {
   "sim_version": "0.16.0",
   "hashes": {
-    "gatework-array": "0xc2c0a0b93783a62f",
-    "gatework-array#commands": "0x8179ff6772a6ee3d",
-    "skirmish": "0x6e5a7a9ebb3ae2f3",
-    "skirmish#commands": "0x7970460139d41334",
-    "skyhook-anchorage": "0x38bdfb2466d9fdc2",
-    "skyhook-anchorage#commands": "0xee5d48d3a9af0cd3",
-    "skyhook-anchorage@9000": "0x06c33a23107b854e",
-    "skyhook-anchorage@9000#commands": "0x643c44c8040f0f97",
-    "terminal-basin": "0x0e0d0bbefa14c3f7",
-    "terminal-basin#commands": "0xe7c16220d28d0ea4",
-    "three-shifts": "0xe0fd950500914beb",
-    "three-shifts#commands": "0x3aba247cd05defa4",
-    "twin-forges": "0x48da00378d651bd9",
-    "twin-forges#commands": "0x19a2ae10a392fdf7"
+    "gatework-array": "0xdf48d636bde7f919",
+    "gatework-array#commands": "0x17922db9142e05c2",
+    "skirmish": "0x14f27b33cfedd1be",
+    "skirmish#commands": "0x12270f4d1bd45828",
+    "skyhook-anchorage": "0x966f4c0277467361",
+    "skyhook-anchorage#commands": "0x1a6918dc090fc09e",
+    "skyhook-anchorage@9000": "0x2cd958558fdfda2e",
+    "skyhook-anchorage@9000#commands": "0x97129d2a9c214132",
+    "terminal-basin": "0xf9af61b342e083d5",
+    "terminal-basin#commands": "0xe3e85c7ef3ae6aff",
+    "three-shifts": "0x75df94c65fef1970",
+    "three-shifts#commands": "0x3b80ca214711560b",
+    "twin-forges": "0x61c67ac8dd6acbdd",
+    "twin-forges#commands": "0x4677537db27c57b9"
   }
 }

@@ -1165,11 +1165,9 @@ fn the_build_palette_has_no_duplicate_structures() {
 
 #[test]
 fn the_build_palette_fits_the_digit_selectors() {
-    // `digit_action` indexes the palette with slots 0..=8 (number keys
-    // 1-9); an entry past the ninth could never be selected.
     assert!(
-        BUILD_PALETTE.len() <= 9,
-        "palette overflows the 1-9 digit range"
+        BUILD_PALETTE.len() <= 13,
+        "palette overflows 1-9 and Shift+1 through Shift+4"
     );
 }
 
@@ -2078,7 +2076,7 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
 
     // The panel is read-only: no command cards; a single ally shows
     // static capability and its order chips.
-    let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("a panel");
+    let panel = crate::panel::build_for_palette(&game, &input.bindings, false).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on an ally panel");
     assert!(
         panel.sub.contains("Standard / Balanced AI"),
@@ -2139,7 +2137,7 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
 
     // Static kind-level capability facts are safe to inspect. Command cards
     // and order chips stay absent because order state reveals intent.
-    let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("a panel");
+    let panel = crate::panel::build_for_palette(&game, &input.bindings, false).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
     assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
     assert!(
@@ -3371,7 +3369,7 @@ fn the_roster_strip_cuts_a_mixed_selection_both_ways() {
         .map(|u| u.id)
         .collect();
     game.selection.units = mine.clone();
-    let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("panel");
+    let panel = crate::panel::build_for_palette(&game, &input.bindings, false).expect("panel");
     let strip: Vec<_> = panel
         .roster
         .iter()
@@ -5055,97 +5053,102 @@ fn an_automatic_upgrade_is_not_a_worker_target_or_a_scrappable_site() {
 }
 
 #[test]
-fn the_build_palette_cycles_through_its_pages() {
+fn construction_menu_shows_every_building_and_shortcuts_arm_the_visible_card() {
     let mut game = headless_game();
     let mut input = InputState::new();
-    let press = |game: &mut Game, input: &mut InputState, key| {
-        apply_events(
-            game,
-            input,
-            &[RawEvent::KeyDown { key }, RawEvent::KeyUp { key }],
+    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(input.build_menu);
+    let panel = crate::panel::build_for_palette(&game, &input.bindings, true).unwrap();
+    assert_eq!(panel.cards.len(), 13);
+    for card in &panel.cards {
+        let crate::panel::CardAction::ArmBuild(kind) = card.action else {
+            panic!("construction card");
+        };
+        let index = BUILD_PALETTE
+            .iter()
+            .position(|entry| *entry == kind)
+            .unwrap();
+        assert_eq!(
+            card.hotkey,
+            if index < 9 {
+                (index + 1).to_string()
+            } else {
+                format!("Shift+{}", index - 8)
+            }
         );
-    };
-    let worker = game
-        .state
-        .units()
-        .iter()
-        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
-        .unwrap()
-        .id;
-    game.selection.units = vec![worker];
-    let closed = crate::panel::build_for_palette(&game, &input.bindings, false, 0)
-        .expect("closed palette panel");
-    assert_eq!(
-        closed
-            .cards
-            .iter()
-            .find(|card| card.title == "turret")
-            .expect("turret card")
-            .hotkey,
-        "B,1"
-    );
-    press(&mut game, &mut input, Key::B);
-    assert!(input.build_menu && input.build_page == 0, "opens on page 0");
-    let basic = crate::panel::build_for_palette(&game, &input.bindings, true, input.build_page)
-        .expect("basic palette panel");
-    assert_eq!(
-        basic
-            .cards
-            .iter()
-            .find(|card| card.title == "turret")
-            .expect("turret card")
-            .hotkey,
-        "1"
-    );
-    press(&mut game, &mut input, Key::B);
-    assert!(
-        input.build_menu && input.build_page == 1,
-        "the second press turns the page"
-    );
-    let advanced = crate::panel::build_for_palette(&game, &input.bindings, true, input.build_page)
-        .expect("advanced palette panel");
-    assert_eq!(
-        advanced
-            .cards
-            .iter()
-            .find(|card| card.title == "crucible")
-            .expect("crucible card")
-            .hotkey,
-        "3"
-    );
-    // The displayed digit now arms the tech page's kind, not basic slot 3.
-    press(&mut game, &mut input, Key::Num3);
-    assert_eq!(
-        input.placing,
-        Some(oxide_sim::BuildingKind::Crucible),
-        "the advanced card's visible 3 arms the Crucible"
-    );
-    // Reopen and close on the third press.
-    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
-    assert!(
-        input.build_menu && input.build_page == 0,
-        "reopens on page 0"
-    );
-    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
-    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
-    assert!(!input.build_menu, "the cycle ends closed");
+        input.build_menu = true;
+        let key = [
+            Key::Num1,
+            Key::Num2,
+            Key::Num3,
+            Key::Num4,
+            Key::Num5,
+            Key::Num6,
+            Key::Num7,
+            Key::Num8,
+            Key::Num9,
+        ][if index < 9 { index } else { index - 9 }];
+        let mut events = Vec::new();
+        if index >= 9 {
+            events.push(RawEvent::KeyDown { key: Key::Shift });
+        }
+        events.extend([RawEvent::KeyDown { key }, RawEvent::KeyUp { key }]);
+        if index >= 9 {
+            events.push(RawEvent::KeyUp { key: Key::Shift });
+        }
+        apply_events(&mut game, &mut input, &events);
+        assert_eq!(input.placing, Some(kind), "{}", card.hotkey);
+        assert!(!input.build_menu);
+    }
+    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(!input.construction_open());
+    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(input.build_menu);
+    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(!input.construction_open());
+}
 
-    super::activate_card(
-        &mut game,
-        &mut input,
-        crate::panel::CardAction::ShowBuildPage(1),
-    );
-    assert!(
-        input.build_menu && input.build_page == 1,
-        "the advanced-page card is a direct, clickable route"
-    );
-    super::activate_card(
-        &mut game,
-        &mut input,
-        crate::panel::CardAction::ShowBuildPage(0),
-    );
-    assert!(
-        input.build_menu && input.build_page == 0,
-        "the basic-page card returns directly"
-    );
+#[test]
+fn mouse_and_touch_switch_construction_without_cancelling_or_placing_in_the_world() {
+    use crate::panel::CardAction;
+    use macroquad::math::Rect;
+    for touch in [false, true] {
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+        activate_card(
+            &mut game,
+            &mut input,
+            CardAction::ArmBuild(oxide_sim::BuildingKind::Turret),
+        );
+        let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+        let mut layout = game.layout.get();
+        layout.panel_top = 680.0;
+        layout.panel_right = 600.0;
+        layout.cards[0] = (
+            Rect::new(300.0, 700.0, 100.0, 90.0),
+            CardAction::ArmBuild(oxide_sim::BuildingKind::Reclaimer),
+        );
+        layout.cards[1] = (Rect::new(410.0, 700.0, 100.0, 90.0), CardAction::None);
+        layout.card_count = 2;
+        layout.minimap = zero;
+        game.layout.set(layout);
+        let hash = game.state.hash();
+        for x in [340.0, 450.0] {
+            let events = if touch {
+                vec![
+                    RawEvent::TouchDown { id: 1, x, y: 740.0 },
+                    RawEvent::TouchUp { id: 1, x, y: 740.0 },
+                ]
+            } else {
+                click(x, 740.0).to_vec()
+            };
+            apply_events(&mut game, &mut input, &events);
+            assert_eq!(input.placing, Some(oxide_sim::BuildingKind::Reclaimer));
+            assert!(input.construction_open());
+            assert!(input.placing_stroke.is_none());
+            assert!(game.pending.is_empty());
+            assert_eq!(game.state.hash(), hash);
+        }
+    }
 }

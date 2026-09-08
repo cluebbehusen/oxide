@@ -198,115 +198,87 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
             crate::layout::TOP_BAR_H * s,
             PANEL,
         );
-        let me = game.state.player(game.human);
+        use crate::action::{Action, BindingMap};
+        let label = |action| {
+            input
+                .bindings
+                .chord_for(action)
+                .map(BindingMap::chord_label)
+                .unwrap_or_default()
+        };
+        let scrap = game.state.player(game.human).scrap;
+        let passive: u32 = game
+            .state
+            .buildings()
+            .iter()
+            .map(|building| crate::panel::building_income(game, building))
+            .sum();
         let my_units = game
             .state
             .units()
             .iter()
-            .filter(|u| u.player == game.human)
+            .filter(|unit| unit.player == game.human)
             .count();
-        draw_text(
-            format!("SCRAP {}", me.scrap),
-            12.0 * s,
-            22.0 * s,
-            22.0 * s,
-            SCRAP_COLOR,
-        );
-        draw_text(
-            format!("UNITS {my_units}"),
-            150.0 * s,
-            22.0 * s,
-            22.0 * s,
-            TEXT_PRIMARY,
-        );
-        // Idle harvesters are money on the ground; the badge nags in
-        // danger red and clicking it (or N) cycles through them. Tick
-        // count is a debug fact; it rides the F1 overlay, not the
-        // player's bar.
+        let scrap_text = scrap.to_string();
+        let passive_text = format!("+{passive}/min passive");
+        let units_text = my_units.to_string();
+        let passive_x =
+            (70.0 * s + crate::typography::measure(&scrap_text, 21.0 * s).width + 16.0 * s)
+                .max(151.0 * s);
+        let units_x = (passive_x
+            + measure_text(&passive_text, None, (16.0 * s) as u16, 1.0).width
+            + 16.0 * s)
+            .max(284.0 * s);
+        let count_x = units_x
+            + (crate::typography::measure("UNITS", 13.0 * s).width + 12.0 * s).max(60.0 * s);
+        crate::typography::draw("SCRAP", 12.0 * s, 26.0 * s, 13.0 * s, TEXT_SECONDARY);
+        crate::typography::draw(&scrap_text, 70.0 * s, 27.0 * s, 21.0 * s, SCRAP_COLOR);
+        draw_text(&passive_text, passive_x, 26.0 * s, 16.0 * s, TEXT_BODY);
+        crate::typography::draw("UNITS", units_x, 26.0 * s, 13.0 * s, TEXT_SECONDARY);
+        crate::typography::draw(&units_text, count_x, 27.0 * s, 21.0 * s, TEXT_PRIMARY);
         let idle = crate::input::idle_harvesters(game).len();
         if idle > 0 {
-            let label = format!("IDLE {idle}");
-            let dims = measure_text(&label, None, (22.0 * s) as u16, 1.0);
-            let x = 270.0 * s;
-            draw_text(&label, x, 22.0 * s, 22.0 * s, DANGER);
-            idle_badge = Rect::new(x - 4.0 * s, 4.0 * s, dims.width + 8.0 * s, 26.0 * s);
-        }
-        if game.paused {
-            draw_text("PAUSED (P)", 360.0 * s, 22.0 * s, 22.0 * s, DANGER);
-        } else if (game.speed - 1.0).abs() > f64::EPSILON {
+            let text = format!("{idle} idle [{}]", label(Action::CycleIdleWorker));
+            let width = measure_text(&text, None, (15.0 * s) as u16, 1.0).width + 18.0 * s;
+            let idle_x = count_x
+                + (crate::typography::measure(&units_text, 21.0 * s).width + 20.0 * s)
+                    .max(45.0 * s);
+            idle_badge = Rect::new(idle_x, 3.0 * s, width, 34.0 * s);
+            draw_rectangle(
+                idle_badge.x,
+                idle_badge.y,
+                width,
+                idle_badge.h,
+                Color::from_rgba(57, 45, 30, 255),
+            );
             draw_text(
-                format!("SPEED x{:.2}", game.speed),
-                360.0 * s,
-                22.0 * s,
-                22.0 * s,
+                &text,
+                idle_badge.x + 9.0 * s,
+                26.0 * s,
+                15.0 * s,
                 SCRAP_COLOR,
             );
         }
-        // Controls coaching fills the bar's empty right half, dropping
-        // trailing segments when a narrow window runs out of room. Live
-        // chords, not folklore: a rebound key changes the prompt.
-        use crate::action::{Action, BindingMap};
-        let label = |a: Action| {
-            input
-                .bindings
-                .chord_for(a)
-                .map(BindingMap::chord_label)
-                .unwrap_or_else(|| "unbound".to_string())
-        };
-        let pans = [
-            Action::PanLeft,
-            Action::PanRight,
-            Action::PanUp,
-            Action::PanDown,
-        ]
-        .map(label);
-        let pan = if pans == ["Left", "Right", "Up", "Down"].map(String::from) {
-            "arrows pan".to_string()
+        let status = if game.paused {
+            format!("PAUSED [{}]", label(Action::TogglePause))
+        } else if (game.speed - 1.0).abs() > f64::EPSILON {
+            format!("x{:.2}", game.speed)
         } else {
-            format!("{}/{}/{}/{} pan", pans[0], pans[1], pans[2], pans[3])
+            let seconds = game.state.current_tick() / u64::from(oxide_sim::TICKS_PER_SECOND);
+            format!("{}:{:02}", seconds / 60, seconds % 60)
         };
-        let segments = [
-            "LMB select".to_string(),
-            "RMB advance".to_string(),
-            format!("{} attack-move", label(Action::AttackMove)),
-            "Shift queues".to_string(),
-            "1-9 train".to_string(),
-            format!("{} build", label(Action::ToggleBuildPalette)),
-            pan,
-            "Esc menu".to_string(),
-            format!("{} debug", label(Action::ToggleOverlay)),
-        ];
-        let max_w = screen_width() - 540.0 * s;
-        let mut hint = String::new();
-        for seg in segments {
-            let candidate = if hint.is_empty() {
-                seg
-            } else {
-                format!("{hint} | {seg}")
-            };
-            if measure_text(&candidate, None, (16.0 * s) as u16, 1.0).width > max_w {
-                break;
-            }
-            hint = candidate;
-        }
-        if !hint.is_empty() {
-            let width = measure_text(&hint, None, (16.0 * s) as u16, 1.0).width;
-            draw_text(
-                &hint,
-                screen_width() - width - 10.0 * s,
-                21.0 * s,
-                16.0 * s,
-                TEXT_BODY,
-            );
-        }
+        let width = crate::typography::measure(&status, 14.0 * s).width;
+        crate::typography::draw(
+            &status,
+            screen_width() - width - 12.0 * s,
+            26.0 * s,
+            14.0 * s,
+            TEXT_PRIMARY,
+        );
     }
 
-    *game.panel_model.borrow_mut() = crate::panel::build_for_palette(
-        game,
-        &input.bindings,
-        input.build_menu,
-        input.active_build_page(),
-    );
+    *game.panel_model.borrow_mut() =
+        crate::panel::build_for_palette(game, &input.bindings, input.construction_open());
     let panel = game.panel_model.borrow();
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut roster_slots = [(zero, crate::panel::CardAction::None); 8];

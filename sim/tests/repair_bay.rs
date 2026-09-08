@@ -5,6 +5,8 @@
 //! ring's edge, air and structure patients, own-entity-only scope, and fire
 //! winning the tick.
 
+mod common;
+
 use chassis::grid::TilePos;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::stats::FOUNDRY_RECOVERY_RESERVE;
@@ -1072,6 +1074,7 @@ fn lethal_fire_wins_a_structure_repair_pulse_and_forfeits_its_coin() {
     state = forge_buildings(state, &[(patient, hurt, true, 0)], None);
     let bank = state.player(PlayerId(0)).scrap;
 
+    common::face_target(&mut state, attacker, Target::Building(patient));
     let report = state.tick(&[cmd(
         1,
         Command::Attack {

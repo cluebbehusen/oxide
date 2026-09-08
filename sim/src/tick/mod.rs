@@ -1028,6 +1028,14 @@ mod tests {
             };
         }
 
+        for (unit_id, victim) in [
+            (state.units[0].id, right_victim),
+            (state.units[1].id, left_victim),
+        ] {
+            let unit = state.unit(unit_id).unwrap();
+            let direction = state.building(victim).unwrap().closest_point_to(unit.pos) - unit.pos;
+            state.unit_mut(unit_id).unwrap().turret_heading = Some(flight::heading_of(direction));
+        }
         let report = state.tick(&[]);
         assert!(
             report.events.iter().any(|event| matches!(

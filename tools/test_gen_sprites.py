@@ -1,6 +1,8 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -18,6 +20,55 @@ class SpriteReproducibilityTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_paged_atlas_preserves_pixels_extrusion_and_duplicate_aliases(self) -> None:
+        frames = {
+            f"sprite_{i}": Image.new("RGBA", (1024, 1024), (i * 17, 80, 90, 255))
+            for i in range(10)
+        }
+        frames["duplicate"] = frames["sprite_0"].copy()
+        with (
+            patch.object(gen_sprites, "OUT", self.actual),
+            patch.object(gen_sprites, "REGISTRY", frames),
+        ):
+            gen_sprites.pack_atlas()
+        manifest = json.loads((self.actual / "atlas.json").read_text())
+        self.assertEqual(set(manifest), set(frames))
+        self.assertEqual(manifest["duplicate"], manifest["sprite_0"])
+        pages = [
+            Image.open(self.actual / name).convert("RGBA")
+            for name in ("atlas.png", "atlas_1.png")
+        ]
+        self.assertTrue(all(max(page.size) <= 4096 for page in pages))
+        for key, (x, y, w, h) in manifest.items():
+            page = pages[y // 4096]
+            y %= 4096
+            self.assertEqual(
+                page.crop((x, y, x + w, y + h)).tobytes(), frames[key].tobytes(), key
+            )
+            self.assertEqual(
+                page.crop((x, y - 1, x + w, y)).tobytes(),
+                frames[key].crop((0, 0, w, 1)).tobytes(),
+            )
+            self.assertEqual(
+                page.crop((x - 1, y, x, y + h)).tobytes(),
+                frames[key].crop((0, 0, 1, h)).tobytes(),
+            )
+        expected = {p.name: p.read_bytes() for p in self.actual.iterdir()}
+        with (
+            patch.object(gen_sprites, "OUT", self.actual),
+            patch.object(gen_sprites, "REGISTRY", dict(reversed(list(frames.items())))),
+        ):
+            gen_sprites.pack_atlas()
+        self.assertEqual(
+            expected, {p.name: p.read_bytes() for p in self.actual.iterdir()}
+        )
+        with (
+            patch.object(gen_sprites, "OUT", self.actual),
+            patch.object(gen_sprites, "REGISTRY", {"small": Image.new("RGBA", (4, 4))}),
+        ):
+            gen_sprites.pack_atlas()
+        self.assertFalse((self.actual / "atlas_1.png").exists())
 
     def test_png_compression_differences_preserve_reproducibility(self) -> None:
         pixels = Image.new("RGBA", (3, 2))

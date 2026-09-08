@@ -30,7 +30,7 @@ OUT = Path(__file__).resolve().parent.parent / "assets" / "sprites"
 SS = 4  # supersample factor
 
 # Every finished sprite lands here too, so main() can pack one atlas the
-# shell renders from — one texture means one GPU batch for the whole world.
+# shell renders from, sharing texture pages across the whole world.
 REGISTRY: dict[str, Image.Image] = {}
 
 # The Oxide palette. Keep in sync with kit/src/render.rs and the shell.
@@ -125,40 +125,57 @@ def rim_light(img: Image.Image) -> Image.Image:
 
 
 def pack_atlas() -> None:
-    """Shelf-packs every registered sprite into atlas.png + atlas.json.
+    """Pack exact duplicate frames once into deterministic 4096px texture pages.
 
-    Deterministic: sprites are placed tallest-first, then by name. Each
-    sprite gets a padded cell with its own edges extruded one pixel into the
-    padding, so linear filtering at any zoom never bleeds a neighbor (or
-    transparency) into the sample.
+    Manifest coordinates address vertically stacked pages. Each sprite keeps
+    its full canvas and one-pixel edge extrusion inside a two-pixel gutter.
     """
     pad = 2
-    # Animation rows add many complete 2x2 frames. A wider shelf keeps the
-    # deterministic atlas comfortably below common 8192px texture limits.
-    atlas_w = 4096
+    page_size = 4096
     entries = sorted(REGISTRY.items(), key=lambda kv: (-kv[1].height, kv[0]))
     placements: dict[str, tuple[int, int, int, int]] = {}
+    unique: dict[tuple[tuple[int, int], bytes], str] = {}
     x, y, shelf_h = pad, pad, 0
     for name, img in entries:
-        w, h = img.width, img.height
-        if x + w + pad > atlas_w:
+        fingerprint = (img.size, img.tobytes())
+        if fingerprint in unique:
+            placements[name] = placements[unique[fingerprint]]
+            continue
+        w, h = img.size
+        if max(w, h) + 2 * pad > page_size:
+            raise ValueError(f"sprite {name} exceeds the texture page size")
+        if x + w + pad > page_size:
             x = pad
             y += shelf_h + 2 * pad
             shelf_h = 0
+        if y % page_size + h + pad > page_size:
+            x = pad
+            y = (y // page_size + 1) * page_size + pad
+            shelf_h = 0
         placements[name] = (x, y, w, h)
+        unique[fingerprint] = name
         shelf_h = max(shelf_h, h)
         x += w + 2 * pad
-    atlas_h = y + shelf_h + pad
-    atlas = Image.new("RGBA", (atlas_w, atlas_h), (0, 0, 0, 0))
-    for name, (px_, py, w, h) in placements.items():
+    total_height = y + shelf_h + pad
+    pages = [
+        Image.new("RGBA", (page_size, min(page_size, total_height - offset)))
+        for offset in range(0, total_height, page_size)
+    ]
+    for name in unique.values():
+        px, py, w, h = placements[name]
+        atlas = pages[py // page_size]
+        py %= page_size
         img = REGISTRY[name]
-        atlas.paste(img, (px_, py))
-        # 1px edge extrusion into the padding.
-        atlas.paste(img.crop((0, 0, w, 1)), (px_, py - 1))
-        atlas.paste(img.crop((0, h - 1, w, h)), (px_, py + h))
-        atlas.paste(img.crop((0, 0, 1, h)), (px_ - 1, py))
-        atlas.paste(img.crop((w - 1, 0, w, h)), (px_ + w, py))
-    atlas.save(OUT / "atlas.png")
+        atlas.paste(img, (px, py))
+        atlas.paste(img.crop((0, 0, w, 1)), (px, py - 1))
+        atlas.paste(img.crop((0, h - 1, w, h)), (px, py + h))
+        atlas.paste(img.crop((0, 0, 1, h)), (px - 1, py))
+        atlas.paste(img.crop((w - 1, 0, w, h)), (px + w, py))
+    for stale in OUT.glob("atlas_*.png"):
+        if stale.stem.removeprefix("atlas_").isdigit():
+            stale.unlink()
+    for index, page in enumerate(pages):
+        page.save(OUT / (f"atlas_{index}.png" if index else "atlas.png"))
     with open(OUT / "atlas.json", "w") as f:
         json.dump(
             {name: list(rect) for name, rect in sorted(placements.items())},
@@ -166,7 +183,9 @@ def pack_atlas() -> None:
             indent=1,
             sort_keys=True,
         )
-    print(f"  atlas.png ({atlas_w}x{atlas_h}, {len(placements)} sprites) + atlas.json")
+    print(
+        f"  atlas: {len(pages)} pages, {len(placements)} sprites, {len(unique)} unique frames"
+    )
 
 
 def _install_finalized_sprite_bank() -> None:
@@ -405,8 +424,12 @@ def extractor_frame_marker() -> None:
     img, d = canvas(px)
     rng = random.Random(40415)
     # The sunken bed plate.
-    d.rounded_rectangle([s(10), s(10), s(118), s(118)], radius=s(8), fill=(24, 23, 26, 235))
-    d.rounded_rectangle([s(16), s(16), s(112), s(112)], radius=s(6), fill=(31, 30, 33, 255))
+    d.rounded_rectangle(
+        [s(10), s(10), s(118), s(118)], radius=s(8), fill=(24, 23, 26, 235)
+    )
+    d.rounded_rectangle(
+        [s(16), s(16), s(112), s(112)], radius=s(6), fill=(31, 30, 33, 255)
+    )
     # Broken foundation girders: an open rectangle with two collapsed
     # spans, the role feature that reads as a rebuildable frame.
     for x0, y0, x1, y1 in ((20, 20, 108, 28), (20, 100, 108, 108), (20, 28, 28, 100)):
@@ -419,7 +442,14 @@ def extractor_frame_marker() -> None:
     )
     # Faded corporate paint on the bed floor: the old operator's chevron.
     d.polygon(
-        [(s(48), s(76)), (s(64), s(52)), (s(80), s(76)), (s(72), s(76)), (s(64), s(64)), (s(56), s(76))],
+        [
+            (s(48), s(76)),
+            (s(64), s(52)),
+            (s(80), s(76)),
+            (s(72), s(76)),
+            (s(64), s(64)),
+            (s(56), s(76)),
+        ],
         fill=(78, 66, 40, 200),
     )
     # Anchor sockets at the girder corners, still waiting for a machine.
@@ -739,7 +769,9 @@ def turret_t1(faction: str) -> None:
         d.ellipse([s(bx - 3), s(by - 3), s(bx + 3), s(by + 3)], fill=(*IRON_DARK, 255))
     # Twin ammo drums flank the ring: the tier's role feature.
     for x in (6, 46):
-        d.rounded_rectangle([s(x), s(22), s(x + 12), s(42)], radius=s(3), fill=(*pal["dark"], 255))
+        d.rounded_rectangle(
+            [s(x), s(22), s(x + 12), s(42)], radius=s(3), fill=(*pal["dark"], 255)
+        )
         d.rectangle([s(x + 2), s(26), s(x + 10), s(30)], fill=(*IRON_LIGHT, 255))
     d.ellipse([s(16), s(16), s(48), s(48)], fill=(*pal["dark"], 255))
     d.ellipse([s(19), s(19), s(45), s(45)], fill=(*pal["base"], 255))
@@ -753,15 +785,26 @@ def turret_t2(faction: str) -> None:
     px = 64
     pal = FACTIONS[faction]
     img, d = canvas(px)
-    oct_pts = [(20, 2), (44, 2), (62, 20), (62, 44), (44, 62), (20, 62), (2, 44), (2, 20)]
+    oct_pts = [
+        (20, 2),
+        (44, 2),
+        (62, 20),
+        (62, 44),
+        (44, 62),
+        (20, 62),
+        (2, 44),
+        (2, 20),
+    ]
     d.polygon([(s(x), s(y)) for x, y in oct_pts], fill=(*IRON_DARK, 255))
     inner = [(22, 7), (42, 7), (57, 22), (57, 42), (42, 57), (22, 57), (7, 42), (7, 22)]
     d.polygon([(s(x), s(y)) for x, y in inner], fill=(*IRON, 255))
     # Hazard chevrons on the north face.
     for i, x in enumerate(range(22, 44, 7)):
-        color = (SCRAP if i % 2 == 0 else IRON_DARK)
-        d.polygon([(s(x), s(7)), (s(x + 5), s(7)), (s(x + 8), s(12)), (s(x + 3), s(12))],
-                  fill=(*color, 255))
+        color = SCRAP if i % 2 == 0 else IRON_DARK
+        d.polygon(
+            [(s(x), s(7)), (s(x + 5), s(7)), (s(x + 8), s(12)), (s(x + 3), s(12))],
+            fill=(*color, 255),
+        )
     d.ellipse([s(14), s(14), s(50), s(50)], fill=(*pal["dark"], 255))
     d.ellipse([s(18), s(18), s(46), s(46)], fill=(*pal["base"], 255))
     d.ellipse([s(26), s(26), s(38), s(38)], fill=(*pal["light"], 255))
@@ -780,10 +823,14 @@ def flak_turret_t1(faction: str) -> None:
     d.rounded_rectangle([s(9), s(9), s(55), s(55)], radius=s(6), fill=(*IRON, 255))
     # Quad rack boxes at the diagonals: the tier's role feature.
     for x, y in ((8, 8), (42, 8), (8, 42), (42, 42)):
-        d.rounded_rectangle([s(x), s(y), s(x + 14), s(y + 14)], radius=s(2), fill=(*pal["dark"], 255))
+        d.rounded_rectangle(
+            [s(x), s(y), s(x + 14), s(y + 14)], radius=s(2), fill=(*pal["dark"], 255)
+        )
         for cx in (x + 4, x + 10):
             for cy in (y + 4, y + 10):
-                d.ellipse([s(cx - 2), s(cy - 2), s(cx + 2), s(cy + 2)], fill=(12, 10, 10, 255))
+                d.ellipse(
+                    [s(cx - 2), s(cy - 2), s(cx + 2), s(cy + 2)], fill=(12, 10, 10, 255)
+                )
     d.ellipse([s(22), s(22), s(42), s(42)], fill=(*pal["base"], 255))
     d.ellipse([s(28), s(28), s(36), s(36)], fill=(*pal["light"], 255))
     finish(img, px, f"flak_turret_t1_{faction}")
@@ -1643,10 +1690,19 @@ def reclaimer_t1(faction: str) -> None:
     d.rounded_rectangle([s(7), s(10), s(57), s(54)], radius=s(5), fill=(*IRON, 255))
     # Twin intake hoppers.
     for x in (10, 34):
-        d.polygon([(s(x), s(10)), (s(x + 20), s(10)), (s(x + 15), s(24)), (s(x + 5), s(24))],
-                  fill=(*pal["dark"], 255))
-        d.polygon([(s(x + 3), s(12)), (s(x + 17), s(12)), (s(x + 13), s(20)), (s(x + 7), s(20))],
-                  fill=(12, 10, 10, 255))
+        d.polygon(
+            [(s(x), s(10)), (s(x + 20), s(10)), (s(x + 15), s(24)), (s(x + 5), s(24))],
+            fill=(*pal["dark"], 255),
+        )
+        d.polygon(
+            [
+                (s(x + 3), s(12)),
+                (s(x + 17), s(12)),
+                (s(x + 13), s(20)),
+                (s(x + 7), s(20)),
+            ],
+            fill=(12, 10, 10, 255),
+        )
     # The cracking stack: the tier's role feature, leaning industrial.
     d.rectangle([s(46), s(26), s(56), s(52)], fill=(*IRON_DARK, 255))
     d.rectangle([s(48), s(28), s(54), s(34)], fill=(*SCRAP_LIGHT, 235))
@@ -1726,7 +1782,9 @@ def extractor(faction: str, work: int = 0) -> None:
     pal = FACTIONS[faction]
     img, d = canvas(px)
     # Machine deck and discharge hall along the east side.
-    d.rounded_rectangle([s(8), s(14), s(122), s(116)], radius=s(9), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle(
+        [s(8), s(14), s(122), s(116)], radius=s(9), fill=(*IRON_DARK, 255)
+    )
     d.rounded_rectangle([s(14), s(20), s(116), s(110)], radius=s(7), fill=(*IRON, 255))
     d.rectangle([s(80), s(26), s(112), s(104)], fill=(*pal["dark"], 255))
     d.rectangle([s(86), s(32), s(106), s(98)], fill=(*IRON_DARK, 255))
@@ -1752,7 +1810,9 @@ def extractor(faction: str, work: int = 0) -> None:
         ang = work * math.pi / 8 + bucket * math.tau / 8
         bx = cx + (radius - 2) * math.cos(ang)
         by = cy + (radius - 2) * math.sin(ang)
-        d.rectangle([s(bx - 3), s(by - 3), s(bx + 3), s(by + 3)], fill=(*IRON_LIGHT, 255))
+        d.rectangle(
+            [s(bx - 3), s(by - 3), s(bx + 3), s(by + 3)], fill=(*IRON_LIGHT, 255)
+        )
         d.rectangle([s(bx - 1), s(by - 1), s(bx + 1), s(by + 1)], fill=(*SCRAP, 255))
     # Gantry arm over the wheel.
     d.rectangle([s(30), s(30), s(42), s(44)], fill=(*IRON_DARK, 255))
@@ -1768,14 +1828,21 @@ def airworks(faction: str, work: int = 0) -> None:
     px = 128
     pal = FACTIONS[faction]
     img, d = canvas(px)
-    d.rounded_rectangle([s(6), s(12), s(122), s(116)], radius=s(9), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle(
+        [s(6), s(12), s(122), s(116)], radius=s(9), fill=(*IRON_DARK, 255)
+    )
     d.rounded_rectangle([s(12), s(18), s(116), s(110)], radius=s(7), fill=(*IRON, 255))
     # Launch apron along the south edge with hazard chevrons.
     d.rectangle([s(16), s(88), s(112), s(106)], fill=(*IRON_DARK, 255))
     for i in range(5):
         x0 = 20 + i * 19
         d.polygon(
-            [(s(x0), s(104)), (s(x0 + 9), s(90)), (s(x0 + 14), s(90)), (s(x0 + 5), s(104))],
+            [
+                (s(x0), s(104)),
+                (s(x0 + 9), s(90)),
+                (s(x0 + 14), s(90)),
+                (s(x0 + 5), s(104)),
+            ],
             fill=(*pal["dark"], 255),
         )
     # Two rotor pads: recessed rings with three-blade fans.
@@ -1786,7 +1853,11 @@ def airworks(faction: str, work: int = 0) -> None:
             ang = work * math.pi / 6 + blade * math.tau / 3 + (cx == 88.0) * 0.5
             tip_x = cx + 14 * math.cos(ang)
             tip_y = 50 + 14 * math.sin(ang)
-            d.line([(s(cx), s(50)), (s(tip_x), s(tip_y))], fill=(*pal["base"], 255), width=s(5))
+            d.line(
+                [(s(cx), s(50)), (s(tip_x), s(tip_y))],
+                fill=(*pal["base"], 255),
+                width=s(5),
+            )
         d.ellipse([s(cx - 5), s(45), s(cx + 5), s(55)], fill=(*pal["light"], 255))
     suffix = "" if work == 0 else f"_work{work}"
     finish(img, px, f"airworks_{faction}{suffix}")
@@ -1799,24 +1870,40 @@ def crucible(faction: str, work: int = 0) -> None:
     px = 128
     pal = FACTIONS[faction]
     img, d = canvas(px)
-    d.rounded_rectangle([s(4), s(10), s(124), s(118)], radius=s(10), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle(
+        [s(4), s(10), s(124), s(118)], radius=s(10), fill=(*IRON_DARK, 255)
+    )
     d.rounded_rectangle([s(12), s(18), s(116), s(110)], radius=s(8), fill=(*IRON, 255))
     # Corner buttresses: the mass that says tier three.
     for bx, by in ((6, 12), (98, 12), (6, 96), (98, 96)):
         d.rounded_rectangle(
-            [s(bx), s(by), s(bx + 24), s(by + 20)], radius=s(5), fill=(*pal["dark"], 255)
+            [s(bx), s(by), s(bx + 24), s(by + 20)],
+            radius=s(5),
+            fill=(*pal["dark"], 255),
         )
-        d.rectangle([s(bx + 4), s(by + 4), s(bx + 20), s(by + 8)], fill=(*IRON_LIGHT, 255))
+        d.rectangle(
+            [s(bx + 4), s(by + 4), s(bx + 20), s(by + 8)], fill=(*IRON_LIGHT, 255)
+        )
     # The melt core: concentric heat rings pulsing with the pour.
-    glow = (36, 30, 30) if work == 0 else (
-        (150, 62, 30), (208, 116, 44), (240, 176, 84)
-    )[work - 1]
+    glow = (
+        (36, 30, 30)
+        if work == 0
+        else ((150, 62, 30), (208, 116, 44), (240, 176, 84))[work - 1]
+    )
     d.ellipse([s(40), s(40), s(88), s(88)], fill=(*IRON_DARK, 255))
     d.ellipse([s(46), s(46), s(82), s(82)], fill=(*pal["dark"], 255))
     d.ellipse([s(52), s(52), s(76), s(76)], fill=(*glow, 255))
-    d.ellipse([s(59), s(59), s(69), s(69)], fill=(12, 10, 10, 255) if work == 0 else (*SCRAP_LIGHT, 255))
+    d.ellipse(
+        [s(59), s(59), s(69), s(69)],
+        fill=(12, 10, 10, 255) if work == 0 else (*SCRAP_LIGHT, 255),
+    )
     # Feed channels into the core from the four faces.
-    for x0, y0, x1, y1 in ((60, 20, 68, 42), (60, 86, 68, 108), (16, 60, 42, 68), (86, 60, 112, 68)):
+    for x0, y0, x1, y1 in (
+        (60, 20, 68, 42),
+        (60, 86, 68, 108),
+        (16, 60, 42, 68),
+        (86, 60, 112, 68),
+    ):
         d.rectangle([s(x0), s(y0), s(x1), s(y1)], fill=(*IRON_DARK, 255))
     suffix = "" if work == 0 else f"_work{work}"
     finish(img, px, f"crucible_{faction}{suffix}")
@@ -1832,10 +1919,11 @@ def barricade(faction: str) -> None:
         off = 6 if row % 2 else 0
         for x in range(4 + off, 52 + off, 16):
             d.rectangle([s(x), s(y), s(x + 14), s(y + 10)], fill=(*IRON, 255))
-            d.rectangle([s(x + 2), s(y + 2), s(x + 12), s(y + 8)], fill=(*pal["base"], 255))
+            d.rectangle(
+                [s(x + 2), s(y + 2), s(x + 12), s(y + 8)], fill=(*pal["base"], 255)
+            )
     d.rectangle([s(4), s(8), s(60), s(11)], fill=(*pal["dark"], 255))
     finish(img, px, f"barricade_{faction}")
-
 
 
 def scuttle_charge(faction: str) -> None:
@@ -1861,13 +1949,23 @@ def sapper(faction: str, move: int = 0) -> None:
     img, d = canvas(px)
     dy = (0, -1, 1)[move % 3]
     for x in (16, 42):
-        d.rounded_rectangle([s(x), s(28), s(x + 6), s(56)], radius=s(2), fill=(*IRON_DARK, 255))
+        d.rounded_rectangle(
+            [s(x), s(28), s(x + 6), s(56)], radius=s(2), fill=(*IRON_DARK, 255)
+        )
         pip_y = (32, 40, 48)[move % 3]
-        d.rectangle([s(x + 1), s(pip_y), s(x + 5), s(pip_y + 5)], fill=(*IRON_LIGHT, 255))
-    d.rounded_rectangle([s(20), s(30 + dy), s(44), s(54 + dy)], radius=s(4), fill=(*pal["base"], 255))
+        d.rectangle(
+            [s(x + 1), s(pip_y), s(x + 5), s(pip_y + 5)], fill=(*IRON_LIGHT, 255)
+        )
+    d.rounded_rectangle(
+        [s(20), s(30 + dy), s(44), s(54 + dy)], radius=s(4), fill=(*pal["base"], 255)
+    )
     # The canister dominates the silhouette.
-    d.rounded_rectangle([s(24), s(6 + dy), s(40), s(34 + dy)], radius=s(6), fill=(*IRON, 255))
-    d.rounded_rectangle([s(27), s(9 + dy), s(37), s(28 + dy)], radius=s(5), fill=(*pal["dark"], 255))
+    d.rounded_rectangle(
+        [s(24), s(6 + dy), s(40), s(34 + dy)], radius=s(6), fill=(*IRON, 255)
+    )
+    d.rounded_rectangle(
+        [s(27), s(9 + dy), s(37), s(28 + dy)], radius=s(5), fill=(*pal["dark"], 255)
+    )
     d.rectangle([s(30), s(2 + dy), s(34), s(8 + dy)], fill=(*SCRAP_LIGHT, 255))
     d.ellipse([s(30), s(40 + dy), s(34), s(44 + dy)], fill=(*pal["light"], 255))
     suffix = "" if move == 0 else f"_move{move}"
@@ -1883,28 +1981,43 @@ def warden(faction: str, move: int = 0, action: int = 0) -> None:
     body_dy = (0, -1, 1)[move % 3]
     # Twin tread blocks, heavier than a sentinel's runners.
     for x in (10, 46):
-        d.rounded_rectangle([s(x), s(20), s(x + 8), s(56)], radius=s(3), fill=(*IRON_DARK, 255))
+        d.rounded_rectangle(
+            [s(x), s(20), s(x + 8), s(56)], radius=s(3), fill=(*IRON_DARK, 255)
+        )
         pip_y = (26, 34, 42)[move % 3]
-        d.rectangle([s(x + 2), s(pip_y), s(x + 6), s(pip_y + 6)], fill=(*IRON_LIGHT, 255))
+        d.rectangle(
+            [s(x + 2), s(pip_y), s(x + 6), s(pip_y + 6)], fill=(*IRON_LIGHT, 255)
+        )
     # The plated hull: a blunt keep.
     d.rounded_rectangle(
         [s(16), s(14 + body_dy), s(48), s(56 + body_dy)], radius=s(5), fill=(*IRON, 255)
     )
     d.rounded_rectangle(
-        [s(20), s(20 + body_dy), s(44), s(50 + body_dy)], radius=s(4), fill=(*pal["base"], 255)
+        [s(20), s(20 + body_dy), s(44), s(50 + body_dy)],
+        radius=s(4),
+        fill=(*pal["base"], 255),
     )
     # Shield cheeks flanking the gun trench.
     for x in (18, 40):
         d.rounded_rectangle(
-            [s(x), s(10 + body_dy), s(x + 6), s(26 + body_dy)], radius=s(2), fill=(*pal["dark"], 255)
+            [s(x), s(10 + body_dy), s(x + 6), s(26 + body_dy)],
+            radius=s(2),
+            fill=(*pal["dark"], 255),
         )
     # The fork cannon: recoils through the action frames.
     recoil = (0, 3, 5, 2, 1)[action]
-    d.rectangle([s(29), s(2 + recoil + body_dy), s(35), s(24 + body_dy)], fill=(*IRON_DARK, 255))
-    d.rectangle([s(30), s(4 + recoil + body_dy), s(34), s(10 + recoil + body_dy)], fill=(*pal["light"], 255))
+    d.rectangle(
+        [s(29), s(2 + recoil + body_dy), s(35), s(24 + body_dy)], fill=(*IRON_DARK, 255)
+    )
+    d.rectangle(
+        [s(30), s(4 + recoil + body_dy), s(34), s(10 + recoil + body_dy)],
+        fill=(*pal["light"], 255),
+    )
     if action in (2, 3):
         d.ellipse([s(28), s(0), s(36), s(8)], fill=(*BONE, 200))
-    d.ellipse([s(28), s(30 + body_dy), s(36), s(38 + body_dy)], fill=(*pal["dark"], 255))
+    d.ellipse(
+        [s(28), s(30 + body_dy), s(36), s(38 + body_dy)], fill=(*pal["dark"], 255)
+    )
     suffix = ""
     if move:
         suffix = f"_move{move}"
@@ -1921,14 +2034,24 @@ def tender(faction: str, move: int = 0) -> None:
     img, d = canvas(px)
     dy = (0, -1, 1)[move % 3]
     for x in (12, 46):
-        d.rounded_rectangle([s(x), s(24), s(x + 6), s(52)], radius=s(2), fill=(*IRON_DARK, 255))
-    d.rounded_rectangle([s(16), s(16 + dy), s(48), s(54 + dy)], radius=s(6), fill=(*IRON, 255))
-    d.rounded_rectangle([s(20), s(22 + dy), s(44), s(48 + dy)], radius=s(4), fill=(*pal["base"], 255))
+        d.rounded_rectangle(
+            [s(x), s(24), s(x + 6), s(52)], radius=s(2), fill=(*IRON_DARK, 255)
+        )
+    d.rounded_rectangle(
+        [s(16), s(16 + dy), s(48), s(54 + dy)], radius=s(6), fill=(*IRON, 255)
+    )
+    d.rounded_rectangle(
+        [s(20), s(22 + dy), s(44), s(48 + dy)], radius=s(4), fill=(*pal["base"], 255)
+    )
     # Coil drum on the back deck.
     d.ellipse([s(24), s(36 + dy), s(40), s(52 + dy)], fill=(*pal["dark"], 255))
     d.ellipse([s(28), s(40 + dy), s(36), s(48 + dy)], fill=(*IRON_LIGHT, 255))
     # The torch arm, folded forward; its tip glows faintly always.
-    d.line([(s(32), s(26 + dy)), (s(24), s(12 + dy)), (s(38), s(6 + dy))], fill=(*IRON_DARK, 255), width=s(4))
+    d.line(
+        [(s(32), s(26 + dy)), (s(24), s(12 + dy)), (s(38), s(6 + dy))],
+        fill=(*IRON_DARK, 255),
+        width=s(4),
+    )
     d.ellipse([s(36), s(3 + dy), s(42), s(9 + dy)], fill=(*SCRAP_LIGHT, 255))
     suffix = "" if move == 0 else f"_move{move}"
     finish(img, px, f"tender_{faction}{suffix}")
@@ -1942,19 +2065,36 @@ def excavator(faction: str, move: int = 0) -> None:
     img, d = canvas(px)
     dy = (0, -1, 1)[move % 3]
     for x in (8, 48):
-        d.rounded_rectangle([s(x), s(18), s(x + 8), s(56)], radius=s(3), fill=(*IRON_DARK, 255))
+        d.rounded_rectangle(
+            [s(x), s(18), s(x + 8), s(56)], radius=s(3), fill=(*IRON_DARK, 255)
+        )
         pip_y = (24, 33, 42)[move % 3]
-        d.rectangle([s(x + 2), s(pip_y), s(x + 6), s(pip_y + 7)], fill=(*IRON_LIGHT, 255))
-    d.rounded_rectangle([s(16), s(14 + dy), s(48), s(56 + dy)], radius=s(6), fill=(*IRON, 255))
+        d.rectangle(
+            [s(x + 2), s(pip_y), s(x + 6), s(pip_y + 7)], fill=(*IRON_LIGHT, 255)
+        )
+    d.rounded_rectangle(
+        [s(16), s(14 + dy), s(48), s(56 + dy)], radius=s(6), fill=(*IRON, 255)
+    )
     # The hopper: a tall amber-stained bin.
-    d.rounded_rectangle([s(22), s(28 + dy), s(42), s(52 + dy)], radius=s(4), fill=(*pal["base"], 255))
+    d.rounded_rectangle(
+        [s(22), s(28 + dy), s(42), s(52 + dy)], radius=s(4), fill=(*pal["base"], 255)
+    )
     d.rectangle([s(26), s(34 + dy), s(38), s(48 + dy)], fill=(*SCRAP_DARK, 255))
     d.rectangle([s(28), s(38 + dy), s(36), s(46 + dy)], fill=(*SCRAP, 255))
     # Twin bucket arms reaching forward.
     for x0, x1 in ((18, 26), (38, 46)):
-        d.line([(s((x0 + x1) // 2), s(28 + dy)), (s((x0 + x1) // 2), s(10 + dy))], fill=(*IRON_DARK, 255), width=s(4))
+        d.line(
+            [(s((x0 + x1) // 2), s(28 + dy)), (s((x0 + x1) // 2), s(10 + dy))],
+            fill=(*IRON_DARK, 255),
+            width=s(4),
+        )
         d.polygon(
-            [(s(x0), s(4 + dy)), (s(x1), s(4 + dy)), (s(x1 - 2), s(12 + dy)), (s(x0 + 2), s(12 + dy))],
+            [
+                (s(x0), s(4 + dy)),
+                (s(x1), s(4 + dy)),
+                (s(x1 - 2), s(12 + dy)),
+                (s(x0 + 2), s(12 + dy)),
+            ],
             fill=(*pal["dark"], 255),
         )
     suffix = "" if move == 0 else f"_move{move}"
@@ -2000,13 +2140,25 @@ def interceptor_flyer(stem: str, faction: str, move: int = 0, action: int = 0) -
     tilt = (0, -2, 2)[move % 3]
     # Swept wings.
     d.polygon(
-        [(s(32), s(6)), (s(58), s(40 + tilt)), (s(44), s(36)), (s(32), s(52)),
-         (s(20), s(36)), (s(6), s(40 - tilt))],
+        [
+            (s(32), s(6)),
+            (s(58), s(40 + tilt)),
+            (s(44), s(36)),
+            (s(32), s(52)),
+            (s(20), s(36)),
+            (s(6), s(40 - tilt)),
+        ],
         fill=(*IRON, 255),
     )
     d.polygon(
-        [(s(32), s(12)), (s(50), s(38 + tilt)), (s(40), s(34)), (s(32), s(46)),
-         (s(24), s(34)), (s(14), s(38 - tilt))],
+        [
+            (s(32), s(12)),
+            (s(50), s(38 + tilt)),
+            (s(40), s(34)),
+            (s(32), s(46)),
+            (s(24), s(34)),
+            (s(14), s(38 - tilt)),
+        ],
         fill=(*pal["base"], 255),
     )
     # Twin intakes.
@@ -2041,14 +2193,20 @@ def skyhook(faction: str, move: int = 0) -> None:
     img, d = canvas(px)
     tilt = (0, -2, 2)[move % 3]
     # The X-frame arms.
-    for x0, y0, x1, y1 in ((10, 12 + tilt, 30, 30), (34, 30, 54, 12 - tilt),
-                           (10, 52 - tilt, 30, 34), (34, 34, 54, 52 + tilt)):
+    for x0, y0, x1, y1 in (
+        (10, 12 + tilt, 30, 30),
+        (34, 30, 54, 12 - tilt),
+        (10, 52 - tilt, 30, 34),
+        (34, 34, 54, 52 + tilt),
+    ):
         d.line([(s(x0), s(y0)), (s(x1), s(y1))], fill=(*IRON, 255), width=s(6))
     # Sling hardpoints at the arm tips.
     for x, y in ((10, 12 + tilt), (54, 12 - tilt), (10, 52 - tilt), (54, 52 + tilt)):
         d.ellipse([s(x - 4), s(y - 4), s(x + 4), s(y + 4)], fill=(*pal["dark"], 255))
     # The lift body and hook boom.
-    d.rounded_rectangle([s(22), s(20), s(42), s(46)], radius=s(6), fill=(*pal["base"], 255))
+    d.rounded_rectangle(
+        [s(22), s(20), s(42), s(46)], radius=s(6), fill=(*pal["base"], 255)
+    )
     d.rectangle([s(30), s(44), s(34), s(56)], fill=(*IRON_DARK, 255))
     d.ellipse([s(28), s(52), s(36), s(60)], fill=(*IRON_LIGHT, 255))
     d.ellipse([s(29), s(26), s(35), s(32)], fill=(*pal["light"], 255))
@@ -2130,16 +2288,26 @@ def breaker(faction: str, move: int = 0, action: int = 0) -> None:
     stride = (0, 2, -2)[move % 3]
     # Four piston legs.
     for x, flip in ((6, 1), (48, -1)):
-        d.rectangle([s(x), s(16 + stride * flip), s(x + 10), s(28 + stride * flip)], fill=(*IRON_DARK, 255))
-        d.rectangle([s(x), s(40 - stride * flip), s(x + 10), s(52 - stride * flip)], fill=(*IRON_DARK, 255))
+        d.rectangle(
+            [s(x), s(16 + stride * flip), s(x + 10), s(28 + stride * flip)],
+            fill=(*IRON_DARK, 255),
+        )
+        d.rectangle(
+            [s(x), s(40 - stride * flip), s(x + 10), s(52 - stride * flip)],
+            fill=(*IRON_DARK, 255),
+        )
     # The fortress hull.
     d.rounded_rectangle([s(14), s(12), s(50), s(56)], radius=s(6), fill=(*IRON, 255))
-    d.rounded_rectangle([s(18), s(18), s(46), s(50)], radius=s(5), fill=(*pal["base"], 255))
+    d.rounded_rectangle(
+        [s(18), s(18), s(46), s(50)], radius=s(5), fill=(*pal["base"], 255)
+    )
     d.rectangle([s(20), s(30), s(44), s(38)], fill=(*pal["dark"], 255))
     # The siege mortar: a fat, short barrel with a violent report.
     recoil = (0, 4, 6, 3, 1)[action]
     d.rectangle([s(26), s(0 + recoil), s(38), s(22)], fill=(*IRON_DARK, 255))
-    d.rectangle([s(28), s(2 + recoil), s(36), s(10 + recoil)], fill=(*pal["light"], 255))
+    d.rectangle(
+        [s(28), s(2 + recoil), s(36), s(10 + recoil)], fill=(*pal["light"], 255)
+    )
     if action in (2, 3):
         d.ellipse([s(24), s(0), s(40), s(10)], fill=(*BONE, 220))
     d.ellipse([s(28), s(40), s(36), s(48)], fill=(*pal["dark"], 255))
@@ -2160,12 +2328,20 @@ def avalanche(faction: str, move: int = 0, action: int = 0) -> None:
     dy = (0, -1, 1)[move % 3]
     # Wide tracks.
     for x in (8, 46):
-        d.rounded_rectangle([s(x), s(18), s(x + 10), s(58)], radius=s(3), fill=(*IRON_DARK, 255))
+        d.rounded_rectangle(
+            [s(x), s(18), s(x + 10), s(58)], radius=s(3), fill=(*IRON_DARK, 255)
+        )
         pip_y = (24, 32, 40)[move % 3]
-        d.rectangle([s(x + 3), s(pip_y), s(x + 7), s(pip_y + 6)], fill=(*IRON_LIGHT, 255))
+        d.rectangle(
+            [s(x + 3), s(pip_y), s(x + 7), s(pip_y + 6)], fill=(*IRON_LIGHT, 255)
+        )
     # The low hull.
-    d.rounded_rectangle([s(16), s(26 + dy), s(48), s(56 + dy)], radius=s(4), fill=(*IRON, 255))
-    d.rounded_rectangle([s(20), s(30 + dy), s(44), s(52 + dy)], radius=s(3), fill=(*pal["base"], 255))
+    d.rounded_rectangle(
+        [s(16), s(26 + dy), s(48), s(56 + dy)], radius=s(4), fill=(*IRON, 255)
+    )
+    d.rounded_rectangle(
+        [s(20), s(30 + dy), s(44), s(52 + dy)], radius=s(3), fill=(*pal["base"], 255)
+    )
     # The raked tube bank: three rows of launch mouths.
     lift = (0, 1, 2, 1, 0)[action]
     for row in range(3):
@@ -2175,7 +2351,9 @@ def avalanche(faction: str, move: int = 0, action: int = 0) -> None:
             if action in (2, 3) and row == action - 2:
                 mouth = (*BONE, 235)
             d.rectangle([s(x), s(y), s(x + 6), s(y + 5)], fill=mouth)
-    d.rectangle([s(20), s(6 - lift + dy), s(44), s(8 - lift + dy)], fill=(*IRON_LIGHT, 255))
+    d.rectangle(
+        [s(20), s(6 - lift + dy), s(44), s(8 - lift + dy)], fill=(*IRON_LIGHT, 255)
+    )
     suffix = ""
     if move:
         suffix = f"_move{move}"
@@ -3210,6 +3388,7 @@ THEMES = (
     "slag",
     "verdigris",
 )
+
 
 def generate(output: Path) -> None:
     """Generates the complete sprite directory at `output`."""

@@ -97,6 +97,13 @@ audio. Exercise the relevant camera zoom, fog state, faction, selection state,
 and actual action trigger. Read every captured PNG or sequence at normal play
 scale; do not judge the game from generated review cards or the CPU renderer.
 
+For typography trials, launch with
+`OXIDE_REVIEW_FONT=/absolute/path/to/font.ttf` to replace both body and display
+faces. Leave it unset for the embedded-font control. Compare the same scenario,
+window size, selection, and text sizes; inspect long labels, tooltips, menus,
+and the smallest supported window before promoting a font. Keep candidate fonts
+and captures in an ignored review folder.
+
 Use injected events only through the shell input funnel:
 
 ```sh

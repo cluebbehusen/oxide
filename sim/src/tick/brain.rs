@@ -171,6 +171,9 @@ pub(super) fn run(
             for cd in &mut unit.cooldowns {
                 *cd = cd.saturating_sub(1);
             }
+            if !matches!(unit.order, Order::Attack { .. }) {
+                unit.retract_braces();
+            }
         }
         let order = state.unit(id).expect("just seen").order;
         {

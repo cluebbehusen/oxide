@@ -107,6 +107,23 @@ queue, idle-worker badge, and armed-mode ribbon. Drawing and interaction must
 not recalculate competing geometry. Logical input coordinates are used
 throughout; platform DPI conversion occurs once at the hardware adapter.
 
+Construction uses one 13-card catalog, grouped by economy, production, defense,
+and utility when space permits. Visual grouping preserves each building's digit
+shortcut. Hover details accompany compact icon, name, and price cards. Opening
+it replaces the selection's ordinary action cards, and choosing a building
+leaves construction visible. Armed world commands yield clicks and taps to HUD
+controls so another card can replace the placement kind directly. The minimap
+retains its existing command and camera routing. The HUD shows banked scrap and
+current recurring income; individual own income buildings show their rate
+without requiring a tooltip. Harvest deliveries and temporary recovery grants
+are separate from that rate. Building portraits use the selected tier's hull and
+weapon mount.
+
+The optional `OXIDE_REVIEW_FONT` path loads one TTF for both body and display
+text at startup. An unreadable or invalid font refuses startup; leaving it unset
+uses the embedded Chakra Petch Medium font. This permits native typography
+comparisons without replacing production font files or altering text sizes.
+
 ## Persistence and replay modes
 
 The recorder is always active. A save is a replay containing the starting
@@ -205,26 +222,125 @@ world, fog, sprites, action animation, projectiles, effects, minimap, HUD, and
 screen chrome. Render interpolation and presentation clocks smooth the fixed 20
 Hz simulation without changing its state.
 
-Airworks doors use the authoritative training event only to drive their brief
-completion animation. The newborn aircraft is always drawn, selected, observed,
-and targeted at its simulation position above the roof bay.
+Airworks doors begin opening during the last twelve production ticks. The
+authoritative training event holds the bay open while the aircraft emerges, then
+closes it over the remainder of a sixteen-tick launch cycle. The newborn
+aircraft is always drawn, selected, observed, and targeted at its simulation
+position above the roof bay.
 
-All production sprite regions come from one generated atlas loaded by
-`shell/src/assets.rs`. The manifest must match every key the shell resolves, and
-the renderer must not load per-sprite textures. The quarry boundary and pit
-terraces are the exception: `render/environment.rs` and `render/pits.rs` draw
-them procedurally as one riser, bench, and lip vocabulary, the boundary rising
-outside the map rect and pits stepping down from a fog-honest distance field
-over explored pit tiles. Animation state is driven by simulation events and
-current actions, then discarded or rebuilt after a timeline jump. Fog rendering
-reads the controlled seat's `Vision` unless an explicit spectator/debug mode is
+All production sprite regions come from generated atlas pages, each at most 4096
+pixels per side, loaded by `shell/src/assets.rs`. Exact duplicate frames share
+space. Manifest coordinates address vertically stacked pages; drawing resolves
+the page without changing a sprite’s canvas or placement. The loader also
+accepts older single-page review banks. The manifest must match every key the
+shell resolves, and the renderer must not load per-sprite textures. The quarry
+boundary and pit terraces are the exception: `render/environment.rs` and
+`render/pits.rs` draw them procedurally as one riser, bench, and lip vocabulary,
+the boundary rising outside the map rect and pits stepping down from a
+fog-honest distance field over explored pit tiles. Both use shared strata and
+material shading. The production floor preserves tile centers with feathered
+edges; twelve `quarry_dressing_*` sprites scatter stains, grates, and cables
+independently of the floor waves. Placement depends only on the scenario seed
+and coordinates, preserves authored wrecks, and avoids resource sites. Older
+resource banks may omit the complete dressing family to retain their original
+terrain treatment. Animation state is driven by simulation events and current
+actions, then discarded or rebuilt after a timeline jump. Fog rendering reads
+the controlled seat's `Vision` unless an explicit spectator/debug mode is
 active.
 
-Most units draw on one tile-sized canvas. Condor, Breaker, and Avalanche use
-centered two-tile canvases with matching selection and health-bar geometry;
+An atlas may supply separate Array foundations and aerials through the complete
+`rig_array_t{0,1}_{base,rotor}` faction and accent families. The world renderer
+rotates the aerial about its bearing using the fractional presentation clock;
+pause and reduced motion hold it still. Construction, placement, and icons use
+the composite sprites. Banks without the rig retain the frame-based sweep, and
+partial rigs are rejected at startup.
+
+Buzzard's optional articulated rig separates the continuous rotor cycle and
+movement-facing chassis from its gun. The gun interpolates the simulation's
+authoritative turret bearing, including before its first shot and during reload;
+attack effects do not override that bearing. The composite sprite remains the
+fallback when a bank does not contain the separate rig.
+
+Most units draw on one tile-sized canvas; Excavator and Shrike use 1.3-tile
+canvases, Sylph uses 1.2, and Warden uses 1.4. Condor, Breaker, and Avalanche
+use centered two-tile canvases with matching selection and health-bar geometry;
 Condor also uses a larger air shadow. Tender's tread and welding-arm rows are
-selected from real locomotion and active repair state. Breaker and Avalanche
-select their large tread and weapon rows from real locomotion and attack state.
+selected from real locomotion and active repair state. At demolition contact,
+Sapper faces its visible target's nearest physical point before disappearing on
+the authoritative attack tick. Breaker and Avalanche select their large tread
+and weapon rows from real locomotion and attack state. Heavy ground units and
+turn-limited aircraft interpolate their authoritative heading across the
+shortest angular interval between ticks. Attack effects do not override that
+orientation. Avalanche launch reports show an empty rail, and its cooldown holds
+that pose until the final reload interval. Serialized projectile kind
+distinguishes shells, missiles, and belly-released bombs even after the shooter
+dies.
+
+Avalanche missiles draw as compact finned payloads, 0.375 tiles long, with a
+short motor flame and a trailing smoke segment. Their visual origin is ahead of
+the vehicle center at the launch rail. A brief unpowered ejection clears the
+rail before motor ignition and acceleration along a straight path. That
+presentation integrates to the authoritative impact tick; only artillery shells
+use a ballistic arc.
+
+Condor bombs start at the nose and draw beneath airborne bodies, so an authored
+opening can conceal the payload until it clears the aircraft. A short forward
+release follows the launch heading and blends into the fixed impact point;
+height only decreases. The shell retains that heading for the payload's
+lifetime, including through saved-match reconstruction and shooter death. After
+a spectator seek without launch history, an identifiable Condor uses the fixed
+impact line; an unidentified dead shooter retains the generic bomb fallback.
+
+Moth uses the same launch-pose record with a distinct slot for each of its six
+authoritative bombs, including salvos whose map-clamped impacts share an arrival
+tick. Payloads emerge beneath two three-position racks, inherit the launch
+heading, and descend to their original impact points and ticks. The authored
+rack stays spent during movement and recovery, then refills in pairs during the
+final 16 percent of the actual cooldown. It adds no decorative projectile or
+release flash. Neither bomber's simulation flight or attack-run rules change.
+
+The production atlas supplies complete `rig_<unit>_hull` and `rig_<unit>_mount`
+families for Sentinel, Warden, and Lancer, including faction and allegiance
+masks. Each hull has idle and two movement rows; Sentinel and Warden mounts have
+idle and four action rows, and Lancer has idle and six. The shell draws each
+mount independently of its hull, whose cosmetic heading eases across movement
+ticks. Weapon cycles persist while the tracks move; Lancer's charge builds
+during the final 18 percent of cooldown. Weapon recoil and firing direction
+follow actual attack reports, with no new firing delay. Missing rigs use the
+ordinary combined sprite; partial rigs are a startup error. The production bank
+pairs these rows with authored muzzle positions, compact metal rounds for
+Sentinel, Warden, and Breaker, and a thin fading Lancer trace. Rendering
+interpolates authoritative ground body and independent gun bearings. Locomotion
+frames remain active during a stationary chassis pivot.
+
+Bombard retains its launch heading in the observational projectile-pose cache.
+Its metal shell leaves the mortar muzzle on a straight, constant-speed course
+and retains its launch bearing. A parabolic height cue slightly enlarges the
+shell and separates its ground shadow around mid-flight, then closes them at
+impact; height never steers the shell across the floor. Bastion uses the same
+metal-shell treatment on its fixed launch-to-impact bearing. Its ammunition rack
+is part of the foundation below the traversing carriage. Flak Turret effects
+emit four visible rounds, or six after upgrading, in two offset banks matched to
+the weapon. This remains one logical damage report. Flakhound reports four
+visible rounds: both barrels on one yoke fire together, followed one tick later
+by the other pair. Stinger retains its existing paired report. These effects
+preserve projectile arrival ticks and existing damage resolution.
+
+An optional neutral `scout_radar` atlas layer rotates over Gnat and Kestrel's
+scanner mounts. Their independent 96-tick sensing cycle runs at rest and during
+movement, holds with the simulation clock when paused, and freezes under reduced
+motion. Flight and propulsion do not drive or restart it. Banks without the
+layer retain their authored scout sprites.
+
+An optional five-frame `bombard_spades_0` through `bombard_spades_4` atlas layer
+follows authoritative spade deployment independently of reload and recoil
+frames. The mortar body follows its interpolated simulation heading, including
+before the first shot and after replay restoration; firing effects cannot snap
+it toward a target. Partial spade banks are a startup error.
+
+Sprite atlases use nearest-neighbor sampling by default.
+`OXIDE_SPRITE_FILTER=linear` enables linear sampling for native comparisons. The
+setting affects presentation only and rejects unknown values at startup.
 
 Selection feedback may describe public simulation rules, but dynamic economy
 state remains owner-only. A selected own Extractor names its authoritative

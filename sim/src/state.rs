@@ -261,6 +261,9 @@ pub struct Unit {
     /// Ticks until each weapon may fire again, indexed like
     /// `kind.stats().weapons` (unused slots stay zero).
     pub cooldowns: [u32; crate::stats::MAX_WEAPONS],
+    /// Bombard spade deployment, from stowed zero to fully planted.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub brace_ticks: u8,
     /// Order-specific counter (extraction progress).
     pub progress: u32,
     /// Current intent.
@@ -287,12 +290,14 @@ pub struct Unit {
     /// once collapsed the scripted tier ladder to a seat-parity coin.
     #[serde(default, skip_serializing_if = "is_zero_u16")]
     pub settled: u16,
-    /// Compass step (of 256, see [`chassis::compass`]) this body faces.
-    /// Only turn-limited kinds (`stats().turn_rate > 0`) steer by it;
-    /// everyone else leaves it wherever it spawned. Every `u8` is a
-    /// valid heading, so deserialization needs no extra validation row.
+    /// Compass step (of 256, see [`chassis::compass`]) this body faces,
+    /// or Buzzard's turret bearing. Ground chassis and turn-limited aircraft
+    /// steer by it. Every `u8` is a valid compass heading.
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub heading: u8,
+    /// Independent ground gun bearing; absent mounts follow the hull initially.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turret_heading: Option<u8>,
     /// Machines riding aboard this transport. Cargo lives OUTSIDE the
     /// world's unit list: nothing can see, target, collide with, or
     /// command a carried machine, and it contributes no vision. It
@@ -307,6 +312,19 @@ pub struct Unit {
 }
 
 impl Unit {
+    /// Compass bearing used to aim this unit's primary weapon.
+    pub fn weapon_heading(&self) -> u8 {
+        self.turret_heading.unwrap_or(self.heading)
+    }
+
+    pub(crate) fn retract_braces(&mut self) {
+        if self.kind == UnitKind::Bombard
+            && self.cooldowns[0] <= self.kind.stats().weapons[0].cooldown_ticks - 8
+        {
+            self.brace_ticks = self.brace_ticks.saturating_sub(3);
+        }
+    }
+
     /// The tile this unit currently occupies.
     pub fn tile(&self) -> TilePos {
         TilePos::containing(self.pos)
@@ -901,6 +919,14 @@ impl State {
             if u.queue.len() > crate::stats::ORDER_QUEUE_CAP {
                 return Err(E::OverlongUnitQueue(u.id));
             }
+            if u.brace_ticks > crate::stats::BOMBARD_BRACE_TICKS
+                || (u.brace_ticks != 0 && u.kind != UnitKind::Bombard)
+            {
+                return Err(E::InvalidUnitBraces(u.id));
+            }
+            if u.turret_heading.is_some() && !u.kind.has_ground_turret() {
+                return Err(E::InvalidTurretHeading(u.id));
+            }
             if !unit_inside_envelope(u) {
                 return Err(E::UnitOutsideEnvelope(u.id));
             }
@@ -981,9 +1007,13 @@ impl State {
                     || rider.path.is_some()
                     || rider.leash.is_some()
                     || rider.settled != 0
+                    || rider.brace_ticks != 0
                     || !rider.cargo.is_empty()
                 {
                     return Err(E::CargoNotDormant(u.id));
+                }
+                if rider.turret_heading.is_some() && !rider.kind.has_ground_turret() {
+                    return Err(E::InvalidTurretHeading(rider.id));
                 }
                 // Boarding zeroes the progress meter too; any nonzero
                 // value is unreachable, not merely oversized.
@@ -1122,6 +1152,15 @@ impl State {
             }
             if !self.minted(s.shooter) {
                 return Err(E::UnmintedShellShooter(i));
+            }
+            let expected = match s.shooter {
+                Target::Unit(id) => self
+                    .unit(id)
+                    .map(|unit| ProjectileKind::for_unit(unit.kind)),
+                Target::Building(_) => Some(ProjectileKind::Shell),
+            };
+            if expected.is_some_and(|kind| kind != s.kind) {
+                return Err(E::ShellKindMismatch(i));
             }
         }
 
@@ -1475,6 +1514,8 @@ impl State {
             hp: kind.stats().max_hp,
             carrying: 0,
             cooldowns: [0; crate::stats::MAX_WEAPONS],
+            brace_ticks: 0,
+            turret_heading: None,
             progress: 0,
             order: Order::Idle,
             queue: std::collections::VecDeque::new(),
@@ -1482,10 +1523,16 @@ impl State {
             path: None,
             leash: None,
             settled: 0,
-            // Spawn facing is derived from position parity rather than
-            // fixed so a wing leaving one factory doesn't share one
-            // heading forever; any constant would be equally legal.
-            heading: (TilePos::containing(pos).x as u8).wrapping_mul(64),
+            heading: if kind.stats().domain == crate::stats::Domain::Ground {
+                crate::tick::flight::heading_of(
+                    Vec2Fx::new(
+                        Fx::from_num(self.map.width()) / 2,
+                        Fx::from_num(self.map.height()) / 2,
+                    ) - pos,
+                )
+            } else {
+                (TilePos::containing(pos).x as u8).wrapping_mul(64)
+            },
             landed: false,
             cargo: Vec::new(),
         });
@@ -1951,6 +1998,12 @@ pub enum StateIntegrityError {
     /// slot past its roster is armed.
     #[error("unit {0} carries a cooldown no weapon of its kind sets")]
     UnitCooldownOutOfRange(UnitId),
+    /// Spade deployment exceeds its range or belongs to a non-siege unit.
+    #[error("unit {0} carries invalid spade deployment")]
+    InvalidUnitBraces(UnitId),
+    /// Only ground units with independent gun mounts carry a turret bearing.
+    #[error("unit {0} carries an unsupported independent turret heading")]
+    InvalidTurretHeading(UnitId),
     /// A unit's order queue is longer than [`crate::stats::ORDER_QUEUE_CAP`].
     #[error("unit {0} queues more orders than the cap allows")]
     OverlongUnitQueue(UnitId),
@@ -2067,6 +2120,9 @@ pub enum StateIntegrityError {
     /// A shell was fired by an entity id this run never handed out.
     #[error("shell {0} was fired by an id the run never minted")]
     UnmintedShellShooter(usize),
+    /// A surviving shooter contradicts its projectile's retained identity.
+    #[error("shell {0} has a projectile kind inconsistent with its shooter")]
+    ShellKindMismatch(usize),
     /// A remembered building is owned by a player outside the table.
     #[error("player {0} remembers a building owned outside the table")]
     ForeignGhostOwner(PlayerId),
@@ -2110,6 +2166,8 @@ pub enum StateIntegrityError {
 /// stands there. It may outlive its shooter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Shell {
+    /// Retained visual identity, including after the shooter dies.
+    pub kind: ProjectileKind,
     /// Who fired it (may be dead by impact; retaliation copes).
     pub shooter: crate::ids::Target,
     /// The firing seat.
@@ -2126,6 +2184,29 @@ pub struct Shell {
     pub targets: crate::stats::DomainMask,
     /// Splash radius, if the weapon splashes.
     pub splash: Option<chassis::fx::Fx>,
+}
+
+/// Physical identity of an in-flight payload, independent of its damage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectileKind {
+    /// An artillery shell.
+    Shell,
+    /// An Avalanche missile.
+    Missile,
+    /// An air-dropped bomb.
+    Bomb,
+}
+
+impl ProjectileKind {
+    /// Payload identity for a unit's projectile weapon.
+    pub const fn for_unit(kind: UnitKind) -> Self {
+        match kind {
+            UnitKind::Avalanche => Self::Missile,
+            UnitKind::Condor | UnitKind::Moth => Self::Bomb,
+            _ => Self::Shell,
+        }
+    }
 }
 
 /// The wire shape of [`State`]: a private mirror that derives the actual

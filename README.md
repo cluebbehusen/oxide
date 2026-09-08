@@ -70,8 +70,8 @@ shortcuts cover the core loop:
 | `F`, then ground                 | Attack-move and engage along the route.                                                          |
 | `M`, then ground                 | Move without engaging.                                                                           |
 | `R`                              | Mark patrol points; press `R` again to start the loop.                                           |
-| `B` with Harvesters selected     | Open basic builds. Press `B` again, or click **Advanced builds**, for the second page.           |
-| `B`, digit                       | Choose a basic structure. Advanced structures use `B`, `B`, digit.                               |
+| `B`                              | Open construction; select an available worker if needed. Press again to close.                   |
+| `B`, `1`–`9` or Shift + `1`–`4`  | Choose a building from the unified construction palette.                                         |
 | `W`, then a damaged machine      | Order selected Harvesters to repair it.                                                          |
 | `V`, then an own building        | Salvage the building for a partial refund. Foundries cannot be salvaged.                         |
 | `X`                              | Stop selected units, or cancel a selected new construction site.                                 |
@@ -83,9 +83,10 @@ shortcuts cover the core loop:
 | `P`                              | Pause immediately.                                                                               |
 | `Esc`                            | Cancel the active action, clear selection, or open the pause menu.                               |
 
-The build ghost explains why a site is invalid. A discovered Extractor frame is
-one 2x2 site. A restored Extractor earns fixed remote income; a nearby completed
-own Foundry raises that income without stacking. Amber placement on remembered
+Click another construction card to change buildings while placing. The build
+ghost explains why a site is invalid. A discovered Extractor frame is one 2x2
+site. A restored Extractor earns fixed remote income; a nearby completed own
+Foundry raises that income without stacking. Amber placement on remembered
 ground creates a deferred order; the builders walk there and validate the site
 only when they can see it. Upgrades rebuild themselves on a fixed timer: the
 building stays offline and vulnerable, but Harvesters keep their existing work.

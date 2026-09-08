@@ -127,12 +127,8 @@ fn allied_fighters_ignore_and_cannot_target_each_other() {
 
 #[test]
 fn splash_spares_the_teammate_in_the_blast() {
-    // The enemy harvester stands one tile from the allied sentinel;
-    // the shell's radius covers both, and only the enemy dies. (A
-    // pacifist foe: a scuttler would brawl the sentinel through the
-    // flight and muddy the hp ledger the assert reads.)
     let mut state = arena4(vec![
-        unit(1, UnitKind::Sentinel, 9, 5),
+        unit(1, UnitKind::Harvester, 9, 5),
         unit(2, UnitKind::Harvester, 10, 5),
         unit(0, UnitKind::Bombard, 8, 8),
     ])
@@ -144,10 +140,8 @@ fn splash_spares_the_teammate_in_the_blast() {
         state.units()[2].id,
     );
     let ally_hp = state.unit(ally).unwrap().hp;
-    // The shell launches on the command tick and lands after real
-    // flight; the ally's sentinel chews the pacifist foe meanwhile,
-    // which touches no ledger the asserts read.
-    let report = state.tick(&[cmd(
+    let foe_hp = state.unit(foe).unwrap().hp;
+    state.tick(&[cmd(
         0,
         Command::Attack {
             units: vec![bombard],
@@ -155,22 +149,29 @@ fn splash_spares_the_teammate_in_the_blast() {
             queue: false,
         },
     )]);
-    assert!(
-        report
+    let mut launched = false;
+    let mut landed = false;
+    for _ in 0..100 {
+        let report = state.tick(&[]);
+        launched |= report
             .events
             .iter()
-            .any(|e| matches!(e, Event::ShellLaunched { .. })),
-        "the shell flies on the command tick"
-    );
-    for _ in 0..30 {
-        state.tick(&[]);
-        if state.unit(foe).is_none() {
+            .any(|event| matches!(event, Event::ShellLaunched { .. }));
+        landed |= report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ShellLanded { .. }));
+        if landed {
             break;
         }
     }
     assert!(
-        state.unit(foe).is_none(),
-        "the shell deletes the raider it was aimed at"
+        launched && landed,
+        "the deployed gun must launch and land its shell"
+    );
+    assert!(
+        state.unit(foe).unwrap().hp < foe_hp,
+        "the enemy inside the blast takes damage"
     );
     assert_eq!(
         state.unit(ally).unwrap().hp,

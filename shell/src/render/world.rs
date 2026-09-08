@@ -28,6 +28,82 @@ pub(crate) fn draw_fog(game: &Game) {
             draw_rectangle(a.x, a.y, b.x - a.x, b.y - a.y, cover);
         }
     }
+    // Feather inward into known ground. Unknown tiles retain their opaque veil.
+    let fog_alpha = |tile| {
+        if !vision.explored(tile) {
+            1.0
+        } else if !vision.visible(tile) {
+            FOG_EXPLORED.a
+        } else {
+            0.0
+        }
+    };
+    for y in min.y..max.y {
+        for x in min.x..max.x {
+            let tile = TilePos::new(x, y);
+            let current = fog_alpha(tile);
+            if current >= 1.0 {
+                continue;
+            }
+            let a = game.camera.to_screen(vec2(x as f32, y as f32)).floor();
+            let b = game
+                .camera
+                .to_screen(vec2((x + 1) as f32, (y + 1) as f32))
+                .floor();
+            let width = game.camera.zoom * 0.45;
+            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let neighbor = fog_alpha(tile.offset(dx, dy));
+                let Some(alpha) = fog_edge_alpha(current, neighbor) else {
+                    continue;
+                };
+                let (edge_a, edge_b, inside_a, inside_b) = match (dx, dy) {
+                    (-1, 0) => (
+                        a,
+                        vec2(a.x, b.y),
+                        a + vec2(width, 0.0),
+                        vec2(a.x + width, b.y),
+                    ),
+                    (1, 0) => (
+                        vec2(b.x, a.y),
+                        b,
+                        vec2(b.x - width, a.y),
+                        b - vec2(width, 0.0),
+                    ),
+                    (0, -1) => (
+                        a,
+                        vec2(b.x, a.y),
+                        a + vec2(0.0, width),
+                        vec2(b.x, a.y + width),
+                    ),
+                    _ => (
+                        vec2(a.x, b.y),
+                        b,
+                        vec2(a.x, b.y - width),
+                        b - vec2(0.0, width),
+                    ),
+                };
+                let color = Color::new(FOG_UNEXPLORED.r, FOG_UNEXPLORED.g, FOG_UNEXPLORED.b, alpha);
+                let clear = Color::new(color.r, color.g, color.b, 0.0);
+                draw_mesh(&Mesh {
+                    vertices: [
+                        (edge_a, color),
+                        (edge_b, color),
+                        (inside_b, clear),
+                        (inside_a, clear),
+                    ]
+                    .into_iter()
+                    .map(|(p, c)| Vertex::new(p.x, p.y, 0.0, 0.0, 0.0, c))
+                    .collect(),
+                    indices: vec![0, 1, 2, 0, 2, 3],
+                    texture: None,
+                });
+            }
+        }
+    }
+}
+
+fn fog_edge_alpha(current: f32, neighbor: f32) -> Option<f32> {
+    (neighbor > current && current < 1.0).then(|| (neighbor - current) / (1.0 - current))
 }
 
 /// Fog-honest peak connectivity. An explored barrier cannot disclose that
@@ -310,6 +386,47 @@ fn symmetric_safe_theme_prop_tile(rows: &[String], pos: TilePos) -> bool {
     safe_theme_prop_tile(rows, pos) && safe_theme_prop_tile(rows, mirror)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct QuarryDressing {
+    variant: usize,
+    rotation: f32,
+    offset: Vec2,
+    scale: f32,
+}
+
+fn quarry_dressing(pos: TilePos, width: i32, height: i32, seed: u64) -> Option<QuarryDressing> {
+    let mirror = TilePos::new(width - 1 - pos.x, height - 1 - pos.y);
+    if width <= 0 || height <= 0 || pos == mirror {
+        return None;
+    }
+    let mirrored = (pos.y, pos.x) > (mirror.y, mirror.x);
+    let canonical = if mirrored { mirror } else { pos };
+    let salt = (seed as u32)
+        ^ (seed >> 32) as u32
+        ^ (width as u32).rotate_left(9)
+        ^ (height as u32).rotate_left(19);
+    let mut token = super::environment::hash(canonical.x, canonical.y, salt);
+    token ^= token >> 16;
+    token = token.wrapping_mul(0x7feb_352d);
+    token ^= token >> 15;
+    token = token.wrapping_mul(0x846c_a68b);
+    token ^= token >> 16;
+    if !token.is_multiple_of(19) {
+        return None;
+    }
+    let direction = if mirrored { -1.0 } else { 1.0 };
+    Some(QuarryDressing {
+        variant: (token / 19 % 12) as usize,
+        rotation: (((token >> 12) % 4) as f32 + if mirrored { 2.0 } else { 0.0 })
+            * std::f32::consts::FRAC_PI_2,
+        offset: vec2(
+            ((token >> 17) % 17) as f32 - 8.0,
+            ((token >> 22) % 17) as f32 - 8.0,
+        ) * (direction / 64.0),
+        scale: 0.72 + ((token >> 27) % 8) as f32 * 0.035,
+    })
+}
+
 pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
     let size = zoom.ceil() + 1.0; // slight overlap kills seam hairlines
@@ -333,13 +450,16 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
             // Position hashes drive all variety: deterministic, no state.
             let h = (x.wrapping_mul(31).wrapping_add(y.wrapping_mul(17))) as usize;
             let variant = h % 6;
-            draw_texture_ex(
-                sprites.texture(),
+            let next = game.camera.to_screen(vec2((x + 1) as f32, (y + 1) as f32));
+            sprites.draw(
                 screen.x.floor(),
                 screen.y.floor(),
                 tint,
                 DrawTextureParams {
-                    dest_size: Some(vec2(size, size)),
+                    dest_size: Some(vec2(
+                        next.x.floor() - screen.x.floor(),
+                        next.y.floor() - screen.y.floor(),
+                    )),
                     source: Some(sprites.ground(variant)),
                     ..Default::default()
                 },
@@ -354,8 +474,23 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                 } else {
                     symmetric_theme_prop(theme, pos, map_width, map_height)
                 };
-            let dressing = if tile.cosmetic == 1 {
+            let quarry = sprites.quarry_dressing(0).is_some();
+            let placement = quarry
+                .then(|| quarry_dressing(pos, map_width, map_height, game.scenario.seed))
+                .flatten()
+                .filter(|_| {
+                    tile.cosmetic != 1
+                        && tile.terrain == oxide_sim::map::Terrain::Ground
+                        && symmetric_safe_theme_prop_tile(&game.scenario.map, pos)
+                });
+            let dressing = if let Some(placement) = placement {
+                sprites
+                    .quarry_dressing(placement.variant)
+                    .map(|source| (source, placement.rotation, tint))
+            } else if tile.cosmetic == 1 {
                 Some((sprites.decal(3), 0.0, tint))
+            } else if quarry {
+                None
             } else if let Some(placement) = prop_candidate {
                 if symmetric_safe_theme_prop_tile(&game.scenario.map, pos) {
                     let source = if placement.variant < 3 {
@@ -376,13 +511,14 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                 None
             };
             if let Some((source, rotation, dressing_tint)) = dressing {
-                draw_texture_ex(
-                    sprites.texture(),
-                    screen.x.floor(),
-                    screen.y.floor(),
+                let (offset, scale) = placement.map_or((Vec2::ZERO, 1.0), |p| (p.offset, p.scale));
+                let origin = screen + (Vec2::splat((1.0 - scale) * 0.5) + offset) * zoom;
+                sprites.draw(
+                    origin.x.floor(),
+                    origin.y.floor(),
                     dressing_tint,
                     DrawTextureParams {
-                        dest_size: Some(vec2(size, size)),
+                        dest_size: Some(vec2(size * scale, size * scale)),
                         source: Some(source),
                         rotation,
                         ..Default::default()
@@ -404,8 +540,7 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                         .tile(neighbor)
                         .is_some_and(|t| t.terrain == oxide_sim::map::Terrain::Rock);
                     if rocky {
-                        draw_texture_ex(
-                            sprites.texture(),
+                        sprites.draw(
                             screen.x.floor(),
                             screen.y.floor(),
                             tint,
@@ -478,8 +613,7 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                 } else {
                     tint
                 };
-                draw_texture_ex(
-                    sprites.texture(),
+                sprites.draw(
                     screen.x.floor(),
                     screen.y.floor(),
                     overlay_tint,
@@ -507,8 +641,7 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
             let screen = game
                 .camera
                 .to_screen(vec2(placement.anchor.x as f32, placement.anchor.y as f32));
-            draw_texture_ex(
-                sprites.texture(),
+            sprites.draw(
                 screen.x.floor(),
                 screen.y.floor(),
                 WHITE,
@@ -549,8 +682,7 @@ pub(crate) fn draw_extractor_frames(game: &Game, sprites: &Sprites) {
             continue;
         }
         let screen = game.camera.to_screen(vec2(frame.x as f32, frame.y as f32));
-        draw_texture_ex(
-            sprites.texture(),
+        sprites.draw(
             screen.x.floor(),
             screen.y.floor(),
             WHITE,
@@ -570,8 +702,7 @@ pub(crate) fn draw_scorches(game: &Game, sprites: &Sprites) {
         let alpha = (1.0 - age / 20.0).clamp(0.0, 1.0) * 0.85;
         let size = zoom * 2.4;
         let screen = game.camera.to_screen(*at);
-        draw_texture_ex(
-            sprites.texture(),
+        sprites.draw(
             screen.x - size * 0.5,
             screen.y - size * 0.5,
             Color::new(1.0, 1.0, 1.0, alpha),
@@ -588,6 +719,53 @@ pub(crate) fn draw_scorches(game: &Game, sprites: &Sprites) {
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn quarry_dressing_is_stable_varied_and_preserves_mirrored_placement() {
+        let mut variants = std::collections::BTreeSet::new();
+        let mut changed_seed = 0;
+        let mut repeated_offset = 0;
+        let mut count = 0;
+        for y in 5..65 {
+            for x in 5..90 {
+                let pos = TilePos::new(x, y);
+                let placement = quarry_dressing(pos, 100, 80, 719);
+                assert_eq!(placement, quarry_dressing(pos, 100, 80, 719));
+                changed_seed += usize::from(placement != quarry_dressing(pos, 100, 80, 720));
+                let Some(a) = placement else { continue };
+                let b = quarry_dressing(TilePos::new(99 - x, 79 - y), 100, 80, 719).unwrap();
+                assert_eq!(a.variant, b.variant);
+                assert_eq!(a.scale, b.scale);
+                assert_eq!(a.offset, -b.offset);
+                assert!(((a.rotation - b.rotation).abs() - std::f32::consts::PI).abs() < 1e-5);
+                assert!(a.offset.abs().max_element() <= 0.125);
+                assert!(a.scale >= 0.72 && a.scale <= 0.965 + f32::EPSILON);
+                variants.insert(a.variant);
+                repeated_offset +=
+                    usize::from(quarry_dressing(pos.offset(23, 0), 100, 80, 719) == Some(a));
+                count += 1;
+            }
+        }
+        assert_eq!(variants.len(), 12);
+        assert!((150..400).contains(&count));
+        assert!(changed_seed > count);
+        assert_eq!(repeated_offset, 0);
+    }
+
+    #[test]
+    fn fog_feather_only_adds_occlusion_and_meets_the_neighbor_veil() {
+        for current in [0.0, FOG_EXPLORED.a, 1.0] {
+            for neighbor in [0.0, FOG_EXPLORED.a, 1.0] {
+                if let Some(edge) = fog_edge_alpha(current, neighbor) {
+                    assert!(neighbor > current);
+                    assert!((0.0..=1.0).contains(&edge));
+                    assert!((current + edge * (1.0 - current) - neighbor).abs() < 1e-6);
+                } else {
+                    assert!(neighbor <= current);
+                }
+            }
+        }
+    }
 
     const THEMES: [&str; 6] = [
         "rusted-yard",

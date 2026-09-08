@@ -20,8 +20,9 @@ crate-level rustdoc.
 - `game` owns one live session, its recorder, bots, and presentation state.
 - `input` and `action` form the single hardware and injected-input funnel.
 - `render`, `panel`, and `layout` draw the world, expose owner-safe selection
-  feedback such as Extractor support, and share hit-test geometry.
-- `assets`, `audio_mix`, and `soundtrack` own presentation resources.
+  feedback, and share hit-test geometry.
+- `assets`, `typography`, `audio_mix`, and `soundtrack` own presentation
+  resources.
 - `debug_server` connects the frame loop to `oxide-protocol`.
 - `autosave`, `saves`, and the playback screens manage replay-backed
   persistence.

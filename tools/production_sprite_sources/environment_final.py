@@ -16,6 +16,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from tools import gen_sprites as gen
+from tools.production_sprite_sources import quarry_final
 
 Registry = dict[str, Image.Image]
 Color = tuple[int, int, int]
@@ -1146,3 +1147,8 @@ def install_finalized_environment(registry: Registry, out: Path) -> None:
         for variant in range(2):
             key = f"peak_barrier_{mask:02x}_{variant}"
             _put(registry, out, key, _peak_barrier(mask, variant))
+
+    quarry_final.install_quarry(registry, out)
+    from tools.production_sprite_sources.mechanical_final import install_props
+
+    install_props(registry, out)

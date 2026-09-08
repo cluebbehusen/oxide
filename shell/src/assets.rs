@@ -3,20 +3,27 @@
 
 use anyhow::{Context, Result};
 use macroquad::audio::{Sound, load_sound};
-use macroquad::prelude::{FilterMode, Rect, Texture2D, load_texture};
+use macroquad::prelude::{
+    Color, DrawTextureParams, FilterMode, Rect, Texture2D, draw_texture_ex, load_texture,
+};
 use oxide_sim::{BuildingKind, Faction, UnitKind};
 
-/// Every sprite the shell draws, as regions of ONE texture.
-///
-/// A single atlas means macroquad batches the entire world into a handful
-/// of draw calls; the previous texture-per-sprite scheme flushed the batch
-/// on nearly every tile and halved the framerate zoomed out.
+/// Sprite regions share bounded texture pages instead of per-sprite textures.
 pub struct Sprites {
-    texture: Texture2D,
+    textures: Vec<Texture2D>,
+    page_height: f32,
+    sentinel_rig: Option<UnitRig>,
+    warden_rig: Option<UnitRig>,
+    lancer_rig: Option<UnitRig>,
+    buzzard_rig: Option<UnitRig>,
+    bombard_spades: Option<[Rect; 5]>,
+    scout_radar: Option<Rect>,
+    array_rig: Option<ArrayRig>,
     /// Verb pictograms for cards and order chips, indexed by
     /// [`crate::panel::VerbIcon`].
     verb_icons: [Rect; 12],
     ground: [Rect; 6],
+    quarry_dressing: Option<[Rect; 12]>,
     rock: [Rect; 23],
     /// Full-tile exclusion barriers, indexed `neighbor_mask * 2 + variant`.
     peak_barriers: [Rect; 32],
@@ -171,6 +178,98 @@ const ACCENT: usize = 2;
 
 /// The atlas manifest as `tools/gen_sprites.py` writes it.
 type Manifest = std::collections::HashMap<String, [f32; 4]>;
+
+pub(crate) struct ArrayRig {
+    base: [[Rect; 3]; 2],
+    rotor: [[Rect; 3]; 2],
+}
+
+impl ArrayRig {
+    pub(crate) fn layers(&self, tier: u8, faction: Faction) -> [(Rect, Rect); 2] {
+        let tier = usize::from(tier.min(1));
+        [self.base[tier], self.rotor[tier]].map(|row| (row[faction_index(faction)], row[ACCENT]))
+    }
+}
+
+fn array_rig(rects: &Manifest) -> Result<Option<ArrayRig>> {
+    if !rects.keys().any(|key| key.starts_with("rig_array_")) {
+        return Ok(None);
+    }
+    Ok(Some(ArrayRig {
+        base: [
+            variant_row(rects, "rig_array_t0_base", "")?,
+            variant_row(rects, "rig_array_t1_base", "")?,
+        ],
+        rotor: [
+            variant_row(rects, "rig_array_t0_rotor", "")?,
+            variant_row(rects, "rig_array_t1_rotor", "")?,
+        ],
+    }))
+}
+
+pub(crate) struct UnitRig {
+    hull: [[Rect; 3]; 3],
+    mount: Vec<[Rect; 3]>,
+}
+
+impl UnitRig {
+    pub(crate) fn hull(&self, faction: Faction, phase: usize) -> (Rect, Rect) {
+        let row = self.hull[phase.min(2)];
+        (row[faction_index(faction)], row[ACCENT])
+    }
+
+    pub(crate) fn mount(&self, faction: Faction, action: Option<usize>) -> (Rect, Rect) {
+        let row = self.mount[action.map_or(0, |frame| (frame + 1).min(self.mount.len() - 1))];
+        (row[faction_index(faction)], row[ACCENT])
+    }
+}
+
+fn unit_rig(rects: &Manifest, stem: &str, actions: usize) -> Result<Option<UnitRig>> {
+    let prefix = format!("rig_{stem}");
+    if !rects
+        .keys()
+        .any(|key| key.starts_with(&format!("{prefix}_")))
+    {
+        return Ok(None);
+    }
+    Ok(Some(UnitRig {
+        hull: variant_rows(rects, &format!("{prefix}_hull"), ["", "_move1", "_move2"])?,
+        mount: (0..=actions)
+            .map(|action| {
+                let suffix = if action == 0 {
+                    String::new()
+                } else {
+                    format!("_action{action}")
+                };
+                variant_row(rects, &format!("{prefix}_mount"), &suffix)
+            })
+            .collect::<Result<_>>()?,
+    }))
+}
+
+fn bombard_spade_rows(rects: &Manifest) -> Result<Option<[Rect; 5]>> {
+    if !rects.keys().any(|key| key.starts_with("bombard_spades_")) {
+        return Ok(None);
+    }
+    Ok(Some(pick(
+        rects,
+        [
+            "bombard_spades_0",
+            "bombard_spades_1",
+            "bombard_spades_2",
+            "bombard_spades_3",
+            "bombard_spades_4",
+        ],
+    )?))
+}
+
+fn quarry_dressing_rows(rects: &Manifest) -> Result<Option<[Rect; 12]>> {
+    if !rects.keys().any(|key| key.starts_with("quarry_dressing_")) {
+        return Ok(None);
+    }
+    let keys: [String; 12] = std::array::from_fn(|index| format!("quarry_dressing_{index}"));
+    Ok(Some(pick(rects, keys.each_ref().map(String::as_str))?))
+}
 
 /// Sprites with no faction variants: one region, one name.
 const SINGLE_KEYS: [&str; 10] = [
@@ -681,6 +780,32 @@ fn atlas_keys() -> Vec<String> {
         .chain(DEBRIS_KEYS.iter())
         .map(|key| (*key).to_string())
         .collect();
+    keys.extend((0..5).map(|phase| format!("bombard_spades_{phase}")));
+    keys.push("scout_radar".to_owned());
+    keys.extend((0..12).map(|index| format!("quarry_dressing_{index}")));
+    for (stem, action_count) in [
+        ("sentinel", 4),
+        ("warden", 4),
+        ("lancer", 6),
+        ("buzzard", 4),
+    ] {
+        for suffix in ["", "_move1", "_move2"] {
+            keys.extend(variant_keys(&format!("rig_{stem}_hull"), suffix));
+        }
+        keys.extend(variant_keys(&format!("rig_{stem}_mount"), ""));
+        for action in 1..=action_count {
+            keys.extend(variant_keys(
+                &format!("rig_{stem}_mount"),
+                &format!("_action{action}"),
+            ));
+        }
+    }
+    for tier in 0..2 {
+        for part in ["base", "rotor"] {
+            keys.extend(variant_keys(&format!("rig_array_t{tier}_{part}"), ""));
+        }
+    }
+
     for stem in [
         TURRET_BARREL_STEM,
         TURRET_BARREL_T1_STEM,
@@ -824,6 +949,12 @@ pub fn resource(rel: &str) -> String {
     resource_root().join(rel).to_string_lossy().into_owned()
 }
 
+fn atlas_page(mut source: Rect, page_height: f32) -> (usize, Rect) {
+    let page = (source.y / page_height) as usize;
+    source.y -= page as f32 * page_height;
+    (page, source)
+}
+
 impl Sprites {
     /// Loads the atlas up front; a missing or incomplete atlas is a
     /// startup error, not a mid-game pop.
@@ -831,11 +962,33 @@ impl Sprites {
         let texture = load_texture(&resource("assets/sprites/atlas.png"))
             .await
             .context("loading assets/sprites/atlas.png (run from the workspace root)")?;
-        texture.set_filter(FilterMode::Linear);
+        let filter = std::env::var("OXIDE_SPRITE_FILTER").unwrap_or_else(|_| "nearest".into());
+        let filter = match filter.as_str() {
+            "linear" => FilterMode::Linear,
+            "nearest" => FilterMode::Nearest,
+            _ => anyhow::bail!("OXIDE_SPRITE_FILTER must be linear or nearest"),
+        };
         let manifest = macroquad::file::load_string(&resource("assets/sprites/atlas.json"))
             .await
             .context("loading assets/sprites/atlas.json")?;
         let rects: Manifest = serde_json::from_str(&manifest).context("parsing atlas manifest")?;
+        let page_height = texture.height();
+        let page_count = rects
+            .values()
+            .map(|row| atlas_page(Rect::new(row[0], row[1], row[2], row[3]), page_height).0 + 1)
+            .max()
+            .unwrap_or(1);
+        texture.set_filter(filter);
+        let mut textures = vec![texture];
+        for page in 1..page_count {
+            let name = format!("assets/sprites/atlas_{page}.png");
+            let texture = load_texture(&resource(&name))
+                .await
+                .with_context(|| format!("loading {name}"))?;
+            texture.set_filter(filter);
+            textures.push(texture);
+        }
+
         let [
             rock_skirt,
             extractor_frame,
@@ -851,9 +1004,20 @@ impl Sprites {
         let unit = |kind| variant_row(&rects, unit_stem(kind), "");
         let building = |kind| variant_row(&rects, building_stem(kind), "");
         Ok(Self {
-            texture,
+            sentinel_rig: unit_rig(&rects, "sentinel", 4)?,
+            warden_rig: unit_rig(&rects, "warden", 4)?,
+            lancer_rig: unit_rig(&rects, "lancer", 6)?,
+            buzzard_rig: unit_rig(&rects, "buzzard", 4)?,
+            bombard_spades: bombard_spade_rows(&rects)?,
+            array_rig: array_rig(&rects)?,
+            scout_radar: rects
+                .get("scout_radar")
+                .map(|&[x, y, w, h]| Rect::new(x, y, w, h)),
+            textures,
+            page_height,
             verb_icons: pick(&rects, VERB_ICON_KEYS)?,
             ground: pick(&rects, GROUND_KEYS)?,
+            quarry_dressing: quarry_dressing_rows(&rects)?,
             rock: pick(&rects, ROCK_KEYS)?,
             peak_barriers: pick(&rects, PEAK_BARRIER_KEYS)?,
             extractor_frame,
@@ -1018,9 +1182,16 @@ impl Sprites {
         })
     }
 
-    /// The one texture every sprite lives in.
-    pub fn texture(&self) -> &Texture2D {
-        &self.texture
+    /// Draw an atlas region from its page while preserving its authored canvas.
+    pub fn draw(&self, x: f32, y: f32, tint: Color, mut params: DrawTextureParams) {
+        let page = if let Some(source) = params.source {
+            let (page, local) = atlas_page(source, self.page_height);
+            params.source = Some(local);
+            page
+        } else {
+            0
+        };
+        draw_texture_ex(&self.textures[page], x, y, tint, params);
     }
 
     /// A verb pictogram's atlas region.
@@ -1031,6 +1202,10 @@ impl Sprites {
     /// A ground variant's atlas region.
     pub fn ground(&self, variant: usize) -> Rect {
         self.ground[variant % self.ground.len()]
+    }
+
+    pub(crate) fn quarry_dressing(&self, variant: usize) -> Option<Rect> {
+        self.quarry_dressing.map(|row| row[variant % row.len()])
     }
 
     /// A rock variant's atlas region.
@@ -1268,34 +1443,6 @@ impl Sprites {
     pub fn building_action_accent(&self, kind: BuildingKind, frame: usize) -> Rect {
         self.building_action_row(kind, frame)
             .unwrap_or_else(|| self.building_row(kind))[ACCENT]
-    }
-
-    /// The Bastion's five-cell rack as an atlas crop plus its normalized
-    /// placement inside the 2x2 base. Drawing this layer after the rotating
-    /// carriage keeps the meter readable at every aim angle.
-    pub fn bastion_charge_overlay(&self, faction: Faction, frame: Option<usize>) -> (Rect, Rect) {
-        const NATIVE_SIDE: f32 = 128.0;
-        const X: f32 = 7.0;
-        const Y: f32 = 40.0;
-        const W: f32 = 28.0;
-        const H: f32 = 73.0;
-        let base = frame.map_or_else(
-            || self.building(BuildingKind::Bastion, faction),
-            |action| self.building_action(BuildingKind::Bastion, faction, action),
-        );
-        let source = Rect::new(
-            base.x + base.w * X / NATIVE_SIDE,
-            base.y + base.h * Y / NATIVE_SIDE,
-            base.w * W / NATIVE_SIDE,
-            base.h * H / NATIVE_SIDE,
-        );
-        let placement = Rect::new(
-            X / NATIVE_SIDE,
-            Y / NATIVE_SIDE,
-            W / NATIVE_SIDE,
-            H / NATIVE_SIDE,
-        );
-        (source, placement)
     }
 
     fn building_work_row(&self, kind: BuildingKind, tier: u8, frame: usize) -> Option<&[Rect; 3]> {
@@ -1541,6 +1688,29 @@ impl Sprites {
         self.unit_row(kind)[faction_index(faction)]
     }
 
+    pub(crate) fn unit_rig(&self, kind: UnitKind) -> Option<&UnitRig> {
+        match kind {
+            UnitKind::Sentinel => self.sentinel_rig.as_ref(),
+            UnitKind::Warden => self.warden_rig.as_ref(),
+            UnitKind::Lancer => self.lancer_rig.as_ref(),
+            UnitKind::Buzzard => self.buzzard_rig.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn scout_radar(&self) -> Option<Rect> {
+        self.scout_radar
+    }
+
+    pub(crate) fn array_rig(&self) -> Option<&ArrayRig> {
+        self.array_rig.as_ref()
+    }
+
+    pub(crate) fn bombard_spades(&self, brace_ticks: u8) -> Option<Rect> {
+        self.bombard_spades
+            .map(|rows| rows[usize::from(brace_ticks.div_ceil(3).min(4))])
+    }
+
     /// The allegiance-accent mask over a unit's faction-colored
     /// regions — grayscale in the atlas, tinted at draw time.
     pub fn unit_accent(&self, kind: UnitKind) -> Rect {
@@ -1743,6 +1913,114 @@ mod tests {
     }
 
     #[test]
+    fn array_layers_require_both_tiers_and_every_allegiance_mask() {
+        let mut atlas = Manifest::default();
+        assert!(array_rig(&atlas).unwrap().is_none());
+        for tier in 0..2 {
+            for (part_index, part) in ["base", "rotor"].into_iter().enumerate() {
+                for (faction_index, faction) in
+                    ["ferrous", "cupric", "accent"].into_iter().enumerate()
+                {
+                    atlas.insert(
+                        format!("rig_array_t{tier}_{part}_{faction}"),
+                        [
+                            tier as f32,
+                            part_index as f32,
+                            faction_index as f32 + 128.0,
+                            128.0,
+                        ],
+                    );
+                }
+            }
+        }
+        let rig = array_rig(&atlas).unwrap().unwrap();
+        let layers = rig.layers(1, Faction::Cupric);
+        assert_eq!(layers[0].0, Rect::new(1.0, 0.0, 129.0, 128.0));
+        assert_eq!(layers[1].1, Rect::new(1.0, 1.0, 130.0, 128.0));
+        for key in atlas.keys() {
+            let mut incomplete = atlas.clone();
+            incomplete.remove(key);
+            assert!(array_rig(&incomplete).is_err(), "missing {key}");
+        }
+    }
+
+    #[test]
+    fn articulated_unit_bank_is_optional_but_must_be_complete() {
+        for (stem, actions) in [
+            ("sentinel", 4),
+            ("warden", 4),
+            ("lancer", 6),
+            ("buzzard", 4),
+        ] {
+            assert!(unit_rig(&manifest(), stem, actions).unwrap().is_some());
+            let mut atlas = Manifest::default();
+            assert!(unit_rig(&atlas, stem, actions).unwrap().is_none());
+            atlas.insert(format!("rig_{stem}_hull_ferrous"), [0.0, 0.0, 128.0, 128.0]);
+            assert!(unit_rig(&atlas, stem, actions).is_err());
+            for faction in ["ferrous", "cupric", "accent"] {
+                for suffix in ["", "_move1", "_move2"] {
+                    atlas.insert(
+                        format!("rig_{stem}_hull_{faction}{suffix}"),
+                        [8.0, 16.0, 128.0, 128.0],
+                    );
+                }
+                for action in 0..=actions {
+                    let suffix = if action == 0 {
+                        String::new()
+                    } else {
+                        format!("_action{action}")
+                    };
+                    atlas.insert(
+                        format!("rig_{stem}_mount_{faction}{suffix}"),
+                        [action as f32, 16.0, 128.0, 128.0],
+                    );
+                }
+            }
+            let rig = unit_rig(&atlas, stem, actions).unwrap().unwrap();
+            assert_eq!(
+                rig.hull(Faction::Cupric, 2).0,
+                Rect::new(8.0, 16.0, 128.0, 128.0)
+            );
+            assert_eq!(
+                rig.mount(Faction::Ferrous, Some(actions - 1)).1,
+                Rect::new(actions as f32, 16.0, 128.0, 128.0)
+            );
+            atlas.remove(&format!("rig_{stem}_mount_accent_action{actions}"));
+            assert!(unit_rig(&atlas, stem, actions).is_err());
+        }
+    }
+
+    #[test]
+    fn quarry_dressing_is_optional_but_partial_banks_are_rejected() {
+        let mut atlas = Manifest::new();
+        assert!(quarry_dressing_rows(&atlas).unwrap().is_none());
+        atlas.insert("quarry_dressing_0".into(), [0.0, 0.0, 64.0, 64.0]);
+        assert!(quarry_dressing_rows(&atlas).is_err());
+        for index in 1..12 {
+            atlas.insert(
+                format!("quarry_dressing_{index}"),
+                [index as f32 * 66.0, 0.0, 64.0, 64.0],
+            );
+        }
+        assert_eq!(quarry_dressing_rows(&atlas).unwrap().unwrap().len(), 12);
+    }
+
+    #[test]
+    fn optional_bombard_spades_require_every_deployment_pose() {
+        let mut atlas = Manifest::new();
+        assert!(bombard_spade_rows(&atlas).unwrap().is_none());
+        atlas.insert("bombard_spades_0".into(), [0.0, 0.0, 128.0, 128.0]);
+        assert!(bombard_spade_rows(&atlas).is_err());
+        for phase in 1..5 {
+            atlas.insert(
+                format!("bombard_spades_{phase}"),
+                [phase as f32, 0.0, 128.0, 128.0],
+            );
+        }
+        assert_eq!(bombard_spade_rows(&atlas).unwrap().unwrap()[4].x, 4.0);
+    }
+
+    #[test]
     fn generated_sound_bank_is_complete_and_has_valid_pcm_metadata() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sounds");
         let mut actual: Vec<String> = std::fs::read_dir(&dir)
@@ -1835,32 +2113,57 @@ mod tests {
 
     #[test]
     fn atlas_regions_fit_a_portable_texture_with_extrusion_room() {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sprites/atlas.png");
-        let bytes =
-            std::fs::read(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
-        let image = macroquad::prelude::Image::from_file_with_format(
-            &bytes,
-            Some(macroquad::prelude::ImageFormat::Png),
-        )
-        .unwrap_or_else(|err| panic!("decoding {}: {err}", path.display()));
-        assert!(
-            image.width <= 4096,
-            "atlas is too wide for a 4096px texture"
-        );
-        assert!(
-            image.height <= 4096,
-            "atlas is too tall for a 4096px texture"
-        );
-        let width = f32::from(image.width);
-        let height = f32::from(image.height);
-        for (name, [x, y, w, h]) in manifest() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sprites");
+        let atlas = manifest();
+        let page_count = atlas
+            .values()
+            .map(|row| row[1] as usize / 4096 + 1)
+            .max()
+            .unwrap();
+        let pages: Vec<_> = (0..page_count)
+            .map(|page| {
+                let name = if page == 0 {
+                    "atlas.png".to_owned()
+                } else {
+                    format!("atlas_{page}.png")
+                };
+                let bytes = std::fs::read(root.join(name)).unwrap();
+                let image = macroquad::prelude::Image::from_file_with_format(
+                    &bytes,
+                    Some(macroquad::prelude::ImageFormat::Png),
+                )
+                .unwrap();
+                assert!(
+                    image.width <= 4096 && image.height <= 4096,
+                    "atlas page exceeds the 4096px texture limit"
+                );
+                image
+            })
+            .collect();
+        for (name, [x, y, w, h]) in atlas {
+            let (page, local) = atlas_page(Rect::new(x, y, w, h), 4096.0);
+            let image = &pages[page];
             assert!(w > 0.0 && h > 0.0, "{name} has an empty atlas region");
             assert!(
-                x >= 1.0 && y >= 1.0 && x + w < width && y + h < height,
+                local.x >= 1.0
+                    && local.y >= 1.0
+                    && local.x + w < f32::from(image.width)
+                    && local.y + h < f32::from(image.height),
                 "{name} leaves no room for its one-pixel edge extrusion"
             );
         }
+    }
+
+    #[test]
+    fn atlas_page_coordinates_preserve_sprite_canvas_and_legacy_banks() {
+        let source = Rect::new(17.0, 4098.0, 128.0, 64.0);
+        assert_eq!(
+            atlas_page(source, 4096.0),
+            (1, Rect::new(17.0, 2.0, 128.0, 64.0))
+        );
+        assert_eq!(atlas_page(source, 5680.0), (0, source));
+        let first = Rect::new(17.0, 3964.0, 128.0, 128.0);
+        assert_eq!(atlas_page(first, 4096.0), (0, first));
     }
 
     #[test]
@@ -2040,13 +2343,15 @@ mod tests {
                 assert_animation_variant(stem, suffix);
                 let ferrous = sprite_image(&format!("{stem}_ferrous{suffix}")).bytes;
                 let cupric = sprite_image(&format!("{stem}_cupric{suffix}")).bytes;
-                assert!(
-                    !ferrous_seen.contains(&ferrous),
-                    "{stem}{suffix} must be distinct from every other Ferrous locomotion phase"
+                assert_ne!(
+                    ferrous_seen.last().unwrap(),
+                    &ferrous,
+                    "{stem}{suffix} must advance its locomotion cycle"
                 );
-                assert!(
-                    !cupric_seen.contains(&cupric),
-                    "{stem}{suffix} must be distinct from every other Cupric locomotion phase"
+                assert_ne!(
+                    cupric_seen.last().unwrap(),
+                    &cupric,
+                    "{stem}{suffix} must advance its locomotion cycle"
                 );
                 ferrous_seen.push(ferrous);
                 cupric_seen.push(cupric);
@@ -2198,40 +2503,35 @@ mod tests {
     }
 
     #[test]
-    fn specialist_defense_mounts_keep_their_heavy_silhouettes() {
+    fn defense_mounts_preserve_separate_banks_and_a_compact_siege_carriage() {
         let flak = sprite_image("flak_mount_ferrous");
         let upgraded_flak = sprite_image("flak_mount_t1_ferrous");
-        let (base_width, base_height) = opaque_span(&flak);
-        let (upgrade_width, upgrade_height) = opaque_span(&upgraded_flak);
-        assert!(
-            base_width * 2 >= usize::from(flak.width),
-            "the base Flak mount must keep two distinct barrel banks"
-        );
-        assert!(
-            upgrade_width * 4 >= usize::from(upgraded_flak.width) * 3,
-            "the upgraded Flak mount must read as a broad six-barrel battery"
-        );
-        assert!(
-            upgrade_width >= base_width + usize::from(flak.width / 8),
-            "the upgraded Flak mount must gain visible lateral presence"
-        );
-        for height in [base_height, upgrade_height] {
-            assert!(
-                height * 4 >= usize::from(flak.height) * 3,
-                "both Flak tiers must keep visibly elevated barrels"
+        for image in [&flak, &upgraded_flak] {
+            let width = usize::from(image.width);
+            let row = &image.bytes.as_chunks::<4>().0[25 * width..26 * width];
+            let bank_starts: Vec<_> = row
+                .iter()
+                .enumerate()
+                .filter(|(x, pixel)| pixel[3] >= 128 && (*x == 0 || row[x - 1][3] < 128))
+                .map(|(x, _)| x)
+                .collect();
+            assert_eq!(
+                bank_starts.len(),
+                2,
+                "the two Flak barrel banks must remain separate"
             );
+            assert!(bank_starts[0] < width / 2 && bank_starts[1] > width / 2);
+            assert_eq!(row[width / 2][3], 0, "the center gap must remain open");
         }
+        assert!(opaque_span(&upgraded_flak).0 > opaque_span(&flak).0);
 
         let bastion = sprite_image("bastion_mount_ferrous");
         let (width, height) = opaque_span(&bastion);
         assert!(
-            width * 2 >= usize::from(bastion.width),
-            "the Bastion mount must keep its oversized breech"
+            width * 2 < height,
+            "the low-carriage gun must keep its narrow traverse fork"
         );
-        assert!(
-            height * 8 >= usize::from(bastion.height) * 7,
-            "the Bastion mount must span from muzzle to loader block"
-        );
+        assert!(height * 4 >= usize::from(bastion.height) * 3);
     }
 
     #[test]

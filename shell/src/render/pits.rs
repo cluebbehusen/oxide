@@ -10,8 +10,8 @@
 //! terrain.
 
 use super::environment::{
-    Layer, Material, WAVE_LIFTS, draw_fracture, draw_lip, draw_missing_slab, draw_rebar, hash,
-    mixed, rgba, shifted,
+    Layer, Material, WAVE_LIFTS, draw_fracture, draw_lip, draw_missing_slab, draw_rebar,
+    draw_strata, hash, mixed, quarry_color, rgba, shifted,
 };
 use crate::game::Game;
 use chassis::grid::TilePos;
@@ -275,11 +275,12 @@ fn draw_glints(xs: &[f32; 5], ys: &[f32; 5], pos: TilePos, zoom: f32) {
     }
 }
 
-fn draw_fill(game: &Game, field: &PitField, pos: TilePos, zoom: f32) {
+fn draw_fill(game: &Game, field: &PitField, pos: TilePos, zoom: f32, fractured: bool) {
     let (xs, ys) = cell_edges(game, pos);
     let color = |sx: i32, sy: i32| {
         let material = field.material_at(pos, sx, sy).unwrap_or(Material::Void);
-        cell_color(material, pos.x * CELLS + sx, pos.y * CELLS + sy)
+        let color = cell_color(material, pos.x * CELLS + sx, pos.y * CELLS + sy);
+        quarry_color(color, material, fractured)
     };
     let all_void = (0..CELLS)
         .flat_map(|sy| (0..CELLS).map(move |sx| (sx, sy)))
@@ -322,7 +323,7 @@ fn uniform_bench(field: &PitField, pos: TilePos, sx: i32, sy: i32) -> Option<usi
         .then_some(level)
 }
 
-fn draw_relief(game: &Game, field: &PitField, pos: TilePos, zoom: f32) {
+fn draw_relief(game: &Game, field: &PitField, pos: TilePos, zoom: f32, fractured: bool) {
     let (xs, ys) = cell_edges(game, pos);
     let lip = (zoom * 0.055).max(1.0);
     let cell = zoom / CELLS as f32;
@@ -340,6 +341,14 @@ fn draw_relief(game: &Game, field: &PitField, pos: TilePos, zoom: f32) {
                     for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
                         if field.at(pos, sx + dx, sy + dy) < depth {
                             draw_lip(rect, (dx, dy), lip, DROP[level].lip);
+                            if fractured {
+                                draw_strata(
+                                    rect,
+                                    (dx, dy),
+                                    DROP[level],
+                                    hash(pos.x * CELLS + sx, pos.y * CELLS + sy, SALT + 607),
+                                );
+                            }
                         }
                     }
                 }
@@ -362,7 +371,7 @@ fn draw_relief(game: &Game, field: &PitField, pos: TilePos, zoom: f32) {
     }
 }
 
-pub(super) fn draw_pits(game: &Game) {
+pub(super) fn draw_pits(game: &Game, fractured: bool) {
     let (min, max) = super::visible_tiles(game);
     if min.x >= max.x || min.y >= max.y {
         return;
@@ -376,10 +385,10 @@ pub(super) fn draw_pits(game: &Game) {
     // Fills first, then relief: a decal that straddles two tiles must not
     // be buried under the neighbor's fill.
     for pos in &pit_tiles {
-        draw_fill(game, &field, *pos, zoom);
+        draw_fill(game, &field, *pos, zoom, fractured);
     }
     for pos in &pit_tiles {
-        draw_relief(game, &field, *pos, zoom);
+        draw_relief(game, &field, *pos, zoom, fractured);
     }
 }
 

@@ -75,7 +75,7 @@ impl Default for LayoutModel {
 /// layout's hit-testing and the chrome's drawing read (the duplicated-
 /// geometry class stays structurally extinct only while it isn't
 /// duplicated).
-pub const TOP_BAR_H: f32 = 32.0;
+pub const TOP_BAR_H: f32 = 40.0;
 
 /// Minimum touch target edge in logical px (platform guidance says a
 /// fingertip needs ~44).

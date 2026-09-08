@@ -5,6 +5,9 @@
 //! command reject reasons a player can actually trigger, and the radar
 //! ring's exact detection boundary. Public API only, like `domains.rs`.
 
+mod common;
+use common::face_target;
+
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{PlayerSpec, UnitSpec};
@@ -290,7 +293,7 @@ fn a_sidearm_downs_a_flyer_without_pulling_the_main_gun_off_its_order() {
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 3, 6),
         unit(1, UnitKind::Scuttler, 5, 6),
-        unit(1, UnitKind::Darter, 3, 4),
+        unit(1, UnitKind::Darter, 5, 6),
     ])
     .build()
     .unwrap();
@@ -454,6 +457,9 @@ fn a_dead_attacker_draws_no_answer() {
     let ids: Vec<_> = state.units().iter().map(|u| u.id).collect();
     let (victim, a, k1, k2) = (ids[0], ids[1], ids[2], ids[3]);
 
+    for (shooter, target) in [(a, victim), (k1, a), (k2, a)] {
+        face_target(&mut state, shooter, Target::Unit(target));
+    }
     let report = state.tick(&[
         // Spend this brain turn completing a no-distance move. Otherwise
         // the Bombard now legitimately acquires the visible rail at its
@@ -561,11 +567,12 @@ fn a_surviving_shooter_is_answered_when_the_victims_own_target_falls() {
             queue: false,
         },
     )]);
-    run_until(&mut state, 20, |s, _| !s.shells().is_empty());
+    run_until(&mut state, 64, |s, _| !s.shells().is_empty());
     let arrival = state.shells()[0].arrival;
     while state.current_tick() < arrival {
         state.tick(&[]);
     }
+    face_target(&mut state, rail, Target::Unit(victim));
     // The rail's first shot lands on its command tick — the same tick
     // the shell resolves and the prey dies.
     state.tick(&[cmd(

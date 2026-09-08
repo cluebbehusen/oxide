@@ -79,6 +79,8 @@ pub struct Selection {
 
 /// A transient visual effect (never sim-relevant).
 mod fx;
+mod projectiles;
+pub(crate) use projectiles::LaunchPose;
 
 pub use fx::{Effect, EffectKind, FlakYokeDelay, PingKind, ShotStyle, SoundKind};
 
@@ -116,12 +118,16 @@ pub struct Game {
     pub overlay: bool,
     /// Positions at the previous tick, for render interpolation.
     pub prev_pos: HashMap<u32, Vec2>,
+    /// Compass headings at the previous tick, for angular interpolation.
+    pub prev_heading: HashMap<u32, u8>,
     /// Sprite rotation per unit (radians; 0 = up).
     pub facing: HashMap<u32, f32>,
+    hull_heading: HashMap<u32, (f32, f32)>,
     /// Combat aim overrides: unit id -> (angle, fx-clock stamp). A shot
     /// turns the shooter toward its victim and holds briefly; movement
     /// facing resumes when the hold expires. Presentation only.
     pub aim_units: HashMap<u32, (f32, f32)>,
+    pub(crate) aim_unit_targets: HashMap<u32, Target>,
     /// Same for buildings (turret mounts track their last victim).
     pub aim_buildings: HashMap<u32, (f32, f32)>,
     /// The live victims defense mounts follow between reports. The last
@@ -130,6 +136,7 @@ pub struct Game {
     /// Action-driven authored sprite state. This remembers only transient
     /// output events; clearing it never changes simulation truth.
     pub(crate) animations: crate::presentation_animation::AnimationController,
+    pub(crate) projectile_releases: projectiles::ProjectileReleases,
     /// Live effects.
     pub fx: Vec<Effect>,
     /// Clips queued by this frame's ticks; the main loop drains and plays.
@@ -271,11 +278,15 @@ impl Game {
             speed: 1.0,
             overlay: false,
             prev_pos: HashMap::new(),
+            prev_heading: HashMap::new(),
             facing: HashMap::new(),
+            hull_heading: HashMap::new(),
             aim_units: HashMap::new(),
+            aim_unit_targets: HashMap::new(),
             aim_buildings: HashMap::new(),
             aim_building_targets: HashMap::new(),
             animations: crate::presentation_animation::AnimationController::default(),
+            projectile_releases: projectiles::ProjectileReleases::default(),
             fx: Vec::new(),
             sounds_pending: Vec::new(),
             autosave_done: false,
@@ -334,6 +345,7 @@ impl Game {
         let mut bots = seat_bots(&scenario)?;
         let mut cursor = replay.cursor();
         let mut live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
+        let mut projectile_releases = projectiles::ProjectileReleases::default();
         for _ in 0..total {
             for bot in &mut bots {
                 let _ = bot.act(&state);
@@ -344,6 +356,7 @@ impl Game {
                 .map(|t| t.command.clone())
                 .collect();
             let report = state.tick(&commands);
+            projectile_releases.observe(&state, &report.events);
             live_stats.observe(&state, &report.events);
         }
         anyhow::ensure!(
@@ -352,6 +365,7 @@ impl Game {
         );
         let mut game = Self::new(scenario)?;
         game.replace_state_after_jump(&state);
+        game.projectile_releases = projectile_releases;
         game.bots = bots;
         game.recorder = replay;
         game.live_stats = live_stats;
@@ -397,6 +411,8 @@ impl Game {
                 .record(self.state.current_tick(), command.clone());
         }
         let report = self.state.0.tick(&commands);
+        self.projectile_releases
+            .observe(&self.state, &report.events);
         self.live_stats.observe(&self.state, &report.events);
         if self.state.result().is_some() && self.end_stats.is_none() {
             self.end_stats = Some(self.live_stats.snapshot(&self.state));
@@ -517,6 +533,7 @@ impl Game {
     pub fn playback_present(&mut self, state: &oxide_sim::State, events: &[Event]) {
         self.remember_previous_tick();
         self.state.0 = state.clone();
+        self.projectile_releases.observe(&self.state, events);
         self.refresh_facing();
         self.animations
             .observe_events(self.state.current_tick(), events);
@@ -548,6 +565,8 @@ impl Game {
         // an id that exists at the destination must not face or flash
         // for a shot fired on the timeline we just left.
         self.aim_units.clear();
+        self.aim_unit_targets.clear();
+        self.hull_heading.clear();
         self.aim_buildings.clear();
         self.aim_building_targets.clear();
         self.animations.reset_transients();
@@ -558,6 +577,7 @@ impl Game {
     /// aim, reports, and effects cannot survive across the jump.
     pub fn replace_state_after_jump(&mut self, state: &State) {
         self.state.0 = state.clone();
+        self.projectile_releases = projectiles::ProjectileReleases::default();
         self.drop_presentation();
         self.remember_previous_tick();
         self.facing.clear();
@@ -571,11 +591,23 @@ impl Game {
     /// faces the way it last moved. Live ticks, playback, and seeks all
     /// agree through this one rule.
     fn refresh_facing(&mut self) {
+        self.aim_unit_targets
+            .retain(|id, _| self.state.unit(UnitId(*id)).is_some());
+        self.hull_heading
+            .retain(|id, _| self.state.unit(UnitId(*id)).is_some());
         for unit in self.state.units() {
-            if unit.kind.stats().turn_rate > 0 {
+            if unit.kind.stats().turn_rate > 0 || unit.kind.ground_turn_rate() > 0 {
                 let angle = f32::from(unit.heading) * std::f32::consts::TAU / 256.0;
                 self.facing
                     .insert(unit.id.0, angle + std::f32::consts::FRAC_PI_2);
+                if unit.kind.has_ground_turret() {
+                    let target = angle + std::f32::consts::FRAC_PI_2;
+                    let entry = self
+                        .hull_heading
+                        .entry(unit.id.0)
+                        .or_insert((target, target));
+                    *entry = (entry.1, target);
+                }
                 continue;
             }
             let now = world_vec(unit.pos);
@@ -588,6 +620,26 @@ impl Game {
                     );
                 }
             }
+            if matches!(
+                unit.kind,
+                oxide_sim::UnitKind::Sentinel
+                    | oxide_sim::UnitKind::Warden
+                    | oxide_sim::UnitKind::Lancer
+                    | oxide_sim::UnitKind::Buzzard
+            ) {
+                let target = self.facing.get(&unit.id.0).copied().unwrap_or(0.0);
+                let (previous, current) = self
+                    .hull_heading
+                    .entry(unit.id.0)
+                    .or_insert((target, target));
+                *previous = *current;
+                let turn = match unit.kind {
+                    oxide_sim::UnitKind::Warden => 0.18,
+                    oxide_sim::UnitKind::Lancer => 0.22,
+                    _ => 0.3,
+                };
+                *current += angle_delta(*current, target).clamp(-turn, turn);
+            }
         }
     }
 
@@ -596,6 +648,12 @@ impl Game {
     /// airframes were parked for the death effect's fall-or-scatter
     /// choice.
     fn remember_previous_tick(&mut self) {
+        self.prev_heading = self
+            .state
+            .units()
+            .iter()
+            .map(|unit| (unit.id.0, unit.weapon_heading()))
+            .collect();
         self.prev_pos = self
             .state
             .units()
@@ -740,10 +798,9 @@ impl Game {
 
     /// Raises a transient HUD message (capped; oldest fall off).
     pub fn toast(&mut self, text: impl Into<String>) {
-        self.toasts.push(Toast {
-            text: text.into(),
-            age: 0.0,
-        });
+        let text = text.into();
+        self.toasts.retain(|toast| toast.text != text);
+        self.toasts.push(Toast { text, age: 0.0 });
         if self.toasts.len() > 3 {
             self.toasts.remove(0);
         }
@@ -809,6 +866,41 @@ impl Game {
             None => now,
         }
     }
+
+    pub fn draw_heading(&self, id: UnitId, current: u8, alpha: f32) -> f32 {
+        let previous = self.prev_heading.get(&id.0).copied().unwrap_or(current);
+        let delta = current.wrapping_sub(previous).cast_signed();
+        (f32::from(previous) + f32::from(delta) * alpha.clamp(0.0, 1.0)) * std::f32::consts::TAU
+            / 256.0
+            + std::f32::consts::FRAC_PI_2
+    }
+
+    pub(crate) fn chassis_turning(&self, unit: &oxide_sim::state::Unit) -> bool {
+        if unit.kind.ground_turn_rate() == 0 {
+            return false;
+        }
+        if unit.kind.has_ground_turret() {
+            self.hull_heading
+                .get(&unit.id.0)
+                .is_some_and(|(previous, current)| angle_delta(*previous, *current).abs() > 1e-6)
+        } else {
+            self.prev_heading
+                .get(&unit.id.0)
+                .is_some_and(|previous| *previous != unit.heading)
+        }
+    }
+
+    pub(crate) fn draw_hull_heading(&self, id: UnitId, alpha: f32) -> f32 {
+        self.hull_heading
+            .get(&id.0)
+            .map_or(0.0, |(previous, current)| {
+                previous + angle_delta(*previous, *current) * alpha.clamp(0.0, 1.0)
+            })
+    }
+}
+
+fn angle_delta(from: f32, to: f32) -> f32 {
+    (to - from + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
 
 /// The live session's half of the debug protocol's shared surface: real
@@ -981,6 +1073,28 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["two", "three", "four"]
         );
+        game.toast("three");
+        assert_eq!(
+            game.toasts
+                .iter()
+                .map(|toast| toast.text.as_str())
+                .collect::<Vec<_>>(),
+            ["two", "four", "three"]
+        );
+        assert_eq!(game.toasts.last().unwrap().age, 0.0);
+    }
+
+    #[test]
+    fn articulated_hull_interpolates_the_short_turn_and_drops_on_seek() {
+        let mut game = Game::with_viewport(Scenario::skirmish(), vec2(1280.0, 800.0)).unwrap();
+        let id = game.state.units()[0].id;
+        game.hull_heading.insert(id.0, (6.2, 0.1));
+        assert!(
+            (game.draw_hull_heading(id, 0.5) - (6.2 + angle_delta(6.2, 0.1) * 0.5)).abs() < 1e-6
+        );
+        assert!(angle_delta(6.2, 0.1) > 0.0);
+        game.drop_presentation();
+        assert_eq!(game.draw_hull_heading(id, 0.5), 0.0);
     }
 
     #[test]
@@ -1326,5 +1440,16 @@ mod tests {
         game.conceded_banner = false;
         game.do_tick();
         assert!(!game.conceded_banner, "spectating stays unobstructed");
+    }
+
+    #[test]
+    fn angular_interpolation_crosses_zero_by_the_short_arc() {
+        let mut game = Game::new(Scenario::skirmish()).unwrap();
+        let id = game.state.units()[0].id;
+        game.prev_heading.insert(id.0, 254);
+        let expected = std::f32::consts::TAU + std::f32::consts::FRAC_PI_2;
+        assert!((game.draw_heading(id, 2, 0.5) - expected).abs() < 1e-6);
+        game.prev_heading.insert(id.0, 2);
+        assert!((game.draw_heading(id, 254, 0.5) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
     }
 }

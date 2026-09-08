@@ -23,6 +23,7 @@ mod screens;
 mod soundtrack;
 mod theme;
 mod tutorial;
+mod typography;
 
 use clap::Parser;
 use macroquad::prelude::*;

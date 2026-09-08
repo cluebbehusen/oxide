@@ -392,7 +392,7 @@ fn splash_kills_the_cluster_in_one_shell() {
     .build()
     .unwrap();
     let target = state.units()[1].id;
-    let report = state.tick(&[cmd(
+    state.tick(&[cmd(
         0,
         Command::Attack {
             units: vec![state.units()[0].id],
@@ -400,13 +400,11 @@ fn splash_kills_the_cluster_in_one_shell() {
             queue: false,
         },
     )]);
-    assert!(
-        report
-            .events
+    run_until(&mut state, 64, |_, events| {
+        events
             .iter()
-            .any(|e| matches!(e, Event::ShellLaunched { .. })),
-        "the shell leaves the gun at once"
-    );
+            .any(|event| matches!(event, Event::ShellLaunched { .. }))
+    });
     // Flight is real now: the cluster stands (idle scuttlers hold
     // their ground) until the shell arrives.
     let mut died = 0;
@@ -445,7 +443,7 @@ fn splash_victims_all_turn_on_the_shooter() {
             queue: false,
         },
     )]);
-    run_until(&mut state, 30, |_, events| {
+    run_until(&mut state, 100, |_, events| {
         events
             .iter()
             .any(|e| matches!(e, Event::ShellLanded { .. }))
@@ -475,7 +473,7 @@ fn indirect_fire_arcs_over_rock() {
     .build()
     .unwrap();
     let (bombard, victim) = (state.units()[0].id, state.units()[1].id);
-    let report = state.tick(&[cmd(
+    state.tick(&[cmd(
         0,
         Command::Attack {
             units: vec![bombard],
@@ -483,13 +481,11 @@ fn indirect_fire_arcs_over_rock() {
             queue: false,
         },
     )]);
-    assert!(
-        report
-            .events
+    run_until(&mut state, 64, |_, events| {
+        events
             .iter()
-            .any(|e| matches!(e, Event::ShellLaunched { .. })),
-        "indirect fire ignores the rock between"
-    );
+            .any(|event| matches!(event, Event::ShellLaunched { .. }))
+    });
     let hp_before = state.unit(victim).unwrap().hp;
     run_until(&mut state, 30, |_, events| {
         events
@@ -512,7 +508,7 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
     // A rock wall splits the map; the only way around is the southern
     // gap. The Bombard at (3,4) can reach the harvester at (12,4) —
     // range 9.5, straight-line distance 9 — but sees only 5, and its
-    // crawl around the wall keeps it blind for a long time. The scuttler
+    // crawl around the wall keeps it blind for a long time. The harvester
     // at (10,3) holds the sight line; no other friendly eye reaches (the
     // Foundry's 8 falls short).
     let scenario = Scenario {
@@ -532,7 +528,7 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
         players: arena(vec![]).players,
         units: vec![
             unit(0, UnitKind::Bombard, 3, 4),
-            unit(0, UnitKind::Scuttler, 10, 3),
+            unit(0, UnitKind::Harvester, 10, 3),
             unit(1, UnitKind::Harvester, 12, 4),
         ],
         buildings: Vec::new(),
@@ -544,7 +540,7 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
         state.units()[1].id,
         state.units()[2].id,
     );
-    let report = state.tick(&[cmd(
+    state.tick(&[cmd(
         0,
         Command::Attack {
             units: vec![bombard],
@@ -552,13 +548,11 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
             queue: false,
         },
     )]);
-    assert!(
-        report
-            .events
+    run_until(&mut state, 64, |_, events| {
+        events
             .iter()
-            .any(|e| matches!(e, Event::ShellLaunched { .. })),
-        "with a spotter, the shell flies beyond the gun's own sight"
-    );
+            .any(|event| matches!(event, Event::ShellLaunched { .. }))
+    });
     run_until(&mut state, 40, |_, events| {
         events
             .iter()
@@ -568,7 +562,7 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
     assert!(hp_after_first < 60);
 
     // Recall the spotter. Sight collapses as it rounds the wall; the
-    // next shell comes off cooldown at tick ~101, when the blind gun is
+    // next shell comes off cooldown after the spotter leaves, while the gun is
     // still crawling the southern detour far outside its own vision — it
     // must hold fire through this whole window.
     state.tick(&[cmd(
@@ -911,7 +905,7 @@ fn splash_hits_the_unseen_but_reveals_nothing() {
     )]);
     let mut named_bystander = false;
     let mut landed = false;
-    for _ in 0..40 {
+    for _ in 0..100 {
         let report = state.tick(&[]);
         landed |= report
             .events

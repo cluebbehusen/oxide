@@ -150,12 +150,16 @@ pub enum ShotStyle {
     Contact,
     /// The approved compact forge-bright orb with no persistent tracer.
     ForgeSpot,
-    /// The Lancer's rail: heavy, bright, lingering.
+    /// A short metal round, followed by a compact impact burst.
+    Kinetic { heavy: bool },
+    /// The Lancer's brief discharge and fading rail trace.
     Rail,
-    /// One logical anti-air attack shown as two physical rounds.
+    /// One logical anti-air burst, with one to three rounds from each yoke.
     FlakBurst {
         /// When the second visible yoke reports.
         yoke_delay: FlakYokeDelay,
+        /// Barrels firing together on each side.
+        rounds_per_yoke: u8,
     },
 }
 
@@ -165,9 +169,12 @@ impl ShotStyle {
         match self {
             ShotStyle::Contact => 0.12,
             ShotStyle::ForgeSpot => 0.20,
+            ShotStyle::Kinetic { heavy: false } => 0.18,
+            ShotStyle::Kinetic { heavy: true } => 0.24,
             ShotStyle::Rail => 0.24,
             ShotStyle::FlakBurst {
                 yoke_delay: FlakYokeDelay::None,
+                rounds_per_yoke: 1,
             } => 0.24,
             ShotStyle::FlakBurst { .. } => 0.30,
         }
@@ -179,18 +186,22 @@ fn unit_shot_style(kind: oxide_sim::UnitKind, weapon: usize) -> ShotStyle {
     use oxide_sim::UnitKind;
     match (kind, weapon) {
         (UnitKind::Scuttler, _) => ShotStyle::Contact,
+        (UnitKind::Sentinel, _) => ShotStyle::Kinetic { heavy: false },
+        (UnitKind::Warden | UnitKind::Breaker, _) => ShotStyle::Kinetic { heavy: true },
         (UnitKind::Lancer, _) => ShotStyle::Rail,
         (UnitKind::Flakhound, _) => ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::OneTick,
+            rounds_per_yoke: 2,
         },
         (UnitKind::Stinger, _) => ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::None,
+            rounds_per_yoke: 1,
         },
         _ => ShotStyle::ForgeSpot,
     }
 }
 
-fn defense_shot_style(kind: oxide_sim::BuildingKind) -> ShotStyle {
+fn defense_shot_style(kind: oxide_sim::BuildingKind, tier: u8) -> ShotStyle {
     debug_assert!(
         kind.base_stats()
             .weapons
@@ -201,6 +212,7 @@ fn defense_shot_style(kind: oxide_sim::BuildingKind) -> ShotStyle {
     match kind {
         oxide_sim::BuildingKind::FlakTurret => ShotStyle::FlakBurst {
             yoke_delay: FlakYokeDelay::OneAndHalfTicks,
+            rounds_per_yoke: if tier == 0 { 2 } else { 3 },
         },
         _ => ShotStyle::ForgeSpot,
     }
@@ -217,11 +229,23 @@ fn visual_shot_origin(from: Vec2, to: Vec2, reach: f32) -> Vec2 {
 
 fn unit_muzzle_reach(kind: oxide_sim::UnitKind) -> f32 {
     match kind {
-        // The Quad-Fan's forward gun extends well beyond its central hull.
-        oxide_sim::UnitKind::Buzzard => 0.44,
+        oxide_sim::UnitKind::Buzzard => 38.0 / 128.0 * crate::render::unit_draw_scale(kind),
+        oxide_sim::UnitKind::Flakhound => 42.0 / 128.0 * crate::render::unit_draw_scale(kind),
+        oxide_sim::UnitKind::Stinger => 35.0 / 128.0 * crate::render::unit_draw_scale(kind),
+        oxide_sim::UnitKind::Sentinel => 0.35,
+        oxide_sim::UnitKind::Warden => 0.36 * crate::render::unit_draw_scale(kind),
+        oxide_sim::UnitKind::Breaker => 0.625,
         _ if kind.stats().domain == oxide_sim::stats::Domain::Ground => 0.38,
         _ => 0.32,
     }
+}
+
+fn unit_shot_origin(kind: oxide_sim::UnitKind, from: Vec2, to: Vec2) -> Vec2 {
+    let mut origin = visual_shot_origin(from, to, unit_muzzle_reach(kind));
+    if kind == oxide_sim::UnitKind::Buzzard {
+        origin.y -= crate::render::air_presentation(kind, 1.0).2;
+    }
+    origin
 }
 
 fn defense_muzzle_reach(kind: oxide_sim::BuildingKind) -> f32 {
@@ -482,6 +506,7 @@ impl Game {
                     // the same stamp.
                     let d = world_vec(*target_pos) - world_vec(*attacker_pos);
                     if d.length_squared() > 1e-6 {
+                        self.aim_unit_targets.insert(attacker.0, *target);
                         self.aim_units.insert(
                             attacker.0,
                             (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
@@ -557,10 +582,10 @@ impl Game {
                         push_direct_report(
                             &mut self.fx,
                             unit_shot_style(*attacker_kind, *weapon),
-                            visual_shot_origin(
+                            unit_shot_origin(
+                                *attacker_kind,
                                 world_vec(*attacker_pos),
                                 world_vec(*target_pos),
-                                unit_muzzle_reach(*attacker_kind),
                             ),
                             world_vec(*target_pos),
                             splash,
@@ -620,7 +645,10 @@ impl Game {
                     }
                     push_direct_report(
                         &mut self.fx,
-                        defense_shot_style(*kind),
+                        defense_shot_style(
+                            *kind,
+                            self.state.building(*turret).map_or(0, |b| b.tier),
+                        ),
                         visual_shot_origin(
                             world_vec(*turret_pos),
                             world_vec(*target_pos),
@@ -979,6 +1007,18 @@ mod tests {
     use super::*;
     use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
 
+    fn face_south(game: &mut crate::game::Game, id: UnitId) {
+        let mut value = serde_json::to_value(&*game.state).unwrap();
+        let unit = value["units"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|unit| unit["id"] == serde_json::json!(id))
+            .unwrap();
+        unit["heading"] = serde_json::json!(64);
+        game.replace_state_after_jump(&serde_json::from_value(value).unwrap());
+    }
+
     fn defense_tracking_game() -> (crate::game::Game, BuildingId, UnitId) {
         let mut scenario = oxide_sim::Scenario::skirmish();
         scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
@@ -1021,30 +1061,54 @@ mod tests {
             unit_shot_style(UnitKind::Flakhound, 0),
             ShotStyle::FlakBurst {
                 yoke_delay: FlakYokeDelay::OneTick,
+                rounds_per_yoke: 2,
             }
         );
         assert_eq!(
             unit_shot_style(UnitKind::Stinger, 0),
             ShotStyle::FlakBurst {
                 yoke_delay: FlakYokeDelay::None,
+                rounds_per_yoke: 1,
             }
         );
         // Both Sentinel slots speak through its one physical barrel;
         // the second is a weaker skyward poke, not a paired flak gun.
-        assert_eq!(unit_shot_style(UnitKind::Sentinel, 0), ShotStyle::ForgeSpot);
-        assert_eq!(unit_shot_style(UnitKind::Sentinel, 1), ShotStyle::ForgeSpot);
+        assert_eq!(
+            unit_shot_style(UnitKind::Sentinel, 0),
+            ShotStyle::Kinetic { heavy: false }
+        );
+        assert_eq!(
+            unit_shot_style(UnitKind::Sentinel, 1),
+            ShotStyle::Kinetic { heavy: false }
+        );
+        assert_eq!(
+            unit_shot_style(UnitKind::Warden, 0),
+            ShotStyle::Kinetic { heavy: true }
+        );
+        assert_eq!(
+            unit_shot_style(UnitKind::Breaker, 0),
+            ShotStyle::Kinetic { heavy: true }
+        );
         assert_eq!(unit_shot_style(UnitKind::Buzzard, 0), ShotStyle::ForgeSpot);
         assert_eq!(unit_shot_style(UnitKind::Darter, 0), ShotStyle::ForgeSpot);
         assert_eq!(unit_shot_style(UnitKind::Talon, 0), ShotStyle::ForgeSpot);
         assert_eq!(unit_shot_style(UnitKind::Wisp, 0), ShotStyle::ForgeSpot);
         assert_eq!(
-            defense_shot_style(BuildingKind::FlakTurret),
+            defense_shot_style(BuildingKind::FlakTurret, 0),
             ShotStyle::FlakBurst {
                 yoke_delay: FlakYokeDelay::OneAndHalfTicks,
+                rounds_per_yoke: 2,
             }
         );
         assert_eq!(
-            defense_shot_style(BuildingKind::Turret),
+            defense_shot_style(BuildingKind::FlakTurret, 1),
+            ShotStyle::FlakBurst {
+                yoke_delay: FlakYokeDelay::OneAndHalfTicks,
+                rounds_per_yoke: 3,
+            }
+        );
+        assert_eq!(
+            defense_shot_style(BuildingKind::Turret, 0),
             ShotStyle::ForgeSpot
         );
     }
@@ -1068,6 +1132,7 @@ mod tests {
             &mut effects,
             ShotStyle::FlakBurst {
                 yoke_delay: FlakYokeDelay::OneTick,
+                rounds_per_yoke: 2,
             },
             Vec2::ZERO,
             Vec2::ONE,
@@ -1081,6 +1146,7 @@ mod tests {
             EffectKind::DirectShot {
                 style: ShotStyle::FlakBurst {
                     yoke_delay: FlakYokeDelay::OneTick,
+                    rounds_per_yoke: 2,
                 },
                 splash: Some(1.25),
                 completed_tick: 42,
@@ -1332,8 +1398,18 @@ mod tests {
             macroquad::prelude::vec2(2.38, 3.0)
         );
         assert_eq!(visual_shot_origin(from, from, 0.38), from);
-        assert_eq!(unit_muzzle_reach(UnitKind::Buzzard), 0.44);
+        let buzzard_muzzle = 38.0 / 128.0 * crate::render::unit_draw_scale(UnitKind::Buzzard);
+        assert_eq!(unit_muzzle_reach(UnitKind::Buzzard), buzzard_muzzle);
+        let origin = unit_shot_origin(UnitKind::Buzzard, from, to);
+        assert!((origin.x - (from.x + buzzard_muzzle)).abs() < 1e-5);
+        assert!((origin.y - (from.y - 0.18)).abs() < 1e-5);
         assert_eq!(unit_muzzle_reach(UnitKind::Darter), 0.32);
+        let warden_muzzle = 46.0 / 128.0 * crate::render::unit_draw_scale(UnitKind::Warden);
+        assert!((unit_muzzle_reach(UnitKind::Warden) - warden_muzzle).abs() < 0.002);
+        assert_eq!(
+            unit_muzzle_reach(UnitKind::Breaker),
+            40.0 / 128.0 * crate::render::unit_draw_scale(UnitKind::Breaker)
+        );
         assert!(
             defense_muzzle_reach(BuildingKind::Bastion)
                 > defense_muzzle_reach(BuildingKind::Turret)
@@ -1372,6 +1448,7 @@ mod tests {
     #[test]
     fn defense_mount_follows_its_visible_target_during_reload() {
         let (mut game, building, target) = defense_tracking_game();
+        face_south(&mut game, target);
         let report = game.state.tick(&[]);
         game.spawn_fx(&report.events);
         let first_angle = game.aim_buildings[&building.0].0;
@@ -1425,6 +1502,7 @@ mod tests {
             .find(|unit| unit.tile() == chassis::grid::TilePos::new(16, 10))
             .unwrap()
             .id;
+        face_south(&mut game, target);
         let report = game.state.tick(&[oxide_sim::PlayerCommand {
             player: oxide_sim::PlayerId(1),
             command: oxide_sim::Command::Move {
