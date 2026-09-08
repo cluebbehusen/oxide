@@ -132,8 +132,8 @@ const SHOWCASE_MAP: [&str; 30] = [
 const WORKED_NODE: TilePos = TilePos { x: 5, y: 4 };
 
 /// Ticks of scripted fighting before the survivors disengage. Long
-/// enough for one volley from every weapon and the artillery's shells to
-/// fly; short enough that only the two machines a Lancer one-shots die.
+/// enough for the ordinary roster's first volley; the Avalanches wait
+/// separately for their slower turn and projectile travel.
 const FIGHT_TICKS: u64 = 24;
 
 /// Total ticks. Sized so the worked node lands in the renderer's
@@ -267,9 +267,8 @@ fn showcase_scenario() -> (Scenario, Cast) {
     let gun_west = roster.add(0, UnitKind::Bombard, 29, 20);
     let gun_east = roster.add(1, UnitKind::Bombard, 29, 22);
 
-    // The tier-three annex, northeast of the pit and clear of every
-    // march lane: each new 0.15 kind stands next to (or five tiles
-    // from) the thing that wounds it inside the 24-tick fight window.
+    // The annex stays northeast of the pit, clear of the march lanes.
+    // Avalanches wait separately for their turn and missile exchange.
     // Bombers are victims here, not shooters — a released bomb's 2.2
     // splash would rewrite the carefully bounded wounds around it.
     let condor = roster.add(0, UnitKind::Condor, 39, 12);
@@ -554,8 +553,8 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
     commands
 }
 
-/// The disengagement: every survivor walks somewhere nothing of another
-/// colour can reach, so the long economy tail runs quiet.
+/// The ordinary roster retreats clear of enemy reach while Avalanches
+/// finish their separate exchange.
 fn disengage(cast: &Cast) -> Vec<PlayerCommand> {
     vec![
         walk(0, cast.west.clone(), 6, 14),
@@ -563,20 +562,53 @@ fn disengage(cast: &Cast) -> Vec<PlayerCommand> {
         // Clear of the widened west column's march lane (idle aggro
         // killed it at its old post once the line grew eight slots).
         walk(2, vec![cast.interloper], 36, 6),
-        walk(0, vec![cast.guns.0], 30, 13),
-        walk(1, vec![cast.guns.1], 30, 27),
         walk(0, cast.annex_f.clone(), 32, 15),
         walk(1, cast.annex_c.clone(), 47, 27),
-        walk(0, vec![cast.avalanches.0], 10, 10),
-        walk(1, vec![cast.avalanches.1], 46, 27),
     ]
 }
 
 fn showcase_state() -> State {
     let (scenario, cast) = showcase_scenario();
     let mut state = scenario.build().expect("the showcase scenario is valid");
+    let mut staged = serde_json::to_value(&state).unwrap();
+    for command in opening_orders(&cast) {
+        if let Command::Attack { units, target, .. } = command.command {
+            for id in units {
+                let unit = state.unit(id).unwrap();
+                if unit.kind.stats().domain != oxide_sim::stats::Domain::Ground {
+                    continue;
+                }
+                let aim = match target {
+                    Target::Unit(id) => state.unit(id).unwrap().pos,
+                    Target::Building(id) => state.building(id).unwrap().closest_point_to(unit.pos),
+                } - unit.pos;
+                let heading = (0..=255u8)
+                    .max_by_key(|&step| {
+                        let direction = chassis::compass::dir(step);
+                        (
+                            direction.x * aim.x + direction.y * aim.y,
+                            std::cmp::Reverse(step),
+                        )
+                    })
+                    .unwrap();
+                let row = staged["units"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|row| row["id"] == serde_json::json!(id))
+                    .unwrap();
+                row["heading"] = serde_json::json!(heading);
+                if unit.kind.has_ground_turret() {
+                    row["turret_heading"] = serde_json::json!(heading);
+                }
+            }
+        }
+    }
+    state = serde_json::from_value(staged).unwrap();
+    let mut avalanches_withdrew = false;
+    let mut bombards_withdrew = false;
     for tick in 0..SHOWCASE_TICKS {
-        let commands = match tick {
+        let mut commands = match tick {
             0 => opening_orders(&cast),
             // The construction yard founds late and is then abandoned:
             // orphaned scaffolds decay now, and the frailest (the Array,
@@ -620,8 +652,36 @@ fn showcase_state() -> State {
             }],
             _ => Vec::new(),
         };
+        if !avalanches_withdrew
+            && [cast.avalanches.0, cast.avalanches.1].iter().all(|id| {
+                state
+                    .unit(*id)
+                    .is_some_and(|unit| unit.hp < unit.kind.stats().max_hp)
+            })
+        {
+            commands.extend([
+                walk(0, vec![cast.avalanches.0], 10, 10),
+                walk(1, vec![cast.avalanches.1], 46, 27),
+            ]);
+            avalanches_withdrew = true;
+        }
+        if !bombards_withdrew
+            && [cast.guns.0, cast.guns.1].iter().all(|id| {
+                state
+                    .unit(*id)
+                    .is_some_and(|unit| unit.hp < unit.kind.stats().max_hp)
+            })
+        {
+            commands.extend([
+                walk(0, vec![cast.guns.0], 30, 13),
+                walk(1, vec![cast.guns.1], 30, 27),
+            ]);
+            bombards_withdrew = true;
+        }
         state.tick(&commands);
     }
+    assert!(avalanches_withdrew, "both Avalanches must trade one volley");
+    assert!(bombards_withdrew, "both Bombards must trade one volley");
     state
 }
 

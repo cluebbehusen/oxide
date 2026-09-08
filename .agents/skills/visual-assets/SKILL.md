@@ -53,8 +53,10 @@ mining debris break up the quarry floor.
 
 - Work in charcoal, oxidized iron, rust, patina, faded corporate paint, and
   restrained hazard accents. Avoid cheerful saturation and generic neon sci-fi.
-- Use bold silhouettes, selective highlights, and a full-strength light rim for
-  gameplay contrast.
+- Use bold silhouettes and selective metal highlights for gameplay contrast.
+  Reserve automatic pale rim lighting for chassis and foundations. Weapon
+  mounts, barrels, rails, and launchers use authored edge highlights without a
+  pale perimeter; keep muzzle flashes distinct from surface lighting.
 - Give each unit or building one unmistakable role anchor plus two to four
   supporting functional details. At native scale, a reviewer should be able to
   name its locomotion or foundation, tool or weapon, and feed, storage, power,

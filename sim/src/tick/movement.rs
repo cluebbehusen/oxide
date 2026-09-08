@@ -22,6 +22,79 @@ use crate::stats::{
     SLIDE_RADIAL_SHARE, WAYPOINT_ACCEPT,
 };
 
+pub(super) fn steer_ground_heading(unit: &mut crate::state::Unit, direction: Vec2Fx) -> bool {
+    let rate = unit.kind.ground_turn_rate();
+    steer_heading(unit, direction, rate)
+}
+
+pub(super) fn steer_weapon_heading(unit: &mut crate::state::Unit, direction: Vec2Fx) -> bool {
+    if unit.kind.has_ground_turret() {
+        let bearing = unit.turret_heading.get_or_insert(unit.heading);
+        return steer_bearing(bearing, direction, unit.kind.turret_turn_rate());
+    }
+    if unit.kind == crate::UnitKind::Bombard {
+        if !ground_weapon_aligned(unit, direction) {
+            if unit.brace_ticks > 0 {
+                unit.retract_braces();
+            } else {
+                steer_ground_heading(unit, direction);
+            }
+            return false;
+        }
+        unit.brace_ticks = (unit.brace_ticks + 1).min(crate::stats::BOMBARD_BRACE_TICKS);
+        return unit.brace_ticks == crate::stats::BOMBARD_BRACE_TICKS;
+    }
+    let rate = unit
+        .kind
+        .ground_turn_rate()
+        .max(unit.kind.turret_turn_rate());
+    steer_heading(unit, direction, rate)
+}
+
+fn steer_heading(unit: &mut crate::state::Unit, direction: Vec2Fx, rate: u8) -> bool {
+    steer_bearing(&mut unit.heading, direction, rate)
+}
+
+fn steer_bearing(heading: &mut u8, direction: Vec2Fx, rate: u8) -> bool {
+    if rate == 0 || direction == Vec2Fx::ZERO {
+        return true;
+    }
+    let desired = flight::heading_of(direction);
+    let delta = i16::from(desired.wrapping_sub(*heading) as i8);
+    let step = delta.clamp(-i16::from(rate), i16::from(rate));
+    *heading = heading.wrapping_add_signed(step as i8);
+    heading_aligned(*heading, desired)
+}
+
+fn heading_aligned(current: u8, desired: u8) -> bool {
+    desired.wrapping_sub(current).cast_signed().unsigned_abs() <= 2
+}
+
+pub(super) fn ground_weapon_aligned(unit: &crate::state::Unit, direction: Vec2Fx) -> bool {
+    unit.kind.ground_turn_rate() == 0
+        || direction == Vec2Fx::ZERO
+        || heading_aligned(unit.weapon_heading(), flight::heading_of(direction))
+}
+
+pub(super) fn advancing_weapon_aligned(unit: &crate::state::Unit, direction: Vec2Fx) -> bool {
+    unit.kind.has_ground_turret() || ground_weapon_aligned(unit, direction)
+}
+
+fn work_aim(state: &State, unit: &crate::state::Unit) -> Option<Vec2Fx> {
+    if unit.path.is_some() || unit.kind.ground_turn_rate() == 0 {
+        return None;
+    }
+    match unit.order {
+        Order::Harvest { node, .. } => Some(node.center()),
+        Order::Build { site } => state.building(site).map(|b| b.closest_point_to(unit.pos)),
+        Order::Repair { building } | Order::Salvage { building } => state
+            .building(building)
+            .map(|b| b.closest_point_to(unit.pos)),
+        Order::RepairUnit { unit: patient } => state.unit(patient).map(|u| u.pos),
+        _ => None,
+    }
+}
+
 /// Whether skipping from tile `cur` toward `nxt` early can clip impassable ground. Cardinal
 /// neighbors are always safe — the swept band stays inside two open tiles.
 /// Diagonals are safe only when both shared cardinal tiles are open (then
@@ -147,6 +220,11 @@ pub(super) fn evict_claimed_ground(state: &mut State) {
 /// carried the body across the onward plane, so a unit does not turn back
 /// toward a center it already passed. Final waypoints are landed exactly.
 pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
+    let work_aims: Vec<_> = state
+        .units
+        .iter()
+        .map(|unit| work_aim(state, unit))
+        .collect();
     // Disjoint field borrows: units move, terrain is read-only.
     let State {
         units,
@@ -156,7 +234,7 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
     } = state;
     let mut travel = vec![Vec2Fx::ZERO; units.len()];
     for (slot, unit) in units.iter_mut().enumerate() {
-        if unit.hp == 0 {
+        if unit.hp == 0 || unit.brace_ticks > 0 {
             continue;
         }
         let before = unit.pos;
@@ -170,7 +248,11 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             continue;
         }
         let airborne = stats.domain == crate::stats::Domain::Air;
+        if let Some(aim) = work_aims[slot] {
+            steer_ground_heading(unit, aim - unit.pos);
+        }
         let mut budget = stats.speed;
+        let mut steered = false;
         while budget > Fx::ZERO {
             let Some(path) = &mut unit.path else { break };
             let Some(&waypoint) = path.waypoints.get(path.next as usize) else {
@@ -218,6 +300,25 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
                 path.next += 1;
                 continue; // spend the budget on the next leg instead
             }
+            if !airborne && dist > Fx::ZERO {
+                let desired = flight::heading_of(center - unit.pos);
+                if !steered {
+                    steer_bearing(
+                        &mut unit.heading,
+                        center - unit.pos,
+                        unit.kind.ground_turn_rate(),
+                    );
+                    steered = true;
+                }
+                if desired
+                    .wrapping_sub(unit.heading)
+                    .cast_signed()
+                    .unsigned_abs()
+                    > 8
+                {
+                    break;
+                }
+            }
             if dist <= budget {
                 unit.pos = center;
                 budget -= dist;
@@ -231,7 +332,11 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
                 break;
             }
         }
-        travel[slot] = unit.pos - before;
+        let direction = unit.pos - before;
+        if airborne && direction != Vec2Fx::ZERO {
+            steer_ground_heading(unit, direction);
+        }
+        travel[slot] = direction;
     }
     travel
 }
@@ -932,6 +1037,8 @@ mod tests {
             },
         ];
         for ((unit, position), path) in state.units.iter_mut().zip([pos, mirrored_pos]).zip(paths) {
+            unit.heading =
+                flight::heading_of(path.waypoints[path.next as usize].center() - position);
             unit.pos = position;
             unit.order = Order::Move { goal: path.goal };
             unit.path = Some(path);
@@ -1094,6 +1201,7 @@ mod tests {
             },
         ];
         for ((unit, pos), path) in state.units.iter_mut().zip(positions).zip(paths) {
+            unit.heading = flight::heading_of(path.waypoints[path.next as usize].center() - pos);
             unit.pos = pos;
             unit.order = Order::AttackMove { goal: path.goal };
             unit.path = Some(path);
@@ -1458,6 +1566,7 @@ mod tests {
         ];
         for ((unit, pos), path) in state.units.iter_mut().zip(positions).zip(paths) {
             unit.kind = UnitKind::Avalanche;
+            unit.heading = flight::heading_of(path.waypoints[path.next as usize].center() - pos);
             unit.hp = UnitKind::Avalanche.stats().max_hp;
             unit.pos = pos;
             unit.order = Order::Move { goal: path.goal };
@@ -1465,7 +1574,7 @@ mod tests {
         }
 
         let mut index = UnitIndex::new();
-        for _ in 0..20 {
+        for _ in 0..80 {
             let travel = run(&mut state);
             resolve_collisions(&mut state, &travel, &mut index);
             state.tick += 1;

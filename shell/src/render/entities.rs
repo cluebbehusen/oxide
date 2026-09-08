@@ -31,8 +31,7 @@ pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &Input
     } else {
         Color::new(0.7, 1.0, 0.75, 0.55)
     };
-    draw_texture_ex(
-        sprites.texture(),
+    sprites.draw(
         screen.x,
         screen.y,
         tint,
@@ -64,8 +63,7 @@ pub(crate) fn draw_pending_founds(game: &Game, sprites: &Sprites) {
             let screen = game
                 .camera
                 .to_screen(vec2(anchor.x as f32, anchor.y as f32));
-            draw_texture_ex(
-                sprites.texture(),
+            sprites.draw(
                 screen.x,
                 screen.y,
                 Color::new(1.0, 0.85, 0.45, 0.3),
@@ -284,8 +282,7 @@ fn draw_defense_mount(
         .aim_buildings
         .get(&building.id.0)
         .map_or(0.0, |(angle, _)| *angle);
-    draw_texture_ex(
-        sprites.texture(),
+    sprites.draw(
         screen.x,
         screen.y,
         WHITE,
@@ -302,8 +299,7 @@ fn draw_defense_mount(
     };
     if let (Some(accent), Some(source)) = (seat_identity_tint(game, building.player), accent_source)
     {
-        draw_texture_ex(
-            sprites.texture(),
+        sprites.draw(
             screen.x,
             screen.y,
             accent,
@@ -315,35 +311,6 @@ fn draw_defense_mount(
             },
         );
     }
-}
-
-fn draw_bastion_charge_overlay(
-    game: &Game,
-    sprites: &Sprites,
-    building: &oxide_sim::Building,
-    action: Option<usize>,
-) {
-    let faction = game.state.player(building.player).faction;
-    let (source, placement) = sprites.bastion_charge_overlay(faction, action);
-    let screen = game
-        .camera
-        .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
-    let (width, height) = building.stats().size;
-    let footprint = vec2(
-        width as f32 * game.camera.zoom,
-        height as f32 * game.camera.zoom,
-    );
-    draw_texture_ex(
-        sprites.texture(),
-        screen.x + footprint.x * placement.x,
-        screen.y + footprint.y * placement.y,
-        WHITE,
-        DrawTextureParams {
-            dest_size: Some(vec2(footprint.x * placement.w, footprint.y * placement.h)),
-            source: Some(source),
-            ..Default::default()
-        },
-    );
 }
 
 pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
@@ -440,8 +407,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 }
             }
             for (source, color) in layers {
-                draw_texture_ex(
-                    sprites.texture(),
+                sprites.draw(
                     screen.x,
                     screen.y,
                     color,
@@ -489,26 +455,32 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             },
         );
         let frame = super::motion::building_frame(building.kind, animation);
-        let (source, accent_source) = match frame.body {
-            super::motion::BuildingBodyFrame::Idle => (
-                sprites.building_tiered(building.kind, building.tier, faction),
-                sprites.building_tiered_accent(building.kind, building.tier),
-            ),
-            super::motion::BuildingBodyFrame::Work(work) => (
-                sprites.building_working(building.kind, building.tier, faction, work + 1),
-                sprites.building_working_accent(building.kind, building.tier, work + 1),
-            ),
-            super::motion::BuildingBodyFrame::Construction { stage, phase } => (
-                sprites.construction(building.kind, faction, stage, phase),
-                sprites.construction_accent(building.kind, stage, phase),
-            ),
-            super::motion::BuildingBodyFrame::Action(action) => (
-                sprites.building_action(building.kind, faction, action),
-                sprites.building_action_accent(building.kind, action),
-            ),
-        };
-        draw_texture_ex(
-            sprites.texture(),
+        let array_layers = (building.built && building.kind == oxide_sim::BuildingKind::Array)
+            .then(|| sprites.array_rig())
+            .flatten()
+            .map(|rig| rig.layers(building.tier, faction));
+        let (source, accent_source) = array_layers.map_or_else(
+            || match frame.body {
+                super::motion::BuildingBodyFrame::Idle => (
+                    sprites.building_tiered(building.kind, building.tier, faction),
+                    sprites.building_tiered_accent(building.kind, building.tier),
+                ),
+                super::motion::BuildingBodyFrame::Work(work) => (
+                    sprites.building_working(building.kind, building.tier, faction, work + 1),
+                    sprites.building_working_accent(building.kind, building.tier, work + 1),
+                ),
+                super::motion::BuildingBodyFrame::Construction { stage, phase } => (
+                    sprites.construction(building.kind, faction, stage, phase),
+                    sprites.construction_accent(building.kind, stage, phase),
+                ),
+                super::motion::BuildingBodyFrame::Action(action) => (
+                    sprites.building_action(building.kind, faction, action),
+                    sprites.building_action_accent(building.kind, action),
+                ),
+            },
+            |layers| layers[0],
+        );
+        sprites.draw(
             screen.x,
             screen.y,
             WHITE,
@@ -520,8 +492,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         );
         let accent_tint = seat_identity_tint(game, building.player);
         if let Some(accent) = accent_tint {
-            draw_texture_ex(
-                sprites.texture(),
+            sprites.draw(
                 screen.x,
                 screen.y,
                 accent,
@@ -532,15 +503,37 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 },
             );
         }
+        if let Some(layers) = array_layers {
+            let cycle = match animation.activity {
+                crate::presentation_animation::BuildingActivity::ArraySweep { cycle } => cycle,
+                _ => 0.0,
+            };
+            let rotation = 20.0_f32.to_radians() - cycle * std::f32::consts::TAU;
+            let pivot = screen + dest * vec2(0.5, 49.0 / 128.0);
+            let (source, accent) = layers[1];
+            for (source, tint) in
+                std::iter::once((source, WHITE)).chain(accent_tint.map(|tint| (accent, tint)))
+            {
+                sprites.draw(
+                    screen.x,
+                    screen.y,
+                    tint,
+                    DrawTextureParams {
+                        dest_size: Some(dest),
+                        source: Some(source),
+                        rotation,
+                        pivot: Some(pivot),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
         if building.built {
             match building.kind {
                 oxide_sim::BuildingKind::Turret
                 | oxide_sim::BuildingKind::FlakTurret
                 | oxide_sim::BuildingKind::Bastion => {
                     draw_defense_mount(game, sprites, building, frame.mount_action);
-                    if building.kind == oxide_sim::BuildingKind::Bastion {
-                        draw_bastion_charge_overlay(game, sprites, building, frame.mount_action);
-                    }
                 }
                 _ => {}
             }
@@ -637,21 +630,210 @@ pub(crate) fn draw_units(game: &Game, sprites: &Sprites, alpha: f32) {
     // them — each flyer casts an offset shadow so altitude reads even
     // when nothing overlaps.
     draw_unit_pass(game, sprites, alpha, oxide_sim::stats::Domain::Ground);
+    draw_bomber_bombs(game);
     draw_unit_pass(game, sprites, alpha, oxide_sim::stats::Domain::Air);
 }
 
-fn shell_visual_origin(launch: Vec2, impact: Vec2, shooter: oxide_sim::Target) -> Vec2 {
+fn bomber_release(game: &Game, index: usize) -> Option<crate::game::LaunchPose> {
+    game.projectile_releases
+        .release(game.state.shells(), index)
+        .or_else(|| {
+            let shell = game.state.shells().get(index)?;
+            if shell.kind != oxide_sim::ProjectileKind::Bomb {
+                return None;
+            }
+            let oxide_sim::Target::Unit(id) = shell.shooter else {
+                return None;
+            };
+            let kind = game.state.unit(id)?.kind;
+            if !matches!(
+                kind,
+                oxide_sim::UnitKind::Condor | oxide_sim::UnitKind::Moth
+            ) {
+                return None;
+            }
+            // Seeks without launch history use a stable impact line, never the
+            // aircraft's later egress heading.
+            Some(crate::game::LaunchPose {
+                heading: vec2(
+                    (shell.impact.x - shell.launch.x).to_num::<f32>(),
+                    (shell.impact.y - shell.launch.y).to_num::<f32>(),
+                )
+                .normalize_or_zero(),
+                kind,
+                slot: 0,
+            })
+        })
+}
+
+fn condor_bomb_pose(launch: Vec2, impact: Vec2, heading: Vec2, t: f32) -> (Vec2, Vec2) {
+    let t = t.clamp(0.0, 1.0);
+    let reach = 0.53_f32.min(launch.distance(impact) * 0.35);
+    let start = launch + heading * reach;
+    let lead = 0.65_f32.min(start.distance(impact) * 0.4);
+    let c1 = start + heading * lead;
+    let c2 = impact - (impact - start).normalize_or_zero() * lead;
+    let q = 1.0 - t;
+    let position = start
+        .lerp(c1, t)
+        .lerp(c1.lerp(c2, t), t)
+        .lerp(c1.lerp(c2, t).lerp(c2.lerp(impact, t), t), t);
+    let tangent = (c1 - start) * (q * q) + (c2 - c1) * (2.0 * q * t) + (impact - c2) * (t * t);
+    (position, tangent.normalize_or_zero())
+}
+
+fn moth_bomb_pose(
+    launch: Vec2,
+    impact: Vec2,
+    release: crate::game::LaunchPose,
+    t: f32,
+    total: f32,
+) -> (Vec2, Vec2) {
+    let heading = release.heading;
+    let side = vec2(-heading.y, heading.x);
+    let row = release.slot / 2;
+    let lateral = if release.slot.is_multiple_of(2) {
+        -0.234375
+    } else {
+        0.234375
+    };
+    let start = launch + side * lateral + heading * ((19.0 - row as f32 * 14.0) / 64.0);
+    let lead = (oxide_sim::UnitKind::Moth.stats().speed.to_num::<f32>() * total / 3.0)
+        .min(start.distance(impact) * 0.4);
+    let c1 = start + heading * lead;
+    let c2 = impact - (impact - start).normalize_or_zero() * lead;
+    let t = t.clamp(0.0, 1.0);
+    let q = 1.0 - t;
+    let position = start
+        .lerp(c1, t)
+        .lerp(c1.lerp(c2, t), t)
+        .lerp(c1.lerp(c2, t).lerp(c2.lerp(impact, t), t), t);
+    let tangent = (c1 - start) * (q * q) + (c2 - c1) * (2.0 * q * t) + (impact - c2) * (t * t);
+    (position, tangent.normalize_or_zero())
+}
+
+fn draw_bomber_bombs(game: &Game) {
+    let zoom = game.camera.zoom;
+    let now = game.state.current_tick() as f32 + game.tick_fraction();
+    for (index, shell) in game.state.shells().iter().enumerate() {
+        let Some(release) = bomber_release(game, index) else {
+            continue;
+        };
+        let launch = vec2(
+            shell.launch.x.to_num::<f32>(),
+            shell.launch.y.to_num::<f32>(),
+        );
+        let impact = vec2(
+            shell.impact.x.to_num::<f32>(),
+            shell.impact.y.to_num::<f32>(),
+        );
+        let total = (launch.distance(impact) / oxide_sim::stats::SHELL_SPEED.to_num::<f32>())
+            .ceil()
+            .max(1.0);
+        let t = (1.0 - (shell.arrival as f32 - now) / total).clamp(0.0, 1.0);
+        let moth = release.kind == oxide_sim::UnitKind::Moth;
+        let (position, direction) = if moth {
+            moth_bomb_pose(launch, impact, release, t, total)
+        } else {
+            condor_bomb_pose(launch, impact, release.heading, t)
+        };
+        if !game.all_seeing()
+            && game.state.hostile(game.human, shell.player)
+            && !game.my_vision().visible(TilePos::new(
+                position.x.floor() as i32,
+                position.y.floor() as i32,
+            ))
+        {
+            continue;
+        }
+        let flat = game.camera.to_screen(position);
+        let lift = if moth { 0.08 } else { 0.0625 };
+        let center = flat - vec2(0.0, zoom * lift * (1.0 - t * t));
+        let scale = zoom * (1.0 - 0.15 * t) * if moth { 0.70 } else { 1.0 };
+        let normal = vec2(-direction.y, direction.x);
+        let nose = center + direction * scale * 0.14;
+        let back = center - direction * scale * 0.14;
+        draw_circle(
+            flat.x + zoom * 0.10,
+            flat.y + zoom * 0.14,
+            scale * 0.065,
+            Color::new(0.02, 0.02, 0.03, 0.35),
+        );
+        draw_line(
+            back.x,
+            back.y,
+            nose.x,
+            nose.y,
+            scale * 0.15,
+            Color::from_rgba(12, 13, 17, 255),
+        );
+        draw_line(
+            back.x,
+            back.y,
+            nose.x,
+            nose.y,
+            scale * 0.095,
+            Color::from_rgba(151, 146, 134, 255),
+        );
+        let tip = nose - direction * scale * 0.05;
+        draw_triangle(
+            nose,
+            tip + normal * scale * 0.048,
+            tip - normal * scale * 0.048,
+            Color::from_rgba(210, 199, 171, 255),
+        );
+        let fin = back + direction * scale * 0.06;
+        draw_triangle(
+            back,
+            fin + normal * scale * 0.085,
+            fin - normal * scale * 0.085,
+            Color::from_rgba(92, 74, 59, 255),
+        );
+    }
+}
+
+fn shell_visual_origin(
+    launch: Vec2,
+    impact: Vec2,
+    shooter: oxide_sim::Target,
+    kind: oxide_sim::ProjectileKind,
+) -> Vec2 {
+    if kind == oxide_sim::ProjectileKind::Bomb {
+        return launch;
+    }
     let direction = impact - launch;
     if direction.length_squared() <= f32::EPSILON {
         return launch;
     }
     let reach = match shooter {
-        oxide_sim::Target::Unit(_) => 0.46,
+        oxide_sim::Target::Unit(_) => {
+            if kind == oxide_sim::ProjectileKind::Missile {
+                0.53
+            } else {
+                31.0 / 128.0 * super::unit_draw_scale(oxide_sim::UnitKind::Bombard)
+            }
+        }
         oxide_sim::Target::Building(_) => {
             oxide_sim::BuildingKind::Bastion.base_stats().size.0 as f32 * 0.49
         }
     };
     launch + direction.normalize() * reach
+}
+
+fn bombard_shell_position(launch: Vec2, impact: Vec2, heading: Vec2, progress: f32) -> Vec2 {
+    let t = progress.clamp(0.0, 1.0);
+    let direction = (impact - launch).normalize_or_zero();
+    let heading = if heading.length_squared() > 0.0 {
+        heading.normalize()
+    } else {
+        direction
+    };
+    let distance = launch.distance(impact);
+    let muzzle = launch
+        + heading
+            * (31.0 / 128.0 * super::unit_draw_scale(oxide_sim::UnitKind::Bombard))
+                .min(distance * 0.4);
+    muzzle.lerp(impact, t)
 }
 
 fn shell_arc_lift(screen_distance: f32, zoom: f32, shooter: oxide_sim::Target) -> f32 {
@@ -663,6 +845,43 @@ fn shell_arc_lift(screen_distance: f32, zoom: f32, shooter: oxide_sim::Target) -
         // compact shell look detached from the barrel and impact.
         oxide_sim::Target::Building(_) => (screen_distance * 0.04).min(zoom * 0.40),
     }
+}
+
+fn missile_ejection_ticks(total_ticks: f32) -> f32 {
+    3.0_f32.min(total_ticks * 0.25)
+}
+
+fn missile_travel_progress(progress: f32, total_ticks: f32, distance: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    if distance <= f32::EPSILON {
+        return progress;
+    }
+    let ejection_ticks = missile_ejection_ticks(total_ticks);
+    let ejection_distance = 0.45_f32.min(distance * 0.12);
+    let ejection_speed = ejection_distance / ejection_ticks;
+    let elapsed = progress * total_ticks;
+    if elapsed <= ejection_ticks {
+        return ejection_speed * elapsed / distance;
+    }
+    let powered_ticks = total_ticks - ejection_ticks;
+    let ramp_ticks = 2.0_f32.min(powered_ticks * 0.25);
+    // Integrate the ignition ramp while preserving the sim's arrival tick.
+    let cruise_speed = (distance - ejection_distance - ejection_speed * ramp_ticks * 0.5)
+        / (powered_ticks - ramp_ticks * 0.5);
+    let powered_elapsed = elapsed - ejection_ticks;
+    let powered_distance = if powered_elapsed < ramp_ticks {
+        ejection_speed * powered_elapsed
+            + (cruise_speed - ejection_speed) * powered_elapsed.powi(2) / (2.0 * ramp_ticks)
+    } else {
+        ejection_speed * ramp_ticks * 0.5 + cruise_speed * (powered_elapsed - ramp_ticks * 0.5)
+    };
+    ((ejection_distance + powered_distance) / distance).clamp(0.0, 1.0)
+}
+
+fn missile_motor_strength(progress: f32, total_ticks: f32) -> f32 {
+    let ejection_ticks = missile_ejection_ticks(total_ticks);
+    let ramp_ticks = 2.0_f32.min((total_ticks - ejection_ticks) * 0.25);
+    ((progress * total_ticks - ejection_ticks) / ramp_ticks).clamp(0.0, 1.0)
 }
 
 fn shell_tail_start(progress: f32, world_distance: f32) -> f32 {
@@ -685,6 +904,52 @@ fn flak_round_progress(age: f32, yoke_delay: crate::game::FlakYokeDelay) -> [Opt
     [round(0.0), round(yoke_delay.seconds())]
 }
 
+fn flak_barrel_rounds(
+    age: f32,
+    delay: crate::game::FlakYokeDelay,
+    count: u8,
+) -> [Option<(f32, f32)>; 6] {
+    let groups = flak_round_progress(age, delay);
+    let count = usize::from(count.clamp(1, 3));
+    let offsets = match (count, delay) {
+        (3, _) => [
+            -31.0 / 128.0,
+            -23.0 / 128.0,
+            -15.0 / 128.0,
+            15.0 / 128.0,
+            23.0 / 128.0,
+            31.0 / 128.0,
+        ],
+        (2, crate::game::FlakYokeDelay::OneAndHalfTicks) => [
+            -24.0 / 128.0,
+            -16.0 / 128.0,
+            16.0 / 128.0,
+            24.0 / 128.0,
+            0.0,
+            0.0,
+        ],
+        (2, _) => {
+            let scale = super::unit_draw_scale(oxide_sim::UnitKind::Flakhound) / 128.0;
+            [
+                -23.0 * scale,
+                -9.0 * scale,
+                9.0 * scale,
+                23.0 * scale,
+                0.0,
+                0.0,
+            ]
+        }
+        _ => [-0.075, 0.075, 0.0, 0.0, 0.0, 0.0],
+    };
+    std::array::from_fn(|index| {
+        if index >= count * 2 {
+            None
+        } else {
+            groups[usize::from(index >= count)].map(|progress| (offsets[index], progress))
+        }
+    })
+}
+
 fn forge_spot_phases(progress: f32) -> (f32, f32) {
     let progress = progress.clamp(0.0, 1.0);
     let travel = (progress / FORGE_SPOT_TRAVEL_FRACTION).clamp(0.0, 1.0);
@@ -697,8 +962,8 @@ fn shot_impact_progress(style: crate::game::ShotStyle, age: f32) -> f32 {
     use crate::game::ShotStyle;
     match style {
         ShotStyle::Contact | ShotStyle::Rail => (age / style.life()).clamp(0.0, 1.0),
-        ShotStyle::ForgeSpot => forge_spot_phases(age / style.life()).1,
-        ShotStyle::FlakBurst { yoke_delay } => {
+        ShotStyle::ForgeSpot | ShotStyle::Kinetic { .. } => forge_spot_phases(age / style.life()).1,
+        ShotStyle::FlakBurst { yoke_delay, .. } => {
             let arrival = yoke_delay.seconds() + FLAK_ROUND_TRAVEL;
             ((age - arrival) / (style.life() - arrival)).clamp(0.0, 1.0)
         }
@@ -746,8 +1011,7 @@ fn shot_visibility(
 fn draw_splash_bloom(sprites: &Sprites, center: Vec2, zoom: f32, radius: f32, progress: f32) {
     let progress = progress.clamp(0.0, 1.0);
     let size = zoom * radius * 2.0 * (0.4 + 0.6 * progress);
-    draw_texture_ex(
-        sprites.texture(),
+    sprites.draw(
         center.x - size * 0.5,
         center.y - size * 0.5,
         Color::new(1.0, 1.0, 1.0, 1.0 - progress),
@@ -769,7 +1033,10 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
     // restores them — no wall-clock effect can drift from the rules.
     let shell_speed = oxide_sim::stats::SHELL_SPEED.to_num::<f32>();
     let now = game.state.current_tick() as f32 + game.tick_fraction();
-    for shell in game.state.shells() {
+    for (index, shell) in game.state.shells().iter().enumerate() {
+        if bomber_release(game, index).is_some() {
+            continue;
+        }
         let launch = vec2(
             shell.launch.x.to_num::<f32>(),
             shell.launch.y.to_num::<f32>(),
@@ -781,7 +1048,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
         // Indirect building fire currently means Bastion fire. Its sim
         // launch stays at the stable footprint center; presentation
         // advances that point to the authored barrel mouth.
-        let from = shell_visual_origin(launch, to, shell.shooter);
+        let from = shell_visual_origin(launch, to, shell.shooter, shell.kind);
         // Fog rule: own and allied shells draw throughout their flight;
         // a hostile shell appears only while its current local segment
         // crosses visible ground. Nothing anchors a trail at a fogged
@@ -792,22 +1059,188 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
         // the shell lands exactly when the sim resolves the hit.
         let total = (launch.distance(to) / shell_speed).ceil().max(1.0);
         let elapsed = total - (shell.arrival as f32 - now);
-        let t = (elapsed / total).clamp(0.0, 1.0);
+        let flight_progress = (elapsed / total).clamp(0.0, 1.0);
+        let t = if shell.kind == oxide_sim::ProjectileKind::Missile {
+            missile_travel_progress(flight_progress, total, from.distance(to))
+        } else {
+            flight_progress
+        };
         if !game.all_seeing() && !mine && !flat_seen(t) {
             continue;
         }
         let a = game.camera.to_screen(from);
         let b = game.camera.to_screen(to);
         let dist = (b - a).length();
-        let lift = shell_arc_lift(dist, game.camera.zoom, shell.shooter);
+        let lift = if shell.kind == oxide_sim::ProjectileKind::Shell {
+            shell_arc_lift(dist, game.camera.zoom, shell.shooter)
+        } else {
+            0.0
+        };
+        let bastion_shell = shell.kind == oxide_sim::ProjectileKind::Shell
+            && matches!(shell.shooter, oxide_sim::Target::Building(_));
+        let artillery_heading = game.projectile_releases.artillery_heading(shell);
         let at = |t: f32| {
+            if let Some(heading) = artillery_heading {
+                return game
+                    .camera
+                    .to_screen(bombard_shell_position(launch, to, heading, t));
+            }
             let flat = a.lerp(b, t);
+            if bastion_shell {
+                return flat;
+            }
             vec2(flat.x, flat.y - lift * 4.0 * t * (1.0 - t))
         };
-        let tail_t = shell_tail_start(t, from.distance(to));
+        let tail_t = if shell.kind == oxide_sim::ProjectileKind::Missile {
+            (t - 0.65 / from.distance(to).max(f32::EPSILON)).max(0.0)
+        } else {
+            shell_tail_start(t, from.distance(to))
+        };
         let tail = at(tail_t);
         let shell_at = at(t);
         let flat = a.lerp(b, t);
+        if shell.kind != oxide_sim::ProjectileKind::Shell {
+            let direction = (at((t + 0.01).min(1.0)) - at((t - 0.01).max(0.0))).normalize_or_zero();
+            let normal = vec2(-direction.y, direction.x);
+            let missile = shell.kind == oxide_sim::ProjectileKind::Missile;
+            let length = game.camera.zoom * if missile { 0.375 } else { 0.28 };
+            let width = game.camera.zoom * if missile { 0.078125 } else { 0.13 };
+            let center = shell_at
+                - vec2(
+                    0.0,
+                    if missile {
+                        0.0
+                    } else {
+                        game.camera.zoom * 0.18 * (1.0 - t)
+                    },
+                );
+            let back = center - direction * length * 0.5;
+            let nose = center + direction * length * 0.5;
+            let motor = missile_motor_strength(flight_progress, total);
+            if missile && motor > 0.0 && (mine || game.all_seeing() || flat_seen(tail_t)) {
+                let exhaust =
+                    back - direction * game.camera.zoom * motor * (0.16 + 0.025 * (t * 97.0).sin());
+                draw_line(
+                    exhaust.x,
+                    exhaust.y,
+                    back.x,
+                    back.y,
+                    width * 0.60,
+                    Color::from_rgba(182, 83, 35, 180),
+                );
+                let core = back - direction * game.camera.zoom * 0.08 * motor;
+                draw_line(
+                    core.x,
+                    core.y,
+                    back.x,
+                    back.y,
+                    width * 0.30,
+                    Color::from_rgba(246, 199, 116, 255),
+                );
+                if (exhaust - tail).dot(direction) > 0.0 {
+                    draw_line(
+                        tail.x,
+                        tail.y,
+                        exhaust.x,
+                        exhaust.y,
+                        width * 0.70,
+                        Color::from_rgba(112, 103, 90, 85),
+                    );
+                }
+            }
+            draw_line(
+                back.x,
+                back.y,
+                nose.x,
+                nose.y,
+                width
+                    + if missile {
+                        game.camera.zoom * 0.035
+                    } else {
+                        2.0
+                    },
+                Color::from_rgba(12, 13, 17, 255),
+            );
+            let shoulder = nose - direction * length * 0.18;
+            draw_line(
+                back.x,
+                back.y,
+                shoulder.x,
+                shoulder.y,
+                width,
+                Color::from_rgba(151, 146, 134, 255),
+            );
+            draw_triangle(
+                nose,
+                shoulder + normal * width * 0.5,
+                shoulder - normal * width * 0.5,
+                Color::from_rgba(210, 199, 171, 255),
+            );
+            let fin = back + direction * length * 0.16;
+            draw_triangle(
+                back,
+                fin + normal * width,
+                fin - normal * width,
+                Color::from_rgba(92, 74, 59, 255),
+            );
+            continue;
+        }
+        if let Some(direction) =
+            artillery_heading.or_else(|| bastion_shell.then(|| (to - launch).normalize_or_zero()))
+        {
+            let direction = direction.normalize_or_zero();
+            let normal = vec2(-direction.y, direction.x);
+            let height = 4.0 * t * (1.0 - t);
+            let scale = game.camera.zoom * (1.0 + height * 0.22);
+            let width = scale * if bastion_shell { 0.12 } else { 0.14 };
+            let length = scale * if bastion_shell { 0.34 } else { 0.30 };
+            let back = shell_at - direction * length * 0.5;
+            let nose = shell_at + direction * length * 0.5;
+            let shoulder = nose - direction * length * 0.22;
+            let shadow =
+                shell_at + game.camera.zoom * (vec2(0.04, 0.06) + vec2(0.18, 0.26) * height);
+            let shadow_half = direction * game.camera.zoom * 0.10;
+            draw_line(
+                (shadow - shadow_half).x,
+                (shadow - shadow_half).y,
+                (shadow + shadow_half).x,
+                (shadow + shadow_half).y,
+                game.camera.zoom * (0.10 + 0.03 * height),
+                Color::new(0.02, 0.02, 0.025, 0.34 - 0.16 * height),
+            );
+            draw_line(
+                back.x,
+                back.y,
+                shoulder.x,
+                shoulder.y,
+                width + game.camera.zoom * 0.035,
+                Color::from_rgba(14, 15, 18, 255),
+            );
+            draw_line(
+                back.x,
+                back.y,
+                shoulder.x,
+                shoulder.y,
+                width,
+                Color::from_rgba(123, 128, 127, 255),
+            );
+            draw_triangle(
+                nose,
+                shoulder + normal * width * 0.5,
+                shoulder - normal * width * 0.5,
+                Color::from_rgba(181, 171, 147, 255),
+            );
+            let band = back + direction * length * 0.16;
+            draw_line(
+                (band - normal * width * 0.5).x,
+                (band - normal * width * 0.5).y,
+                (band + normal * width * 0.5).x,
+                (band + normal * width * 0.5).y,
+                game.camera.zoom * 0.035,
+                Color::from_rgba(149, 107, 58, 255),
+            );
+            continue;
+        }
         let radius = (game.camera.zoom * 0.075).clamp(2.2, 4.0);
         // The tiny flat-path shadow makes the restrained lift legible
         // without restoring the old launch-to-impact glowing arc.
@@ -966,6 +1399,41 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 }
                 match style {
                     ShotStyle::Contact => {}
+                    ShotStyle::Kinetic { heavy } => {
+                        let (travel, impact) = forge_spot_phases(progress);
+                        let direction = (b - a).normalize_or_zero();
+                        let zoom = game.camera.zoom;
+                        let round = a.lerp(b, travel);
+                        let length = zoom * if heavy { 0.19 } else { 0.12 };
+                        let tail = round - direction * length.min(round.distance(a));
+                        let alpha = 1.0 - impact;
+                        draw_line(
+                            tail.x,
+                            tail.y,
+                            round.x,
+                            round.y,
+                            (zoom * if heavy { 0.065 } else { 0.04 }).max(1.0),
+                            Color::new(0.91, 0.79, 0.57, alpha),
+                        );
+                        if impact > 0.0 {
+                            let normal = vec2(-direction.y, direction.x);
+                            for side in [-1.0, 0.0, 1.0] {
+                                let spread = (-direction + normal * side * 1.4).normalize_or_zero();
+                                let reach =
+                                    zoom * (0.05 + impact * if heavy { 0.25 } else { 0.16 });
+                                let start = b + spread * reach * 0.55;
+                                let end = b + spread * reach;
+                                draw_line(
+                                    start.x,
+                                    start.y,
+                                    end.x,
+                                    end.y,
+                                    1.0,
+                                    Color::new(0.84, 0.66, 0.41, alpha),
+                                );
+                            }
+                        }
+                    }
                     ShotStyle::ForgeSpot => {
                         let (travel, impact) = forge_spot_phases(progress);
                         let round = a.lerp(b, travel);
@@ -1005,25 +1473,29 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                             a.y,
                             b.x,
                             b.y,
-                            10.0 * fade.max(0.25),
-                            Color::new(0.64, 0.78, 0.96, 0.24 * fade),
+                            game.camera.zoom * 0.10 * fade.max(0.25),
+                            Color::new(0.70, 0.76, 0.80, 0.18 * fade * fade),
                         );
                         draw_line(
                             a.x,
                             a.y,
                             b.x,
                             b.y,
-                            3.5 * fade.max(0.3),
-                            Color::new(0.92, 0.96, 1.0, fade),
+                            (game.camera.zoom * 0.038).max(0.8),
+                            Color::new(0.89, 0.89, 0.80, fade * fade),
                         );
                     }
-                    ShotStyle::FlakBurst { yoke_delay } => {
+                    ShotStyle::FlakBurst {
+                        yoke_delay,
+                        rounds_per_yoke,
+                    } => {
                         let direction = (b - a).normalize_or_zero();
                         let normal = vec2(-direction.y, direction.x);
-                        let rounds = flak_round_progress(age, yoke_delay);
-                        for (side, round) in [(-1.0, rounds[0]), (1.0, rounds[1])] {
-                            let Some(round) = round else { continue };
-                            let offset = normal * side * game.camera.zoom * 0.075;
+                        for (barrel, round) in flak_barrel_rounds(age, yoke_delay, rounds_per_yoke)
+                            .into_iter()
+                            .flatten()
+                        {
+                            let offset = normal * barrel * game.camera.zoom;
                             let end = b + offset;
                             let at = (a + offset).lerp(end, round);
                             draw_circle(at.x, at.y, 3.4, Color::new(0.98, 0.43, 0.12, 0.18));
@@ -1067,8 +1539,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                     impact_witnessed || sees(blast_at),
                 );
                 if visibility.body {
-                    draw_texture_ex(
-                        sprites.texture(),
+                    sprites.draw(
                         body.x - size * 0.5,
                         body.y - size * 0.5,
                         Color::new(1.0, 1.0, 1.0, fade),
@@ -1085,8 +1556,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                     );
                     if let Some(mut tint) = seat_identity_tint(game, player) {
                         tint.a *= fade;
-                        draw_texture_ex(
-                            sprites.texture(),
+                        sprites.draw(
                             body.x - size * 0.5,
                             body.y - size * 0.5,
                             tint,
@@ -1118,8 +1588,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 let world = vec2(at.x, at.y + t * t * 1.4);
                 let screen = game.camera.to_screen(world);
                 let size = game.camera.zoom * 1.05 * (1.0 - t * 0.55);
-                draw_texture_ex(
-                    sprites.texture(),
+                sprites.draw(
                     screen.x - size * 0.5,
                     screen.y - size * 0.5,
                     Color::new(1.0, 1.0, 1.0, 1.0 - t * 0.8),
@@ -1166,8 +1635,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                     );
                     let p = game.camera.to_screen(world);
                     let size = zoom * 0.34 * (1.0 - t * 0.4);
-                    draw_texture_ex(
-                        sprites.texture(),
+                    sprites.draw(
                         p.x - size * 0.5,
                         p.y - size * 0.5,
                         Color::new(1.0, 1.0, 1.0, 1.0 - t),
@@ -2177,13 +2645,77 @@ mod tests {
     }
 
     #[test]
+    fn moth_payloads_begin_in_six_rack_positions_and_keep_their_impact_points() {
+        let launch = vec2(5.0, 7.0);
+        let heading = vec2(1.0, 0.0);
+        let mut starts = Vec::new();
+        for slot in 0..6 {
+            let impact = vec2(7.0 + slot as f32 * 0.8, 7.1);
+            let release = crate::game::LaunchPose {
+                heading,
+                kind: oxide_sim::UnitKind::Moth,
+                slot,
+            };
+            let (start, direction) = moth_bomb_pose(launch, impact, release, 0.0, 10.0);
+            assert!(direction.dot(heading) > 0.99);
+            assert!(!starts.contains(&start));
+            starts.push(start);
+            for progress in [0.0, 0.01, 0.2, 0.5, 0.99, 1.0] {
+                let (position, direction) = moth_bomb_pose(launch, impact, release, progress, 10.0);
+                assert!(position.is_finite() && direction.is_finite());
+            }
+            assert!(
+                moth_bomb_pose(launch, impact, release, 1.0, 10.0)
+                    .0
+                    .distance(impact)
+                    < 1e-5
+            );
+        }
+    }
+
+    #[test]
+    fn condor_payload_clears_the_nose_and_arrives_without_a_loft() {
+        let launch = vec2(5.0, 7.0);
+        let heading = vec2(1.0, 0.0);
+        for impact in [launch, launch + vec2(0.1, 0.0), launch + vec2(3.0, 0.8)] {
+            let (start, tangent) = condor_bomb_pose(launch, impact, heading, 0.0);
+            assert!(start.is_finite() && tangent.is_finite());
+            if impact != launch {
+                assert!(start.x > launch.x);
+                assert_eq!(start.y, launch.y);
+                assert!(tangent.dot(heading) > 0.99);
+            }
+            let mut previous = start;
+            for step in 1..=100 {
+                let (position, direction) =
+                    condor_bomb_pose(launch, impact, heading, step as f32 / 100.0);
+                assert!(position.is_finite() && direction.is_finite());
+                assert!(position.x >= previous.x);
+                assert!(position.y >= launch.y && position.y <= impact.y);
+                previous = position;
+            }
+            assert!(previous.distance(impact) < 1e-5);
+        }
+    }
+
+    #[test]
     fn artillery_shells_begin_at_the_barrel_and_use_a_low_arc() {
         let launch = vec2(5.0, 7.0);
         let impact = vec2(15.0, 7.0);
+        let shooter = oxide_sim::Target::Unit(oxide_sim::UnitId(4));
+        assert_eq!(
+            shell_visual_origin(launch, impact, shooter, oxide_sim::ProjectileKind::Bomb),
+            launch
+        );
+        assert_eq!(
+            shell_visual_origin(launch, impact, shooter, oxide_sim::ProjectileKind::Missile),
+            launch + vec2(0.53, 0.0)
+        );
         let from = shell_visual_origin(
             launch,
             impact,
             oxide_sim::Target::Building(oxide_sim::BuildingId(4)),
+            oxide_sim::ProjectileKind::Shell,
         );
         assert!((from.x - 5.98).abs() < 1.0e-4);
         assert_eq!(from.y, launch.y);
@@ -2191,14 +2723,16 @@ mod tests {
             launch,
             impact,
             oxide_sim::Target::Unit(oxide_sim::UnitId(4)),
+            oxide_sim::ProjectileKind::Shell,
         );
-        assert!((bombard_from.x - 5.46).abs() < 1.0e-4);
+        assert!((bombard_from.x - 5.254_297).abs() < 1.0e-4);
         assert_eq!(bombard_from.y, launch.y);
         assert_eq!(
             shell_visual_origin(
                 launch,
                 launch,
-                oxide_sim::Target::Unit(oxide_sim::UnitId(4))
+                oxide_sim::Target::Unit(oxide_sim::UnitId(4)),
+                oxide_sim::ProjectileKind::Shell,
             ),
             launch
         );
@@ -2214,6 +2748,95 @@ mod tests {
         let tail = shell_tail_start(0.5, 10.0);
         assert!((tail - 0.486).abs() < 1.0e-4);
         assert!((0.5 - tail) * 10.0 <= 0.140_001);
+    }
+
+    #[test]
+    fn bombard_payload_keeps_a_straight_constant_speed_course() {
+        let launch = vec2(5.0, 7.0);
+        for angle in [0.0_f32, 0.7, 1.57, 2.9, 4.71] {
+            let heading = vec2(angle.cos(), angle.sin());
+            let impact = launch + vec2((angle + 0.04).cos(), (angle + 0.04).sin()) * 10.0;
+            let start = bombard_shell_position(launch, impact, heading, 0.0);
+            let next = bombard_shell_position(launch, impact, heading, 0.001);
+            assert!((start - launch).normalize().dot(heading) > 0.999);
+            assert!((next - start).normalize().dot(heading) > 0.999);
+            assert!(bombard_shell_position(launch, impact, heading, 1.0).distance(impact) < 1e-5);
+            for step in 0..=100 {
+                let t = step as f32 / 100.0;
+                let position = bombard_shell_position(launch, impact, heading, t);
+                assert!(position.is_finite());
+                assert!(position.distance(start.lerp(impact, t)) < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn flakhound_reports_four_barrels_as_two_offset_pairs() {
+        let delay = crate::game::FlakYokeDelay::OneTick;
+        let first = flak_barrel_rounds(0.0, delay, 2);
+        assert_eq!(first.iter().flatten().count(), 2);
+        assert!(first[..2].iter().all(Option::is_some));
+        let both = flak_barrel_rounds(delay.seconds(), delay, 2);
+        let rounds: Vec<_> = both.into_iter().flatten().collect();
+        assert_eq!(rounds.len(), 4);
+        assert!(rounds.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert_eq!(rounds[0].1, rounds[1].1);
+        assert_eq!(rounds[2].1, rounds[3].1);
+        assert!(rounds[0].1 > rounds[2].1);
+        assert_eq!(
+            flak_barrel_rounds(0.0, delay, 1).iter().flatten().count(),
+            1
+        );
+    }
+
+    #[test]
+    fn flak_turret_rounds_match_both_barrel_banks_and_upgrade() {
+        let delay = crate::game::FlakYokeDelay::OneAndHalfTicks;
+        for count in [2, 3] {
+            let first = flak_barrel_rounds(0.0, delay, count);
+            assert_eq!(first.iter().flatten().count(), usize::from(count));
+            assert!(first.iter().flatten().all(|round| round.0 < 0.0));
+            let both: Vec<_> = flak_barrel_rounds(delay.seconds(), delay, count)
+                .into_iter()
+                .flatten()
+                .collect();
+            assert_eq!(both.len(), usize::from(count) * 2);
+            assert!(both.windows(2).all(|pair| pair[0].0 < pair[1].0));
+            for index in 0..usize::from(count) {
+                assert_eq!(both[index].0, -both[both.len() - 1 - index].0);
+                assert!(both[index].1 > both[index + usize::from(count)].1);
+            }
+            assert!(
+                flak_barrel_rounds(delay.seconds() + FLAK_ROUND_TRAVEL + 0.01, delay, count)
+                    .iter()
+                    .all(Option::is_none)
+            );
+        }
+    }
+
+    #[test]
+    fn missiles_eject_then_accelerate_without_changing_arrival() {
+        for distance in [0.0, 0.1, 1.0, 6.0, 20.0] {
+            let total = (distance / 0.30_f32).ceil().max(1.0);
+            assert_eq!(missile_travel_progress(0.0, total, distance), 0.0);
+            assert!((missile_travel_progress(1.0, total, distance) - 1.0).abs() < 1.0e-5);
+            let mut previous = 0.0;
+            for step in 0..=200 {
+                let progress = missile_travel_progress(step as f32 / 200.0, total, distance);
+                assert!(progress.is_finite() && (0.0..=1.0).contains(&progress));
+                assert!(progress >= previous);
+                previous = progress;
+            }
+        }
+        let total = 40.0;
+        let at = |tick| missile_travel_progress(tick / total, total, 12.0) * 12.0;
+        assert!((at(3.0) - 0.45).abs() < 1.0e-5);
+        assert_eq!(missile_motor_strength(3.0 / total, total), 0.0);
+        assert_eq!(missile_motor_strength(5.0 / total, total), 1.0);
+        assert!(at(5.0) - at(4.0) > at(2.0) - at(1.0));
+        assert!(at(7.0) - at(6.0) > at(5.0) - at(4.0));
+        assert!((at(3.0001) - at(3.0)).abs() < 0.001);
+        assert!((at(5.0001) - at(5.0)).abs() < 0.001);
     }
 
     #[test]
@@ -2246,6 +2869,23 @@ mod tests {
         let (travel, impact) = forge_spot_phases(0.99);
         assert_eq!(travel, 1.0);
         assert!(impact > 0.9);
+    }
+
+    #[test]
+    fn kinetic_reports_reach_impact_before_fading_and_respect_fog() {
+        use crate::game::ShotStyle;
+        for heavy in [false, true] {
+            let style = ShotStyle::Kinetic { heavy };
+            assert_eq!(shot_impact_progress(style, 0.0), 0.0);
+            assert_eq!(shot_impact_progress(style, style.life() * 0.25), 0.0);
+            assert!(shot_impact_progress(style, style.life() * 0.9) > 0.5);
+            assert_eq!(shot_impact_progress(style, style.life()), 1.0);
+            assert_eq!(
+                shot_visibility(style, false, true),
+                ShotVisibility::ImpactOnly
+            );
+            assert_eq!(shot_visibility(style, true, false), ShotVisibility::Hidden);
+        }
     }
 
     #[test]

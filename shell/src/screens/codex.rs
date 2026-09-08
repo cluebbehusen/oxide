@@ -289,8 +289,7 @@ impl CodexScreen {
                 plate,
             );
             let blit = |source: Rect| {
-                draw_texture_ex(
-                    sprites.texture(),
+                sprites.draw(
                     dest.x,
                     dest.y,
                     WHITE,

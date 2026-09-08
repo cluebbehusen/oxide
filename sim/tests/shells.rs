@@ -3,6 +3,8 @@
 //! later course change, deadly to straight commitments and the rooted,
 //! loyal to no one once launched. Public API only, like `domains.rs`.
 
+mod common;
+
 use chassis::grid::TilePos;
 use chassis::replay::Replay;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
@@ -93,6 +95,21 @@ fn unit_launch(
     })
 }
 
+fn fire_when_ready(
+    state: &mut State,
+    commands: &[PlayerCommand],
+    shooter: oxide_sim::UnitId,
+) -> (Vec<Event>, State) {
+    for tick in 0..200 {
+        let before = state.clone();
+        let report = state.tick(if tick == 0 { commands } else { &[] });
+        if unit_launch(&report.events, shooter).is_some() {
+            return (report.events, before);
+        }
+    }
+    panic!("ordered artillery did not establish a firing stance");
+}
+
 fn moving_target_range() -> Scenario {
     moving_target_range_with_order(true)
 }
@@ -100,13 +117,13 @@ fn moving_target_range() -> Scenario {
 fn moving_target_range_with_order(target_first: bool) -> Scenario {
     let mut units = if target_first {
         vec![
-            unit(1, UnitKind::Scuttler, 10, 5),
-            unit(0, UnitKind::Bombard, 2, 5),
+            unit(1, UnitKind::Scuttler, 8, 5),
+            unit(0, UnitKind::Bombard, 4, 5),
         ]
     } else {
         vec![
-            unit(0, UnitKind::Bombard, 2, 5),
-            unit(1, UnitKind::Scuttler, 10, 5),
+            unit(0, UnitKind::Bombard, 4, 5),
+            unit(1, UnitKind::Scuttler, 8, 5),
         ]
     };
     units.push(unit(0, UnitKind::Harvester, 7, 5));
@@ -162,7 +179,7 @@ fn establish_straight_motion(
 /// Fires the bombard at the scuttler and returns (state, launch events).
 fn open_fire() -> (State, Vec<Event>) {
     let mut state = range(vec![
-        unit(0, UnitKind::Bombard, 2, 5),
+        unit(0, UnitKind::Bombard, 4, 5),
         // The spotter sees (vision 7 at range 6) without engaging
         // (aggro 5): eyes for the gun, not a second gun.
         unit(0, UnitKind::Sentinel, 5, 5),
@@ -171,15 +188,19 @@ fn open_fire() -> (State, Vec<Event>) {
     .build()
     .unwrap();
     let (bombard, scuttler) = (state.units()[0].id, state.units()[2].id);
-    let report = state.tick(&[cmd(
-        0,
-        Command::Attack {
-            units: vec![bombard],
-            target: Target::Unit(scuttler),
-            queue: false,
-        },
-    )]);
-    (state, report.events)
+    let (events, _) = fire_when_ready(
+        &mut state,
+        &[cmd(
+            0,
+            Command::Attack {
+                units: vec![bombard],
+                target: Target::Unit(scuttler),
+                queue: false,
+            },
+        )],
+        bombard,
+    );
+    (state, events)
 }
 
 #[test]
@@ -199,7 +220,7 @@ fn a_standing_target_eats_the_shell() {
         events
             .iter()
             .any(|e| matches!(e, Event::ShellLaunched { .. })),
-        "in range with a spotter: the gun speaks immediately"
+        "in range with a spotter: the deployed gun fires"
     );
     assert_eq!(state.shells().len(), 1, "one shell in flight");
     let hp_before = state.unit(scuttler).unwrap().hp;
@@ -333,7 +354,7 @@ fn a_straight_mover_is_led_hit_and_replayed_bit_exactly() {
             1,
             Command::Move {
                 units: vec![target],
-                goal: TilePos::new(10, 10),
+                goal: TilePos::new(13, 5),
                 queue: false,
             },
         ),
@@ -365,8 +386,23 @@ fn a_straight_mover_is_led_hit_and_replayed_bit_exactly() {
         replay.record(0, command.clone());
     }
     replay.record(1, attack);
-    replay.record(2, stop);
-    replay.meta.ticks = Some(90);
+    let mut staged = replay.setup.clone().build().unwrap();
+    let mut cursor = replay.cursor();
+    let mut launched = false;
+    for _ in 0..200 {
+        let commands: Vec<_> = cursor
+            .take_tick(staged.current_tick())
+            .iter()
+            .map(|timed| timed.command.clone())
+            .collect();
+        if unit_launch(&staged.tick(&commands).events, bombard).is_some() {
+            launched = true;
+            break;
+        }
+    }
+    assert!(launched);
+    replay.record(staged.current_tick(), stop);
+    replay.meta.ticks = Some(staged.current_tick() + 90);
 
     let play = |replay: &Replay<Scenario, PlayerCommand>| {
         let mut state = replay.setup.clone().build().unwrap();
@@ -405,9 +441,9 @@ fn a_straight_mover_is_led_hit_and_replayed_bit_exactly() {
 
     let live = play(&replay);
     assert_eq!(live.0.0, Target::Unit(target));
-    assert!(live.0.1.y > live.1.y, "the shell leads the southbound path");
+    assert!(live.0.1.x > live.1.x, "the shell leads the eastbound path");
     assert!(
-        live.0.1.x <= live.1.x && live.0.1.x > live.1.x - chassis::fx::Fx::lit("0.2"),
+        live.0.1.y == live.1.y,
         "range clipping stays close to the target's straight lane"
     );
     assert!(live.2, "the predicted shell lands");
@@ -429,132 +465,188 @@ fn a_straight_mover_is_led_hit_and_replayed_bit_exactly() {
     );
 }
 
-#[test]
-fn a_visible_cluster_keeps_the_shell_on_its_current_footprint() {
+fn neighbor_shot(
+    hidden: bool,
+    air: bool,
+) -> (
+    State,
+    Vec<Event>,
+    oxide_sim::UnitId,
+    oxide_sim::UnitId,
+    oxide_sim::UnitId,
+) {
     let mut state = range(vec![
-        unit(0, UnitKind::Bombard, 3, 5),
-        unit(0, UnitKind::Sentinel, 5, 5),
-        unit(1, UnitKind::Scuttler, 11, 5),
-        unit(1, UnitKind::Scuttler, 11, 6),
+        unit(0, UnitKind::Bombard, 4, 7),
+        unit(0, UnitKind::Harvester, 5, if hidden { 4 } else { 5 }),
+        unit(1, UnitKind::Harvester, 10, 7),
+        unit(
+            1,
+            if air {
+                UnitKind::Buzzard
+            } else {
+                UnitKind::Harvester
+            },
+            if air { 9 } else { 10 },
+            8,
+        ),
     ])
     .build()
     .unwrap();
-    let bombard = state.units()[0].id;
-    let target = state.units()[2].id;
-    let neighbor = state.units()[3].id;
-    establish_straight_motion(&mut state, target, bombard, TilePos::new(11, 10));
-    assert!(state.can_see(PlayerId(0), state.unit(target).unwrap().tile()));
-    assert!(state.can_see(PlayerId(0), state.unit(neighbor).unwrap().tile()));
-    let current = state.unit(target).unwrap().pos;
+    let (gun, spotter, target, neighbor) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+        state.units()[3].id,
+    );
+    common::face_target(&mut state, gun, Target::Unit(target));
+    for id in [target, neighbor, spotter] {
+        let pos = state.unit(id).unwrap().pos;
+        common::face_toward(
+            &mut state,
+            id,
+            pos - chassis::fx::Vec2Fx::new(chassis::fx::Fx::ONE, chassis::fx::Fx::ZERO),
+        );
+    }
+    let mut value = serde_json::to_value(&state).unwrap();
+    value["units"][0]["brace_ticks"] = serde_json::json!(oxide_sim::stats::BOMBARD_BRACE_TICKS);
+    state = serde_json::from_value(value).unwrap();
+    let mut orders = vec![
+        cmd(
+            0,
+            Command::Move {
+                units: vec![gun],
+                goal: TilePos::new(4, 7),
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Move {
+                units: vec![target],
+                goal: TilePos::new(6, 7),
+                queue: false,
+            },
+        ),
+    ];
+    if !air {
+        orders.push(cmd(
+            1,
+            Command::Move {
+                units: vec![neighbor],
+                goal: TilePos::new(6, 8),
+                queue: false,
+            },
+        ));
+        orders.push(cmd(
+            0,
+            Command::Move {
+                units: vec![spotter],
+                goal: TilePos::new(1, if hidden { 4 } else { 5 }),
+                queue: false,
+            },
+        ));
+    }
+    state.tick(&orders);
+    let (events, before) = fire_when_ready(
+        &mut state,
+        &[cmd(
+            0,
+            Command::Attack {
+                units: vec![gun],
+                target: Target::Unit(target),
+                queue: false,
+            },
+        )],
+        gun,
+    );
+    let victim = before.unit(target).unwrap();
+    let neighbor_unit = before.unit(neighbor).unwrap();
+    assert!(
+        victim.path.is_some(),
+        "the fire-time target must still be moving"
+    );
+    assert!(before.can_see(PlayerId(0), victim.tile()));
+    assert_eq!(before.can_see(PlayerId(0), neighbor_unit.tile()), !hidden);
+    assert!(
+        victim.pos.dist(neighbor_unit.pos) <= UnitKind::Bombard.stats().weapons[0].splash.unwrap(),
+        "the neighbor must occupy the fire-time blast footprint: victim={:?} neighbor={:?} tick={}",
+        victim.pos,
+        neighbor_unit.pos,
+        before.current_tick()
+    );
+    (before, events, gun, target, neighbor)
+}
 
-    let report = state.tick(&[cmd(
-        0,
-        Command::Attack {
-            units: vec![bombard],
-            target: Target::Unit(target),
-            queue: false,
-        },
-    )]);
-    let (_, aim, _) = unit_launch(&report.events, bombard).expect("the clustered shot launches");
-
+#[test]
+fn a_visible_cluster_keeps_the_shell_on_its_current_footprint() {
+    let (before, events, gun, target, _) = neighbor_shot(false, false);
+    let (_, aim, _) = unit_launch(&events, gun).unwrap();
     assert_eq!(
-        aim, current,
-        "a second visible hostile inside the current blast rewards the known cluster"
+        aim,
+        before.unit(target).unwrap().pos,
+        "a second visible ground body preserves current-cluster aim"
     );
 }
 
 #[test]
 fn an_unseen_neighbor_cannot_suppress_predictive_aim() {
-    let mut state = range(vec![
-        unit(0, UnitKind::Bombard, 3, 5),
-        unit(0, UnitKind::Sentinel, 5, 5),
-        unit(1, UnitKind::Scuttler, 12, 5),
-        unit(1, UnitKind::Scuttler, 13, 5),
-    ])
-    .build()
-    .unwrap();
-    let bombard = state.units()[0].id;
-    let target = state.units()[2].id;
-    let neighbor = state.units()[3].id;
-    establish_straight_motion(&mut state, target, bombard, TilePos::new(12, 10));
-    assert!(state.can_see(PlayerId(0), state.unit(target).unwrap().tile()));
-    assert!(!state.can_see(PlayerId(0), state.unit(neighbor).unwrap().tile()));
-    let current = state.unit(target).unwrap().pos;
-
-    let report = state.tick(&[cmd(
-        0,
-        Command::Attack {
-            units: vec![bombard],
-            target: Target::Unit(target),
-            queue: false,
-        },
-    )]);
-    let (_, aim, _) = unit_launch(&report.events, bombard).expect("the isolated shot launches");
-
+    let (before, events, gun, target, _) = neighbor_shot(true, false);
+    let (_, aim, _) = unit_launch(&events, gun).unwrap();
     assert!(
-        aim.y > current.y,
-        "fog-private neighbors cannot turn an isolated visible mover into a cluster"
+        aim.x < before.unit(target).unwrap().pos.x,
+        "a hidden neighbor cannot suppress westbound lead"
     );
 }
 
 #[test]
 fn an_ineligible_air_neighbor_cannot_suppress_predictive_aim() {
-    let mut state = range(vec![
-        unit(0, UnitKind::Bombard, 3, 5),
-        unit(0, UnitKind::Sentinel, 5, 5),
-        unit(1, UnitKind::Scuttler, 11, 5),
-        unit(1, UnitKind::Buzzard, 11, 6),
-    ])
-    .build()
-    .unwrap();
-    let bombard = state.units()[0].id;
-    let target = state.units()[2].id;
-    let neighbor = state.units()[3].id;
-    establish_straight_motion(&mut state, target, bombard, TilePos::new(11, 10));
-    assert!(state.can_see(PlayerId(0), state.unit(target).unwrap().tile()));
-    assert!(state.can_see(PlayerId(0), state.unit(neighbor).unwrap().tile()));
-    let current = state.unit(target).unwrap().pos;
-
-    let report = state.tick(&[cmd(
-        0,
-        Command::Attack {
-            units: vec![bombard],
-            target: Target::Unit(target),
-            queue: false,
-        },
-    )]);
-    let (_, aim, _) = unit_launch(&report.events, bombard).expect("the isolated shot launches");
-
+    let (before, events, gun, target, _) = neighbor_shot(false, true);
+    let (_, aim, _) = unit_launch(&events, gun).unwrap();
     assert!(
-        aim.y > current.y,
-        "a nearby air body outside the weapon domain cannot suppress the lead"
+        aim.x < before.unit(target).unwrap().pos.x,
+        "an air body outside the weapon domain cannot suppress westbound lead"
     );
 }
 
 #[test]
 fn advance_fire_leads_the_same_moving_path_without_becoming_an_attack() {
-    let mut state = moving_target_range().build().unwrap();
-    let (target, bombard) = moving_ids(&state);
-    establish_straight_motion(&mut state, target, bombard, TilePos::new(10, 10));
+    let mut scenario = moving_target_range();
+    scenario
+        .units
+        .iter_mut()
+        .find(|unit| unit.kind == UnitKind::Bombard)
+        .unwrap()
+        .kind = UnitKind::Avalanche;
+    scenario
+        .units
+        .iter_mut()
+        .find(|unit| unit.kind == UnitKind::Scuttler)
+        .unwrap()
+        .x = 12;
+    let mut state = scenario.build().unwrap();
+    let target = unit_of_kind(&state, UnitKind::Scuttler);
+    let launcher = unit_of_kind(&state, UnitKind::Avalanche);
+    establish_straight_motion(&mut state, target, launcher, TilePos::new(15, 5));
+    common::face_target(&mut state, launcher, Target::Unit(target));
     let target_start = state.unit(target).unwrap().pos;
-    let goal = TilePos::new(6, 8);
+    let goal = TilePos::new(20, 5);
     let report = state.tick(&[cmd(
         0,
         Command::Advance {
-            units: vec![bombard],
+            units: vec![launcher],
             goal,
             queue: false,
         },
     )]);
     let (event_target, aim, _) =
-        unit_launch(&report.events, bombard).expect("Advance launches a shell");
+        unit_launch(&report.events, launcher).expect("Advance launches a shell");
     assert_eq!(event_target, Target::Unit(target));
     assert!(
-        aim.y > target_start.y,
+        aim.x > target_start.x,
         "Advance uses predictive artillery aim"
     );
     assert!(matches!(
-        state.unit(bombard).unwrap().order,
+        state.unit(launcher).unwrap().order,
         oxide_sim::Order::Advance { goal: current } if current == goal
     ));
 }
@@ -563,7 +655,7 @@ fn advance_fire_leads_the_same_moving_path_without_becoming_an_attack() {
 fn predictive_aim_never_extends_the_weapon_envelope() {
     let mut state = range(vec![
         unit(1, UnitKind::Scuttler, 11, 5),
-        unit(0, UnitKind::Bombard, 2, 5),
+        unit(0, UnitKind::Bombard, 4, 5),
         unit(0, UnitKind::Harvester, 7, 5),
     ])
     .build()
@@ -581,17 +673,21 @@ fn predictive_aim_never_extends_the_weapon_envelope() {
         .unwrap()
         .id;
     establish_straight_motion(&mut state, target, bombard, TilePos::new(20, 5));
-    let from = state.unit(bombard).unwrap().pos;
-    let current = state.unit(target).unwrap().pos;
-    let report = state.tick(&[cmd(
-        0,
-        Command::Attack {
-            units: vec![bombard],
-            target: Target::Unit(target),
-            queue: false,
-        },
-    )]);
-    let (_, aim, _) = unit_launch(&report.events, bombard).expect("the edge shot launches");
+    let (events, before) = fire_when_ready(
+        &mut state,
+        &[cmd(
+            0,
+            Command::Attack {
+                units: vec![bombard],
+                target: Target::Unit(target),
+                queue: false,
+            },
+        )],
+        bombard,
+    );
+    let current = before.unit(target).unwrap().pos;
+    let (_, aim, _) = unit_launch(&events, bombard).expect("the edge shot launches");
+    let from = before.unit(bombard).unwrap().pos;
     let range = UnitKind::Bombard.stats().weapons[0].range;
     assert!(aim.x > current.x, "the outward path is still led");
     assert!(
@@ -618,18 +714,22 @@ fn predictive_aim_is_independent_of_unit_id_order_and_brain_parity() {
                 },
             )]);
         }
-        establish_straight_motion(&mut state, target, bombard, TilePos::new(10, 10));
+        establish_straight_motion(&mut state, target, bombard, TilePos::new(13, 5));
         assert_eq!(state.current_tick().is_multiple_of(2), fire_on_even_tick);
-        let current = state.unit(target).unwrap().pos;
-        let report = state.tick(&[cmd(
-            0,
-            Command::Attack {
-                units: vec![bombard],
-                target: Target::Unit(target),
-                queue: false,
-            },
-        )]);
-        let (_, aim, _) = unit_launch(&report.events, bombard).expect("the moving target is led");
+        let (events, before) = fire_when_ready(
+            &mut state,
+            &[cmd(
+                0,
+                Command::Attack {
+                    units: vec![bombard],
+                    target: Target::Unit(target),
+                    queue: false,
+                },
+            )],
+            bombard,
+        );
+        let current = before.unit(target).unwrap().pos;
+        let (_, aim, _) = unit_launch(&events, bombard).expect("the moving target is led");
         (current, aim)
     };
 
@@ -727,7 +827,7 @@ fn assert_artillery_ignores_hidden_target(
     kind: UnitKind,
 ) {
     let initial_pos = state.unit(artillery).unwrap().pos;
-    for tick in 0..4 {
+    for tick in 0..44 {
         let report = state.tick(&[]);
         let unit = state.unit(artillery).unwrap();
         assert_eq!(
@@ -769,18 +869,26 @@ fn assert_artillery_fires_through_shared_sight(
     assert_eq!(unit.pos, initial_pos);
     assert!(unit.path.is_none());
 
-    let report = state.tick(&[]);
-    let unit = state.unit(artillery).unwrap();
-    assert_eq!(
-        unit.pos, initial_pos,
-        "{kind:?} approached despite having range"
-    );
-    assert!(unit.path.is_none());
-    assert_eq!(
-        unit_launch(&report.events, artillery).map(|launch| launch.0),
-        Some(target),
-        "allied sight did not unlock {kind:?} at its autonomous range"
-    );
+    let turn_ticks = if kind.ground_turn_rate() == 0 {
+        1
+    } else {
+        128u32.div_ceil(u32::from(kind.ground_turn_rate()))
+    };
+    for _ in 0..turn_ticks {
+        let report = state.tick(&[]);
+        let unit = state.unit(artillery).unwrap();
+        assert_eq!(
+            unit.pos, initial_pos,
+            "{kind:?} approached despite having range"
+        );
+        assert!(unit.path.is_none());
+        if let Some(launch) = unit_launch(&report.events, artillery) {
+            assert_eq!(launch.0, target);
+            return;
+        }
+        assert_eq!(unit.cooldowns[0], 0, "turning cannot consume the shot");
+    }
+    panic!("allied sight did not unlock {kind:?} at its autonomous range");
 }
 
 fn peak_prediction_range() -> Scenario {
@@ -795,12 +903,12 @@ fn peak_prediction_range() -> Scenario {
             "#......................#".into(),
             "#......................#".into(),
             "#......................#".into(),
+            "#........####..........#".into(),
+            "#.............^........#".into(),
+            "#........####..........#".into(),
             "#......................#".into(),
             "#......................#".into(),
             "#......................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#.......^..............#".into(),
             "#......................#".into(),
             "#......................#".into(),
             "#......................#".into(),
@@ -813,7 +921,7 @@ fn peak_prediction_range() -> Scenario {
         players: players(),
         units: vec![
             unit(1, UnitKind::Scuttler, 10, 8),
-            unit(0, UnitKind::Bombard, 2, 8),
+            unit(0, UnitKind::Bombard, 4, 8),
             unit(0, UnitKind::Harvester, 7, 8),
         ],
         buildings: Vec::new(),
@@ -920,17 +1028,27 @@ fn autonomous_avalanche_requires_shared_true_sight_for_buildings() {
 fn predictive_aim_falls_back_before_crossing_a_peak() {
     let mut state = peak_prediction_range().build().unwrap();
     let (target, bombard) = moving_ids(&state);
-    establish_straight_motion(&mut state, target, bombard, TilePos::new(10, 16));
-    let current = state.unit(target).unwrap().pos;
-    let report = state.tick(&[cmd(
-        0,
-        Command::Attack {
-            units: vec![bombard],
-            target: Target::Unit(target),
-            queue: false,
-        },
-    )]);
-    let (_, aim, _) = unit_launch(&report.events, bombard).expect("the current line is legal");
+    establish_straight_motion(&mut state, target, bombard, TilePos::new(18, 8));
+    let (events, before) = fire_when_ready(
+        &mut state,
+        &[cmd(
+            0,
+            Command::Attack {
+                units: vec![bombard],
+                target: Target::Unit(target),
+                queue: false,
+            },
+        )],
+        bombard,
+    );
+    let victim = before.unit(target).unwrap();
+    assert!(
+        victim.path.is_some(),
+        "the target must still be approaching the peak"
+    );
+    assert_eq!(victim.pos.y, chassis::fx::Fx::lit("8.5"));
+    let current = victim.pos;
+    let (_, aim, _) = unit_launch(&events, bombard).expect("the current line is legal");
     assert_eq!(
         aim, current,
         "a predicted line through a peak falls back to the visible current position"
@@ -963,15 +1081,23 @@ fn a_siege_shell_lands_on_the_footprint_edge_and_still_counts() {
         .building(east)
         .unwrap()
         .closest_point_to(state.unit(bombard).unwrap().pos);
-    let report = state.tick(&[cmd(
-        0,
-        Command::Attack {
-            units: vec![bombard],
-            target: Target::Building(east),
-            queue: false,
-        },
-    )]);
-    let launch = unit_launch(&report.events, bombard).expect("the Bombard launches");
+    let (events, before) = fire_when_ready(
+        &mut state,
+        &[cmd(
+            0,
+            Command::Attack {
+                units: vec![bombard],
+                target: Target::Building(east),
+                queue: false,
+            },
+        )],
+        bombard,
+    );
+    let launch = unit_launch(&events, bombard).expect("the Bombard launches");
+    assert_eq!(
+        before.unit(bombard).unwrap().pos,
+        state.unit(bombard).unwrap().pos
+    );
     assert_eq!(launch.0, Target::Building(east));
     assert_eq!(
         launch.1, expected_aim,

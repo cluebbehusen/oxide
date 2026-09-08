@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageChops
 
 from tools import gen_sprites as gen
 

@@ -889,7 +889,12 @@ mod tests {
 
         DebugSession::advance(&mut pb, 40);
 
-        assert!(pb.game.facing.is_empty());
+        for (&id, &angle) in &pb.game.facing {
+            let unit = pb.game.state.unit(oxide_sim::UnitId(id)).unwrap();
+            let expected = f32::from(unit.heading) * std::f32::consts::TAU / 256.0
+                + std::f32::consts::FRAC_PI_2;
+            assert_eq!(angle, expected);
+        }
         for unit in pb.game.state.units() {
             let expected = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
             assert_eq!(pb.game.prev_pos.get(&unit.id.0), Some(&expected));

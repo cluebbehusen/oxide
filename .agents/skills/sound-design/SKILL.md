@@ -69,10 +69,12 @@ another layer.
 3. Copy the paired finalized GIF into the selected audition tree when animation
    timing matters; production generation intentionally does not depend on the
    untracked visual-review bank.
-4. Open `tools/audio_review.html` and select the audition directory. Exercise
-   normal mixer level, rapid retrigger, and the paired animation. Present the
-   numbered options with plain descriptions, then stop for Connor's by-ear
-   approval. Do not infer a winner from spectra or diagnostics.
+4. Open `tools/audio_review.html` and select the audition directory. When the
+   repository is served over local HTTP, `?bank=../path/to/manifest.json` loads
+   a same-origin audition bank directly. Exercise normal mixer level, rapid
+   retrigger, and the paired animation. Present the numbered options with plain
+   descriptions, then stop for Connor's by-ear approval. Do not infer a winner
+   from spectra or diagnostics.
 5. After an explicit approval, port that exact recipe into the production
    generator and assert that its generated WAV is byte-identical to the approved
    audition file.

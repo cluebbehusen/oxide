@@ -92,17 +92,16 @@ fn visible_hostile_target_at(
 /// structures, a selected own factory spends them on production, and
 /// otherwise the first five are control groups.
 pub(super) fn digit_action(game: &mut Game, input: &mut InputState, slot: usize) {
-    if input.build_menu {
-        if let Some(&kind) = crate::input::build_page(input.build_page).get(slot) {
+    if input.construction_open() {
+        let slot = if input.resolver.shift_held() && slot < 4 {
+            slot + 9
+        } else {
+            slot
+        };
+        if let Some(&kind) = crate::input::BUILD_PALETTE.get(slot) {
             input.build_menu = false;
             input.disarm_click_verbs();
             input.placing = Some(kind);
-            let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
-            game.toast(format!(
-                "placing {} ({} scrap): click to build, Esc to cancel",
-                kind.name(),
-                cost
-            ));
         }
         return;
     }

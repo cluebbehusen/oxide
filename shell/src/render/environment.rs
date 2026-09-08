@@ -289,6 +289,45 @@ fn cell_color(material: Material, ix: i32, iy: i32) -> Option<Color> {
     }
 }
 
+pub(super) fn quarry_color(color: Color, material: Material, fractured: bool) -> Color {
+    if fractured && matches!(material, Material::Riser(_) | Material::Bench(_)) {
+        Color::new(color.r + 0.008, color.g + 0.004, color.b, color.a)
+    } else {
+        color
+    }
+}
+
+pub(super) fn draw_strata(rect: Rect, edge: (i32, i32), layer: Layer, token: u32) {
+    let (origin, tangent, inward) = match edge {
+        (-1, 0) => (vec2(rect.x, rect.y), vec2(0.0, rect.h), vec2(rect.w, 0.0)),
+        (1, 0) => (
+            vec2(rect.x + rect.w, rect.y),
+            vec2(0.0, rect.h),
+            vec2(-rect.w, 0.0),
+        ),
+        (0, -1) => (vec2(rect.x, rect.y), vec2(rect.w, 0.0), vec2(0.0, rect.h)),
+        _ => (
+            vec2(rect.x, rect.y + rect.h),
+            vec2(rect.w, 0.0),
+            vec2(0.0, -rect.h),
+        ),
+    };
+    if token.is_multiple_of(3) {
+        let start = origin + inward * 0.42;
+        let middle = start + tangent * 0.46 + inward * 0.08;
+        let end = origin + tangent * 0.94 + inward * 0.43;
+        let tone = mixed(layer.riser, layer.lip, 0.30);
+        let width = (rect.w * 0.08).max(1.0);
+        draw_line(start.x, start.y, middle.x, middle.y, width, tone);
+        draw_line(middle.x, middle.y, end.x, end.y, width, tone);
+    }
+    if token.is_multiple_of(7) {
+        let start = origin + tangent * 0.32;
+        let tip = start + tangent * 0.23 + inward * 0.38;
+        draw_triangle(start, start + tangent * 0.22, tip, layer.riser);
+    }
+}
+
 pub(super) fn draw_lip(rect: Rect, direction: (i32, i32), thickness: f32, color: Color) {
     match direction {
         (-1, 0) => draw_rectangle(rect.x, rect.y, thickness, rect.h, color),
@@ -387,7 +426,7 @@ pub(super) fn draw_rebar(rect: Rect, cell: f32, tile: f32) {
     }
 }
 
-fn draw_boundary_terraces(frame: MapFrame) {
+fn draw_boundary_terraces(frame: MapFrame, fractured: bool) {
     let field = TerraceField::new(frame);
     let (x_range, y_range) = field.visible_ranges();
     for iy in y_range.clone() {
@@ -397,7 +436,13 @@ fn draw_boundary_terraces(frame: MapFrame) {
                 continue;
             };
             let rect = field.rect(ix, iy);
-            draw_rectangle(rect.x, rect.y, rect.w, rect.h, color);
+            draw_rectangle(
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                quarry_color(color, material, fractured),
+            );
         }
     }
 
@@ -431,6 +476,14 @@ fn draw_boundary_terraces(frame: MapFrame) {
             for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
                 if field.material(ix + dx, iy + dy) == Material::Riser(level) {
                     draw_lip(rect, (dx, dy), lip, LAYERS[level].lip);
+                    if fractured {
+                        draw_strata(
+                            field.rect(ix + dx, iy + dy),
+                            (-dx, -dy),
+                            LAYERS[level],
+                            hash(ix + dx, iy + dy, SALT + 607),
+                        );
+                    }
                 }
             }
         }
@@ -452,8 +505,8 @@ pub(super) fn draw_backdrop(_game: &Game) {
     draw_rectangle(0.0, 0.0, screen_width(), screen_height(), rgba(8, 9, 12));
 }
 
-pub(super) fn draw_boundary(game: &Game) {
-    draw_boundary_terraces(MapFrame::from_game(game));
+pub(super) fn draw_boundary(game: &Game, fractured: bool) {
+    draw_boundary_terraces(MapFrame::from_game(game), fractured);
 }
 
 #[cfg(test)]

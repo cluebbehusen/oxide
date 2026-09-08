@@ -31,9 +31,12 @@ from tools.production_sprite_sources import (
     ground_base,
     ground_final,
     heavy_structures,
+    installed_defenses_final,
+    mechanical_final,
     moth_warden_final,
     shrike_sylph_final,
     skyhook_sapper_crucible_final,
+    specialists_final,
     structures_base,
     tender_condor_final,
     tier_one_combat_final,
@@ -716,3 +719,6 @@ def install_finalized_sprites(registry: Registry, out: Path) -> None:
     core_unit_art_final.install_core_unit_art(registry, out)
     flak_array_final.install_flak_array(registry, out)
     field_structures_final.install_field_structures(registry, out)
+    specialists_final.install_specialists(registry, out)
+    installed_defenses_final.install_defenses(registry, out)
+    mechanical_final.install_machines(registry, out)

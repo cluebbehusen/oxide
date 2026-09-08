@@ -1,5 +1,7 @@
 //! The 0.15 Skyhook: boarding, riding, landing, stranding, and dying.
 
+mod common;
+
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{PlayerSpec, UnitSpec};
@@ -676,6 +678,9 @@ fn a_lethally_hit_rider_is_not_entombed_as_cargo() {
         .map(|unit| unit.id)
         .collect();
 
+    for &attacker in &attackers {
+        common::face_target(&mut state, attacker, Target::Unit(rider));
+    }
     let report = state.tick(&[
         cmd(
             0,

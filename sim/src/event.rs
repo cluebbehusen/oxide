@@ -14,6 +14,24 @@ use chassis::fx::Vec2Fx;
 use chassis::grid::TilePos;
 use serde::{Deserialize, Serialize};
 
+/// A unit's physical pose when its projectile leaves the weapon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnitLaunchPose {
+    /// The firing chassis, retained even if it dies during the volley.
+    pub kind: UnitKind,
+    /// Compass heading before subsequent movement or egress steering.
+    pub heading: u8,
+}
+
+impl From<&crate::state::Unit> for UnitLaunchPose {
+    fn from(unit: &crate::state::Unit) -> Self {
+        Self {
+            kind: unit.kind,
+            heading: unit.heading,
+        }
+    }
+}
+
 /// Something noteworthy that happened during a tick.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -165,6 +183,8 @@ pub enum Event {
         /// building may be rubble by the time presentation looks it up
         /// (a Bastion destroyed the tick it fires still booms).
         kind: crate::stats::BuildingKind,
+        /// Upgrade tier when the weapon fired, before damage resolves.
+        tier: u8,
         /// The unit or building hit.
         target: Target,
         /// Muzzle position.
@@ -177,6 +197,8 @@ pub enum Event {
         /// The gun itself — a unit's mount or a building's emplacement;
         /// presentation turns it toward the work.
         shooter: crate::ids::Target,
+        /// Fire-time chassis pose; building emplacements have no unit pose.
+        unit_pose: Option<UnitLaunchPose>,
         /// The unit or building the gun led at launch time.
         target: Target,
         /// The firing seat.

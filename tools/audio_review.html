@@ -165,7 +165,13 @@
         active.delete(audio);
         if (card) card.classList.remove('playing');
       }, { once: true });
-      audio.play();
+      audio.play().catch(error => {
+        active.delete(audio);
+        if (card) card.classList.remove('playing');
+        if (error.name !== 'AbortError') {
+          status.textContent = `could not play ${entry.filename}: ${error.message}`;
+        }
+      });
     }
 
     function retrigger(entry) {
@@ -278,6 +284,35 @@
       }
     });
     document.getElementById('stop').addEventListener('click', stopAll);
+
+    const bankPath = new URLSearchParams(location.search).get('bank');
+    if (bankPath) {
+      (async () => {
+        try {
+          const manifestUrl = new URL(bankPath, location.href);
+          if (manifestUrl.origin !== location.origin) throw new Error('bank must use the same origin');
+          const response = await fetch(manifestUrl);
+          if (!response.ok) throw new Error(`manifest HTTP ${response.status}`);
+          const manifest = await response.json();
+          if (manifest.format !== 1 || !Array.isArray(manifest.sounds)) {
+            throw new Error('not an Oxide audio manifest');
+          }
+          const names = [...new Set(manifest.sounds.flatMap(entry =>
+            [entry.filename, entry.paired_animation].filter(Boolean)))];
+          const files = [];
+          for (const name of names) {
+            const response = await fetch(new URL(name, manifestUrl));
+            if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`);
+            files.push(new File([await response.blob()], name));
+          }
+          if (directory.files.length) return;
+          filesByName = new Map(files.map(file => [file.name, [file]]));
+          render(manifest);
+        } catch (error) {
+          if (!directory.files.length) status.textContent = `could not load bank: ${error.message}`;
+        }
+      })();
+    }
   </script>
 </body>
 </html>

@@ -157,6 +157,7 @@ fn refusal(doc: Value) -> String {
 fn shell(shooter: Value, player: u32, impact_bits: i64) -> Value {
     json!({
         "shooter": shooter,
+        "kind": "shell",
         "player": player,
         "launch": {"x": {"bits": 0}, "y": {"bits": 0}},
         "impact": {"x": {"bits": impact_bits}, "y": {"bits": 0}},
@@ -184,6 +185,40 @@ fn the_base_snapshot_is_accepted() {
     let base = snapshot();
     let restored: State = serde_json::from_value(base.clone()).expect("a real state round-trips");
     assert_eq!(doc(&restored), base, "the round trip is lossless");
+}
+
+#[test]
+fn projectile_kind_checks_include_shooters_inside_transports() {
+    let mut scenario = arena();
+    scenario.units = vec![
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Bombard,
+            x: 8,
+            y: 4,
+        },
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Skyhook,
+            x: 9,
+            y: 4,
+        },
+    ];
+    let mut base = doc(&scenario.build().unwrap());
+    base["shells"] = json!([shell(json!({"kind": "unit", "id": 0}), 0, 4294967296)]);
+    let mut rider = base["units"].as_array_mut().unwrap().remove(0);
+    rider["pos"] = base["units"][0]["pos"].clone();
+    base["units"][0]["cargo"] = json!([rider]);
+    let restored: State =
+        serde_json::from_value(base.clone()).expect("a carried shooter's shell remains valid");
+    assert_eq!(doc(&restored), base);
+    for kind in ["bomb", "missile"] {
+        let mut forged = base.clone();
+        forged["shells"][0]["kind"] = json!(kind);
+        assert!(refusal(forged).contains("projectile kind inconsistent with its shooter"));
+    }
+    base["units"][0]["cargo"] = json!([]);
+    serde_json::from_value::<State>(base).expect("a shell outlives its destroyed shooter");
 }
 
 #[test]
@@ -292,10 +327,13 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::LandedUnescapable(_) => 64,
         E::LandedOnUnstandableGround(_) => 65,
         E::LandedOverlap(..) => 66,
+        E::ShellKindMismatch(_) => 67,
+        E::InvalidUnitBraces(_) => 68,
+        E::InvalidTurretHeading(_) => 69,
     }
 }
 
-const ROWS: usize = 67;
+const ROWS: usize = 70;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -375,6 +413,9 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::LandedUnescapable(UnitId(0)),
         E::LandedOnUnstandableGround(UnitId(0)),
         E::LandedOverlap(UnitId(0), UnitId(1)),
+        E::ShellKindMismatch(0),
+        E::InvalidUnitBraces(UnitId(0)),
+        E::InvalidTurretHeading(UnitId(0)),
     ]
 }
 
@@ -589,6 +630,16 @@ fn every_checklist_row_refuses_its_forgery() {
             "an order queue past the cap",
             |d| d["units"][0]["queue"] = json!(vec![json!({"order": "idle"}); 33]),
             "unit u0 queues more orders than the cap allows",
+        ),
+        (
+            "a harvester carrying an independent turret bearing",
+            |d| d["units"][0]["turret_heading"] = json!(0),
+            "unit u0 carries an unsupported independent turret heading",
+        ),
+        (
+            "a harvester carrying deployed spades",
+            |d| d["units"][0]["brace_ticks"] = json!(1),
+            "unit u0 carries invalid spade deployment",
         ),
         (
             "a unit shoved to the far end of the coordinate space",
@@ -827,35 +878,41 @@ fn every_checklist_row_refuses_its_forgery() {
         (
             "a shell fired by a seat off the table",
             |d| {
-                d["shells"].as_array_mut().unwrap().push(shell(
-                    json!({"kind": "unit", "id": 1}),
-                    9,
-                    4294967296,
-                ));
+                d["shells"]
+                    .as_array_mut()
+                    .unwrap()
+                    .insert(0, shell(json!({"kind": "unit", "id": 1}), 9, 4294967296));
             },
             "shell 0 is owned by a player outside the table",
         ),
         (
             "a shell aimed at the far end of the coordinate space",
             |d| {
-                d["shells"].as_array_mut().unwrap().push(shell(
-                    json!({"kind": "unit", "id": 1}),
-                    0,
-                    i64::MAX,
-                ));
+                d["shells"]
+                    .as_array_mut()
+                    .unwrap()
+                    .insert(0, shell(json!({"kind": "unit", "id": 1}), 0, i64::MAX));
             },
             "shell 0 names a coordinate outside the envelope",
         ),
         (
             "a shell fired by an id the run never minted",
             |d| {
-                d["shells"].as_array_mut().unwrap().push(shell(
-                    json!({"kind": "building", "id": 9_999}),
+                d["shells"].as_array_mut().unwrap().insert(
                     0,
-                    4294967296,
-                ));
+                    shell(json!({"kind": "building", "id": 9_999}), 0, 4294967296),
+                );
             },
             "shell 0 was fired by an id the run never minted",
+        ),
+        (
+            "a shell carrying a payload its shooter cannot launch",
+            |d| {
+                let mut projectile = shell(json!({"kind": "unit", "id": 1}), 0, 4294967296);
+                projectile["kind"] = json!("bomb");
+                d["shells"].as_array_mut().unwrap().insert(0, projectile);
+            },
+            "shell 0 has a projectile kind inconsistent with its shooter",
         ),
         (
             "a memory of a building owned off the table",

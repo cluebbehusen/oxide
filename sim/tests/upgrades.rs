@@ -5,6 +5,8 @@
 //! upgrades cannot be cancelled, and the deepest rungs sit behind the
 //! Crucible.
 
+mod common;
+
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
@@ -450,6 +452,9 @@ fn lethal_fire_wins_an_upgrades_completion_tick() {
     }
     assert_eq!(state.building(turret).unwrap().progress, ticks - 1);
 
+    for &attacker in &sappers {
+        common::face_target(&mut state, attacker, oxide_sim::Target::Building(turret));
+    }
     let report = state.tick(&[cmd(
         1,
         Command::Attack {

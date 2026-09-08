@@ -23,14 +23,15 @@ const FABRICATOR_PRODUCTION_PERIOD: u64 = 12;
 const CRUCIBLE_PRODUCTION_PERIOD: u64 = 16;
 const AIRWORKS_PRODUCTION_PERIOD: u64 = 12;
 const ARRAY_SWEEP_PERIOD: u64 = 32;
-const EXTRACTOR_PERIOD: u64 = 12;
-const RECLAIMER_PERIOD: u64 = 12;
+const EXTRACTOR_PERIOD: u64 = 48;
+const RECLAIMER_PERIOD: u64 = 40;
 const BUZZARD_ROTOR_PERIOD: u64 = 6;
 const WISP_ROTOR_PERIOD: u64 = 4;
 const SKYHOOK_ROTOR_PERIOD: u64 = 8;
 const SKYHOOK_ACTION_TICKS: f32 = 8.0;
 const REPAIR_PULSE_TICKS: f32 = 6.0;
 const AIRWORKS_LAUNCH_TICKS: u64 = 16;
+const AIRWORKS_OPEN_TICKS: u32 = 12;
 pub(crate) const FLAKHOUND_REPORT_TICKS: f32 = 2.0;
 pub(crate) const FLAK_TURRET_REPORT_TICKS: f32 = 3.0;
 
@@ -185,6 +186,8 @@ pub(crate) struct UnitAnimationState {
     pub(crate) weapons: [WeaponCycle; MAX_WEAPONS],
     /// Mechanisms that must run independently of locomotion.
     pub(crate) propulsion: PropulsionState,
+    /// Continuously powered scout scanner, independent of flight or movement.
+    pub(crate) scanner: Option<f32>,
     /// Event-driven cargo-door and clamp movement.
     pub(crate) transport: Option<TransportActionState>,
     /// A Sapper has physically reached contact and will detonate next tick.
@@ -530,6 +533,8 @@ impl AnimationController {
             attack: self.unit_attack(facts.id, facts.kind, clock),
             weapons,
             propulsion,
+            scanner: matches!(facts.kind, UnitKind::Kestrel | UnitKind::Gnat)
+                .then(|| clock.cycle(facts.id.0, 96, options.reduced_motion)),
             transport: self.transport_action(facts.id, clock),
             demolition_preparation: facts
                 .demolition_contact
@@ -686,9 +691,17 @@ impl AnimationController {
             .get(&facts.id)
             .and_then(|completed_tick| clock.elapsed_since(*completed_tick))
             .filter(|elapsed| *elapsed < AIRWORKS_LAUNCH_TICKS as f32)
-            .map(|elapsed| (elapsed / AIRWORKS_LAUNCH_TICKS as f32).clamp(0.0, 1.0))
+            .map(|elapsed| (2.0 - 2.0 * elapsed / AIRWORKS_LAUNCH_TICKS as f32).clamp(0.0, 1.0))
         {
             return BuildingActivity::AirworksLaunch { progress };
+        }
+        if let Some((_, progress, total)) = facts.production {
+            let remaining = total.saturating_sub(progress);
+            if remaining <= AIRWORKS_OPEN_TICKS {
+                return BuildingActivity::AirworksLaunch {
+                    progress: 1.0 - remaining as f32 / AIRWORKS_OPEN_TICKS as f32,
+                };
+            }
         }
         facts
             .production
@@ -1169,6 +1182,7 @@ mod tests {
             tick: 8,
             events: vec![
                 Event::ShellLaunched {
+                    unit_pose: None,
                     shooter: Target::Unit(UnitId(7)),
                     target: Target::Unit(UnitId(8)),
                     player: PlayerId(0),
@@ -1177,6 +1191,7 @@ mod tests {
                     flight: 10,
                 },
                 Event::ShellLaunched {
+                    unit_pose: None,
                     shooter: Target::Building(BuildingId(9)),
                     target: Target::Unit(UnitId(8)),
                     player: PlayerId(0),
@@ -1246,6 +1261,80 @@ mod tests {
             );
             assert_eq!(held.propulsion, PropulsionState::LiftRotors { cycle: 0.0 });
         }
+    }
+
+    #[test]
+    fn array_sweep_preserves_fractional_motion_and_holds_the_paused_clock() {
+        let controller = AnimationController::default();
+        let facts = building_facts(BuildingKind::Array);
+        let options = AnimationOptions::default();
+        let activity = |fraction| {
+            controller
+                .building_state(facts, AnimationClock::new(12, fraction), options)
+                .activity
+        };
+        let BuildingActivity::ArraySweep { cycle: first } = activity(0.0) else {
+            panic!("built Array must sweep");
+        };
+        let BuildingActivity::ArraySweep { cycle: later } = activity(0.5) else {
+            panic!("built Array must sweep");
+        };
+        assert!((later - first - 0.5 / ARRAY_SWEEP_PERIOD as f32).abs() < 0.00001);
+        assert_eq!(activity(0.5), activity(0.5));
+        assert_eq!(
+            controller
+                .building_state(
+                    facts,
+                    AnimationClock::new(99, 0.75),
+                    AnimationOptions {
+                        reduced_motion: true
+                    }
+                )
+                .activity,
+            BuildingActivity::ArraySweep { cycle: 0.0 }
+        );
+    }
+
+    #[test]
+    fn scout_scanners_run_at_rest_without_restarting_with_movement() {
+        let controller = AnimationController::default();
+        let options = AnimationOptions::default();
+        for kind in [UnitKind::Kestrel, UnitKind::Gnat] {
+            let mut facts = unit_facts(kind);
+            let clock = AnimationClock::new(12, 0.5);
+            let idle = controller.unit_state(facts, clock, options);
+            assert_eq!(idle.locomotion, LocomotionState::Rest);
+            assert!(idle.scanner.is_some());
+            let later = controller.unit_state(facts, AnimationClock::new(24, 0.5), options);
+            assert_ne!(idle.scanner, later.scanner);
+            facts.moved = true;
+            assert_eq!(
+                controller.unit_state(facts, clock, options).scanner,
+                idle.scanner
+            );
+            assert_eq!(
+                controller
+                    .unit_state(
+                        facts,
+                        clock,
+                        AnimationOptions {
+                            reduced_motion: true
+                        }
+                    )
+                    .scanner,
+                Some(0.0)
+            );
+        }
+        assert_eq!(
+            controller
+                .unit_state(
+                    unit_facts(UnitKind::Sentinel),
+                    AnimationClock::new(12, 0.5),
+                    options
+                )
+                .scanner,
+            None
+        );
     }
 
     #[test]
@@ -1425,6 +1514,8 @@ mod tests {
             hp: UnitKind::Harvester.stats().max_hp,
             carrying: 0,
             cooldowns: [0; MAX_WEAPONS],
+            brace_ticks: 0,
+            turret_heading: None,
             progress: 0,
             order: Order::Build { site: site.id },
             queue: VecDeque::new(),
@@ -1472,7 +1563,50 @@ mod tests {
     }
 
     #[test]
-    fn aircraft_completion_opens_only_its_producer_bay() {
+    fn airworks_opens_before_completion_and_closes_after_launch() {
+        let mut controller = AnimationController::default();
+        let mut facts = building_facts(BuildingKind::Airworks);
+        let total = UnitKind::Buzzard.stats().train_ticks;
+        for (remaining, expected) in [(12, 0.0), (6, 0.5), (1, 11.0 / 12.0)] {
+            facts.production = Some((UnitKind::Buzzard, total - remaining, total));
+            let activity = controller
+                .building_state(
+                    facts,
+                    AnimationClock::new(100, 0.0),
+                    AnimationOptions::default(),
+                )
+                .activity;
+            let BuildingActivity::AirworksLaunch { progress } = activity else {
+                panic!("the bay must open before the aircraft appears");
+            };
+            assert!((progress - expected).abs() < 0.0001);
+        }
+        facts.production = None;
+        controller.observe_events(
+            100,
+            &[Event::UnitTrained {
+                building: facts.id,
+                unit: UnitId(99),
+                kind: UnitKind::Buzzard,
+                player: PlayerId(0),
+            }],
+        );
+        for (tick, expected) in [(100, 1.0), (108, 1.0), (112, 0.5)] {
+            assert_eq!(
+                controller
+                    .building_state(
+                        facts,
+                        AnimationClock::new(tick, 0.0),
+                        AnimationOptions::default()
+                    )
+                    .activity,
+                BuildingActivity::AirworksLaunch { progress: expected }
+            );
+        }
+    }
+
+    #[test]
+    fn aircraft_completion_holds_open_only_its_producer_bay() {
         let facts = building_facts(BuildingKind::Airworks);
         let mut controller = AnimationController::default();
         controller.observe_events(
@@ -1510,7 +1644,7 @@ mod tests {
             controller
                 .building_state(facts, clock, AnimationOptions::default())
                 .activity,
-            BuildingActivity::AirworksLaunch { progress: 0.0 }
+            BuildingActivity::AirworksLaunch { progress: 1.0 }
         );
 
         let finished = AnimationClock::new(37, 0.0);
@@ -1788,6 +1922,7 @@ mod tests {
             &[Event::TurretFired {
                 turret: BuildingId(u32::MAX),
                 kind: BuildingKind::Turret,
+                tier: 0,
                 target: Target::Unit(UnitId(0)),
                 turret_pos: point(),
                 target_pos: point(),

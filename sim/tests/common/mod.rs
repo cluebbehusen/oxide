@@ -126,3 +126,41 @@ pub fn run_until(
     }
     panic!("condition not reached within {max_ticks} ticks");
 }
+
+/// Establish an already-aimed fixture when testing same-tick resolution.
+pub fn face_toward(state: &mut State, id: oxide_sim::UnitId, point: chassis::fx::Vec2Fx) {
+    let unit = state.unit(id).unwrap();
+    let direction = point - unit.pos;
+    let heading = (0..=255u8)
+        .max_by_key(|&step| {
+            let d = chassis::compass::dir(step);
+            (
+                d.x * direction.x + d.y * direction.y,
+                std::cmp::Reverse(step),
+            )
+        })
+        .unwrap();
+    let mut value = serde_json::to_value(&*state).unwrap();
+    let row = value["units"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|u| u["id"] == serde_json::json!(id))
+        .unwrap();
+    row["heading"] = serde_json::json!(heading);
+    if unit.kind.has_ground_turret() {
+        row["turret_heading"] = serde_json::json!(heading);
+    }
+    *state = serde_json::from_value(value).unwrap();
+}
+
+pub fn face_target(state: &mut State, id: oxide_sim::UnitId, target: oxide_sim::Target) {
+    let unit = state.unit(id).unwrap();
+    let point = match target {
+        oxide_sim::Target::Unit(target) => state.unit(target).unwrap().pos,
+        oxide_sim::Target::Building(target) => {
+            state.building(target).unwrap().closest_point_to(unit.pos)
+        }
+    };
+    face_toward(state, id, point);
+}

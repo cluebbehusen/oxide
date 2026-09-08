@@ -372,6 +372,43 @@ shot is hitscan or a real projectile. Buildings count as ground targets. Weapons
 may cover ground, air, or both; sidearms are separate weapon slots and cooldowns
 are stored per slot.
 
+All ground chassis pivot toward their route before translating, moving once
+within eight of 256 compass steps. A tick spends at most one movement turn, even
+across several waypoints. Turn rate is the ceiling of movement speed times 64,
+bounded to four through ten steps per tick; Breaker retains four, and Avalanche
+and Bombard retain three. Pathfinding and translation speeds remain unchanged,
+but turn time changes arrival and engagement timing. Ground units spawn facing
+the map center so mirrored placements have mirrored initial turn costs; air
+initialization is unchanged.
+
+Ground weapons require alignment within two compass steps before firing.
+Sentinel, Warden, and Lancer have independent serialized `turret_heading`
+bearings, traversing eight, five, and six steps per tick respectively while the
+hull follows its route. An absent bearing initially follows the hull; other unit
+kinds cannot deserialize this field. Fixed ground weapons aim with the chassis.
+During Advance they only take already-aligned opportunistic shots; independent
+mounts can traverse while advancing. Ground sidearms share the current weapon
+bearing and cannot fire off-axis. Workers turn toward their stationary work
+target without delaying work progress.
+
+Buzzard uses its compass heading for an independent turret, while its air
+movement remains unrestricted by heading. The turret traverses six compass steps
+per tick and shares the two-step firing tolerance. It tracks visible, shootable
+targets during reload. An advance keeps its route while traversing toward its
+ordinary opportunistic target; cooldown starts only once the turret aligns.
+Hidden structures cannot attract an advancing weapon or reveal themselves
+through turret tracking.
+
+Bombard keeps serialized `brace_ticks` from zero to twelve. It turns with the
+spades stowed, then spends twelve aligned ticks deploying; its heading stays
+fixed inside the firing tolerance while planted. After a shot, eight ticks of
+recoil protection precede retraction at three deployment ticks per tick. A new
+aim, lost firing solution, or movement order retracts the spades before further
+turning or translation. Reloading at an unchanged firing stance keeps them
+planted. Advance does not fire Bombard potshots. Deserialization bounds the
+deployment counter, rejects it on other kinds and requires transported riders to
+have stowed spades.
+
 Targeted attacks require current team sight. Shared allied sight can spot for a
 long-range weapon, but a remembered building or unidentified radar contact
 cannot authorize a shot. Direct ground-to-ground fire traces terrain: rocks
@@ -382,8 +419,11 @@ and artillery arc.
 Hitscan attacks buffer damage for same-tick resolution. Projectile weapons
 launch a serialized `Shell` toward a fixed fire-time aim point. Predictive aim
 may lead a unit's current path before launch, but a shell is unguided after it
-leaves the weapon. On arrival, buildings take only a direct hit; eligible enemy
-units may take splash according to the weapon's domain mask.
+leaves the weapon. A serialized projectile kind preserves missile, bomb, or
+shell identity independently of shooter survival. Deserialization rejects a kind
+inconsistent with a shooter that still exists. On arrival, buildings take only a
+direct hit; eligible enemy units may take splash according to the weapon's
+domain mask.
 
 ## Fog, memory, radar, and teams
 

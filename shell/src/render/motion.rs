@@ -94,6 +94,11 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
     if let Some(attack) = state.attack {
         return UnitFrame::Action(unit_attack_frame(kind, attack));
     }
+    if matches!(kind, UnitKind::Avalanche | UnitKind::Moth)
+        && let Some(progress) = preparation_progress(&state.weapons)
+    {
+        return UnitFrame::Action(unit_preparation_frame(kind, progress));
+    }
 
     if kind == UnitKind::Sapper
         && let Some(progress) = state.demolition_preparation
@@ -166,6 +171,12 @@ fn lift_rotor_frame(kind: UnitKind, cycle: f32) -> UnitFrame {
     } else {
         UnitFrame::Moving(cycle_index(cycle, 2))
     }
+}
+
+/// Independent weapon rows retain their cycle while the chassis travels.
+pub(crate) fn unit_mount_frame(kind: UnitKind, mut state: UnitAnimationState) -> UnitFrame {
+    state.locomotion = LocomotionState::Rest;
+    unit_frame(kind, state)
 }
 
 /// Selects the complete building frame, keeping Bastion's fixed charge rack
@@ -278,7 +289,36 @@ fn preparation_progress(weapons: &[WeaponCycle]) -> Option<f32> {
 
 fn unit_preparation_frame(kind: UnitKind, progress: f32) -> usize {
     match kind {
-        UnitKind::Lancer | UnitKind::Bombard => cycle_index(progress, 3),
+        UnitKind::Moth => {
+            if progress < 0.84 {
+                2
+            } else if progress < 0.90 {
+                3
+            } else if progress < 0.96 {
+                4
+            } else {
+                5
+            }
+        }
+        UnitKind::Avalanche => {
+            if progress < 0.78 {
+                2
+            } else if progress < 0.95 {
+                3
+            } else {
+                0
+            }
+        }
+        UnitKind::Lancer => {
+            if progress < 0.82 {
+                0
+            } else if progress < 0.94 {
+                1
+            } else {
+                2
+            }
+        }
+        UnitKind::Bombard => cycle_index(progress, 3),
         UnitKind::Flakhound => cycle_index(progress, 5),
         UnitKind::Sentinel
         | UnitKind::Scuttler
@@ -291,9 +331,7 @@ fn unit_preparation_frame(kind: UnitKind, progress: f32) -> usize {
         | UnitKind::Shrike
         | UnitKind::Sylph
         | UnitKind::Condor
-        | UnitKind::Moth
-        | UnitKind::Breaker
-        | UnitKind::Avalanche => 0,
+        | UnitKind::Breaker => 0,
         UnitKind::Harvester
         | UnitKind::Tender
         | UnitKind::Excavator
@@ -309,6 +347,13 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
         AttackPhase::Report { progress, .. } => match kind {
             UnitKind::Lancer | UnitKind::Bombard => 3,
             UnitKind::Flakhound => 5 + cycle_index(progress, 2),
+            UnitKind::Condor => {
+                if progress < 1.0 / 3.0 {
+                    3
+                } else {
+                    1
+                }
+            }
             UnitKind::Sentinel
             | UnitKind::Scuttler
             | UnitKind::Stinger
@@ -319,10 +364,9 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Warden
             | UnitKind::Shrike
             | UnitKind::Sylph
-            | UnitKind::Condor
             | UnitKind::Breaker
             | UnitKind::Avalanche => 1,
-            UnitKind::Moth => cycle_index(progress, 3),
+            UnitKind::Moth => 0,
             UnitKind::Harvester
             | UnitKind::Tender
             | UnitKind::Excavator
@@ -332,6 +376,7 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Sapper => 0,
         },
         AttackPhase::Recover { progress, .. } => match kind {
+            UnitKind::Avalanche => 2,
             UnitKind::Lancer | UnitKind::Bombard => 4 + cycle_index(progress, 2),
             UnitKind::Flakhound => 7 + cycle_index(progress, 2),
             UnitKind::Sentinel
@@ -345,9 +390,8 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Shrike
             | UnitKind::Sylph
             | UnitKind::Condor
-            | UnitKind::Breaker
-            | UnitKind::Avalanche => 2 + cycle_index(progress, 2),
-            UnitKind::Moth => 3 + cycle_index(progress, 3),
+            | UnitKind::Breaker => 2 + cycle_index(progress, 2),
+            UnitKind::Moth => 1,
             UnitKind::Harvester
             | UnitKind::Tender
             | UnitKind::Excavator
@@ -405,6 +449,7 @@ mod tests {
             attack: None,
             weapons: [WeaponCycle::Unavailable; MAX_WEAPONS],
             propulsion: PropulsionState::None,
+            scanner: None,
             transport: None,
             demolition_preparation: None,
         }
@@ -434,6 +479,39 @@ mod tests {
                 mount_action: None,
             }
         );
+    }
+
+    #[test]
+    fn articulated_mount_keeps_late_charge_and_recoil_while_tracks_move() {
+        let mut state = unit_state();
+        state.locomotion = LocomotionState::Moving { cycle: 0.75 };
+        for (progress, frame) in [(0.1, 0), (0.8, 0), (0.9, 1), (0.98, 2)] {
+            state.weapons[0] = WeaponCycle::Preparing { progress };
+            assert_eq!(unit_frame(UnitKind::Lancer, state), UnitFrame::Moving(1));
+            assert_eq!(
+                unit_mount_frame(UnitKind::Lancer, state),
+                UnitFrame::Action(frame)
+            );
+        }
+        state.attack = Some(AttackPhase::Report {
+            progress: 0.0,
+            weapon: 0,
+        });
+        assert_eq!(
+            unit_mount_frame(UnitKind::Lancer, state),
+            UnitFrame::Action(3)
+        );
+        state.attack = Some(AttackPhase::Recover {
+            progress: 0.1,
+            weapon: 0,
+        });
+        assert_eq!(
+            unit_mount_frame(UnitKind::Lancer, state),
+            UnitFrame::Action(4)
+        );
+        state.attack = None;
+        state.weapons[0] = WeaponCycle::Ready;
+        assert_eq!(unit_mount_frame(UnitKind::Lancer, state), UnitFrame::Idle);
     }
 
     #[test]
@@ -709,31 +787,41 @@ mod tests {
     }
 
     #[test]
-    fn moth_uses_all_six_payload_frames_across_report_and_recovery() {
-        for (progress, expected) in [(0.0, 0), (0.34, 1), (0.67, 2)] {
-            assert_eq!(
-                unit_attack_frame(
-                    UnitKind::Moth,
-                    AttackPhase::Report {
-                        weapon: 0,
-                        progress,
-                    },
-                ),
-                expected,
-            );
+    fn moth_stays_spent_during_egress_and_reloads_only_at_the_end_of_cooldown() {
+        let mut state = unit_state();
+        state.locomotion = LocomotionState::Moving { cycle: 0.5 };
+        for progress in [0.0, 0.5, 0.99] {
+            state.attack = Some(AttackPhase::Report {
+                weapon: 0,
+                progress,
+            });
+            assert_eq!(unit_frame(UnitKind::Moth, state), UnitFrame::Action(0));
+            state.attack = Some(AttackPhase::Recover {
+                weapon: 0,
+                progress,
+            });
+            assert_eq!(unit_frame(UnitKind::Moth, state), UnitFrame::Action(1));
         }
-        for (progress, expected) in [(0.0, 3), (0.34, 4), (0.67, 5)] {
-            assert_eq!(
-                unit_attack_frame(
-                    UnitKind::Moth,
-                    AttackPhase::Recover {
-                        weapon: 0,
-                        progress,
-                    },
-                ),
-                expected,
-            );
+        state.attack = None;
+        for (progress, pose) in [
+            (0.07, 2),
+            (0.50, 2),
+            (0.83, 2),
+            (0.85, 3),
+            (0.91, 4),
+            (0.97, 5),
+        ] {
+            state.weapons[0] = WeaponCycle::Preparing { progress };
+            assert_eq!(unit_frame(UnitKind::Moth, state), UnitFrame::Action(pose));
+            let mut parked = state;
+            parked.locomotion = LocomotionState::Rest;
+            assert_eq!(unit_frame(UnitKind::Moth, parked), UnitFrame::Action(pose));
         }
+        state.weapons[0] = WeaponCycle::Ready;
+        assert!(matches!(
+            unit_frame(UnitKind::Moth, state),
+            UnitFrame::Moving(_)
+        ));
     }
 
     #[test]
@@ -890,6 +978,19 @@ mod tests {
                     ) < count
                 );
             }
+        }
+    }
+
+    #[test]
+    fn avalanche_stays_empty_through_most_of_reload_even_while_moving() {
+        let mut state = unit_state();
+        state.locomotion = LocomotionState::Moving { cycle: 0.5 };
+        for (progress, frame) in [(0.1, 2), (0.77, 2), (0.8, 3), (0.96, 0)] {
+            state.weapons[0] = WeaponCycle::Preparing { progress };
+            assert_eq!(
+                unit_frame(UnitKind::Avalanche, state),
+                UnitFrame::Action(frame)
+            );
         }
     }
 }

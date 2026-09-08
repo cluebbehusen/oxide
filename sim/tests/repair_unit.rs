@@ -711,10 +711,9 @@ fn a_patient_evicted_from_freshly_claimed_ground_rides_no_heal() {
                 .any(|building| building.anchor == TilePos::new(5, 5)),
             "the command must claim the patient's ground at tick {tick}"
         );
-        assert_ne!(
-            state.unit(patient).unwrap().pos,
-            before_pos,
-            "the footprint eviction must move the patient at tick {tick}"
+        assert!(
+            state.unit(patient).unwrap().path.is_some(),
+            "the footprint eviction must route the patient at tick {tick}"
         );
         assert_eq!(
             state.unit(patient).unwrap().hp,
@@ -729,6 +728,18 @@ fn a_patient_evicted_from_freshly_claimed_ground_rides_no_heal() {
                 ..
             } if *unit == patient && *source == welder
         )));
+        for _ in 0..64 {
+            state.tick(&[]);
+            assert_eq!(state.unit(patient).unwrap().hp, before_hp);
+            if state.unit(patient).unwrap().pos != before_pos {
+                break;
+            }
+        }
+        assert_ne!(
+            state.unit(patient).unwrap().pos,
+            before_pos,
+            "the patient must turn and leave the claimed ground"
+        );
     }
 }
 

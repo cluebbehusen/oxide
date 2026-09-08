@@ -512,6 +512,18 @@ fn raises_combat_music(kind: SoundKind) -> bool {
 }
 
 pub(crate) async fn run(args: Args) -> Result<()> {
+    let review_font = std::env::var_os("OXIDE_REVIEW_FONT")
+        .map(std::fs::read)
+        .transpose()
+        .context("reading OXIDE_REVIEW_FONT")?;
+    let mut font = load_ttf_font_from_bytes(
+        review_font
+            .as_deref()
+            .unwrap_or(include_bytes!("../../assets/fonts/ChakraPetch-Medium.ttf")),
+    )?;
+    font.set_filter(FilterMode::Linear);
+    macroquad::text::set_default_font(font.clone());
+    crate::typography::install(font);
     let trace = crate::trace_startup_enabled(&args);
     let mark = |label: &str| {
         if trace {

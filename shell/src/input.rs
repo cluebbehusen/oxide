@@ -158,8 +158,6 @@ pub struct InputState {
     pub(crate) rallying: Vec<oxide_sim::BuildingId>,
     /// Whether the build palette is open (`B`; digits pick a structure).
     pub(crate) build_menu: bool,
-    /// Which palette page the open build menu shows (0 or 1).
-    pub(crate) build_page: usize,
     /// This frame's chrome scale (dpi x user), injected by the frame
     /// loop so hit math never queries the window.
     pub(crate) ui: f32,
@@ -348,9 +346,8 @@ fn placement_ping(kind: oxide_sim::BuildingKind, anchor: TilePos) -> Vec2 {
     )
 }
 
-/// Everything a harvester can put in the ground, in palette order — the
-/// digit keys index straight into this.
-pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 7] = [
+/// Construction shortcuts use 1-9, then Shift+1 through Shift+4.
+pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 13] = [
     oxide_sim::BuildingKind::Turret,
     oxide_sim::BuildingKind::FlakTurret,
     oxide_sim::BuildingKind::Bastion,
@@ -358,11 +355,6 @@ pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 7] = [
     oxide_sim::BuildingKind::Reclaimer,
     oxide_sim::BuildingKind::RepairBay,
     oxide_sim::BuildingKind::Fabricator,
-];
-
-/// The advanced palette page. The palette key cycles closed -> basic ->
-/// advanced -> closed, and digits pick from the open page.
-pub(crate) const BUILD_PALETTE_TECH: [oxide_sim::BuildingKind; 6] = [
     oxide_sim::BuildingKind::Foundry,
     oxide_sim::BuildingKind::Airworks,
     oxide_sim::BuildingKind::Crucible,
@@ -371,20 +363,9 @@ pub(crate) const BUILD_PALETTE_TECH: [oxide_sim::BuildingKind; 6] = [
     oxide_sim::BuildingKind::ScuttleCharge,
 ];
 
-/// The open palette page's kinds.
-pub(crate) fn build_page(page: usize) -> &'static [oxide_sim::BuildingKind] {
-    if page == 0 {
-        &BUILD_PALETTE
-    } else {
-        &BUILD_PALETTE_TECH
-    }
-}
-
 impl InputState {
-    /// The palette page the panel should render: the live page while
-    /// the menu is open, the classic first page otherwise.
-    pub(crate) fn active_build_page(&self) -> usize {
-        if self.build_menu { self.build_page } else { 0 }
+    pub(crate) fn construction_open(&self) -> bool {
+        self.build_menu || self.placing.is_some()
     }
 
     /// Fresh input state.
@@ -406,7 +387,6 @@ impl InputState {
             attacking: false,
             rallying: Vec::new(),
             build_menu: false,
-            build_page: 0,
             ui: 1.0,
             now: 0.0,
             camera_prefs: crate::config::CameraPrefs::default(),
@@ -1299,6 +1279,9 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         }
         return true;
     }
+    if click_on_hud(game, p) && crate::render::minimap_world_at(game, p).is_none() {
+        return false;
+    }
     if !input.rallying.is_empty() {
         let world = crate::render::minimap_world_at(game, p)
             .or_else(|| (!click_on_hud(game, p)).then(|| game.camera.to_world(p)));
@@ -1553,17 +1536,6 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             input.build_menu = false;
             input.disarm_click_verbs();
             input.placing = Some(kind);
-            let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
-            game.toast(format!(
-                "placing {} ({} scrap): click to build, Shift chains, Esc to cancel",
-                kind.name(),
-                cost
-            ));
-        }
-        crate::panel::CardAction::ShowBuildPage(page) => {
-            input.disarm_click_verbs();
-            input.build_menu = true;
-            input.build_page = page;
         }
         crate::panel::CardAction::ArmRally => {
             let buildings = orders::selected_producers(game);

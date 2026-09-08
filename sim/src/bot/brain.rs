@@ -1853,7 +1853,11 @@ mod tests {
 
         let config = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 9_001);
         let mut brain = scripted_brain(&scenario, PlayerId(0), config);
-        while state.current_tick() < 12 {
+        while state.current_tick() < 100 && state.building(site).unwrap().progress == 0 {
+            state.tick(&[]);
+        }
+        assert!(state.building(site).unwrap().progress > 0);
+        while !state.current_tick().is_multiple_of(brain.dials.cadence) {
             state.tick(&[]);
         }
         let active_builder = state
@@ -1879,7 +1883,7 @@ mod tests {
         );
         state.tick(&evacuation);
 
-        while state.current_tick() < 24 {
+        while !state.current_tick().is_multiple_of(brain.dials.cadence) {
             state.tick(&[]);
         }
         assert!(matches!(
@@ -1894,7 +1898,12 @@ mod tests {
             "the interruption must leave a paid unfinished site"
         );
 
-        let resolution = brain.act(&state);
+        let deadline = state.current_tick() + brain.dials.cadence * 4;
+        let mut resolution = brain.act(&state);
+        while resolution.is_empty() && state.current_tick() < deadline {
+            state.tick(&[]);
+            resolution = brain.act(&state);
+        }
         assert!(
             resolution.iter().any(|command| matches!(
                 command.command,
