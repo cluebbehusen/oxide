@@ -7,10 +7,13 @@ use super::*;
 /// explored-but-unseen is dimmed.
 pub(crate) fn draw_fog(game: &Game) {
     let vision = game.my_vision();
-    let (min, max) = visible_tiles(game);
+    let boundary = environment::BoundaryKnowledge::new(&game.scenario.map);
+    let (lo, hi) = game.camera.world_rect();
+    let min = TilePos::new(lo.x.floor() as i32, lo.y.floor() as i32);
+    let max = TilePos::new(hi.x.ceil() as i32, hi.y.ceil() as i32);
     for y in min.y..max.y {
         for x in min.x..max.x {
-            let tile = TilePos::new(x, y);
+            let tile = boundary.tile(TilePos::new(x, y));
             let cover = if !vision.explored(tile) {
                 FOG_UNEXPLORED
             } else if !vision.visible(tile) {
@@ -30,6 +33,7 @@ pub(crate) fn draw_fog(game: &Game) {
     }
     // Feather inward into known ground. Unknown tiles retain their opaque veil.
     let fog_alpha = |tile| {
+        let tile = boundary.tile(tile);
         if !vision.explored(tile) {
             1.0
         } else if !vision.visible(tile) {
