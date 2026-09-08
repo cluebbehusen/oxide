@@ -1,5 +1,8 @@
 """Compact installed defenses in Oxide's accepted machine materials."""
 
+import math
+import struct
+
 from tools import gen_sprites as gen
 from tools.production_sprite_sources.specialists_final import (
     DARK,
@@ -18,6 +21,45 @@ from tools.production_sprite_sources.specialists_final import (
 )
 
 BRASS = (130, 105, 66)
+
+
+def _brace(d, a, b, color, width):
+    # Pillow's wide-line scan conversion can fuse multiply/add on ARM but
+    # not x86. Round the slope and intersection explicitly to retain the
+    # same edge pixels on both platforms.
+    def f32(value):
+        return struct.unpack("<f", struct.pack("<f", value))[0]
+
+    x0, y0 = (round(v * 4) for v in a)
+    x1, y1 = (round(v * 4) for v in b)
+    dx, dy = x1 - x0, y1 - y0
+    length = math.hypot(dx, dy)
+    half = (width * 4 - 1) / 2
+
+    def offset(distance, delta):
+        value = distance * delta / length
+        return math.copysign(math.ceil(abs(value) - 0.5), value)
+
+    xmin = offset(math.floor(half), dy)
+    xmax = offset(math.ceil(half), dy)
+    ymin = offset(math.floor(half), dx)
+    ymax = offset(math.ceil(half), dx)
+    points = [
+        (x0 - xmin, y0 + ymax),
+        (x1 - xmin, y1 + ymax),
+        (x1 + xmax, y1 - ymin),
+        (x0 + xmax, y0 - ymin),
+    ]
+    edges = list(zip(points, points[1:] + points[:1]))
+    for y in range(int(min(p[1] for p in points)), int(max(p[1] for p in points)) + 1):
+        xs = [
+            f32(ax + (y - ay) * f32((bx - ax) / (by - ay)))
+            for (ax, ay), (bx, by) in edges
+            if min(ay, by) <= y <= max(ay, by)
+        ]
+        left = math.floor(min(xs) + 0.5)
+        right = math.ceil(max(xs) - 0.5)
+        d.line([(left, y), (right, y)], fill=(*color, 255))
 
 
 def plate(d, bounds, fill=DARK, cut=5):
@@ -183,8 +225,8 @@ def flak_base(faction, tier=0):
     im, d = canvas()
     paint = gen.FACTIONS[faction]["dark"]
     for a, b in [((25, 29), (104, 105)), ((103, 29), (24, 105))]:
-        line(d, [a, b], VOID, 18)
-        line(d, [a, b], IRON, 11)
+        _brace(d, a, b, VOID, 18)
+        _brace(d, a, b, IRON, 11)
     for x, y in [(24, 28), (104, 28), (24, 106), (104, 106)]:
         plate(d, (x - 10, y - 7, x + 10, y + 8), DARK, 4)
         bolt(d, x, y)
