@@ -14,6 +14,53 @@ use serde_json::json;
 
 use common::{cmd, open_arena_with, run_until, unit};
 
+#[test]
+fn a_loaded_worker_inside_static_pressure_leaves_and_deposits() {
+    let node = TilePos::new(6, 6);
+    let mut state = state_with_salvage(
+        24,
+        &[(node, 100)],
+        &[],
+        vec![unit(0, UnitKind::Harvester, 6, 5)],
+        vec![BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Turret,
+            x: 10,
+            y: 5,
+        }],
+    );
+    let worker = state.units()[0].id;
+    state = set_cargo(
+        state,
+        worker,
+        UnitKind::Harvester.stats().harvest.unwrap().capacity,
+    );
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![worker],
+            node,
+            queue: false,
+        },
+    )]);
+    assert!(
+        state.unit(worker).unwrap().path.is_some(),
+        "known static fire trapped the worker instead of allowing retreat"
+    );
+    run_until(&mut state, 500, |_, events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                Event::ScrapDeposited {
+                    player: PlayerId(0),
+                    ..
+                }
+            )
+        })
+    });
+    assert!(state.unit(worker).unwrap().hp > 0);
+}
+
 fn state_with_salvage(
     width: usize,
     sources: &[(TilePos, u32)],

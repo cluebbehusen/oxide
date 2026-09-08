@@ -521,18 +521,31 @@ impl GroundSalvageDanger {
     }
 
     /// Whether an autonomous route may traverse `tile` from its current
-    /// planning origin. Live threats, radar, and static fire remain hard
-    /// barriers. A worker already inside an anonymous incident ring may
-    /// move laterally or outward, but never closer to that impact; a worker
-    /// outside cannot enter it.
+    /// planning origin. Live threats and radar remain hard barriers. A worker
+    /// inside remembered static fire or an incident ring may move laterally
+    /// or outward; a worker outside cannot enter either envelope.
     pub(crate) fn route_safe_from(&self, from: TilePos, tile: TilePos) -> bool {
         // One bounds test and one byte load serve both the observed
         // memo and the incident-near stamp.
         let index = self.lane_index(tile);
         let bits = index.map(|i| self.lanes[i].get()).unwrap_or(0);
         let observed = self.observed_at(tile, index, bits);
-        if observed {
+        if observed && self.mobile_or_radar_contains(tile) {
             return false;
+        }
+        if observed {
+            let from_point = from.center();
+            let next_point = tile.center();
+            if self.statics.iter().any(|pressure| {
+                let next_distance = rect_closest_point(pressure.anchor, pressure.size, next_point)
+                    .dist_sq(next_point);
+                next_distance <= pressure.reach_sq
+                    && next_distance
+                        < rect_closest_point(pressure.anchor, pressure.size, from_point)
+                            .dist_sq(from_point)
+            }) {
+                return false;
+            }
         }
         if index.is_some() && bits & lane::INCIDENT_NEAR == 0 {
             return true;
@@ -632,6 +645,17 @@ impl GroundSalvageDanger {
     }
 
     fn compute_observed_contains(&self, source: TilePos) -> bool {
+        if self.mobile_or_radar_contains(source) {
+            return true;
+        }
+        let source_point = source.center();
+        self.statics.iter().any(|pressure| {
+            rect_closest_point(pressure.anchor, pressure.size, source_point).dist_sq(source_point)
+                <= pressure.reach_sq
+        })
+    }
+
+    fn mobile_or_radar_contains(&self, source: TilePos) -> bool {
         if self
             .contacts
             .iter()
@@ -651,13 +675,7 @@ impl GroundSalvageDanger {
                 screen_strength = screen_strength.saturating_add(pressure.strength);
             }
         }
-        if hostile_strength > screen_strength {
-            return true;
-        }
-        self.statics.iter().any(|pressure| {
-            rect_closest_point(pressure.anchor, pressure.size, source_point).dist_sq(source_point)
-                <= pressure.reach_sq
-        })
+        hostile_strength > screen_strength
     }
 }
 
@@ -1280,5 +1298,56 @@ mod danger_tests {
         assert!(projection.known_building_blocked(allied_wall));
         assert!(projection.known_building_blocked(hostile_wall));
         assert!(!projection.known_building_blocked(hostile_charge));
+    }
+
+    fn static_egress_danger() -> GroundSalvageDanger {
+        let (state, _) = screened_source(false);
+        let mut danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        danger.mobile.clear();
+        danger.statics = vec![StaticGroundPressure {
+            anchor: TilePos::new(10, 3),
+            size: (2, 2),
+            reach_sq: Fx::from_num(64),
+        }];
+        danger
+    }
+
+    #[test]
+    fn static_pressure_allows_egress_but_never_approach_or_new_entry() {
+        let danger = static_egress_danger();
+        let from = TilePos::new(7, 4);
+        assert!(
+            danger.contains(from),
+            "the unsafe source remains ineligible for work"
+        );
+        assert!(danger.route_safe_from(from, TilePos::new(6, 4)));
+        assert!(danger.route_safe_from(from, TilePos::new(7, 3)));
+        assert!(!danger.route_safe_from(from, TilePos::new(8, 4)));
+        assert!(!danger.route_safe_from(TilePos::new(0, 4), TilePos::new(3, 4)));
+        assert!(danger.route_safe_from(from, TilePos::new(0, 4)));
+    }
+
+    #[test]
+    fn static_egress_cannot_approach_an_overlapping_gun_or_cross_radar_or_mobile_fire() {
+        let from = TilePos::new(7, 4);
+        let to = TilePos::new(6, 4);
+        let mut overlap = static_egress_danger();
+        overlap.statics.push(StaticGroundPressure {
+            anchor: TilePos::new(0, 3),
+            size: (2, 2),
+            reach_sq: Fx::from_num(64),
+        });
+        assert!(!overlap.route_safe_from(from, to));
+        let mut radar = static_egress_danger();
+        radar.contacts.push(to);
+        assert!(!radar.route_safe_from(from, to));
+        let mut mobile = static_egress_danger();
+        mobile.mobile.push(MobileGroundPressure {
+            pos: to.center(),
+            reach_sq: Fx::from_num(16),
+            strength: 100,
+            hostile: true,
+        });
+        assert!(!mobile.route_safe_from(from, to));
     }
 }
