@@ -21,9 +21,11 @@ mod render;
 mod saves;
 mod screens;
 mod soundtrack;
+mod strategic_markers;
 mod theme;
 mod tutorial;
 mod typography;
+mod unit_lod;
 
 use clap::Parser;
 use macroquad::prelude::*;
