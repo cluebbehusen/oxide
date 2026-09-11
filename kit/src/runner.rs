@@ -37,10 +37,7 @@ pub fn step(
     bots: &mut [SeatBot],
     replay: Option<&mut GameReplay>,
 ) -> oxide_sim::TickReport {
-    let mut commands: Vec<PlayerCommand> = Vec::new();
-    for bot in bots.iter_mut() {
-        commands.extend(bot.act(state));
-    }
+    let commands = crate::bot_execution::commands(state, bots);
     record_and_tick(state, commands, replay)
 }
 
@@ -48,7 +45,8 @@ pub fn step(
 ///
 /// This uses the same command recording and state-transition path as [`step`].
 /// Callers that do not need diagnostics should keep using [`step`], which does
-/// not allocate a trace collection or ask bots to construct traces.
+/// not allocate a trace collection or ask bots to construct traces. Diagnostic
+/// collection runs serially; ordinary steps may think across seats in parallel.
 pub fn step_traced(
     state: &mut State,
     bots: &mut [SeatBot],

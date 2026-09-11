@@ -223,6 +223,10 @@ impl Brain {
         &self.exec
     }
 
+    pub(super) fn decision_due(&self, state: &State) -> bool {
+        state.result().is_none() && state.current_tick().is_multiple_of(self.dials.cadence)
+    }
+
     /// Commands for this tick (usually none — brains think on a cadence).
     pub fn act(&mut self, state: &State) -> Vec<PlayerCommand> {
         self.act_inner(state, None)
@@ -248,7 +252,7 @@ impl Brain {
         state: &State,
         mut recorder: Option<&mut DecisionTraceRecorder>,
     ) -> Vec<PlayerCommand> {
-        if state.result().is_some() || !state.current_tick().is_multiple_of(self.dials.cadence) {
+        if !self.decision_due(state) {
             return Vec::new();
         }
         let obs = if self.dials.fog_honest {

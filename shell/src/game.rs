@@ -347,9 +347,7 @@ impl Game {
         let mut live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         let mut projectile_releases = projectiles::ProjectileReleases::default();
         for _ in 0..total {
-            for bot in &mut bots {
-                let _ = bot.act(&state);
-            }
+            let _ = oxide_kit::bot_execution::commands(&state, &mut bots);
             let commands: Vec<PlayerCommand> = cursor
                 .take_tick(state.current_tick())
                 .iter()
@@ -403,9 +401,10 @@ impl Game {
             .filter(|pc| pc.player == self.human)
             .map(|pc| pc.command.clone())
             .collect();
-        for bot in &mut self.bots {
-            commands.extend(bot.act(&self.state));
-        }
+        commands.extend(oxide_kit::bot_execution::commands(
+            &self.state,
+            &mut self.bots,
+        ));
         for command in &commands {
             self.recorder
                 .record(self.state.current_tick(), command.clone());
@@ -992,6 +991,28 @@ mod tests {
              bot memory was not rebuilt by the watch-back"
         );
     }
+    #[test]
+    fn multiple_bot_seats_rebuild_the_same_history_on_resume() {
+        let mut scenario =
+            oxide_sim::Scenario::from_json(include_str!("../../scenarios/compass-grand.json"))
+                .unwrap();
+        oxide_kit::bench::all_bots(&mut scenario);
+        scenario.players[0].bot = false;
+        scenario.players[0].bot_config = None;
+        let mut original = Game::new(scenario).unwrap();
+        original.advance_ticks(180);
+        let mut snapshot = original.recorder.clone();
+        snapshot.meta.ticks = Some(180);
+        let mut resumed = Game::from_replay(snapshot).unwrap();
+        original.advance_ticks(120);
+        resumed.advance_ticks(120);
+        assert_eq!(
+            serde_json::to_vec(&original.recorder.commands).unwrap(),
+            serde_json::to_vec(&resumed.recorder.commands).unwrap()
+        );
+        assert_eq!(original.hash_hex(), resumed.hash_hex());
+    }
+
     use oxide_sim::{Command, Scenario, UnitKind};
 
     #[test]

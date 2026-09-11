@@ -36,7 +36,7 @@ where
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
-                loop {
+                let run_jobs = || loop {
                     if failure.lock().unwrap().is_some() {
                         break;
                     }
@@ -54,6 +54,11 @@ where
                             break;
                         }
                     }
+                };
+                if workers > 1 {
+                    oxide_kit::bot_execution::serially(run_jobs);
+                } else {
+                    run_jobs();
                 }
             });
         }
