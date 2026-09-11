@@ -253,6 +253,26 @@ actions, then discarded or rebuilt after a timeline jump. Fog rendering reads
 the controlled seat's `Vision` unless an explicit spectator/debug mode is
 active.
 
+Unit minification is owned by `unit_lod`. At startup it derives half-, quarter-,
+and eighth-resolution images independently from every unit sprite, including
+rigs, accent masks, cargo and animation frames. Alpha-weighted RGB and averaged
+coverage preserve thin details without importing transparent pixel colors or
+neighboring atlas sprites. Each reduced region has its own extruded border. The
+original atlas remains unchanged. Physical destination size, including DPI,
+chooses the nearest reduced level; short premultiplied-alpha shader blends
+smooth level boundaries. Normal rendering is retained at 32 logical pixels per
+tile and above, with filtering introduced below that scale. The
+`OXIDE_SPRITE_FILTER` override controls the original atlas; reduced levels use
+linear sampling.
+
+`strategic_markers` fades in role and seat-identity markers below 14 logical
+pixels per tile, replacing unit sprites at 10. Ground bodies use squares and
+airborne bodies diamonds. Markers retain player visibility, selection and
+damaged health feedback, with separate allied and hostile cues. Selected markers
+draw last in crowds. Markers remain centered on the same unit positions used for
+picking; they do not cluster or displace units. Camera presentation never
+changes simulation positions, commands or visibility.
+
 An atlas may supply separate Array foundations and aerials through the complete
 `rig_array_t{0,1}_{base,rotor}` faction and accent families. The world renderer
 rotates the aerial about its bearing using the fractional presentation clock;

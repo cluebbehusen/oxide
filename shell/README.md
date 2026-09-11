@@ -21,6 +21,8 @@ crate-level rustdoc.
 - `input` and `action` form the single hardware and injected-input funnel.
 - `render`, `panel`, and `layout` draw the world, expose owner-safe selection
   feedback, and share hit-test geometry.
+- `unit_lod` filters unit sprites for distant views; `strategic_markers` draws
+  role and allegiance cues at extreme zoom.
 - `assets`, `typography`, `audio_mix`, and `soundtrack` own presentation
   resources.
 - `debug_server` connects the frame loop to `oxide-protocol`.
