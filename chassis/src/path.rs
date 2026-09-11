@@ -222,6 +222,13 @@ impl DialQueue {
 }
 
 impl AstarScratch {
+    /// Hide reachability evidence without releasing retained search buffers.
+    /// Use when changing passability contexts or supplying a cached success
+    /// without running another search.
+    pub fn clear_search_evidence(&mut self) {
+        self.last_exhausted = false;
+    }
+
     /// Whether the previous query exhausted the complete reachable component
     /// instead of finding its goal or hitting the expansion cap.
     pub fn last_search_exhausted(&self) -> bool {
@@ -825,6 +832,40 @@ mod tests {
         );
         assert!(scratch.last_search_exhausted());
         assert!(scratch.last_search_reached(TilePos::new(1, 2)));
+    }
+
+    #[test]
+    fn clearing_evidence_retains_storage_and_future_routes() {
+        let mut scratch = AstarScratch::default();
+        prime_exhausted_scratch(&mut scratch);
+        let capacities = (
+            scratch.best_g.capacity(),
+            scratch.came_from.capacity(),
+            scratch.stamp.capacity(),
+        );
+        scratch.clear_search_evidence();
+        assert!(!scratch.last_search_exhausted());
+        assert!(!scratch.last_search_reached(TilePos::new(1, 2)));
+        assert_eq!(
+            capacities,
+            (
+                scratch.best_g.capacity(),
+                scratch.came_from.capacity(),
+                scratch.stamp.capacity()
+            )
+        );
+        let search = |scratch: &mut AstarScratch| {
+            astar_with_scratch(
+                8,
+                6,
+                TilePos::new(0, 0),
+                TilePos::new(7, 5),
+                |tile| tile.x != 3 || tile.y == 4,
+                1000,
+                scratch,
+            )
+        };
+        assert_eq!(search(&mut scratch), search(&mut AstarScratch::default()));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 //! Fog-honest valuation and approach-lane scoring for static defenses.
 
+mod routes;
+
 use super::*;
 use crate::bot::intelligence::ContactEvidence;
 use crate::bot::{Orientation, PublicMapBriefing, StartingFoundry};
@@ -9,6 +11,7 @@ use crate::stats::{
 };
 use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::{CARDINALS, DIAGONALS};
+use routes::{CandidateRoutes, Scratch};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -2804,17 +2807,16 @@ fn approach_path(
 }
 
 fn approach_path_cached(
-    ground: &GroundKnowledge<'_>,
+    routes: &mut CandidateRoutes<'_, '_>,
     source: ThreatOrigin,
     asset: &AssetShape,
     goals: &[TilePos],
-    candidate: PlacementFootprint,
-    domain: DefenseDomain,
     baseline_endpoint_routes: &mut BTreeMap<
         (DefenseDomain, TilePos, TilePos),
         BaselineEndpointRoute,
     >,
 ) -> Option<(TilePos, Vec<TilePos>)> {
+    let (ground, candidate, domain) = routes.context();
     if let ThreatCapability::StaticDefense { kind, tier } = source.capability {
         return static_defense_attack(kind, tier, source.anchor, asset, ground.briefing, goals)
             .map(|(goal, source_tile)| (goal, vec![source_tile]));
@@ -2849,11 +2851,9 @@ fn approach_path_cached(
     }
 
     shortest_path_between_cached(
-        ground,
+        routes,
         &source.approach_tiles(ground, domain),
         goals,
-        candidate,
-        domain,
         baseline_endpoint_routes,
     )
     .map(|(_, goal, path)| {
@@ -2940,6 +2940,7 @@ fn approaches_with_candidate_inner(
         &mut BTreeMap<(DefenseDomain, TilePos, TilePos), BaselineEndpointRoute>,
     >,
 ) -> Option<Vec<Approach>> {
+    let mut routes = CandidateRoutes::new(ground, candidate, domain);
     let mut rerouted = Vec::with_capacity(baseline.len());
     for approach in baseline {
         if !candidate_affects_path(&approach.path, candidate, domain) {
@@ -2949,12 +2950,10 @@ fn approaches_with_candidate_inner(
         let goals = assets[approach.asset].shape.approach_tiles(ground, domain);
         let (goal, path) = match baseline_endpoint_routes.as_deref_mut() {
             Some(endpoint_routes) => approach_path_cached(
-                ground,
+                &mut routes,
                 approach.source,
                 &assets[approach.asset].shape,
                 &goals,
-                candidate,
-                domain,
                 endpoint_routes,
             ),
             None => approach_path(
@@ -3335,7 +3334,7 @@ fn shortest_path_between(
 
     let mut best: Option<(TilePos, TilePos, Vec<TilePos>)> = None;
     let mut proven_unreachable = BTreeSet::new();
-    let mut scratch = chassis::path::AstarScratch::default();
+    let mut scratch = Scratch::default();
     for (start, goal) in pairs {
         if proven_unreachable.contains(&(start, goal)) {
             continue;
@@ -3407,16 +3406,15 @@ fn shortest_path_between(
 }
 
 fn shortest_path_between_cached(
-    ground: &GroundKnowledge<'_>,
+    routes: &mut CandidateRoutes<'_, '_>,
     starts: &[TilePos],
     goals: &[TilePos],
-    candidate: PlacementFootprint,
-    domain: DefenseDomain,
     baseline_endpoint_routes: &mut BTreeMap<
         (DefenseDomain, TilePos, TilePos),
         BaselineEndpointRoute,
     >,
 ) -> Option<(TilePos, TilePos, Vec<TilePos>)> {
+    let (ground, candidate, domain) = routes.context();
     let mut pairs: Vec<_> = starts
         .iter()
         .flat_map(|start| goals.iter().map(move |goal| (*start, *goal)))
@@ -3426,7 +3424,7 @@ fn shortest_path_between_cached(
     });
 
     let mut best: Option<(TilePos, TilePos, Vec<TilePos>)> = None;
-    let mut scratch = chassis::path::AstarScratch::default();
+    let mut scratch = Scratch::default();
     let mut proven_unreachable = BTreeSet::new();
     for (start, goal) in pairs {
         if proven_unreachable.contains(&(start, goal)) {
@@ -3476,15 +3474,7 @@ fn shortest_path_between_cached(
         let path = match &baseline.path {
             Some(path) if !candidate_affects_path(path, candidate, domain) => Some(path.clone()),
             Some(_) => {
-                let mut path = chassis::path::astar_with_scratch(
-                    ground.obs.map_width,
-                    ground.obs.map_height,
-                    start,
-                    goal,
-                    |tile| ground.open(tile, Some(candidate), domain),
-                    PATH_EXPANSION_CAP,
-                    &mut scratch,
-                );
+                let mut path = routes.path(start, goal, &mut scratch);
                 if let Some(path) = path.as_mut() {
                     path.insert(0, start);
                 }
@@ -3492,15 +3482,7 @@ fn shortest_path_between_cached(
             }
             None if baseline.exhausted => None,
             None => {
-                let mut path = chassis::path::astar_with_scratch(
-                    ground.obs.map_width,
-                    ground.obs.map_height,
-                    start,
-                    goal,
-                    |tile| ground.open(tile, Some(candidate), domain),
-                    PATH_EXPANSION_CAP,
-                    &mut scratch,
-                );
+                let mut path = routes.path(start, goal, &mut scratch);
                 if let Some(path) = path.as_mut() {
                     path.insert(0, start);
                 }
@@ -6258,6 +6240,64 @@ mod tests {
     }
 
     #[test]
+    fn candidate_cache_and_reused_scratch_keep_search_evidence_local() {
+        let scenario = scenario_with(|tile| if tile.x == 20 { '#' } else { '.' });
+        let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+        let obs = observation(PlayerId(0), LEFT_HOME);
+        let ground = GroundKnowledge::new(&obs, &map, &[]);
+        let candidate = PlacementFootprint {
+            anchor: TilePos::new(1, 1),
+            size: (1, 1),
+            blocks_ground: true,
+        };
+        let start = TilePos::new(8, 12);
+        let reachable = TilePos::new(12, 12);
+        let unreachable = TilePos::new(30, 12);
+        let mut routes = CandidateRoutes::new(&ground, candidate, DefenseDomain::Ground);
+        let mut scratch = Scratch::default();
+        let path = routes.path(start, reachable, &mut scratch).unwrap();
+        assert!(routes.path(start, unreachable, &mut scratch).is_none());
+        assert!(scratch.last_search_exhausted());
+        assert!(scratch.last_search_reached(start));
+        assert_eq!(routes.path(start, reachable, &mut scratch), Some(path));
+        assert!(!scratch.last_search_exhausted());
+        assert!(!scratch.last_search_reached(start));
+        assert!(routes.path(start, unreachable, &mut scratch).is_none());
+        assert!(
+            scratch.last_search_exhausted(),
+            "a cached failure must not discard its component proof"
+        );
+        drop(scratch);
+        let mut scratch = Scratch::default();
+        assert!(!scratch.last_search_exhausted());
+        assert!(!scratch.last_search_reached(start));
+        let nested = Scratch::default();
+        drop(nested);
+        // The same endpoints are reachable in a different movement domain.
+        let mut air_routes = CandidateRoutes::new(&ground, candidate, DefenseDomain::Air);
+        assert!(air_routes.path(start, unreachable, &mut scratch).is_some());
+        assert!(!scratch.last_search_exhausted());
+        // A new footprint must not inherit the earlier successful route.
+        let mut blocked_routes = CandidateRoutes::new(
+            &ground,
+            PlacementFootprint {
+                anchor: reachable,
+                ..candidate
+            },
+            DefenseDomain::Ground,
+        );
+        assert!(
+            blocked_routes
+                .path(start, reachable, &mut scratch)
+                .is_none()
+        );
+        assert!(
+            !scratch.last_search_exhausted(),
+            "a blocked goal is not an exhaustive search"
+        );
+    }
+
+    #[test]
     fn cached_endpoint_routes_match_candidate_specific_searches() {
         let scenario = scenario_with(|tile| {
             let first_ridge = tile.x == 16 && !matches!(tile.y, 4 | 5 | 17 | 18);
@@ -6304,24 +6344,22 @@ mod tests {
                 size: (1, 1),
                 blocks_ground: true,
             };
-            assert_eq!(
-                shortest_path_between_cached(
-                    &ground,
-                    &starts,
-                    &goals,
-                    candidate,
-                    DefenseDomain::Ground,
-                    &mut cache,
-                ),
-                shortest_path_between(
-                    &ground,
-                    &starts,
-                    &goals,
-                    Some(candidate),
-                    DefenseDomain::Ground,
-                ),
-                "cached routing changed the exact endpoint or path at {anchor:?}"
-            );
+            for domain in [DefenseDomain::Ground, DefenseDomain::Air] {
+                let mut routes = CandidateRoutes::new(&ground, candidate, domain);
+                for starts in [&starts[..], &starts[1..], &starts[..]] {
+                    assert_eq!(
+                        shortest_path_between_cached(&mut routes, starts, &goals, &mut cache),
+                        shortest_path_between_exhaustive(
+                            &ground,
+                            starts,
+                            &goals,
+                            Some(candidate),
+                            domain
+                        ),
+                        "cached routing changed the exact endpoint or path at {anchor:?} in {domain:?}"
+                    );
+                }
+            }
         }
     }
 
