@@ -94,6 +94,11 @@ global entity ids or an absolute screen corner. Airworks aircraft spawn at the
 authoritative center of the open roof bay, then obey their ordinary orders from
 there.
 
+Defensive route evaluation retains A* allocation buffers per thread, clearing
+reachability evidence between query contexts. Successful endpoint paths are
+reused only within one candidate footprint, map snapshot, and movement domain;
+failed searches retain their exhaustion or expansion-cap semantics.
+
 ## Development
 
 Run commands from the workspace root:
