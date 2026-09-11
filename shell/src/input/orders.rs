@@ -188,7 +188,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         return;
     }
     if !game.selection_commandable() {
-        game.toast("ally units are read-only");
+        game.toast("You can only command your own units.");
         return;
     }
     let units = game.selection.units.clone();
