@@ -931,6 +931,14 @@ not treated as live obstacles. The accepted proposal retains the scorer's exact
 site and builder through `BuildWith`. The frozen Overseer retains its legacy
 placement and sequential construction rules.
 
+The site search evaluates candidates in descending order of conservative score
+bounds. Unchanged approach routes retain their coverage score; assets whose
+routes could change receive the maximum positive contribution, and bounds omit
+penalties and builder travel. A site is skipped only when it cannot provide
+coverage or its bound falls below the best exact candidate. Surviving sites
+still undergo every builder, egress, resource-route, and support check. The
+existing score and coordinate tie-breaks determine the selected site.
+
 The pre-core emergency path is deliberately narrower than voluntary allocation.
 It uses only a current visible armed ground threat for a Turret or a current
 visible ground-attack aircraft for Flak, places only the matching defense, and
