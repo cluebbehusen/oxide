@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod bench;
+pub mod bot_execution;
 pub mod matchup;
 pub mod perceptual;
 pub mod playback;

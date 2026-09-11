@@ -26,6 +26,11 @@ presentation caches observe the resulting report. Fast advancement may suppress
 intermediate presentation work, but it still bottoms out in the same recorded
 tick path.
 
+Live ticks and replay resume use `oxide_kit::bot_execution` to collect bot
+commands. Due seats may think concurrently against the same immutable state; all
+work joins in input seat order before recording commands and ticking.
+`State::tick` remains serial.
+
 The shell may use floats, hash maps, frame time, and interpolation while
 interpreting input and presenting a match. Those values can affect which
 semantic command the shell stages, but only the resulting `PlayerCommand`,

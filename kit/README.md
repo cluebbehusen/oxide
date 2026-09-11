@@ -10,6 +10,12 @@ while reusable game-independent primitives stay in `chassis`.
 
 ## Main pieces
 
+- `bot_execution` collects commands in input seat order, using a shared pool of
+  up to four workers when multiple bots are due. A busy or unavailable pool uses
+  serial execution, so independent headless matches do not queue behind it.
+  Batch workers that already run matches concurrently use `serially` to avoid
+  adding bot threads to a saturated workload.
+
 - `load_replay` owns bounded Oxide replay loading and version-scoped setup
   compatibility.
 - `runner` executes scenarios and replays headlessly through the same

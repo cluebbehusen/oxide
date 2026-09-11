@@ -7,6 +7,7 @@ publish.workspace = true
 description = "Shared engine-side toolkit: playback, replay stats, software renderer"
 
 [dependencies]
+rayon = "1.11"
 chassis = { workspace = true }
 oxide-sim = { workspace = true }
 serde = { workspace = true }
