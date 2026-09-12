@@ -33,6 +33,8 @@ fn weight_class(kind: SoundKind) -> WeightClass {
         | SoundKind::BastionFire
         | SoundKind::BreakerFire
         | SoundKind::AvalancheFire
+        | SoundKind::RocketMotor
+        | SoundKind::RocketImpact
         | SoundKind::BombRelease
         | SoundKind::DemolitionBoom => WeightClass::Heavy,
         SoundKind::UnitDeath

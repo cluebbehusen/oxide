@@ -1774,6 +1774,10 @@ pub struct Sounds {
     pub attack_breaker: Sound,
     /// The Avalanche's heavy launch rail.
     pub avalanche_launch: Sound,
+    /// Independently loaded buffers, because the backend stops by sound id.
+    pub rocket_motors: Vec<Sound>,
+    /// A missile warhead reaching its impact point.
+    pub rocket_impact: Sound,
     /// A bomber's bay opening and its load dropping away.
     pub bomb_release: Sound,
     /// A buried charge or Sapper going up.
@@ -1799,7 +1803,14 @@ pub struct Sounds {
 }
 
 async fn clip(name: &str) -> Result<Sound> {
-    let path = resource(&format!("assets/sounds/{name}.wav"));
+    let candidate = std::env::var("OXIDE_SOUND_BANK")
+        .ok()
+        .map(|root| std::path::PathBuf::from(root).join(format!("{name}.wav")))
+        .filter(|path| path.is_file());
+    let path = candidate.map_or_else(
+        || resource(&format!("assets/sounds/{name}.wav")),
+        |path| path.to_string_lossy().into_owned(),
+    );
     load_sound(&path)
         .await
         .with_context(|| format!("loading {path} (run from the workspace root)"))
@@ -1808,7 +1819,13 @@ async fn clip(name: &str) -> Result<Sound> {
 impl Sounds {
     /// Loads every clip up front, like [`Sprites::load`].
     pub async fn load() -> Result<Self> {
+        let mut rocket_motors = Vec::with_capacity(crate::rocket_audio::MOTOR_VOICES);
+        for _ in 0..crate::rocket_audio::MOTOR_VOICES {
+            rocket_motors.push(clip("avalanche_motor").await?);
+        }
         Ok(Self {
+            rocket_motors,
+            rocket_impact: clip("rocket_impact").await?,
             laser: clip("laser").await?,
             unit_death: clip("unit_death").await?,
             building_boom: clip("building_boom").await?,
@@ -1863,7 +1880,7 @@ impl Sounds {
 mod tests {
     use super::*;
 
-    const SOUND_NAMES: [&str; 38] = [
+    const SOUND_NAMES: [&str; 40] = [
         "ack",
         "alert",
         "artillery_boom",
@@ -1883,6 +1900,7 @@ mod tests {
         "attack_warden",
         "attack_wisp",
         "avalanche_launch",
+        "avalanche_motor",
         "bomb_release",
         "building_boom",
         "click",
@@ -1898,6 +1916,7 @@ mod tests {
         "music_menu",
         "music_result",
         "music_victory",
+        "rocket_impact",
         "train_done",
         "unit_death",
         "upgrade_done",

@@ -286,6 +286,7 @@ struct PendingScreenshot {
 /// weapon reports read as battle, not noise.
 #[derive(Default)]
 struct Mixer {
+    rocket_loops: crate::rocket_audio::RocketLoops,
     last_played: std::collections::HashMap<SoundKind, f64>,
     /// Alternates the basic zap between two clips so volleys read as
     /// many guns, not one sample looping.
@@ -315,6 +316,8 @@ impl Mixer {
             SoundKind::WardenFire => 0.1,
             SoundKind::BreakerFire
             | SoundKind::AvalancheFire
+            | SoundKind::RocketMotor
+            | SoundKind::RocketImpact
             | SoundKind::BombRelease
             | SoundKind::DemolitionBoom => 0.2,
             SoundKind::UpgradeDone => 0.3,
@@ -341,7 +344,7 @@ impl Mixer {
             SoundKind::Denied => 0.3,
             SoundKind::Alert => 0.4,
             SoundKind::Victory | SoundKind::Defeat => 0.6,
-            SoundKind::Artillery => 0.5,
+            SoundKind::Artillery | SoundKind::RocketImpact => 0.5,
             SoundKind::ArtilleryLaunch => 0.4,
             SoundKind::Ack => 0.18,
             SoundKind::SentinelFire => 0.26,
@@ -359,6 +362,7 @@ impl Mixer {
             SoundKind::WardenFire => 0.3,
             SoundKind::BreakerFire => 0.55,
             SoundKind::AvalancheFire => 0.5,
+            SoundKind::RocketMotor => 0.35,
             SoundKind::BombRelease => 0.45,
             SoundKind::DemolitionBoom => 0.65,
             SoundKind::UpgradeDone => 0.35,
@@ -402,6 +406,8 @@ impl Mixer {
             SoundKind::WardenFire => &sounds.attack_warden,
             SoundKind::BreakerFire => &sounds.attack_breaker,
             SoundKind::AvalancheFire => &sounds.avalanche_launch,
+            SoundKind::RocketMotor => &sounds.rocket_motors[0],
+            SoundKind::RocketImpact => &sounds.rocket_impact,
             SoundKind::BombRelease => &sounds.bomb_release,
             SoundKind::DemolitionBoom => &sounds.demolition_boom,
             SoundKind::UpgradeDone => &sounds.upgrade_done,
@@ -506,6 +512,8 @@ fn raises_combat_music(kind: SoundKind) -> bool {
             | SoundKind::WardenFire
             | SoundKind::BreakerFire
             | SoundKind::AvalancheFire
+            | SoundKind::RocketMotor
+            | SoundKind::RocketImpact
             | SoundKind::BombRelease
             | SoundKind::DemolitionBoom
     )
@@ -781,6 +789,19 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 app.game.camera.zoom,
             ),
         };
+        let (motor_game, motor_running) = match &screen {
+            Screen::Playback(pb) => (&pb.game, !pb.paused && pb.seeking.is_none()),
+            Screen::Playing => (&app.game, !app.game.paused),
+            _ => (&app.game, false),
+        };
+        app.mixer.rocket_loops.update(
+            motor_game,
+            motor_running,
+            &app.sounds.rocket_motors,
+            app.config.volumes.master
+                * app.config.volumes.effects
+                * Mixer::base_volume(SoundKind::RocketMotor),
+        );
         let combat_impulse = queued.iter().any(|(kind, _)| raises_combat_music(*kind));
         for event in crate::audio_mix::frame_mix(queued, cam_center, cam_half_extents, cam_zoom) {
             app.mixer
@@ -1476,6 +1497,26 @@ mod tests {
         assert_eq!(Mixer::min_gap(SoundKind::ArtilleryLaunch), 0.20);
         assert_eq!(Mixer::base_volume(SoundKind::Deposit), 0.25);
         assert_eq!(Mixer::min_gap(SoundKind::Deposit), 0.15);
+
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../assets/sounds/manifest.json")).unwrap();
+        for (name, kind) in [
+            ("avalanche_launch", SoundKind::AvalancheFire),
+            ("avalanche_motor", SoundKind::RocketMotor),
+            ("rocket_impact", SoundKind::RocketImpact),
+        ] {
+            let entry = manifest["sounds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["name"] == name)
+                .unwrap();
+            assert_eq!(
+                entry["mixer_volume"].as_f64().unwrap() as f32,
+                Mixer::base_volume(kind)
+            );
+            assert_eq!(entry["min_gap"].as_f64().unwrap(), Mixer::min_gap(kind));
+        }
     }
 
     fn team_draft() -> NewMatchDraft {

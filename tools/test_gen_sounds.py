@@ -39,6 +39,26 @@ def pcm_wav(
 
 
 class SfxPcmTests(unittest.TestCase):
+    def test_motor_validator_rejects_broken_loop_and_oversized_level(self) -> None:
+        sounds = Path(__file__).resolve().parent.parent / "assets" / "sounds"
+        data = bytearray((sounds / "avalanche_motor.wav").read_bytes())
+        struct.pack_into("<h", data, 44, 3000)
+        with self.assertRaisesRegex(ValueError, "loop seam"):
+            gen_sounds.validate_sfx_wav("avalanche_motor", bytes(data))
+
+        frames = 4 * gen_sounds.SFX_RATE
+        samples = b"".join(
+            struct.pack(
+                "<h", round(12000 * math.cos(math.tau * 440 * i / gen_sounds.SFX_RATE))
+            )
+            for i in range(frames)
+        )
+        with self.assertRaisesRegex(ValueError, "propulsion level"):
+            gen_sounds.validate_sfx_wav(
+                "avalanche_motor",
+                pcm_wav(frames=frames, rate=gen_sounds.SFX_RATE, samples=samples),
+            )
+
     def test_checked_in_effects_match_approval_hashes_and_audio_budgets(self) -> None:
         sounds = Path(__file__).resolve().parent.parent / "assets" / "sounds"
         self.assertEqual(set(SFX_NAMES), set(gen_sounds.SFX_BUILDERS))
@@ -71,6 +91,9 @@ class SfxPcmTests(unittest.TestCase):
         for entry in entries:
             self.assertGreater(entry["mixer_volume"], 0.0)
             self.assertGreater(entry["min_gap"], 0.0)
+            self.assertEqual(
+                entry.get("looped", False), entry["name"] == "avalanche_motor"
+            )
 
     def test_sfx_validator_rejects_wrong_rate(self) -> None:
         with self.assertRaisesRegex(ValueError, "44100 Hz"):

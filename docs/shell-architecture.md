@@ -367,6 +367,22 @@ more machine detail; a wide camera admits fewer minor voices while protecting
 heavy reports. The under-attack alert bypasses distance, zoom, and positional
 voice limits.
 
+Avalanche uses separate launch, sustained propulsion, and impact clips from the
+production sound bank. Up to sixteen independently loaded motor buffers follow
+the currently visible missiles from motor ignition until arrival. Each buffer
+has its own backend sound id so stopping one flight does not stop another. Pause
+and non-playing screens stop the loops; resuming reconstructs them from the
+presented state. Playback speed changes their game lifetime without
+pitch-shifting the motor texture. Rocket impacts use the pre-tick projectile
+order to retain their sound identity after shells leave state; the simulation
+and its event schema are unchanged.
+
+Reload remains silent. `tools/gen_sounds.py` owns the approved PCM bytes,
+including the motor's four-second periodic texture; its playback duration comes
+from the missile lifetime. The approval record is in `docs/sound-approvals.md`.
+`OXIDE_SOUND_BANK` can override individual clips for future native auditions;
+missing overrides use the corresponding production clips.
+
 The soundtrack owns continuous beds and pure crossfades for menu, match
 pressure, pause, and results. Automation omits those long-lived sources during
 deterministic UI capture. No audio behavior may create a simulation branch.
