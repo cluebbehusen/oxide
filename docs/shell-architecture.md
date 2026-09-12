@@ -66,10 +66,11 @@ presentation-only and refreshed by live and playback ticks.
 
 `App` owns resources and state that outlive an individual screen: the live
 `Game`, configuration, input funnel, cross-screen scenario draft, tutorial,
-atlas, sounds, soundtrack, debug channels, and frame profiler. The `Screen` enum
-pairs each active mode with its screen-local state, so the variant and its
-payload cannot disagree. Cross-screen state such as the draft and live session
-remains in `App` rather than being duplicated across variants.
+atlas, sounds, soundtrack, debug channels, frame profiler, and player-facing
+performance collector. The `Screen` enum pairs each active mode with its
+screen-local state, so the variant and its payload cannot disagree. Cross-screen
+state such as the draft and live session remains in `App` rather than being
+duplicated across variants.
 
 The screen graph includes Home, Settings/Controls, the Codex (the roster read
 from `stats.rs`), the New Match wizard, Playing, Playback, the Saves & Replays
@@ -106,6 +107,31 @@ The frame loop has a fixed shape:
 3. Advance the live or playback clock unless paused or seeking.
 4. Render the active world and screen using interpolated presentation state.
 5. Capture requested screenshots from the completed frame and reply.
+
+The persisted Performance display setting defaults to Off, including when
+loading older configs. FPS and Detailed are available in Playing (including a
+paused simulation), Playback, and Final Map; menus and results hide them. FPS
+fits beside the clock when measured resource, unit, and idle-badge content
+leaves room. Otherwise it moves below the status bar. Detailed adds a backed
+timing panel below the bar; spectator views use a backed upper-right header. The
+panel participates in the shared chrome hit testing, and debug text clears its
+bottom.
+
+The performance collector is independent of debug profiling and cannot arm a
+capture window, pause a match, or reveal fog. Off reads no additional clocks and
+retains no samples. Enabled modes measure frame-start intervals, including
+presentation waits; Detailed also measures CPU work from after debug-request
+handling through the presentation handoff, excluding `next_frame().await`. These
+are not GPU timestamps. Each display uses completed measurements from the
+preceding frame. Mode, screen-context, and session changes reset its history.
+
+Fifty 100 ms buckets retain five seconds of frame-interval maxima, sums, and
+counts. Numeric labels refresh four times per second from the ten most recent
+buckets; FPS divides frame count by summed interval duration. The graph retains
+individual hitch maxima with a fixed 0–50 ms scale and 16.7/33.3 ms reference
+lines. Clipped spikes are marked and the five-second maximum remains numeric.
+Missing samples show placeholders, invalid intervals are discarded, and real
+long intervals remain visible.
 
 ## Input and layout
 

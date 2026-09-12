@@ -15,6 +15,37 @@ use std::path::PathBuf;
 /// defaults rather than guessing.
 const CONFIG_VERSION: u32 = 1;
 
+/// Optional player-facing frame timing, independent of the debug overlay.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PerformanceDisplay {
+    /// No collection or display.
+    #[default]
+    Off,
+    /// Smoothed frames per second.
+    Fps,
+    /// Frame intervals, CPU work, and recent hitch history.
+    Detailed,
+}
+
+impl PerformanceDisplay {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Fps => "FPS",
+            Self::Detailed => "Detailed",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Fps,
+            Self::Fps => Self::Detailed,
+            Self::Detailed => Self::Off,
+        }
+    }
+}
+
 /// Mixer bus volumes, 0..=1, applied multiplicatively with each clip's
 /// authored level.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -102,6 +133,9 @@ impl TouchPrefs {
 /// The whole persisted surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
+    /// Optional performance HUD; older configs leave it disabled.
+    #[serde(default)]
+    pub performance_display: PerformanceDisplay,
     /// Shape version; mismatch resets to defaults.
     pub version: u32,
     /// The active binding profile.
@@ -139,6 +173,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            performance_display: PerformanceDisplay::Off,
             version: CONFIG_VERSION,
             bindings: BindingMap::classic(),
             volumes: Volumes::default(),
@@ -433,6 +468,33 @@ mod tests {
         let back = Config::load_from(Some(path));
         assert_eq!(back, config);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn performance_modes_persist_and_old_configs_keep_preferences() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide-config-performance-{}", std::process::id()));
+        let path = dir.join("config.json");
+        let mut config = Config {
+            ui_scale: 1.25,
+            ..Config::default()
+        };
+        config.volumes.master = 0.25;
+        for mode in [
+            PerformanceDisplay::Off,
+            PerformanceDisplay::Fps,
+            PerformanceDisplay::Detailed,
+        ] {
+            config.performance_display = mode;
+            config.save_to(&path).unwrap();
+            assert_eq!(Config::load_from(Some(path.clone())), config);
+        }
+        let mut old = serde_json::to_value(&config).unwrap();
+        old.as_object_mut().unwrap().remove("performance_display");
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        config.performance_display = PerformanceDisplay::Off;
+        assert_eq!(Config::load_from(Some(path)), config);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
