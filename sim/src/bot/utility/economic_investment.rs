@@ -187,6 +187,7 @@ impl UtilityPolicy {
             briefing: context.briefing,
             orientation: context.orientation,
             air_work: &[],
+            protected_scrap: context.protected_scrap,
         };
         let opportunities = obs
             .my_buildings
@@ -200,7 +201,8 @@ impl UtilityPolicy {
                     anchor,
                     horizon,
                     delay,
-                );
+                )
+                .benefit;
                 (value >= u64::from(economy.foundry_cost))
                     .then(|| expansion::FoundryOpportunity::capacity_only(anchor, value, economy))
             })
@@ -514,6 +516,7 @@ impl UtilityPolicy {
             briefing: context.briefing,
             orientation: context.orientation,
             air_work: context.air_work,
+            protected_scrap: context.protected_scrap,
         };
         let have_built = |kind| {
             obs.my_buildings
@@ -645,6 +648,7 @@ impl UtilityPolicy {
                     u64::from(stats.build_ticks)
                         .div_ceil(u64::from(worker.kind.stats().build_rate.max(1))),
                 );
+            let mut capacity = None;
             let benefit = match kind {
                 BuildingKind::Extractor => {
                     let rate = if Self::frame_has_foundry_support(obs, anchor) {
@@ -665,12 +669,25 @@ impl UtilityPolicy {
                     unmet_demand: unmet_income,
                 }
                 .marginal(),
-                _ => infrastructure_benefit(&mut infrastructure, kind, anchor, horizon, delay),
+                _ => {
+                    let value =
+                        infrastructure_benefit(&mut infrastructure, kind, anchor, horizon, delay);
+                    capacity = value.case;
+                    value.benefit
+                }
             };
             if benefit < u64::from(stats.cost) {
                 continue;
             }
-            let mut case = infrastructure_case(&context, kind, benefit, stats.cost, delay);
+            let mut case = if capacity.is_some() {
+                economic_case(benefit, stats.cost, delay)
+            } else {
+                infrastructure_case(&context, kind, benefit, stats.cost, delay)
+            };
+            if let Some(evidence) = capacity {
+                case.confidence = evidence.confidence;
+                case.urgency = evidence.urgency;
+            }
             if kind == BuildingKind::Reclaimer
                 && let Some(evidence) = income_evidence
             {
@@ -1083,6 +1100,13 @@ struct InfrastructureContext<'a> {
     briefing: &'a PublicMapBriefing,
     orientation: Orientation,
     air_work: &'a [AirCapacityDemand],
+    protected_scrap: u32,
+}
+
+#[derive(Default)]
+struct InfrastructureReturn {
+    benefit: u64,
+    case: Option<ProposalCase>,
 }
 
 fn capability_chain(obs: &Observation, unit: UnitKind, candidate: BuildingKind) -> (u64, u64) {
@@ -1146,8 +1170,19 @@ fn infrastructure_benefit(
     anchor: TilePos,
     horizon: u64,
     delay: u64,
-) -> u64 {
+) -> InfrastructureReturn {
     let obs = context.obs;
+    let budget = u64::from(obs.scrap.saturating_sub(context.protected_scrap))
+        .saturating_add(u64::from(
+            context
+                .resources
+                .forecast()
+                .income_through(obs.tick.saturating_add(horizon).saturating_sub(1))
+                .amount(),
+        ))
+        .saturating_sub(u64::from(
+            kind.base_stats().construction.map_or(0, |stats| stats.cost),
+        ));
     let candidate = BuildingObs {
         id: BuildingId(u32::MAX),
         player: obs.me,
@@ -1186,12 +1221,16 @@ fn infrastructure_benefit(
                 let (chain_cost, chain_delay) = capability_chain(obs, demand.kind, kind);
                 let units = horizon.saturating_sub(delay.saturating_add(chain_delay))
                     / u64::from(demand.kind.stats().train_ticks.max(1));
-                return Some(
+                let affordable =
+                    budget.saturating_sub(chain_cost) / u64::from(demand.kind.stats().cost.max(1));
+                return Some((
                     units
                         .min(demand.units_needed())
+                        .min(affordable)
                         .saturating_mul(u64::from(demand.kind.stats().cost))
                         .saturating_sub(chain_cost),
-                );
+                    demand,
+                ));
             }
             if !kind.base_stats().produces.contains(&demand.kind) {
                 return None;
@@ -1270,20 +1309,41 @@ fn infrastructure_benefit(
                     )) / u64::from(demand.kind.stats().train_ticks.max(1))
                 })
                 .fold(0, u64::saturating_add);
-            Some(
+            Some((
                 CapacityReturn {
                     horizon,
                     ready_after: delay,
                     train_ticks: u64::from(demand.kind.stats().train_ticks),
-                    demanded_units: demand.units_needed(),
+                    demanded_units: demand
+                        .units_needed()
+                        .min(budget / u64::from(demand.kind.stats().cost.max(1))),
                     existing_units: existing.saturating_add(pending),
                 }
                 .additional_units()
                 .saturating_mul(u64::from(demand.kind.stats().cost)),
-            )
+                demand,
+            ))
         })
-        .max()
-        .unwrap_or(0);
+        .filter(|(benefit, _)| *benefit > 0)
+        .max_by_key(|(benefit, demand)| {
+            (
+                *benefit,
+                demand.case.confidence as u8,
+                demand.case.urgency as u8,
+                demand.kind,
+                demand.service,
+            )
+        });
+    let ordinary = ordinary.map_or_else(InfrastructureReturn::default, |(benefit, demand)| {
+        let mut case = demand.case;
+        if case.urgency == Urgency::Pressing {
+            case.urgency = Urgency::Timely;
+        }
+        InfrastructureReturn {
+            benefit,
+            case: Some(case),
+        }
+    });
     if kind != BuildingKind::Airworks || context.air_work.is_empty() {
         return ordinary;
     }
@@ -1347,7 +1407,21 @@ fn infrastructure_benefit(
         &existing,
         &candidate_lane,
     );
-    ordinary.max(operational)
+    let operational = operational.min(budget);
+    if operational > ordinary.benefit {
+        let mut case = economic_case(
+            operational,
+            kind.base_stats().construction.unwrap().cost,
+            delay,
+        );
+        case.confidence = Confidence::Supported;
+        InfrastructureReturn {
+            benefit: operational,
+            case: Some(case),
+        }
+    } else {
+        ordinary
+    }
 }
 
 #[cfg(test)]
@@ -1544,6 +1618,11 @@ mod tests {
             )
         };
         assert!(
+            quote(&obs, 1_000).is_none(),
+            "existing capacity covers the affordable army"
+        );
+        obs.scrap = 50_000;
+        assert!(
             matches!(
                 quote(&obs, 1_000),
                 Some(construction::FreshFoundryInvestment::Ready(_))
@@ -1670,6 +1749,56 @@ mod tests {
                 )),
             "already funded work is not an income shortfall"
         );
+    }
+
+    #[test]
+    fn surplus_factories_do_not_value_unaffordable_throughput_or_borrow_confidence() {
+        let (mut obs, map, profile) = fixture();
+        for (id, anchor) in [
+            (2, TilePos::new(8, 3)),
+            (3, TilePos::new(14, 3)),
+            (4, TilePos::new(20, 3)),
+            (5, TilePos::new(26, 3)),
+        ] {
+            obs.my_buildings
+                .push(building(id, BuildingKind::Fabricator, anchor));
+            obs.my_queues.push(Vec::new());
+            obs.my_queue_progress.push(0);
+        }
+        obs.my_buildings
+            .push(building(6, BuildingKind::Crucible, TilePos::new(8, 22)));
+        obs.my_queues.push(Vec::new());
+        obs.my_queue_progress.push(0);
+        let mut siege = demand(UnitKind::Bombard, 1_000);
+        siege.case.confidence = Confidence::Prior;
+        siege.case.urgency = Urgency::Developmental;
+        let mut covered = demand(UnitKind::Warden, 1);
+        covered.case.confidence = Confidence::Current;
+        covered.case.urgency = Urgency::Pressing;
+        let demands = [siege, covered];
+        let factory = |quote: &&EconomicInvestment| {
+            matches!(
+                quote.key,
+                EconomicInvestmentKey::Build {
+                    kind: BuildingKind::Fabricator,
+                    ..
+                }
+            )
+        };
+        obs.scrap = 282;
+        assert!(
+            !quotes(&UtilityPolicy::new(), &obs, &map, &profile, &demands)
+                .iter()
+                .any(|quote| factory(&quote))
+        );
+        obs.scrap = 50_000;
+        let rich = quotes(&UtilityPolicy::new(), &obs, &map, &profile, &demands);
+        let quote = rich
+            .iter()
+            .find(factory)
+            .expect("funded demand can exhaust existing throughput");
+        assert_eq!(quote.case.confidence, Confidence::Prior);
+        assert_eq!(quote.case.urgency, Urgency::Developmental);
     }
 
     #[test]

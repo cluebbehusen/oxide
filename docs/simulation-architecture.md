@@ -741,6 +741,10 @@ harvest workers pay initial travel to visible safe work before contributing
 output. Concurrent air and lift demand share each Airworks lane's time once,
 bounded by readiness, customer deadlines, and route reachability. Local Foundry
 throughput opportunities reuse the expansion admission and security path.
+Additional throughput is capped by current unprotected capital and completed
+income after the candidate and its missing prerequisites are paid. Capacity
+confidence and urgency come from the demand contributing its marginal return; an
+already-covered current need cannot strengthen a speculative capacity case.
 Recurring-income investments are capped by unfunded useful work; completed
 income alone supplies spendable forecasts. Self-refits own exact building ids
 and withhold their offline source income separately from purchase capital. The
