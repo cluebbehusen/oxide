@@ -244,7 +244,13 @@ impl StandingForceCommitment {
                 .iter()
                 .any(|demand| demand.case.urgency == Urgency::Pressing)
             || !demands.iter().any(|demand| {
-                demand.kind == self.proposal.kind && self.covers(demand.reason, demand.service)
+                demand.kind == self.proposal.kind
+                    && self.covers(demand.reason, demand.service)
+                    && routes.producer_reaches_any(
+                        self.job.producer,
+                        self.job.kind,
+                        &[demand.service],
+                    )
             })
         {
             return false;
