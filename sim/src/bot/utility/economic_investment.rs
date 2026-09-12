@@ -8,6 +8,7 @@ use super::*;
 use crate::bot::allocation::{
     Confidence, ExecutionSafety, ProposalCase, StrategicValue, TimeToImpact, Urgency,
 };
+use crate::bot::intelligence::StrategicIntelligence;
 use crate::bot::orient::Orientation;
 use crate::bot::resources::ProducerEgress;
 use crate::bot::standing_force::{CapabilityDemand, ServiceRouting};
@@ -508,6 +509,23 @@ impl UtilityPolicy {
             .filter(|unit| retained.is_none_or(|saving| saving.builder == Some(unit.id)))
             .collect::<Vec<_>>();
         let mut geometry = None;
+        let bootstrap_air = !obs
+            .my_buildings
+            .iter()
+            .any(|building| building.kind == BuildingKind::Airworks)
+            && !Self::deferred_claims(obs)
+                .iter()
+                .any(|(kind, _)| *kind == BuildingKind::Airworks)
+            && obs
+                .enemy_buildings
+                .iter()
+                .any(|building| building.seen && building.hp > 0)
+            && obs.scrap.saturating_sub(context.protected_scrap)
+                >= BuildingKind::Airworks
+                    .base_stats()
+                    .construction
+                    .unwrap()
+                    .cost;
         let mut infrastructure = InfrastructureContext {
             obs,
             resources: context.resources,
@@ -552,7 +570,8 @@ impl UtilityPolicy {
                         continue;
                     }
                     if kind != BuildingKind::Reclaimer
-                        && !(kind == BuildingKind::Airworks && !context.air_work.is_empty())
+                        && !(kind == BuildingKind::Airworks
+                            && (!context.air_work.is_empty() || bootstrap_air))
                         && !context
                             .demands
                             .iter()
@@ -670,8 +689,65 @@ impl UtilityPolicy {
                 }
                 .marginal(),
                 _ => {
-                    let value =
+                    let mut value =
                         infrastructure_benefit(&mut infrastructure, kind, anchor, horizon, delay);
+                    if kind == BuildingKind::Airworks && bootstrap_air {
+                        let mut intelligence = StrategicIntelligence::new();
+                        intelligence.update(obs);
+                        let home = obs
+                            .my_buildings
+                            .iter()
+                            .filter(|building| {
+                                building.kind == BuildingKind::Foundry && building.built
+                            })
+                            .min_by_key(|building| building.id)
+                            .unwrap()
+                            .anchor;
+                        let candidate = BuildingObs {
+                            id: BuildingId(u32::MAX),
+                            player: obs.me,
+                            kind,
+                            anchor,
+                            hp: kind.base_stats().max_hp,
+                            built: true,
+                            tier: 0,
+                            seen: true,
+                        };
+                        let request = crate::bot::strategy::FreshConnectedProposalRequest::new(
+                            context.profile,
+                            DifficultyTuning::for_level(context.profile.difficulty),
+                            obs,
+                            context.resources,
+                            &intelligence,
+                            home,
+                            crate::bot::strategy::StrategicCoordination {
+                                enlisted: context.unavailable,
+                                lift_support: None,
+                                allow_new_operation: true,
+                                protected_current_scrap: context.protected_scrap,
+                                protected_forecast_scrap: 0,
+                                public_map: Some(context.briefing),
+                                orientation: context.orientation,
+                            },
+                        );
+                        if let Some(benefit) =
+                            crate::bot::strategy::prospective_airworks_package_value(
+                                request, candidate, delay, deadline,
+                            )
+                            .filter(|benefit| *benefit > value.benefit)
+                        {
+                            value = InfrastructureReturn {
+                                benefit,
+                                case: Some(ProposalCase {
+                                    urgency: Urgency::Timely,
+                                    confidence: Confidence::Supported,
+                                    value: StrategicValue::Material,
+                                    time_to_impact: TimeToImpact::Patient,
+                                    safety: ExecutionSafety::Managed,
+                                }),
+                            };
+                        }
+                    }
                     capacity = value.case;
                     value.benefit
                 }
@@ -1525,6 +1601,51 @@ mod tests {
             protected_scrap: 0,
             air_work: &[],
         })
+    }
+
+    #[test]
+    fn first_airworks_is_valued_as_a_complete_affordable_campaign() {
+        let (mut obs, map, profile) = fixture();
+        obs.scrap = 1200;
+        obs.my_buildings
+            .push(building(2, BuildingKind::Fabricator, TilePos::new(8, 5)));
+        obs.my_buildings
+            .push(building(3, BuildingKind::Crucible, TilePos::new(12, 5)));
+        obs.my_queues.resize(obs.my_buildings.len(), Vec::new());
+        obs.my_queue_progress.resize(obs.my_buildings.len(), 0);
+        let mut target = building(90, BuildingKind::Foundry, TilePos::new(30, 12));
+        target.player = PlayerId(1);
+        obs.enemy_buildings.push(target);
+        let offered = air_quotes(&obs, &map, &profile, &[]);
+        assert!(
+            !offered.is_empty(),
+            "a serviceable scout, suppression and strike minimum should justify its first Airworks"
+        );
+        assert!(
+            offered
+                .iter()
+                .all(|quote| quote.case.confidence == Confidence::Supported)
+        );
+        obs.scrap = 200;
+        assert!(
+            air_quotes(&obs, &map, &profile, &[]).is_empty(),
+            "the building alone does not fund a campaign"
+        );
+        obs.scrap = 1200;
+        obs.enemy_buildings[0].seen = false;
+        assert!(
+            air_quotes(&obs, &map, &profile, &[]).is_empty(),
+            "remembered targets require new reconnaissance before this investment"
+        );
+        obs.enemy_buildings[0].seen = true;
+        obs.my_buildings
+            .push(building(4, BuildingKind::Airworks, TilePos::new(16, 5)));
+        obs.my_queues.push(Vec::new());
+        obs.my_queue_progress.push(0);
+        assert!(
+            air_quotes(&obs, &map, &profile, &[]).is_empty(),
+            "bootstrap value cannot buy redundant factories"
+        );
     }
 
     #[test]

@@ -2314,6 +2314,93 @@ fn connected_opportunity_case(
     }
 }
 
+/// Values a complete, route-serviceable minimum after a proposed first Airworks.
+/// The hypothetical producer is confined to sizing; it never becomes an owned claim.
+pub(in crate::bot) fn prospective_airworks_package_value(
+    request: FreshConnectedProposalRequest<'_>,
+    candidate: crate::bot::observation::BuildingObs,
+    ready_after: Tick,
+    deadline: Tick,
+) -> Option<u64> {
+    let mut prospective = request.obs.clone();
+    let cost = BuildingKind::Airworks.base_stats().construction?.cost;
+    prospective.scrap = prospective
+        .scrap
+        .checked_sub(request.coordination.protected_current_scrap)?
+        .checked_sub(cost)?;
+    prospective.my_buildings.push(candidate);
+    prospective.my_queues.push(Vec::new());
+    prospective.my_queue_progress.push(0);
+    let resources = ResourceSnapshot::from_observation(&prospective);
+    let unavailable: Vec<_> = prospective.my_units.iter().map(|unit| unit.id).collect();
+    let coordination = StrategicCoordination {
+        enlisted: &unavailable,
+        protected_current_scrap: 0,
+        ..request.coordination
+    };
+    let context = FreshConnectedDerivationContext {
+        unavailable_paid: &[],
+        profile: request.profile,
+        tuning: request.tuning,
+        obs: &prospective,
+        resource_snapshot: &resources,
+        intel: request.intel,
+        home: request.home,
+        coordination,
+        unavailable: &unavailable,
+        preferred_artillery: &[],
+    };
+    let deadline = deadline.checked_sub(ready_after)?;
+    if deadline <= prospective.tick {
+        return None;
+    }
+    request
+        .intel
+        .buildings()
+        .iter()
+        .filter(|target| {
+            target.evidence == ContactEvidence::Current && target.built && target.hp > 0
+        })
+        .filter_map(|target| {
+            let route = ConnectedRouteContext {
+                unavailable_paid: &[],
+                intel: request.intel,
+                home: request.home,
+                target: target.anchor,
+                public_map: coordination.public_map,
+                orientation: coordination.orientation,
+            };
+            let initial = ConnectedProductionResources::from_snapshot_after_current_reserve(
+                &prospective,
+                target,
+                &unavailable,
+                route,
+                &resources,
+                0,
+            );
+            let proposal = derive_connected_proposal_with_resources(
+                context,
+                target,
+                ConnectedProposalOrigin::Idle {
+                    air: None,
+                    standby: AirStandby::default(),
+                },
+                initial,
+                deadline,
+            )
+            .ok()?;
+            Some(
+                proposal
+                    .minimum_claims()
+                    .provider_jobs()
+                    .iter()
+                    .map(|job| u64::from(job.kind().stats().cost))
+                    .sum(),
+            )
+        })
+        .max()
+}
+
 fn derive_fresh_connected_proposal(
     context: FreshConnectedDerivationContext<'_>,
     target: &BuildingContact,

@@ -58,7 +58,13 @@ and the defenses actually covering them. An army that loses members without
 identifying a local fight returns with ordinary movement and records an
 inconclusive casualty episode, without inventing a hidden attacker. Withdrawal
 from static fire also uses ordinary movement to avoid reacquiring the position.
-The profile-free Overseer retains its original contact and strength rules.
+Pressure admission counts known gun coverage along a projected approach as well
+as defenders near the objective. Against a building, an escorted siege body
+seeks a reachable position inside its guns' range and outside known defensive
+fire. Its screen moves to the same position; artillery with a visible target in
+range remains engaged rather than being discarded as a stalled march. The
+profile-free Overseer retains its original contact, strength, and marching
+rules.
 
 Player-facing maintenance advances tactical armies first. The decision then
 observes battlefield evidence and work outcomes once, including on the early
@@ -763,14 +769,21 @@ throughput opportunities reuse the expansion admission and security path.
 Additional throughput is capped by current unprotected capital and completed
 income after the candidate and its missing prerequisites are paid. Capacity
 confidence and urgency come from the demand contributing its marginal return; an
-already-covered current need cannot strengthen a speculative capacity case.
-Recurring-income investments are capped by unfunded useful work; completed
-income alone supplies spendable forecasts. Self-refits own exact building ids
-and withhold their offline source income separately from purchase capital. The
-residual technology scalar and the operational Airworks capital tax are absent.
-Accepted unpaid economic plans keep their original identity and deadline through
-saving and deferred travel, release unsafe or expired unpaid founders, and leave
-paid foundations and refits to ordinary simulation rules.
+already-covered current need cannot strengthen a speculative capacity case. A
+proposed first Airworks may also derive a complete connected scout, suppression,
+and strike minimum against current targets. The hypothetical factory exists only
+inside this pure sizing calculation: its construction capital and delay are
+removed before the ordinary package and route checks run, and existing live
+units are excluded from speculative ownership. This supported investment value
+cannot justify duplicate Airworks, issue a production command, or admit an
+operation before its real prerequisites exist. Recurring-income investments are
+capped by unfunded useful work; completed income alone supplies spendable
+forecasts. Self-refits own exact building ids and withhold their offline source
+income separately from purchase capital. The residual technology scalar and the
+operational Airworks capital tax are absent. Accepted unpaid economic plans keep
+their original identity and deadline through saving and deferred travel, release
+unsafe or expired unpaid founders, and leave paid foundations and refits to
+ordinary simulation rules.
 
 Before the difficulty floor is projected, the player-facing policy pauses new
 voluntary construction and upgrades, discretionary production, mobile support,
