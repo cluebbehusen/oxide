@@ -2430,6 +2430,16 @@ mod tests {
         let orientation = Orientation::for_home(&obs, TilePos::new(2, 2));
         assert!(saving.still_useful(&obs, &[demand.clone()], &briefing, orientation));
         assert_eq!(saving.job, job);
+        let divided = public_map(
+            &obs,
+            (0..obs.map_height)
+                .map(|y| (TilePos::new(16, y), Terrain::Rock))
+                .collect(),
+        );
+        assert!(
+            !saving.still_useful(&obs, &[demand.clone()], &divided, orientation),
+            "nearby demand across a sealed front cannot inherit the saved producer"
+        );
         demand.service = StandingForceServiceKey::Point(site.offset(9, 0));
         assert!(!saving.still_useful(&obs, &[demand.clone()], &briefing, orientation));
         demand.service = StandingForceServiceKey::Point(site);

@@ -183,7 +183,7 @@ pub(crate) enum ProposalKey {
     FoundryExpansion(FoundryExpansionKey),
     /// One minimum viable connected operation.
     ConnectedOffenseMinimum(ConnectedOffenseKey),
-    /// One immediate standing-force purchase.
+    /// One current or scheduled standing-force purchase.
     StandingForce(StandingForceKey),
     /// One exact defensive construction opportunity.
     Defense(DefenseInvestmentKey),

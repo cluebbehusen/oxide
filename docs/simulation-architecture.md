@@ -63,10 +63,11 @@ as defenders near the objective. Against a building, an escorted siege body
 seeks a reachable position inside its guns' range and its screen's sight. It
 prefers positions outside known defensive fire; if the defender matches its
 range, an already-admitted assault accepts exposure instead of waiting forever
-for range superiority. Its screen moves to the same position; artillery with a
-visible target in range remains engaged rather than being discarded as a stalled
-march. The profile-free Overseer retains its original contact, strength, and
-marching rules.
+for range superiority. Its faster screen advances at most three route steps
+ahead of the rearmost gun, then waits for it before approaching the shared
+firing position. Artillery with a visible target in range remains engaged rather
+than being discarded as a stalled march. The profile-free Overseer retains its
+original contact, strength, and marching rules.
 
 Player-facing maintenance advances tactical armies first. The decision then
 observes battlefield evidence and work outcomes once, including on the early

@@ -444,6 +444,16 @@ impl Executive {
                     // idle exactly where it stood. Checked only on a LATER
                     // think than the order, since this think's commands
                     // have not executed yet.
+                    if player_facing
+                        && !in_contact
+                        && all_idle
+                        && artillery_has_escort_quorum_with_roster(army, roster)
+                        && members.iter().any(|unit| is_artillery(unit) && !unit.idle)
+                        && let Some(target) = army.target
+                    {
+                        march_with_roster(me, obs, army, target, &mut out, roster, true);
+                        army.issued = None;
+                    }
                     let bounced = all_idle
                         && army.issued.is_some_and(|(at, from)| {
                             obs.tick > at && vanguard.chebyshev(from) <= 1
@@ -1019,12 +1029,21 @@ fn march_with_roster<'a>(
         } else {
             army.staging
         };
+        let screen_goal = if goal == army.staging {
+            goal
+        } else {
+            arty.iter()
+                .filter_map(|id| roster.get(*id))
+                .max_by_key(|unit| (unit.tile.manhattan(goal), Reverse(unit.id)))
+                .and_then(|rear| routes.command_route(rear.tile, goal))
+                .map_or(goal, |path| path.get(2).copied().unwrap_or(goal))
+        };
         if !escorts.is_empty() {
             out.push(PlayerCommand {
                 player: me,
                 command: Command::Move {
                     units: escorts,
-                    goal,
+                    goal: screen_goal,
                     queue: false,
                 },
             });
@@ -1554,10 +1573,21 @@ mod tests {
         let stand = out
             .iter()
             .find_map(|command| match command.command {
+                Command::AttackMove { goal, .. } => Some(goal),
+                _ => None,
+            })
+            .unwrap();
+        let screen = out
+            .iter()
+            .find_map(|command| match command.command {
                 Command::Move { goal, .. } => Some(goal),
                 _ => None,
             })
             .unwrap();
+        assert!(
+            screen.chebyshev(staging) <= 3,
+            "the faster screen must wait within support distance of the slow guns"
+        );
         assert_ne!(stand, target);
         assert_ne!(
             stand, staging,
