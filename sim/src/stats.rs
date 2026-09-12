@@ -265,8 +265,8 @@ pub struct UnitStats {
     /// Total cargo room this machine offers as a carrier. 0 for
     /// everything that is not a transport.
     pub transport_capacity: u8,
-    /// Maximum compass steps (of 256) this unit may turn per tick.
-    /// 0 means turning is free — the unit is not flight-committed. A
+    /// Maximum compass steps (of 256) a committed airframe turns per tick.
+    /// 0 selects ordinary movement or [`UnitKind::cruise_turn_rate`]. A
     /// nonzero rate makes the unit fly heading-first: it steers on a
     /// bounded arc, attacks on passes, and releases bombs only into its
     /// forward cone.
@@ -477,7 +477,44 @@ impl Role {
     }
 }
 
+/// Time between an airborne casualty and its ground impact.
+pub const AIRCRAFT_CRASH_TICKS: crate::Tick = 13;
+
+/// Ground damage from a large aircraft reaching its crash site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CrashProfile {
+    /// Damage to each hostile ground body in the blast.
+    pub damage: u32,
+    /// Blast radius in world tiles, including building footprints.
+    pub radius: Fx,
+}
+
 impl UnitKind {
+    /// Large airframes that coast to a damaging ground impact.
+    pub const fn crash_profile(self) -> Option<CrashProfile> {
+        let damage = match self {
+            Self::Condor => 50,
+            Self::Moth | Self::Skyhook => 40,
+            _ => return None,
+        };
+        Some(CrashProfile {
+            damage,
+            radius: Fx::lit("2"),
+        })
+    }
+
+    /// Travel and fixed-gun traverse for aircraft that bank in cruise and
+    /// hover at rest. Independent of committed bomber flight and rotorcraft.
+    pub const fn cruise_turn_rate(self) -> u8 {
+        match self {
+            Self::Shrike => 6,
+            Self::Talon => 8,
+            Self::Darter | Self::Sylph | Self::Kestrel => 10,
+            Self::Gnat => 12,
+            _ => 0,
+        }
+    }
+
     /// Independent turret traverse in compass steps per tick.
     pub const fn turret_turn_rate(self) -> u8 {
         match self {

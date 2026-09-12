@@ -14,7 +14,7 @@ use oxide_protocol::hash_hex;
 use oxide_sim::bot::{SeatBot, seat_bots};
 use oxide_sim::{
     Building, BuildingId, Command, Event, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State,
-    TICKS_PER_SECOND, Target, UnitId,
+    TICKS_PER_SECOND, Target, UnitId, UnitKind,
 };
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -82,6 +82,7 @@ mod fx;
 mod projectiles;
 pub(crate) use projectiles::LaunchPose;
 
+pub(crate) use fx::UnitBody;
 pub use fx::{Effect, EffectKind, FlakYokeDelay, PingKind, ShotStyle, SoundKind};
 
 /// A transient HUD message (rejected orders, stalled units).
@@ -136,7 +137,9 @@ pub struct Game {
     /// Action-driven authored sprite state. This remembers only transient
     /// output events; clearing it never changes simulation truth.
     pub(crate) animations: crate::presentation_animation::AnimationController,
+    pub(crate) track_motion: HashMap<u32, crate::track_motion::TrackMotion>,
     pub(crate) projectile_releases: projectiles::ProjectileReleases,
+    fx_previous: fx::PreviousEffects,
     /// Live effects.
     pub fx: Vec<Effect>,
     /// Retains projectile identity across the impact tick.
@@ -288,7 +291,9 @@ impl Game {
             aim_buildings: HashMap::new(),
             aim_building_targets: HashMap::new(),
             animations: crate::presentation_animation::AnimationController::default(),
+            track_motion: HashMap::new(),
             projectile_releases: projectiles::ProjectileReleases::default(),
+            fx_previous: fx::PreviousEffects::default(),
             fx: Vec::new(),
             audio_timeline: crate::audio_timeline::AudioTimeline::default(),
             sounds_pending: Vec::new(),
@@ -350,9 +355,7 @@ impl Game {
         let mut live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         let mut projectile_releases = projectiles::ProjectileReleases::default();
         for _ in 0..total {
-            for bot in &mut bots {
-                let _ = bot.act(&state);
-            }
+            let _ = oxide_kit::bot_execution::commands(&state, &mut bots);
             let commands: Vec<PlayerCommand> = cursor
                 .take_tick(state.current_tick())
                 .iter()
@@ -406,9 +409,10 @@ impl Game {
             .filter(|pc| pc.player == self.human)
             .map(|pc| pc.command.clone())
             .collect();
-        for bot in &mut self.bots {
-            commands.extend(bot.act(&self.state));
-        }
+        commands.extend(oxide_kit::bot_execution::commands(
+            &self.state,
+            &mut self.bots,
+        ));
         for command in &commands {
             self.recorder
                 .record(self.state.current_tick(), command.clone());
@@ -478,8 +482,8 @@ impl Game {
 
         if !self.suppress_presentation {
             self.animations.observe(&report);
-            self.refresh_facing();
             self.spawn_fx(&report.events);
+            self.refresh_facing(&report.movement);
         }
         // Dead units leave the selection — and so do HOSTILES whose
         // ground fog has re-covered: the panel reads live hp from the
@@ -533,14 +537,19 @@ impl Game {
     /// Absorbs one batch of replayed ticks for presentation: the world
     /// the engine produced plus the events it emitted on the way —
     /// shots, deaths, aim, and sound work in playback exactly as live.
-    pub fn playback_present(&mut self, state: &oxide_sim::State, events: &[Event]) {
+    pub fn playback_present(
+        &mut self,
+        state: &oxide_sim::State,
+        events: &[Event],
+        movement: &[oxide_sim::GroundMotion],
+    ) {
         self.remember_previous_tick();
         self.state.0 = state.clone();
         self.projectile_releases.observe(&self.state, events);
-        self.refresh_facing();
         self.animations
             .observe_events(self.state.current_tick(), events);
         self.spawn_fx(events);
+        self.refresh_facing(movement);
         let state = &self.state;
         self.facing
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
@@ -562,6 +571,7 @@ impl Game {
     /// must not replay as a burst of noise.
     pub fn drop_presentation(&mut self) {
         self.fx.clear();
+        self.restore_pending_crashes();
         self.sounds_pending.clear();
         self.toasts.clear();
         // Aim holds and recoil stamps are per-timeline: after a seek,
@@ -574,6 +584,7 @@ impl Game {
         self.aim_building_targets.clear();
         self.animations.reset_transients();
         self.audio_timeline.clear();
+        self.track_motion.clear();
     }
 
     /// Replaces truth after a seek or replay rebuild and establishes that
@@ -587,20 +598,50 @@ impl Game {
         self.facing.clear();
         // Nothing has moved across a jump, but a heading-first airframe
         // still has a heading to show, parked or flying.
-        self.refresh_facing();
+        self.refresh_facing(&[]);
     }
 
     /// Sprite rotation for this tick: a heading-first airframe faces where
     /// the simulation says it does, parked or flying, and everything else
     /// faces the way it last moved. Live ticks, playback, and seeks all
     /// agree through this one rule.
-    fn refresh_facing(&mut self) {
+    fn refresh_facing(&mut self, movement: &[oxide_sim::GroundMotion]) {
+        self.track_motion
+            .retain(|id, _| self.state.unit(UnitId(*id)).is_some());
+        for unit in self
+            .state
+            .units()
+            .iter()
+            .filter(|unit| crate::render::tracks::supported(unit.kind))
+        {
+            let tick = self.state.current_tick();
+            let heading = f32::from(unit.heading) * std::f32::consts::TAU / 256.0;
+            self.track_motion
+                .entry(unit.id.0)
+                .or_insert_with(|| crate::track_motion::TrackMotion::new(tick, heading))
+                .observe(
+                    tick,
+                    heading,
+                    crate::render::tracks::gauge(
+                        unit.kind,
+                        crate::render::unit_draw_scale(unit.kind),
+                    ),
+                    movement
+                        .binary_search_by_key(&unit.id, |motion| motion.unit)
+                        .ok()
+                        .map_or(Vec2::ZERO, |index| world_vec(movement[index].propulsion)),
+                );
+        }
+
         self.aim_unit_targets
             .retain(|id, _| self.state.unit(UnitId(*id)).is_some());
         self.hull_heading
             .retain(|id, _| self.state.unit(UnitId(*id)).is_some());
         for unit in self.state.units() {
-            if unit.kind.stats().turn_rate > 0 || unit.kind.ground_turn_rate() > 0 {
+            if unit.kind.stats().turn_rate > 0
+                || unit.kind.ground_turn_rate() > 0
+                || unit.kind.cruise_turn_rate() > 0
+            {
                 let angle = f32::from(unit.heading) * std::f32::consts::TAU / 256.0;
                 self.facing
                     .insert(unit.id.0, angle + std::f32::consts::FRAC_PI_2);
@@ -615,33 +656,29 @@ impl Game {
                 continue;
             }
             let now = world_vec(unit.pos);
+            let mut moving = false;
             if let Some(prev) = self.prev_pos.get(&unit.id.0) {
                 let delta = now - *prev;
                 if delta.length_squared() > 1e-6 {
+                    moving = true;
                     self.facing.insert(
                         unit.id.0,
                         delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
                     );
                 }
             }
-            if matches!(
-                unit.kind,
-                oxide_sim::UnitKind::Sentinel
-                    | oxide_sim::UnitKind::Warden
-                    | oxide_sim::UnitKind::Lancer
-                    | oxide_sim::UnitKind::Buzzard
-            ) {
-                let target = self.facing.get(&unit.id.0).copied().unwrap_or(0.0);
-                let (previous, current) = self
-                    .hull_heading
-                    .entry(unit.id.0)
-                    .or_insert((target, target));
-                *previous = *current;
-                let turn = match unit.kind {
-                    oxide_sim::UnitKind::Warden => 0.18,
-                    oxide_sim::UnitKind::Lancer => 0.22,
-                    _ => 0.3,
+            if let Some(turn) = rotor_hull_turn_rate(unit.kind) {
+                let movement_facing = self.facing.get(&unit.id.0).copied().unwrap_or(0.0);
+                let target = if unit.kind == UnitKind::Wisp && !moving {
+                    self.aim_units
+                        .get(&unit.id.0)
+                        .filter(|(_, at)| self.fx_time() - at < 1.2)
+                        .map_or(movement_facing, |(angle, _)| *angle)
+                } else {
+                    movement_facing
                 };
+                let (previous, current) = self.hull_heading.entry(unit.id.0).or_insert((0.0, 0.0));
+                *previous = *current;
                 *current += angle_delta(*current, target).clamp(-turn, turn);
             }
         }
@@ -653,6 +690,7 @@ impl Game {
     /// choice.
     fn remember_previous_tick(&mut self) {
         self.audio_timeline.remember_arrivals(&self.state);
+        self.fx_previous = fx::PreviousEffects::capture(self);
         self.prev_heading = self
             .state
             .units()
@@ -738,7 +776,7 @@ impl Game {
         self.drop_presentation();
         self.remember_previous_tick();
         self.facing.clear();
-        self.refresh_facing();
+        self.refresh_facing(&[]);
     }
 
     /// Advances a small number of ticks while retaining presentation
@@ -900,6 +938,9 @@ impl Game {
         self.hull_heading.get(&id.0).map_or_else(
             || {
                 self.state.unit(id).map_or(0.0, |unit| {
+                    if rotor_hull_turn_rate(unit.kind).is_some() {
+                        return self.facing.get(&id.0).copied().unwrap_or(0.0);
+                    }
                     f32::from(unit.heading) * std::f32::consts::TAU / 256.0
                         + std::f32::consts::FRAC_PI_2
                 })
@@ -908,6 +949,17 @@ impl Game {
                 previous + angle_delta(*previous, *current) * alpha.clamp(0.0, 1.0)
             },
         )
+    }
+}
+
+pub(crate) fn rotor_hull_turn_rate(kind: UnitKind) -> Option<f32> {
+    match kind {
+        UnitKind::Skyhook => Some(0.25),
+        UnitKind::Buzzard | UnitKind::Wisp => Some(
+            0.3 * kind.stats().speed.to_num::<f32>()
+                / UnitKind::Buzzard.stats().speed.to_num::<f32>(),
+        ),
+        _ => None,
     }
 }
 
@@ -997,6 +1049,28 @@ mod tests {
              bot memory was not rebuilt by the watch-back"
         );
     }
+    #[test]
+    fn multiple_bot_seats_rebuild_the_same_history_on_resume() {
+        let mut scenario =
+            oxide_sim::Scenario::from_json(include_str!("../../scenarios/compass-grand.json"))
+                .unwrap();
+        oxide_kit::bench::all_bots(&mut scenario);
+        scenario.players[0].bot = false;
+        scenario.players[0].bot_config = None;
+        let mut original = Game::new(scenario).unwrap();
+        original.advance_ticks(180);
+        let mut snapshot = original.recorder.clone();
+        snapshot.meta.ticks = Some(180);
+        let mut resumed = Game::from_replay(snapshot).unwrap();
+        original.advance_ticks(120);
+        resumed.advance_ticks(120);
+        assert_eq!(
+            serde_json::to_vec(&original.recorder.commands).unwrap(),
+            serde_json::to_vec(&resumed.recorder.commands).unwrap()
+        );
+        assert_eq!(original.hash_hex(), resumed.hash_hex());
+    }
+
     use oxide_sim::{Command, Scenario, UnitKind};
 
     #[test]
@@ -1137,6 +1211,114 @@ mod tests {
             game.drop_presentation();
             assert_bearing(&game);
         }
+    }
+
+    #[test]
+    fn cruising_aircraft_keep_authoritative_facing_across_timeline_jumps() {
+        for kind in UnitKind::ALL
+            .into_iter()
+            .filter(|kind| kind.cruise_turn_rate() > 0)
+        {
+            let mut scenario = Scenario::skirmish();
+            scenario.units[0].kind = kind;
+            let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+            let id = game.state.units()[0].id;
+            for heading in [0u8, 96, 254] {
+                let mut snapshot = serde_json::to_value(&*game.state).unwrap();
+                snapshot["units"][0]["heading"] = serde_json::json!(heading);
+                game.replace_state_after_jump(&serde_json::from_value(snapshot).unwrap());
+                let expected = f32::from(heading) * std::f32::consts::TAU / 256.0
+                    + std::f32::consts::FRAC_PI_2;
+                assert_eq!(game.facing.get(&id.0), Some(&expected), "{kind:?}");
+                for alpha in [0.0, 0.5, 1.0] {
+                    assert_eq!(game.draw_heading(id, heading, alpha), expected);
+                }
+            }
+        }
+    }
+
+    fn rotor_game(kind: UnitKind) -> Game {
+        let mut map = vec!["........................................"; 24];
+        map[2] = "..1................................2....";
+        let scenario = serde_json::from_value(serde_json::json!({
+            "name": "Rotor turning", "seed": 1, "map": map,
+            "players": [
+                {"name": "You", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "Target", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "units": [{"player": 0, "kind": kind, "x": 12, "y": 12}],
+            "buildings": []
+        }))
+        .unwrap();
+        Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap()
+    }
+
+    #[test]
+    fn rotor_hulls_ease_reversals_and_finish_turning_after_stopping() {
+        let mut first_turns = Vec::new();
+        for kind in [UnitKind::Buzzard, UnitKind::Skyhook, UnitKind::Wisp] {
+            let mut game = rotor_game(kind);
+            let id = game.state.units()[0].id;
+            game.present_ticks(1);
+            game.issue(Command::Move {
+                units: vec![id],
+                goal: chassis::grid::TilePos::new(28, 12),
+                queue: false,
+            });
+            game.present_ticks(20);
+            let before = game.draw_hull_heading(id, 1.0);
+            let position = game.state.unit(id).unwrap().pos;
+            game.issue(Command::Move {
+                units: vec![id],
+                goal: chassis::grid::TilePos::new(8, 12),
+                queue: false,
+            });
+            game.present_ticks(1);
+            assert!(game.state.unit(id).unwrap().pos.x < position.x, "{kind:?}");
+            let turn = angle_delta(before, game.draw_hull_heading(id, 1.0)).abs();
+            assert!(turn > 0.1 && turn < 0.7, "{kind:?}: {turn}");
+            first_turns.push(turn);
+            assert!((game.draw_hull_heading(id, 0.0) - before).abs() < 1e-6);
+            game.issue(Command::Stop { units: vec![id] });
+            game.present_ticks(1);
+            let stopped = game.state.unit(id).unwrap().pos;
+            game.present_ticks(20);
+            assert_eq!(game.state.unit(id).unwrap().pos, stopped, "{kind:?}");
+            assert!(
+                angle_delta(
+                    game.draw_hull_heading(id, 1.0),
+                    -std::f32::consts::FRAC_PI_2
+                )
+                .abs()
+                    < 1e-5
+            );
+        }
+        assert!((first_turns[0] - 0.3).abs() < 1e-6);
+        assert!((first_turns[1] - 0.25).abs() < 1e-6);
+        assert!(first_turns[1] < first_turns[0] && first_turns[0] < first_turns[2]);
+    }
+
+    #[test]
+    fn hovering_wisp_eases_firing_aim_and_discards_it_on_seek() {
+        let mut game = rotor_game(UnitKind::Wisp);
+        let id = game.state.units()[0].id;
+        game.present_ticks(1);
+        let before = game.draw_hull_heading(id, 1.0);
+        let position = game.state.unit(id).unwrap().pos;
+        game.aim_units
+            .insert(id.0, (std::f32::consts::PI, game.fx_time()));
+        game.present_ticks(1);
+        let after = game.draw_hull_heading(id, 1.0);
+        assert!((0.1..0.7).contains(&angle_delta(before, after).abs()));
+        assert_eq!(game.state.unit(id).unwrap().pos, position);
+        game.present_ticks(8);
+        assert!(angle_delta(game.draw_hull_heading(id, 1.0), std::f32::consts::PI).abs() < 1e-5);
+        game.replace_state_after_jump(&game.state.0.clone());
+        assert_eq!(
+            game.draw_hull_heading(id, 0.0),
+            game.draw_hull_heading(id, 1.0)
+        );
+        assert_eq!(game.draw_hull_heading(id, 1.0), 0.0);
     }
 
     #[test]
@@ -1369,7 +1551,7 @@ mod tests {
         );
 
         game.facing.clear();
-        game.playback_present(&snapshot, &[]);
+        game.playback_present(&snapshot, &[], &[]);
         assert_eq!(
             game.facing.get(&condor.0).copied(),
             Some(expected),

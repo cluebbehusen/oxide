@@ -26,6 +26,11 @@ presentation caches observe the resulting report. Fast advancement may suppress
 intermediate presentation work, but it still bottoms out in the same recorded
 tick path.
 
+Live ticks and replay resume use `oxide_kit::bot_execution` to collect bot
+commands. Due seats may think concurrently against the same immutable state; all
+work joins in input seat order before recording commands and ticking.
+`State::tick` remains serial.
+
 The shell may use floats, hash maps, frame time, and interpolation while
 interpreting input and presenting a match. Those values can affect which
 semantic command the shell stages, but only the resulting `PlayerCommand`,
@@ -33,6 +38,29 @@ recorded for a specific tick, crosses the simulation boundary. Once staged,
 camera, selection, interpolation, and other shell state never feed
 `State::tick`. Selection is pruned when entities die or hostiles leave sight;
 timeline-local aim and effects are cleared after jumps.
+
+Destruction retains the visible casualty's faction, seat tint, tier, and heading
+before the tick removes it. Completed buildings break into rigid sections;
+ground casualties separate into hull pieces. Condor, Moth, and Skyhook
+casualties retain their heading and full proportions while carrying momentum and
+descending level into their shadows before exploding on ground contact. Smaller
+aircraft burst at flight height and shed fragments that fall to the floor.
+Parked aircraft use ground destruction. Large airborne casualties follow the
+simulation's stored crash trajectory and 13-tick impact deadline. Their fall
+pauses and changes speed with the match, and pending falls restore after seeks.
+Reduced motion preserves the same contact point and deadline. Ground impact
+effects accompany authoritative crash damage; other destruction remains visual.
+Witnessed crash contacts retain their wreck and sound even when that impact
+removes the last source of sight. Independent-turret casualties retain the live
+chassis heading rather than rotating the wreck toward the weapon's aim. Fragment
+dimensions stay fixed, and settled wreckage draws beneath live entities without
+affecting collision or salvage. Scorches and low dust anchor impacts to the
+floor; air hits use compact flashes without ground dust. Unobserved casualties
+cannot reveal their art, and own casualties remain visible through their
+destruction even when losing that unit removes local vision. Unfinished sites
+retain a generic impact. Pre-tick projectile metadata distinguishes shell and
+missile impacts after the payload has left state. These caches are
+presentation-only and refreshed by live and playback ticks.
 
 ## App and screen ownership
 
@@ -248,6 +276,26 @@ actions, then discarded or rebuilt after a timeline jump. Fog rendering reads
 the controlled seat's `Vision` unless an explicit spectator/debug mode is
 active.
 
+Unit minification is owned by `unit_lod`. At startup it derives half-, quarter-,
+and eighth-resolution images independently from every unit sprite, including
+rigs, accent masks, cargo and animation frames. Alpha-weighted RGB and averaged
+coverage preserve thin details without importing transparent pixel colors or
+neighboring atlas sprites. Each reduced region has its own extruded border. The
+original atlas remains unchanged. Physical destination size, including DPI,
+chooses the nearest reduced level; short premultiplied-alpha shader blends
+smooth level boundaries. Normal rendering is retained at 32 logical pixels per
+tile and above, with filtering introduced below that scale. The
+`OXIDE_SPRITE_FILTER` override controls the original atlas; reduced levels use
+linear sampling.
+
+`strategic_markers` fades in role and seat-identity markers below 14 logical
+pixels per tile, replacing unit sprites at 10. Ground bodies use squares and
+airborne bodies diamonds. Markers retain player visibility, selection and
+damaged health feedback, with separate allied and hostile cues. Selected markers
+draw last in crowds. Markers remain centered on the same unit positions used for
+picking; they do not cluster or displace units. Camera presentation never
+changes simulation positions, commands or visibility.
+
 An atlas may supply separate Array foundations and aerials through the complete
 `rig_array_t{0,1}_{base,rotor}` faction and accent families. The world renderer
 rotates the aerial about its bearing using the fractional presentation clock;
@@ -261,6 +309,13 @@ authoritative turret bearing, including before its first shot and during reload;
 attack effects do not override that bearing. The composite sprite remains the
 fallback when a bank does not contain the separate rig.
 
+Buzzard, Skyhook, and Wisp ease their hulls toward movement facing without
+gating translation. Wisp's angular speed scales with movement speed, using
+Buzzard's 0.3 radians per tick as the reference. Skyhook turns more slowly at
+0.25 radians per tick to give the large transport more weight. Wisp also eases
+toward its recent firing angle while hovering; attack frames cannot snap its
+hull to the target.
+
 Most units draw on one tile-sized canvas; Excavator and Shrike use 1.3-tile
 canvases, Sylph uses 1.2, and Warden uses 1.4. Condor, Breaker, and Avalanche
 use centered two-tile canvases with matching selection and health-bar geometry;
@@ -269,14 +324,15 @@ selected from real locomotion and active repair state. At demolition contact,
 Sapper faces its visible target's nearest physical point before disappearing on
 the authoritative attack tick. Breaker and Avalanche select their large tread
 and weapon rows from real locomotion and attack state. Heavy ground units and
-turn-limited aircraft interpolate their authoritative heading across the
-shortest angular interval between ticks. Attack effects do not override that
-orientation. Avalanche launch reports show an empty rail, and its cooldown holds
-that pose until the final reload interval. Serialized projectile kind
-distinguishes shells, missiles, and belly-released bombs even after the shooter
-dies. Launch reports retain unit kind and heading from the firing phase, before
-egress steering or movement. Turret reports likewise retain the firing tier so
-same-tick destruction cannot change the final volley's presentation.
+aircraft with committed or hover-capable cruise steering interpolate their
+authoritative heading across the shortest angular interval between ticks. Attack
+effects do not override that orientation. Avalanche launch reports show an empty
+rail, and its cooldown holds that pose until the final reload interval.
+Serialized projectile kind distinguishes shells, missiles, and belly-released
+bombs even after the shooter dies. Launch reports retain unit kind and heading
+from the firing phase, before egress steering or movement. Turret reports
+likewise retain the firing tier so same-tick destruction cannot change the final
+volley's presentation.
 
 Avalanche missiles draw as compact finned payloads, 0.375 tiles long, with a
 short motor flame and a trailing smoke segment. Their visual origin is ahead of
@@ -422,3 +478,12 @@ clock in a headless session.
 | GPU assets and rendering           | `shell/src/assets.rs`, `shell/src/render.rs`                               | asset-manifest tests in `shell/src/assets.rs`, `shell/tests/presentation_animation.rs`, `driver/tests/native_animation_capture.rs` |
 | CPU schematic rendering            | `kit/src/render.rs`                                                        | `driver/tests/golden.rs`                                                                                                           |
 | Audio mix and soundtrack           | `shell/src/audio_mix.rs`, `shell/src/soundtrack.rs`                        | module unit tests                                                                                                                  |
+
+## Continuous ground tracks
+
+Sentinel, Warden, Lancer, Harvester, Avalanche and Breaker retain their authored
+hulls while exposed tread shoes scroll continuously. Each belt integrates signed
+motor travel and differential hull rotation, so pivots counter-rotate the belts
+and collision sliding does not count as driving. Motion reports reach both live
+and replay presentation; seeks reset odometry and interpolation. Reduced motion
+holds the shoes still. This presentation state never enters the simulation.

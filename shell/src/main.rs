@@ -23,9 +23,12 @@ mod rocket_audio;
 mod saves;
 mod screens;
 mod soundtrack;
+mod strategic_markers;
 mod theme;
+mod track_motion;
 mod tutorial;
 mod typography;
+mod unit_lod;
 
 use clap::Parser;
 use macroquad::prelude::*;

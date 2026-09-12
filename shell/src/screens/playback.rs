@@ -475,7 +475,11 @@ impl PlaybackSession {
                 // hitch.
                 for _ in 0..ticks.min(24) {
                     let events = self.engine.advance(1);
-                    self.game.playback_present(&self.engine.state, &events);
+                    self.game.playback_present(
+                        &self.engine.state,
+                        &events,
+                        &self.engine.last_motion,
+                    );
                     if self.engine.at_end() {
                         break;
                     }
@@ -552,7 +556,8 @@ impl oxide_protocol::DebugSession for PlaybackSession {
             // newest tick stay fresh.
             self.game.update_fx(game::TICK_DT);
             let tick_events = self.engine.advance(1);
-            self.game.playback_present(&self.engine.state, &tick_events);
+            self.game
+                .playback_present(&self.engine.state, &tick_events, &self.engine.last_motion);
             events.extend(tick_events);
         }
         oxide_protocol::PresentedView {

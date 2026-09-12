@@ -11,6 +11,7 @@ use oxide_sim::{BuildingKind, Faction, UnitKind};
 /// Sprite regions share bounded texture pages instead of per-sprite textures.
 pub struct Sprites {
     textures: Vec<Texture2D>,
+    unit_lod: crate::unit_lod::UnitLod,
     page_height: f32,
     sentinel_rig: Option<UnitRig>,
     warden_rig: Option<UnitRig>,
@@ -521,7 +522,7 @@ pub enum ExcavatorPose {
 }
 
 /// The atlas stem a unit kind's rows live under.
-fn unit_stem(kind: UnitKind) -> &'static str {
+pub(crate) fn unit_stem(kind: UnitKind) -> &'static str {
     kind.name()
 }
 
@@ -1001,6 +1002,7 @@ impl Sprites {
             air_shadow,
             burst,
         ] = pick(&rects, SINGLE_KEYS)?;
+        let unit_lod = crate::unit_lod::UnitLod::load(&rects, page_height).await?;
         let unit = |kind| variant_row(&rects, unit_stem(kind), "");
         let building = |kind| variant_row(&rects, building_stem(kind), "");
         Ok(Self {
@@ -1014,6 +1016,7 @@ impl Sprites {
                 .get("scout_radar")
                 .map(|&[x, y, w, h]| Rect::new(x, y, w, h)),
             textures,
+            unit_lod,
             page_height,
             verb_icons: pick(&rects, VERB_ICON_KEYS)?,
             ground: pick(&rects, GROUND_KEYS)?,
@@ -1192,6 +1195,24 @@ impl Sprites {
             0
         };
         draw_texture_ex(&self.textures[page], x, y, tint, params);
+    }
+
+    pub fn draw_unit(&self, x: f32, y: f32, tint: Color, params: DrawTextureParams, zoom: f32) {
+        let tint = Color {
+            a: tint.a * (1.0 - crate::strategic_markers::marker_alpha(zoom)),
+            ..tint
+        };
+        if self.unit_lod.draw(
+            macroquad::prelude::vec2(x, y),
+            tint,
+            &params,
+            zoom,
+            &self.textures,
+            self.page_height,
+        ) {
+            return;
+        }
+        self.draw(x, y, tint, params);
     }
 
     /// A verb pictogram's atlas region.

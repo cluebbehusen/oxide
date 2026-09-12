@@ -10,6 +10,7 @@
 use crate::assets::{
     ExcavatorPose as SpriteExcavatorPose, HarvesterPose as SpriteHarvesterPose, Sprites,
 };
+pub(crate) mod tracks;
 static COLORBLIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Colorblind accents: swap allegiance-critical indicator colors for a
@@ -188,6 +189,7 @@ pub fn staleness_fade(age: f32) -> f32 {
 }
 
 mod chrome;
+mod destruction;
 pub(crate) mod entities;
 mod environment;
 mod minimap;
@@ -580,8 +582,10 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     crate::render::world::draw_extractor_frames(game, sprites);
     environment::draw_boundary(game, sprites.quarry_dressing(0).is_some());
     draw_scorches(game, sprites);
+    destruction::draw_ground_effects(game, sprites);
     draw_buildings(game, sprites);
     draw_units(game, sprites, alpha);
+    crate::strategic_markers::draw_markers(game, alpha);
     draw_fx(game, sprites);
     // The debug overlay is deliberately omniscient; the spectator
     // stance (playback) skips the fog too but never the debug chrome.
@@ -767,8 +771,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         if unit.domain() != domain {
             continue;
         }
-        if unit.player != game.human && !game.all_seeing() && !game.my_vision().visible(unit.tile())
-        {
+        if !crate::strategic_markers::visible(game, unit) {
             continue;
         }
         let faction = game.state.player(unit.player).faction;
@@ -781,6 +784,9 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             continue;
         }
         let mut screen = game.camera.to_screen(pos);
+        if crate::strategic_markers::replaces_units(zoom) {
+            continue;
+        }
         let draw_scale = unit_draw_scale(unit.kind);
         let dest = zoom * draw_scale;
         let current = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
@@ -802,7 +808,18 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 reduced_motion: reduced_motion(),
             },
         );
-        let frame = motion::unit_frame(unit.kind, animation);
+        let mut frame = motion::unit_frame(unit.kind, animation);
+        if tracks::supported(unit.kind) {
+            match &mut frame {
+                motion::UnitFrame::Moving(_) => frame = motion::UnitFrame::Idle,
+                motion::UnitFrame::Harvester { pose, .. }
+                    if matches!(pose, motion::HarvesterPose::Moving(_)) =>
+                {
+                    *pose = motion::HarvesterPose::Idle;
+                }
+                _ => {}
+            }
+        }
         let preparing = animation.weapons.iter().any(|cycle| {
             matches!(
                 cycle,
@@ -827,9 +844,12 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             .and_then(|_| tracked_mount_angle(game, unit, alpha));
         let rotation = if unit.kind.stats().turn_rate > 0
             || unit.kind.ground_turn_rate() > 0
+            || unit.kind.cruise_turn_rate() > 0
             || unit.kind.turret_turn_rate() > 0
         {
             game.draw_heading(unit.id, unit.weapon_heading(), alpha)
+        } else if crate::game::rotor_hull_turn_rate(unit.kind).is_some() {
+            game.draw_hull_heading(unit.id, alpha)
         } else if let Some(angle) = contact_facing {
             angle
         } else {
@@ -847,7 +867,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         };
         if airborne {
             let (shadow_size, shadow_offset, body_lift) = air_presentation(unit.kind, zoom);
-            sprites.draw(
+            sprites.draw_unit(
                 screen.x - shadow_size.x * 0.5 + shadow_offset.x,
                 screen.y - shadow_size.y * 0.5 + shadow_offset.y,
                 WHITE,
@@ -856,6 +876,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                     source: Some(sprites.air_shadow()),
                     ..Default::default()
                 },
+                zoom,
             );
             // The body rides visibly above its shadow.
             screen.y -= body_lift;
@@ -945,7 +966,14 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                     }
                 }
             };
-            let (source, accent) = rig.hull(faction, phase);
+            let (source, accent) = rig.hull(
+                faction,
+                if tracks::supported(unit.kind) {
+                    0
+                } else {
+                    phase
+                },
+            );
             (source, accent, game.draw_hull_heading(unit.id, alpha))
         } else {
             (source, accent, rotation)
@@ -953,7 +981,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         if unit.kind == oxide_sim::UnitKind::Bombard
             && let Some(source) = sprites.bombard_spades(unit.brace_ticks)
         {
-            sprites.draw(
+            sprites.draw_unit(
                 body.x - body_size.x * 0.5,
                 body.y - body_size.y * 0.5,
                 WHITE,
@@ -963,33 +991,46 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                     rotation,
                     ..Default::default()
                 },
+                zoom,
             );
         }
-        sprites.draw(
+        let params = DrawTextureParams {
+            dest_size: Some(body_size),
+            source: Some(source),
+            rotation: body_rotation,
+            ..Default::default()
+        };
+        sprites.draw_unit(
             body.x - body_size.x * 0.5,
             body.y - body_size.y * 0.5,
             WHITE,
-            DrawTextureParams {
-                dest_size: Some(body_size),
-                source: Some(source),
-                rotation: body_rotation,
-                ..Default::default()
-            },
+            params.clone(),
+            zoom,
         );
-        // The allegiance accent rides the body draw exactly — same
-        // pose, same frame — and draws UNCONDITIONALLY for non-own
-        // machines: selection must never repaint a foe as a friend.
+        if let Some(motion) = game.track_motion.get(&unit.id.0) {
+            tracks::draw(
+                unit.kind,
+                body,
+                body_size.x,
+                body_rotation,
+                if reduced_motion() {
+                    [0.0; 2]
+                } else {
+                    motion.distances(alpha)
+                },
+                draw_scale,
+            );
+        }
         if let Some(tint) = seat_identity_tint(game, unit.player) {
-            sprites.draw(
+            sprites.draw_unit(
                 body.x - body_size.x * 0.5,
                 body.y - body_size.y * 0.5,
                 tint,
                 DrawTextureParams {
-                    dest_size: Some(body_size),
                     source: Some(accent),
-                    rotation: body_rotation,
-                    ..Default::default()
+                    ..params
                 },
+                zoom,
             );
         }
         if let Some(cycle) = animation.scanner
@@ -1002,7 +1043,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             };
             let offset = (mount_y - 64.0) / 128.0 * body_size.y;
             let center = body + vec2(-body_rotation.sin(), body_rotation.cos()) * offset;
-            sprites.draw(
+            sprites.draw_unit(
                 center.x - body_size.x * 0.5,
                 center.y - body_size.y * 0.5,
                 WHITE,
@@ -1012,6 +1053,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                     rotation: body_rotation + cycle * std::f32::consts::TAU,
                     ..Default::default()
                 },
+                zoom,
             );
         }
         if let Some(rig) = rig {
@@ -1023,7 +1065,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             for (source, tint) in std::iter::once((mount, WHITE))
                 .chain(seat_identity_tint(game, unit.player).map(|tint| (accent, tint)))
             {
-                sprites.draw(
+                sprites.draw_unit(
                     body.x - dest * 0.5,
                     body.y - dest * 0.5,
                     tint,
@@ -1033,11 +1075,12 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                         rotation,
                         ..Default::default()
                     },
+                    zoom,
                 );
             }
         }
         if let Some(cargo_meter) = cargo_meter {
-            sprites.draw(
+            sprites.draw_unit(
                 body.x - body_size.x * 0.5,
                 body.y - body_size.y * 0.5,
                 WHITE,
@@ -1047,6 +1090,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                     rotation,
                     ..Default::default()
                 },
+                zoom,
             );
         }
         let max_hp = unit.kind.stats().max_hp;

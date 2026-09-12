@@ -1009,18 +1009,7 @@ fn shot_visibility(
 }
 
 fn draw_splash_bloom(sprites: &Sprites, center: Vec2, zoom: f32, radius: f32, progress: f32) {
-    let progress = progress.clamp(0.0, 1.0);
-    let size = zoom * radius * 2.0 * (0.4 + 0.6 * progress);
-    sprites.draw(
-        center.x - size * 0.5,
-        center.y - size * 0.5,
-        Color::new(1.0, 1.0, 1.0, 1.0 - progress),
-        DrawTextureParams {
-            dest_size: Some(vec2(size, size)),
-            source: Some(sprites.burst()),
-            ..Default::default()
-        },
-    );
+    super::destruction::draw_hit(sprites, center, zoom, radius, progress);
 }
 
 pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
@@ -1340,8 +1329,10 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 );
                 visibility.body || visibility.bloom
             }
+            EffectKind::Collapse { at, .. } | EffectKind::Impact { at, .. } => sees(at),
             EffectKind::Puff { at } => sees(at),
-            EffectKind::Falling { at, .. } => sees(at),
+            // Falling fragments and airframes apply fog at their moving positions.
+            EffectKind::Falling { .. } => true,
             EffectKind::Burst { at, .. } => sees(at),
             EffectKind::Debris { at, .. } => sees(at),
             // Own-order acknowledgments always show; fogged targets are
@@ -1585,73 +1576,52 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                     );
                 }
             }
-            EffectKind::Falling { at, unit, faction } => {
-                // Gravity takes the wreck: drop accelerates, the hull
-                // spins and shrinks, and the ground swallows it.
-                let t = (fx.age / 0.7).clamp(0.0, 1.0);
-                let world = vec2(at.x, at.y + t * t * 1.4);
-                let screen = game.camera.to_screen(world);
-                let size = game.camera.zoom * 1.05 * (1.0 - t * 0.55);
-                sprites.draw(
-                    screen.x - size * 0.5,
-                    screen.y - size * 0.5,
-                    Color::new(1.0, 1.0, 1.0, 1.0 - t * 0.8),
-                    DrawTextureParams {
-                        dest_size: Some(vec2(size, size)),
-                        source: Some(sprites.unit(unit, faction)),
-                        rotation: t * 5.2,
-                        ..Default::default()
-                    },
+            EffectKind::Falling {
+                at,
+                body,
+                seed,
+                crash,
+                ..
+            } => {
+                super::destruction::draw_falling(
+                    game,
+                    sprites,
+                    at,
+                    body,
+                    seed,
+                    fx.age_at(game.state.current_tick(), game.tick_fraction()),
+                    crash,
+                );
+            }
+            EffectKind::Collapse { .. } => {}
+            EffectKind::Impact {
+                at,
+                radius,
+                payload,
+            } => {
+                super::destruction::draw_impact(
+                    game.camera.to_screen(at),
+                    game.camera.zoom,
+                    radius,
+                    fx.age,
+                    payload,
                 );
             }
             EffectKind::Puff { at } => {
-                let center = game.camera.to_screen(at);
-                let fade = 1.0 - fx.age / 0.4;
-                let radius = game.camera.zoom * (0.15 + fx.age * 1.6);
-                let color = Color::new(0.9, 0.88, 0.84, 0.7 * fade.clamp(0.0, 1.0));
-                draw_circle_lines(center.x, center.y, radius, 2.0, color);
+                super::destruction::draw_impact(
+                    game.camera.to_screen(at),
+                    game.camera.zoom,
+                    0.45,
+                    fx.age,
+                    oxide_sim::ProjectileKind::Shell,
+                );
             }
             EffectKind::Burst { at, radius } => {
-                // The bloom grows toward the splash radius and fades —
-                // the player reads exactly the area that just got hit.
                 let center = game.camera.to_screen(at);
                 let progress = (fx.age / 0.35).clamp(0.0, 1.0);
                 draw_splash_bloom(sprites, center, game.camera.zoom, radius, progress);
             }
-            EffectKind::Debris { at, seed } => {
-                // Three shards on seed-derived arcs: radial fling that
-                // decays, a gravity-flavored settle, spin, and a fade.
-                // Everything derives from (seed, i), so a replay draws
-                // the same scatter the live session did.
-                let t = (fx.age / 0.7).clamp(0.0, 1.0);
-                let zoom = game.camera.zoom;
-                for i in 0..3u32 {
-                    let h = seed
-                        .wrapping_mul(2_654_435_761)
-                        .wrapping_add(i.wrapping_mul(40_503))
-                        .rotate_left(13);
-                    let angle = (h % 628) as f32 / 100.0;
-                    let fling = 0.55 + ((h >> 10) % 60) as f32 / 100.0;
-                    let reach = fling * (1.0 - (1.0 - t) * (1.0 - t));
-                    let world = vec2(
-                        at.x + angle.cos() * reach,
-                        at.y + angle.sin() * reach + t * t * 0.35,
-                    );
-                    let p = game.camera.to_screen(world);
-                    let size = zoom * 0.34 * (1.0 - t * 0.4);
-                    sprites.draw(
-                        p.x - size * 0.5,
-                        p.y - size * 0.5,
-                        Color::new(1.0, 1.0, 1.0, 1.0 - t),
-                        DrawTextureParams {
-                            dest_size: Some(vec2(size, size)),
-                            source: Some(sprites.debris(i as usize)),
-                            rotation: angle + t * 4.0,
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
+            EffectKind::Debris { .. } => {}
             EffectKind::Ping { .. } => {} // drawn above the fog, in draw_pings
         }
     }

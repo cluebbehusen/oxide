@@ -62,6 +62,11 @@ pub enum Event {
         /// event is read.
         grounded: bool,
     },
+    /// A destroyed aircraft reached its scheduled impact point.
+    AircraftImpacted {
+        /// Identity and trajectory retained after removal of the aircraft.
+        crash: crate::state::AircraftCrash,
+    },
     /// A machine climbed aboard a transport and left the world's unit
     /// list until it is set down again.
     UnitBoarded {
@@ -300,6 +305,20 @@ pub struct TickReport {
     pub tick: Tick,
     /// Events in the order they occurred.
     pub events: Vec<Event>,
+    /// Ground propulsion and forced displacement, observed before cleanup.
+    #[serde(default)]
+    pub movement: Vec<GroundMotion>,
+}
+
+/// Presentation-only decomposition of one ground body's displacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroundMotion {
+    /// Body that moved; records are ordered by id.
+    pub unit: UnitId,
+    /// Displacement produced by the driving integrator.
+    pub propulsion: Vec2Fx,
+    /// Displacement imposed by overlap separation.
+    pub correction: Vec2Fx,
 }
 
 /// Why an order program stalled. Every variant derives from the acting

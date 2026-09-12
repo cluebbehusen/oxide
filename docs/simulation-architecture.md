@@ -152,11 +152,15 @@ Phase order is game behavior. `State::tick` currently performs:
 6. Resolve boarding and unloading after every unit has decided.
 7. Evict pathless ground bodies from newly claimed blocking footprints.
 8. Follow paths, then resolve same-domain unit collisions.
-9. Detonate armed Scuttle Charges under hostile post-movement bodies.
-10. Remove dead entities and deposit eligible wreck salvage.
-11. Apply wreck decay on its global cadence.
-12. Rebuild team-shared visibility and reconcile fog memory.
-13. Determine victory or draw from surviving, non-resigned teams.
+9. Retain large aircraft motion and resolve due crash impacts against current
+   positions.
+10. Detonate armed Scuttle Charges under hostile post-movement bodies.
+11. Schedule airborne crashes, remove dead entities, and deposit eligible wreck
+    salvage.
+12. Apply wreck decay on its global cadence.
+13. Rebuild team-shared visibility and reconcile fog memory.
+14. Determine victory or draw from surviving, non-resigned teams and discard any
+    remaining pending crashes when the match ends.
 
 Shots and hp work are buffered while actors decide against stable positions, hp,
 and live entity tables. Orders, paths, harvesting, and billing may still change
@@ -169,6 +173,21 @@ Once a result exists, later calls ignore commands and skip world phases, but the
 tick counter still advances so external timelines remain aligned. Per-tick
 acceleration structures, including the unit spatial index, are local scratch.
 They are rebuilt at their use points and never serialized or hashed.
+
+Destroyed airborne Condors, Moths, and Skyhooks leave a pending crash. The
+record retains owner, kind, heading, launch and contact positions, and start and
+arrival ticks. Contact is fixed at death using the last actual airborne
+displacement, capped at flight speed, with 20% average deceleration over 13
+ticks. A hovering transport therefore falls in place. The removed aircraft and
+its cargo cease acting immediately, and ordinary death salvage is unchanged.
+
+At contact, a two-tile blast damages every hostile ground unit and nearby
+building footprint: 50 damage for Condor, 40 for Moth and Skyhook. Allies and
+airborne units are immune; impacts over pits do no damage. Targets can move into
+or out of the blast before arrival. Pending crashes resolve in death-tick and
+unit-id order and survive state serialization. Victory is immediate once the
+Foundry condition is met; any crashes still pending are discarded without
+damage.
 
 ## Commands and unit programs
 
@@ -207,9 +226,23 @@ non-stealthy building footprint. A buried Scuttle Charge deliberately blocks
 nothing. Air movement ignores rocks, scrap, and buildings, but Peaks own their
 air column and remain impassable.
 
-Turn-limited aircraft fly heading-first: only the heading steers, at most
-`turn_rate` compass steps per tick, so every waypoint is accepted inside the
-kind's turn-acceptance ring rather than at an exact center. Every turn is a
+Talon, Darter, Shrike, Sylph, Kestrel, and Gnat cruise heading-first but can
+hover at rest. Their travel and fixed-gun traverse rates are independent of
+bomber flight: eight compass steps per tick for Talon, six for Shrike, ten for
+Darter, Sylph, and Kestrel, and twelve for Gnat. At full speed these give turn
+radii of roughly 0.7 to 1.1 tiles. Near waypoints they slow to tighten the arc;
+intermediate waypoints can be rounded only when the onward segment is clear. An
+obstructed step holds position while the nose turns and replans from the actual
+position. Arrivals, Stop, and in-range attacks hover rather than orbit or land.
+Fixed guns traverse with the body before firing ordinary hitscan shots; Advance
+only fires when already aligned and does not turn away from its route to aim.
+These aircraft spawn facing the map center, matching mirrored initial turn
+costs. Buzzard, Wisp, and Skyhook retain independent travel without a cruise
+turn radius.
+
+Condor and Moth use committed heading-first flight: only the heading steers, at
+most `turn_rate` compass steps per tick, so every waypoint is accepted inside
+the kind's turn-acceptance ring rather than at an exact center. Every turn is a
 committed arc of one fixed radius, and the simulation reasons about that arc
 against the map's flight envelope in fixed point. Steering takes the shorter
 rotation only when the arc it sweeps stays inside the world and ends in a state
@@ -219,7 +252,10 @@ A committed airframe never stops: without a path it orbits on the bank whose
 fitting arc is longest, tangent to the point where the route ran out, and if it
 is ever pressed into the envelope it slides along the boundary while turning
 back in. A step into a Peak drops the route so the brain replans from the actual
-position, while the airframe slides along the face.
+position, while the airframe slides along the face. Near the target bearing, a
+three-quarter-step angular deadband prevents alternating corrections across the
+256-step compass boundary. Turns settle on the nearer of the two bearings
+bracketing the goal ray.
 
 A bomber's roll-out after a release, and its departure leg when it is inside
 release range or inside its own acceptance ring of the attack tile, go only to
@@ -380,14 +416,27 @@ shot is hitscan or a real projectile. Buildings count as ground targets. Weapons
 may cover ground, air, or both; sidearms are separate weapon slots and cooldowns
 are stored per slot.
 
-All ground chassis pivot toward their route before translating, moving once
-within eight of 256 compass steps. A tick spends at most one movement turn, even
-across several waypoints. Turn rate is the ceiling of movement speed times 64,
-bounded to four through ten steps per tick; Breaker retains four, and Avalanche
-and Bombard retain three. Pathfinding and translation speeds remain unchanged,
-but turn time changes arrival and engagement timing. Ground units spawn facing
-the map center so mirrored placements have mirrored initial turn costs; air
-initialization is unchanged.
+Ground chassis retain a motor speed independently of collision displacement.
+They accelerate from rest over six ticks and brake from full speed over three. A
+sharp route change first brakes along the existing heading, then pivots; final
+approaches reduce speed to stop at the goal. Stop and lost paths brake without
+retaining the old order. Newly blocked terrain can arrest that coast. Turn rate
+remains the ceiling of movement speed times 64, bounded to four through ten
+compass steps per tick; Breaker retains four, and Avalanche and Bombard retain
+three. Translation resumes within eight of 256 compass steps. Ground units spawn
+facing the map center so mirrored placements have mirrored initial turn costs.
+Independent weapon mounts can aim during travel; fixed weapons wait for the
+motor to stop before turning to aim.
+
+A pathless ground unit can still be braking. Group arrival propagation and
+anchored collision priority require its motor speed to be zero.
+
+Paths and destination allocation remain advisory. The ordinary collision
+relaxation still separates bodies laterally after propulsion, with its original
+per-tick budgets and alternating order. No future journey, service timetable or
+contact-steering coordinator controls ground travel. Motor speed is serialized
+and validated; observational motion reports split propulsion from collision
+correction without affecting state or hashes.
 
 Ground weapons require alignment within two compass steps before firing.
 Sentinel, Warden, and Lancer have independent serialized `turret_heading`
@@ -426,12 +475,13 @@ and artillery arc.
 
 Hitscan attacks buffer damage for same-tick resolution. Projectile weapons
 launch a serialized `Shell` toward a fixed fire-time aim point. Predictive aim
-may lead a unit's current path before launch, but a shell is unguided after it
-leaves the weapon. A serialized projectile kind preserves missile, bomb, or
-shell identity independently of shooter survival. Deserialization rejects a kind
-inconsistent with a shooter that still exists. On arrival, buildings take only a
-direct hit; eligible enemy units may take splash according to the weapon's
-domain mask.
+samples ground motor speed and heading, including pathless coasting; air units
+retain the current steering-line estimate. The snapshot precedes unit brains and
+does not consult later route turns. A shell is unguided after it leaves the
+weapon. A serialized projectile kind preserves missile, bomb, or shell identity
+independently of shooter survival. Deserialization rejects a kind inconsistent
+with a shooter that still exists. On arrival, buildings take only a direct hit;
+eligible enemy units may take splash according to the weapon's domain mask.
 
 ## Fog, memory, radar, and teams
 
@@ -931,6 +981,14 @@ not treated as live obstacles. The accepted proposal retains the scorer's exact
 site and builder through `BuildWith`. The frozen Overseer retains its legacy
 placement and sequential construction rules.
 
+The site search evaluates candidates in descending order of conservative score
+bounds. Unchanged approach routes retain their coverage score; assets whose
+routes could change receive the maximum positive contribution, and bounds omit
+penalties and builder travel. A site is skipped only when it cannot provide
+coverage or its bound falls below the best exact candidate. Surviving sites
+still undergo every builder, egress, resource-route, and support check. The
+existing score and coordinate tie-breaks determine the selected site.
+
 The pre-core emergency path is deliberately narrower than voluntary allocation.
 It uses only a current visible armed ground threat for a Turret or a current
 visible ground-attack aircraft for Flak, places only the matching defense, and
@@ -1018,13 +1076,13 @@ map rather than an exhaustive test inventory.
 | Scenario build and authored map                    | `sim/src/scenario.rs`, `sim/src/map.rs`                                                                                                                                                       | inline module tests, `sim/tests/pits.rs`, `sim/tests/extractors.rs`                                                                 |
 | State, hashing, validation, and teams              | `sim/src/state.rs`, `chassis/src/hash.rs`                                                                                                                                                     | `sim/tests/state_integrity.rs`, `sim/tests/determinism.rs`, `sim/tests/teams.rs`                                                    |
 | Placement, deferred founding, and upgrades         | `sim/src/state/placement.rs`, `sim/src/tick/commands.rs`, `sim/src/tick/brain.rs`, `sim/src/tick/brain/economy.rs`                                                                            | `sim/tests/behavior_construction.rs`, `sim/tests/extractors.rs`, `sim/tests/upgrades.rs`, `sim/tests/foundries.rs`                  |
-| Tick scheduling, production, cleanup, and charges  | `sim/src/tick/mod.rs`, `sim/src/tick/production.rs`                                                                                                                                           | `sim/tests/behavior_rules.rs`, `sim/tests/behavior_economy.rs`, `sim/tests/mines_015.rs`                                            |
+| Tick scheduling, production, cleanup, and charges  | `sim/src/tick/mod.rs`, `sim/src/tick/production.rs`                                                                                                                                           | `sim/tests/behavior_rules.rs`, `sim/tests/behavior_economy.rs`, `sim/tests/field_kit.rs`                                            |
 | Command vocabulary and set semantics               | `sim/src/command.rs`, `sim/src/tick/commands.rs`                                                                                                                                              | `sim/tests/command_canonicalization.rs`, `sim/tests/fuzz.rs`                                                                        |
 | Unit programs, routing, movement, and collision    | `sim/src/tick/brain.rs`, `sim/src/tick/brain/locomotion.rs`, `sim/src/tick/movement.rs`, `chassis/src/path.rs`                                                                                | `sim/tests/behavior_movement.rs`, `sim/tests/movement_lab.rs`, `sim/tests/peaks.rs`, `sim/tests/pits.rs`                            |
-| Boarding and unloading                             | `sim/src/tick/brain/logistics.rs`                                                                                                                                                             | `sim/tests/transports_015.rs`                                                                                                       |
+| Boarding and unloading                             | `sim/src/tick/brain/logistics.rs`                                                                                                                                                             | `sim/tests/transports.rs`                                                                                                           |
 | Harvesting, income, salvage, and repair            | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs`                                                                                                                                 | `sim/tests/harvest_zones.rs`, `sim/tests/salvage.rs`, `sim/tests/repair_unit.rs`, `sim/tests/repair_bay.rs`, `sim/tests/smelter.rs` |
 | Weapons and simultaneous resolution                | `sim/src/stats.rs`, `sim/src/tick/brain/combat.rs`                                                                                                                                            | `sim/tests/behavior_combat.rs`, `sim/tests/combat_edges.rs`, `sim/tests/shells.rs`, `sim/tests/peaks.rs`                            |
-| Fog, memory, radar, and stealth                    | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                                                                       | `sim/tests/bot_brain.rs`, `sim/tests/bastion_acquisition.rs`, `sim/tests/mines_015.rs`                                              |
+| Fog, memory, radar, and stealth                    | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                                                                       | `sim/tests/bot_brain.rs`, `sim/tests/bastion_acquisition.rs`, `sim/tests/field_kit.rs`                                              |
 | Bot knowledge, profiles, and fair difficulty       | `sim/src/bot/briefing.rs`, `sim/src/bot/observation.rs`, `sim/src/bot/intelligence.rs`, `sim/src/bot/orient.rs`, `sim/src/bot/profile.rs`, `sim/src/bot/difficulty.rs`                        | inline module tests, `sim/tests/bot_brain.rs`                                                                                       |
 | Bot resource evidence and planning commitments     | `sim/src/bot/resources.rs`, `sim/src/bot/resources/ledger.rs`, `sim/src/bot/resources/production.rs`, `sim/src/bot/utility.rs`, `sim/src/bot/executive/lowering.rs`                           | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
 | Bot cross-domain investment allocation             | `sim/src/bot/resources/planning.rs`, `sim/src/bot/allocation.rs`, `sim/src/bot/allocation/`                                                                                                   | inline allocation, adapter, coordinator, session, and Brain tests                                                                   |

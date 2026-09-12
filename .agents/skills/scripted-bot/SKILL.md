@@ -609,7 +609,7 @@ Run focused bot tests first:
 cargo test -p oxide-sim --test bot_brain --locked
 cargo test -p oxide-sim --test bot_policy --locked
 cargo test -p oxide-sim --test scripted_bot --locked
-cargo test -p oxide-sim --test overseer_015 --locked
+cargo test -p oxide-sim --test overseer --locked
 ```
 
 Then run complete seeded matches on representative shapes: a normal duel, an

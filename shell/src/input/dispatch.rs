@@ -40,7 +40,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             // Contextual: units selected halt in place; a selected own
             // unfinished site is scrapped for its refund.
             if !game.selection.units.is_empty() && !game.selection_commandable() {
-                game.toast("ally units are read-only");
+                game.toast("You can only command your own units.");
                 return;
             }
             if !game.selection.units.is_empty() {
@@ -110,7 +110,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         }
         Action::Patrol => {
             if !game.selection_commandable() {
-                game.toast("ally units are read-only");
+                game.toast("You can only command your own units.");
                 return;
             }
             // First press arms a route; the second sends the circuit.

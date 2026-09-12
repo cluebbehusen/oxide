@@ -1,4 +1,4 @@
-//! The 0.15 field kit: buried Scuttle Charges (the game's only
+//! The field kit: buried Scuttle Charges (the game's only
 //! stealth), the Sapper's one-way demolition, and Barricade walls.
 
 use chassis::grid::TilePos;
@@ -482,7 +482,7 @@ fn the_sapper_cracks_the_wall_and_is_consumed() {
             unit(0, UnitKind::Sapper, 6, 4),
             // The spotter that makes the cross-map order fog-legal.
             unit(0, UnitKind::Kestrel, 11, 2),
-            unit(1, UnitKind::Scuttler, 12, 5),
+            unit(1, UnitKind::Harvester, 12, 3),
         ],
         vec![building(1, BuildingKind::Barricade, 12, 4)],
     )
@@ -505,8 +505,21 @@ fn the_sapper_cracks_the_wall_and_is_consumed() {
             queue: false,
         },
     )]);
+    let mut splash_distance = None;
     for _ in 0..400 {
-        state.tick(&[]);
+        let bystander_pos = state.unit(bystander).unwrap().pos;
+        let report = state.tick(&[]);
+        for event in report.events {
+            if let Event::AttackHit {
+                attacker,
+                target_pos,
+                ..
+            } = event
+                && attacker == sapper
+            {
+                splash_distance = Some(bystander_pos.dist(target_pos));
+            }
+        }
         if state.unit(sapper).is_none() {
             break;
         }
@@ -524,7 +537,11 @@ fn the_sapper_cracks_the_wall_and_is_consumed() {
     );
     let bystander_hp = state.unit(bystander).map_or(0, |u| u.hp);
     assert!(
-        bystander_hp < UnitKind::Scuttler.stats().max_hp,
+        splash_distance.expect("the sapper detonated") <= oxide_sim::stats::SAPPER_BLAST_RADIUS,
+        "the stationary bystander must be inside the blast"
+    );
+    assert!(
+        bystander_hp < UnitKind::Harvester.stats().max_hp,
         "the adjacent machine takes the splash"
     );
 }

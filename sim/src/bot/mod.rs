@@ -101,6 +101,12 @@ impl SeatBot {
         )))
     }
 
+    /// Whether this seat is scheduled to think at this tick.
+    /// A due seat can still produce no commands.
+    pub fn decision_due(&self, state: &crate::State) -> bool {
+        self.0.decision_due(state)
+    }
+
     /// Commands for this tick.
     pub fn act(&mut self, state: &crate::state::State) -> Vec<crate::command::PlayerCommand> {
         self.0.act(state)

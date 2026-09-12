@@ -11,6 +11,9 @@
 //! are only ever blocked by terrain and buildings, so pathfinding stays
 //! deadlock-free while crowds physically jostle.
 
+mod cruise;
+mod ground;
+
 use super::flight;
 use crate::map::Map;
 use crate::state::{Order, PathFollow, State};
@@ -32,6 +35,9 @@ pub(super) fn steer_weapon_heading(unit: &mut crate::state::Unit, direction: Vec
         let bearing = unit.turret_heading.get_or_insert(unit.heading);
         return steer_bearing(bearing, direction, unit.kind.turret_turn_rate());
     }
+    if unit.drive_speed > Fx::ZERO {
+        return false;
+    }
     if unit.kind == crate::UnitKind::Bombard {
         if !ground_weapon_aligned(unit, direction) {
             if unit.brace_ticks > 0 {
@@ -47,7 +53,8 @@ pub(super) fn steer_weapon_heading(unit: &mut crate::state::Unit, direction: Vec
     let rate = unit
         .kind
         .ground_turn_rate()
-        .max(unit.kind.turret_turn_rate());
+        .max(unit.kind.turret_turn_rate())
+        .max(unit.kind.cruise_turn_rate());
     steer_heading(unit, direction, rate)
 }
 
@@ -71,7 +78,7 @@ fn heading_aligned(current: u8, desired: u8) -> bool {
 }
 
 pub(super) fn ground_weapon_aligned(unit: &crate::state::Unit, direction: Vec2Fx) -> bool {
-    unit.kind.ground_turn_rate() == 0
+    (unit.kind.ground_turn_rate() == 0 && unit.kind.cruise_turn_rate() == 0)
         || direction == Vec2Fx::ZERO
         || heading_aligned(unit.weapon_heading(), flight::heading_of(direction))
 }
@@ -247,77 +254,36 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             }
             continue;
         }
-        let airborne = stats.domain == crate::stats::Domain::Air;
-        if let Some(aim) = work_aims[slot] {
-            steer_ground_heading(unit, aim - unit.pos);
+        if unit.kind.cruise_turn_rate() > 0 {
+            cruise::advance(unit, map);
+            travel[slot] = unit.pos - before;
+            continue;
+        }
+        if stats.domain == crate::stats::Domain::Ground {
+            ground::advance(unit, map, buildings);
+            if unit.drive_speed == Fx::ZERO
+                && let Some(aim) = work_aims[slot]
+            {
+                steer_ground_heading(unit, aim - unit.pos);
+            }
+            travel[slot] = unit.pos - before;
+            continue;
         }
         let mut budget = stats.speed;
-        let mut steered = false;
         while budget > Fx::ZERO {
             let Some(path) = &mut unit.path else { break };
             let Some(&waypoint) = path.waypoints.get(path.next as usize) else {
                 unit.path = None;
                 break;
             };
-            // Ground can close mid-walk (a site claims its footprint at
-            // command time): never step toward a waypoint that is no
-            // longer open — and never take a diagonal whose two flanking
-            // cardinals aren't both open either, the same no-corner-cut
-            // rule A* guaranteed when the path was computed. Drop the path
-            // and let the brain repath around whatever appeared. None of
-            // it binds a flyer: air routes never close.
-            if !airborne {
-                let open = |t: TilePos| {
-                    map.terrain_passable(t)
-                        && !buildings
-                            .iter()
-                            .any(|b| b.contains(t) && !b.kind.is_stealthy())
-                };
-                let here = TilePos::containing(unit.pos);
-                let (dx, dy) = (waypoint.x - here.x, waypoint.y - here.y);
-                let corner_cut = dx != 0
-                    && dy != 0
-                    && !(open(here.offset(dx.signum(), 0)) && open(here.offset(0, dy.signum())));
-                if !open(waypoint) || corner_cut {
-                    unit.path = None;
-                    break;
-                }
-            }
             let center = waypoint.center();
             let dist = unit.pos.dist(center);
             if let Some(&next_wp) = path.waypoints.get(path.next as usize + 1)
                 && (dist <= WAYPOINT_ACCEPT
                     || passed_intermediate_waypoint(unit.pos, waypoint, next_wp, stats.radius))
-                && (airborne
-                    || (early_advance_safe(waypoint, next_wp, map, buildings)
-                        && early_advance_safe(
-                            TilePos::containing(unit.pos),
-                            next_wp,
-                            map,
-                            buildings,
-                        )))
             {
                 path.next += 1;
-                continue; // spend the budget on the next leg instead
-            }
-            if !airborne && dist > Fx::ZERO {
-                let desired = flight::heading_of(center - unit.pos);
-                if !steered {
-                    steer_bearing(
-                        &mut unit.heading,
-                        center - unit.pos,
-                        unit.kind.ground_turn_rate(),
-                    );
-                    steered = true;
-                }
-                if desired
-                    .wrapping_sub(unit.heading)
-                    .cast_signed()
-                    .unsigned_abs()
-                    > 8
-                {
-                    break;
-                }
+                continue;
             }
             if dist <= budget {
                 unit.pos = center;
@@ -333,7 +299,7 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             }
         }
         let direction = unit.pos - before;
-        if airborne && direction != Vec2Fx::ZERO {
+        if direction != Vec2Fx::ZERO {
             steer_ground_heading(unit, direction);
         }
         travel[slot] = direction;
@@ -456,7 +422,7 @@ fn steer_turn_limited(
 }
 
 /// Rotates the heading toward `target` by at most `turn_rate` compass
-/// steps, stopping early the moment the nose crosses the goal ray. Every
+/// steps, settling on the nearest bearing with a small angular deadband. Every
 /// input is Q32.32, so each platform turns identically. The turn is a
 /// committed arc, not a nudge: the shorter rotation is taken only when the
 /// arc it sweeps stays inside the world and ends somewhere the airframe can
@@ -469,6 +435,14 @@ fn steer_toward(
     target: Vec2Fx,
 ) {
     let d = target - unit.pos;
+    let facing = chassis::compass::dir(unit.heading);
+    let cross = facing.x * d.y - facing.y * d.x;
+    let dot = facing.x * d.x + facing.y * d.y;
+    // Three quarters of a compass step: retain the current bearing near
+    // the quantization boundary instead of reversing on successive ticks.
+    if dot >= Fx::ZERO && cross.abs() <= dot * Fx::lit("0.0184") {
+        return;
+    }
     let Some((short, sweep)) = flight::turn_to(unit.heading, d) else {
         return;
     };
@@ -509,13 +483,16 @@ fn steer_toward(
         let nhv = chassis::compass::dir(next);
         let ncross = nhv.x * d.y - nhv.y * d.x;
         let ndot = nhv.x * d.x + nhv.y * d.y;
-        unit.heading = next;
         // The sign of the cross product also flips when the nose sweeps
         // through dead astern on the long way round; only a crossing
         // with the target ahead is the goal ray.
         if ndot >= Fx::ZERO && (cross > Fx::ZERO) != (ncross > Fx::ZERO) {
+            if ndot > dot {
+                unit.heading = next;
+            }
             break;
         }
+        unit.heading = next;
     }
 }
 
@@ -535,6 +512,7 @@ fn is_anchored(unit: &crate::state::Unit) -> bool {
     unit.landed
         || unit.kind.stats().turn_rate == 0
             && unit.path.is_none()
+            && unit.drive_speed == Fx::ZERO
             && matches!(
                 unit.order,
                 Order::Harvest { .. } | Order::Attack { .. } | Order::Repair { .. }
@@ -924,6 +902,34 @@ mod tests {
     use crate::state::Faction;
     use crate::stats::UnitKind;
 
+    #[test]
+    fn shallow_air_bearing_does_not_alternate_across_the_goal_ray() {
+        let map = Map::parse(&vec![".".repeat(200); 200]).unwrap().0;
+        for heading in [0u8, 64, 128, 192] {
+            let mut unit = boundary_pair().units[0].clone();
+            unit.kind = UnitKind::Condor;
+            unit.heading = heading;
+            unit.pos = Vec2Fx::new(Fx::from_num(100), Fx::from_num(100));
+            let forward = chassis::compass::dir(heading);
+            let sideways = chassis::compass::dir(heading.wrapping_add(64));
+            let target = unit.pos + forward * Fx::from_num(80) + sideways;
+            for _ in 0..200 {
+                steer_toward(&mut unit, &map, UnitKind::Condor.stats(), target);
+                assert_eq!(
+                    unit.heading, heading,
+                    "straight approach must not wag its nose"
+                );
+                unit.pos += chassis::compass::dir(unit.heading) * unit.kind.stats().speed;
+            }
+            let target = unit.pos + sideways * Fx::from_num(20);
+            steer_toward(&mut unit, &map, UnitKind::Condor.stats(), target);
+            assert_eq!(
+                unit.heading,
+                heading.wrapping_add(unit.kind.stats().turn_rate)
+            );
+        }
+    }
+
     fn seat(name: &str, faction: Faction) -> PlayerSpec {
         PlayerSpec {
             name: name.into(),
@@ -972,6 +978,30 @@ mod tests {
         }
         .build()
         .expect("boundary pair builds")
+    }
+
+    #[test]
+    fn coasting_worker_is_not_anchored_until_its_motor_stops() {
+        let mut state = boundary_pair();
+        let unit = &mut state.units[0];
+        unit.kind = UnitKind::Harvester;
+        unit.heading = 0;
+        unit.order = Order::Harvest {
+            node: TilePos::new(7, 1),
+            anchor: None,
+            retiring: false,
+        };
+        unit.drive_speed = unit.kind.stats().speed;
+        let before = unit.pos;
+        assert!(!is_anchored(unit));
+        ground::advance(unit, &state.map, &state.buildings);
+        assert!(unit.pos.x > before.x);
+        assert!(!is_anchored(unit));
+        for _ in 0..2 {
+            ground::advance(unit, &state.map, &state.buildings);
+        }
+        assert_eq!(unit.drive_speed, Fx::ZERO);
+        assert!(is_anchored(unit));
     }
 
     fn corner_shortcut_pair(
