@@ -13,6 +13,8 @@ use macroquad::prelude::{Rect, Vec2};
 /// Where the persistent HUD chrome sits, in window pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutModel {
+    /// Read-only performance panel; pointer presses must not reach the map.
+    pub performance: Rect,
     /// Height of the top status bar.
     pub top_bar_h: f32,
     /// Top edge of the bottom panel band; the band runs to the window
@@ -53,6 +55,7 @@ pub struct LayoutModel {
 impl Default for LayoutModel {
     fn default() -> Self {
         Self {
+            performance: Rect::new(0.0, 0.0, 0.0, 0.0),
             top_bar_h: 0.0,
             panel_top: f32::INFINITY,
             panel_right: 0.0,
@@ -160,6 +163,7 @@ impl LayoutModel {
     ) -> Self {
         Self {
             top_bar_h: TOP_BAR_H * ui,
+            performance: Rect::new(0.0, 0.0, 0.0, 0.0),
             panel_top,
             panel_right,
             orders,
@@ -181,6 +185,7 @@ impl LayoutModel {
     /// its own richer meaning and is tested separately.
     pub fn chrome_owns(&self, p: Vec2) -> bool {
         p.y <= self.top_bar_h
+            || (self.performance.w > 0.0 && self.performance.contains(p))
             || (p.y >= self.panel_top && p.x <= self.panel_right)
             || (self.orders.w > 0.0 && self.orders.contains(p))
             || (self.mode_ribbon.w > 0.0 && self.mode_ribbon.contains(p))

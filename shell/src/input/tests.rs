@@ -65,6 +65,51 @@ fn click(x: f32, y: f32) -> [RawEvent; 2] {
     ]
 }
 
+#[test]
+fn performance_panel_swallows_orders_and_selection_without_revealing_fog() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let unit = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| unit.player == game.human)
+        .unwrap()
+        .id;
+    game.selection.units.push(unit);
+    let mut layout = game.layout.get();
+    layout.performance = macroquad::prelude::Rect::new(1028.0, 46.0, 240.0, 158.0);
+    game.layout.set(layout);
+    let pos = layout.performance.center();
+    let before = game.state.hash();
+    for events in [
+        click(pos.x, pos.y).to_vec(),
+        vec![RawEvent::MouseDown {
+            button: MouseButton::Right,
+            x: pos.x,
+            y: pos.y,
+        }],
+        vec![
+            RawEvent::TouchDown {
+                id: 23,
+                x: pos.x,
+                y: pos.y,
+            },
+            RawEvent::TouchUp {
+                id: 23,
+                x: pos.x,
+                y: pos.y,
+            },
+        ],
+    ] {
+        apply_events(&mut game, &mut input, &events);
+        assert_eq!(game.selection.units, vec![unit]);
+        assert!(game.pending.is_empty());
+        assert_eq!(game.state.hash(), before);
+        assert!(!game.all_seeing());
+    }
+}
+
 fn skyhook_interaction_game() -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         "{

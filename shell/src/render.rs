@@ -195,6 +195,7 @@ mod environment;
 mod minimap;
 mod motion;
 mod panel_draw;
+mod performance;
 mod pits;
 mod world;
 use chrome::*;
@@ -574,6 +575,15 @@ fn view_height() -> f32 {
 
 /// Draws one frame.
 pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
+    draw_with_performance(game, sprites, input, None);
+}
+
+pub(crate) fn draw_with_performance(
+    game: &Game,
+    sprites: &Sprites,
+    input: &InputState,
+    performance: Option<&crate::performance::PerformanceView>,
+) {
     clear_background(OUTSIDE);
     environment::draw_backdrop(game);
     let alpha = game.render_alpha();
@@ -609,7 +619,10 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     draw_placement_ghost(game, sprites, input);
     draw_drag_rect(game, input);
     draw_salvage_tooltip(game, input);
-    draw_hud(game, sprites, input);
+    draw_hud(game, sprites, input, performance);
+    if game.overlay {
+        draw_overlay_info(game);
+    }
     draw_minimap(game);
     draw_result_overlay(game);
     draw_panel_tooltip(game, input);

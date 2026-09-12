@@ -77,6 +77,9 @@ pub(crate) fn draw_overlay(game: &Game, alpha: f32) {
             }
         }
     }
+}
+
+pub(crate) fn draw_overlay_info(game: &Game) {
     let info = format!(
         "tick {}  fps {}  zoom {:.0}  center ({:.1},{:.1})",
         game.state.current_tick(),
@@ -86,7 +89,21 @@ pub(crate) fn draw_overlay(game: &Game, alpha: f32) {
         game.camera.center.y,
     );
     let s = ui_scale();
-    draw_text(&info, screen_width() - 420.0 * s, 54.0 * s, 18.0 * s, BONE);
+    let panel = game.layout.get().performance;
+    let y = if panel.w > 0.0 {
+        panel.y + panel.h + 20.0 * s
+    } else {
+        60.0 * s
+    };
+    let size = 14.0 * s;
+    let width = measure_text(&info, None, size as u16, 1.0).width;
+    draw_text(
+        &info,
+        (screen_width() - width - 12.0 * s).max(0.0),
+        y,
+        size,
+        BONE,
+    );
 }
 
 fn mode_ribbon_geometry(
@@ -183,12 +200,18 @@ fn toast_origin(viewport: Vec2, scale: f32, panel_top: f32, orders: Rect, index:
     )
 }
 
-pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
+pub(crate) fn draw_hud(
+    game: &Game,
+    sprites: &Sprites,
+    input: &InputState,
+    performance: Option<&crate::performance::PerformanceView>,
+) {
     let s = ui_scale();
     // A spectator commands nothing: no bank, no unit count, no idle
     // nag — the viewer's transport bar is its own chrome. The layout
     // still publishes below so the minimap stays clickable.
     let mut idle_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut status_space = None;
     if !game.spectate {
         // Top bar.
         draw_rectangle(
@@ -268,6 +291,9 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
             format!("{}:{:02}", seconds / 60, seconds % 60)
         };
         let width = crate::typography::measure(&status, 14.0 * s).width;
+        let occupied_right = (count_x + crate::typography::measure(&units_text, 21.0 * s).width)
+            .max(idle_badge.x + idle_badge.w);
+        status_space = Some((occupied_right, screen_width() - width - 12.0 * s));
         crate::typography::draw(
             &status,
             screen_width() - width - 12.0 * s,
@@ -326,6 +352,13 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
         queue_slots,
         queue_count,
     ));
+
+    if let Some(view) = performance {
+        let panel = super::performance::draw(view, status_space);
+        let mut layout = game.layout.get();
+        layout.performance = panel;
+        game.layout.set(layout);
+    }
 
     // Toasts: rejected orders and stalled units, newest at the bottom.
     for (i, toast) in game.toasts.iter().rev().take(3).enumerate() {
