@@ -830,9 +830,12 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             .and_then(|_| tracked_mount_angle(game, unit, alpha));
         let rotation = if unit.kind.stats().turn_rate > 0
             || unit.kind.ground_turn_rate() > 0
+            || unit.kind.cruise_turn_rate() > 0
             || unit.kind.turret_turn_rate() > 0
         {
             game.draw_heading(unit.id, unit.weapon_heading(), alpha)
+        } else if crate::game::rotor_hull_turn_rate(unit.kind).is_some() {
+            game.draw_hull_heading(unit.id, alpha)
         } else if let Some(angle) = contact_facing {
             angle
         } else {

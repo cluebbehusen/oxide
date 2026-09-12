@@ -286,6 +286,13 @@ authoritative turret bearing, including before its first shot and during reload;
 attack effects do not override that bearing. The composite sprite remains the
 fallback when a bank does not contain the separate rig.
 
+Buzzard, Skyhook, and Wisp ease their hulls toward movement facing without
+gating translation. Wisp's angular speed scales with movement speed, using
+Buzzard's 0.3 radians per tick as the reference. Skyhook turns more slowly at
+0.25 radians per tick to give the large transport more weight. Wisp also eases
+toward its recent firing angle while hovering; attack frames cannot snap its
+hull to the target.
+
 Most units draw on one tile-sized canvas; Excavator and Shrike use 1.3-tile
 canvases, Sylph uses 1.2, and Warden uses 1.4. Condor, Breaker, and Avalanche
 use centered two-tile canvases with matching selection and health-bar geometry;
@@ -294,14 +301,15 @@ selected from real locomotion and active repair state. At demolition contact,
 Sapper faces its visible target's nearest physical point before disappearing on
 the authoritative attack tick. Breaker and Avalanche select their large tread
 and weapon rows from real locomotion and attack state. Heavy ground units and
-turn-limited aircraft interpolate their authoritative heading across the
-shortest angular interval between ticks. Attack effects do not override that
-orientation. Avalanche launch reports show an empty rail, and its cooldown holds
-that pose until the final reload interval. Serialized projectile kind
-distinguishes shells, missiles, and belly-released bombs even after the shooter
-dies. Launch reports retain unit kind and heading from the firing phase, before
-egress steering or movement. Turret reports likewise retain the firing tier so
-same-tick destruction cannot change the final volley's presentation.
+aircraft with committed or hover-capable cruise steering interpolate their
+authoritative heading across the shortest angular interval between ticks. Attack
+effects do not override that orientation. Avalanche launch reports show an empty
+rail, and its cooldown holds that pose until the final reload interval.
+Serialized projectile kind distinguishes shells, missiles, and belly-released
+bombs even after the shooter dies. Launch reports retain unit kind and heading
+from the firing phase, before egress steering or movement. Turret reports
+likewise retain the firing tier so same-tick destruction cannot change the final
+volley's presentation.
 
 Avalanche missiles draw as compact finned payloads, 0.375 tiles long, with a
 short motor flame and a trailing smoke segment. Their visual origin is ahead of

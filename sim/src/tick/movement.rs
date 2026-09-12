@@ -11,6 +11,8 @@
 //! are only ever blocked by terrain and buildings, so pathfinding stays
 //! deadlock-free while crowds physically jostle.
 
+mod cruise;
+
 use super::flight;
 use crate::map::Map;
 use crate::state::{Order, PathFollow, State};
@@ -47,7 +49,8 @@ pub(super) fn steer_weapon_heading(unit: &mut crate::state::Unit, direction: Vec
     let rate = unit
         .kind
         .ground_turn_rate()
-        .max(unit.kind.turret_turn_rate());
+        .max(unit.kind.turret_turn_rate())
+        .max(unit.kind.cruise_turn_rate());
     steer_heading(unit, direction, rate)
 }
 
@@ -71,7 +74,7 @@ fn heading_aligned(current: u8, desired: u8) -> bool {
 }
 
 pub(super) fn ground_weapon_aligned(unit: &crate::state::Unit, direction: Vec2Fx) -> bool {
-    unit.kind.ground_turn_rate() == 0
+    (unit.kind.ground_turn_rate() == 0 && unit.kind.cruise_turn_rate() == 0)
         || direction == Vec2Fx::ZERO
         || heading_aligned(unit.weapon_heading(), flight::heading_of(direction))
 }
@@ -245,6 +248,11 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
                 steer_turn_limited(unit, map, stats);
                 travel[slot] = unit.pos - before;
             }
+            continue;
+        }
+        if unit.kind.cruise_turn_rate() > 0 {
+            cruise::advance(unit, map);
+            travel[slot] = unit.pos - before;
             continue;
         }
         let airborne = stats.domain == crate::stats::Domain::Air;
