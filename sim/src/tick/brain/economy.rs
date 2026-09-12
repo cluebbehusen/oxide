@@ -10,6 +10,7 @@ use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::state::{Order, PathFollow, State};
 use crate::stats::HARVEST_ZONE_RADIUS;
 use crate::vision::GroundSalvageDanger;
+use chassis::fx::Fx;
 use chassis::grid::TilePos;
 use std::cmp::Reverse;
 
@@ -411,7 +412,7 @@ pub(super) fn commit_unit_welds(
             };
             let me = unit.player;
             let unit_pos = unit.pos;
-            if footprint_eviction_pending(state, weld.welder) {
+            if unit.drive_speed != Fx::ZERO || footprint_eviction_pending(state, weld.welder) {
                 // Phase 5, after weld resolution, will make this welder
                 // walk off newly claimed ground. It cannot light the
                 // torch and move in the same tick.
@@ -429,6 +430,7 @@ pub(super) fn commit_unit_welds(
             };
             let reach = crate::stats::REPAIR_REACH;
             if t.path.is_none()
+                && t.drive_speed == Fx::ZERO
                 && !matches!(t.order, Order::Found { .. })
                 && !footprint_eviction_pending(state, weld.patient)
                 && unit_pos.dist_sq(t.pos) <= reach * reach

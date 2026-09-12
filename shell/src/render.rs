@@ -10,6 +10,7 @@
 use crate::assets::{
     ExcavatorPose as SpriteExcavatorPose, HarvesterPose as SpriteHarvesterPose, Sprites,
 };
+pub(crate) mod tracks;
 static COLORBLIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Colorblind accents: swap allegiance-critical indicator colors for a
@@ -805,7 +806,18 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 reduced_motion: reduced_motion(),
             },
         );
-        let frame = motion::unit_frame(unit.kind, animation);
+        let mut frame = motion::unit_frame(unit.kind, animation);
+        if tracks::supported(unit.kind) {
+            match &mut frame {
+                motion::UnitFrame::Moving(_) => frame = motion::UnitFrame::Idle,
+                motion::UnitFrame::Harvester { pose, .. }
+                    if matches!(pose, motion::HarvesterPose::Moving(_)) =>
+                {
+                    *pose = motion::HarvesterPose::Idle;
+                }
+                _ => {}
+            }
+        }
         let preparing = animation.weapons.iter().any(|cycle| {
             matches!(
                 cycle,
@@ -952,7 +964,14 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                     }
                 }
             };
-            let (source, accent) = rig.hull(faction, phase);
+            let (source, accent) = rig.hull(
+                faction,
+                if tracks::supported(unit.kind) {
+                    0
+                } else {
+                    phase
+                },
+            );
             (source, accent, game.draw_hull_heading(unit.id, alpha))
         } else {
             (source, accent, rotation)
@@ -973,31 +992,41 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 zoom,
             );
         }
+        let params = DrawTextureParams {
+            dest_size: Some(body_size),
+            source: Some(source),
+            rotation: body_rotation,
+            ..Default::default()
+        };
         sprites.draw_unit(
             body.x - body_size.x * 0.5,
             body.y - body_size.y * 0.5,
             WHITE,
-            DrawTextureParams {
-                dest_size: Some(body_size),
-                source: Some(source),
-                rotation: body_rotation,
-                ..Default::default()
-            },
+            params.clone(),
             zoom,
         );
-        // The allegiance accent rides the body draw exactly — same
-        // pose, same frame — and draws UNCONDITIONALLY for non-own
-        // machines: selection must never repaint a foe as a friend.
+        if let Some(motion) = game.track_motion.get(&unit.id.0) {
+            tracks::draw(
+                unit.kind,
+                body,
+                body_size.x,
+                body_rotation,
+                if reduced_motion() {
+                    [0.0; 2]
+                } else {
+                    motion.distances(alpha)
+                },
+                draw_scale,
+            );
+        }
         if let Some(tint) = seat_identity_tint(game, unit.player) {
             sprites.draw_unit(
                 body.x - body_size.x * 0.5,
                 body.y - body_size.y * 0.5,
                 tint,
                 DrawTextureParams {
-                    dest_size: Some(body_size),
                     source: Some(accent),
-                    rotation: body_rotation,
-                    ..Default::default()
+                    ..params
                 },
                 zoom,
             );

@@ -74,8 +74,9 @@ fn shell_flight(from: Vec2Fx, aim: Vec2Fx) -> u64 {
 /// One tick-boundary sample of the motion a visible body is already showing.
 ///
 /// The sample is captured before any unit brain runs. That keeps artillery
-/// independent of the alternating brain order, and recording only the current
-/// steering line avoids reading an opponent's later A* turns or destination.
+/// independent of the alternating brain order. Ground samples use retained
+/// motor speed and heading, including pathless coasting; air samples keep the
+/// current steering line. Neither reads an opponent's later A* turns.
 pub(super) struct MotionSnapshot {
     velocities: Vec<(UnitId, Vec2Fx)>,
 }
@@ -86,6 +87,12 @@ impl MotionSnapshot {
             .units
             .iter()
             .filter_map(|unit| {
+                if unit.kind.stats().domain == Domain::Ground {
+                    return (unit.drive_speed > Fx::ZERO).then_some((
+                        unit.id,
+                        chassis::compass::dir(unit.heading) * unit.drive_speed,
+                    ));
+                }
                 let path = unit.path.as_ref()?;
                 let next = path.waypoints.get(path.next as usize)?.center();
                 let delta = next - unit.pos;
@@ -157,7 +164,7 @@ struct ProjectileShooter {
     domain: Domain,
 }
 
-/// Leads a moving unit along its tick-boundary steering line for the shell's
+/// Leads a moving unit using its tick-boundary motion sample for the shell's
 /// estimated flight. For splash shells, the aim backs toward the current
 /// position by one blast radius: a straight commitment remains just inside
 /// the footprint, while stopping or turning gets a principled margin for
@@ -2367,13 +2374,51 @@ mod tests {
     }
 
     #[test]
-    fn motion_snapshot_uses_only_the_current_steering_line() {
+    fn motion_snapshot_tracks_motor_speed_through_retargeting_and_coasting() {
+        let mut state = boundary_duel();
+        let target = &mut state.units[1];
+        target.kind = UnitKind::Scuttler;
+        target.heading = 0;
+        target.drive_speed = target.kind.stats().speed / 6;
+        target.path = Some(PathFollow {
+            goal: TilePos::new(3, 1),
+            waypoints: vec![TilePos::new(5, 1), TilePos::new(3, 1)],
+            next: 0,
+        });
+        let (id, pos, speed) = (target.id, target.pos, target.drive_speed);
+        let expected = pos + Vec2Fx::new(speed, Fx::ZERO);
+        assert_eq!(
+            MotionSnapshot::capture(&state).position_after(id, pos, 1),
+            Some(expected)
+        );
+
+        state.units[1].path = None;
+        assert_eq!(
+            MotionSnapshot::capture(&state).position_after(id, pos, 1),
+            Some(expected)
+        );
+        state.units[1].drive_speed = Fx::ZERO;
+        state.units[1].path = Some(PathFollow {
+            goal: TilePos::new(8, 1),
+            waypoints: vec![TilePos::new(8, 1)],
+            next: 0,
+        });
+        assert_eq!(
+            MotionSnapshot::capture(&state).position_after(id, pos, 1),
+            None
+        );
+    }
+
+    #[test]
+    fn motion_snapshot_ignores_later_route_turns() {
         let aim_with_later_turn = |turn: TilePos| {
             let mut state = boundary_duel();
             state.units[0].kind = UnitKind::Bombard;
             state.units[0].pos = TilePos::new(2, 1).center();
             state.units[1].kind = UnitKind::Scuttler;
             state.units[1].pos = TilePos::new(7, 1).center();
+            state.units[1].heading = 0;
+            state.units[1].drive_speed = UnitKind::Scuttler.stats().speed;
             let target = state.units[1].id;
             state.units[1].path = Some(PathFollow {
                 goal: turn,

@@ -162,6 +162,7 @@ impl State {
     pub fn tick(&mut self, commands: &[PlayerCommand]) -> TickReport {
         let tick = self.tick;
         let mut events = Vec::new();
+        let mut motion = Vec::new();
         if self.result.is_none() {
             // One spatial index serves the tick's unit-neighborhood
             // queries (acquisition windows, collision pairs). A scratch
@@ -179,7 +180,21 @@ impl State {
             brain::logistics::resolve(self, boardings, &mut events);
             movement::evict_claimed_ground(self);
             let travel = movement::run(self);
+            let driven: Vec<_> = self.units.iter().map(|unit| unit.pos).collect();
             movement::resolve_collisions(self, &travel, &mut index);
+            motion.extend(self.units.iter().zip(&travel).zip(driven).filter_map(
+                |((unit, &propulsion), driven)| {
+                    let correction = unit.pos - driven;
+                    (unit.domain() == crate::stats::Domain::Ground
+                        && (propulsion != chassis::fx::Vec2Fx::ZERO
+                            || correction != chassis::fx::Vec2Fx::ZERO))
+                        .then_some(crate::GroundMotion {
+                            unit: unit.id,
+                            propulsion,
+                            correction,
+                        })
+                },
+            ));
             detonate_charges(self, &mut events);
             cleanup(self, &mut events);
             if self.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
@@ -189,7 +204,11 @@ impl State {
             victory(self, &mut events);
         }
         self.tick += 1;
-        TickReport { tick, events }
+        TickReport {
+            tick,
+            events,
+            movement: motion,
+        }
     }
 }
 

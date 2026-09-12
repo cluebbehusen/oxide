@@ -153,6 +153,42 @@ fn refusal(doc: Value) -> String {
         .to_string()
 }
 
+#[test]
+fn ground_motor_speed_is_validated_and_survives_continuation() {
+    use chassis::fx::Fx;
+    use chassis::grid::TilePos;
+    let mut state = arena().build().unwrap();
+    let id = state.units()[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![id],
+            goal: TilePos::new(8, 5),
+            queue: false,
+        },
+    )]);
+    for _ in 0..20 {
+        state.tick(&[]);
+    }
+    let mut restored: State = serde_json::from_value(doc(&state)).unwrap();
+    for _ in 0..100 {
+        assert_eq!(state.tick(&[]), restored.tick(&[]));
+        assert_eq!(state.hash(), restored.hash());
+    }
+    for speed in [
+        -Fx::ONE,
+        UnitKind::Harvester.stats().speed + Fx::from_bits(1),
+    ] {
+        let mut forged = doc(&state);
+        forged["units"][0]["drive_speed"] = serde_json::to_value(speed).unwrap();
+        assert!(refusal(forged).contains("invalid ground motor speed"));
+    }
+    let mut forged = doc(&state);
+    forged["units"][1]["brace_ticks"] = json!(1);
+    forged["units"][1]["drive_speed"] = serde_json::to_value(Fx::from_bits(1)).unwrap();
+    assert!(refusal(forged).contains("invalid ground motor speed"));
+}
+
 /// A well-formed shell, for fixtures that need one in the sky.
 fn shell(shooter: Value, player: u32, impact_bits: i64) -> Value {
     json!({
@@ -330,10 +366,11 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::ShellKindMismatch(_) => 67,
         E::InvalidUnitBraces(_) => 68,
         E::InvalidTurretHeading(_) => 69,
+        E::InvalidGroundSpeed(_) => 70,
     }
 }
 
-const ROWS: usize = 70;
+const ROWS: usize = 71;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -416,6 +453,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::ShellKindMismatch(0),
         E::InvalidUnitBraces(UnitId(0)),
         E::InvalidTurretHeading(UnitId(0)),
+        E::InvalidGroundSpeed(UnitId(0)),
     ]
 }
 
@@ -453,6 +491,7 @@ fn make_transport(d: &mut Value) {
     d["units"][0]["carrying"] = json!(0);
     let unit = d["units"][0].as_object_mut().expect("unit is a map");
     unit.remove("path");
+    unit.remove("drive_speed");
     unit.remove("leash");
     unit.remove("queue");
 }
@@ -472,6 +511,7 @@ fn make_landed(d: &mut Value) {
     d["units"][0]["landed"] = json!(true);
     let unit = d["units"][0].as_object_mut().expect("unit is a map");
     unit.remove("path");
+    unit.remove("drive_speed");
     unit.remove("leash");
     unit.remove("queue");
 }
@@ -635,6 +675,11 @@ fn every_checklist_row_refuses_its_forgery() {
             "a harvester carrying an independent turret bearing",
             |d| d["units"][0]["turret_heading"] = json!(0),
             "unit u0 carries an unsupported independent turret heading",
+        ),
+        (
+            "negative motor speed",
+            |d| d["units"][0]["drive_speed"] = json!({"bits": -1}),
+            "unit u0 carries invalid ground motor speed",
         ),
         (
             "a harvester carrying deployed spades",

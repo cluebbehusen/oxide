@@ -1039,7 +1039,7 @@ mod tests {
                 queue: false,
             },
         }]);
-        game.playback_present(&state, &report.events);
+        game.playback_present(&state, &report.events, &report.movement);
         assert!(game.state.building(BuildingId(2)).is_none());
         assert!(report.events.iter().any(|event| matches!(
             event,

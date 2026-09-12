@@ -386,6 +386,7 @@ fn touching_settled_arrival(state: &State, id: UnitId, goal: TilePos) -> bool {
             && other.hp > 0
             && other.domain() == unit.domain()
             && other.path.is_none()
+            && other.drive_speed == chassis::fx::Fx::ZERO
             && other.order == Order::Idle
             && other.pos.dist_sq(goal_center) <= near_sq
             && unit.pos.dist(other.pos) <= my_radius + other.kind.stats().radius + contact_slack
@@ -467,6 +468,47 @@ fn auto_land_probe_due(settled: u16) -> bool {
 mod tests {
     use super::auto_land_probe_due;
     use crate::stats::{AUTO_LAND_IDLE_TICKS, AUTO_LAND_RETRY_TICKS};
+
+    #[test]
+    fn coasting_arrival_does_not_complete_a_neighbor_order() {
+        use super::{touching_settled_arrival, walk};
+        use crate::state::{Order, PathFollow};
+        use chassis::fx::{Fx, Vec2Fx};
+        use chassis::grid::TilePos;
+
+        let mut state = crate::Scenario::skirmish().build().unwrap();
+        state.units.truncate(2);
+        let goal = TilePos::new(12, 8);
+        for unit in &mut state.units {
+            unit.kind = crate::UnitKind::Sentinel;
+            unit.order = Order::Move { goal };
+            unit.path = Some(PathFollow {
+                goal,
+                waypoints: vec![goal],
+                next: 0,
+            });
+        }
+        state.units[0].pos = Vec2Fx::new(Fx::lit("12.01"), Fx::lit("8.5"));
+        state.units[0].drive_speed = state.units[0].kind.stats().speed;
+        let gap = state.units[0].kind.stats().radius * 2 + Fx::lit("0.02");
+        state.units[1].pos = state.units[0].pos - Vec2Fx::new(gap, Fx::ZERO);
+        let leader = state.units[0].id;
+        let follower = state.units[1].id;
+        let mut events = Vec::new();
+
+        walk(&mut state, leader, goal, &mut events);
+        assert!(state.units[0].path.is_none());
+        assert!(state.units[0].drive_speed > Fx::ZERO);
+        assert_ne!(state.units[1].tile(), goal);
+        assert!(!touching_settled_arrival(&state, follower, goal));
+        walk(&mut state, follower, goal, &mut events);
+        assert_eq!(state.units[1].order, Order::Move { goal });
+
+        state.units[0].drive_speed = Fx::ZERO;
+        assert!(touching_settled_arrival(&state, follower, goal));
+        walk(&mut state, follower, goal, &mut events);
+        assert_eq!(state.units[1].order, Order::Idle);
+    }
 
     #[test]
     fn auto_land_probes_fire_on_the_retry_cadence_not_every_tick() {
