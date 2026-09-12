@@ -466,11 +466,12 @@ impl Battlefield {
             matches!(
                 episode.context.doctrine,
                 Doctrine::Pressure | Doctrine::Air | Doctrine::Siege
-            ) && matches!(episode.outcome, Outcome::Aborted | Outcome::Ineffective)
+            ) && ((matches!(episode.outcome, Outcome::Aborted | Outcome::Ineffective)
                 && matches!(
                     episode.reason,
                     OutcomeReason::UnsafeApproach | OutcomeReason::ObservedCounter
-                )
+                ))
+                || episode.has_uncertain_losses())
                 && experience.contextual_score(episode.context) < 0
         }) {
             let tile = TilePos::new(episode.context.x, episode.context.y);
@@ -618,68 +619,77 @@ mod tests {
 
     #[test]
     fn failed_approaches_keep_the_frozen_objective_through_fog() {
-        use crate::bot::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, Experience, ExperienceKey, Outcome, OutcomeJournal,
-            OutcomeReason,
-        };
-        let mut obs = fixture();
-        obs.enemy_units.clear();
-        let target = obs.enemy_buildings[0].clone();
-        let mut journal = OutcomeJournal::default();
-        journal.watch(
-            &obs,
-            EpisodeId {
-                owner: EpisodeOwner::Air,
-                serial: 1,
-            },
-            ExperienceKey {
-                doctrine: Doctrine::Air,
-                x: target.anchor.x,
-                y: target.anchor.y,
-                subject: u64::from(target.id.0),
-            },
-            &[],
-            1,
-        );
-        journal.observe_objective(&obs, target.id);
-        journal.finish(
-            &obs,
-            Outcome::Aborted,
-            OutcomeReason::UnsafeApproach,
-            1000,
-            false,
-        );
-        let mut experience = Experience::default();
-        experience.observe(&obs, 6000);
-        experience.report(journal.pending.remove(0));
-        obs.tick += 12;
-        obs.visible.fill(false);
-        let mut ghost = target.clone();
-        ghost.seen = false;
-        ghost.id = BuildingId(u32::MAX);
-        let questions = |building: BuildingObs| {
-            let mut observed = obs.clone();
-            observed.enemy_buildings = vec![building];
-            let mut battlefield = Battlefield::default();
-            battlefield.observe(&observed, &[], tuning(), None);
-            battlefield.review_approaches(&observed, &experience);
-            battlefield.assessment.questions
-        };
-        let retained = questions(ghost.clone());
-        assert_eq!(retained.len(), 1);
-        assert_eq!(retained[0].evidence_at, 0);
-        assert_eq!(questions(target.clone()), retained);
-        let mut changed_owner = ghost.clone();
-        changed_owner.player = PlayerId(2);
-        assert!(questions(changed_owner).is_empty());
-        ghost.kind = BuildingKind::Fabricator;
-        assert!(questions(ghost.clone()).is_empty());
-        ghost.kind = target.kind;
-        ghost.anchor.x += 1;
-        assert!(questions(ghost).is_empty());
-        let mut replacement = target;
-        replacement.id = BuildingId(9999);
-        assert!(questions(replacement).is_empty());
+        for uncertain in [false, true] {
+            use crate::bot::experience::{
+                Doctrine, EpisodeId, EpisodeOwner, Experience, ExperienceKey, Outcome,
+                OutcomeJournal, OutcomeReason,
+            };
+            let mut obs = fixture();
+            obs.enemy_units.clear();
+            let target = obs.enemy_buildings[0].clone();
+            let mut journal = OutcomeJournal::default();
+            journal.watch(
+                &obs,
+                EpisodeId {
+                    owner: EpisodeOwner::Air,
+                    serial: 1,
+                },
+                ExperienceKey {
+                    doctrine: Doctrine::Air,
+                    x: target.anchor.x,
+                    y: target.anchor.y,
+                    subject: u64::from(target.id.0),
+                },
+                &[],
+                1,
+            );
+            journal.observe_objective(&obs, target.id);
+            journal.finish(
+                &obs,
+                Outcome::Aborted,
+                OutcomeReason::UnsafeApproach,
+                1000,
+                false,
+            );
+            let mut experience = Experience::default();
+            experience.observe(&obs, 6000);
+            let mut report = journal.pending.remove(0);
+            if uncertain {
+                report.outcome = Outcome::Inconclusive;
+                report.reason = OutcomeReason::LostContact;
+                report.confidence = 0;
+                report.own_lost_value = 90;
+            }
+            experience.report(report);
+            obs.tick += 12;
+            obs.visible.fill(false);
+            let mut ghost = target.clone();
+            ghost.seen = false;
+            ghost.id = BuildingId(u32::MAX);
+            let questions = |building: BuildingObs| {
+                let mut observed = obs.clone();
+                observed.enemy_buildings = vec![building];
+                let mut battlefield = Battlefield::default();
+                battlefield.observe(&observed, &[], tuning(), None);
+                battlefield.review_approaches(&observed, &experience);
+                battlefield.assessment.questions
+            };
+            let retained = questions(ghost.clone());
+            assert_eq!(retained.len(), 1);
+            assert_eq!(retained[0].evidence_at, 0);
+            assert_eq!(questions(target.clone()), retained);
+            let mut changed_owner = ghost.clone();
+            changed_owner.player = PlayerId(2);
+            assert!(questions(changed_owner).is_empty());
+            ghost.kind = BuildingKind::Fabricator;
+            assert!(questions(ghost.clone()).is_empty());
+            ghost.kind = target.kind;
+            ghost.anchor.x += 1;
+            assert!(questions(ghost).is_empty());
+            let mut replacement = target;
+            replacement.id = BuildingId(9999);
+            assert!(questions(replacement).is_empty());
+        }
     }
 
     #[test]

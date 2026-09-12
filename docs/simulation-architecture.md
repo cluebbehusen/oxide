@@ -86,7 +86,10 @@ units remain present but unavailable. Foundation observation continues after the
 builder leaves; a delivery watch continues without ownership of its landed
 troops. Shared coordination credits prevent these components from teaching the
 same outcome repeatedly. Stronger assault evidence may replace preliminary
-delivery credit. Ambiguous attribution cannot earn broad doctrine credit. Frozen
+delivery credit. Ambiguous attribution cannot earn broad doctrine credit.
+Inconclusive lost-contact or deadline reports with known own casualties retain
+half-strength contextual evidence and can request approach reconnaissance. They
+remain inconclusive about the objective and never contribute to doctrine. Frozen
 objective owner, kind, and footprint anchor link failed approaches to remembered
 buildings without relying on their placeholder ids. Defensive service uses a
 provider's movement domain for routing, including parked aircraft; target

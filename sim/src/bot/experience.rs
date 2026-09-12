@@ -99,11 +99,21 @@ pub(crate) struct EpisodeReport {
 }
 
 impl EpisodeReport {
+    pub(crate) fn has_uncertain_losses(&self) -> bool {
+        self.outcome == Outcome::Inconclusive
+            && matches!(
+                self.reason,
+                OutcomeReason::LostContact | OutcomeReason::Deadline
+            )
+            && self.own_lost_value > 0
+    }
+
     fn contextual_rank(&self) -> (u8, u16, Tick, std::cmp::Reverse<EpisodeId>) {
         let quality = match self.outcome {
             Outcome::Complete | Outcome::Ineffective => 3,
             Outcome::Aborted => 2,
             Outcome::Partial => 1,
+            Outcome::Inconclusive if self.has_uncertain_losses() => 1,
             Outcome::Invalidated | Outcome::Inconclusive => 0,
         };
         (
@@ -115,6 +125,10 @@ impl EpisodeReport {
     }
 
     fn contribution(&self) -> i32 {
+        // Own casualties remain certain even when the objective and attacker are unknown.
+        if self.has_uncertain_losses() {
+            return -EPISODE_WEIGHT / 2;
+        }
         let magnitude = EPISODE_WEIGHT * i32::from(self.confidence.min(1000)) / 1000;
         match self.outcome {
             Outcome::Complete => magnitude,
@@ -193,6 +207,9 @@ impl Experience {
             return;
         }
         report.confidence = report.confidence.min(1000);
+        if report.has_uncertain_losses() {
+            report.doctrine_eligible = false;
+        }
         report.participants.sort_unstable();
         report.participants.dedup();
         if matches!(report.credit.owner, EpisodeOwner::Air | EpisodeOwner::Lift)
@@ -954,6 +971,40 @@ mod tests {
         );
         assert_eq!(memory.contextual_score(report(1).context), 0);
         assert!(memory.episodes.is_empty());
+    }
+
+    #[test]
+    fn uncertain_objective_retains_local_casualty_evidence_without_doctrine() {
+        let mut memory = memory();
+        for serial in 1..=2 {
+            let mut event = report(serial);
+            event.outcome = Outcome::Inconclusive;
+            event.reason = OutcomeReason::LostContact;
+            event.confidence = 0;
+            memory.report(event);
+        }
+        assert_eq!(memory.contextual_score(report(1).context), -256);
+        assert_eq!(memory.doctrine_score(Doctrine::Pressure), 0);
+        assert!(
+            memory
+                .episodes
+                .iter()
+                .all(|episode| !episode.doctrine_eligible)
+        );
+        let mut empty_followup = memory.episodes[0].clone();
+        empty_followup.own_lost_value = 0;
+        empty_followup.finished_at += 12;
+        assert!(memory.episodes[0].contextual_rank() > empty_followup.contextual_rank());
+
+        let mut event = report(3);
+        event.context.x += 1;
+        event.outcome = Outcome::Inconclusive;
+        event.reason = OutcomeReason::LostContact;
+        event.own_lost_value = 0;
+        event.confidence = 0;
+        let context = event.context;
+        memory.report(event);
+        assert_eq!(memory.contextual_score(context), 0);
     }
 
     #[test]
