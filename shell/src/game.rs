@@ -14,7 +14,7 @@ use oxide_protocol::hash_hex;
 use oxide_sim::bot::{SeatBot, seat_bots};
 use oxide_sim::{
     Building, BuildingId, Command, Event, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State,
-    TICKS_PER_SECOND, Target, UnitId,
+    TICKS_PER_SECOND, Target, UnitId, UnitKind,
 };
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -474,8 +474,8 @@ impl Game {
 
         if !self.suppress_presentation {
             self.animations.observe(&report);
-            self.refresh_facing();
             self.spawn_fx(&report.events);
+            self.refresh_facing();
         }
         // Dead units leave the selection — and so do HOSTILES whose
         // ground fog has re-covered: the panel reads live hp from the
@@ -533,10 +533,10 @@ impl Game {
         self.remember_previous_tick();
         self.state.0 = state.clone();
         self.projectile_releases.observe(&self.state, events);
-        self.refresh_facing();
         self.animations
             .observe_events(self.state.current_tick(), events);
         self.spawn_fx(events);
+        self.refresh_facing();
         let state = &self.state;
         self.facing
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
@@ -595,7 +595,10 @@ impl Game {
         self.hull_heading
             .retain(|id, _| self.state.unit(UnitId(*id)).is_some());
         for unit in self.state.units() {
-            if unit.kind.stats().turn_rate > 0 || unit.kind.ground_turn_rate() > 0 {
+            if unit.kind.stats().turn_rate > 0
+                || unit.kind.ground_turn_rate() > 0
+                || unit.kind.cruise_turn_rate() > 0
+            {
                 let angle = f32::from(unit.heading) * std::f32::consts::TAU / 256.0;
                 self.facing
                     .insert(unit.id.0, angle + std::f32::consts::FRAC_PI_2);
@@ -610,33 +613,29 @@ impl Game {
                 continue;
             }
             let now = world_vec(unit.pos);
+            let mut moving = false;
             if let Some(prev) = self.prev_pos.get(&unit.id.0) {
                 let delta = now - *prev;
                 if delta.length_squared() > 1e-6 {
+                    moving = true;
                     self.facing.insert(
                         unit.id.0,
                         delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
                     );
                 }
             }
-            if matches!(
-                unit.kind,
-                oxide_sim::UnitKind::Sentinel
-                    | oxide_sim::UnitKind::Warden
-                    | oxide_sim::UnitKind::Lancer
-                    | oxide_sim::UnitKind::Buzzard
-            ) {
-                let target = self.facing.get(&unit.id.0).copied().unwrap_or(0.0);
-                let (previous, current) = self
-                    .hull_heading
-                    .entry(unit.id.0)
-                    .or_insert((target, target));
-                *previous = *current;
-                let turn = match unit.kind {
-                    oxide_sim::UnitKind::Warden => 0.18,
-                    oxide_sim::UnitKind::Lancer => 0.22,
-                    _ => 0.3,
+            if let Some(turn) = rotor_hull_turn_rate(unit.kind) {
+                let movement_facing = self.facing.get(&unit.id.0).copied().unwrap_or(0.0);
+                let target = if unit.kind == UnitKind::Wisp && !moving {
+                    self.aim_units
+                        .get(&unit.id.0)
+                        .filter(|(_, at)| self.fx_time() - at < 1.2)
+                        .map_or(movement_facing, |(angle, _)| *angle)
+                } else {
+                    movement_facing
                 };
+                let (previous, current) = self.hull_heading.entry(unit.id.0).or_insert((0.0, 0.0));
+                *previous = *current;
                 *current += angle_delta(*current, target).clamp(-turn, turn);
             }
         }
@@ -894,6 +893,9 @@ impl Game {
         self.hull_heading.get(&id.0).map_or_else(
             || {
                 self.state.unit(id).map_or(0.0, |unit| {
+                    if rotor_hull_turn_rate(unit.kind).is_some() {
+                        return self.facing.get(&id.0).copied().unwrap_or(0.0);
+                    }
                     f32::from(unit.heading) * std::f32::consts::TAU / 256.0
                         + std::f32::consts::FRAC_PI_2
                 })
@@ -902,6 +904,17 @@ impl Game {
                 previous + angle_delta(*previous, *current) * alpha.clamp(0.0, 1.0)
             },
         )
+    }
+}
+
+pub(crate) fn rotor_hull_turn_rate(kind: UnitKind) -> Option<f32> {
+    match kind {
+        UnitKind::Skyhook => Some(0.25),
+        UnitKind::Buzzard | UnitKind::Wisp => Some(
+            0.3 * kind.stats().speed.to_num::<f32>()
+                / UnitKind::Buzzard.stats().speed.to_num::<f32>(),
+        ),
+        _ => None,
     }
 }
 
@@ -1153,6 +1166,114 @@ mod tests {
             game.drop_presentation();
             assert_bearing(&game);
         }
+    }
+
+    #[test]
+    fn cruising_aircraft_keep_authoritative_facing_across_timeline_jumps() {
+        for kind in UnitKind::ALL
+            .into_iter()
+            .filter(|kind| kind.cruise_turn_rate() > 0)
+        {
+            let mut scenario = Scenario::skirmish();
+            scenario.units[0].kind = kind;
+            let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+            let id = game.state.units()[0].id;
+            for heading in [0u8, 96, 254] {
+                let mut snapshot = serde_json::to_value(&*game.state).unwrap();
+                snapshot["units"][0]["heading"] = serde_json::json!(heading);
+                game.replace_state_after_jump(&serde_json::from_value(snapshot).unwrap());
+                let expected = f32::from(heading) * std::f32::consts::TAU / 256.0
+                    + std::f32::consts::FRAC_PI_2;
+                assert_eq!(game.facing.get(&id.0), Some(&expected), "{kind:?}");
+                for alpha in [0.0, 0.5, 1.0] {
+                    assert_eq!(game.draw_heading(id, heading, alpha), expected);
+                }
+            }
+        }
+    }
+
+    fn rotor_game(kind: UnitKind) -> Game {
+        let mut map = vec!["........................................"; 24];
+        map[2] = "..1................................2....";
+        let scenario = serde_json::from_value(serde_json::json!({
+            "name": "Rotor turning", "seed": 1, "map": map,
+            "players": [
+                {"name": "You", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "Target", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "units": [{"player": 0, "kind": kind, "x": 12, "y": 12}],
+            "buildings": []
+        }))
+        .unwrap();
+        Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap()
+    }
+
+    #[test]
+    fn rotor_hulls_ease_reversals_and_finish_turning_after_stopping() {
+        let mut first_turns = Vec::new();
+        for kind in [UnitKind::Buzzard, UnitKind::Skyhook, UnitKind::Wisp] {
+            let mut game = rotor_game(kind);
+            let id = game.state.units()[0].id;
+            game.present_ticks(1);
+            game.issue(Command::Move {
+                units: vec![id],
+                goal: chassis::grid::TilePos::new(28, 12),
+                queue: false,
+            });
+            game.present_ticks(20);
+            let before = game.draw_hull_heading(id, 1.0);
+            let position = game.state.unit(id).unwrap().pos;
+            game.issue(Command::Move {
+                units: vec![id],
+                goal: chassis::grid::TilePos::new(8, 12),
+                queue: false,
+            });
+            game.present_ticks(1);
+            assert!(game.state.unit(id).unwrap().pos.x < position.x, "{kind:?}");
+            let turn = angle_delta(before, game.draw_hull_heading(id, 1.0)).abs();
+            assert!(turn > 0.1 && turn < 0.7, "{kind:?}: {turn}");
+            first_turns.push(turn);
+            assert!((game.draw_hull_heading(id, 0.0) - before).abs() < 1e-6);
+            game.issue(Command::Stop { units: vec![id] });
+            game.present_ticks(1);
+            let stopped = game.state.unit(id).unwrap().pos;
+            game.present_ticks(20);
+            assert_eq!(game.state.unit(id).unwrap().pos, stopped, "{kind:?}");
+            assert!(
+                angle_delta(
+                    game.draw_hull_heading(id, 1.0),
+                    -std::f32::consts::FRAC_PI_2
+                )
+                .abs()
+                    < 1e-5
+            );
+        }
+        assert!((first_turns[0] - 0.3).abs() < 1e-6);
+        assert!((first_turns[1] - 0.25).abs() < 1e-6);
+        assert!(first_turns[1] < first_turns[0] && first_turns[0] < first_turns[2]);
+    }
+
+    #[test]
+    fn hovering_wisp_eases_firing_aim_and_discards_it_on_seek() {
+        let mut game = rotor_game(UnitKind::Wisp);
+        let id = game.state.units()[0].id;
+        game.present_ticks(1);
+        let before = game.draw_hull_heading(id, 1.0);
+        let position = game.state.unit(id).unwrap().pos;
+        game.aim_units
+            .insert(id.0, (std::f32::consts::PI, game.fx_time()));
+        game.present_ticks(1);
+        let after = game.draw_hull_heading(id, 1.0);
+        assert!((0.1..0.7).contains(&angle_delta(before, after).abs()));
+        assert_eq!(game.state.unit(id).unwrap().pos, position);
+        game.present_ticks(8);
+        assert!(angle_delta(game.draw_hull_heading(id, 1.0), std::f32::consts::PI).abs() < 1e-5);
+        game.replace_state_after_jump(&game.state.0.clone());
+        assert_eq!(
+            game.draw_hull_heading(id, 0.0),
+            game.draw_hull_heading(id, 1.0)
+        );
+        assert_eq!(game.draw_hull_heading(id, 1.0), 0.0);
     }
 
     #[test]

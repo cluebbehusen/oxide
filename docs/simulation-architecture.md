@@ -207,9 +207,23 @@ non-stealthy building footprint. A buried Scuttle Charge deliberately blocks
 nothing. Air movement ignores rocks, scrap, and buildings, but Peaks own their
 air column and remain impassable.
 
-Turn-limited aircraft fly heading-first: only the heading steers, at most
-`turn_rate` compass steps per tick, so every waypoint is accepted inside the
-kind's turn-acceptance ring rather than at an exact center. Every turn is a
+Talon, Darter, Shrike, Sylph, Kestrel, and Gnat cruise heading-first but can
+hover at rest. Their travel and fixed-gun traverse rates are independent of
+bomber flight: eight compass steps per tick for Talon, six for Shrike, ten for
+Darter, Sylph, and Kestrel, and twelve for Gnat. At full speed these give turn
+radii of roughly 0.7 to 1.1 tiles. Near waypoints they slow to tighten the arc;
+intermediate waypoints can be rounded only when the onward segment is clear. An
+obstructed step holds position while the nose turns and replans from the actual
+position. Arrivals, Stop, and in-range attacks hover rather than orbit or land.
+Fixed guns traverse with the body before firing ordinary hitscan shots; Advance
+only fires when already aligned and does not turn away from its route to aim.
+These aircraft spawn facing the map center, matching mirrored initial turn
+costs. Buzzard, Wisp, and Skyhook retain independent travel without a cruise
+turn radius.
+
+Condor and Moth use committed heading-first flight: only the heading steers, at
+most `turn_rate` compass steps per tick, so every waypoint is accepted inside
+the kind's turn-acceptance ring rather than at an exact center. Every turn is a
 committed arc of one fixed radius, and the simulation reasons about that arc
 against the map's flight envelope in fixed point. Steering takes the shorter
 rotation only when the arc it sweeps stays inside the world and ends in a state
@@ -386,8 +400,8 @@ across several waypoints. Turn rate is the ceiling of movement speed times 64,
 bounded to four through ten steps per tick; Breaker retains four, and Avalanche
 and Bombard retain three. Pathfinding and translation speeds remain unchanged,
 but turn time changes arrival and engagement timing. Ground units spawn facing
-the map center so mirrored placements have mirrored initial turn costs; air
-initialization is unchanged.
+the map center so mirrored placements have mirrored initial turn costs;
+rotorcraft and bomber initialization is unchanged.
 
 Ground weapons require alignment within two compass steps before firing.
 Sentinel, Warden, and Lancer have independent serialized `turret_heading`

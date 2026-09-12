@@ -1547,7 +1547,9 @@ impl State {
             path: None,
             leash: None,
             settled: 0,
-            heading: if kind.stats().domain == crate::stats::Domain::Ground {
+            heading: if kind.stats().domain == crate::stats::Domain::Ground
+                || kind.cruise_turn_rate() > 0
+            {
                 crate::tick::flight::heading_of(
                     Vec2Fx::new(
                         Fx::from_num(self.map.width()) / 2,

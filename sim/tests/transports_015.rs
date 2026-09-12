@@ -602,6 +602,10 @@ fn a_rider_survives_when_its_sling_is_destroyed_during_boarding() {
         .map(|unit| unit.id)
         .collect();
 
+    for &hunter in &hunters {
+        common::face_target(&mut state, hunter, Target::Unit(sky));
+    }
+
     let report = state.tick(&[
         cmd(
             0,
