@@ -592,8 +592,12 @@ impl Brain {
             &[],
             u64::from(self.dials.minimum_core_equivalents),
         );
-        let raid_exclusions =
+        let mut raid_exclusions =
             PlannerClaims::new(&enlisted, strategy, raids, lifts).without_raid(&team_claims);
+        raid_exclusions.extend(self.policy.reconnaissance.reservations());
+        raid_exclusions.extend(self.policy.support_reservations());
+        raid_exclusions.sort_unstable();
+        raid_exclusions.dedup();
         let raid_decision = if raid_was_active {
             raids
                 .as_mut()
@@ -767,6 +771,10 @@ impl Brain {
                 .and_then(|planner| planner.active_connected_obligation(&oriented))
                 .is_some();
         let allocation_observation = oriented.clone();
+        let mut utility_reservations = self.policy.reconnaissance.reservations();
+        utility_reservations.extend(self.policy.support_reservations());
+        utility_reservations.sort_unstable();
+        utility_reservations.dedup();
         let ResidualCoordinationOutcome {
             strategic,
             team_decision,
@@ -791,6 +799,7 @@ impl Brain {
                 home: oriented_home,
                 armies: &armies,
                 enlisted: &enlisted,
+                utility_reservations: &utility_reservations,
                 minimum_core_equivalents: u64::from(self.dials.minimum_core_equivalents),
                 allocation_ok,
                 allow_new_voluntary_operations,

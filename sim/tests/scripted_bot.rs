@@ -458,10 +458,14 @@ fn prime_skirmish_places_an_accepted_defense_on_the_hostile_approach() {
                     && *commanded_kind == kind
                     && *commanded_anchor == world_anchor
             )));
-            assert!(
-                defense_build.replace((kind, world_anchor)).is_none(),
-                "the first accepted Defense must lower exactly once"
+            assert_ne!(
+                defense_build,
+                Some((kind, world_anchor)),
+                "the same defense site must not be admitted twice while its builder approaches"
             );
+            if defense_build.is_none() {
+                defense_build = Some((kind, world_anchor));
+            }
         }
         let report = state.tick(&decision.commands);
         rejected.extend(report.events.into_iter().filter_map(|event| match event {
@@ -1694,8 +1698,14 @@ fn completed_income_forecast_cannot_fund_an_immediate_standing_purchase() {
             .proposals
             .entries
             .iter()
-            .all(|proposal| !matches!(proposal.key, ProposalKeyTrace::StandingForce { .. })),
-        "forecast income must not make an immediate standing-force purchase legally affordable"
+            .filter(|proposal| matches!(proposal.key, ProposalKeyTrace::StandingForce { .. }))
+            .all(
+                |proposal| proposal.claims.producer_jobs.entries.iter().all(|job| {
+                    !job.requires_current_funding
+                        && job.enqueue_not_before > forecast_state.current_tick()
+                })
+            ),
+        "forecast-funded standing proposals must retain a future purchase time"
     );
     assert!(
         forecast_trace
@@ -2534,25 +2544,37 @@ fn completed_income_accumulates_into_the_better_shipped_standing_provider() {
             matches!(
                 proposal.key,
                 ProposalKeyTrace::StandingForce {
-                    kind: UnitKind::Warden,
+                    kind: UnitKind::Warden | UnitKind::Breaker,
                     ..
                 }
-            )
+            ) && proposal.disposition == ProposalDispositionTrace::Accepted
         })
-        .expect("the bounded Warden wait must participate in shared allocation");
+        .expect("the better funded provider must participate in shared allocation");
     assert_eq!(wait.disposition, ProposalDispositionTrace::Accepted);
-    assert_eq!(wait.claims.current_scrap, UnitKind::Sentinel.stats().cost);
+    let ProposalKeyTrace::StandingForce {
+        kind: selected_kind,
+        ..
+    } = wait.key
+    else {
+        unreachable!()
+    };
+    assert_eq!(wait.claims.current_scrap, 0);
+    assert_eq!(wait.claims.forecast_scrap_total, 0);
+    assert_eq!(wait.claims.producer_jobs.total, 1);
+    let scheduled = held_trace
+        .allocation
+        .producer_schedule
+        .entries
+        .iter()
+        .find(|job| matches!(job.owner, ClaimOwnerTrace::Proposal { key } if key == wait.key))
+        .expect("accepted accumulation retains its exact producer schedule");
+    assert!(scheduled.current_scrap <= held_trace.resources.current_scrap);
     assert_eq!(
-        wait.claims.forecast_scrap_total,
-        u128::from(
-            UnitKind::Warden
-                .stats()
-                .cost
-                .saturating_sub(UnitKind::Sentinel.stats().cost)
-        )
+        scheduled.forecast_scrap,
+        selected_kind.stats().cost - scheduled.current_scrap
     );
-    assert_eq!(wait.claims.deferrable_capital, None);
-    assert!(wait.claims.producer_jobs.entries.is_empty());
+    assert!(scheduled.enqueued_at > state.current_tick());
+    let selected_enqueue = scheduled.enqueued_at;
 
     let started_at = state.current_tick();
     let mut better_order = None;
@@ -2562,6 +2584,13 @@ fn completed_income_accumulates_into_the_better_shipped_standing_provider() {
         } else {
             brain.act_traced(&state)
         };
+        if let Some(trace) = &decision.trace {
+            assert!(
+                trace.allocation.error.is_none(),
+                "{:?}",
+                trace.allocation.error
+            );
+        }
         for kind in decision
             .commands
             .iter()
@@ -2606,9 +2635,11 @@ fn completed_income_accumulates_into_the_better_shipped_standing_provider() {
             .collect::<Vec<_>>()
         )
     });
-    assert!(
-        state.current_tick() > started_at,
-        "the higher-tier purchase must follow real authoritative income"
+    assert_eq!(better_kind, selected_kind);
+    assert_eq!(
+        state.current_tick(),
+        selected_enqueue + 1,
+        "the selected provider must execute at its retained purchase time after authoritative income"
     );
     assert_eq!(
         state
