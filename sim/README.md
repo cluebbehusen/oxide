@@ -65,7 +65,7 @@ an ordinary command source rather than a separate ruleset.
   contributions retain their individual ages, failed approaches retain frozen
   objective sites through fog, and Array ranking uses exact builder readiness.
   Observation schema 17 includes owner-only carried identities and health
-  separately from available units. Decision trace schema 11 separates raw
+  separately from available units. Decision trace schema 12 separates raw
   evidence from adjusted return, mission ownership, and bounded experience. All
   seven domains compete in shared allocation, and forecast income never funds a
   command. Current-threat emergency defense remains exact survival work with

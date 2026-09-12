@@ -217,6 +217,20 @@ impl StandingForceCommitment {
         )
     }
 
+    pub(crate) fn covers(
+        &self,
+        reason: StandingForceReason,
+        service: StandingForceServiceKey,
+    ) -> bool {
+        reason == self.proposal.reason
+            && (service == self.proposal.service
+                || matches!(
+                    (reason, self.proposal.service, service),
+                    (StandingForceReason::GroundPressure, StandingForceServiceKey::Point(old), StandingForceServiceKey::Point(new))
+                        if old.chebyshev(new) <= 8
+                ))
+    }
+
     pub(crate) fn still_useful(
         &self,
         obs: &Observation,
@@ -224,19 +238,17 @@ impl StandingForceCommitment {
         briefing: &PublicMapBriefing,
         orientation: Orientation,
     ) -> bool {
+        let mut routes = ServiceRouting::new(obs, Some(briefing), Some(orientation));
         if obs.tick > self.job.enqueued_at
             || demands
                 .iter()
                 .any(|demand| demand.case.urgency == Urgency::Pressing)
             || !demands.iter().any(|demand| {
-                demand.kind == self.proposal.kind
-                    && demand.service == self.proposal.service
-                    && demand.reason == self.proposal.reason
+                demand.kind == self.proposal.kind && self.covers(demand.reason, demand.service)
             })
         {
             return false;
         }
-        let mut routes = ServiceRouting::new(obs, Some(briefing), Some(orientation));
         routes.producer_reaches_any(self.job.producer, self.job.kind, &[self.proposal.service])
     }
 }
@@ -2366,6 +2378,64 @@ mod tests {
     use crate::map::Terrain;
     use crate::scenario::{BotDifficulty, BotStance};
     use chassis::grid::TilePos;
+
+    #[test]
+    fn saved_ground_reinforcement_tracks_local_motion_without_changing_its_schedule() {
+        use super::super::allocation::{ClaimOwner, ScheduledProducerJob};
+        let mut obs = observation(100);
+        add_producer(&mut obs, 0, BuildingKind::Fabricator, vec![]);
+        let site = TilePos::new(15, 10);
+        let mut proposal = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: obs.tick,
+            ready_before: 2000,
+            kind: UnitKind::Warden,
+            reason: StandingForceReason::GroundPressure,
+            specialty: Specialty::Fortification,
+            personality_emphasis: 50,
+            case: ProposalCase {
+                urgency: Urgency::Timely,
+                confidence: Confidence::Current,
+                value: StrategicValue::Material,
+                time_to_impact: TimeToImpact::Near,
+                safety: ExecutionSafety::Managed,
+            },
+            eligible_producers: vec![BuildingId(0)],
+        });
+        proposal.service = StandingForceServiceKey::Point(site);
+        let job = ScheduledProducerJob {
+            owner: ClaimOwner::Proposal(super::super::allocation::ProposalKey::StandingForce(
+                proposal.key(),
+            )),
+            producer: BuildingId(0),
+            kind: proposal.kind,
+            request_ordinal: 0,
+            enqueued_at: 600,
+            starts_at: 600,
+            ready_at: 1100,
+            ready_before: 2000,
+            current_scrap: 100,
+            forecast_scrap: 200,
+        };
+        let saving = StandingForceCommitment { proposal, job };
+        let mut demand = CapabilityDemand {
+            kind: UnitKind::Warden,
+            service: StandingForceServiceKey::Point(site.offset(2, 0)),
+            reason: StandingForceReason::GroundPressure,
+            case: saving.proposal.case,
+            unmet: 3,
+            baseline: UnitKind::Sentinel,
+            provider_value: 100,
+        };
+        let briefing = public_map(&obs, vec![]);
+        let orientation = Orientation::for_home(&obs, TilePos::new(2, 2));
+        assert!(saving.still_useful(&obs, &[demand.clone()], &briefing, orientation));
+        assert_eq!(saving.job, job);
+        demand.service = StandingForceServiceKey::Point(site.offset(9, 0));
+        assert!(!saving.still_useful(&obs, &[demand.clone()], &briefing, orientation));
+        demand.service = StandingForceServiceKey::Point(site);
+        demand.reason = StandingForceReason::SiegePressure;
+        assert!(!saving.still_useful(&obs, &[demand], &briefing, orientation));
+    }
 
     fn observation(scrap: u32) -> Observation {
         Observation {

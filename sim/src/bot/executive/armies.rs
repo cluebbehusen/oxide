@@ -932,11 +932,9 @@ fn artillery_has_escort_quorum_with_roster<'a>(army: &Army, roster: &impl UnitLo
 /// reach of the target, outside a defending turret's.
 const ARTY_STANDOFF: i32 = 7;
 
-/// Marching orders for a push: escorts attack-move onto the target;
-/// artillery holds a standoff point pulled back along the line of
-/// advance — and without an escort quorum (a third of the army) the
-/// guns stay at the staging ground instead. Nobody pushes blind
-/// artillery.
+/// Marching keeps an escorted siege within target sight and gun range.
+/// Without an escort quorum (a third of the army), guns remain at staging.
+/// Other pushes retain the ordinary advance with artillery behind the screen.
 pub(super) fn march(
     me: PlayerId,
     obs: &Observation,
@@ -972,33 +970,50 @@ fn march_with_roster<'a>(
         let (dx, dy) = (army.staging.x - target.x, army.staging.y - target.y);
         let distance = dx.abs().max(dy.abs());
         let mut routes = crate::bot::routing::RouteProjection::new(obs, Domain::Ground);
-        let stand = (1..=distance.min(20)).rev().find_map(|pull| {
-            let tile = TilePos::new(
-                target.x + dx * pull / distance,
-                target.y + dy * pull / distance,
-            );
-            let in_range = arty.iter().all(|id| {
-                roster.get(*id).is_some_and(|unit| {
-                    unit.kind.stats().weapons.iter().any(|weapon| {
-                        let distance = tile.center().dist_sq(target.center());
-                        let reach = (weapon.range - Fx::from_num(2)).max(Fx::from_num(0));
-                        weapon.targets.covers(Domain::Ground)
-                            && distance <= reach * reach
-                            && distance >= weapon.minimum_range * weapon.minimum_range
+        let sight = escorts
+            .iter()
+            .filter_map(|id| roster.get(*id))
+            .map(|unit| unit.kind.stats().vision)
+            .max()
+            .unwrap_or(0)
+            .saturating_sub(1);
+        let positions: Vec<_> = (1..=distance.min(20))
+            .rev()
+            .filter_map(|pull| {
+                let tile = TilePos::new(
+                    target.x + dx * pull / distance,
+                    target.y + dy * pull / distance,
+                );
+                let in_range = arty.iter().all(|id| {
+                    roster.get(*id).is_some_and(|unit| {
+                        unit.kind.stats().weapons.iter().any(|weapon| {
+                            let distance = tile.center().dist_sq(target.center());
+                            let reach = (weapon.range - Fx::from_num(2)).max(Fx::from_num(0));
+                            weapon.targets.covers(Domain::Ground)
+                                && distance <= reach * reach
+                                && distance >= weapon.minimum_range * weapon.minimum_range
+                        })
                     })
+                });
+                (in_range
+                    && tile.chebyshev(target) <= sight
+                    && army.members.iter().all(|id| {
+                        roster
+                            .get(*id)
+                            .is_some_and(|unit| routes.unit_reaches(unit, tile))
+                    }))
+                .then_some(tile)
+            })
+            .collect();
+        let stand = positions
+            .iter()
+            .copied()
+            .find(|tile| {
+                !obs.enemy_buildings.iter().any(|building| {
+                    super::threats::building_threatens(obs, building, *tile, Domain::Ground)
                 })
-            });
-            (in_range
-                && !obs.enemy_buildings.iter().any(|building| {
-                    super::threats::building_threatens(obs, building, tile, Domain::Ground)
-                })
-                && army.members.iter().all(|id| {
-                    roster
-                        .get(*id)
-                        .is_some_and(|unit| routes.unit_reaches(unit, tile))
-                }))
-            .then_some(tile)
-        });
+            })
+            .or_else(|| positions.first().copied());
         let goal = if artillery_has_escort_quorum_with_roster(army, roster) {
             stand.unwrap_or(army.staging)
         } else {
@@ -1551,6 +1566,28 @@ mod tests {
         assert!(out.iter().any(
             |command| matches!(command.command, Command::AttackMove { goal, .. } if goal == stand)
         ));
+        assert!(
+            stand.chebyshev(target) < UnitKind::Sentinel.stats().vision,
+            "the screen must keep the artillery objective visible"
+        );
+        let mut parity = obs.clone();
+        parity.enemy_buildings[0].kind = BuildingKind::Bastion;
+        let mut parity_commands = Vec::new();
+        march(
+            parity.me,
+            &parity,
+            &body,
+            target,
+            &mut parity_commands,
+            true,
+        );
+        assert!(
+            parity_commands
+                .iter()
+                .all(|command| matches!(command.command,
+            Command::Move { goal, .. } | Command::AttackMove { goal, .. } if goal != staging)),
+            "an admitted escorted assault must not wait forever for range superiority over a Bastion"
+        );
         for unit in &mut obs.my_units {
             unit.tile = stand;
         }

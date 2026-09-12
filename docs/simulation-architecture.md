@@ -60,11 +60,13 @@ inconclusive casualty episode, without inventing a hidden attacker. Withdrawal
 from static fire also uses ordinary movement to avoid reacquiring the position.
 Pressure admission counts known gun coverage along a projected approach as well
 as defenders near the objective. Against a building, an escorted siege body
-seeks a reachable position inside its guns' range and outside known defensive
-fire. Its screen moves to the same position; artillery with a visible target in
-range remains engaged rather than being discarded as a stalled march. The
-profile-free Overseer retains its original contact, strength, and marching
-rules.
+seeks a reachable position inside its guns' range and its screen's sight. It
+prefers positions outside known defensive fire; if the defender matches its
+range, an already-admitted assault accepts exposure instead of waiting forever
+for range superiority. Its screen moves to the same position; artillery with a
+visible target in range remains engaged rather than being discarded as a stalled
+march. The profile-free Overseer retains its original contact, strength, and
+marching rules.
 
 Player-facing maintenance advances tactical armies first. The decision then
 observes battlefield evidence and work outcomes once, including on the early
@@ -723,11 +725,14 @@ immediate fallback. The search can start below the fallback's price and uses the
 bounded strategic preparation window instead of requiring repayment within one
 cheap production cycle. Acceptance retains the exact producer, purchase tick,
 completion, deadline, and originating need. Subsequent allocation imports that
-schedule before fresh spending; loss of the producer, income, useful need, or
-opening core releases unpaid work. Immediate threats can preempt it. Enemy
-fortifications motivate deliberate siege preparation without making every siege
-purchase an emergency. Economic saving preserves its capital claims while
-allowing compatible military alternatives to compete.
+schedule before fresh spending. Nearby motion of the same ground threat
+preserves the purchase, provided the producer can still serve it; it cannot
+transfer the claim to a different kind of need or a distant front. Loss of the
+producer, income, useful need, or opening core releases unpaid work. Immediate
+threats can preempt it. Enemy fortifications motivate deliberate siege
+preparation without making every siege purchase an emergency. Economic saving
+preserves its capital claims while allowing compatible military alternatives to
+compete.
 
 Portfolio ranking compares sorted complete urgency, confidence, consequence,
 impact-time, and safety cases before rewarding additional compatible work.

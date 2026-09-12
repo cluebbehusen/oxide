@@ -2737,8 +2737,7 @@ impl<'a> AllocationSession<'a> {
         if let Some(saving) = &self.participants.policy.standing_saving {
             proposals.retain(|proposal| {
                 proposal.accumulation().is_none()
-                    && (proposal.reason() != saving.proposal.reason()
-                        || proposal.key().service != saving.proposal.key().service)
+                    && !saving.covers(proposal.reason(), proposal.key().service)
             });
         }
         demands.extend_from_slice(self.participants.policy.reconnaissance.capability_demands());
