@@ -1724,8 +1724,12 @@ fn apply_bounded_provider_accumulation(
                         >= candidate.kind.stats().cost)
                     .then_some((index, through))
             })
-            .min_by_key(|(index, through)| {
-                (candidates[*index].kind.stats().cost, *through, *index)
+            .max_by_key(|(index, through)| {
+                (
+                    candidate_rank(&candidates[*index]),
+                    Reverse(*through),
+                    Reverse(*index),
+                )
             });
         if let Some((index, through)) = selected {
             let cost = candidates[index].kind.stats().cost;
