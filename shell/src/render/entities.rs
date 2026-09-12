@@ -792,7 +792,7 @@ fn draw_bomber_bombs(game: &Game) {
     }
 }
 
-fn shell_visual_origin(
+pub(crate) fn shell_visual_origin(
     launch: Vec2,
     impact: Vec2,
     shooter: oxide_sim::Target,
@@ -848,10 +848,10 @@ fn shell_arc_lift(screen_distance: f32, zoom: f32, shooter: oxide_sim::Target) -
 }
 
 fn missile_ejection_ticks(total_ticks: f32) -> f32 {
-    3.0_f32.min(total_ticks * 0.25)
+    crate::audio_timeline::missile_ejection_ticks(total_ticks)
 }
 
-fn missile_travel_progress(progress: f32, total_ticks: f32, distance: f32) -> f32 {
+pub(crate) fn missile_travel_progress(progress: f32, total_ticks: f32, distance: f32) -> f32 {
     let progress = progress.clamp(0.0, 1.0);
     if distance <= f32::EPSILON {
         return progress;
@@ -1047,7 +1047,11 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
         // Reconstruct flight length the way the launch computed it, so
         // the shell lands exactly when the sim resolves the hit.
         let total = (launch.distance(to) / shell_speed).ceil().max(1.0);
-        let elapsed = total - (shell.arrival as f32 - now);
+        let elapsed = if shell.kind == oxide_sim::ProjectileKind::Missile {
+            crate::audio_timeline::missile_elapsed_ticks(now, shell.arrival, total)
+        } else {
+            total - (shell.arrival as f32 - now)
+        };
         let flight_progress = (elapsed / total).clamp(0.0, 1.0);
         let t = if shell.kind == oxide_sim::ProjectileKind::Missile {
             missile_travel_progress(flight_progress, total, from.distance(to))

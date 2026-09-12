@@ -215,6 +215,10 @@ pub enum SoundKind {
     BreakerFire,
     /// The Avalanche bank launching.
     AvalancheFire,
+    /// Missile motor ignition after launcher ejection.
+    RocketMotor,
+    /// A missile warhead reaching its impact point.
+    RocketImpact,
     /// A bomber releasing its load.
     BombRelease,
     /// A buried charge or Sapper detonating.
@@ -1034,6 +1038,7 @@ impl Game {
                     player,
                     from,
                     to,
+                    unit_pose,
                     ..
                 } => {
                     // The gun turns to its work — a Bastion's mount as
@@ -1074,6 +1079,14 @@ impl Game {
                             ShellSoundAnchor::Muzzle => *from,
                             ShellSoundAnchor::Impact => *to,
                         };
+                        let missile = unit_pose
+                            .as_ref()
+                            .is_some_and(|pose| pose.kind == oxide_sim::UnitKind::Avalanche);
+                        let sound = if missile && anchor == ShellSoundAnchor::Muzzle {
+                            SoundKind::AvalancheFire
+                        } else {
+                            sound
+                        };
                         self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
                 }
@@ -1101,6 +1114,7 @@ impl Game {
                     // whether the blast reached anything of ours —
                     // survivors alert here, the dead through their own
                     // events.
+                    let impact_sound = self.audio_timeline.landed(*player, *at);
                     let reach = splash.map_or(1.0, |r| r.to_num::<f32>().max(1.0));
                     let world = world_vec(*at);
                     let hostile_shell = self.state.hostile(self.human, *player);
@@ -1129,7 +1143,7 @@ impl Game {
                     }
                     if sees(self, *at) {
                         self.sounds_pending
-                            .push((SoundKind::Artillery, Some(world_vec(*at))));
+                            .push((impact_sound, Some(world_vec(*at))));
                     }
                     let payload = self
                         .fx_previous

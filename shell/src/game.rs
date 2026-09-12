@@ -142,6 +142,8 @@ pub struct Game {
     fx_previous: fx::PreviousEffects,
     /// Live effects.
     pub fx: Vec<Effect>,
+    /// Retains projectile identity across the impact tick.
+    pub(crate) audio_timeline: crate::audio_timeline::AudioTimeline,
     /// Clips queued by this frame's ticks; the main loop drains and plays.
     pub sounds_pending: Vec<(SoundKind, Option<Vec2>)>,
     /// Transient HUD messages, newest last.
@@ -204,7 +206,7 @@ pub struct Game {
     suppress_presentation: bool,
 }
 
-fn world_vec(pos: chassis::fx::Vec2Fx) -> Vec2 {
+pub(crate) fn world_vec(pos: chassis::fx::Vec2Fx) -> Vec2 {
     vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>())
 }
 
@@ -293,6 +295,7 @@ impl Game {
             projectile_releases: projectiles::ProjectileReleases::default(),
             fx_previous: fx::PreviousEffects::default(),
             fx: Vec::new(),
+            audio_timeline: crate::audio_timeline::AudioTimeline::default(),
             sounds_pending: Vec::new(),
             autosave_done: false,
             last_seen: std::cell::RefCell::new(HashMap::new()),
@@ -580,6 +583,7 @@ impl Game {
         self.aim_buildings.clear();
         self.aim_building_targets.clear();
         self.animations.reset_transients();
+        self.audio_timeline.clear();
         self.track_motion.clear();
     }
 
@@ -685,6 +689,7 @@ impl Game {
     /// airframes were parked for the death effect's fall-or-scatter
     /// choice.
     fn remember_previous_tick(&mut self) {
+        self.audio_timeline.remember_arrivals(&self.state);
         self.fx_previous = fx::PreviousEffects::capture(self);
         self.prev_heading = self
             .state

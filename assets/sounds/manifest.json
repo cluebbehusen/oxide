@@ -165,9 +165,26 @@
     {
       "category": "signature-weapon",
       "filename": "avalanche_launch.wav",
-      "min_gap": 0.15,
+      "min_gap": 0.2,
       "mixer_volume": 0.5,
       "name": "avalanche_launch",
+      "paired_animation": null
+    },
+    {
+      "category": "propulsion-loop",
+      "filename": "avalanche_motor.wav",
+      "looped": true,
+      "min_gap": 0.2,
+      "mixer_volume": 0.35,
+      "name": "avalanche_motor",
+      "paired_animation": null
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "rocket_impact.wav",
+      "min_gap": 0.2,
+      "mixer_volume": 0.5,
+      "name": "rocket_impact",
       "paired_animation": null
     },
     {

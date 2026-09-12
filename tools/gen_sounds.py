@@ -53,6 +53,7 @@ SFX_CATEGORY_BUDGETS = {
     "economy": (1.2, 0.50),
     "generic-weapon": (0.6, 0.50),
     "signature-weapon": (1.5, 0.50),
+    "propulsion-loop": (4.0, 0.50),
     "destruction": (1.5, 0.50),
     "result": (3.0, 0.50),
 }
@@ -145,7 +146,9 @@ SFX_METADATA = (
     ),
     ("attack_warden", "generic-weapon", 0.30, 0.10, None),
     ("attack_breaker", "signature-weapon", 0.55, 0.15, None),
-    ("avalanche_launch", "signature-weapon", 0.50, 0.15, None),
+    ("avalanche_launch", "signature-weapon", 0.50, 0.20, None),
+    ("avalanche_motor", "propulsion-loop", 0.35, 0.20, None),
+    ("rocket_impact", "signature-weapon", 0.50, 0.20, None),
     ("bomb_release", "signature-weapon", 0.45, 0.15, None),
     ("demolition_boom", "destruction", 0.80, 0.20, None),
     ("upgrade_done", "economy", 0.55, 0.10, None),
@@ -183,10 +186,12 @@ SFX_METADATA = (
     ("defeat", "result", 0.60, 0.05, None),
 )
 
-# Approval boundary for the 0.14 bank. These hashes are intentionally checked
+# Byte approvals are recorded in docs/sound-approvals.md. These hashes are intentionally checked
 # after synthesis so a library or recipe change cannot silently replace clips
 # already accepted by ear.
 EXPECTED_SFX_SHA256 = {
+    "avalanche_motor.wav": "aa1944a1dba7a0746973873bcffdbf03bf2c09355eef8f1a046028c83fe8a4bd",
+    "rocket_impact.wav": "037944ae136afdb1c69d34f2f72c6642d1a775663f7ab26fa1c75358af566d0e",
     "ack.wav": "0450d0bb65444c92d60082978685f135c910979446425aa71c75d97842a1081f",
     "alert.wav": "7acef654cf90a5c7df6bc4effd15f533c077c2d7bb5d9067bb863bec32898398",
     "artillery_boom.wav": "6ead280916761589497cd1d75bdb34a21404c14980194de2af331c28466a7de2",
@@ -210,7 +215,7 @@ EXPECTED_SFX_SHA256 = {
     "deposit.wav": "d92bbc7bfd413943db5fe5bd52ef03fcb318ae550a7eb8291fca80ddf6e0a036",
     "attack_breaker.wav": "33f327ca63858234a34ce4ddcba6d5cf72f77c1ecddc497a77219a30771fc3e2",
     "attack_warden.wav": "9c094a4623eeca1d205db2eba26efbb54c9d559bdb56871eae79e7428739697c",
-    "avalanche_launch.wav": "e56a8da38dfab471ccd248716f41498cc6954c1dbea9a1a3f0b7804df97d2afd",
+    "avalanche_launch.wav": "ab8d9a4a2ba9955108ba3e43aaa80b80e86ef8dc947450b53ca8db74aa2b8a85",
     "bomb_release.wav": "6b18f6e7db76d0a51a46930f3e17c017055575e3daec2dae01372a130d489413",
     "demolition_boom.wav": "8a7d117cc678fb98bba9b2d4ba72cb26bdb47c7ff77fa100256d767e14be69cd",
     "upgrade_done.wav": "f60e6045845b53946224d33ce1cc8dbf96671903893a36fe3a0738c73ea646f0",
@@ -220,6 +225,8 @@ EXPECTED_SFX_SHA256 = {
     "unit_death.wav": "b875ac45ad46385a8c5acc3f29f150496fb39071dc2c2bcb036b5d28b0538fec",
     "victory.wav": "ce13a0edb4afb7ad38fcbdf2d33d6afdf4f52ae6f9f3108fe37c8e4291e22ff2",
 }
+SFX_ROUNDED_PCM = {"avalanche_launch", "avalanche_motor", "rocket_impact"}
+SFX_LOOP_NAMES = {"avalanche_motor"}
 SFX_META_BY_NAME = {row[0]: row for row in SFX_METADATA}
 
 
@@ -293,6 +300,20 @@ def validate_sfx_wav(name: str, data: bytes) -> dict[str, float]:
             f"{name}: only {attack_audible:.1%} of its first 300 ms is at or "
             f"above 180 Hz; {SFX_ATTACK_AUDIBLE_FLOOR:.0%} required"
         )
+    if name in SFX_LOOP_NAMES:
+        if frame_count != 4 * SFX_RATE:
+            raise ValueError(
+                f"{name}: propulsion loop must contain exactly four seconds"
+            )
+        if abs(float(normalized[0] - normalized[-1])) > 0.001:
+            raise ValueError(f"{name}: propulsion loop seam exceeds 0.001")
+        rms = float(np.sqrt(np.mean(normalized**2)))
+        if rms > 0.16 or peak > 0.5:
+            raise ValueError(
+                f"{name}: propulsion level exceeds the compact motor budget"
+            )
+        if audible < 0.98:
+            raise ValueError(f"{name}: propulsion has excessive low-frequency energy")
     return {
         "duration": duration,
         "peak": peak,
@@ -1211,21 +1232,91 @@ def sfx_breaker() -> np.ndarray:
     return sfx_finish(result, highpass=52, peak=0.9)
 
 
+def rocket_noise(seconds: float, seed: int, low: float, high: float) -> np.ndarray:
+    """Periodic, smoothly band-limited turbulence without a loop splice."""
+    count = round(seconds * SFX_RATE)
+    rng = np.random.default_rng(seed)
+    spectrum = np.fft.rfft(rng.standard_normal(count))
+    frequency = np.fft.rfftfreq(count, 1 / SFX_RATE)
+    shape = (1 - np.exp(-((frequency / low) ** 4))) / (1 + (frequency / high) ** 6)
+    result = np.fft.irfft(spectrum * shape, n=count)
+    return result / np.sqrt(np.mean(result**2))
+
+
+def rocket_finish(
+    samples: np.ndarray, peak: float = 0.89, loop: bool = False
+) -> np.ndarray:
+    samples = np.tanh(samples * 0.85)
+    if not loop:
+        samples = sig.sosfilt(
+            sig.butter(2, 28, "highpass", fs=SFX_RATE, output="sos"), samples
+        )
+        fade = round(SFX_RATE * 0.025)
+        samples[-fade:] *= np.linspace(1, 0, fade) ** 2
+        samples[:88] *= np.linspace(0, 1, 88)
+        window = np.sin(np.linspace(0, np.pi, len(samples))) ** 2
+        samples -= samples.sum() / window.sum() * window
+    else:
+        samples -= samples.mean()
+    return samples * peak / np.max(np.abs(samples))
+
+
 def sfx_avalanche_launch() -> np.ndarray:
-    # The rocket bank leaving its tubes: a dark fused-noise sweep rising
-    # out of a soft ignition, no impact — the shells land elsewhere.
-    n = int(0.55 * SFX_RATE)
-    rush = sfx_bandpass(sfx_noise(n, 751), 380, 3200)
-    ramp = np.linspace(0.3, 1.0, n) * sfx_decay(n, 1.6)
-    body = sfx_softsquare(sfx_glide(n, 180.0, 460.0), 2.0) * sfx_decay(n, 2.4)
-    canvas = SfxCanvas(0.7)
-    canvas.add(sfx_attack(rush * ramp, 8.0), 0.0, 0.9)
-    canvas.add(body, 0.02, 0.3)
-    return sfx_finish(
-        sfx_space(sfx_crush(canvas.output(), 10, 3), 0.10, tail=0.2),
-        highpass=90,
-        peak=0.85,
+    seconds = 0.64
+    t = np.arange(round(seconds * SFX_RATE)) / SFX_RATE
+    pressure = rocket_noise(seconds, 91101, 45, 1100) * np.exp(-t * 13)
+    crack = rocket_noise(seconds, 91102, 650, 6500) * np.exp(-t * 85)
+    exhaust = rocket_noise(seconds, 91103, 100, 2300) * np.exp(-t * 9)
+    phase = 2 * np.pi * (65 * t + 35 * 0.045 * (1 - np.exp(-t / 0.045)))
+    body = (np.sin(phase) + 0.35 * np.sin(3 * phase)) * np.exp(-t * 17)
+    field_phase = 2 * np.pi * (146.83 * t + 140 * 0.045 * (1 - np.exp(-t / 0.045)))
+    field = np.sin(field_phase + 1.6 * np.exp(-t * 14) * np.sin(2.03 * field_phase))
+    field *= np.exp(-t * 12)
+    return rocket_finish(
+        0.8 * pressure + 0.21 * crack + 0.35 * exhaust + 0.35 * body + 0.18 * field
     )
+
+
+def sfx_avalanche_motor() -> np.ndarray:
+    seconds = 4.0
+    t = np.arange(round(seconds * SFX_RATE)) / SFX_RATE
+    body = rocket_noise(seconds, 91411, 220, 650)
+    hiss = rocket_noise(seconds, 91412, 480, 2800)
+    edge = rocket_noise(seconds, 91413, 1900, 3800)
+    flutter = 1 + 0.035 * np.tanh(rocket_noise(seconds, 91414, 12, 40))
+    # Integer cycles over four seconds keep the electrical texture periodic.
+    field = np.sin(2 * np.pi * 587 * t + 0.25 * np.sin(2 * np.pi * 146.75 * t))
+    samples = rocket_finish(
+        (0.11 * body + 0.65 * hiss + 0.035 * edge) * flutter + 0.035 * field,
+        peak=0.5,
+        loop=True,
+    )
+    samples *= min(1.0, 0.145 / np.sqrt(np.mean(samples**2)))
+    # Choose a quiet boundary without splicing the periodic waveform.
+    boundary = np.argmin(np.abs(samples) + np.abs(np.roll(samples, 1)))
+    return np.roll(samples, -boundary)
+
+
+def sfx_rocket_impact() -> np.ndarray:
+    seconds = 1.42
+    t = np.arange(round(seconds * SFX_RATE)) / SFX_RATE
+    fracture = rocket_noise(seconds, 91121, 250, 7100) * np.exp(-t * 42)
+    pressure = rocket_noise(seconds, 91122, 35, 900) * np.exp(-t * 5.8)
+    # A fast onset opens into diffuse energy instead of a narrow resonant knock.
+    bloom = (1 - np.exp(-t * 70)) * np.exp(-t * 5.4)
+    air = rocket_noise(seconds, 91221, 280, 3400)
+    phase = 2 * np.pi * (73.42 * t + 240 * 0.065 * (1 - np.exp(-t / 0.065)))
+    discharge = np.sin(phase + 2.6 * np.exp(-t * 5) * np.sin(phase * 2.0))
+    discharge += 0.3 * np.sin(phase * 3.0)
+    textured = air * (0.62 + 0.38 * np.sin(phase * 1.5))
+    low_phase = 2 * np.pi * (43 * t + 40 * 0.055 * (1 - np.exp(-t / 0.055)))
+    body = (np.sin(low_phase) + 0.25 * np.sin(3 * low_phase)) * np.exp(-t * 7)
+    dry = 0.19 * fracture + 0.62 * pressure + 0.32 * body
+    dry += (0.6 * textured + 0.58 * discharge) * bloom
+    reflection = sig.sosfilt(sig.butter(2, 1800, fs=SFX_RATE, output="sos"), dry)
+    delay = round(SFX_RATE * 0.043)
+    dry[delay:] += reflection[:-delay] * 0.12
+    return rocket_finish(dry)
 
 
 def sfx_bomb_release() -> np.ndarray:
@@ -1270,7 +1361,9 @@ def sfx_upgrade_done() -> np.ndarray:
     )
     canvas.add(sfx_attack(vent, 6.0), 0.0, 0.3)
     bell_frames = int(0.5 * SFX_RATE)
-    canvas.add(sfx_bell(bell_frames, 293.66, ratio=2.0, index=1.1, sharp=4.5), 0.04, 0.55)
+    canvas.add(
+        sfx_bell(bell_frames, 293.66, ratio=2.0, index=1.1, sharp=4.5), 0.04, 0.55
+    )
     canvas.add(sfx_bell(bell_frames, 440.0, ratio=3.01, index=1.5, sharp=5.0), 0.2, 0.7)
     return sfx_finish(
         sfx_space(sfx_crush(canvas.output(), 11, 2), 0.16, tail=0.3),
@@ -1301,6 +1394,8 @@ SFX_BUILDERS = {
     "attack_warden": sfx_warden,
     "attack_breaker": sfx_breaker,
     "avalanche_launch": sfx_avalanche_launch,
+    "avalanche_motor": sfx_avalanche_motor,
+    "rocket_impact": sfx_rocket_impact,
     "bomb_release": sfx_bomb_release,
     "demolition_boom": sfx_demolition_boom,
     "upgrade_done": sfx_upgrade_done,
@@ -1315,14 +1410,17 @@ SFX_BUILDERS = {
 }
 
 
-def sfx_wav(samples: np.ndarray) -> bytes:
+def sfx_wav(samples: np.ndarray, *, rounded: bool = False) -> bytes:
     data = io.BytesIO()
     with wave.open(data, "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
         output.setframerate(SFX_RATE)
         pcm = np.clip(samples, -1.0, 1.0)
-        output.writeframes((pcm * 32767.0).astype("<i2").tobytes())
+        pcm = pcm * 32767.0
+        if rounded:
+            pcm = np.rint(pcm)
+        output.writeframes(pcm.astype("<i2").tobytes())
     return data.getvalue()
 
 
@@ -1330,7 +1428,7 @@ def generate_sfx_bank() -> None:
     if set(SFX_BUILDERS) != set(SFX_META_BY_NAME):
         raise ValueError("SFX builders and metadata differ")
     for name, _, _, _, _ in SFX_METADATA:
-        data = sfx_wav(SFX_BUILDERS[name]())
+        data = sfx_wav(SFX_BUILDERS[name](), rounded=name in SFX_ROUNDED_PCM)
         metrics = validate_sfx_wav(name, data)
         digest = hashlib.sha256(data).hexdigest()
         expected = EXPECTED_SFX_SHA256[f"{name}.wav"]
@@ -1538,6 +1636,7 @@ def manifest_bytes() -> bytes:
             "mixer_volume": volume,
             "min_gap": min_gap,
             "paired_animation": animation,
+            **({"looped": True} if name in SFX_LOOP_NAMES else {}),
         }
         for name, category, volume, min_gap, animation in SFX_METADATA
     ]
