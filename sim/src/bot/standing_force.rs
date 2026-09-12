@@ -1671,93 +1671,68 @@ fn useful_provider_capacity(full: u64, missing: u64, reason: StandingForceReason
     covered.saturating_add(durable_headroom)
 }
 
-/// Adds a bounded future purchase beside one need's affordable fallback when
-/// completed income can reach a strictly better completed-producer option
-/// within the two alternatives' exact production horizons. Shared allocation
-/// decides whether the wait or fallback survives alongside other work.
+/// Adds a stronger completed-provider purchase within the strategic preparation
+/// window. A temporarily empty bank cannot erase the opportunity to save.
 fn apply_bounded_provider_accumulation(
     obs: &Observation,
     resources: &ResourceSnapshot,
     candidates: &mut [DemandCandidate],
 ) {
-    let current_scrap = resources.current_scrap().amount();
-    let affordable = |candidate: &DemandCandidate| current_scrap >= candidate.kind.stats().cost;
-    let held_current = candidates
-        .iter()
-        .enumerate()
-        .filter(|(_, candidate)| affordable(candidate))
-        .filter(|(_, candidate)| {
-            !candidates.iter().any(|other| {
-                other.reason == candidate.reason
-                    && other.service == candidate.service
-                    && affordable(other)
-                    && candidate_rank(other) > candidate_rank(candidate)
-            })
-        })
-        .filter(|(_, current_best)| {
-            current_best.reason != StandingForceReason::CoreRecovery
-                && current_best.case.urgency != Urgency::Pressing
-        })
-        .filter(|(_, current_best)| {
-            candidates
-                .iter()
-                .filter(|candidate| {
-                    candidate.reason == current_best.reason
-                        && candidate.service == current_best.service
-                })
-                .filter(|candidate| !affordable(candidate))
-                .filter(|candidate| candidate.provider_value > current_best.provider_value)
-                .filter(|candidate| candidate_rank(candidate) > candidate_rank(current_best))
-                .any(|candidate| {
-                    let fallback_delay = current_best.ready_before.saturating_sub(obs.tick);
-                    let accumulation_deadline =
-                        candidate.ready_before.saturating_add(fallback_delay);
-                    current_scrap.saturating_add(
-                        resources
-                            .forecast()
-                            .income_through(accumulation_deadline)
-                            .amount(),
-                    ) >= candidate.kind.stats().cost
-                })
-        })
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-
-    for current_index in held_current {
-        let current_best = &candidates[current_index];
-        let selected = candidates
+    let bank = resources.current_scrap().amount();
+    let mut groups = BTreeMap::<(StandingForceReason, StandingForceServiceKey), Vec<usize>>::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        if candidate.reason != StandingForceReason::CoreRecovery
+            && candidate.case.urgency != Urgency::Pressing
+        {
+            groups
+                .entry((candidate.reason, candidate.service))
+                .or_default()
+                .push(index);
+        }
+    }
+    for indices in groups.values() {
+        let fallback = indices
             .iter()
-            .enumerate()
-            .filter(|(_, candidate)| {
-                candidate.reason == current_best.reason && candidate.service == current_best.service
+            .copied()
+            .filter(|index| candidates[*index].kind.stats().cost <= bank)
+            .max_by_key(|index| candidate_rank(&candidates[*index]))
+            .or_else(|| {
+                indices
+                    .iter()
+                    .copied()
+                    .min_by_key(|index| (candidates[*index].kind.stats().cost, *index))
             })
-            .filter(|(_, candidate)| !affordable(candidate))
-            .filter(|(_, candidate)| candidate.provider_value > current_best.provider_value)
-            .filter(|(_, candidate)| candidate_rank(candidate) > candidate_rank(current_best))
-            .filter_map(|(index, candidate)| {
-                let fallback_delay = current_best.ready_before.saturating_sub(obs.tick);
-                let through = candidate.ready_before.saturating_add(fallback_delay);
-                (current_scrap
-                    .saturating_add(resources.forecast().income_through(through).amount())
-                    >= candidate.kind.stats().cost)
+            .unwrap();
+        let base = &candidates[fallback];
+        let selected = indices
+            .iter()
+            .copied()
+            .filter(|index| candidates[*index].kind.stats().cost > bank)
+            .filter(|index| {
+                candidates[*index].provider_value > base.provider_value
+                    && candidate_rank(&candidates[*index]) > candidate_rank(base)
+            })
+            .filter_map(|index| {
+                let candidate = &candidates[index];
+                let production = candidate.ready_before.saturating_sub(obs.tick);
+                let through = obs
+                    .tick
+                    .saturating_add(super::strategy::connected_preparation_horizon())
+                    .saturating_sub(production);
+                (through >= obs.tick
+                    && bank.saturating_add(resources.forecast().income_through(through).amount())
+                        >= candidate.kind.stats().cost)
                     .then_some((index, through))
             })
-            .min_by(|(left, left_through), (right, right_through)| {
-                candidates[*left]
-                    .kind
-                    .stats()
-                    .cost
-                    .cmp(&candidates[*right].kind.stats().cost)
-                    .then_with(|| left_through.cmp(right_through))
-                    .then_with(|| left.cmp(right))
+            .min_by_key(|(index, through)| {
+                (candidates[*index].kind.stats().cost, *through, *index)
             });
         if let Some((index, through)) = selected {
             let cost = candidates[index].kind.stats().cost;
-            let current_scrap = current_scrap.min(cost);
             candidates[index].funding = StandingForceFunding::Accumulate {
                 through,
-                current_scrap,
-                forecast_scrap: cost.saturating_sub(current_scrap),
+                current_scrap: bank.min(cost),
+                forecast_scrap: cost.saturating_sub(bank),
             };
         }
     }
@@ -2870,6 +2845,27 @@ mod tests {
             .expect("the allocator must retain the affordable fallback as an alternative");
         assert_eq!(fallback.accumulation(), None);
 
+        let mut empty_bank = obs.clone();
+        empty_bank.scrap = 0;
+        let waiting = derive_all(
+            &empty_bank,
+            &StrategicIntelligence::new(),
+            &profile,
+            tuning,
+            context,
+        );
+        let wait = waiting
+            .iter()
+            .find(|proposal| proposal.key_kind() == UnitKind::Warden)
+            .expect(
+                "steady income can fund an advanced provider even before a fallback is affordable",
+            );
+        assert!(wait.accumulation().is_some());
+        assert!(
+            wait.reservation_deadline()
+                <= obs.tick + super::super::strategy::connected_preparation_horizon()
+        );
+
         obs.tick += 1;
         obs.scrap = UnitKind::Warden.stats().cost;
         let proposal = derive(
@@ -2891,7 +2887,6 @@ mod tests {
         let mut obs = observation(UnitKind::Sentinel.stats().cost);
         add_producer(&mut obs, 1, BuildingKind::Foundry, Vec::new());
         add_producer(&mut obs, 2, BuildingKind::Fabricator, Vec::new());
-        add_reclaimers(&mut obs, 10, 1);
         fill_core(&mut obs, 8);
         let profile = profile(20, 10, 20, 100);
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);

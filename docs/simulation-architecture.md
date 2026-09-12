@@ -719,10 +719,12 @@ and readiness fit better. Immediate alternatives are current-funded, enqueue-now
 work through one completed producer; forecast income cannot make an unaffordable
 command legal. For a non-urgent need, completed recurring income may add a
 bounded future purchase of a strictly better unlocked provider beside the
-affordable immediate fallback. Acceptance retains the exact producer, purchase
-tick, completion, deadline, and originating need. Subsequent allocation imports
-that schedule before fresh spending; loss of the producer, income, useful need,
-or opening core releases unpaid work. Immediate threats can preempt it. Enemy
+immediate fallback. The search can start below the fallback's price and uses the
+bounded strategic preparation window instead of requiring repayment within one
+cheap production cycle. Acceptance retains the exact producer, purchase tick,
+completion, deadline, and originating need. Subsequent allocation imports that
+schedule before fresh spending; loss of the producer, income, useful need, or
+opening core releases unpaid work. Immediate threats can preempt it. Enemy
 fortifications motivate deliberate siege preparation without making every siege
 purchase an emergency. Economic saving preserves its capital claims while
 allowing compatible military alternatives to compete.
