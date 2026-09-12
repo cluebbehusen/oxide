@@ -1507,6 +1507,7 @@ mod tests {
             salvaged: false,
         };
         let mut builder = Unit {
+            air_motion: Vec2Fx::ZERO,
             id: UnitId(2),
             player: PlayerId(0),
             kind: UnitKind::Harvester,

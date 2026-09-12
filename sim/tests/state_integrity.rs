@@ -330,10 +330,12 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::ShellKindMismatch(_) => 67,
         E::InvalidUnitBraces(_) => 68,
         E::InvalidTurretHeading(_) => 69,
+        E::InvalidAirMotion(_) => 70,
+        E::InvalidAircraftCrash(_) => 71,
     }
 }
 
-const ROWS: usize = 70;
+const ROWS: usize = 72;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -416,6 +418,8 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::ShellKindMismatch(0),
         E::InvalidUnitBraces(UnitId(0)),
         E::InvalidTurretHeading(UnitId(0)),
+        E::InvalidAirMotion(UnitId(0)),
+        E::InvalidAircraftCrash(0),
     ]
 }
 
@@ -482,6 +486,23 @@ fn make_landed(d: &mut Value) {
 #[test]
 fn every_checklist_row_refuses_its_forgery() {
     let fixtures: Vec<Forgery> = vec![
+        (
+            "ground unit with crash momentum",
+            |d| {
+                d["units"][0]["air_motion"] = json!(chassis::fx::Vec2Fx::new(
+                    chassis::fx::Fx::ONE,
+                    chassis::fx::Fx::ZERO
+                ));
+            },
+            "unit u0 carries invalid airborne motion",
+        ),
+        (
+            "a live aircraft also scheduled to crash",
+            |d| {
+                d["aircraft_crashes"] = json!([pending_crash(d)]);
+            },
+            "invalid pending aircraft crash 0",
+        ),
         (
             "an empty player table",
             |d| d["players"] = json!([]),
@@ -1303,4 +1324,79 @@ fn parse_refuses_a_map_beyond_the_edge_bound() {
         Map::parse(&square).is_ok(),
         "the bound is inclusive: exactly the maximum still parses"
     );
+}
+
+fn pending_crash(d: &Value) -> Value {
+    let started = d["tick"].as_u64().unwrap() - 1;
+    json!({
+        "unit": 0, "player": 0, "kind": "condor", "heading": 0,
+        "launch": d["units"][0]["pos"], "impact": d["units"][0]["pos"],
+        "started": started, "arrival": started + oxide_sim::stats::AIRCRAFT_CRASH_TICKS,
+    })
+}
+
+#[test]
+fn pending_crash_geometry_identity_and_clock_are_validated() {
+    let mut base = snapshot();
+    base["aircraft_crashes"] = json!([pending_crash(&base)]);
+    base["units"].as_array_mut().unwrap().remove(0);
+    let state: State = serde_json::from_value(base.clone()).unwrap();
+    let restored: State = serde_json::from_value(doc(&state)).unwrap();
+    assert_eq!(state.hash(), restored.hash());
+    let crash = &base["aircraft_crashes"][0];
+    for (field, value) in [
+        ("player", json!(255)),
+        ("unit", json!(u32::MAX)),
+        ("kind", json!("talon")),
+        ("started", json!(u64::MAX)),
+        ("arrival", json!(u64::MAX)),
+        ("arrival", json!(0)),
+        (
+            "impact",
+            json!(chassis::fx::Vec2Fx::new(
+                chassis::fx::Fx::from_num(1000),
+                chassis::fx::Fx::ZERO
+            )),
+        ),
+        ("launch", json!({"x":{"bits": i64::MIN}, "y":{"bits":0}})),
+    ] {
+        let mut forged = base.clone();
+        forged["aircraft_crashes"][0][field] = value;
+        assert!(
+            refusal(forged).contains("invalid pending aircraft crash"),
+            "{field}"
+        );
+    }
+    let mut duplicate = base.clone();
+    duplicate["aircraft_crashes"] = json!([crash, crash]);
+    assert!(refusal(duplicate).contains("invalid pending aircraft crash"));
+    let mut terminal = base;
+    terminal["result"] = json!({"outcome":"victory", "team":0});
+    assert!(refusal(terminal).contains("invalid pending aircraft crash"));
+}
+
+#[test]
+fn extreme_and_unphysical_aircraft_motion_is_rejected_without_arithmetic_overflow() {
+    let mut base = snapshot();
+    make_transport(&mut base);
+    for (x, y) in [
+        (i64::MIN, 0),
+        (i64::MAX, 0),
+        (0, i64::MIN),
+        (
+            chassis::fx::Fx::lit("0.13").to_bits(),
+            chassis::fx::Fx::lit("0.13").to_bits(),
+        ),
+    ] {
+        let mut forged = base.clone();
+        forged["units"][0]["air_motion"] = json!({"x":{"bits": x}, "y":{"bits":y}});
+        assert!(refusal(forged).contains("invalid airborne motion"));
+    }
+    let mut parked = snapshot();
+    make_landed(&mut parked);
+    parked["units"][0]["air_motion"] = json!(chassis::fx::Vec2Fx::new(
+        chassis::fx::Fx::lit("0.1"),
+        chassis::fx::Fx::ZERO,
+    ));
+    assert!(refusal(parked).contains("invalid airborne motion"));
 }

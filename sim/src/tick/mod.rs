@@ -22,18 +22,21 @@
 //! 6. **Collision** — overlapping bodies are pushed apart until they fit;
 //!    units are solid to each other but never block tiles.
 //! 7. **Cleanup** — entities at 0 hp are removed, with events; every
-//!    death deposits wreck salvage on its ground.
+//!    death deposits wreck salvage on its ground. Due aircraft crashes
+//!    damage post-movement ground targets before charges and cleanup;
+//!    cleanup schedules new crashes with their retained flight momentum.
 //! 8. **Decay** — on its global cadence, every wreck tile loses one
 //!    salvage. Cleanup and decay share the tick, so a wreck born on a
 //!    cadence tick pays its first salvage immediately.
 //! 9. **Vision** — every player's fog-of-war visible set is rebuilt from
 //!    their surviving entities (explored only accumulates).
 //! 10. **Victory** — a player with no Foundry (or who conceded) is out;
-//!     last standing wins.
+//!     last standing wins after pending aircraft crashes resolve.
 //!
 //! After [`GameResult`] is set the world freezes: ticks still count up (so
 //! timelines stay aligned) but nothing moves and commands are ignored.
 
+mod aircraft_crashes;
 mod brain;
 mod commands;
 pub(crate) mod flight;
@@ -178,8 +181,11 @@ impl State {
             // last decision and the first movement.
             brain::logistics::resolve(self, boardings, &mut events);
             movement::evict_claimed_ground(self);
+            let air_positions = aircraft_crashes::capture_positions(self);
             let travel = movement::run(self);
             movement::resolve_collisions(self, &travel, &mut index);
+            aircraft_crashes::remember_motion(self, &air_positions);
+            aircraft_crashes::land(self, &mut events);
             detonate_charges(self, &mut events);
             cleanup(self, &mut events);
             if self.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
@@ -256,6 +262,7 @@ fn detonate_charges(state: &mut State, events: &mut Vec<Event>) {
 /// cost lands as wreck salvage (buildings split theirs across the
 /// footprint). Battles literally feed the salvagers.
 fn cleanup(state: &mut State, events: &mut Vec<Event>) {
+    aircraft_crashes::schedule(state);
     let mut deposits: Vec<(TilePos, u32)> = Vec::new();
     for unit in state.units.iter().filter(|u| u.hp == 0) {
         events.push(Event::UnitDied {
@@ -386,6 +393,9 @@ fn victory(state: &mut State, events: &mut Vec<Event>) {
         if out {
             state.players[index].eliminated_at = Some(state.tick);
         }
+    }
+    if !state.aircraft_crashes.is_empty() {
+        return;
     }
     let mut teams: Vec<u8> = state.players.iter().map(|p| p.team).collect();
     teams.sort_unstable();
@@ -1356,10 +1366,13 @@ mod tests {
         brain::logistics::resolve(state, pending, &mut events);
         assert_calibration_open_symmetry(&stage("logistics"), state, unit_pairs);
         movement::evict_claimed_ground(state);
+        let air_positions = aircraft_crashes::capture_positions(state);
         let travel = movement::run(state);
         assert_calibration_open_symmetry(&stage("movement"), state, unit_pairs);
         movement::resolve_collisions(state, &travel, &mut index);
         assert_calibration_open_symmetry(&stage("collisions"), state, unit_pairs);
+        aircraft_crashes::remember_motion(state, &air_positions);
+        aircraft_crashes::land(state, &mut events);
         detonate_charges(state, &mut events);
         cleanup(state, &mut events);
         if state.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {

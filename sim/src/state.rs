@@ -254,6 +254,9 @@ pub struct Unit {
     pub kind: UnitKind,
     /// World position (tile units).
     pub pos: Vec2Fx,
+    /// Last airborne displacement per tick, retained for crash momentum.
+    #[serde(default, skip_serializing_if = "is_zero_motion")]
+    pub air_motion: Vec2Fx,
     /// Current hit points.
     pub hp: u32,
     /// Scrap on board (harvesters only).
@@ -309,6 +312,10 @@ pub struct Unit {
     /// [`Unit::domain`]) until an order lifts it off again.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub landed: bool,
+}
+
+fn is_zero_motion(motion: &Vec2Fx) -> bool {
+    *motion == Vec2Fx::ZERO
 }
 
 impl Unit {
@@ -556,6 +563,8 @@ pub struct State {
     pub(crate) units: Vec<Unit>,
     pub(crate) buildings: Vec<Building>,
     pub(crate) shells: Vec<Shell>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) aircraft_crashes: Vec<AircraftCrash>,
     pub(crate) result: Option<GameResult>,
     next_unit_id: u32,
     next_building_id: u32,
@@ -588,6 +597,7 @@ impl State {
             units: Vec::new(),
             buildings: Vec::new(),
             shells: Vec::new(),
+            aircraft_crashes: Vec::new(),
             result: None,
             next_unit_id: 0,
             next_building_id: 0,
@@ -918,6 +928,9 @@ impl State {
                 return Err(E::ForeignUnitOwner(u.id));
             }
             let stats = u.kind.stats();
+            if !valid_air_motion(u) {
+                return Err(E::InvalidAirMotion(u.id));
+            }
             if u.hp == 0 || u.hp > stats.max_hp {
                 return Err(E::UnitHpOutOfRange(u.id));
             }
@@ -1007,6 +1020,9 @@ impl State {
             }
             for rider in &u.cargo {
                 let rstats = rider.kind.stats();
+                if !valid_air_motion(rider) {
+                    return Err(E::InvalidAirMotion(rider.id));
+                }
                 if rstats.transport_size == 0 {
                     return Err(E::UncarriableCargo(u.id));
                 }
@@ -1151,6 +1167,38 @@ impl State {
             }
             if b.salvaged {
                 return Err(E::LiveBuildingMarkedSalvaged(b.id));
+            }
+        }
+
+        for (i, crash) in self.aircraft_crashes.iter().enumerate() {
+            let live = self.units.iter().any(|unit| {
+                unit.id == crash.unit || unit.cargo.iter().any(|rider| rider.id == crash.unit)
+            });
+            if usize::from(crash.player.0) >= players
+                || crash.unit.0 >= self.next_unit_id
+                || live
+                || crash.kind.crash_profile().is_none()
+                || !point_inside_envelope(crash.launch)
+                || !point_inside_envelope(crash.impact)
+                || crash.started >= self.tick
+                || crash.arrival < self.tick
+                || crash.arrival.checked_sub(crash.started)
+                    != Some(crate::stats::AIRCRAFT_CRASH_TICKS)
+                || self.result.is_some()
+                || (i > 0
+                    && (
+                        self.aircraft_crashes[i - 1].started,
+                        self.aircraft_crashes[i - 1].unit,
+                    ) >= (crash.started, crash.unit))
+                || self.aircraft_crashes[..i]
+                    .iter()
+                    .any(|other| other.unit == crash.unit)
+            {
+                return Err(E::InvalidAircraftCrash(i));
+            }
+            let reach = crash.kind.stats().speed * Fx::from_num(crate::stats::AIRCRAFT_CRASH_TICKS);
+            if crash.launch.dist_sq(crash.impact) > reach * reach {
+                return Err(E::InvalidAircraftCrash(i));
             }
         }
 
@@ -1309,6 +1357,11 @@ impl State {
     /// Shells currently in flight, in launch order.
     pub fn shells(&self) -> &[Shell] {
         &self.shells
+    }
+
+    /// Falling aircraft awaiting their authoritative ground impact.
+    pub fn aircraft_crashes(&self) -> &[AircraftCrash] {
+        &self.aircraft_crashes
     }
 
     /// The seats on the winning team, in id order — empty until a
@@ -1535,6 +1588,7 @@ impl State {
             player,
             kind,
             pos,
+            air_motion: Vec2Fx::ZERO,
             hp: kind.stats().max_hp,
             carrying: 0,
             cooldowns: [0; crate::stats::MAX_WEAPONS],
@@ -1556,6 +1610,8 @@ impl State {
                         Fx::from_num(self.map.height()) / 2,
                     ) - pos,
                 )
+            } else if kind == UnitKind::Skyhook {
+                192
             } else {
                 (TilePos::containing(pos).x as u8).wrapping_mul(64)
             },
@@ -1953,6 +2009,12 @@ mod tests {
 /// one names the entity that broke it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StateIntegrityError {
+    /// A stored aircraft displacement is not physically bounded.
+    #[error("unit {0} carries invalid airborne motion")]
+    InvalidAirMotion(UnitId),
+    /// A pending crash has invalid identity, geometry, timing, or ordering.
+    #[error("invalid pending aircraft crash {0}")]
+    InvalidAircraftCrash(usize),
     /// The player table is empty.
     #[error("no players")]
     NoPlayers,
@@ -2187,6 +2249,42 @@ pub enum StateIntegrityError {
     UnsortedSalvageIncidents(PlayerId),
 }
 
+fn valid_air_motion(unit: &Unit) -> bool {
+    let motion = unit.air_motion;
+    let speed = unit.kind.stats().speed;
+    if motion == Vec2Fx::ZERO {
+        return true;
+    }
+    unit.kind.crash_profile().is_some()
+        && unit.domain() == crate::stats::Domain::Air
+        && motion.x >= -speed
+        && motion.x <= speed
+        && motion.y >= -speed
+        && motion.y <= speed
+        && motion.length_sq() <= speed * speed
+}
+
+/// A destroyed airframe coasting toward a fixed impact point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AircraftCrash {
+    /// The removed aircraft's stable identity.
+    pub unit: UnitId,
+    /// The removed aircraft's owner, retained for damage attribution.
+    pub player: PlayerId,
+    /// Airframe and crash damage profile.
+    pub kind: UnitKind,
+    /// Last hull bearing; the airframe stays level during its fall.
+    pub heading: u8,
+    /// Ground position when the aircraft died.
+    pub launch: Vec2Fx,
+    /// Fixed ground contact point.
+    pub impact: Vec2Fx,
+    /// Tick on which the aircraft died.
+    pub started: Tick,
+    /// Tick on which impact damage resolves.
+    pub arrival: Tick,
+}
+
 /// A shell in flight: launched toward a fixed fire-time aim point, unguided
 /// from that instant, and resolved on its arrival tick against whatever
 /// stands there. It may outlive its shooter.
@@ -2252,6 +2350,8 @@ struct StateWire {
     units: Vec<Unit>,
     buildings: Vec<Building>,
     shells: Vec<Shell>,
+    #[serde(default)]
+    aircraft_crashes: Vec<AircraftCrash>,
     result: Option<GameResult>,
     next_unit_id: u32,
     next_building_id: u32,
@@ -2269,6 +2369,7 @@ impl From<StateWire> for State {
             units,
             buildings,
             shells,
+            aircraft_crashes,
             result,
             next_unit_id,
             next_building_id,
@@ -2283,6 +2384,7 @@ impl From<StateWire> for State {
             units,
             buildings,
             shells,
+            aircraft_crashes,
             result,
             next_unit_id,
             next_building_id,
