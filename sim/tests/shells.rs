@@ -920,8 +920,8 @@ fn peak_prediction_range() -> Scenario {
         ],
         players: players(),
         units: vec![
-            unit(1, UnitKind::Scuttler, 10, 8),
-            unit(0, UnitKind::Bombard, 4, 8),
+            unit(1, UnitKind::Scuttler, 11, 8),
+            unit(0, UnitKind::Bombard, 5, 8),
             unit(0, UnitKind::Harvester, 7, 8),
         ],
         buildings: Vec::new(),
@@ -1028,6 +1028,15 @@ fn autonomous_avalanche_requires_shared_true_sight_for_buildings() {
 fn predictive_aim_falls_back_before_crossing_a_peak() {
     let mut state = peak_prediction_range().build().unwrap();
     let (target, bombard) = moving_ids(&state);
+    assert!(
+        state
+            .unit(bombard)
+            .unwrap()
+            .pos
+            .dist(TilePos::new(14, 8).center())
+            < UnitKind::Bombard.stats().weapons[0].range,
+        "range clamping must not stop the projected shot before the peak"
+    );
     establish_straight_motion(&mut state, target, bombard, TilePos::new(18, 8));
     let (events, before) = fire_when_ready(
         &mut state,
@@ -1047,6 +1056,7 @@ fn predictive_aim_falls_back_before_crossing_a_peak() {
         "the target must still be approaching the peak"
     );
     assert_eq!(victim.pos.y, chassis::fx::Fx::lit("8.5"));
+    assert!(victim.drive_speed > chassis::fx::Fx::ZERO);
     let current = victim.pos;
     let (_, aim, _) = unit_launch(&events, bombard).expect("the current line is legal");
     assert_eq!(

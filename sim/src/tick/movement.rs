@@ -12,6 +12,7 @@
 //! deadlock-free while crowds physically jostle.
 
 mod cruise;
+mod ground;
 
 use super::flight;
 use crate::map::Map;
@@ -33,6 +34,9 @@ pub(super) fn steer_weapon_heading(unit: &mut crate::state::Unit, direction: Vec
     if unit.kind.has_ground_turret() {
         let bearing = unit.turret_heading.get_or_insert(unit.heading);
         return steer_bearing(bearing, direction, unit.kind.turret_turn_rate());
+    }
+    if unit.drive_speed > Fx::ZERO {
+        return false;
     }
     if unit.kind == crate::UnitKind::Bombard {
         if !ground_weapon_aligned(unit, direction) {
@@ -255,77 +259,31 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             travel[slot] = unit.pos - before;
             continue;
         }
-        let airborne = stats.domain == crate::stats::Domain::Air;
-        if let Some(aim) = work_aims[slot] {
-            steer_ground_heading(unit, aim - unit.pos);
+        if stats.domain == crate::stats::Domain::Ground {
+            ground::advance(unit, map, buildings);
+            if unit.drive_speed == Fx::ZERO
+                && let Some(aim) = work_aims[slot]
+            {
+                steer_ground_heading(unit, aim - unit.pos);
+            }
+            travel[slot] = unit.pos - before;
+            continue;
         }
         let mut budget = stats.speed;
-        let mut steered = false;
         while budget > Fx::ZERO {
             let Some(path) = &mut unit.path else { break };
             let Some(&waypoint) = path.waypoints.get(path.next as usize) else {
                 unit.path = None;
                 break;
             };
-            // Ground can close mid-walk (a site claims its footprint at
-            // command time): never step toward a waypoint that is no
-            // longer open — and never take a diagonal whose two flanking
-            // cardinals aren't both open either, the same no-corner-cut
-            // rule A* guaranteed when the path was computed. Drop the path
-            // and let the brain repath around whatever appeared. None of
-            // it binds a flyer: air routes never close.
-            if !airborne {
-                let open = |t: TilePos| {
-                    map.terrain_passable(t)
-                        && !buildings
-                            .iter()
-                            .any(|b| b.contains(t) && !b.kind.is_stealthy())
-                };
-                let here = TilePos::containing(unit.pos);
-                let (dx, dy) = (waypoint.x - here.x, waypoint.y - here.y);
-                let corner_cut = dx != 0
-                    && dy != 0
-                    && !(open(here.offset(dx.signum(), 0)) && open(here.offset(0, dy.signum())));
-                if !open(waypoint) || corner_cut {
-                    unit.path = None;
-                    break;
-                }
-            }
             let center = waypoint.center();
             let dist = unit.pos.dist(center);
             if let Some(&next_wp) = path.waypoints.get(path.next as usize + 1)
                 && (dist <= WAYPOINT_ACCEPT
                     || passed_intermediate_waypoint(unit.pos, waypoint, next_wp, stats.radius))
-                && (airborne
-                    || (early_advance_safe(waypoint, next_wp, map, buildings)
-                        && early_advance_safe(
-                            TilePos::containing(unit.pos),
-                            next_wp,
-                            map,
-                            buildings,
-                        )))
             {
                 path.next += 1;
-                continue; // spend the budget on the next leg instead
-            }
-            if !airborne && dist > Fx::ZERO {
-                let desired = flight::heading_of(center - unit.pos);
-                if !steered {
-                    steer_bearing(
-                        &mut unit.heading,
-                        center - unit.pos,
-                        unit.kind.ground_turn_rate(),
-                    );
-                    steered = true;
-                }
-                if desired
-                    .wrapping_sub(unit.heading)
-                    .cast_signed()
-                    .unsigned_abs()
-                    > 8
-                {
-                    break;
-                }
+                continue;
             }
             if dist <= budget {
                 unit.pos = center;
@@ -341,7 +299,7 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             }
         }
         let direction = unit.pos - before;
-        if airborne && direction != Vec2Fx::ZERO {
+        if direction != Vec2Fx::ZERO {
             steer_ground_heading(unit, direction);
         }
         travel[slot] = direction;

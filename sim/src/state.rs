@@ -295,6 +295,9 @@ pub struct Unit {
     /// steer by it. Every `u8` is a valid compass heading.
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub heading: u8,
+    /// Ground motor speed; overlap corrections do not contribute to it.
+    #[serde(default, skip_serializing_if = "is_zero_fx")]
+    pub drive_speed: Fx,
     /// Independent ground gun bearing; absent mounts follow the hull initially.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turret_heading: Option<u8>,
@@ -492,6 +495,10 @@ fn default_true() -> bool {
 
 fn is_zero_u32(n: &u32) -> bool {
     *n == 0
+}
+
+fn is_zero_fx(value: &Fx) -> bool {
+    *value == Fx::ZERO
 }
 
 fn is_zero_u8(n: &u8) -> bool {
@@ -942,6 +949,13 @@ impl State {
             {
                 return Err(E::InvalidUnitBraces(u.id));
             }
+            if u.drive_speed < Fx::ZERO
+                || u.drive_speed > stats.speed
+                || (u.drive_speed != Fx::ZERO
+                    && (stats.domain != crate::stats::Domain::Ground || u.brace_ticks != 0))
+            {
+                return Err(E::InvalidGroundSpeed(u.id));
+            }
             if u.turret_heading.is_some() && !u.kind.has_ground_turret() {
                 return Err(E::InvalidTurretHeading(u.id));
             }
@@ -1026,6 +1040,7 @@ impl State {
                     || rider.leash.is_some()
                     || rider.settled != 0
                     || rider.brace_ticks != 0
+                    || rider.drive_speed != Fx::ZERO
                     || !rider.cargo.is_empty()
                 {
                     return Err(E::CargoNotDormant(u.id));
@@ -1540,6 +1555,7 @@ impl State {
             cooldowns: [0; crate::stats::MAX_WEAPONS],
             brace_ticks: 0,
             turret_heading: None,
+            drive_speed: Fx::ZERO,
             progress: 0,
             order: Order::Idle,
             queue: std::collections::VecDeque::new(),
@@ -2027,6 +2043,9 @@ pub enum StateIntegrityError {
     /// Spade deployment exceeds its range or belongs to a non-siege unit.
     #[error("unit {0} carries invalid spade deployment")]
     InvalidUnitBraces(UnitId),
+    /// Motor speed exceeds the chassis limit or belongs to a stationary/air body.
+    #[error("unit {0} carries invalid ground motor speed")]
+    InvalidGroundSpeed(UnitId),
     /// Only ground units with independent gun mounts carry a turret bearing.
     #[error("unit {0} carries an unsupported independent turret heading")]
     InvalidTurretHeading(UnitId),

@@ -12,7 +12,7 @@ mod tick;
 pub mod vision;
 
 pub use command::{Command, PlayerCommand};
-pub use event::{Event, StallReason, TickReport, UnitRepairSource};
+pub use event::{Event, GroundMotion, StallReason, TickReport, UnitRepairSource};
 pub use ids::{BuildingId, PlayerId, Target, UnitId};
 pub use scenario::Scenario;
 pub use state::{

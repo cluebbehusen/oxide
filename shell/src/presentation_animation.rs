@@ -1046,6 +1046,7 @@ mod tests {
     fn unit_attack_report(tick: u64, attacker: UnitId, weapon: usize) -> TickReport {
         TickReport {
             tick,
+            movement: Vec::new(),
             events: vec![Event::AttackHit {
                 attacker,
                 attacker_kind: UnitKind::Sentinel,
@@ -1180,6 +1181,7 @@ mod tests {
         let mut controller = AnimationController::default();
         controller.observe(&TickReport {
             tick: 8,
+            movement: Vec::new(),
             events: vec![
                 Event::ShellLaunched {
                     unit_pose: None,
@@ -1516,6 +1518,7 @@ mod tests {
             cooldowns: [0; MAX_WEAPONS],
             brace_ticks: 0,
             turret_heading: None,
+            drive_speed: chassis::fx::Fx::ZERO,
             progress: 0,
             order: Order::Build { site: site.id },
             queue: VecDeque::new(),
@@ -1743,6 +1746,7 @@ mod tests {
 
             controller.observe(&TickReport {
                 tick: 20,
+                movement: Vec::new(),
                 events: vec![event],
             });
             let pulse = controller.building_state(
