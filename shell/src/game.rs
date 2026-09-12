@@ -82,6 +82,7 @@ mod fx;
 mod projectiles;
 pub(crate) use projectiles::LaunchPose;
 
+pub(crate) use fx::UnitBody;
 pub use fx::{Effect, EffectKind, FlakYokeDelay, PingKind, ShotStyle, SoundKind};
 
 /// A transient HUD message (rejected orders, stalled units).
@@ -138,6 +139,7 @@ pub struct Game {
     pub(crate) animations: crate::presentation_animation::AnimationController,
     pub(crate) track_motion: HashMap<u32, crate::track_motion::TrackMotion>,
     pub(crate) projectile_releases: projectiles::ProjectileReleases,
+    fx_previous: fx::PreviousEffects,
     /// Live effects.
     pub fx: Vec<Effect>,
     /// Clips queued by this frame's ticks; the main loop drains and plays.
@@ -289,6 +291,7 @@ impl Game {
             animations: crate::presentation_animation::AnimationController::default(),
             track_motion: HashMap::new(),
             projectile_releases: projectiles::ProjectileReleases::default(),
+            fx_previous: fx::PreviousEffects::default(),
             fx: Vec::new(),
             sounds_pending: Vec::new(),
             autosave_done: false,
@@ -565,6 +568,7 @@ impl Game {
     /// must not replay as a burst of noise.
     pub fn drop_presentation(&mut self) {
         self.fx.clear();
+        self.restore_pending_crashes();
         self.sounds_pending.clear();
         self.toasts.clear();
         // Aim holds and recoil stamps are per-timeline: after a seek,
@@ -681,6 +685,7 @@ impl Game {
     /// airframes were parked for the death effect's fall-or-scatter
     /// choice.
     fn remember_previous_tick(&mut self) {
+        self.fx_previous = fx::PreviousEffects::capture(self);
         self.prev_heading = self
             .state
             .units()

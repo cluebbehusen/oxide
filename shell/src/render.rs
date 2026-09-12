@@ -189,6 +189,7 @@ pub fn staleness_fade(age: f32) -> f32 {
 }
 
 mod chrome;
+mod destruction;
 pub(crate) mod entities;
 mod environment;
 mod minimap;
@@ -581,6 +582,7 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     crate::render::world::draw_extractor_frames(game, sprites);
     environment::draw_boundary(game, sprites.quarry_dressing(0).is_some());
     draw_scorches(game, sprites);
+    destruction::draw_ground_effects(game, sprites);
     draw_buildings(game, sprites);
     draw_units(game, sprites, alpha);
     crate::strategic_markers::draw_markers(game, alpha);

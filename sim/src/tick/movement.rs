@@ -422,7 +422,7 @@ fn steer_turn_limited(
 }
 
 /// Rotates the heading toward `target` by at most `turn_rate` compass
-/// steps, stopping early the moment the nose crosses the goal ray. Every
+/// steps, settling on the nearest bearing with a small angular deadband. Every
 /// input is Q32.32, so each platform turns identically. The turn is a
 /// committed arc, not a nudge: the shorter rotation is taken only when the
 /// arc it sweeps stays inside the world and ends somewhere the airframe can
@@ -435,6 +435,14 @@ fn steer_toward(
     target: Vec2Fx,
 ) {
     let d = target - unit.pos;
+    let facing = chassis::compass::dir(unit.heading);
+    let cross = facing.x * d.y - facing.y * d.x;
+    let dot = facing.x * d.x + facing.y * d.y;
+    // Three quarters of a compass step: retain the current bearing near
+    // the quantization boundary instead of reversing on successive ticks.
+    if dot >= Fx::ZERO && cross.abs() <= dot * Fx::lit("0.0184") {
+        return;
+    }
     let Some((short, sweep)) = flight::turn_to(unit.heading, d) else {
         return;
     };
@@ -475,13 +483,16 @@ fn steer_toward(
         let nhv = chassis::compass::dir(next);
         let ncross = nhv.x * d.y - nhv.y * d.x;
         let ndot = nhv.x * d.x + nhv.y * d.y;
-        unit.heading = next;
         // The sign of the cross product also flips when the nose sweeps
         // through dead astern on the long way round; only a crossing
         // with the target ahead is the goal ray.
         if ndot >= Fx::ZERO && (cross > Fx::ZERO) != (ncross > Fx::ZERO) {
+            if ndot > dot {
+                unit.heading = next;
+            }
             break;
         }
+        unit.heading = next;
     }
 }
 
@@ -890,6 +901,34 @@ mod tests {
     use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
     use crate::state::Faction;
     use crate::stats::UnitKind;
+
+    #[test]
+    fn shallow_air_bearing_does_not_alternate_across_the_goal_ray() {
+        let map = Map::parse(&vec![".".repeat(200); 200]).unwrap().0;
+        for heading in [0u8, 64, 128, 192] {
+            let mut unit = boundary_pair().units[0].clone();
+            unit.kind = UnitKind::Condor;
+            unit.heading = heading;
+            unit.pos = Vec2Fx::new(Fx::from_num(100), Fx::from_num(100));
+            let forward = chassis::compass::dir(heading);
+            let sideways = chassis::compass::dir(heading.wrapping_add(64));
+            let target = unit.pos + forward * Fx::from_num(80) + sideways;
+            for _ in 0..200 {
+                steer_toward(&mut unit, &map, UnitKind::Condor.stats(), target);
+                assert_eq!(
+                    unit.heading, heading,
+                    "straight approach must not wag its nose"
+                );
+                unit.pos += chassis::compass::dir(unit.heading) * unit.kind.stats().speed;
+            }
+            let target = unit.pos + sideways * Fx::from_num(20);
+            steer_toward(&mut unit, &map, UnitKind::Condor.stats(), target);
+            assert_eq!(
+                unit.heading,
+                heading.wrapping_add(unit.kind.stats().turn_rate)
+            );
+        }
+    }
 
     fn seat(name: &str, faction: Faction) -> PlayerSpec {
         PlayerSpec {

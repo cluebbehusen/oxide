@@ -152,11 +152,15 @@ Phase order is game behavior. `State::tick` currently performs:
 6. Resolve boarding and unloading after every unit has decided.
 7. Evict pathless ground bodies from newly claimed blocking footprints.
 8. Follow paths, then resolve same-domain unit collisions.
-9. Detonate armed Scuttle Charges under hostile post-movement bodies.
-10. Remove dead entities and deposit eligible wreck salvage.
-11. Apply wreck decay on its global cadence.
-12. Rebuild team-shared visibility and reconcile fog memory.
-13. Determine victory or draw from surviving, non-resigned teams.
+9. Retain large aircraft motion and resolve due crash impacts against current
+   positions.
+10. Detonate armed Scuttle Charges under hostile post-movement bodies.
+11. Schedule airborne crashes, remove dead entities, and deposit eligible wreck
+    salvage.
+12. Apply wreck decay on its global cadence.
+13. Rebuild team-shared visibility and reconcile fog memory.
+14. Determine victory or draw from surviving, non-resigned teams and discard any
+    remaining pending crashes when the match ends.
 
 Shots and hp work are buffered while actors decide against stable positions, hp,
 and live entity tables. Orders, paths, harvesting, and billing may still change
@@ -169,6 +173,21 @@ Once a result exists, later calls ignore commands and skip world phases, but the
 tick counter still advances so external timelines remain aligned. Per-tick
 acceleration structures, including the unit spatial index, are local scratch.
 They are rebuilt at their use points and never serialized or hashed.
+
+Destroyed airborne Condors, Moths, and Skyhooks leave a pending crash. The
+record retains owner, kind, heading, launch and contact positions, and start and
+arrival ticks. Contact is fixed at death using the last actual airborne
+displacement, capped at flight speed, with 20% average deceleration over 13
+ticks. A hovering transport therefore falls in place. The removed aircraft and
+its cargo cease acting immediately, and ordinary death salvage is unchanged.
+
+At contact, a two-tile blast damages every hostile ground unit and nearby
+building footprint: 50 damage for Condor, 40 for Moth and Skyhook. Allies and
+airborne units are immune; impacts over pits do no damage. Targets can move into
+or out of the blast before arrival. Pending crashes resolve in death-tick and
+unit-id order and survive state serialization. Victory is immediate once the
+Foundry condition is met; any crashes still pending are discarded without
+damage.
 
 ## Commands and unit programs
 
@@ -233,7 +252,10 @@ A committed airframe never stops: without a path it orbits on the bank whose
 fitting arc is longest, tangent to the point where the route ran out, and if it
 is ever pressed into the envelope it slides along the boundary while turning
 back in. A step into a Peak drops the route so the brain replans from the actual
-position, while the airframe slides along the face.
+position, while the airframe slides along the face. Near the target bearing, a
+three-quarter-step angular deadband prevents alternating corrections across the
+256-step compass boundary. Turns settle on the nearer of the two bearings
+bracketing the goal ray.
 
 A bomber's roll-out after a release, and its departure leg when it is inside
 release range or inside its own acceptance ring of the attack tile, go only to

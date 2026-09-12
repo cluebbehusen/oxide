@@ -8,6 +8,124 @@ use super::{Game, world_vec};
 use macroquad::prelude::Vec2;
 use oxide_sim::Event;
 
+#[derive(Clone, Copy)]
+pub(crate) struct CollapseBody {
+    pub kind: oxide_sim::BuildingKind,
+    pub tier: u8,
+    pub player: oxide_sim::PlayerId,
+    pub faction: oxide_sim::Faction,
+    pub rotation: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UnitBody {
+    pub kind: oxide_sim::UnitKind,
+    pub player: oxide_sim::PlayerId,
+    pub faction: oxide_sim::Faction,
+    pub rotation: f32,
+    pub velocity: Vec2,
+}
+
+impl UnitBody {
+    fn capture(game: &Game, unit: &oxide_sim::state::Unit) -> Self {
+        let kind = unit.kind;
+        let rotation = if kind.has_ground_turret() || super::rotor_hull_turn_rate(kind).is_some() {
+            game.draw_hull_heading(unit.id, 1.0)
+        } else if kind.stats().turn_rate > 0
+            || kind.ground_turn_rate() > 0
+            || kind.cruise_turn_rate() > 0
+            || kind.turret_turn_rate() > 0
+        {
+            game.draw_heading(unit.id, unit.weapon_heading(), 1.0)
+        } else {
+            game.aim_units
+                .get(&unit.id.0)
+                .map(|pose| pose.0)
+                .or_else(|| game.facing.get(&unit.id.0).copied())
+                .unwrap_or(0.0)
+        };
+        let velocity = game
+            .prev_pos
+            .get(&unit.id.0)
+            .map_or(Vec2::ZERO, |previous| {
+                (world_vec(unit.pos) - *previous) / super::TICK_DT
+            });
+        Self {
+            kind,
+            player: unit.player,
+            faction: game.state.player(unit.player).faction,
+            rotation,
+            velocity: velocity
+                .clamp_length_max(kind.stats().speed.to_num::<f32>() / super::TICK_DT),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct PreviousEffects {
+    buildings: Vec<(oxide_sim::BuildingId, CollapseBody)>,
+    shells: Vec<oxide_sim::state::Shell>,
+    units: Vec<(oxide_sim::UnitId, UnitBody)>,
+    visible_crash_contacts: Vec<oxide_sim::UnitId>,
+}
+
+impl PreviousEffects {
+    pub(super) fn capture(game: &Game) -> Self {
+        Self {
+            visible_crash_contacts: game
+                .state
+                .aircraft_crashes()
+                .iter()
+                .filter(|crash| {
+                    crash.arrival == game.state.current_tick()
+                        && (crash.player == game.human
+                            || game.all_seeing()
+                            || game
+                                .my_vision()
+                                .visible(chassis::grid::TilePos::containing(crash.impact)))
+                })
+                .map(|crash| crash.unit)
+                .collect(),
+            buildings: game
+                .state
+                .buildings()
+                .iter()
+                .filter(|b| {
+                    b.built
+                        && (b.player == game.human
+                            || game.all_seeing()
+                            || (b.tiles().any(|t| game.my_vision().visible(t))
+                                && game.state.building_apparent(game.human, b)))
+                })
+                .map(|b| {
+                    (
+                        b.id,
+                        CollapseBody {
+                            kind: b.kind,
+                            tier: b.tier,
+                            player: b.player,
+                            faction: game.state.player(b.player).faction,
+                            rotation: game.aim_buildings.get(&b.id.0).map_or(0.0, |pose| pose.0),
+                        },
+                    )
+                })
+                .collect(),
+            shells: game.state.shells().to_vec(),
+            units: game
+                .state
+                .units()
+                .iter()
+                .filter(|unit| {
+                    unit.player == game.human
+                        || game.all_seeing()
+                        || game.my_vision().visible(unit.tile())
+                })
+                .map(|unit| (unit.id, UnitBody::capture(game, unit)))
+                .collect(),
+        }
+    }
+}
+
 pub struct Effect {
     /// What to draw.
     pub kind: EffectKind,
@@ -25,6 +143,12 @@ impl Effect {
             EffectKind::DirectShot { completed_tick, .. }
             | EffectKind::SapperDetonation { completed_tick, .. } => {
                 let whole = completed_ticks.saturating_sub(completed_tick) as f32;
+                (whole + tick_fraction.clamp(0.0, 1.0)) * super::TICK_DT + self.age
+            }
+            EffectKind::Falling {
+                crash: Some(crash), ..
+            } => {
+                let whole = completed_ticks.saturating_sub(crash.started + 1) as f32;
                 (whole + tick_fraction.clamp(0.0, 1.0)) * super::TICK_DT + self.age
             }
             _ => self.age,
@@ -359,14 +483,25 @@ pub enum EffectKind {
         /// Simulation tick immediately after the hit was reported.
         completed_tick: u64,
     },
-    /// A downed flyer: the sprite drops, spins, and shrinks out.
+    /// An airborne casualty: heavy airframes crash; smaller ones burst in flight.
     Falling {
-        /// Where it was hit, world coords.
         at: Vec2,
-        /// What fell.
-        unit: oxide_sim::UnitKind,
-        /// Whose colors it wears.
-        faction: oxide_sim::Faction,
+        body: UnitBody,
+        seed: u32,
+        crash: Option<oxide_sim::state::AircraftCrash>,
+        impact_witnessed: bool,
+    },
+    /// A retained structural silhouette collapsing into low wreckage.
+    Collapse {
+        at: Vec2,
+        body: CollapseBody,
+        seed: u32,
+    },
+    /// A payload-specific impact.
+    Impact {
+        at: Vec2,
+        radius: f32,
+        payload: oxide_sim::ProjectileKind,
     },
     /// A death pop.
     Puff {
@@ -387,11 +522,11 @@ pub enum EffectKind {
         /// Splash radius, tiles.
         radius: f32,
     },
-    /// Hull shards scattering from a ground kill. The renderer derives
-    /// each shard's arc from the seed, so playback matches live.
+    /// A ruptured ground chassis and rigid fragments settling on the floor.
     Debris {
         /// Death point, world coords.
         at: Vec2,
+        body: UnitBody,
         /// Deterministic scatter seed (the casualty's id).
         seed: u32,
     },
@@ -444,6 +579,56 @@ fn event_target_owner(
 }
 
 impl Game {
+    pub(super) fn restore_pending_crashes(&mut self) {
+        for crash in self.state.aircraft_crashes().to_vec() {
+            self.restore_crash_effect(crash, false);
+        }
+    }
+
+    fn restore_crash_effect(&mut self, crash: oxide_sim::state::AircraftCrash, witnessed: bool) {
+        for effect in &mut self.fx {
+            if let EffectKind::Falling {
+                crash: Some(existing),
+                impact_witnessed,
+                ..
+            } = &mut effect.kind
+                && existing.unit == crash.unit
+            {
+                *impact_witnessed |= witnessed;
+                return;
+            }
+        }
+        let visible = witnessed
+            || self.all_seeing()
+            || crash.player == self.human
+            || self
+                .my_vision()
+                .visible(chassis::grid::TilePos::containing(crash.launch))
+            || self
+                .my_vision()
+                .visible(chassis::grid::TilePos::containing(crash.impact));
+        if !visible {
+            return;
+        }
+        self.fx.push(Effect {
+            kind: EffectKind::Falling {
+                at: world_vec(crash.launch),
+                seed: crash.unit.0,
+                crash: Some(crash),
+                impact_witnessed: witnessed,
+                body: UnitBody {
+                    kind: crash.kind,
+                    player: crash.player,
+                    faction: self.state.player(crash.player).faction,
+                    rotation: f32::from(crash.heading) * std::f32::consts::TAU / 256.0
+                        + std::f32::consts::FRAC_PI_2,
+                    velocity: Vec2::ZERO,
+                },
+            },
+            age: 0.0,
+        });
+    }
+
     pub fn update_fx(&mut self, dt: f32) {
         self.fx_clock += dt;
         for (_, age) in &mut self.alerts {
@@ -453,10 +638,16 @@ impl Game {
         let terminal = self.state.result().is_some();
         for fx in &mut self.fx {
             match fx.kind {
-                EffectKind::DirectShot { .. } | EffectKind::SapperDetonation { .. } if terminal => {
+                EffectKind::DirectShot { .. }
+                | EffectKind::SapperDetonation { .. }
+                | EffectKind::Falling { crash: Some(_), .. }
+                    if terminal =>
+                {
                     fx.age += dt;
                 }
-                EffectKind::DirectShot { .. } | EffectKind::SapperDetonation { .. } => {}
+                EffectKind::DirectShot { .. }
+                | EffectKind::SapperDetonation { .. }
+                | EffectKind::Falling { crash: Some(_), .. } => {}
                 _ => fx.age += dt,
             }
         }
@@ -467,11 +658,13 @@ impl Game {
                 < match fx.kind {
                     EffectKind::DirectShot { style, .. } => style.life(),
                     EffectKind::SapperDetonation { .. } => super::TICK_DT * 2.0,
+                    EffectKind::Collapse { .. } => 4.5,
+                    EffectKind::Impact { .. } => 1.4,
                     EffectKind::Puff { .. } => 0.4,
-                    EffectKind::Falling { .. } => 0.7,
+                    EffectKind::Falling { .. } => 4.0,
                     EffectKind::Ping { .. } => 0.5,
                     EffectKind::Burst { .. } => 0.35,
-                    EffectKind::Debris { .. } => 0.7,
+                    EffectKind::Debris { .. } => 3.0,
                 }
         });
         for toast in &mut self.toasts {
@@ -685,47 +878,82 @@ impl Game {
                     kind,
                     grounded,
                 } => {
-                    // A parked airframe has no altitude to fall from; the
-                    // event carries the body's layer at death because the
-                    // corpse is already gone and landing, takeoff, and
-                    // death can all share a tick.
-                    let airborne =
-                        kind.stats().domain == oxide_sim::stats::Domain::Air && !grounded;
-                    if airborne && !crate::render::reduced_motion() {
-                        self.fx.push(Effect {
-                            kind: EffectKind::Falling {
-                                at: world_vec(*pos),
-                                unit: *kind,
-                                faction: self.state.player(*player).faction,
-                            },
-                            age: 0.0,
-                        });
-                    } else if !crate::render::reduced_motion() {
-                        // Ground kills scatter hull shards; flyers
-                        // already tell their death with the fall.
-                        self.fx.push(Effect {
-                            kind: EffectKind::Debris {
-                                at: world_vec(*pos),
-                                seed: unit.0,
-                            },
-                            age: 0.0,
-                        });
-                    }
                     if *player == self.human {
                         self.raise_alert(world_vec(*pos));
                     }
-                    if *player == self.human || sees(self, *pos) {
-                        self.sounds_pending
-                            .push((SoundKind::UnitDeath, Some(world_vec(*pos))));
+                    let prior = self
+                        .fx_previous
+                        .units
+                        .iter()
+                        .find(|(id, _)| id == unit)
+                        .map(|(_, body)| *body);
+                    let witnessed = *player == self.human
+                        || sees(self, *pos)
+                        || self.all_seeing()
+                        || prior.is_some();
+                    if !witnessed {
+                        continue;
                     }
+                    self.sounds_pending
+                        .push((SoundKind::UnitDeath, Some(world_vec(*pos))));
+                    let body = prior.unwrap_or(UnitBody {
+                        kind: *kind,
+                        player: *player,
+                        faction: self.state.player(*player).faction,
+                        rotation: self.facing.get(&unit.0).copied().unwrap_or(0.0),
+                        velocity: Vec2::ZERO,
+                    });
+                    let airborne =
+                        kind.stats().domain == oxide_sim::stats::Domain::Air && !grounded;
                     self.fx.push(Effect {
-                        kind: EffectKind::Puff {
-                            at: world_vec(*pos),
+                        kind: if airborne {
+                            EffectKind::Falling {
+                                at: world_vec(*pos),
+                                body,
+                                seed: unit.0,
+                                impact_witnessed: false,
+                                crash: self
+                                    .state
+                                    .aircraft_crashes()
+                                    .iter()
+                                    .find(|crash| crash.unit == *unit)
+                                    .copied(),
+                            }
+                        } else {
+                            EffectKind::Debris {
+                                at: world_vec(*pos),
+                                body,
+                                seed: unit.0,
+                            }
                         },
                         age: 0.0,
                     });
                 }
-                Event::BuildingDestroyed { pos, player, .. } => {
+                Event::AircraftImpacted { crash } => {
+                    let witnessed = crash.player == self.human
+                        || sees(self, crash.impact)
+                        || self.all_seeing()
+                        || self
+                            .fx_previous
+                            .visible_crash_contacts
+                            .contains(&crash.unit);
+                    self.restore_crash_effect(*crash, witnessed);
+                    if witnessed
+                        && self
+                            .state
+                            .map()
+                            .tile(chassis::grid::TilePos::containing(crash.impact))
+                            .is_some_and(|tile| tile.terrain != oxide_sim::map::Terrain::Pit)
+                    {
+                        self.sounds_pending
+                            .push((SoundKind::BuildingBoom, Some(world_vec(crash.impact))));
+                    }
+                }
+                Event::BuildingDestroyed {
+                    building,
+                    pos,
+                    player,
+                } => {
                     if *player == self.human {
                         self.raise_alert(world_vec(*pos));
                     }
@@ -733,10 +961,23 @@ impl Game {
                         self.sounds_pending
                             .push((SoundKind::BuildingBoom, Some(world_vec(*pos))));
                     }
+                    let body = self
+                        .fx_previous
+                        .buildings
+                        .iter()
+                        .find(|(id, _)| id == building)
+                        .map(|(_, body)| *body);
                     self.fx.push(Effect {
-                        kind: EffectKind::Puff {
-                            at: world_vec(*pos),
-                        },
+                        kind: body.map_or(
+                            EffectKind::Puff {
+                                at: world_vec(*pos),
+                            },
+                            |body| EffectKind::Collapse {
+                                at: world_vec(*pos),
+                                body,
+                                seed: building.0,
+                            },
+                        ),
                         age: 0.0,
                     });
                     // A permanent-feeling scar (capped; oldest fall off).
@@ -890,10 +1131,24 @@ impl Game {
                         self.sounds_pending
                             .push((SoundKind::Artillery, Some(world_vec(*at))));
                     }
+                    let payload = self
+                        .fx_previous
+                        .shells
+                        .iter()
+                        .position(|shell| {
+                            shell.player == *player
+                                && shell.impact == *at
+                                && shell.targets == *targets
+                                && shell.splash == *splash
+                                && shell.arrival < self.state.current_tick()
+                        })
+                        .map(|index| self.fx_previous.shells.remove(index).kind)
+                        .unwrap_or(oxide_sim::ProjectileKind::Shell);
                     self.fx.push(Effect {
-                        kind: EffectKind::Burst {
+                        kind: EffectKind::Impact {
                             at: world_vec(*at),
                             radius: splash.map_or(0.8, |r| r.to_num::<f32>()),
+                            payload,
                         },
                         age: 0.0,
                     });
@@ -1006,6 +1261,351 @@ impl Game {
 mod tests {
     use super::*;
     use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
+
+    #[test]
+    fn casualty_art_survives_unit_removal_in_live_and_playback() {
+        for (kind, attacker) in [
+            (UnitKind::Sentinel, UnitKind::Scuttler),
+            (UnitKind::Kestrel, UnitKind::Flakhound),
+            (UnitKind::Condor, UnitKind::Flakhound),
+        ] {
+            let mut scenario = oxide_sim::Scenario::skirmish();
+            for player in &mut scenario.players {
+                player.bot_config = None;
+            }
+            scenario.units = vec![
+                oxide_sim::scenario::UnitSpec {
+                    player: 0,
+                    kind,
+                    x: 10,
+                    y: 10,
+                },
+                oxide_sim::scenario::UnitSpec {
+                    player: 1,
+                    kind: attacker,
+                    x: 11,
+                    y: 10,
+                },
+            ];
+            let mut live = Game::with_viewport(scenario.clone(), Vec2::new(1280.0, 800.0)).unwrap();
+            let mut playback = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
+            let mut wire = serde_json::to_value(&*live.state).unwrap();
+            wire["units"][0]["hp"] = serde_json::json!(1);
+            live.state.0 = serde_json::from_value(wire).unwrap();
+            playback.state.0 = live.state.0.clone();
+            let mut reference = live.state.0.clone();
+            let mut died = false;
+            for _ in 0..80 {
+                let expected_body = UnitBody::capture(&live, live.state.unit(UnitId(0)).unwrap());
+                let expected = reference.tick(&[]);
+                let report = live.do_tick();
+                playback.playback_present(&reference, &expected.events, &expected.movement);
+                assert_eq!(live.state.hash(), reference.hash());
+                if report.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        Event::UnitDied {
+                            unit: UnitId(0),
+                            ..
+                        }
+                    )
+                }) {
+                    for game in [&live, &playback] {
+                        assert!(game.state.unit(UnitId(0)).is_none());
+                        let body = game
+                            .fx
+                            .iter()
+                            .find_map(|effect| match effect.kind {
+                                EffectKind::Falling { body, seed: 0, .. }
+                                | EffectKind::Debris { body, seed: 0, .. } => Some(body),
+                                _ => None,
+                            })
+                            .expect("removed casualty retains its presentation");
+                        assert_eq!(body.kind, kind);
+                        assert_eq!(body.faction, expected_body.faction);
+                        assert_eq!(body.player, expected_body.player);
+                        assert_eq!(body.rotation, expected_body.rotation);
+                        assert_eq!(body.velocity, expected_body.velocity);
+                    }
+                    died = true;
+                    break;
+                }
+            }
+            assert!(died, "{kind:?} must die in the staged engagement");
+        }
+    }
+
+    #[test]
+    fn wreck_capture_keeps_the_hull_bearing_when_the_turret_aims_away() {
+        for kind in [
+            UnitKind::Sentinel,
+            UnitKind::Warden,
+            UnitKind::Lancer,
+            UnitKind::Buzzard,
+        ] {
+            let mut scenario = oxide_sim::Scenario::skirmish();
+            scenario.units = vec![oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind,
+                x: 8,
+                y: 8,
+            }];
+            let mut game = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
+            game.hull_heading.insert(0, (0.4, 0.7));
+            let unit = game.state.unit(UnitId(0)).unwrap();
+            assert!((game.draw_heading(unit.id, unit.weapon_heading(), 1.0) - 0.7).abs() > 0.1);
+            assert!(
+                (UnitBody::capture(&game, unit).rotation - 0.7).abs() < 1e-6,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hostile_crash_contact_retains_feedback_when_it_kills_the_only_observer() {
+        for witnessed in [true, false] {
+            let mut scenario = oxide_sim::Scenario::skirmish();
+            scenario.map = vec![".".repeat(48); 32];
+            scenario.map[2].replace_range(2..3, "1");
+            scenario.map[2].replace_range(42..43, "2");
+            for player in &mut scenario.players {
+                player.bot_config = None;
+            }
+            scenario.units = vec![
+                oxide_sim::scenario::UnitSpec {
+                    player: 1,
+                    kind: UnitKind::Condor,
+                    x: 20,
+                    y: 25,
+                },
+                oxide_sim::scenario::UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Harvester,
+                    x: if witnessed { 20 } else { 4 },
+                    y: 25,
+                },
+            ];
+            let mut game = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
+            let at = chassis::grid::TilePos::new(20, 25).center();
+            let crash = oxide_sim::state::AircraftCrash {
+                unit: UnitId(0),
+                player: oxide_sim::PlayerId(1),
+                kind: UnitKind::Condor,
+                heading: 0,
+                launch: at,
+                impact: at,
+                started: 0,
+                arrival: 13,
+            };
+            let mut wire = serde_json::to_value(&*game.state).unwrap();
+            wire["units"].as_array_mut().unwrap().remove(0);
+            wire["units"][0]["hp"] = serde_json::json!(40);
+            wire["tick"] = serde_json::json!(13);
+            wire["aircraft_crashes"] = serde_json::json!([crash]);
+            game.replace_state_after_jump(&serde_json::from_value(wire).unwrap());
+            let tile = chassis::grid::TilePos::containing(at);
+            assert_eq!(game.my_vision().visible(tile), witnessed);
+            game.present_ticks(1);
+            assert!(!game.my_vision().visible(tile));
+            assert_eq!(game.state.unit(UnitId(1)).is_none(), witnessed);
+            assert_eq!(
+                game.sounds_pending
+                    .iter()
+                    .any(|(sound, pos)| *sound == SoundKind::BuildingBoom
+                        && *pos == Some(world_vec(at))),
+                witnessed
+            );
+            assert_eq!(game.fx.iter().any(|effect| matches!(effect.kind,
+                EffectKind::Falling { crash: Some(saved), impact_witnessed: true, .. } if saved.unit == crash.unit
+            )), witnessed);
+        }
+    }
+
+    #[test]
+    fn scheduled_crash_uses_sim_time_and_restores_after_a_seek() {
+        let mut game =
+            Game::with_viewport(oxide_sim::Scenario::skirmish(), Vec2::new(1280.0, 800.0)).unwrap();
+        let mut wire = serde_json::to_value(&*game.state).unwrap();
+        let unit = wire["units"].as_array_mut().unwrap().remove(0);
+        let crash = oxide_sim::state::AircraftCrash {
+            unit: serde_json::from_value(unit["id"].clone()).unwrap(),
+            player: game.human,
+            kind: UnitKind::Condor,
+            heading: 32,
+            launch: chassis::grid::TilePos::new(8, 8).center(),
+            impact: chassis::grid::TilePos::new(9, 8).center(),
+            started: 0,
+            arrival: 13,
+        };
+        wire["tick"] = serde_json::json!(5);
+        wire["aircraft_crashes"] = serde_json::json!([crash]);
+        let state = serde_json::from_value(wire).unwrap();
+        game.replace_state_after_jump(&state);
+        game.paused = true;
+        let age = game.fx[0].age_at(game.state.current_tick(), 0.0);
+        assert!((age - 4.0 * crate::game::TICK_DT).abs() < 1.0e-6);
+        game.update_fx(30.0);
+        assert_eq!(game.fx.len(), 1, "a paused fall cannot expire on wall time");
+        assert_eq!(game.fx[0].age_at(game.state.current_tick(), 0.0), age);
+        game.advance_ticks(4);
+        assert_eq!(game.fx.len(), 1, "a bulk seek restores a pending fall");
+        let fx = &game.fx[0];
+        assert!(
+            matches!(fx.kind, EffectKind::Falling { crash: Some(restored), .. } if restored == crash)
+        );
+        assert!(
+            (fx.age_at(game.state.current_tick(), 0.5) - 8.5 * crate::game::TICK_DT).abs() < 1.0e-6
+        );
+        game.present_ticks(5);
+        assert_eq!(game.state.current_tick(), 14);
+        assert!(game.state.aircraft_crashes().is_empty());
+        assert_eq!(
+            game.fx
+                .iter()
+                .filter(|fx| matches!(fx.kind, EffectKind::Falling { crash: Some(_), .. }))
+                .count(),
+            1,
+            "impact continues the same casualty effect without a duplicate explosion"
+        );
+    }
+
+    #[test]
+    fn hidden_casualty_does_not_reveal_art_or_audio() {
+        let mut game =
+            Game::with_viewport(oxide_sim::Scenario::skirmish(), Vec2::new(1280.0, 800.0)).unwrap();
+        let at = chassis::grid::TilePos::new(30, 20).center();
+        assert!(
+            !game
+                .my_vision()
+                .visible(chassis::grid::TilePos::containing(at))
+        );
+        game.fx_previous = PreviousEffects::capture(&game);
+        game.spawn_fx(&[Event::UnitDied {
+            unit: UnitId(999),
+            kind: UnitKind::Condor,
+            player: oxide_sim::PlayerId(1),
+            pos: at,
+            grounded: false,
+        }]);
+        assert!(game.fx.is_empty());
+        assert!(game.sounds_pending.is_empty());
+    }
+
+    #[test]
+    fn collapse_preserves_the_casualty_and_live_playback_state_parity() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        for player in &mut scenario.players {
+            player.bot_config = None;
+        }
+        scenario.units = vec![oxide_sim::scenario::UnitSpec {
+            player: 1,
+            kind: UnitKind::Scuttler,
+            x: 10,
+            y: 10,
+        }];
+        scenario.buildings = vec![oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Bastion,
+            x: 11,
+            y: 10,
+        }];
+        let mut live = crate::game::Game::with_viewport(
+            scenario.clone(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .unwrap();
+        let mut playback =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .unwrap();
+        let mut wire = serde_json::to_value(&*live.state).unwrap();
+        let casualty = wire["buildings"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|b| b["kind"] == "bastion")
+            .unwrap();
+        casualty["hp"] = serde_json::json!(1);
+        live.state.0 = serde_json::from_value(wire).unwrap();
+        playback.state.0 = live.state.0.clone();
+        let mut reference = live.state.0.clone();
+        let id = live
+            .state
+            .buildings()
+            .iter()
+            .find(|b| b.kind == BuildingKind::Bastion)
+            .unwrap()
+            .id;
+        for _ in 0..40 {
+            let expected = reference.tick(&[]);
+            let report = live.do_tick();
+            playback.playback_present(&reference, &expected.events, &expected.movement);
+            assert_eq!(live.state.hash(), reference.hash());
+            if report.events.iter().any(|event| matches!(event, oxide_sim::Event::BuildingDestroyed { building, .. } if *building == id)) {
+                assert!(live.state.building(id).is_none());
+                for game in [&live, &playback] {
+                    assert!(game.fx.iter().any(|fx| matches!(fx.kind, EffectKind::Collapse { body, seed, .. } if body.kind == BuildingKind::Bastion && seed == id.0)));
+                    assert!(!game.fx.iter().any(|fx| matches!(fx.kind, EffectKind::Puff { .. })));
+                }
+                live.update_fx(4.6);
+                assert!(!live.fx.iter().any(|fx| matches!(fx.kind, EffectKind::Collapse { .. })));
+                return;
+            }
+        }
+        panic!("the adjacent Scuttler must destroy the damaged Bastion");
+    }
+
+    #[test]
+    fn impact_metadata_is_consumed_in_landing_order() {
+        let mut game = crate::game::Game::with_viewport(
+            oxide_sim::Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .unwrap();
+        game.state.0.tick(&[]);
+        let at = game.state.units()[0].pos;
+        for kind in [
+            oxide_sim::ProjectileKind::Missile,
+            oxide_sim::ProjectileKind::Shell,
+        ] {
+            game.fx_previous.shells.push(oxide_sim::state::Shell {
+                kind,
+                shooter: Target::Unit(UnitId(0)),
+                player: oxide_sim::PlayerId(0),
+                launch: at,
+                impact: at,
+                arrival: 0,
+                damage: 1,
+                targets: oxide_sim::stats::DomainMask::GROUND,
+                splash: None,
+            });
+        }
+        let event = oxide_sim::Event::ShellLanded {
+            player: oxide_sim::PlayerId(0),
+            at,
+            targets: oxide_sim::stats::DomainMask::GROUND,
+            splash: None,
+        };
+        game.spawn_fx(&[event.clone(), event]);
+        let payloads: Vec<_> = game
+            .fx
+            .iter()
+            .filter_map(|fx| {
+                if let EffectKind::Impact { payload, .. } = fx.kind {
+                    Some(payload)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            payloads,
+            vec![
+                oxide_sim::ProjectileKind::Missile,
+                oxide_sim::ProjectileKind::Shell
+            ]
+        );
+        assert!(game.fx_previous.shells.is_empty());
+    }
 
     #[test]
     fn destroyed_upgraded_flak_keeps_its_final_six_round_volley() {

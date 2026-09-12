@@ -39,6 +39,29 @@ camera, selection, interpolation, and other shell state never feed
 `State::tick`. Selection is pruned when entities die or hostiles leave sight;
 timeline-local aim and effects are cleared after jumps.
 
+Destruction retains the visible casualty's faction, seat tint, tier, and heading
+before the tick removes it. Completed buildings break into rigid sections;
+ground casualties separate into hull pieces. Condor, Moth, and Skyhook
+casualties retain their heading and full proportions while carrying momentum and
+descending level into their shadows before exploding on ground contact. Smaller
+aircraft burst at flight height and shed fragments that fall to the floor.
+Parked aircraft use ground destruction. Large airborne casualties follow the
+simulation's stored crash trajectory and 13-tick impact deadline. Their fall
+pauses and changes speed with the match, and pending falls restore after seeks.
+Reduced motion preserves the same contact point and deadline. Ground impact
+effects accompany authoritative crash damage; other destruction remains visual.
+Witnessed crash contacts retain their wreck and sound even when that impact
+removes the last source of sight. Independent-turret casualties retain the live
+chassis heading rather than rotating the wreck toward the weapon's aim. Fragment
+dimensions stay fixed, and settled wreckage draws beneath live entities without
+affecting collision or salvage. Scorches and low dust anchor impacts to the
+floor; air hits use compact flashes without ground dust. Unobserved casualties
+cannot reveal their art, and own casualties remain visible through their
+destruction even when losing that unit removes local vision. Unfinished sites
+retain a generic impact. Pre-tick projectile metadata distinguishes shell and
+missile impacts after the payload has left state. These caches are
+presentation-only and refreshed by live and playback ticks.
+
 ## App and screen ownership
 
 `App` owns resources and state that outlive an individual screen: the live

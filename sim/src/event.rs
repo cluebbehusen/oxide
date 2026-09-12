@@ -62,6 +62,11 @@ pub enum Event {
         /// event is read.
         grounded: bool,
     },
+    /// A destroyed aircraft reached its scheduled impact point.
+    AircraftImpacted {
+        /// Identity and trajectory retained after removal of the aircraft.
+        crash: crate::state::AircraftCrash,
+    },
     /// A machine climbed aboard a transport and left the world's unit
     /// list until it is set down again.
     UnitBoarded {
