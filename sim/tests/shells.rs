@@ -1,4 +1,4 @@
-//! Real artillery: shells lead a path known at fire time, fly unguided,
+//! Real artillery: shells lead current motion at fire time, fly unguided,
 //! and resolve on arrival against whatever stands there. Dodgeable by a
 //! later course change, deadly to straight commitments and the rooted,
 //! loyal to no one once launched. Public API only, like `domains.rs`.
@@ -509,6 +509,14 @@ fn neighbor_shot(
     }
     let mut value = serde_json::to_value(&state).unwrap();
     value["units"][0]["brace_ticks"] = serde_json::json!(oxide_sim::stats::BOMBARD_BRACE_TICKS);
+    // Start at cruise speed to keep the shot on the authored visibility boundary.
+    value["units"][2]["drive_speed"] = serde_json::json!(UnitKind::Harvester.stats().speed);
+    if !air {
+        for index in [1, 3] {
+            value["units"][index]["drive_speed"] =
+                serde_json::json!(UnitKind::Harvester.stats().speed);
+        }
+    }
     state = serde_json::from_value(value).unwrap();
     let mut orders = vec![
         cmd(
@@ -565,6 +573,8 @@ fn neighbor_shot(
         victim.path.is_some(),
         "the fire-time target must still be moving"
     );
+    assert_eq!(victim.drive_speed, victim.kind.stats().speed);
+    assert_eq!(victim.heading, 128);
     assert!(before.can_see(PlayerId(0), victim.tile()));
     assert_eq!(before.can_see(PlayerId(0), neighbor_unit.tile()), !hidden);
     assert!(
@@ -626,7 +636,23 @@ fn advance_fire_leads_the_same_moving_path_without_becoming_an_attack() {
     let mut state = scenario.build().unwrap();
     let target = unit_of_kind(&state, UnitKind::Scuttler);
     let launcher = unit_of_kind(&state, UnitKind::Avalanche);
+    common::face_toward(&mut state, target, TilePos::new(15, 5).center());
     establish_straight_motion(&mut state, target, launcher, TilePos::new(15, 5));
+    for _ in 0..5 {
+        let launcher_tile = state.unit(launcher).unwrap().tile();
+        state.tick(&[cmd(
+            0,
+            Command::Move {
+                units: vec![launcher],
+                goal: launcher_tile,
+                queue: false,
+            },
+        )]);
+    }
+    assert_eq!(
+        state.unit(target).unwrap().drive_speed,
+        UnitKind::Scuttler.stats().speed
+    );
     common::face_target(&mut state, launcher, Target::Unit(target));
     let target_start = state.unit(target).unwrap().pos;
     let goal = TilePos::new(20, 5);

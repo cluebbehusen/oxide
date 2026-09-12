@@ -915,7 +915,7 @@ fn balanced_mirror_plays_a_complete_decisive_match() {
     let mut bots = seat_bots(&scenario).expect("the skirmish has a briefing");
     let mut rejected_commands = Vec::new();
 
-    for _ in 0..30_000 {
+    for _ in 0..50_000 {
         if state.result().is_some() {
             break;
         }

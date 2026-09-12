@@ -1,6 +1,6 @@
 ---
 created: 2026-09-12T09:35:38
-updated: 2026-09-12T10:11:51
+updated: 2026-09-12T14:02:52
 ---
 
 # Movement research closure
@@ -52,6 +52,12 @@ rejected controller research.
 - Connor authorized refreshing the affected fixtures while keeping main’s
   version. Freshly fetched main remains at 73a58fe with version 0.16.0, so the
   assembly uses an explicitly approved same-version bless at 0.16.0.
+- After reviewing the paired match results, Connor approved retaining the three
+  review fixes and increasing the balanced-mirror completion ceiling from 30,000
+  to 50,000 ticks. The local stationarity contracts are correct; the longer
+  match showed continued combat and economic activity rather than a permanent
+  stall. Broader pacing and bot forecasting remain separate work. The existing
+  fixture approval remains at version 0.16.0.
 
 ## Findings
 
@@ -913,6 +919,285 @@ decision are recorded in Decisions.
   gates. Both coverage commands exited successfully. The full run verified the
   refreshed fixtures with blessing disabled.
 
+### 7. Movement integration review follow-up
+
+- Independent review probes found two consumers that still treated a missing
+  path as proof of rest. An arriving leader could finish a neighbor’s order
+  while still coasting, and a braking worker could receive anchored collision
+  priority. Both predicates now require zero motor speed. Regressions include
+  the transition back to ordinary settled/anchored behavior after stopping.
+- The canonical scripted-bot skill retained a command for the renamed Overseer
+  suite. It now uses the current test target; all canonical skill directories
+  were validated.
+- The proposed global travel-forecast surcharge was not included. Full-tick
+  straight Harvester moves of one, three and ten tiles completed their orders at
+  exactly the forecast 8, 24 and 80 ticks; stopping took two more ticks.
+  Motor-only exact-center timings do not establish a general allocation
+  regression. A concrete builder or worker deadline failure is needed before
+  changing those heuristics.
+- The three new regressions failed against the submitted code and passed after
+  the fixes. The existing same-version fixture approval remains in force at
+  0.16.0; the follow-up is a new signed commit and ordinary push, not an
+  amendment or force push.
+- The artillery integration fixtures now distinguish issuing a move from
+  reaching cruise speed. The Advance case accelerates through real ticks before
+  firing. The neighbor-visibility cases seed an already cruising, west-facing
+  group so the shot remains on the authored fog boundary; they assert motor
+  speed and heading as well as the original visibility and splash geometry.
+- The old projectile snapshot assigned maximum speed along the current waypoint
+  and omitted pathless units. A retargeted Scuttler was predicted moving left at
+  about 0.16 tiles/tick while actually braking right at about 0.107. Ground
+  snapshots now use retained motor speed and hull heading without consulting the
+  route. This represents propulsion during acceleration, retargeting and
+  pathless coasting. It remains constant-velocity extrapolation; it does not
+  predict future braking, steering or lateral collision correction. Air
+  estimation is unchanged.
+- The follow-up changed all 66 shipped-map hash rows and all 14
+  scripted-controller rows. Both fixture stamps remain 0.16.0. The two changed
+  PNGs were inspected side by side: the showcase preserves its feature coverage,
+  and the skirmish frame reflects changed unit positions and economic timing.
+  The opening frame is unchanged. The driver fixture refresh passed, including
+  the long-horizon scripted-controller probe.
+- The archived submitted binary finishes the same default balanced mirror at
+  tick 13,196 (loser elimination at 13,195), versus 42,108 with the corrections.
+  The fixed run therefore changes this matchup substantially, not merely a small
+  boundary overshoot. That comparison was disclosed before accepting any longer
+  completion horizon.
+- The unfiltered suite exposed a completion-horizon failure that combined
+  coverage deliberately skips: the balanced mirror had no result at 30,000
+  ticks. The extended diagnostic run reached victory at tick 42,108, with
+  continued production and combat through 30,000 and 40,000, no rejected
+  commands, and final elimination at 42,107. After the controlled investigation
+  in section 8, Connor approved a 50,000-tick completion ceiling with the
+  victory and command-validity assertions retained. The resulting closure is
+  recorded in section 9.
+
+### 8. Isolating the longer match and evaluating travel forecasts
+
+The research below changes only scratch copies and observational harnesses. The
+review fixes remain uncommitted in the assembly worktree. The completion test
+still requires victory within 30,000 ticks; neither its ceiling nor bot travel
+forecasting was changed.
+
+#### Controlled comparison
+
+The scratch workspace copies the current sim and chassis, then places each of
+the three behavior predicates behind a compile-time feature. With features
+disabled it reproduces the submitted match at tick 13,196. With all enabled it
+reproduces the local fixed match at tick 42,108; its state hash at that tick,
+`0x5d45571cdb6e8ce3`, matches playback through the production driver. There are
+no runtime environment reads inside the simulation. Each variant ran the same
+five personality seeds, 0 through 4, on the same built-in Skirmish scenario,
+Standard difficulty and Balanced stance. The ceiling was 60,000 ticks. These are
+a small paired sample, not five independent maps or a broad balance evaluation.
+
+| Enabled fixes              | Seed 0 |  Seed 1 | Seed 2 | Seed 3 |  Seed 4 |
+| -------------------------- | -----: | ------: | -----: | -----: | ------: |
+| None, submitted behavior   | 13,196 |  14,100 | 13,196 | 13,808 |  15,193 |
+| Group arrival only         | 18,744 | >60,000 | 14,168 | 53,075 | >60,000 |
+| Anchoring only             | 46,383 |  10,202 | 21,229 | 10,505 |  10,202 |
+| Projectile prediction only | 13,196 |  14,100 | 13,196 | 13,808 |  15,193 |
+| All fixes                  | 42,108 |  22,004 | 17,293 | 23,574 |  16,692 |
+
+The greater-than entries mean no victory by the ceiling, not proof of permanent
+deadlock. Their snapshots still show economic deliveries, changing rosters and
+combat. All 25 matches issued zero rejected commands. Aiming-only is
+bit-identical to the baseline across all five final states. Those matches fired
+no projectiles, so aiming cannot explain the default mirror change. The combined
+fixes finish all five matches in 13.9–35.1 simulated minutes, with an
+18.3-minute median versus 11.5 minutes before the fixes. Anchoring alone makes
+three of the five matches shorter. The default mirror is therefore a sensitive
+trajectory, not evidence that every unit or task became three times slower. The
+combined sample nevertheless has longer matches and does not establish
+acceptable game pacing or human fun.
+
+#### First divergences and their consequences
+
+- Anchoring first changes state at tick 451, on both mirrored worker groups. A
+  worker has just deposited, cleared its path and retained a motor speed of
+  about 0.0417 tiles/tick. Its adjacent partner is stationary and extracting.
+  The correction removes the moving worker's anchored priority; the two bodies
+  separate with different shares. The first position differences are about
+  0.02–0.04 tiles. Commands, deposits and banks are still equal on that tick.
+- That displacement changes subsequent haul timing. At tick 1,000 the anchoring
+  variant has delivered 210 scrap per seat against 190 in the baseline. The
+  first different command is at tick 912: both bots can train a Sentinel in the
+  variant while the baseline cannot yet afford it. This is an earlier purchase,
+  not an economy freeze.
+- Between ticks 2,000 and 3,000, eight already-existing Sentinels disappear in
+  the anchoring variant and none in the baseline. The different purchases and
+  positioning have already changed the combat sequence. The anchoring-only
+  default ultimately flips the winning team. Subsequent match duration includes
+  production, combat, losses, strategic reassessment and finishing the opponent;
+  it is not a travel-time measurement.
+- Group arrival first diverges at tick 1,814. Sentinels 12–15 continue their
+  allocated rally moves instead of becoming idle against a neighbor whose path
+  has cleared but whose motor is still running. Its standalone default match
+  finishes at 18,744. This change interacts with anchoring rather than adding a
+  fixed number of ticks to the final match.
+
+The original suggestion to simply extend one timeout was premature without this
+isolation. The local predicates satisfy the intended stationary-body contracts,
+but their match-level effect needs a calibration decision. Retain the focused
+behavioral regressions and judge completion over a small fixed batch rather than
+treating one exact match length as proof of motor correctness. No timeout change
+or publication is implied by this recommendation.
+
+#### What the forecasts actually control
+
+The two shared distance-to-time conversions are in
+`bot/utility/economic_value.rs` and `bot/utility/defense.rs`; raid procurement
+and standing-force repair also duplicate the conversion. About a dozen consuming
+modules use these values for worker and infrastructure investment, orphaned
+construction, defensive construction versus reinforcements, Array readiness,
+reconnaissance arrival, support deployment and repairs, and raid preparation
+deadlines. Reconnaissance already adds its own 24-tick allowance. Route costs,
+readiness margins and endpoint meanings therefore need reconciliation before
+adding another universal margin.
+
+Worker `HarvestWork` uses a resource-weighted mean haul cost and a count of
+available work positions. `WorkerService` carries only unit kind and readiness
+delay. Its output is the number of full loads fitting after readiness, using
+gathering time plus two distance/speed legs, capped by finite resource amount
+and available positions. It affects expected marginal return and investment
+selection. It is not the allocator's guaranteed income: `ResourceSnapshot`
+forecasts completed Foundries, Extractors, Reclaimers and Refineries. Worker
+income does not enter those guaranteed streams, and commands still spend current
+banked scrap. The review comment correctly identifies approximate travel times,
+but its suggestion of workers funding impossible purchases needs this
+qualification.
+
+`UnitObs` intentionally exposes tile-level location, without precise position,
+heading, speed or route. The current travel helper takes only kind and scalar
+route cost. Neither input can distinguish a stopped unit facing the destination
+from one braking in the opposite direction, or a straight route from one with
+repeated turns. Own-unit kinematics can be exposed honestly; enemy route intent
+must remain private, with hostile arrival estimates retaining uncertainty.
+
+#### Measurements of actual jobs
+
+The harness uses real commands and `State::tick`, retaining the command tick.
+Move completion is the order becoming Idle, construction completion is a built
+structure, and haul cycles are consecutive credited deposits. The distance-only
+comparison uses the same conversion as the bot, applied to the actual selected
+route. It does not claim to reproduce every regional weighted quote or the
+planner's chosen builder. Initial motor states are explicit fixtures. A passive
+friendly aircraft supplies sight for distant scrap; it does not collide with
+workers. Early exploratory distant-harvest rows rejected for lack of sight were
+excluded and corrected in the final probe.
+
+- A stopped Harvester moving one tile takes 8 ticks when facing the goal, 14
+  when facing 90 degrees away, and 22 when facing away. All three scalar
+  forecasts are 8 ticks. A one-tile Breaker move forecasts 19 ticks but takes 13
+  facing the goal and 42 facing away. A uniform positive surcharge can therefore
+  worsen some already-conservative estimates.
+- Across 72 isolated movement cases, including four chassis, three distances,
+  three headings and stopped/cruising starts, scalar error ranges from 28 ticks
+  early to 8 ticks late.
+- Nine actual Fabricator construction jobs vary distance and initial heading.
+  Forecast completion ranges from 15 ticks early to 1 tick late even when
+  supplied the actual selected route cost. For example, a route costing 104
+  tenths plus construction forecasts 364 ticks; completion is 371 or 379
+  depending on heading. These are measured service jobs, unlike the earlier
+  straight Move-only probes.
+- Lone Harvester haul routes of 3, 6 and 11 tiles forecast cycles of 148, 196
+  and 276 ticks, but repeat at 180, 228 and 308 ticks. Each adds 32 ticks over
+  the distance-only cycle. Ignoring that overhead overstates steady, unsaturated
+  output by approximately 22%, 16% and 12%, respectively. Finite deposits and
+  saturation still cap the bot's actual quote. The discrepancy already exists in
+  the submitted motor, independently of these review fixes.
+- A route around a wall forecasts 144 ticks from its 180-tenths path cost but
+  takes 174. A straight 12-tile control takes its predicted 96 ticks. Turn shape
+  matters beyond total route distance.
+
+#### Shared-motor prototype and implementation scope
+
+A scratch helper clones one unit on an already assigned route and runs the
+existing ground motor until the relevant arrival predicate is met. It advances
+no other actor, bot or combat. After the initial command has selected a route,
+the helper predicts the remaining travel using the current position, heading and
+motor speed; construction adds the actual work duration and phase offset. This
+is a feasibility demonstration for sharing the movement model, not a
+production-ready pre-command bot quote. Its `State`-based interface must be
+replaced by fog-honest geometry and own-unit observations before use by the bot.
+
+The helper matches all 72 isolated moves, all nine construction completions, and
+both route-shape controls exactly. Four-body arrival also matches in this
+fixture; eight- and sixteen-body crowds introduce additional delays up to 27
+ticks, and one body arrives a tick sooner through collision
+correction/settlement. Correct free-flow physics does not predict future
+traffic.
+
+Five batches of 1,000 forecasts for a 12-tile path have a median cost of about
+37.9 microseconds per query on this machine, using the optimized-development sim
+with no concurrent build or match batch. This includes cloning the unit/path and
+stepping the current geometry checks. It is a limited cost probe, not a
+production frame-time benchmark. Hundreds of candidates would add milliseconds;
+reusing route geometry, filtering candidates cheaply, quoting only decisions
+near a deadline, and profiling the actual caller load matter.
+
+Recommended bounded implementation:
+
+1. Define what each consumer needs: entering a goal tile, reaching a work
+   surface, delivering a load, or stopping. Separate nominal travel from
+   uncertainty and authoritative completion.
+2. Extract or expose a pure motor projection shared with movement. Supply
+   precise own-unit kinematics and a projected route; handle newly trained units
+   and unknown initial heading explicitly. Avoid duplicating tuned acceleration
+   and turning rules in bot code.
+3. Route the shared converters and duplicate raid/repair calculations through
+   that model. Keep air estimation and hidden enemy intent separate. Preserve
+   lower-cost geometric estimates for broad candidate ranking.
+4. Model recurring work as gather, outbound travel, deposit and return with the
+   correct terminal conditions and turnaround state. Refresh from actual
+   completed service, and use conservative handling for deadline-sensitive
+   commitments. Congestion cannot receive a guaranteed finite ETA merely from a
+   static route.
+5. Validate short trips, bends, opposite-heading retasks, newly spawned units,
+   complete harvest loops and builder deadlines, then paired bot outcomes and
+   per-think cost. Shared deterministic code and current-knowledge boundaries
+   must hold throughout.
+
+This is a medium refactor, plausibly several hundred lines across roughly a
+dozen consumers plus tests, rather than a new movement scheduler. A rough
+engineering budget is a few focused development days for reliable free-flow
+quotes and integration, followed by separate crowding and gameplay calibration.
+Exact future congestion prediction would be a much larger coordination problem
+and is not recommended as the next step.
+
+The scratch examples compile, format and pass Clippy with warnings denied. The
+measurements and comparison assertions are retained under
+`review-movement-assembly/review-comments/investigation/`, including per-variant
+binaries, traces, results, source and the motor prototype. Production simulation
+source was unchanged during this investigation. The previously reported
+full-workspace timeout remains unresolved, so the follow-up commit and push
+remain pending.
+
+### 9. Approved closure after the investigation
+
+Connor subsequently approved the completion-ceiling change, final validation and
+ordinary follow-up publication. This closes the pending decision and publication
+status recorded at the end of the section 8 investigation. The balanced-mirror
+test now permits 50,000 ticks and still requires a decisive victory and no
+rejected commands. The movement and animation improvements, collision sliding
+and version 0.16.0 are retained.
+
+Forecasting implementation is deferred to
+[Account for turning and motor state in bot travel forecasts](https://linear.app/cluebbehusen/issue/CL-18/account-for-turning-and-motor-state-in-bot-travel-forecasts),
+created with the Oxide Bug template at Low priority in Backlog. It includes the
+actual move, detour, construction and haul measurements, the limits of scalar
+route costs, and the bounded shared-motor approach. No production bot forecast
+changed in this follow-up.
+
+- Final validation passed with fixture blessing disabled: the complete workspace
+  suite, including the formerly failing balanced mirror, formatting, Clippy with
+  warnings denied, rustdoc and Markdown checks. Unit and combined coverage
+  passed at 90.41% and 91.78%; their measured production code was unchanged by
+  the completion-ceiling adjustment. All canonical skill directories passed
+  validation. The signed follow-up contains the three reviewed fixes, focused
+  regressions, artillery fixture setup corrections, approved 0.16.0 fixture
+  refresh and durable findings; scratch research remains outside the commit.
+
 ## Actions
 
 - [x] Reconstruct the original Oxide work, independent Python experiments, and
@@ -931,6 +1216,12 @@ decision are recorded in Decisions.
   - Native acceptance came from the live sandbox with 12 Harvesters, 12
     Sentinels, 8 Breakers, 8 Wardens and six rich-scrap clusters. The screenshot
     and scenario are retained in the assembly artifact directory.
+- [x] Prepare validated fixes for coasting stationarity, projectile motion
+      snapshots and the renamed Overseer workflow for the authorized signed
+      follow-up commit and ordinary push.
+- [x] Isolate the match-duration change by review fix, inspect the first
+      divergence, and measure travel forecasts against complete worker and
+      builder jobs before recommending a forecasting change.
 
 ## Open Questions
 

@@ -501,6 +501,7 @@ fn is_anchored(unit: &crate::state::Unit) -> bool {
     unit.landed
         || unit.kind.stats().turn_rate == 0
             && unit.path.is_none()
+            && unit.drive_speed == Fx::ZERO
             && matches!(
                 unit.order,
                 Order::Harvest { .. } | Order::Attack { .. } | Order::Repair { .. }
@@ -938,6 +939,30 @@ mod tests {
         }
         .build()
         .expect("boundary pair builds")
+    }
+
+    #[test]
+    fn coasting_worker_is_not_anchored_until_its_motor_stops() {
+        let mut state = boundary_pair();
+        let unit = &mut state.units[0];
+        unit.kind = UnitKind::Harvester;
+        unit.heading = 0;
+        unit.order = Order::Harvest {
+            node: TilePos::new(7, 1),
+            anchor: None,
+            retiring: false,
+        };
+        unit.drive_speed = unit.kind.stats().speed;
+        let before = unit.pos;
+        assert!(!is_anchored(unit));
+        ground::advance(unit, &state.map, &state.buildings);
+        assert!(unit.pos.x > before.x);
+        assert!(!is_anchored(unit));
+        for _ in 0..2 {
+            ground::advance(unit, &state.map, &state.buildings);
+        }
+        assert_eq!(unit.drive_speed, Fx::ZERO);
+        assert!(is_anchored(unit));
     }
 
     fn corner_shortcut_pair(

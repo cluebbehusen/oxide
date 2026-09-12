@@ -406,6 +406,9 @@ facing the map center so mirrored placements have mirrored initial turn costs.
 Independent weapon mounts can aim during travel; fixed weapons wait for the
 motor to stop before turning to aim.
 
+A pathless ground unit can still be braking. Group arrival propagation and
+anchored collision priority require its motor speed to be zero.
+
 Paths and destination allocation remain advisory. The ordinary collision
 relaxation still separates bodies laterally after propulsion, with its original
 per-tick budgets and alternating order. No future journey, service timetable or
@@ -450,12 +453,13 @@ and artillery arc.
 
 Hitscan attacks buffer damage for same-tick resolution. Projectile weapons
 launch a serialized `Shell` toward a fixed fire-time aim point. Predictive aim
-may lead a unit's current path before launch, but a shell is unguided after it
-leaves the weapon. A serialized projectile kind preserves missile, bomb, or
-shell identity independently of shooter survival. Deserialization rejects a kind
-inconsistent with a shooter that still exists. On arrival, buildings take only a
-direct hit; eligible enemy units may take splash according to the weapon's
-domain mask.
+samples ground motor speed and heading, including pathless coasting; air units
+retain the current steering-line estimate. The snapshot precedes unit brains and
+does not consult later route turns. A shell is unguided after it leaves the
+weapon. A serialized projectile kind preserves missile, bomb, or shell identity
+independently of shooter survival. Deserialization rejects a kind inconsistent
+with a shooter that still exists. On arrival, buildings take only a direct hit;
+eligible enemy units may take splash according to the weapon's domain mask.
 
 ## Fog, memory, radar, and teams
 
