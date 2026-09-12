@@ -26,6 +26,8 @@ pub struct Playback {
     replay: GameReplay,
     /// The world at the current position.
     pub state: State,
+    /// Motion emitted by the most recently simulated tick.
+    pub last_motion: Vec<oxide_sim::GroundMotion>,
     /// Index into `replay.commands` of the first command not yet fed.
     next_cmd: usize,
     /// Forward checkpoints, ascending by tick.
@@ -69,6 +71,7 @@ impl Playback {
         Ok(Self {
             replay,
             state,
+            last_motion: Vec::new(),
             next_cmd: 0,
             checkpoints: vec![],
             cadence,
@@ -130,6 +133,7 @@ impl Playback {
             let (_, state) =
                 best.unwrap_or_else(|| (0, self.replay.setup.build().expect("validated at load")));
             self.state = state;
+            self.last_motion.clear();
             self.next_cmd = self
                 .replay
                 .commands
@@ -164,6 +168,7 @@ impl Playback {
             let (_, state) =
                 best.unwrap_or_else(|| (0, self.replay.setup.build().expect("validated at load")));
             self.state = state;
+            self.last_motion.clear();
             self.next_cmd = self
                 .replay
                 .commands
@@ -195,7 +200,9 @@ impl Playback {
             self.next_cmd += 1;
         }
         // Raw tick, never a recorder: playback must not re-record.
-        self.state.tick(&commands).events
+        let report = self.state.tick(&commands);
+        self.last_motion = report.movement;
+        report.events
     }
 }
 

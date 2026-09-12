@@ -137,6 +137,7 @@ pub struct Game {
     /// Action-driven authored sprite state. This remembers only transient
     /// output events; clearing it never changes simulation truth.
     pub(crate) animations: crate::presentation_animation::AnimationController,
+    pub(crate) track_motion: HashMap<u32, crate::track_motion::TrackMotion>,
     pub(crate) projectile_releases: projectiles::ProjectileReleases,
     fx_previous: fx::PreviousEffects,
     /// Live effects.
@@ -288,6 +289,7 @@ impl Game {
             aim_buildings: HashMap::new(),
             aim_building_targets: HashMap::new(),
             animations: crate::presentation_animation::AnimationController::default(),
+            track_motion: HashMap::new(),
             projectile_releases: projectiles::ProjectileReleases::default(),
             fx_previous: fx::PreviousEffects::default(),
             fx: Vec::new(),
@@ -478,7 +480,7 @@ impl Game {
         if !self.suppress_presentation {
             self.animations.observe(&report);
             self.spawn_fx(&report.events);
-            self.refresh_facing();
+            self.refresh_facing(&report.movement);
         }
         // Dead units leave the selection — and so do HOSTILES whose
         // ground fog has re-covered: the panel reads live hp from the
@@ -532,14 +534,19 @@ impl Game {
     /// Absorbs one batch of replayed ticks for presentation: the world
     /// the engine produced plus the events it emitted on the way —
     /// shots, deaths, aim, and sound work in playback exactly as live.
-    pub fn playback_present(&mut self, state: &oxide_sim::State, events: &[Event]) {
+    pub fn playback_present(
+        &mut self,
+        state: &oxide_sim::State,
+        events: &[Event],
+        movement: &[oxide_sim::GroundMotion],
+    ) {
         self.remember_previous_tick();
         self.state.0 = state.clone();
         self.projectile_releases.observe(&self.state, events);
         self.animations
             .observe_events(self.state.current_tick(), events);
         self.spawn_fx(events);
-        self.refresh_facing();
+        self.refresh_facing(movement);
         let state = &self.state;
         self.facing
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
@@ -573,6 +580,7 @@ impl Game {
         self.aim_buildings.clear();
         self.aim_building_targets.clear();
         self.animations.reset_transients();
+        self.track_motion.clear();
     }
 
     /// Replaces truth after a seek or replay rebuild and establishes that
@@ -586,14 +594,41 @@ impl Game {
         self.facing.clear();
         // Nothing has moved across a jump, but a heading-first airframe
         // still has a heading to show, parked or flying.
-        self.refresh_facing();
+        self.refresh_facing(&[]);
     }
 
     /// Sprite rotation for this tick: a heading-first airframe faces where
     /// the simulation says it does, parked or flying, and everything else
     /// faces the way it last moved. Live ticks, playback, and seeks all
     /// agree through this one rule.
-    fn refresh_facing(&mut self) {
+    fn refresh_facing(&mut self, movement: &[oxide_sim::GroundMotion]) {
+        self.track_motion
+            .retain(|id, _| self.state.unit(UnitId(*id)).is_some());
+        for unit in self
+            .state
+            .units()
+            .iter()
+            .filter(|unit| crate::render::tracks::supported(unit.kind))
+        {
+            let tick = self.state.current_tick();
+            let heading = f32::from(unit.heading) * std::f32::consts::TAU / 256.0;
+            self.track_motion
+                .entry(unit.id.0)
+                .or_insert_with(|| crate::track_motion::TrackMotion::new(tick, heading))
+                .observe(
+                    tick,
+                    heading,
+                    crate::render::tracks::gauge(
+                        unit.kind,
+                        crate::render::unit_draw_scale(unit.kind),
+                    ),
+                    movement
+                        .binary_search_by_key(&unit.id, |motion| motion.unit)
+                        .ok()
+                        .map_or(Vec2::ZERO, |index| world_vec(movement[index].propulsion)),
+                );
+        }
+
         self.aim_unit_targets
             .retain(|id, _| self.state.unit(UnitId(*id)).is_some());
         self.hull_heading
@@ -736,7 +771,7 @@ impl Game {
         self.drop_presentation();
         self.remember_previous_tick();
         self.facing.clear();
-        self.refresh_facing();
+        self.refresh_facing(&[]);
     }
 
     /// Advances a small number of ticks while retaining presentation
@@ -1511,7 +1546,7 @@ mod tests {
         );
 
         game.facing.clear();
-        game.playback_present(&snapshot, &[]);
+        game.playback_present(&snapshot, &[], &[]);
         assert_eq!(
             game.facing.get(&condor.0).copied(),
             Some(expected),

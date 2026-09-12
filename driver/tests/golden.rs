@@ -138,7 +138,7 @@ const FIGHT_TICKS: u64 = 24;
 
 /// Total ticks. Sized so the worked node lands in the renderer's
 /// depleted tint without mining out.
-const SHOWCASE_TICKS: u64 = 480;
+const SHOWCASE_TICKS: u64 = 540;
 
 /// The crew steps off the node before the picture is taken — eight
 /// harvesters ringing a tile would hide the very thing they mined.

@@ -1240,22 +1240,27 @@ fn a_brain_without_an_authored_aircraft_discovers_an_island_opponent() {
             .is_empty(),
         "the opposing shore starts outside vision"
     );
-    let mut saw_no_route = false;
     let mut saw_scout_flyer = false;
 
     for _ in 0..1_200 {
         let commands = brain.act(&state);
-        let report = state.tick(&commands);
-        saw_no_route |= report.events.iter().any(|event| {
-            matches!(
-                event,
-                oxide_sim::Event::OrderStalled {
-                    player: PlayerId(0),
-                    reason: oxide_sim::StallReason::NoRoute,
-                    ..
-                }
-            )
-        });
+        for command in &commands {
+            if let Command::Move { units, goal, .. }
+            | Command::AttackMove { units, goal, .. }
+            | Command::Advance { units, goal, .. } = &command.command
+                && goal.x > 12
+            {
+                assert!(
+                    units
+                        .iter()
+                        .all(|id| state.unit(*id).is_some_and(
+                            |unit| unit.kind.stats().domain == oxide_sim::stats::Domain::Air
+                        )),
+                    "the public terrain briefing must not send ground probes across the wall: {command:?}",
+                );
+            }
+        }
+        state.tick(&commands);
         saw_scout_flyer |= state.units().iter().any(|unit| {
             unit.player == PlayerId(0) && unit.kind.role() == oxide_sim::stats::Role::Scout
         });
@@ -1267,10 +1272,6 @@ fn a_brain_without_an_authored_aircraft_discovers_an_island_opponent() {
         }
     }
 
-    assert!(
-        !saw_no_route,
-        "the public terrain briefing should avoid a doomed ground probe"
-    );
     assert!(
         saw_scout_flyer,
         "the Airworks must replace the stranded ground scout"

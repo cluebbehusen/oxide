@@ -76,7 +76,7 @@ fn run_until(
     panic!("condition not reached within {max_ticks} ticks");
 }
 
-/// Builds a turret at (3,3), lets an enemy scuttler raid wound it (the
+/// Builds a turret at (3,3), lets an enemy ranged raid wound it (the
 /// builder is an accepted casualty; the turret wins), then trains a
 /// fresh harvester to do the welding. Returns (turret, welder, hp after
 /// the fight).
@@ -106,8 +106,7 @@ fn wounded_turret(
         .find(|b| b.kind == BuildingKind::Turret)
         .unwrap()
         .id;
-    // The raid: the scuttler eats the defenseless builder, gnaws the
-    // turret, and dies to it — leaving scars.
+    // The ranged raiders damage the turret before it defeats them.
     state.tick(&[cmd(
         1,
         Command::AttackMove {
@@ -161,8 +160,8 @@ fn wounded_turret(
 fn harvesters_weld_wounds_shut_for_a_price() {
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 4, 2),
-        unit(1, UnitKind::Scuttler, 12, 6),
-        unit(1, UnitKind::Scuttler, 12, 7),
+        unit(1, UnitKind::Sentinel, 12, 6),
+        unit(1, UnitKind::Sentinel, 12, 7),
     ])
     .build()
     .unwrap();
@@ -204,8 +203,8 @@ fn a_rejected_welders_prepaid_coin_comes_back() {
     // vanished, and the crew paid two scrap for one hp.
     let mut scenario = arena(vec![
         unit(0, UnitKind::Harvester, 4, 2),
-        unit(1, UnitKind::Scuttler, 12, 6),
-        unit(1, UnitKind::Scuttler, 12, 7),
+        unit(1, UnitKind::Sentinel, 12, 6),
+        unit(1, UnitKind::Sentinel, 12, 7),
     ]);
     // Room for the turret, three trained torches, and the weld.
     scenario.players[0].scrap = 500;
@@ -376,8 +375,8 @@ fn a_free_stepping_welder_still_consumes_the_room() {
 fn an_empty_bank_stalls_the_torch() {
     let mut scenario = arena(vec![
         unit(0, UnitKind::Harvester, 4, 2),
-        unit(1, UnitKind::Scuttler, 12, 6),
-        unit(1, UnitKind::Scuttler, 12, 7),
+        unit(1, UnitKind::Sentinel, 12, 6),
+        unit(1, UnitKind::Sentinel, 12, 7),
     ]);
     // Turret (100) + welder (50) leave two coins for the torch — not
     // nearly enough to close the raid's scars.
@@ -540,8 +539,8 @@ fn reissued_repairs_still_pay_for_the_welding() {
     // buildings heal for free.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 4, 2),
-        unit(1, UnitKind::Scuttler, 12, 6),
-        unit(1, UnitKind::Scuttler, 12, 7),
+        unit(1, UnitKind::Sentinel, 12, 6),
+        unit(1, UnitKind::Sentinel, 12, 7),
     ])
     .build()
     .unwrap();
@@ -587,8 +586,8 @@ fn the_torch_bills_its_first_scrap_the_tick_it_lights() {
     // small wounds would heal free forever.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 4, 2),
-        unit(1, UnitKind::Scuttler, 12, 6),
-        unit(1, UnitKind::Scuttler, 12, 7),
+        unit(1, UnitKind::Sentinel, 12, 6),
+        unit(1, UnitKind::Sentinel, 12, 7),
     ])
     .build()
     .unwrap();
@@ -625,8 +624,8 @@ fn the_last_coin_prepays_its_full_scrap_of_welding() {
     // one scrap — derived here with the sim's own billing formula.
     let mut scenario = arena(vec![
         unit(0, UnitKind::Harvester, 4, 2),
-        unit(1, UnitKind::Scuttler, 12, 6),
-        unit(1, UnitKind::Scuttler, 12, 7),
+        unit(1, UnitKind::Sentinel, 12, 6),
+        unit(1, UnitKind::Sentinel, 12, 7),
         // Keep recovery income out of this isolated welding-price premise.
         unit(0, UnitKind::Harvester, 14, 1),
     ]);
@@ -688,8 +687,8 @@ fn a_queued_repair_waits_its_turn_then_welds() {
     // the welder finishes its walk first, then turns to the wound.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 3, 2),
-        unit(1, UnitKind::Scuttler, 12, 6),
-        unit(1, UnitKind::Scuttler, 12, 7),
+        unit(1, UnitKind::Sentinel, 12, 6),
+        unit(1, UnitKind::Sentinel, 12, 7),
     ])
     .build()
     .unwrap();

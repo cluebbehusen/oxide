@@ -462,3 +462,12 @@ clock in a headless session.
 | GPU assets and rendering           | `shell/src/assets.rs`, `shell/src/render.rs`                               | asset-manifest tests in `shell/src/assets.rs`, `shell/tests/presentation_animation.rs`, `driver/tests/native_animation_capture.rs` |
 | CPU schematic rendering            | `kit/src/render.rs`                                                        | `driver/tests/golden.rs`                                                                                                           |
 | Audio mix and soundtrack           | `shell/src/audio_mix.rs`, `shell/src/soundtrack.rs`                        | module unit tests                                                                                                                  |
+
+## Continuous ground tracks
+
+Sentinel, Warden, Lancer, Harvester, Avalanche and Breaker retain their authored
+hulls while exposed tread shoes scroll continuously. Each belt integrates signed
+motor travel and differential hull rotation, so pivots counter-rotate the belts
+and collision sliding does not count as driving. Motion reports reach both live
+and replay presentation; seeks reset odometry and interpolation. Reduced motion
+holds the shoes still. This presentation state never enters the simulation.

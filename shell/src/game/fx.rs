@@ -1299,7 +1299,7 @@ mod tests {
                 let expected_body = UnitBody::capture(&live, live.state.unit(UnitId(0)).unwrap());
                 let expected = reference.tick(&[]);
                 let report = live.do_tick();
-                playback.playback_present(&reference, &expected.events);
+                playback.playback_present(&reference, &expected.events, &expected.movement);
                 assert_eq!(live.state.hash(), reference.hash());
                 if report.events.iter().any(|event| {
                     matches!(
@@ -1538,7 +1538,7 @@ mod tests {
         for _ in 0..40 {
             let expected = reference.tick(&[]);
             let report = live.do_tick();
-            playback.playback_present(&reference, &expected.events);
+            playback.playback_present(&reference, &expected.events, &expected.movement);
             assert_eq!(live.state.hash(), reference.hash());
             if report.events.iter().any(|event| matches!(event, oxide_sim::Event::BuildingDestroyed { building, .. } if *building == id)) {
                 assert!(live.state.building(id).is_none());
@@ -1639,7 +1639,7 @@ mod tests {
                 queue: false,
             },
         }]);
-        game.playback_present(&state, &report.events);
+        game.playback_present(&state, &report.events, &report.movement);
         assert!(game.state.building(BuildingId(2)).is_none());
         assert!(report.events.iter().any(|event| matches!(
             event,
