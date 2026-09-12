@@ -254,25 +254,11 @@ impl<'a> RouteProjection<'a> {
         if !in_bounds(self.obs, from) || !self.open(to) || (!escape && !self.open(from)) {
             return None;
         }
-        let transform = |tile| {
-            self.command_orientation
-                .map_or(tile, |orientation| orientation.tile(tile))
-        };
-        let path = chassis::path::astar(
-            self.obs.map_width,
-            self.obs.map_height,
-            transform(from),
-            transform(to),
-            |tile| {
-                let tile = transform(tile);
-                self.domain_open_memo(tile) && (!self.require_explored || self.obs.explored(tile))
-            },
-            crate::stats::PATH_EXPANSION_CAP,
-        )?;
+        let path = self.command_route(from, to)?;
         let mut outside = !escape || self.open(from);
         let mut previous = from;
         let mut cost = 0_u32;
-        for tile in path.into_iter().map(transform) {
+        for tile in path {
             if self.open(tile) {
                 outside = true;
             } else if outside {
@@ -288,6 +274,29 @@ impl<'a> RouteProjection<'a> {
             previous = tile;
         }
         Some(cost)
+    }
+
+    /// Ordinary path in the caller's coordinate frame, without a danger overlay.
+    pub(super) fn command_route(&self, from: TilePos, to: TilePos) -> Option<Vec<TilePos>> {
+        if !in_bounds(self.obs, from) || !self.domain_open_memo(to) {
+            return None;
+        }
+        let transform = |tile| {
+            self.command_orientation
+                .map_or(tile, |orientation| orientation.tile(tile))
+        };
+        let path = chassis::path::astar(
+            self.obs.map_width,
+            self.obs.map_height,
+            transform(from),
+            transform(to),
+            |tile| {
+                let tile = transform(tile);
+                self.domain_open_memo(tile) && (!self.require_explored || self.obs.explored(tile))
+            },
+            crate::stats::PATH_EXPANSION_CAP,
+        )?;
+        Some(path.into_iter().map(transform).collect())
     }
 
     /// Conservative exact approach for a not-yet-produced group. Both ordinary

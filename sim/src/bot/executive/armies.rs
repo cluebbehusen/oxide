@@ -1,6 +1,8 @@
 //! Army lifecycle, marching, contact, and strength assessment.
 
 use super::*;
+use crate::stats::Domain;
+use chassis::fx::Fx;
 use core::cmp::Reverse;
 
 const PULLBACK_NUM: u32 = 35;
@@ -281,7 +283,26 @@ impl Executive {
                             )
                     })
                 });
-            let in_contact = unit_contact || static_contact;
+            let siege_contact = player_facing
+                && army.target.is_some_and(|target| {
+                    obs.enemy_buildings.iter().any(|building| {
+                        building.seen && building.hp > 0 && building.anchor.chebyshev(target) <= 2
+                    }) && members.iter().any(|unit| {
+                        is_artillery(unit)
+                            && unit.kind.stats().weapons.iter().any(|weapon| {
+                                let distance = unit.tile.center().dist_sq(target.center());
+                                weapon.targets.covers(Domain::Ground)
+                                    && distance <= weapon.range * weapon.range
+                                    && distance >= weapon.minimum_range * weapon.minimum_range
+                                    && !chassis::path::line_blocked(
+                                        unit.tile.center(),
+                                        target.center(),
+                                        |tile| !obs.known_peaks.contains(&tile),
+                                    )
+                            })
+                    })
+                });
+            let in_contact = unit_contact || static_contact || siege_contact;
 
             // Rotate the badly wounded out, but only between fights.
             // Mid-engagement a wounded machine still deals full damage,
@@ -505,7 +526,15 @@ impl Executive {
                             army.focus = None;
                             army.progress = None;
                             if let Some(target) = army.target {
-                                march_with_roster(me, obs, army, target, &mut out, roster);
+                                march_with_roster(
+                                    me,
+                                    obs,
+                                    army,
+                                    target,
+                                    &mut out,
+                                    roster,
+                                    player_facing,
+                                );
                             }
                         }
                     } else if mine * u64::from(WITHDRAW_MARGIN_DEN)
@@ -914,23 +943,95 @@ pub(super) fn march(
     army: &Army,
     target: TilePos,
     out: &mut Vec<PlayerCommand>,
+    player_facing: bool,
 ) {
     let roster = UnitRoster::new(&obs.my_units);
-    march_with_roster(me, obs, army, target, out, &roster);
+    march_with_roster(me, obs, army, target, out, &roster, player_facing);
 }
 
 fn march_with_roster<'a>(
     me: PlayerId,
-    _obs: &'a Observation,
+    obs: &'a Observation,
     army: &Army,
     target: TilePos,
     out: &mut Vec<PlayerCommand>,
     roster: &impl UnitLookup<'a>,
+    player_facing: bool,
 ) {
     let (arty, escorts): (Vec<UnitId>, Vec<UnitId>) = army
         .members
         .iter()
         .partition(|id| roster.get(**id).is_some_and(is_artillery));
+    if player_facing
+        && !arty.is_empty()
+        && obs
+            .enemy_buildings
+            .iter()
+            .any(|building| building.hp > 0 && building.anchor.chebyshev(target) <= 2)
+    {
+        let (dx, dy) = (army.staging.x - target.x, army.staging.y - target.y);
+        let distance = dx.abs().max(dy.abs());
+        let mut routes = crate::bot::routing::RouteProjection::new(obs, Domain::Ground);
+        let stand = (1..=distance.min(20)).rev().find_map(|pull| {
+            let tile = TilePos::new(
+                target.x + dx * pull / distance,
+                target.y + dy * pull / distance,
+            );
+            let in_range = arty.iter().all(|id| {
+                roster.get(*id).is_some_and(|unit| {
+                    unit.kind.stats().weapons.iter().any(|weapon| {
+                        let distance = tile.center().dist_sq(target.center());
+                        let reach = (weapon.range - Fx::from_num(2)).max(Fx::from_num(0));
+                        weapon.targets.covers(Domain::Ground)
+                            && distance <= reach * reach
+                            && distance >= weapon.minimum_range * weapon.minimum_range
+                    })
+                })
+            });
+            (in_range
+                && !obs.enemy_buildings.iter().any(|building| {
+                    super::threats::building_threatens(obs, building, tile, Domain::Ground)
+                })
+                && army.members.iter().all(|id| {
+                    roster
+                        .get(*id)
+                        .is_some_and(|unit| routes.unit_reaches(unit, tile))
+                }))
+            .then_some(tile)
+        });
+        let goal = if artillery_has_escort_quorum_with_roster(army, roster) {
+            stand.unwrap_or(army.staging)
+        } else {
+            army.staging
+        };
+        if !escorts.is_empty() {
+            out.push(PlayerCommand {
+                player: me,
+                command: Command::Move {
+                    units: escorts,
+                    goal,
+                    queue: false,
+                },
+            });
+        }
+        out.push(PlayerCommand {
+            player: me,
+            command: if goal == army.staging {
+                Command::Move {
+                    units: arty,
+                    goal,
+                    queue: false,
+                }
+            } else {
+                Command::AttackMove {
+                    units: arty,
+                    goal,
+                    queue: false,
+                }
+            },
+        });
+        return;
+    }
     if !escorts.is_empty() {
         out.push(PlayerCommand {
             player: me,
@@ -1391,6 +1492,86 @@ mod tests {
         ];
         obs.my_queues = vec![Vec::new(); obs.my_buildings.len()];
         obs
+    }
+
+    #[test]
+    fn siege_keeps_its_screen_with_the_guns_and_holds_while_firing() {
+        let staging = TilePos::new(4, 10);
+        let target = TilePos::new(26, 10);
+        let units = vec![
+            unit(
+                1,
+                PlayerId(0),
+                UnitKind::Bombard,
+                staging,
+                UnitKind::Bombard.stats().max_hp,
+                true,
+            ),
+            unit(
+                2,
+                PlayerId(0),
+                UnitKind::Sentinel,
+                staging.offset(1, 0),
+                UnitKind::Sentinel.stats().max_hp,
+                true,
+            ),
+            unit(
+                3,
+                PlayerId(0),
+                UnitKind::Sentinel,
+                staging.offset(0, 1),
+                UnitKind::Sentinel.stats().max_hp,
+                true,
+            ),
+        ];
+        let mut obs = observation(120, (40, 24), units, Vec::new());
+        obs.enemy_buildings
+            .push(building(90, PlayerId(1), BuildingKind::Turret, target));
+        let mut body = army(
+            1,
+            vec![UnitId(1), UnitId(2), UnitId(3)],
+            ArmyState::Pushing,
+            staging,
+        );
+        body.target = Some(target);
+        let mut out = Vec::new();
+        march(obs.me, &obs, &body, target, &mut out, true);
+        let stand = out
+            .iter()
+            .find_map(|command| match command.command {
+                Command::Move { goal, .. } => Some(goal),
+                _ => None,
+            })
+            .unwrap();
+        assert_ne!(stand, target);
+        assert_ne!(
+            stand, staging,
+            "a Bombard can find a reachable position outside the gun"
+        );
+        assert!(out.iter().any(
+            |command| matches!(command.command, Command::AttackMove { goal, .. } if goal == stand)
+        ));
+        for unit in &mut obs.my_units {
+            unit.tile = stand;
+        }
+        let mut executive = Executive::new();
+        executive.armies.push(body);
+        for tick in [132, 744] {
+            obs.tick = tick;
+            executive.maintain_player_facing(obs.me, &obs, staging);
+            assert_eq!(executive.armies.len(), 1);
+            assert_eq!(executive.armies[0].state, ArmyState::Engaging);
+        }
+        let mut legacy = Vec::new();
+        march(
+            obs.me,
+            &obs,
+            &executive.armies[0],
+            target,
+            &mut legacy,
+            false,
+        );
+        assert!(legacy.iter().any(|command| matches!(command.command, Command::AttackMove { goal, ref units, .. } if goal == target && units.contains(&UnitId(2)))));
     }
 
     #[test]

@@ -266,7 +266,7 @@ impl Executive {
                                 obs.tick,
                                 vanguard_centroid(&body.members, obs, centroid_frame),
                             ));
-                            march(me, obs, body, mission.goal, &mut out);
+                            march(me, obs, body, mission.goal, &mut out, defer_unseen_builds);
                         }
                     }
                 }
@@ -363,7 +363,7 @@ impl Executive {
                             obs.tick,
                             vanguard_centroid(&body.members, obs, centroid_frame),
                         ));
-                        march(me, obs, body, mission.goal, &mut out);
+                        march(me, obs, body, mission.goal, &mut out, defer_unseen_builds);
                     }
                     claimed.extend(body.members.iter().copied());
                     self.watch_ground_mission(obs, *army, mission);
@@ -475,7 +475,7 @@ impl Executive {
                                 obs.tick,
                                 vanguard_centroid(&a.members, obs, centroid_frame),
                             ));
-                            march(me, obs, a, *target, &mut out);
+                            march(me, obs, a, *target, &mut out, defer_unseen_builds);
                         }
                     }
                 }

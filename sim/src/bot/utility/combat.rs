@@ -1504,6 +1504,45 @@ mod tests {
     use crate::state::Faction;
 
     #[test]
+    fn pressure_counts_a_corridor_gun_outside_the_objective_radius() {
+        let (mut obs, armies, policy, _) = mission_fixture();
+        let goal = TilePos::new(54, 16);
+        obs.enemy_buildings.clear();
+        obs.my_units
+            .iter_mut()
+            .for_each(|unit| unit.tile = TilePos::new(8, 16));
+        let gun = BuildingObs {
+            id: BuildingId(99),
+            player: PlayerId(1),
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(28, 18),
+            hp: BuildingKind::Turret.tier_stats(2).max_hp,
+            built: true,
+            seen: true,
+            tier: 2,
+        };
+        obs.enemy_buildings.push(gun.clone());
+        let risk = policy
+            .approach_defense_strength(&obs, &armies[0], goal, player_mode(None))
+            .unwrap();
+        assert_eq!(
+            risk,
+            objective_building_strength(&gun, player_mode(None), obs.tick)
+        );
+        obs.enemy_buildings[0].anchor = TilePos::new(28, 29);
+        assert_eq!(
+            policy.approach_defense_strength(&obs, &armies[0], goal, player_mode(None)),
+            Some(0)
+        );
+        obs.enemy_buildings[0].anchor = gun.anchor;
+        obs.enemy_buildings[0].kind = BuildingKind::FlakTurret;
+        assert_eq!(
+            policy.approach_defense_strength(&obs, &armies[0], goal, player_mode(None)),
+            Some(0)
+        );
+    }
+
+    #[test]
     fn remembered_strength_counts_the_full_salvo() {
         let stats = UnitKind::Moth.stats();
         let weapon = &stats.weapons[0];
