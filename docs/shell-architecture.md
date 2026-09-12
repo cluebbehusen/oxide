@@ -50,13 +50,16 @@ simulation's stored crash trajectory and 13-tick impact deadline. Their fall
 pauses and changes speed with the match, and pending falls restore after seeks.
 Reduced motion preserves the same contact point and deadline. Ground impact
 effects accompany authoritative crash damage; other destruction remains visual.
-Fragment dimensions stay fixed, and settled wreckage draws beneath live entities
-without affecting collision or salvage. Scorches and low dust anchor impacts to
-the floor; air hits use compact flashes without ground dust. Unobserved
-casualties cannot reveal their art, and own casualties remain visible through
-their destruction even when losing that unit removes local vision. Unfinished
-sites retain a generic impact. Pre-tick projectile metadata distinguishes shell
-and missile impacts after the payload has left state. These caches are
+Witnessed crash contacts retain their wreck and sound even when that impact
+removes the last source of sight. Independent-turret casualties retain the live
+chassis heading rather than rotating the wreck toward the weapon's aim. Fragment
+dimensions stay fixed, and settled wreckage draws beneath live entities without
+affecting collision or salvage. Scorches and low dust anchor impacts to the
+floor; air hits use compact flashes without ground dust. Unobserved casualties
+cannot reveal their art, and own casualties remain visible through their
+destruction even when losing that unit removes local vision. Unfinished sites
+retain a generic impact. Pre-tick projectile metadata distinguishes shell and
+missile impacts after the payload has left state. These caches are
 presentation-only and refreshed by live and playback ticks.
 
 ## App and screen ownership

@@ -301,8 +301,16 @@ const HULL_PIECES: [Rect; 4] = [
     Rect::new(0.32, 0.52, 0.36, 0.48),
 ];
 
-fn draw_unit_wreck(game: &Game, sprites: &Sprites, at: Vec2, body: UnitBody, seed: u32, age: f32) {
-    if age < 0.0 || !casualty_visible(game, at, body) || !floor_contact(game, at) {
+fn draw_unit_wreck(
+    game: &Game,
+    sprites: &Sprites,
+    at: Vec2,
+    body: UnitBody,
+    seed: u32,
+    age: f32,
+    witnessed: bool,
+) {
+    if age < 0.0 || !(witnessed || casualty_visible(game, at, body)) || !floor_contact(game, at) {
         return;
     }
     let zoom = game.camera.zoom;
@@ -639,13 +647,14 @@ pub(super) fn draw_ground_effects(game: &Game, sprites: &Sprites) {
                 } else {
                     0.0
                 };
-                draw_unit_wreck(game, sprites, at, body, seed, effect.age - delay);
+                draw_unit_wreck(game, sprites, at, body, seed, effect.age - delay, false);
             }
             EffectKind::Falling {
                 at,
                 body,
                 seed,
                 crash,
+                impact_witnessed,
             } => {
                 if !large_airframe(body.kind) {
                     if !reduced_motion() {
@@ -673,6 +682,7 @@ pub(super) fn draw_ground_effects(game: &Game, sprites: &Sprites) {
                     },
                     seed,
                     age - delay,
+                    impact_witnessed,
                 );
             }
             EffectKind::Collapse { at, body, seed }

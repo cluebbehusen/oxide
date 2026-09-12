@@ -159,8 +159,8 @@ Phase order is game behavior. `State::tick` currently performs:
     salvage.
 12. Apply wreck decay on its global cadence.
 13. Rebuild team-shared visibility and reconcile fog memory.
-14. Determine victory or draw from surviving, non-resigned teams once pending
-    crashes resolve.
+14. Determine victory or draw from surviving, non-resigned teams and discard any
+    remaining pending crashes when the match ends.
 
 Shots and hp work are buffered while actors decide against stable positions, hp,
 and live entity tables. Orders, paths, harvesting, and billing may still change
@@ -185,8 +185,9 @@ At contact, a two-tile blast damages every hostile ground unit and nearby
 building footprint: 50 damage for Condor, 40 for Moth and Skyhook. Allies and
 airborne units are immune; impacts over pits do no damage. Targets can move into
 or out of the blast before arrival. Pending crashes resolve in death-tick and
-unit-id order and survive state serialization. Victory waits for them, allowing
-a last crash to destroy the remaining Foundry and force a draw.
+unit-id order and survive state serialization. Victory is immediate once the
+Foundry condition is met; any crashes still pending are discarded without
+damage.
 
 ## Commands and unit programs
 

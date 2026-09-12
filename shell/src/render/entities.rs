@@ -1577,6 +1577,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 body,
                 seed,
                 crash,
+                ..
             } => {
                 super::destruction::draw_falling(
                     game,

@@ -31,7 +31,7 @@
 //! 9. **Vision** — every player's fog-of-war visible set is rebuilt from
 //!    their surviving entities (explored only accumulates).
 //! 10. **Victory** — a player with no Foundry (or who conceded) is out;
-//!     last standing wins after pending aircraft crashes resolve.
+//!     last standing wins immediately; remaining aircraft crashes are discarded.
 //!
 //! After [`GameResult`] is set the world freezes: ticks still count up (so
 //! timelines stay aligned) but nothing moves and commands are ignored.
@@ -394,9 +394,6 @@ fn victory(state: &mut State, events: &mut Vec<Event>) {
             state.players[index].eliminated_at = Some(state.tick);
         }
     }
-    if !state.aircraft_crashes.is_empty() {
-        return;
-    }
     let mut teams: Vec<u8> = state.players.iter().map(|p| p.team).collect();
     teams.sort_unstable();
     teams.dedup();
@@ -415,6 +412,7 @@ fn victory(state: &mut State, events: &mut Vec<Event>) {
         [team] => GameResult::Victory { team: *team },
         _ => return, // multiple teams standing — play on
     };
+    state.aircraft_crashes.clear();
     state.result = Some(result);
     events.push(Event::GameOver { result });
 }

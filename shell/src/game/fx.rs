@@ -29,14 +29,14 @@ pub(crate) struct UnitBody {
 impl UnitBody {
     fn capture(game: &Game, unit: &oxide_sim::state::Unit) -> Self {
         let kind = unit.kind;
-        let rotation = if kind.stats().turn_rate > 0
+        let rotation = if kind.has_ground_turret() || super::rotor_hull_turn_rate(kind).is_some() {
+            game.draw_hull_heading(unit.id, 1.0)
+        } else if kind.stats().turn_rate > 0
             || kind.ground_turn_rate() > 0
             || kind.cruise_turn_rate() > 0
             || kind.turret_turn_rate() > 0
         {
             game.draw_heading(unit.id, unit.weapon_heading(), 1.0)
-        } else if super::rotor_hull_turn_rate(kind).is_some() {
-            game.draw_hull_heading(unit.id, 1.0)
         } else {
             game.aim_units
                 .get(&unit.id.0)
@@ -66,11 +66,26 @@ pub(super) struct PreviousEffects {
     buildings: Vec<(oxide_sim::BuildingId, CollapseBody)>,
     shells: Vec<oxide_sim::state::Shell>,
     units: Vec<(oxide_sim::UnitId, UnitBody)>,
+    visible_crash_contacts: Vec<oxide_sim::UnitId>,
 }
 
 impl PreviousEffects {
     pub(super) fn capture(game: &Game) -> Self {
         Self {
+            visible_crash_contacts: game
+                .state
+                .aircraft_crashes()
+                .iter()
+                .filter(|crash| {
+                    crash.arrival == game.state.current_tick()
+                        && (crash.player == game.human
+                            || game.all_seeing()
+                            || game
+                                .my_vision()
+                                .visible(chassis::grid::TilePos::containing(crash.impact)))
+                })
+                .map(|crash| crash.unit)
+                .collect(),
             buildings: game
                 .state
                 .buildings()
@@ -474,6 +489,7 @@ pub enum EffectKind {
         body: UnitBody,
         seed: u32,
         crash: Option<oxide_sim::state::AircraftCrash>,
+        impact_witnessed: bool,
     },
     /// A retained structural silhouette collapsing into low wreckage.
     Collapse {
@@ -565,15 +581,25 @@ fn event_target_owner(
 impl Game {
     pub(super) fn restore_pending_crashes(&mut self) {
         for crash in self.state.aircraft_crashes().to_vec() {
-            self.restore_crash_effect(crash);
+            self.restore_crash_effect(crash, false);
         }
     }
 
-    fn restore_crash_effect(&mut self, crash: oxide_sim::state::AircraftCrash) {
-        if self.fx.iter().any(|fx| matches!(fx.kind, EffectKind::Falling { crash: Some(existing), .. } if existing.unit == crash.unit)) {
-            return;
+    fn restore_crash_effect(&mut self, crash: oxide_sim::state::AircraftCrash, witnessed: bool) {
+        for effect in &mut self.fx {
+            if let EffectKind::Falling {
+                crash: Some(existing),
+                impact_witnessed,
+                ..
+            } = &mut effect.kind
+                && existing.unit == crash.unit
+            {
+                *impact_witnessed |= witnessed;
+                return;
+            }
         }
-        let visible = self.all_seeing()
+        let visible = witnessed
+            || self.all_seeing()
             || crash.player == self.human
             || self
                 .my_vision()
@@ -589,6 +615,7 @@ impl Game {
                 at: world_vec(crash.launch),
                 seed: crash.unit.0,
                 crash: Some(crash),
+                impact_witnessed: witnessed,
                 body: UnitBody {
                     kind: crash.kind,
                     player: crash.player,
@@ -884,6 +911,7 @@ impl Game {
                                 at: world_vec(*pos),
                                 body,
                                 seed: unit.0,
+                                impact_witnessed: false,
                                 crash: self
                                     .state
                                     .aircraft_crashes()
@@ -902,8 +930,15 @@ impl Game {
                     });
                 }
                 Event::AircraftImpacted { crash } => {
-                    self.restore_crash_effect(*crash);
-                    if (crash.player == self.human || sees(self, crash.impact))
+                    let witnessed = crash.player == self.human
+                        || sees(self, crash.impact)
+                        || self.all_seeing()
+                        || self
+                            .fx_previous
+                            .visible_crash_contacts
+                            .contains(&crash.unit);
+                    self.restore_crash_effect(*crash, witnessed);
+                    if witnessed
                         && self
                             .state
                             .map()
@@ -1297,6 +1332,92 @@ mod tests {
                 }
             }
             assert!(died, "{kind:?} must die in the staged engagement");
+        }
+    }
+
+    #[test]
+    fn wreck_capture_keeps_the_hull_bearing_when_the_turret_aims_away() {
+        for kind in [
+            UnitKind::Sentinel,
+            UnitKind::Warden,
+            UnitKind::Lancer,
+            UnitKind::Buzzard,
+        ] {
+            let mut scenario = oxide_sim::Scenario::skirmish();
+            scenario.units = vec![oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind,
+                x: 8,
+                y: 8,
+            }];
+            let mut game = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
+            game.hull_heading.insert(0, (0.4, 0.7));
+            let unit = game.state.unit(UnitId(0)).unwrap();
+            assert!((game.draw_heading(unit.id, unit.weapon_heading(), 1.0) - 0.7).abs() > 0.1);
+            assert!(
+                (UnitBody::capture(&game, unit).rotation - 0.7).abs() < 1e-6,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hostile_crash_contact_retains_feedback_when_it_kills_the_only_observer() {
+        for witnessed in [true, false] {
+            let mut scenario = oxide_sim::Scenario::skirmish();
+            scenario.map = vec![".".repeat(48); 32];
+            scenario.map[2].replace_range(2..3, "1");
+            scenario.map[2].replace_range(42..43, "2");
+            for player in &mut scenario.players {
+                player.bot_config = None;
+            }
+            scenario.units = vec![
+                oxide_sim::scenario::UnitSpec {
+                    player: 1,
+                    kind: UnitKind::Condor,
+                    x: 20,
+                    y: 25,
+                },
+                oxide_sim::scenario::UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Harvester,
+                    x: if witnessed { 20 } else { 4 },
+                    y: 25,
+                },
+            ];
+            let mut game = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
+            let at = chassis::grid::TilePos::new(20, 25).center();
+            let crash = oxide_sim::state::AircraftCrash {
+                unit: UnitId(0),
+                player: oxide_sim::PlayerId(1),
+                kind: UnitKind::Condor,
+                heading: 0,
+                launch: at,
+                impact: at,
+                started: 0,
+                arrival: 13,
+            };
+            let mut wire = serde_json::to_value(&*game.state).unwrap();
+            wire["units"].as_array_mut().unwrap().remove(0);
+            wire["units"][0]["hp"] = serde_json::json!(40);
+            wire["tick"] = serde_json::json!(13);
+            wire["aircraft_crashes"] = serde_json::json!([crash]);
+            game.replace_state_after_jump(&serde_json::from_value(wire).unwrap());
+            let tile = chassis::grid::TilePos::containing(at);
+            assert_eq!(game.my_vision().visible(tile), witnessed);
+            game.present_ticks(1);
+            assert!(!game.my_vision().visible(tile));
+            assert_eq!(game.state.unit(UnitId(1)).is_none(), witnessed);
+            assert_eq!(
+                game.sounds_pending
+                    .iter()
+                    .any(|(sound, pos)| *sound == SoundKind::BuildingBoom
+                        && *pos == Some(world_vec(at))),
+                witnessed
+            );
+            assert_eq!(game.fx.iter().any(|effect| matches!(effect.kind,
+                EffectKind::Falling { crash: Some(saved), impact_witnessed: true, .. } if saved.unit == crash.unit
+            )), witnessed);
         }
     }
 

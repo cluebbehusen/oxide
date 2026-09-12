@@ -229,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_crash_can_change_the_last_foundry_result() {
+    fn pending_crash_does_not_delay_the_last_foundry_result() {
         let mut state = arena();
         let aircraft = casualty(&mut state, UnitKind::Condor, Vec2Fx::ZERO);
         let impact = state.buildings[1].center();
@@ -242,12 +242,15 @@ mod tests {
         state.buildings[0].hp = 0;
         state.buildings[1].hp = UnitKind::Condor.crash_profile().unwrap().damage;
         state.tick(&[]);
-        assert!(state.result.is_none());
+        assert_eq!(state.result, Some(crate::GameResult::Victory { team: 1 }));
+        assert!(state.aircraft_crashes.is_empty());
+        let hp = state.buildings[0].hp;
         for _ in 0..AIRCRAFT_CRASH_TICKS {
             state.tick(&[]);
+            state.validate_invariants().unwrap();
         }
-        assert_eq!(state.result, Some(crate::GameResult::Draw));
-        assert!(state.aircraft_crashes.is_empty());
+        assert_eq!(state.result, Some(crate::GameResult::Victory { team: 1 }));
+        assert_eq!(state.buildings[0].hp, hp);
     }
 
     #[test]
