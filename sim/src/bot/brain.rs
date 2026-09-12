@@ -7612,6 +7612,11 @@ mod tests {
         assert_eq!(initial_started_at, admitted_at);
         let oriented = orientation.observe(&raw);
         let saved = brain.policy.validated_foundry_saving(&oriented, true);
+        let saved_site = brain
+            .policy
+            .foundry_builder_lease(&oriented)
+            .expect("the saved expansion retains its builder and site")
+            .anchor();
         assert!(saved > state.player(PlayerId(0)).scrap);
         assert!(brain.policy.operation_precedes_foundry_saving(admitted_at));
         assert_eq!(
@@ -7885,13 +7890,21 @@ mod tests {
                 "an issued connected assignment must not re-enter allocation"
             );
         }
-        let continued_raw = Observation::fog_honest(&visible_state, PlayerId(0));
-        assert_eq!(
-            brain
-                .policy
-                .validated_foundry_saving(&orientation.observe(&continued_raw), true),
-            saved
-        );
+        let continued_raw =
+            orientation.observe(&Observation::fog_honest(&visible_state, PlayerId(0)));
+        let retained = brain.policy.validated_foundry_saving(&continued_raw, true);
+        if retained == 0 {
+            assert!(
+                continued_raw
+                    .my_buildings
+                    .iter()
+                    .any(|building| building.kind == BuildingKind::Foundry
+                        && building.anchor == saved_site),
+                "the original expansion may release its reserve only after paying for its exact foundation"
+            );
+        } else {
+            assert_eq!(retained, saved);
+        }
     }
 
     #[test]

@@ -890,6 +890,7 @@ pub struct UtilityPolicy {
     /// fund while current scrap accumulates to its admission threshold.
     foundry_saving: Option<construction::FoundrySavingCommitment>,
     economic_saving: Option<EconomicInvestment>,
+    pub(in crate::bot) standing_saving: Option<super::standing_force::StandingForceCommitment>,
     economic_foundation: Option<EconomicInvestment>,
     economic_cancelled_founder: Option<(UnitId, BuildingKind, TilePos)>,
     economic_retry_at: u64,

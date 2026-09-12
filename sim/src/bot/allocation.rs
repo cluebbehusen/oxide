@@ -320,7 +320,7 @@ pub(crate) enum ExecutionSafety {
 ///
 /// Each domain translates its own evidence into these named bands. Raw Foundry
 /// yield and target hit points therefore never masquerade as comparable units.
-/// Personality may decide only when every semantic-band histogram ties; those
+/// Personality may decide only when the complete semantic investment cases tie; those
 /// deliberately coarse ties are the allocator's explicit near-tie boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProposalCase {
@@ -1276,6 +1276,8 @@ pub(crate) enum ObligationKey {
     SavedFoundry { anchor: TilePos },
     /// One exact accepted economic investment awaiting current funding.
     SavedEconomy(crate::bot::utility::EconomicInvestmentKey),
+    /// One exact unpaid military purchase with a retained producer schedule.
+    StandingForceSaving(StandingForceKey),
     /// A funded persistent voluntary repair program.
     Support(crate::bot::utility::SupportKey),
     /// One retained information assignment.
@@ -1330,12 +1332,16 @@ impl ObligationKey {
             Self::Support(_) => (9, 0, 0, 0),
             Self::Reconnaissance(_) => (10, 0, 0, 0),
             Self::SupportDeployment(_) => (11, 0, 0, 0),
+            Self::StandingForceSaving(_) => (12, 0, 0, 0),
         }
     }
 }
 
 impl Ord for ObligationKey {
     fn cmp(&self, other: &Self) -> Ordering {
+        if let (Self::StandingForceSaving(left), Self::StandingForceSaving(right)) = (self, other) {
+            return left.cmp(right);
+        }
         if let (Self::SupportDeployment(left), Self::SupportDeployment(right)) = (self, other) {
             return left.cmp(right);
         }
@@ -1473,15 +1479,15 @@ pub(crate) enum ProposalRejection {
 /// First deterministic rank component that favored one feasible portfolio.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutrankingBasis {
-    /// The selected portfolio had the stronger urgency histogram.
+    /// The selected portfolio had the stronger first differing urgency case.
     Urgency,
-    /// The selected portfolio had the stronger evidence-confidence histogram.
+    /// The selected portfolio had the stronger first differing evidence-confidence case.
     Confidence,
-    /// The selected portfolio had the stronger strategic-value histogram.
+    /// The selected portfolio had the stronger strategic-value case or additional compatible work.
     StrategicValue,
     /// The selected portfolio could affect the match sooner.
     TimeToImpact,
-    /// The selected portfolio had the stronger execution-safety histogram.
+    /// The selected portfolio had the stronger first differing execution-safety case.
     Safety,
     /// Bounded experience broke an effective-return semantic tie.
     Experience,
@@ -1624,6 +1630,22 @@ impl<Payload> AllocationResult<Payload> {
 
         let owner = ClaimOwner::Proposal(proposal_key);
         let mut extended = self.selected_state.clone();
+        for job in &mut extended.producer_jobs {
+            if let Some(slot) = self
+                .producer_schedule
+                .iter()
+                .find(|slot| slot.owner == job.owner && slot.request_ordinal == job.ordinal)
+            {
+                job.claim = ProducerJobClaim::fixed(
+                    slot.producer,
+                    slot.kind,
+                    slot.enqueued_at,
+                    slot.starts_at,
+                    slot.ready_at,
+                    slot.ready_before,
+                );
+            }
+        }
         let resolved = extended.try_apply_with_priority(
             capacity,
             owner,
@@ -2184,13 +2206,9 @@ fn proposal_funding_priority<Payload>(
     }
 }
 
-type BandHistogram = [u8; 3];
+type ProposalRank = (u8, u8, u8, u8, u8);
 pub(super) type PortfolioRank = (
-    BandHistogram,
-    BandHistogram,
-    BandHistogram,
-    BandHistogram,
-    BandHistogram,
+    Vec<ProposalRank>,
     i64,
     u128,
     Reverse<usize>,
@@ -2207,25 +2225,35 @@ pub(super) fn accepted_portfolio_rank<Payload>(
 }
 
 fn outranking_basis(winner: &PortfolioRank, loser: &PortfolioRank) -> Option<OutrankingBasis> {
-    if winner.0 != loser.0 {
-        Some(OutrankingBasis::Urgency)
-    } else if winner.1 != loser.1 {
-        Some(OutrankingBasis::Confidence)
-    } else if winner.2 != loser.2 {
+    for (winner, loser) in winner.0.iter().zip(&loser.0) {
+        let basis = if winner.0 != loser.0 {
+            Some(OutrankingBasis::Urgency)
+        } else if winner.1 != loser.1 {
+            Some(OutrankingBasis::Confidence)
+        } else if winner.2 != loser.2 {
+            Some(OutrankingBasis::StrategicValue)
+        } else if winner.3 != loser.3 {
+            Some(OutrankingBasis::TimeToImpact)
+        } else if winner.4 != loser.4 {
+            Some(OutrankingBasis::Safety)
+        } else {
+            None
+        };
+        if basis.is_some() {
+            return basis;
+        }
+    }
+    if winner.0.len() != loser.0.len() {
         Some(OutrankingBasis::StrategicValue)
-    } else if winner.3 != loser.3 {
-        Some(OutrankingBasis::TimeToImpact)
-    } else if winner.4 != loser.4 {
-        Some(OutrankingBasis::Safety)
-    } else if winner.5 != loser.5 {
+    } else if winner.1 != loser.1 {
         Some(OutrankingBasis::Experience)
-    } else if winner.6 != loser.6 {
+    } else if winner.2 != loser.2 {
         Some(OutrankingBasis::Personality)
-    } else if winner.7 != loser.7 {
+    } else if winner.3 != loser.3 {
         Some(OutrankingBasis::DomainPreference)
-    } else if winner.8 != loser.8 {
+    } else if winner.4 != loser.4 {
         Some(OutrankingBasis::LowerCapital)
-    } else if winner.9 != loser.9 {
+    } else if winner.5 != loser.5 {
         Some(OutrankingBasis::StructuralKey)
     } else {
         None
@@ -2237,67 +2265,39 @@ fn portfolio_rank<Payload>(
     proposals: &[InvestmentProposal<Payload>],
     personality: AllocationPersonality,
 ) -> PortfolioRank {
-    let mut urgency = [0_u8; 3];
-    let mut confidence = [0_u8; 3];
-    let mut value = [0_u8; 3];
-    let mut time_to_impact = [0_u8; 3];
-    let mut safety = [0_u8; 3];
-    let mut personality_weight = 0_u128;
+    let mut cases = Vec::with_capacity(selected.len());
     let mut experience = 0_i64;
-    let mut domain_preference = 0_usize;
+    let mut preference = 0_usize;
+    let mut weight = 0_u128;
     let mut capital = 0_u128;
-    let mut keys = Vec::new();
+    let mut keys = Vec::with_capacity(selected.len());
     for &index in selected {
         let proposal = &proposals[index];
         let case = proposal.case();
-        add_band(&mut urgency, urgency_index(case.urgency));
-        add_band(&mut confidence, confidence_index(case.confidence));
-        add_band(&mut value, value_index(proposal.effective_value()));
+        cases.push((
+            case.urgency as u8,
+            case.confidence as u8,
+            proposal.effective_value() as u8,
+            case.time_to_impact as u8,
+            case.safety as u8,
+        ));
         experience += i64::from(proposal.experience_remainder());
-        add_band(
-            &mut time_to_impact,
-            time_to_impact_index(case.time_to_impact),
-        );
-        add_band(&mut safety, safety_index(case.safety));
-        personality_weight =
-            personality_weight.saturating_add(proposal.personality_weight(personality));
-        domain_preference = domain_preference.saturating_add(proposal.domain_preference());
+        weight = weight.saturating_add(proposal.personality_weight(personality));
+        preference = preference.saturating_add(proposal.domain_preference());
         capital = capital.saturating_add(proposal.claims().claimed_capital());
         keys.push(proposal.key());
     }
+    // Compare complete cases before rewarding additional compatible work.
+    cases.sort_unstable_by(|left, right| right.cmp(left));
     keys.sort_unstable();
     (
-        urgency,
-        confidence,
-        value,
-        time_to_impact,
-        safety,
+        cases,
         experience,
-        personality_weight,
-        Reverse(domain_preference),
+        weight,
+        Reverse(preference),
         Reverse(capital),
         Reverse(keys),
     )
-}
-
-fn add_band(histogram: &mut BandHistogram, index: usize) {
-    histogram[index] = histogram[index].saturating_add(1);
-}
-
-const fn urgency_index(urgency: Urgency) -> usize {
-    match urgency {
-        Urgency::Pressing => 0,
-        Urgency::Timely => 1,
-        Urgency::Developmental => 2,
-    }
-}
-
-const fn confidence_index(confidence: Confidence) -> usize {
-    match confidence {
-        Confidence::Current => 0,
-        Confidence::Supported => 1,
-        Confidence::Prior => 2,
-    }
 }
 
 const fn value_index(value: StrategicValue) -> usize {
@@ -2305,22 +2305,6 @@ const fn value_index(value: StrategicValue) -> usize {
         StrategicValue::Decisive => 0,
         StrategicValue::Material => 1,
         StrategicValue::Incremental => 2,
-    }
-}
-
-const fn time_to_impact_index(time_to_impact: TimeToImpact) -> usize {
-    match time_to_impact {
-        TimeToImpact::Immediate => 0,
-        TimeToImpact::Near => 1,
-        TimeToImpact::Patient => 2,
-    }
-}
-
-const fn safety_index(safety: ExecutionSafety) -> usize {
-    match safety {
-        ExecutionSafety::Secure => 0,
-        ExecutionSafety::Managed => 1,
-        ExecutionSafety::Speculative => 2,
     }
 }
 
@@ -2376,7 +2360,9 @@ impl FundingPriority {
             tier,
             accepted_at,
             order: match key {
-                ObligationKey::SavedFoundry { .. } | ObligationKey::SavedEconomy(_) => 1,
+                ObligationKey::SavedFoundry { .. }
+                | ObligationKey::SavedEconomy(_)
+                | ObligationKey::StandingForceSaving(_) => 1,
                 ObligationKey::EmergencyDefense { .. }
                 | ObligationKey::OpeningCore { .. }
                 | ObligationKey::PaidConstruction(_)
@@ -4643,6 +4629,53 @@ mod tests {
     }
 
     #[test]
+    fn complete_investment_case_beats_multiple_weaker_cases_in_the_same_urgency_band() {
+        let material = ordinary_case();
+        let incremental = ProposalCase {
+            value: StrategicValue::Incremental,
+            ..material
+        };
+        let proposals = vec![
+            InvestmentProposal::fresh(
+                ProposalKey::StandingForce(StandingForceKey::fixture(UnitKind::Warden)),
+                material,
+                ClaimBundle::default(),
+                (),
+            ),
+            InvestmentProposal::fresh(
+                ProposalKey::FoundryExpansion(FoundryExpansionKey {
+                    anchor: TilePos::new(1, 1),
+                }),
+                incremental,
+                ClaimBundle::default(),
+                (),
+            ),
+            InvestmentProposal::fresh(
+                ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
+                    objective: BuildingId(2),
+                    anchor: TilePos::new(2, 2),
+                }),
+                incremental,
+                ClaimBundle::default(),
+                (),
+            ),
+        ];
+        let personality = AllocationPersonality::default();
+        let useful = portfolio_rank(&[0], &proposals, personality);
+        let fragmented = portfolio_rank(&[1, 2], &proposals, personality);
+        assert!(useful > fragmented);
+        assert_eq!(
+            outranking_basis(&useful, &fragmented),
+            Some(OutrankingBasis::StrategicValue)
+        );
+        assert!(portfolio_rank(&[0, 1], &proposals, personality) > useful);
+        assert_eq!(
+            portfolio_rank(&[1, 0], &proposals, personality),
+            portfolio_rank(&[0, 1], &proposals, personality)
+        );
+    }
+
+    #[test]
     fn two_domains_examine_all_four_exact_portfolios() {
         let result = allocate(
             &capacity(100, 0, vec![], vec![]),
@@ -4687,68 +4720,33 @@ mod tests {
 
     #[test]
     fn allocation_matches_an_independent_grouped_alternative_oracle() {
-        #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Clone)]
         struct OracleRank {
-            urgency: [u8; 3],
-            confidence: [u8; 3],
-            value: [u8; 3],
-            time_to_impact: [u8; 3],
-            safety: [u8; 3],
+            cases: Vec<(u8, u8, u8, u8, u8)>,
             personality: u128,
             domain_preference: usize,
             capital: u128,
             keys: Vec<ProposalKey>,
         }
-
         let add_case = |rank: &mut OracleRank, case: ProposalCase| {
-            let urgency = match case.urgency {
-                Urgency::Pressing => 0,
-                Urgency::Timely => 1,
-                Urgency::Developmental => 2,
-            };
-            let confidence = match case.confidence {
-                Confidence::Current => 0,
-                Confidence::Supported => 1,
-                Confidence::Prior => 2,
-            };
-            let value = match case.value {
-                StrategicValue::Decisive => 0,
-                StrategicValue::Material => 1,
-                StrategicValue::Incremental => 2,
-            };
-            let time_to_impact = match case.time_to_impact {
-                TimeToImpact::Immediate => 0,
-                TimeToImpact::Near => 1,
-                TimeToImpact::Patient => 2,
-            };
-            let safety = match case.safety {
-                ExecutionSafety::Secure => 0,
-                ExecutionSafety::Managed => 1,
-                ExecutionSafety::Speculative => 2,
-            };
-            rank.urgency[urgency] += 1;
-            rank.confidence[confidence] += 1;
-            rank.value[value] += 1;
-            rank.time_to_impact[time_to_impact] += 1;
-            rank.safety[safety] += 1;
+            rank.cases.push((
+                case.urgency as u8,
+                case.confidence as u8,
+                case.value as u8,
+                case.time_to_impact as u8,
+                case.safety as u8,
+            ));
+            rank.cases.sort_unstable_by(|left, right| right.cmp(left));
         };
         let better = |left: &OracleRank, right: &OracleRank| {
             (
-                left.urgency,
-                left.confidence,
-                left.value,
-                left.time_to_impact,
-                left.safety,
+                &left.cases,
                 left.personality,
                 Reverse(left.domain_preference),
                 Reverse(left.capital),
                 Reverse(&left.keys),
             ) > (
-                right.urgency,
-                right.confidence,
-                right.value,
-                right.time_to_impact,
-                right.safety,
+                &right.cases,
                 right.personality,
                 Reverse(right.domain_preference),
                 Reverse(right.capital),
@@ -4852,11 +4850,7 @@ mod tests {
                                                 continue;
                                             }
                                             let mut rank = OracleRank {
-                                                urgency: [0; 3],
-                                                confidence: [0; 3],
-                                                value: [0; 3],
-                                                time_to_impact: [0; 3],
-                                                safety: [0; 3],
+                                                cases: Vec::new(),
                                                 personality: 0,
                                                 domain_preference: 0,
                                                 capital,

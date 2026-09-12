@@ -266,17 +266,37 @@ pub(crate) fn standing_force_investment_proposal(
 ) -> Result<DomainInvestmentProposal, ClaimBundleError> {
     let personality_preference = u16::from(proposal.personality_emphasis());
     let claims = if let Some((through, current_scrap, forecast_scrap)) = proposal.accumulation() {
-        ClaimBundle::new(
-            current_scrap,
-            vec![ForecastClaim {
-                through,
-                amount: forecast_scrap,
-            }],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        )?
+        if proposal.reason() == crate::bot::standing_force::StandingForceReason::WoundedSupport {
+            ClaimBundle::new(
+                current_scrap,
+                vec![ForecastClaim {
+                    through,
+                    amount: forecast_scrap,
+                }],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )?
+        } else {
+            ClaimBundle::new(
+                0,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![ProducerJobClaim::flexible(
+                    proposal.key_kind(),
+                    proposal.observed_at(),
+                    through.saturating_add(
+                        proposal
+                            .ready_before()
+                            .saturating_sub(proposal.observed_at()),
+                    ),
+                    proposal.eligible_producers().to_vec(),
+                )],
+            )?
+        }
     } else {
         let job = ProducerJobClaim::immediate(
             proposal.key_kind(),
@@ -1101,7 +1121,7 @@ mod tests {
     }
 
     #[test]
-    fn standing_force_adapter_makes_provider_wait_compete_as_capital_not_a_command() {
+    fn standing_force_adapter_schedules_provider_wait_without_forecast_commands() {
         let original = StandingForceProposal::fixture(StandingForceFixture {
             observed_at: NOW,
             ready_before: DEADLINE,
@@ -1122,21 +1142,12 @@ mod tests {
         let proposal = standing_force_investment_proposal(original.clone())
             .expect("a bounded wait is valid deferrable capital");
 
-        assert!(proposal.claims().producer_jobs().is_empty());
-        assert_eq!(
-            proposal.claims().current_scrap(),
-            UnitKind::Sentinel.stats().cost
-        );
-        assert_eq!(
-            proposal.claims().forecast_scrap(),
-            &[ForecastClaim {
-                through: DEADLINE,
-                amount: UnitKind::Warden
-                    .stats()
-                    .cost
-                    .saturating_sub(UnitKind::Sentinel.stats().cost),
-            }]
-        );
+        assert_eq!(proposal.claims().current_scrap(), 0);
+        assert!(proposal.claims().forecast_scrap().is_empty());
+        let job = &proposal.claims().producer_jobs()[0];
+        assert_eq!(job.kind(), UnitKind::Warden);
+        assert_eq!(job.eligible_producers(), &[BuildingId(3)]);
+        assert_eq!(job.ready_before(), DEADLINE + DEADLINE - NOW);
         assert_eq!(proposal.claims().deferrable_capital(), None);
         assert!(matches!(
             proposal.payload(),

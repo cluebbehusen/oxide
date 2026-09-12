@@ -509,6 +509,7 @@ impl<'a> AllocationSession<'a> {
         }
         let mut claims = self.snapshot_claims();
         let mut obligations = self.collect_legacy_obligations(&claims);
+        self.prepare_standing_saving(&claims, &mut obligations);
         if obligations.invalid_active_connected {
             self.participants
                 .strategy
@@ -676,6 +677,7 @@ impl<'a> AllocationSession<'a> {
         let prospective_carrier_floor =
             self.prospective_carrier_floor(&claims, obligations.coordinator_failure.is_none());
         self.reconcile_unfundable_reconnaissance(&claims, &mut obligations);
+        self.reconcile_standing_saving(&mut obligations);
         let (fresh_support, fresh_support_construction) =
             self.prepare_support(&claims, &mut obligations);
         let fresh_support_relief = self.prepare_support_relief(&claims);
@@ -1385,6 +1387,75 @@ impl<'a> AllocationSession<'a> {
                 ),
             ),
         );
+    }
+
+    fn prepare_standing_saving(
+        &mut self,
+        claims: &ClaimSnapshot,
+        obligations: &mut ObligationPreparation,
+    ) {
+        let Some(saving) = self.participants.policy.standing_saving.as_ref() else {
+            return;
+        };
+        if !claims.opening_core.ready {
+            self.participants.policy.standing_saving = None;
+            return;
+        }
+        let targets = self.standing_force_projection_targets();
+        let (_, demands) = derive_standing_force_with_demand(
+            self.context.observation,
+            self.context.intelligence,
+            self.context.profile,
+            self.context.tuning,
+            &obligations.resources,
+            StandingForceContext::new(&claims.strategic_core_exclusions, &[]).with_ground_routing(
+                StandingGroundTarget::footprint(
+                    self.context.home,
+                    BuildingKind::Foundry.base_stats().size,
+                ),
+                Some(self.context.public_map),
+                &targets,
+                Some(self.context.orientation),
+            ),
+        );
+        if !saving.still_useful(
+            self.context.observation,
+            &demands,
+            self.context.public_map,
+            self.context.orientation,
+        ) {
+            self.participants.policy.standing_saving = None;
+            return;
+        }
+        obligations.obligations.push(saving.obligation());
+        self.reconcile_standing_saving(obligations);
+    }
+
+    fn reconcile_standing_saving(&mut self, obligations: &mut ObligationPreparation) {
+        let Some(saving) = self.participants.policy.standing_saving.as_ref() else {
+            return;
+        };
+        let deadline = obligation_horizon(&obligations.obligations, saving.job.ready_before);
+        let feasible = CrossDomainAllocation::new(
+            &obligations.resources,
+            deadline,
+            self.context.dials.cadence,
+        )
+        .ok()
+        .is_some_and(|mut allocation| {
+            for obligation in obligations.obligations.iter().cloned() {
+                allocation.import(obligation);
+            }
+            allocation
+                .resolve(AllocationPersonality::default(), None)
+                .is_ok()
+        });
+        if !feasible {
+            let key = saving.proposal.key();
+            obligations.obligations.retain(|obligation| !matches!(obligation.owner(),
+                ClaimOwner::Obligation { key: ObligationKey::StandingForceSaving(found), .. } if found == key));
+            self.participants.policy.standing_saving = None;
+        }
     }
 
     fn prepare_emergency_defense(
@@ -2616,7 +2687,13 @@ impl<'a> AllocationSession<'a> {
     ) -> (Vec<StandingForceProposal>, Vec<CapabilityDemand>) {
         if !claims.opening_core.ready
             || obligations.coordinator_failure.is_some()
-            || self.participants.policy.economic_saving().is_some()
+            || (self.participants.policy.economic_saving().is_some()
+                && !self
+                    .context
+                    .observation
+                    .my_buildings
+                    .iter()
+                    .any(|building| building.kind == BuildingKind::Fabricator && building.built))
         {
             return (Vec::new(), Vec::new());
         }
@@ -2657,6 +2734,13 @@ impl<'a> AllocationSession<'a> {
             &obligations.resources,
             context,
         );
+        if let Some(saving) = &self.participants.policy.standing_saving {
+            proposals.retain(|proposal| {
+                proposal.accumulation().is_none()
+                    && (proposal.reason() != saving.proposal.reason()
+                        || proposal.key().service != saving.proposal.key().service)
+            });
+        }
         demands.extend_from_slice(self.participants.policy.reconnaissance.capability_demands());
         if let Some(request) = derivation.raid.as_ref().filter(|request| {
             request
@@ -2995,6 +3079,9 @@ impl<'a> AllocationSession<'a> {
         if let Some(saving) = self.participants.policy.economic_saving() {
             horizon = horizon.max(saving.deadline);
         }
+        if let Some(saving) = &self.participants.policy.standing_saving {
+            horizon = horizon.max(saving.job.ready_before);
+        }
         if let Some(active) = active_connected {
             horizon = horizon.max(active.deadline());
         }
@@ -3019,7 +3106,7 @@ impl<'a> AllocationSession<'a> {
             horizon = horizon.max(proposal.deadline);
         }
         fresh.standing_force.for_each(|proposal| {
-            horizon = horizon.max(proposal.ready_before());
+            horizon = horizon.max(proposal.reservation_deadline());
         });
         horizon
     }
@@ -3457,6 +3544,12 @@ impl<'a> AllocationSession<'a> {
             })
             .collect();
         effects.producer_lane_reservations = settlement.producer_lane_reservations().clone();
+        if self.participants.policy.standing_saving.as_ref().is_some_and(|saving|
+            producer_schedule.iter().any(|job| job.enqueued_at == self.context.observation.tick
+                && matches!(job.owner, ClaimOwner::Obligation { key: ObligationKey::StandingForceSaving(key), .. }
+                    if key == saving.proposal.key()))) {
+            self.participants.policy.standing_saving = None;
+        }
 
         if let Some(saved) = self.participants.policy.economic_saving().cloned() {
             let current = saved.current_capital;
@@ -3579,18 +3672,32 @@ impl<'a> AllocationSession<'a> {
             *allocation_ok = false;
         }
         if let Some(standing_force) = payloads.take_standing_force() {
+            if *allocation_ok
+                && standing_force.accumulation().is_some()
+                && let Some(job) = producer_schedule.iter().find(|job| {
+                    job.owner
+                        == ClaimOwner::Proposal(ProposalKey::StandingForce(standing_force.key()))
+                        && job.enqueued_at > self.context.observation.tick
+                })
+            {
+                self.participants.policy.standing_saving =
+                    Some(crate::bot::standing_force::StandingForceCommitment {
+                        proposal: standing_force.clone(),
+                        job: *job,
+                    });
+            }
             let scheduled = producer_schedule.iter().any(|job| {
                 job.owner == ClaimOwner::Proposal(ProposalKey::StandingForce(standing_force.key()))
                     && job.enqueued_at == self.context.observation.tick
                     && job.kind == standing_force.key_kind()
             });
-            debug_assert_eq!(
-                scheduled,
-                standing_force.accumulation().is_none()
-                    && standing_force
-                        .raid
-                        .as_ref()
-                        .is_none_or(|raid| raid.missing > 0)
+            debug_assert!(
+                standing_force.accumulation().is_some()
+                    || scheduled
+                        == standing_force
+                            .raid
+                            .as_ref()
+                            .is_none_or(|raid| raid.missing > 0)
             );
             if *allocation_ok && let Some(request) = standing_force.raid {
                 let count = producer_schedule
@@ -5920,6 +6027,110 @@ mod tests {
             StrategicDecision::default(),
             None,
         )
+    }
+
+    #[test]
+    fn military_saving_keeps_its_paid_time_and_releases_after_purchase() {
+        let mut obs = connected_observation(120, 110);
+        obs.my_units
+            .retain(|unit| unit.kind != UnitKind::Sentinel || unit.id.0 <= 8);
+        for id in 101..105 {
+            obs.my_units
+                .push(owned_unit(id, UnitKind::Harvester, TilePos::new(5, 14)));
+        }
+        for id in 20..30 {
+            let mut income = observed_building(
+                id,
+                0,
+                BuildingKind::Reclaimer,
+                TilePos::new(12 + (id - 20) as i32, 2),
+            );
+            income.tier = 2;
+            income.hp = income.kind.tier_stats(2).max_hp;
+            obs.my_buildings.push(income);
+            obs.my_queues.push(Vec::new());
+            obs.my_queue_progress.push(0);
+        }
+        let mut policy = UtilityPolicy::new();
+        let mut trace = AllocationTrace::default();
+        let first = run_connected_session_with_team_decision_and_trace(
+            &obs,
+            &mut policy,
+            &mut None,
+            StrategicDecision::default(),
+            Some(&mut trace),
+        );
+        assert!(first.allocation_ok);
+        let saving = policy.standing_saving.clone().unwrap_or_else(|| {
+            panic!("useful higher-tier waiting must survive settlement: {trace:#?}")
+        });
+        assert!(saving.job.enqueued_at > obs.tick);
+        assert!(!first.allocated_producer_intents.iter().any(
+            |intent| matches!(intent, Intent::TrainAt { kind, .. } if *kind == saving.job.kind)
+        ));
+        let original = obs.clone();
+        obs.tick += 12;
+        obs.scrap = 1000;
+        let second = run_connected_session(&obs, &mut policy, &mut None);
+        assert!(second.allocation_ok);
+        assert_eq!(policy.standing_saving.as_ref().unwrap().job, saving.job);
+        assert!(!second.allocated_producer_intents.iter().any(
+            |intent| matches!(intent, Intent::TrainAt { kind, .. } if *kind == saving.job.kind)
+        ));
+        obs.tick = saving.job.enqueued_at;
+        let purchased = run_connected_session(&obs, &mut policy, &mut None);
+        assert!(purchased.allocation_ok);
+        assert!(
+            purchased
+                .allocated_producer_intents
+                .contains(&Intent::TrainAt {
+                    building: saving.job.producer,
+                    kind: saving.job.kind
+                })
+        );
+        assert!(policy.standing_saving.is_none());
+
+        for loss in [
+            "core",
+            "producer",
+            "income",
+            "objective",
+            "emergency",
+            "missed purchase",
+        ] {
+            let mut invalid = original.clone();
+            invalid.tick += 12;
+            match loss {
+                "core" => invalid.my_units.clear(),
+                "producer" => invalid
+                    .my_buildings
+                    .retain(|building| building.id != saving.job.producer),
+                "income" => invalid
+                    .my_buildings
+                    .retain(|building| building.kind != BuildingKind::Reclaimer),
+                "objective" => invalid.enemy_buildings.clear(),
+                "emergency" => {
+                    let mut enemy = owned_unit(999, UnitKind::Breaker, TilePos::new(7, 10));
+                    enemy.player = PlayerId(1);
+                    invalid.enemy_units.push(enemy);
+                }
+                "missed purchase" => invalid.tick = saving.job.enqueued_at + 12,
+                _ => unreachable!(),
+            }
+            invalid.my_queues = vec![Vec::new(); invalid.my_buildings.len()];
+            invalid.my_queue_progress = vec![0; invalid.my_buildings.len()];
+            let mut policy = UtilityPolicy::new();
+            policy.standing_saving = Some(saving.clone());
+            let result = run_connected_session(&invalid, &mut policy, &mut None);
+            assert!(result.allocation_ok, "{loss}");
+            assert!(
+                policy
+                    .standing_saving
+                    .as_ref()
+                    .is_none_or(|next| next.job != saving.job),
+                "{loss} must release the old unpaid purchase"
+            );
+        }
     }
 
     #[test]
@@ -9232,7 +9443,7 @@ mod tests {
                     kind: UnitKind::Lancer,
                     ..
                 }
-            ) && proposal.case.urgency == crate::bot::trace::UrgencyTrace::Pressing
+            ) && proposal.case.urgency == crate::bot::trace::UrgencyTrace::Timely
         }));
         assert_eq!(
             trace
@@ -9362,10 +9573,7 @@ mod tests {
                 )
             })
             .expect("the selected Connected context accepts the replacement demand");
-        assert_eq!(
-            lancer.case.urgency,
-            crate::bot::trace::UrgencyTrace::Pressing
-        );
+        assert_eq!(lancer.case.urgency, crate::bot::trace::UrgencyTrace::Timely);
     }
 
     #[test]

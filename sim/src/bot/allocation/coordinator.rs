@@ -52,6 +52,66 @@ impl From<crate::bot::resources::PlanningProjectionError> for CoordinatorInputEr
     }
 }
 
+fn pin_standing_waits(
+    capacity: &AllocationCapacity,
+    obligations: &[ImportedObligation],
+    proposals: &mut Vec<DomainInvestmentProposal>,
+) {
+    if obligations
+        .iter()
+        .any(|obligation| !obligation.claims.producer_jobs().is_empty())
+    {
+        proposals.retain(|proposal| {
+            !matches!(proposal.payload(), super::DomainPayload::StandingForce(standing)
+            if standing.accumulation().is_some())
+        });
+    }
+    for proposal in proposals {
+        if !matches!(proposal.payload(), super::DomainPayload::StandingForce(standing)
+            if standing.accumulation().is_some())
+        {
+            continue;
+        }
+        let Ok(Some(result)) = allocate_requiring(
+            capacity,
+            obligations
+                .iter()
+                .filter(|obligation| obligation.claims.producer_jobs().is_empty())
+                .cloned()
+                .collect(),
+            vec![proposal.clone()],
+            AllocationPersonality::default(),
+            proposal.key(),
+            &[],
+        ) else {
+            if let super::DomainPayload::StandingForce(standing) = proposal.payload() {
+                proposal.claims.producer_jobs = vec![ProducerJobClaim::immediate(
+                    standing.key_kind(),
+                    standing.observed_at(),
+                    standing.ready_before(),
+                    standing.eligible_producers().to_vec(),
+                )];
+            }
+            continue;
+        };
+        if let Some(job) = result
+            .final_producer_schedule()
+            .iter()
+            .find(|job| job.owner == ClaimOwner::Proposal(proposal.key()))
+        {
+            // Choose timing once; portfolio enumeration only checks this exact alternative.
+            proposal.claims.producer_jobs = vec![ProducerJobClaim::fixed(
+                job.producer,
+                job.kind,
+                job.enqueued_at,
+                job.starts_at,
+                job.ready_at,
+                job.ready_before,
+            )];
+        }
+    }
+}
+
 /// One bounded cross-domain allocation pass before portfolio selection.
 pub(crate) struct CrossDomainAllocation {
     capacity: AllocationCapacity,
@@ -151,10 +211,14 @@ impl CrossDomainAllocation {
             capacity,
             current_scrap,
             obligations,
-            proposals,
-            contextual_proposals,
+            mut proposals,
+            mut contextual_proposals,
             incompatible_layouts,
         } = self;
+        pin_standing_waits(&capacity, &obligations, &mut proposals);
+        for context in &mut contextual_proposals {
+            pin_standing_waits(&capacity, &obligations, &mut context.proposals);
+        }
         let mut trace = trace;
         let (mut result, considered_proposals, selected_context, considered_contexts) =
             if contextual_proposals.is_empty() {

@@ -38,7 +38,7 @@ Player-facing bot decision traces have the same one-way boundary. An opt-in
 coordinator while returning the same ordinary commands as `Brain::act`. The
 trace recorder is local to that call; traces are not controller memory,
 authoritative state, replay input, or replay metadata. Overseer and ticks on
-which no player-facing decision occurs produce no trace. Trace schema version 11
+which no player-facing decision occurs produce no trace. Trace schema version 12
 reports current scrap separately from a bounded forecast based only on completed
 income sources, together with current builder and producer capacity. Proposal
 and allocation evidence records the coordinator's actual inputs and verdicts,
@@ -712,13 +712,21 @@ siege, anti-air, and support units to substitute when their role, route, cost,
 and readiness fit better. Immediate alternatives are current-funded, enqueue-now
 work through one completed producer; forecast income cannot make an unaffordable
 command legal. For a non-urgent need, completed recurring income may add a
-capital-only bounded wait for a strictly better unlocked provider beside the
-affordable immediate fallback. The wait claims its exact current and forecast
-funding in shared allocation, so competing work can displace it without hiding
-the fallback. Core recovery and current threats never wait, and accumulation for
-one need does not suppress an affordable response to another. The shared
-allocator may select at most one such alternative per cadence and preserves an
-immediate purchase's exact producer through lowering.
+bounded future purchase of a strictly better unlocked provider beside the
+affordable immediate fallback. Acceptance retains the exact producer, purchase
+tick, completion, deadline, and originating need. Subsequent allocation imports
+that schedule before fresh spending; loss of the producer, income, useful need,
+or opening core releases unpaid work. Immediate threats can preempt it. Enemy
+fortifications motivate deliberate siege preparation without making every siege
+purchase an emergency. Economic saving preserves its capital claims while
+allowing compatible military alternatives to compete.
+
+Portfolio ranking compares sorted complete urgency, confidence, consequence,
+impact-time, and safety cases before rewarding additional compatible work.
+Experience, personality, domain preference, and capital resolve subsequent ties.
+Several incremental purchases cannot win merely by outnumbering a material
+investment in the same urgency and confidence bands. Optional connected scale
+retains the production slots already assigned to the stronger portfolio.
 
 When a fresh Connected proposal exists, the session derives separate Standing
 proposal sets for Connected absence, its minimum, and every cumulative marginal.

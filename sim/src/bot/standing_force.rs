@@ -182,6 +182,65 @@ pub(crate) struct StandingForceProposal {
     pub(crate) raid: Option<super::raid::RaidProcurementRequest>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StandingForceCommitment {
+    pub(crate) proposal: StandingForceProposal,
+    pub(crate) job: super::allocation::ScheduledProducerJob,
+}
+
+impl StandingForceCommitment {
+    pub(crate) fn obligation(&self) -> super::allocation::ImportedObligation {
+        use super::allocation::{
+            ClaimBundle, ObligationClass, ObligationKey, ProducerJobClaim, imported_obligation,
+        };
+        let job = self.job;
+        imported_obligation(
+            ObligationClass::PersistentPlan,
+            self.proposal.observed_at(),
+            ObligationKey::StandingForceSaving(self.proposal.key()),
+            ClaimBundle::new(
+                0,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![ProducerJobClaim::fixed(
+                    job.producer,
+                    job.kind,
+                    job.enqueued_at,
+                    job.starts_at,
+                    job.ready_at,
+                    job.ready_before,
+                )],
+            )
+            .expect("one exact production commitment has no duplicate claims"),
+        )
+    }
+
+    pub(crate) fn still_useful(
+        &self,
+        obs: &Observation,
+        demands: &[CapabilityDemand],
+        briefing: &PublicMapBriefing,
+        orientation: Orientation,
+    ) -> bool {
+        if obs.tick > self.job.enqueued_at
+            || demands
+                .iter()
+                .any(|demand| demand.case.urgency == Urgency::Pressing)
+            || !demands.iter().any(|demand| {
+                demand.kind == self.proposal.kind
+                    && demand.service == self.proposal.service
+                    && demand.reason == self.proposal.reason
+            })
+        {
+            return false;
+        }
+        let mut routes = ServiceRouting::new(obs, Some(briefing), Some(orientation));
+        routes.producer_reaches_any(self.job.producer, self.job.kind, &[self.proposal.service])
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StandingForceFunding {
     Immediate,
@@ -249,6 +308,13 @@ impl StandingForceProposal {
         self.ready_before
     }
 
+    pub(crate) fn reservation_deadline(&self) -> Tick {
+        self.accumulation()
+            .map_or(self.ready_before, |(through, _, _)| {
+                through.saturating_add(self.ready_before.saturating_sub(self.observed_at))
+            })
+    }
+
     /// Canonical completed producers that can satisfy the shallow request.
     pub(crate) fn eligible_producers(&self) -> &[BuildingId] {
         &self.eligible_producers
@@ -259,7 +325,7 @@ impl StandingForceProposal {
         self.minimum_residual_scrap
     }
 
-    /// Capital-only bounded wait that competes in shared allocation without
+    /// Bounded future purchase that competes in shared allocation without
     /// making its future provider an enqueue-now command.
     pub(crate) const fn accumulation(&self) -> Option<(Tick, u32, u32)> {
         match self.funding {
@@ -875,10 +941,13 @@ pub(crate) fn derive_standing_force_with_demand(
             &defense.targets,
             DemandBasis {
                 reason: StandingForceReason::SiegePressure,
-                case: threat_case(
-                    defense.observed.strongest_evidence(),
-                    StrategicValue::Material,
-                ),
+                case: ProposalCase {
+                    urgency: Urgency::Timely,
+                    confidence: contact_confidence(defense.observed.strongest_evidence()),
+                    value: StrategicValue::Material,
+                    time_to_impact: TimeToImpact::Near,
+                    safety: ExecutionSafety::Managed,
+                },
                 unmet,
             },
         ));
@@ -1602,7 +1671,7 @@ fn useful_provider_capacity(full: u64, missing: u64, reason: StandingForceReason
     covered.saturating_add(durable_headroom)
 }
 
-/// Adds a capital-only wait beside one need's affordable fallback when
+/// Adds a bounded future purchase beside one need's affordable fallback when
 /// completed income can reach a strictly better completed-producer option
 /// within the two alternatives' exact production horizons. Shared allocation
 /// decides whether the wait or fallback survives alongside other work.

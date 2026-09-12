@@ -33,7 +33,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// Schema version for serialized decision traces.
-pub const DECISION_TRACE_VERSION: u32 = 11;
+pub const DECISION_TRACE_VERSION: u32 = 12;
 
 const RESOURCE_FORECAST_TICKS: Tick = crate::TICKS_PER_SECOND as Tick * 60;
 const ALLOCATION_TRACE_ENTRY_LIMIT: usize = 32;
@@ -2097,6 +2097,13 @@ pub enum ObligationKeyTrace {
         /// Frozen action identity.
         action: crate::bot::utility::EconomicInvestmentKey,
     },
+    /// One exact military purchase awaiting its accepted production slot.
+    StandingForceSaving {
+        /// Frozen unit kind.
+        unit: UnitKind,
+        /// Frozen service identity.
+        service: StandingForceServiceKeyTrace,
+    },
     /// One exact opening defense admitted before ordinary core recovery.
     EmergencyDefense {
         /// Defensive structure selected by the utility scorer.
@@ -2174,6 +2181,10 @@ impl From<ObligationKey> for ObligationKeyTrace {
             }
             ObligationKey::SavedFoundry { anchor } => Self::SavedFoundry { anchor },
             ObligationKey::SavedEconomy(action) => Self::SavedEconomy { action },
+            ObligationKey::StandingForceSaving(key) => Self::StandingForceSaving {
+                unit: key.kind,
+                service: key.service.into(),
+            },
             ObligationKey::ConnectedOffense { objective, anchor } => {
                 Self::ConnectedOffense { objective, anchor }
             }
@@ -4739,7 +4750,7 @@ mod tests {
 
     #[test]
     fn serialized_trace_has_a_fixed_schema() {
-        assert_eq!(DECISION_TRACE_VERSION, 11);
+        assert_eq!(DECISION_TRACE_VERSION, 12);
         let mut trace = DecisionTrace::from_observation(&Observation::default());
         trace.gates.opening_core = Some(CoreGateTrace {
             projected_strength: 1,
