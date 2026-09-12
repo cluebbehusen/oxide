@@ -110,6 +110,11 @@ Contested-harvest quarantine retains its separate complete-sweep and safe-return
 requirements. These components are reconstructed by replaying the observed
 command prefix, not serialized into authoritative `State`.
 
+An unpaid Foundry's recovery interval spans both funding and execution blockage.
+Restored funding permits another readiness check; only a ready builder and site
+clear the interval. Continuous execution blockage therefore releases the unpaid
+claim after the same bounded recovery period as continuous funding failure.
+
 ## State construction and trust boundary
 
 `Scenario::build` is the normal constructor. It parses and validates authored

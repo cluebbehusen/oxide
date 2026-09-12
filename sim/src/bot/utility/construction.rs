@@ -820,12 +820,10 @@ impl UtilityPolicy {
             &saving,
             current_before_protected_reserve,
         );
-        if funding.viable {
-            self.foundry_saving
-                .as_mut()
-                .expect("the validated Foundry still exists")
-                .blocked_since = None;
-        } else if saving.forecast_basis.is_some() && !self.retain_blocked_foundry_saving(obs.tick) {
+        if !funding.viable
+            && saving.forecast_basis.is_some()
+            && !self.retain_blocked_foundry_saving(obs.tick)
+        {
             return None;
         }
         let saving = self
@@ -841,7 +839,7 @@ impl UtilityPolicy {
             planning_scrap: funding.planning_scrap,
             protected_reserve: funding.protected_reserve,
             forecast_deadline: funding.deadline,
-            blocked: saving.blocked_since.is_some(),
+            blocked: !funding.viable,
         })
     }
 
@@ -885,6 +883,12 @@ impl UtilityPolicy {
             false
         } else {
             true
+        }
+    }
+
+    pub(in crate::bot) fn recover_ready_foundry_saving(&mut self) {
+        if let Some(saving) = self.foundry_saving.as_mut() {
+            saving.blocked_since = None;
         }
     }
 
@@ -4471,7 +4475,60 @@ mod tests {
     }
 
     #[test]
-    fn viable_revalidation_clears_a_transient_foundry_block_immediately() {
+    fn funded_expansion_releases_after_continuous_builder_unavailability() {
+        let mut obs = ready_developed_expansion_observation();
+        let dials = expansion_dials();
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+        let mut policy = UtilityPolicy::new();
+        let proposal = expect_ready_foundry(
+            fresh_expansion_investment(&policy, &dials, &obs, &public_map, &[UnitId(1)], 0),
+            "funded plan",
+        );
+        policy
+            .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
+            .unwrap();
+        let start = obs.tick;
+        for delta in (0..=FOUNDRY_RECOVERY_TICKS).step_by(12) {
+            obs.tick = start + delta;
+            let resources = ResourceSnapshot::from_observation(&obs);
+            let obligation = policy
+                .validated_foundry_obligation(&obs, &resources, true, obs.scrap)
+                .unwrap();
+            assert_eq!(
+                policy.saved_foundry_readiness(
+                    &dials,
+                    &obs,
+                    obligation,
+                    FreshFoundryProposalContext {
+                        home: HOME,
+                        available_builders: &[],
+                        combat_core_exclusions: &[],
+                        unit_contacts: &[],
+                        building_contacts: &[],
+                        public_map: &public_map,
+                        same_think_intents: &[],
+                        current_scrap: obligation.planning_scrap(),
+                        protected_reserve: obligation.protected_reserve()
+                    }
+                ),
+                SavedFoundryReadiness::Blocked
+            );
+            assert_eq!(
+                policy.retain_blocked_foundry_saving(obs.tick),
+                delta < FOUNDRY_RECOVERY_TICKS
+            );
+        }
+        assert!(policy.foundry_saving.is_none());
+    }
+
+    #[test]
+    fn funding_recovery_preserves_execution_recovery_until_ready() {
         let obs = ready_developed_expansion_observation();
         let dials = expansion_dials();
         let public_map = array_briefing(
@@ -4501,6 +4558,11 @@ mod tests {
             .expect("restored exact funding makes the accepted plan viable again");
 
         assert!(!obligation.blocked());
+        assert_eq!(
+            policy.foundry_saving.as_ref().unwrap().blocked_since,
+            Some(obs.tick.saturating_sub(20))
+        );
+        policy.recover_ready_foundry_saving();
         assert_eq!(
             policy
                 .foundry_saving

@@ -1826,7 +1826,9 @@ impl<'a> AllocationSession<'a> {
                     protected_reserve: saved.protected_reserve(),
                 },
             ) {
-                SavedFoundryReadiness::Ready => {}
+                SavedFoundryReadiness::Ready => {
+                    self.participants.policy.recover_ready_foundry_saving();
+                }
                 SavedFoundryReadiness::NeedsProtection {
                     anchor,
                     target_strength,
