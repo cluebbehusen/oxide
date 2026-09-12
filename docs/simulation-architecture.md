@@ -52,6 +52,14 @@ express historical preferences.
 
 ### Controller-local battlefield loop
 
+Playable army contact includes observed completed defenses with compatible
+weapon range and known fire geometry. Local strength counts nearby participants
+and the defenses actually covering them. An army that loses members without
+identifying a local fight returns with ordinary movement and records an
+inconclusive casualty episode, without inventing a hidden attacker. Withdrawal
+from static fire also uses ordinary movement to avoid reacquiring the position.
+The profile-free Overseer retains its original contact and strength rules.
+
 Player-facing maintenance advances tactical armies first. The decision then
 observes battlefield evidence and work outcomes once, including on the early
 economy-recovery path, before preparing new investment alternatives. Spatial
