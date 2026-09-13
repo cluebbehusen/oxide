@@ -14,6 +14,7 @@ use crate::panel::{
 };
 use crate::render;
 use crate::theme::{SURFACE_MENU, TEXT_ACCENT, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY};
+use crate::typography::entity_name;
 use macroquad::prelude::*;
 use oxide_protocol::{Key, RawEvent};
 use oxide_sim::Faction;
@@ -79,21 +80,6 @@ fn sections() -> Vec<(&'static str, Vec<Entry>)> {
     ]
 }
 
-/// Capitalizes a lowercase display name for a heading.
-fn title_case(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut start = true;
-    for c in name.chars() {
-        if start {
-            out.extend(c.to_uppercase());
-        } else {
-            out.push(c);
-        }
-        start = c == ' ';
-    }
-    out
-}
-
 /// The codex screen: the list and what each row opens.
 pub struct CodexScreen {
     /// The live list: section headers, one row per kind, and Back.
@@ -118,7 +104,7 @@ impl CodexScreen {
                     Entry::Unit(kind) => kind.name(),
                     Entry::Building(kind) => kind.name(),
                 };
-                items.push(title_case(name));
+                items.push(entity_name(name));
                 entries.push(Some(entry));
             }
         }
@@ -189,7 +175,7 @@ impl CodexScreen {
             Entry::Unit(kind) => {
                 let owner = kind.faction();
                 (
-                    title_case(kind.name()),
+                    entity_name(kind.name()),
                     match owner {
                         Some(Faction::Ferrous) => "Ferrous only".to_string(),
                         Some(Faction::Cupric) => "Cupric only".to_string(),
@@ -202,7 +188,7 @@ impl CodexScreen {
                 )
             }
             Entry::Building(kind) => (
-                title_case(kind.name()),
+                entity_name(kind.name()),
                 "shared roster".to_string(),
                 vec![viewer, other(viewer)],
             ),
@@ -374,7 +360,11 @@ fn unit_notes(kind: UnitKind) -> Vec<String> {
         notes.push("Detonates on its target; always fatal to itself.".to_string());
     }
     if !stats.requires.is_empty() {
-        let names: Vec<&str> = stats.requires.iter().map(|b| b.name()).collect();
+        let names: Vec<String> = stats
+            .requires
+            .iter()
+            .map(|b| entity_name(b.name()))
+            .collect();
         notes.push(format!("Needs a standing {}.", names.join(" and ")));
     }
     let factory = [
@@ -386,7 +376,7 @@ fn unit_notes(kind: UnitKind) -> Vec<String> {
     .into_iter()
     .find(|b| b.base_stats().produces.contains(&kind));
     if let Some(factory) = factory {
-        notes.push(format!("Trained at the {}.", factory.name()));
+        notes.push(format!("Trained at the {}.", entity_name(factory.name())));
     }
     notes
 }
@@ -399,11 +389,15 @@ fn building_notes(kind: BuildingKind) -> Vec<String> {
     if let Some(c) = base.construction
         && !c.requires.is_empty()
     {
-        let names: Vec<&str> = c.requires.iter().map(|b| b.name()).collect();
+        let names: Vec<String> = c.requires.iter().map(|b| entity_name(b.name())).collect();
         notes.push(format!("Needs a standing {}.", names.join(" and ")));
     }
     if !base.produces.is_empty() {
-        let names: Vec<String> = base.produces.iter().map(|u| title_case(u.name())).collect();
+        let names: Vec<String> = base
+            .produces
+            .iter()
+            .map(|u| entity_name(u.name()))
+            .collect();
         notes.push(format!("Trains {}.", names.join(", ")));
     }
     for (tier, stats) in kind.tiers().iter().enumerate().skip(1) {
@@ -412,13 +406,13 @@ fn building_notes(kind: BuildingKind) -> Vec<String> {
         };
         let mut line = format!(
             "Upgrade: {} for {} scrap ({:.0} s){} - {} hp",
-            kind.tier_name(tier as u8),
+            entity_name(kind.tier_name(tier as u8)),
             c.cost,
             c.build_ticks as f32 / oxide_sim::TICKS_PER_SECOND as f32,
             if c.requires.is_empty() {
                 String::new()
             } else {
-                let names: Vec<&str> = c.requires.iter().map(|b| b.name()).collect();
+                let names: Vec<String> = c.requires.iter().map(|b| entity_name(b.name())).collect();
                 format!(", needs a {}", names.join(" and "))
             },
             stats.max_hp
@@ -506,14 +500,14 @@ mod tests {
         assert!(
             harvester
                 .iter()
-                .any(|l| l.contains("Trained at the foundry"))
+                .any(|l| l.contains("Trained at the Foundry"))
         );
         let skyhook = unit_notes(UnitKind::Skyhook);
         assert!(skyhook.iter().any(|l| l.starts_with("Lifts 4 sling")));
         let turret = building_notes(BuildingKind::Turret);
         assert_eq!(turret.len(), 2, "two upgrade rungs: {turret:?}");
-        assert!(turret[0].contains("heavy turret"));
-        assert!(turret[1].contains("bulwark") && turret[1].contains("crucible"));
+        assert!(turret[0].contains("Heavy Turret"));
+        assert!(turret[1].contains("Bulwark") && turret[1].contains("Crucible"));
 
         let extractor = building_notes(BuildingKind::Extractor);
         assert!(

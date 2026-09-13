@@ -135,7 +135,7 @@ fn mode_ribbon_geometry(
     (ribbon, cancel)
 }
 
-fn draw_mode_ribbon(input: &InputState, panel_top: f32) -> (Rect, Rect) {
+fn draw_mode_ribbon(input: &InputState, regions: &[Rect; 2]) -> (Rect, Rect) {
     let Some(mode) = input.armed_mode() else {
         let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
         return (zero, zero);
@@ -144,6 +144,15 @@ fn draw_mode_ribbon(input: &InputState, panel_top: f32) -> (Rect, Rect) {
     let label = format!("MODE  |  {}", mode.label());
     let size = 15.0 * s;
     let width = measure_text(&label, None, size as u16, 1.0).width;
+    let estimated_width = (width + 34.0 * s + crate::layout::MIN_TOUCH_TARGET * s)
+        .max(210.0 * s)
+        .min(screen_width() - 24.0 * s);
+    let x = (screen_width() - estimated_width) * 0.5;
+    let panel_top = regions
+        .iter()
+        .filter(|r| r.w > 0.0 && r.x < x + estimated_width && r.x + r.w > x)
+        .map(|r| r.y)
+        .fold(f32::INFINITY, f32::min);
     let (ribbon, cancel) =
         mode_ribbon_geometry(vec2(screen_width(), screen_height()), s, width, panel_top);
     draw_rectangle(
@@ -317,25 +326,30 @@ pub(crate) fn draw_hud(
     let mut panel_right = 0.0;
     let mut orders_dock = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut minimap = minimap_rect(game);
+    let mut panel_regions = [zero; 2];
     if let Some(panel) = panel.as_ref() {
-        let (r, rc, c, cc, q, qc, top, right, dock, hides_minimap) =
-            draw_panel(game, sprites, input, panel);
-        roster_slots = r;
-        roster_count = rc;
-        cards = c;
-        card_count = cc;
-        queue_slots = q;
-        queue_count = qc;
-        panel_top = top;
-        panel_right = right;
-        orders_dock = dock;
-        if hides_minimap {
+        let geometry = draw_panel(game, sprites, input, panel);
+        roster_slots = geometry.roster_slots;
+        roster_count = geometry.roster_count;
+        cards = geometry.cards;
+        card_count = geometry.card_count;
+        queue_slots = geometry.queue_slots;
+        queue_count = geometry.queue_count;
+        panel_regions = [geometry.info, geometry.actions];
+        panel_top = panel_regions
+            .iter()
+            .filter(|r| r.w > 0.0)
+            .map(|r| r.y)
+            .fold(f32::INFINITY, f32::min);
+        panel_right = panel_regions.iter().map(|r| r.x + r.w).fold(0.0, f32::max);
+        orders_dock = geometry.orders;
+        if geometry.hides_minimap {
             minimap = zero;
         }
     }
-    let (mode_ribbon, mode_cancel) = draw_mode_ribbon(input, panel_top);
+    let (mode_ribbon, mode_cancel) = draw_mode_ribbon(input, &panel_regions);
     // Publish the frame's chrome geometry — the model hit-testing reads.
-    game.layout.set(crate::layout::LayoutModel::compute(
+    let mut layout = crate::layout::LayoutModel::compute(
         vec2(screen_width(), screen_height()),
         s,
         panel_top,
@@ -351,7 +365,9 @@ pub(crate) fn draw_hud(
         card_count,
         queue_slots,
         queue_count,
-    ));
+    );
+    layout.panel_regions = panel_regions;
+    game.layout.set(layout);
 
     if let Some(view) = performance {
         let panel = super::performance::draw(view, status_space);
@@ -366,8 +382,12 @@ pub(crate) fn draw_hud(
         let origin = toast_origin(
             vec2(screen_width(), screen_height()),
             s,
-            panel_top,
-            orders_dock,
+            if panel_regions[1].w > 0.0 {
+                panel_regions[1].y
+            } else {
+                screen_height()
+            },
+            Rect::new(0.0, 0.0, orders_dock.w.max(panel_regions[0].w), 0.0),
             i,
         );
         let mut size = 20.0 * s;

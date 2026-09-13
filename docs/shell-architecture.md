@@ -156,13 +156,46 @@ but order generation remains gated to the controlled seat. Multi-select and card
 actions must preserve set semantics when they become commands.
 
 HUD drawing publishes one `LayoutModel` for the frame. The same rectangles drive
-hit testing for the top bar, panel band, order dock, minimap, roster, cards,
-queue, idle-worker badge, and armed-mode ribbon. Drawing and interaction must
-not recalculate competing geometry. Logical input coordinates are used
+hit testing for the top bar, selection regions, order dock, minimap, roster,
+cards, queue, idle-worker badge, and armed-mode ribbon. Drawing and interaction
+must not recalculate competing geometry. Logical input coordinates are used
 throughout; platform DPI conversion occurs once at the hardware adapter. The
 command band measures its width from the placed card rectangles, including the
 separator after rally controls. Row packing reserves the same right inset used
-by the background so wrapped production cards remain inside the panel.
+by the background so wrapped production cards remain inside the panel. Selection
+information occupies a left column at least as tall as the action strip, while
+commands occupy a separate bottom strip. Their enclosing bounds are
+observational only: the open notch accepts battlefield input. The queue remains
+a separate dock above the information column and wraps into multiple columns to
+keep its entries accessible. The debug UI response exposes both exact selection
+regions alongside its legacy enclosing bounds.
+
+The HUD's supported layout floor is 1280×800 at the default UI scale, matching
+the Steam Deck display. Smaller windows remain useful overflow stress tests, but
+do not determine the normal layout or spacing.
+
+Unit and building display names use Title Case through the shared typography
+formatter, including tier names, cards, queues, tooltips, notifications, and
+codex entries. Section headings retain uppercase and descriptions use sentence
+case. Simulation names and asset keys keep their canonical spelling.
+
+The selection information model supplies health, status, and labeled stat rows
+from existing simulation accessors. Text measurement wraps labels and values
+before rendering; weapon damage, range, reload, salvo, and blast radius are
+distinct facts. Sight remains visible on every single selection. Routine worker
+repair reach and weapon implementation properties stay out of the persistent
+readout; support distances remain in build-card and codex details. Health
+includes its exact value and a proportional bar. Static capabilities remain
+inspectable on foreign selections, while current enemy loads and orders and
+foreign building income remain private. Tooltips anchor to their cards or dock
+instead of reserving the tallest column across the screen.
+
+Upgrade hovers show the completed next-tier values for changed stats under
+"After upgrade", alongside the cost, downtime, and prerequisites. Current values
+remain in the adjacent selection panel. The preview includes slower reloads as
+well as benefits, and tier-specific income and mine detection. Health shows
+maximum capacity, not the selected building's current damage. Disabled upgrade
+cards retain the same preview.
 
 Construction uses one 13-card catalog, grouped by economy, production, defense,
 and utility when space permits. Visual grouping preserves each building's digit

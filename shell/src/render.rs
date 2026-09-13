@@ -195,6 +195,7 @@ mod environment;
 mod minimap;
 mod motion;
 mod panel_draw;
+mod panel_layout;
 mod performance;
 mod pits;
 mod world;

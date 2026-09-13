@@ -103,7 +103,7 @@ impl ArmedMode {
     /// Compact persistent label; detailed coaching remains in the toast.
     pub(crate) fn label(self) -> String {
         match self {
-            Self::Build(kind) => format!("BUILD {}", kind.name().to_uppercase()),
+            Self::Build(kind) => format!("BUILD {}", crate::typography::entity_name(kind.name())),
             Self::Rally => "SET RALLY".to_string(),
             Self::Salvage => "SALVAGE".to_string(),
             Self::Weld => "WELD UNIT".to_string(),
@@ -1345,7 +1345,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // acknowledgment ping followed by a sim rejection.
             let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
             if projection.funds.available() < cost {
-                game.toast(format!("not enough scrap for a {}", kind.name()));
+                game.toast(format!(
+                    "not enough scrap for a {}",
+                    crate::typography::entity_name(kind.name())
+                ));
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
