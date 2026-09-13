@@ -677,7 +677,10 @@ funding priority does not reorder that lane. Production preflight rejects
 overlapping fixed execution intervals on the same factory before enumerating
 flexible schedules. A job occupies its completion tick, so the next fixed job
 may start on the following tick. Extra forecast income and alternative
-assignments for other jobs cannot resolve that overlap.
+assignments for other jobs cannot resolve that overlap. Each tentative schedule
+also preserves the payment deadlines and earliest possible execution of every
+remaining fixed job. A flexible append that already makes a fixed job impossible
+is rejected before searching its successors.
 
 Defense derivation skips expensive placement for roles whose real current cost
 cannot fit after imported fixed capital. This prefilter leaves viable quotes

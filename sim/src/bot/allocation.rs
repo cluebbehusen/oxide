@@ -3072,6 +3072,9 @@ impl ProductionPortfolioSearch<'_> {
             }
             return false;
         }
+        if !self.remaining_fixed_jobs_fit(producers, remaining, schedule) {
+            return false;
+        }
         let state = ProductionSearchState {
             remaining: remaining.to_vec(),
             producers: producers.to_vec(),
@@ -3208,6 +3211,60 @@ impl ProductionPortfolioSearch<'_> {
         }
         self.failed.insert(state);
         false
+    }
+
+    fn remaining_fixed_jobs_fit(
+        &self,
+        producers: &[ProducerPlanningProjection],
+        remaining: &[bool],
+        schedule: &[ScheduledProducerJob],
+    ) -> bool {
+        let mut optimistic: Option<Vec<ScheduledProducerJob>> = None;
+        for (job, pending) in self.jobs.iter().zip(remaining) {
+            if !*pending {
+                continue;
+            }
+            let Some(fixed) = job.claim.fixed_assignment() else {
+                continue;
+            };
+            let lane_index = producers
+                .binary_search_by_key(&fixed.producer, ProducerPlanningProjection::producer)
+                .expect("every producer claim was validated against capacity");
+            let Some(earliest) = producers[lane_index]
+                .clone()
+                .append(job.claim.kind, fixed.enqueued_at)
+            else {
+                return false;
+            };
+            // Remaining jobs may delay this append, but cannot make it earlier.
+            if earliest.starts_at > fixed.starts_at || earliest.ready_at > fixed.ready_at {
+                return false;
+            }
+            optimistic
+                .get_or_insert_with(|| schedule.to_vec())
+                .push(ScheduledProducerJob {
+                    owner: job.owner,
+                    producer: fixed.producer,
+                    kind: job.claim.kind,
+                    request_ordinal: job.ordinal,
+                    enqueued_at: fixed.enqueued_at,
+                    starts_at: fixed.starts_at,
+                    ready_at: fixed.ready_at,
+                    ready_before: job.claim.ready_before,
+                    current_scrap: 0,
+                    forecast_scrap: 0,
+                });
+        }
+        optimistic.as_ref().is_none_or(|schedule| {
+            combined_cash_timeline_fits(
+                self.capacity,
+                self.current_capital,
+                self.minimum_residual_scrap,
+                self.forecast_capital,
+                self.deferrable_capital,
+                schedule,
+            )
+        })
     }
 
     fn is_frontier(&self, job_index: usize, remaining: &[bool]) -> bool {
@@ -7447,6 +7504,81 @@ mod tests {
     }
 
     #[test]
+    fn fixed_payment_deadlines_prune_earlier_flexible_spending() {
+        let offense =
+            ClaimOwner::Proposal(ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
+                objective: BuildingId(90),
+                anchor: TilePos::new(40, 10),
+            }));
+        let standing = ClaimOwner::Proposal(ProposalKey::StandingForce(StandingForceKey::fixture(
+            UnitKind::Lancer,
+        )));
+        let basis = timed_capacity(
+            110,
+            0,
+            600,
+            12,
+            vec![
+                ForecastAvailability {
+                    available_at: 204,
+                    amount: 50,
+                },
+                ForecastAvailability {
+                    available_at: 264,
+                    amount: 50,
+                },
+            ],
+            vec![
+                timed_producer_fixture(
+                    BuildingId(7),
+                    0,
+                    12,
+                    0,
+                    vec![0; QUEUE_CAP],
+                    vec![UnitKind::Lancer],
+                ),
+                timed_producer_fixture(
+                    BuildingId(8),
+                    0,
+                    12,
+                    0,
+                    vec![0; QUEUE_CAP],
+                    vec![UnitKind::Harvester],
+                ),
+            ],
+        );
+        let mut jobs: Vec<_> = (0..2)
+            .map(|ordinal| OwnedProducerJob {
+                claim: ProducerJobClaim::flexible(UnitKind::Harvester, 0, 600, vec![BuildingId(8)]),
+                owner: offense,
+                ordinal,
+                funding_priority: FundingPriority::fresh_proposal(offense, 0),
+            })
+            .collect();
+        jobs.push(OwnedProducerJob {
+            claim: ProducerJobClaim::fixed(BuildingId(7), UnitKind::Lancer, 108, 108, 307, 600),
+            owner: standing,
+            ordinal: 0,
+            funding_priority: FundingPriority::fresh_proposal(standing, 1),
+        });
+        let claims = ClaimState {
+            producer_jobs: jobs,
+            ..ClaimState::default()
+        };
+        let resolved = claims
+            .resolve(&basis)
+            .expect("later income funds both flexible jobs");
+        assert_eq!(resolved.producer_schedule.len(), 3);
+        assert_eq!(resolved.producer_schedule[0].kind, UnitKind::Lancer);
+        assert_eq!(resolved.producer_schedule[0].enqueued_at, 108);
+        assert!(
+            resolved.search_states <= 4,
+            "explored {} states",
+            resolved.search_states
+        );
+    }
+
+    #[test]
     fn fixed_producer_chronology_is_independent_of_funding_priority() {
         let earlier_owner = ClaimOwner::Proposal(ProposalKey::StandingForce(
             StandingForceKey::fixture(UnitKind::Harvester),
@@ -7466,46 +7598,48 @@ mod tests {
                 vec![UnitKind::Harvester, UnitKind::Sentinel],
             )],
         );
-        let claims = ClaimState {
-            producer_jobs: vec![
-                OwnedProducerJob {
-                    claim: ProducerJobClaim::fixed(
-                        BuildingId(7),
-                        UnitKind::Sentinel,
-                        200,
-                        200,
-                        349,
-                        1_000,
-                    ),
-                    owner: later_owner,
-                    ordinal: 0,
-                    funding_priority: FundingPriority::fresh_proposal(later_owner, 0),
-                },
-                OwnedProducerJob {
-                    claim: ProducerJobClaim::fixed(
-                        BuildingId(7),
-                        UnitKind::Harvester,
-                        100,
-                        100,
-                        199,
-                        1_000,
-                    ),
-                    owner: earlier_owner,
-                    ordinal: 0,
-                    funding_priority: FundingPriority::fresh_proposal(earlier_owner, 1),
-                },
-            ],
-            ..ClaimState::default()
-        };
-        let resolved = claims
-            .resolve(&basis)
-            .expect("both fixed jobs fit their lane");
-        assert_eq!(resolved.producer_schedule.len(), 2);
-        assert_eq!(resolved.producer_schedule[0].owner, earlier_owner);
-        assert_eq!(resolved.producer_schedule[1].owner, later_owner);
-        assert_eq!(resolved.producer_schedule[0].enqueued_at, 100);
-        assert_eq!(resolved.producer_schedule[1].enqueued_at, 200);
-        assert!(resolved.search_states <= 3);
+        for later_enqueue in [100, 200] {
+            let claims = ClaimState {
+                producer_jobs: vec![
+                    OwnedProducerJob {
+                        claim: ProducerJobClaim::fixed(
+                            BuildingId(7),
+                            UnitKind::Sentinel,
+                            later_enqueue,
+                            200,
+                            349,
+                            1_000,
+                        ),
+                        owner: later_owner,
+                        ordinal: 0,
+                        funding_priority: FundingPriority::fresh_proposal(later_owner, 0),
+                    },
+                    OwnedProducerJob {
+                        claim: ProducerJobClaim::fixed(
+                            BuildingId(7),
+                            UnitKind::Harvester,
+                            100,
+                            100,
+                            199,
+                            1_000,
+                        ),
+                        owner: earlier_owner,
+                        ordinal: 0,
+                        funding_priority: FundingPriority::fresh_proposal(earlier_owner, 1),
+                    },
+                ],
+                ..ClaimState::default()
+            };
+            let resolved = claims
+                .resolve(&basis)
+                .expect("both fixed jobs fit their lane");
+            assert_eq!(resolved.producer_schedule.len(), 2);
+            assert_eq!(resolved.producer_schedule[0].owner, earlier_owner);
+            assert_eq!(resolved.producer_schedule[1].owner, later_owner);
+            assert_eq!(resolved.producer_schedule[0].enqueued_at, 100);
+            assert_eq!(resolved.producer_schedule[1].enqueued_at, later_enqueue);
+            assert!(resolved.search_states <= 3);
+        }
 
         let earlier_owner = ClaimOwner::Proposal(ProposalKey::StandingForce(
             StandingForceKey::fixture(UnitKind::Lancer),
