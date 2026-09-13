@@ -108,7 +108,7 @@ pub(super) fn measure_info(
         health_y,
         lines,
         roster_y,
-        height: y + 10.0 * scale,
+        height: y + 6.0 * scale,
         font,
         line_h,
         roster_size,

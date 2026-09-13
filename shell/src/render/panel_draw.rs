@@ -7,6 +7,7 @@ use super::*;
 use super::panel_layout::{PanelGeometry, measure_info};
 
 const CARD_RIGHT_INSET: f32 = 12.0;
+const CARD_LEFT_INSET: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PanelPacking {
@@ -33,14 +34,14 @@ fn panel_packing_at_right(
     hides_minimap: bool,
 ) -> PanelPacking {
     let (cards_x, card_w, card_h, gap) = card_metrics(viewport, scale);
-    let available = (right - cards_x - CARD_RIGHT_INSET * scale).max(card_w);
+    let available = (right - cards_x - (CARD_LEFT_INSET + CARD_RIGHT_INSET) * scale).max(card_w);
     let per_row = (((available + gap) / (card_w + gap)).floor() as usize).max(1);
     let cards_h = if cards_shown == 0 {
         0.0
     } else {
         grouped_card_rows(cards_shown, per_row) as f32 * (card_h + 4.0 * scale)
     };
-    let band_h = (20.0 * scale + cards_h).max(76.0 * scale);
+    let band_h = (16.0 * scale + cards_h).max(72.0 * scale);
     PanelPacking {
         right,
         available,
@@ -135,7 +136,9 @@ fn command_card_geometry(
         .map(|index| {
             let (row, column, after_rally) = grouped_card_slot(index, rally_count, packing.per_row);
             Rect::new(
-                left + column as f32 * (width + gap) + if after_rally { section_gap } else { 0.0 },
+                left + CARD_LEFT_INSET * scale
+                    + column as f32 * (width + gap)
+                    + if after_rally { section_gap } else { 0.0 },
                 packing.top + 10.0 * scale + row as f32 * (height + 4.0 * scale),
                 width,
                 height,

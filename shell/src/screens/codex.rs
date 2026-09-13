@@ -386,6 +386,13 @@ fn unit_notes(kind: UnitKind) -> Vec<String> {
 fn building_notes(kind: BuildingKind) -> Vec<String> {
     let base = kind.base_stats();
     let mut notes = building_economy_lines(kind);
+    if kind == BuildingKind::RepairBay {
+        notes.push(format!(
+            "Repairs each nearby target at {:.1} hp/s.",
+            oxide_sim::stats::REPAIR_BAY_STEP as f32 * oxide_sim::TICKS_PER_SECOND as f32
+                / oxide_sim::stats::REPAIR_BAY_PERIOD as f32
+        ));
+    }
     if let Some(c) = base.construction
         && !c.requires.is_empty()
     {

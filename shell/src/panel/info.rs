@@ -182,7 +182,7 @@ pub(crate) fn selection_info(game: &Game, panel: &Panel) -> SelectionInfo {
                 info.row(
                     "Repair rate",
                     format!(
-                        "{:.1} hp/s per unit",
+                        "{:.1} hp/s",
                         REPAIR_BAY_STEP as f32 * oxide_sim::TICKS_PER_SECOND as f32
                             / REPAIR_BAY_PERIOD as f32
                     ),
