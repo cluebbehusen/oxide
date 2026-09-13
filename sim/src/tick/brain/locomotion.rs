@@ -44,7 +44,8 @@ pub(super) fn idle(state: &mut State, index: &super::super::spatial::UnitIndex, 
         let anchor = unit.tile();
         let stationed = unit.settled >= crate::stats::LEASH_STATION_TICKS;
         unit.order = Order::Attack {
-            target,
+            pursue: false,
+            target: target.into(),
             resume: None,
         };
         unit.path = None;
@@ -117,7 +118,8 @@ pub(super) fn land(
     if let Some(target) = acquire_target_from(state, index, id, goal.center()) {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.order = Order::Attack {
-            target,
+            pursue: false,
+            target: target.into(),
             resume: None,
         };
         unit.path = None;
@@ -263,7 +265,8 @@ pub(super) fn attack_move(
     if let Some(target) = acquire_target(state, index, id) {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.order = Order::Attack {
-            target,
+            pursue: false,
+            target: target.into(),
             resume: Some(goal),
         };
         unit.path = None;

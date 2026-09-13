@@ -120,9 +120,8 @@ pub enum Event {
         /// queue excluded.
         refund: u32,
     },
-    /// An attack landed this tick. Positions ride along because the victim
-    /// may be gone by the time a renderer resolves the ids — a lethal hit
-    /// still deserves the weapon's report.
+    /// A hitscan weapon fired, including blind misses. Positions survive
+    /// the target's removal and never require identifying a concealed victim.
     AttackHit {
         /// Who fired.
         attacker: UnitId,
@@ -132,12 +131,20 @@ pub enum Event {
         /// Which weapon slot fired (0 = primary), so presentation reads
         /// the exact weapon's stats instead of guessing across the list.
         weapon: usize,
-        /// Who was hit.
-        target: Target,
+        /// Identified intended target; absent for blind fire, even on a hit.
+        target: Option<Target>,
         /// Muzzle position at fire time.
         attacker_pos: Vec2Fx,
         /// Impact point at fire time.
         target_pos: Vec2Fx,
+    },
+    /// Combat damage was applied. Notification evidence for the victim's owner,
+    /// without identifying either combatant to other players.
+    DamageTaken {
+        /// The owner receiving damage.
+        player: PlayerId,
+        /// The damaged entity's position.
+        pos: Vec2Fx,
     },
     /// A harvester delivered its load.
     ScrapDeposited {
@@ -190,8 +197,8 @@ pub enum Event {
         kind: crate::stats::BuildingKind,
         /// Upgrade tier when the weapon fired, before damage resolves.
         tier: u8,
-        /// The unit or building hit.
-        target: Target,
+        /// Identified intended target; absent for blind fire, even on a hit.
+        target: Option<Target>,
         /// Muzzle position.
         turret_pos: chassis::fx::Vec2Fx,
         /// Impact position.
@@ -204,8 +211,8 @@ pub enum Event {
         shooter: crate::ids::Target,
         /// Fire-time chassis pose; building emplacements have no unit pose.
         unit_pose: Option<UnitLaunchPose>,
-        /// The unit or building the gun led at launch time.
-        target: Target,
+        /// Identified target at launch; absent for blind fire.
+        target: Option<Target>,
         /// The firing seat.
         player: PlayerId,
         /// Muzzle position.

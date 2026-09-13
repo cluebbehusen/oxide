@@ -111,6 +111,7 @@ fn construction_observation(scrap: u32) -> Observation {
         known_wrecks: Vec::new(),
         salvage_incidents: Vec::new(),
         blips: Vec::new(),
+        contact_tracks: Vec::new(),
         faction: Faction::Ferrous,
         my_shells: 0,
         incoming_shells: Vec::new(),

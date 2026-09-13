@@ -4188,7 +4188,7 @@ mod tests {
     use crate::bot::Orientation;
 
     use crate::command::{Command, PlayerCommand};
-    use crate::ids::{BuildingId, PlayerId, Target, UnitId};
+    use crate::ids::{BuildingId, PlayerId, UnitId};
     use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
     use chassis::Tick;
 
@@ -6350,7 +6350,7 @@ mod tests {
             player: PlayerId(1),
             command: Command::Attack {
                 units: vec![avalanche],
-                target: Target::Building(foundry),
+                target: crate::AttackTarget::Building(foundry),
                 queue: false,
             },
         }]);

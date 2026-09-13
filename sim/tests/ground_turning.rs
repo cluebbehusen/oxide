@@ -95,7 +95,7 @@ fn independent_ground_guns_traverse_without_spinning_the_hull() {
                     0,
                     Command::Attack {
                         units: vec![id],
-                        target: Target::Building(target),
+                        target: oxide_sim::AttackTarget::Building(target),
                         queue: false,
                     },
                 )]
@@ -174,12 +174,12 @@ fn a_ground_sidearm_cannot_fire_across_its_main_guns_bearing() {
         0,
         Command::Attack {
             units: vec![gun],
-            target: Target::Unit(ground),
+            target: Target::Unit(ground).into(),
             queue: false,
         },
     )]);
-    assert!(report.events.iter().any(|event| matches!(event,Event::AttackHit{attacker,target:Target::Unit(id),..} if *attacker==gun && *id==ground)));
-    assert!(!report.events.iter().any(|event| matches!(event,Event::AttackHit{attacker,target:Target::Unit(id),..} if *attacker==gun && *id==air)));
+    assert!(report.events.iter().any(|event| matches!(event,Event::AttackHit{attacker,target:Some(Target::Unit(id)),..} if *attacker==gun && *id==ground)));
+    assert!(!report.events.iter().any(|event| matches!(event,Event::AttackHit{attacker,target:Some(Target::Unit(id)),..} if *attacker==gun && *id==air)));
     assert_eq!(state.unit(air).unwrap().hp, UnitKind::Darter.stats().max_hp);
     assert_eq!(state.unit(gun).unwrap().cooldowns[1], 0);
 }

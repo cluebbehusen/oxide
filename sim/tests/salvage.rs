@@ -83,7 +83,7 @@ fn kill_harvester(state: &mut State, killer: UnitId, victim: UnitId) -> TilePos 
         1,
         Command::Attack {
             units: vec![killer],
-            target: Target::Unit(victim),
+            target: Target::Unit(victim).into(),
             queue: false,
         },
     )]);
@@ -110,7 +110,7 @@ fn execute(state: &mut State, executioner: UnitId, killer: UnitId) {
         0,
         Command::Attack {
             units: vec![executioner],
-            target: Target::Unit(killer),
+            target: Target::Unit(killer).into(),
             queue: false,
         },
     )]);
@@ -343,7 +343,7 @@ fn a_dead_building_splits_its_wreck_across_the_footprint() {
         1,
         Command::Attack {
             units: lancers,
-            target: Target::Building(turret),
+            target: Target::Building(turret).into(),
             queue: false,
         },
     )]);
@@ -444,7 +444,7 @@ fn a_flyer_downed_over_rock_leaves_no_wreck_bait() {
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(wisp),
+            target: Target::Unit(wisp).into(),
             queue: false,
         },
     )]);
@@ -472,7 +472,7 @@ fn a_flyer_downed_over_rock_leaves_no_wreck_bait() {
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(wisp),
+            target: Target::Unit(wisp).into(),
             queue: false,
         },
     )]);
@@ -711,7 +711,7 @@ fn fire_finishing_a_salvage_target_wins_and_forfeits_the_rest() {
             1,
             Command::Attack {
                 units: raiders,
-                target: Target::Building(array),
+                target: Target::Building(array).into(),
                 queue: false,
             },
         ),

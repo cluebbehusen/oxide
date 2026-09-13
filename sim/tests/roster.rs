@@ -185,7 +185,7 @@ fn the_tender_welds_but_never_harvests() {
         1,
         Command::Attack {
             units: vec![raider],
-            target: oxide_sim::Target::Unit(patient),
+            target: oxide_sim::Target::Unit(patient).into(),
             queue: false,
         },
     )]);
@@ -254,7 +254,7 @@ fn interceptors_rule_the_sky_and_ignore_the_ground() {
         0,
         Command::Attack {
             units: vec![shrike],
-            target: oxide_sim::Target::Unit(crawler),
+            target: oxide_sim::Target::Unit(crawler).into(),
             queue: false,
         },
     )]);
@@ -273,7 +273,7 @@ fn interceptors_rule_the_sky_and_ignore_the_ground() {
         0,
         Command::Attack {
             units: vec![shrike],
-            target: oxide_sim::Target::Unit(gnat),
+            target: oxide_sim::Target::Unit(gnat).into(),
             queue: false,
         },
     )]);

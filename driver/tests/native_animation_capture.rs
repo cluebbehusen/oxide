@@ -370,7 +370,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
             0,
             Command::Attack {
                 units: vec![attacker],
-                target: Target::Unit(target),
+                target: Target::Unit(target).into(),
                 queue: false,
             },
         )?;
@@ -401,7 +401,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         0,
         Command::Attack {
             units: vec![sentinel],
-            target: Target::Unit(target),
+            target: Target::Unit(target).into(),
             queue: false,
         },
     )?;
@@ -436,7 +436,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
             0,
             Command::FocusFire {
                 buildings: vec![gun],
-                target: Target::Unit(target),
+                target: Target::Unit(target).into(),
             },
         )?;
         let events = harness.capture_schedule(
@@ -464,7 +464,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         1,
         Command::Attack {
             units: vec![attacker],
-            target: Target::Building(patient),
+            target: Target::Building(patient).into(),
             queue: false,
         },
     )?;
@@ -473,7 +473,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         event,
         oxide_sim::Event::AttackHit {
             attacker: source,
-            target: Target::Building(target),
+            target: Some(Target::Building(target)),
             ..
         } if *source == attacker && *target == patient
     )));
@@ -489,7 +489,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         0,
         Command::Attack {
             units: vec![executioner],
-            target: Target::Unit(attacker),
+            target: Target::Unit(attacker).into(),
             queue: false,
         },
     )?;
@@ -529,7 +529,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         1,
         Command::Attack {
             units: vec![attacker],
-            target: Target::Unit(patient),
+            target: Target::Unit(patient).into(),
             queue: false,
         },
     )?;
@@ -537,7 +537,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
     let hit = first.iter().any(|event| {
         matches!(
             event,
-            oxide_sim::Event::AttackHit { attacker: source, target: Target::Unit(target), .. }
+            oxide_sim::Event::AttackHit { attacker: source, target: Some(Target::Unit(target)), .. }
                 if *source == attacker && *target == patient
         )
     });
@@ -546,14 +546,14 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
             1,
             Command::Attack {
                 units: vec![attacker],
-                target: Target::Unit(patient),
+                target: Target::Unit(patient).into(),
                 queue: false,
             },
         )?;
         let second = harness.present(1)?;
         assert!(second.iter().any(|event| matches!(
             event,
-            oxide_sim::Event::AttackHit { attacker: source, target: Target::Unit(target), .. }
+            oxide_sim::Event::AttackHit { attacker: source, target: Some(Target::Unit(target)), .. }
                 if *source == attacker && *target == patient
         )));
     }
@@ -569,7 +569,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         0,
         Command::Attack {
             units: vec![executioner],
-            target: Target::Unit(attacker),
+            target: Target::Unit(attacker).into(),
             queue: false,
         },
     )?;
@@ -657,7 +657,7 @@ fn captures_promoted_tender_and_condor_in_the_real_shell() -> Result<()> {
         1,
         Command::Attack {
             units: vec![attacker],
-            target: Target::Building(patient),
+            target: Target::Building(patient).into(),
             queue: false,
         },
     )?;
@@ -666,7 +666,7 @@ fn captures_promoted_tender_and_condor_in_the_real_shell() -> Result<()> {
         event,
         oxide_sim::Event::AttackHit {
             attacker: source,
-            target: Target::Building(target),
+            target: Some(Target::Building(target)),
             ..
         } if *source == attacker && *target == patient
     )));
@@ -719,7 +719,7 @@ fn captures_promoted_tender_and_condor_in_the_real_shell() -> Result<()> {
         0,
         Command::Attack {
             units: vec![condor],
-            target: Target::Unit(target),
+            target: Target::Unit(target).into(),
             queue: false,
         },
     )?;

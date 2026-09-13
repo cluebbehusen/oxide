@@ -52,7 +52,7 @@ fn turn_limited_weapons_align_before_firing_and_resume_identically() {
                     0,
                     Command::Attack {
                         units: vec![id],
-                        target: Target::Building(target),
+                        target: Target::Building(target).into(),
                         queue: false,
                     },
                 )]
@@ -158,7 +158,7 @@ fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
             0,
             Command::Attack {
                 units: vec![id],
-                target: Target::Building(target),
+                target: Target::Building(target).into(),
                 queue: false,
             },
         )
@@ -319,7 +319,7 @@ fn buzzard_tracks_a_new_target_during_reload_without_spending_another_shot() {
             0,
             Command::Attack {
                 units: vec![id],
-                target: Target::Building(target),
+                target: Target::Building(target).into(),
                 queue: false,
             },
         )
@@ -503,7 +503,7 @@ fn attack_command_kills_and_reports() {
             0,
             Command::Attack {
                 units: vec![attacker],
-                target: Target::Unit(victim),
+                target: Target::Unit(victim).into(),
                 queue: false,
             },
         )])
@@ -572,7 +572,7 @@ fn avalanche_backs_out_of_its_dead_zone_before_firing() {
             0,
             Command::Attack {
                 units: vec![avalanche],
-                target: Target::Building(target),
+                target: Target::Building(target).into(),
                 queue: false,
             },
         )])
@@ -707,7 +707,13 @@ fn unqueued_advance_replaces_an_acquired_attack_on_the_command_tick() {
     assert_eq!(
         state.unit(mover).unwrap().order,
         Order::Attack {
-            target: Target::Unit(target),
+            pursue: false,
+            target: state
+                .attack_objective(
+                    state.unit(mover).unwrap().player,
+                    Target::Unit(target).into()
+                )
+                .unwrap(),
             resume: None,
         },
         "test premise: idle acquisition installed a chase"
@@ -1066,7 +1072,7 @@ fn advance_ignores_retaliation_and_pacifists_use_plain_move() {
             1,
             Command::Attack {
                 units: vec![attacker],
-                target: Target::Unit(guard),
+                target: Target::Unit(guard).into(),
                 queue: false,
             },
         ),
@@ -1118,7 +1124,7 @@ fn rock_is_cover_until_the_attacker_repositions() {
             0,
             Command::Attack {
                 units: vec![attacker],
-                target: Target::Unit(victim),
+                target: Target::Unit(victim).into(),
                 queue: false,
             },
         )])
@@ -1181,7 +1187,7 @@ fn buildings_are_not_cover_only_terrain_is() {
             0,
             Command::Attack {
                 units: vec![attacker],
-                target: Target::Unit(victim),
+                target: Target::Unit(victim).into(),
                 queue: false,
             },
         )])
@@ -1299,7 +1305,7 @@ fn an_unbuilt_site_is_no_sandbag() {
             0,
             Command::Attack {
                 units: vec![attacker],
-                target: Target::Unit(victim),
+                target: Target::Unit(victim).into(),
                 queue: false,
             },
         )])
@@ -1362,7 +1368,7 @@ fn lancer_fires_from_beyond_bombard_sight_and_retaliation_answers() {
         1,
         Command::Attack {
             units: vec![lancer],
-            target: Target::Unit(victim),
+            target: Target::Unit(victim).into(),
             queue: false,
         },
     )]);
@@ -1374,7 +1380,7 @@ fn lancer_fires_from_beyond_bombard_sight_and_retaliation_answers() {
     assert!(
         matches!(
             state.unit(victim).unwrap().order,
-            Order::Attack { target: Target::Unit(t), .. } if t == lancer
+            Order::Attack { target, .. } if state.attack_view(state.unit(victim).unwrap().player, target).and_then(|v| v.entity) == Some(Target::Unit(lancer))
         ),
         "the bombard should turn on its attacker"
     );
@@ -1467,7 +1473,7 @@ fn a_flank_pick_is_lethal_and_the_march_still_arrives() {
         1,
         Command::Attack {
             units: vec![lancer],
-            target: Target::Unit(marcher),
+            target: Target::Unit(marcher).into(),
             queue: false,
         },
     )]);
@@ -1500,7 +1506,7 @@ fn scuttler_wins_the_matchups_it_should_and_loses_the_rest() {
         0,
         Command::Attack {
             units: vec![rat],
-            target: Target::Unit(prey),
+            target: Target::Unit(prey).into(),
             queue: false,
         },
     )]);
@@ -1518,7 +1524,7 @@ fn scuttler_wins_the_matchups_it_should_and_loses_the_rest() {
         1,
         Command::Attack {
             units: vec![rat],
-            target: Target::Unit(line),
+            target: Target::Unit(line).into(),
             queue: false,
         },
     )]);
@@ -1802,7 +1808,7 @@ fn bastion_has_artillery_reach_and_a_real_close_pressure_dead_zone() {
         1,
         Command::Attack {
             units: vec![scuttler],
-            target: Target::Building(bastion),
+            target: Target::Building(bastion).into(),
             queue: false,
         },
     )]);
@@ -1903,7 +1909,7 @@ fn mirrored_duels_end_in_mutual_annihilation() {
             0,
             Command::Attack {
                 units: vec![a],
-                target: Target::Unit(b),
+                target: Target::Unit(b).into(),
                 queue: false,
             },
         ),
@@ -1911,7 +1917,7 @@ fn mirrored_duels_end_in_mutual_annihilation() {
             1,
             Command::Attack {
                 units: vec![b],
-                target: Target::Unit(a),
+                target: Target::Unit(a).into(),
                 queue: false,
             },
         ),
@@ -1960,7 +1966,7 @@ fn retaliation_interrupts_an_attack_on_a_corpse() {
             1,
             Command::Attack {
                 units: vec![sniper],
-                target: Target::Unit(v),
+                target: Target::Unit(v).into(),
                 queue: false,
             },
         ),
@@ -1968,7 +1974,7 @@ fn retaliation_interrupts_an_attack_on_a_corpse() {
             0,
             Command::Attack {
                 units: vec![c1, c2],
-                target: Target::Unit(bait),
+                target: Target::Unit(bait).into(),
                 queue: false,
             },
         ),
@@ -1977,7 +1983,7 @@ fn retaliation_interrupts_an_attack_on_a_corpse() {
     assert!(
         matches!(
             state.unit(v).unwrap().order,
-            Order::Attack { target: Target::Unit(t), .. } if t == sniper
+            Order::Attack { target, .. } if state.attack_view(state.unit(v).unwrap().player, target).and_then(|v| v.entity) == Some(Target::Unit(sniper))
         ),
         "the victim must abandon the corpse and answer the sniper, got {:?}",
         state.unit(v).unwrap().order

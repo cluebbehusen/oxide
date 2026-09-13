@@ -1234,7 +1234,8 @@ fn queue_replacing_non_harvest_units(command: &Command) -> Option<&[UnitId]> {
         | Command::FocusFire { .. }
         | Command::CancelFound { .. }
         | Command::UpgradeBuilding { .. }
-        | Command::Unload { .. } => None,
+        | Command::Unload { .. }
+        | Command::ClearFocus { .. } => None,
     }
 }
 
@@ -1718,19 +1719,13 @@ mod tests {
         let (target, target_anchors, members) =
             frozen.expect("the connected package reaches exact-id freeze");
 
-        let mut document = serde_json::to_value(&state).expect("the fixture state serializes");
-        document["units"]
-            .as_array_mut()
-            .expect("state units serialize as an array")
-            .retain(|unit| {
-                let id = UnitId(
-                    u32::try_from(unit["id"].as_u64().expect("unit ids are numeric"))
-                        .expect("unit ids fit u32"),
-                );
-                members.binary_search(&id).is_err()
-            });
-        let mut state: State =
-            serde_json::from_value(document).expect("removing the frozen force remains valid");
+        state
+            .units
+            .retain(|unit| members.binary_search(&unit.id).is_err());
+        state.refresh_vision();
+        state
+            .validate_invariants()
+            .expect("removing the frozen force remains valid");
         while !state.current_tick().is_multiple_of(brain.dials.cadence) {
             state.tick(&[]);
         }
@@ -2492,7 +2487,7 @@ mod tests {
         for defense in defenses {
             assert_eq!(
                 applied.building(defense).expect("defense stands").focus,
-                Some(target)
+                applied.attack_objective(PlayerId(0), target)
             );
         }
     }
@@ -3265,23 +3260,20 @@ mod tests {
                     .map(move |id| (id, manifest.drop))
             })
             .collect();
-        let mut document = serde_json::to_value(&state).expect("the fixture state serializes");
-        let units = document["units"]
-            .as_array_mut()
-            .expect("state units serialize as an array");
-        units.retain(|unit| unit["id"].as_u64() != Some(u64::from(one_home_sentinel.0)));
-        for unit in units {
-            let id = UnitId(
-                u32::try_from(unit["id"].as_u64().expect("unit ids are numeric"))
-                    .expect("unit ids fit u32"),
-            );
-            if let Some((_, drop)) = assault_positions.iter().find(|(rider, _)| *rider == id) {
-                unit["pos"] =
-                    serde_json::to_value(drop.center()).expect("a tile center serializes");
+        let mut state = state.clone();
+        state.units.retain(|unit| unit.id != one_home_sentinel);
+        for unit in &mut state.units {
+            if let Some((_, drop)) = assault_positions
+                .iter()
+                .find(|(rider, _)| *rider == unit.id)
+            {
+                unit.pos = drop.center();
             }
         }
-        let state: State =
-            serde_json::from_value(document).expect("the post-loss assault state remains valid");
+        state.refresh_vision();
+        state
+            .validate_invariants()
+            .expect("the post-loss assault state remains valid");
         let observed = Observation::fog_honest(&state, PlayerId(0));
         assert!(combat_core_status(&observed, &[], &[], 8).ready);
         let exact_lift_claims = prior_planner_claims(&[], None, &[], &[], Some(operation));
@@ -4580,7 +4572,8 @@ mod tests {
                         } if *command_target
                             == Target::Building(
                                 target_id.expect("the shared Foundry is currently identified"),
-                            ) =>
+                            )
+                            .into() =>
                         {
                             let strike_aircraft = units
                                 .iter()
@@ -7524,13 +7517,14 @@ mod tests {
             }
         )));
 
-        let mut document = serde_json::to_value(&state).expect("the island state serializes");
-        document["units"]
-            .as_array_mut()
-            .expect("state units serialize as an array")
-            .retain(|unit| unit["id"].as_u64() != Some(u64::from(operation_scout.0)));
-        document["tick"] = serde_json::json!(decision_tick.saturating_add(brain.dials.cadence));
-        let state_after_scout_loss: State = serde_json::from_value(document)
+        let mut state_after_scout_loss = state.clone();
+        state_after_scout_loss
+            .units
+            .retain(|unit| unit.id != operation_scout);
+        state_after_scout_loss.tick = decision_tick.saturating_add(brain.dials.cadence);
+        state_after_scout_loss.refresh_vision();
+        state_after_scout_loss
+            .validate_invariants()
             .expect("removing the island scout preserves authoritative invariants");
         let after_loss = brain.act_traced(&state_after_scout_loss);
         let after_loss_trace = after_loss

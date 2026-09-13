@@ -850,7 +850,9 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                     note_contact(
                         &state,
                         shooter,
-                        ledgers.target_seat(target, &state),
+                        target
+                            .as_ref()
+                            .and_then(|target| ledgers.target_seat(target, &state)),
                         TilePos::containing(*target_pos),
                         now,
                         &mut contacted,
@@ -868,7 +870,9 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                     note_contact(
                         &state,
                         shooter,
-                        ledgers.target_seat(target, &state),
+                        target
+                            .as_ref()
+                            .and_then(|target| ledgers.target_seat(target, &state)),
                         TilePos::containing(*target_pos),
                         now,
                         &mut contacted,
@@ -882,7 +886,9 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                     note_contact(
                         &state,
                         Some(player.0),
-                        ledgers.target_seat(target, &state),
+                        target
+                            .as_ref()
+                            .and_then(|target| ledgers.target_seat(target, &state)),
                         TilePos::containing(*to),
                         now,
                         &mut contacted,

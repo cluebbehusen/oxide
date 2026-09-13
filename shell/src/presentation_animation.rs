@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use chassis::fx::Vec2Fx;
 use oxide_sim::stats::{Domain, MAX_WEAPONS};
 use oxide_sim::{
-    Building, BuildingId, BuildingKind, Event, Order, State, Target, TickReport, Unit, UnitId,
-    UnitKind, UnitRepairSource,
+    Building, BuildingId, BuildingKind, Event, Order, State, TickReport, Unit, UnitId, UnitKind,
+    UnitRepairSource,
 };
 
 const GROUND_MOVE_PERIOD: u64 = 6;
@@ -852,16 +852,9 @@ fn sapper_at_contact(state: &State, unit: &Unit) -> bool {
     let Order::Attack { target, .. } = unit.order else {
         return false;
     };
-    let target_pos = match target {
-        Target::Unit(id) => state
-            .unit(id)
-            .filter(|target| target.hp > 0)
-            .map(|target| target.pos),
-        Target::Building(id) => state
-            .building(id)
-            .filter(|target| target.hp > 0)
-            .map(|target| target.closest_point_to(unit.pos)),
-    };
+    let target_pos = state
+        .attack_view(unit.player, target)
+        .map(|view| view.aim_from(unit.pos));
     target_pos.is_some_and(|target| {
         let reach = oxide_sim::stats::SAPPER_CONTACT_RANGE;
         unit.pos.dist_sq(target) <= reach * reach
@@ -1051,7 +1044,7 @@ mod tests {
                 attacker,
                 attacker_kind: UnitKind::Sentinel,
                 weapon,
-                target: Target::Unit(UnitId(99)),
+                target: Some(Target::Unit(UnitId(99))),
                 attacker_pos: point(),
                 target_pos: point(),
             }],
@@ -1186,7 +1179,7 @@ mod tests {
                 Event::ShellLaunched {
                     unit_pose: None,
                     shooter: Target::Unit(UnitId(7)),
-                    target: Target::Unit(UnitId(8)),
+                    target: Some(Target::Unit(UnitId(8))),
                     player: PlayerId(0),
                     from: point(),
                     to: point(),
@@ -1195,7 +1188,7 @@ mod tests {
                 Event::ShellLaunched {
                     unit_pose: None,
                     shooter: Target::Building(BuildingId(9)),
-                    target: Target::Unit(UnitId(8)),
+                    target: Some(Target::Unit(UnitId(8))),
                     player: PlayerId(0),
                     from: point(),
                     to: point(),
@@ -1928,7 +1921,7 @@ mod tests {
                 turret: BuildingId(u32::MAX),
                 kind: BuildingKind::Turret,
                 tier: 0,
-                target: Target::Unit(UnitId(0)),
+                target: Some(Target::Unit(UnitId(0))),
                 turret_pos: point(),
                 target_pos: point(),
             }],

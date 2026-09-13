@@ -194,7 +194,7 @@ fn cruising_fighters_turn_to_targets_without_becoming_bombers() {
                         0,
                         Command::Attack {
                             units: vec![id],
-                            target: Target::Unit(target),
+                            target: Target::Unit(target).into(),
                             queue: false,
                         },
                     )]

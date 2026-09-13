@@ -55,6 +55,70 @@ fn tick_until_tethered(state: &mut State, id: UnitId) {
 }
 
 #[test]
+fn a_victorious_guard_immediately_reacquires_and_remains_stationed() {
+    let mut state = open_arena(
+        40,
+        30,
+        vec![
+            unit(0, UnitKind::Sentinel, 10, 10),
+            unit(1, UnitKind::Harvester, 20, 10),
+            unit(1, UnitKind::Harvester, 20, 12),
+        ],
+    )
+    .build()
+    .unwrap();
+    let guard = state.units()[0].id;
+    let first = state.units()[1].id;
+    let second = state.units()[2].id;
+    settle(&mut state, 60);
+    state.tick(&[
+        cmd(
+            1,
+            Command::Move {
+                units: vec![first],
+                goal: TilePos::new(13, 10),
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Move {
+                units: vec![second],
+                goal: TilePos::new(13, 11),
+                queue: false,
+            },
+        ),
+    ]);
+    for _ in 0..600 {
+        let report = state.tick(&[]);
+        if !report
+            .events
+            .iter()
+            .any(|event| matches!(event, oxide_sim::Event::UnitDied { unit, .. } if *unit == first))
+        {
+            continue;
+        }
+        let victor = state.unit(guard).unwrap();
+        let post = victor.tile();
+        assert_eq!(victor.order, Order::Idle);
+        assert!(victor.leash.is_none());
+        assert_eq!(victor.settled, oxide_sim::stats::LEASH_STATION_TICKS);
+        state.tick(&[]);
+        let victor = state.unit(guard).unwrap();
+        assert!(matches!(victor.order, Order::Attack { target, .. }
+            if state.attack_view(victor.player, target).and_then(|view| view.entity) == Some(Target::Unit(second))));
+        let leash = victor
+            .leash
+            .expect("the next fight still has a stationed guard's tether");
+        assert_eq!(leash.anchor, post);
+        assert_eq!(leash.cooldown, 0);
+        state.validate_invariants().unwrap();
+        return;
+    }
+    panic!("the guard never killed its first target");
+}
+
+#[test]
 fn a_guard_breaks_off_at_the_leash_and_walks_home() {
     let station = TilePos::new(20, 10);
     let mut state = open_arena(
@@ -271,7 +335,8 @@ fn a_returning_guard_answers_fire() {
         let Some(u) = state.units().iter().find(|u| u.id == guard) else {
             break;
         };
-        if matches!(u.order, Order::Attack { target: Target::Unit(t), .. } if t == raider) {
+        if matches!(u.order, Order::Attack { target, .. } if state.attack_view(u.player, target).and_then(|v| v.entity) == Some(Target::Unit(raider)))
+        {
             answered = true;
         }
     }
@@ -325,7 +390,7 @@ fn a_player_attack_is_never_leashed() {
             0,
             Command::Attack {
                 units: vec![hunter],
-                target: Target::Unit(prey),
+                target: Target::Unit(prey).into(),
                 queue: false,
             },
         ),
@@ -411,7 +476,7 @@ fn reissuing_the_selfsame_attack_clears_the_tether() {
     tick_until_tethered(&mut state, guard);
     let u = state.units().iter().find(|u| u.id == guard).unwrap();
     assert!(
-        matches!(u.order, Order::Attack { target: Target::Unit(t), resume: None } if t == prey),
+        matches!(u.order, Order::Attack { target, resume: None, .. } if state.attack_view(u.player, target).and_then(|view| view.entity) == Some(Target::Unit(prey))),
         "the guard self-acquired its visitor"
     );
     // The player blesses the same fight: the order compares equal (the
@@ -421,13 +486,13 @@ fn reissuing_the_selfsame_attack_clears_the_tether() {
         0,
         Command::Attack {
             units: vec![guard],
-            target: Target::Unit(prey),
+            target: Target::Unit(prey).into(),
             queue: false,
         },
     )]);
     let u = state.units().iter().find(|u| u.id == guard).unwrap();
     assert!(
-        matches!(u.order, Order::Attack { target: Target::Unit(t), .. } if t == prey),
+        matches!(u.order, Order::Attack { target, .. } if state.attack_view(u.player, target).and_then(|v| v.entity) == Some(Target::Unit(prey))),
         "the order itself is untouched"
     );
     assert!(

@@ -10,7 +10,7 @@
 use super::domain_goal;
 use crate::command::{Command, PlayerCommand, RejectReason};
 use crate::event::Event;
-use crate::ids::{BuildingId, PlayerId, Target, UnitId};
+use crate::ids::{AttackTarget, BuildingId, PlayerId, UnitId};
 use crate::state::{Order, State};
 use crate::stats::{Domain, GOAL_SNAP_RADIUS, ORDER_QUEUE_CAP, QUEUE_CAP};
 use chassis::grid::TilePos;
@@ -107,6 +107,23 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             }
             Command::FocusFire { buildings, target } => {
                 apply_focus_fire(state, pc.player, &canonical_buildings(buildings), *target)
+            }
+            Command::ClearFocus { buildings } => {
+                let ids = canonical_buildings(buildings);
+                if ids.is_empty()
+                    || ids.iter().any(|id| {
+                        state.building(*id).is_none_or(|b| {
+                            b.player != pc.player || !b.built || b.stats().weapons.is_empty()
+                        })
+                    })
+                {
+                    Err(RejectReason::NotYourBuilding)
+                } else {
+                    for id in ids {
+                        state.building_mut(id).expect("validated").focus = None;
+                    }
+                    Ok(())
+                }
             }
             Command::CancelFound { kind, anchor } => {
                 apply_cancel_found(state, pc.player, *kind, *anchor)
@@ -479,37 +496,17 @@ fn apply_attack(
     state: &mut State,
     player: PlayerId,
     units: &[UnitId],
-    target: Target,
+    target: AttackTarget,
     queue: bool,
 ) -> Result<(), RejectReason> {
-    // The target must exist, be an enemy's, and be visible to the issuer —
-    // fog of war means no sniping at things you cannot see.
-    let (target_owner, target_tile, seen) = match target {
-        Target::Unit(id) => state
-            .unit(id)
-            .map(|u| (u.player, u.tile(), state.can_see(player, u.tile())))
-            .ok_or(RejectReason::InvalidTarget)?,
-        Target::Building(id) => state
-            .building(id)
-            .map(|b| {
-                // Sight of the ground is not knowledge of a buried
-                // charge: stealth gates targeting exactly like fog.
-                let seen = b.tiles().any(|t| state.can_see(player, t))
-                    && state.building_apparent(player, b);
-                (b.player, b.anchor, seen)
-            })
-            .ok_or(RejectReason::InvalidTarget)?,
-    };
-    // Teammates (and yourself) are not targets.
-    if !state.hostile(player, target_owner) || !seen {
-        return Err(RejectReason::InvalidTarget);
-    }
-    // Units that can't fight — or whose weapons can't cover the target's
-    // domain — walk to the target area instead.
-    let victim_domain = match target {
-        Target::Unit(id) => state.unit(id).map_or(Domain::Ground, |u| u.domain()),
-        Target::Building(_) => Domain::Ground,
-    };
+    let target = state
+        .attack_objective(player, target)
+        .ok_or(RejectReason::InvalidTarget)?;
+    let view = state
+        .attack_view(player, target)
+        .ok_or(RejectReason::InvalidTarget)?;
+    let target_tile = chassis::grid::TilePos::containing(view.position);
+    let victim_domain = view.domain;
     let walk_goals = [
         domain_goal(state, target_tile, Domain::Ground),
         domain_goal(state, target_tile, Domain::Air),
@@ -519,14 +516,17 @@ fn apply_attack(
         let stats = u.kind.stats();
         // A demolition machine carries no gun, but its charge covers
         // ground the same way a weapon would.
-        let covers = stats.can_target(victim_domain)
-            || (stats.demolition && victim_domain == Domain::Ground);
+        let covers = victim_domain
+            .map_or(!stats.weapons.is_empty() || stats.demolition, |domain| {
+                stats.can_target(domain) || (stats.demolition && domain == Domain::Ground)
+            });
         if covers {
             if assign(
                 u,
                 Order::Attack {
                     target,
                     resume: None,
+                    pursue: true,
                 },
                 queue,
             ) {
@@ -1364,7 +1364,7 @@ fn apply_focus_fire(
     state: &mut State,
     player: PlayerId,
     buildings: &[BuildingId],
-    target: Target,
+    target: AttackTarget,
 ) -> Result<(), RejectReason> {
     if buildings.is_empty() {
         return Err(RejectReason::NotYourBuilding);
@@ -1392,10 +1392,16 @@ fn apply_focus_fire(
         weapons.push(weapon);
     }
 
-    let domain = state
-        .visible_hostile_target_domain(player, target)
+    let target = state
+        .attack_objective(player, target)
         .ok_or(RejectReason::InvalidTarget)?;
-    if weapons.iter().any(|weapon| !weapon.targets.covers(domain)) {
+    let view = state
+        .attack_view(player, target)
+        .ok_or(RejectReason::InvalidTarget)?;
+    if view
+        .domain
+        .is_some_and(|domain| weapons.iter().any(|weapon| !weapon.targets.covers(domain)))
+    {
         return Err(RejectReason::InvalidTarget);
     }
 

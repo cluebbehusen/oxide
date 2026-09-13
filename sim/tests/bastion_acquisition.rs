@@ -236,7 +236,7 @@ fn bastion_keeps_a_legal_aim_when_prediction_enters_its_dead_zone() {
 }
 
 #[test]
-fn building_ghosts_and_radar_contacts_do_not_enable_bastion_fire() {
+fn radar_contacts_enable_bastion_fire_without_acquiring_building_ghosts() {
     let target_anchor = TilePos::new(13, 10);
     let mut scenario = open_arena(
         32,
@@ -294,11 +294,13 @@ fn building_ghosts_and_radar_contacts_do_not_enable_bastion_fire() {
     assert!(!state.can_see(PlayerId(0), radar_tile));
     assert!(state.vision(PlayerId(0)).contacts().contains(&radar_tile));
 
+    let mut shots = 0;
     for _ in 0..(BuildingKind::Bastion.base_stats().weapons[0].cooldown_ticks + 30) {
         let report = state.tick(&[]);
-        assert!(
-            bastion_launch(&report.events, bastion).is_none(),
-            "memory and unidentified radar must not authorize a shot"
-        );
+        if let Some(aim) = bastion_launch(&report.events, bastion) {
+            assert_eq!(aim, radar_tile.center());
+            shots += 1;
+        }
     }
+    assert!(shots > 0);
 }

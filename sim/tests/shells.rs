@@ -90,7 +90,7 @@ fn unit_launch(
             to,
             flight,
             ..
-        } if *unit == shooter => Some((*target, *to, *flight)),
+        } if *unit == shooter => Some(((*target)?, *to, *flight)),
         _ => None,
     })
 }
@@ -194,7 +194,7 @@ fn open_fire() -> (State, Vec<Event>) {
             0,
             Command::Attack {
                 units: vec![bombard],
-                target: Target::Unit(scuttler),
+                target: oxide_sim::AttackTarget::Unit(scuttler),
                 queue: false,
             },
         )],
@@ -371,7 +371,7 @@ fn a_straight_mover_is_led_hit_and_replayed_bit_exactly() {
         0,
         Command::Attack {
             units: vec![bombard],
-            target: Target::Unit(target),
+            target: Target::Unit(target).into(),
             queue: false,
         },
     );
@@ -561,7 +561,7 @@ fn neighbor_shot(
             0,
             Command::Attack {
                 units: vec![gun],
-                target: Target::Unit(target),
+                target: Target::Unit(target).into(),
                 queue: false,
             },
         )],
@@ -705,7 +705,7 @@ fn predictive_aim_never_extends_the_weapon_envelope() {
             0,
             Command::Attack {
                 units: vec![bombard],
-                target: Target::Unit(target),
+                target: Target::Unit(target).into(),
                 queue: false,
             },
         )],
@@ -748,7 +748,7 @@ fn predictive_aim_is_independent_of_unit_id_order_and_brain_parity() {
                 0,
                 Command::Attack {
                     units: vec![bombard],
-                    target: Target::Unit(target),
+                    target: Target::Unit(target).into(),
                     queue: false,
                 },
             )],
@@ -888,7 +888,8 @@ fn assert_artillery_fires_through_shared_sight(
     assert_eq!(
         unit.order,
         Order::Attack {
-            target,
+            pursue: false,
+            target: state.attack_objective(unit.player, target.into()).unwrap(),
             resume: None,
         }
     );
@@ -1070,7 +1071,7 @@ fn predictive_aim_falls_back_before_crossing_a_peak() {
             0,
             Command::Attack {
                 units: vec![bombard],
-                target: Target::Unit(target),
+                target: Target::Unit(target).into(),
                 queue: false,
             },
         )],
@@ -1123,7 +1124,7 @@ fn a_siege_shell_lands_on_the_footprint_edge_and_still_counts() {
             0,
             Command::Attack {
                 units: vec![bombard],
-                target: Target::Building(east),
+                target: Target::Building(east).into(),
                 queue: false,
             },
         )],

@@ -200,7 +200,7 @@ fn departure_case(work: DepartingWork, tick: u64) -> (State, UnitId, UnitId, Pla
     let command = match work {
         DepartingWork::Attack => Command::Attack {
             units: vec![patient],
-            target: Target::Unit(extra_unit.expect("attack case has a target")),
+            target: Target::Unit(extra_unit.expect("attack case has a target")).into(),
             queue: false,
         },
         DepartingWork::Harvest => Command::Harvest {
@@ -582,7 +582,8 @@ fn a_patient_that_parks_during_its_brain_is_weldable_on_both_parities() {
         json["units"][0]["progress"] = serde_json::json!(weld_step_progress(UnitKind::Sentinel));
         json["units"][1]["hp"] = serde_json::json!(UnitKind::Sentinel.stats().max_hp - 10);
         json["units"][1]["order"] = serde_json::to_value(Order::Attack {
-            target: Target::Unit(target),
+            pursue: true,
+            target: Target::Unit(target).into(),
             resume: None,
         })
         .unwrap();

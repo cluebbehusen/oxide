@@ -88,6 +88,50 @@ fn visible_hostile_target_at(
         })
 }
 
+fn known_hostile_target_at(
+    game: &Game,
+    world: Vec2,
+    tile: TilePos,
+) -> Option<(
+    oxide_sim::AttackTarget,
+    Vec2,
+    Option<oxide_sim::stats::Domain>,
+)> {
+    if let Some((target, at, domain)) = visible_hostile_target_at(game, world, tile) {
+        return Some((target.into(), at, Some(domain)));
+    }
+    if let Some(track) = game
+        .my_vision()
+        .tracks()
+        .iter()
+        .find(|track| track.visible_unit.is_none() && track.tile == tile)
+    {
+        return Some((
+            oxide_sim::AttackTarget::Contact(track.id),
+            vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5),
+            None,
+        ));
+    }
+    if let Some(ghost) = game.my_vision().ghosts().iter().find(|ghost| {
+        let (w, h) = ghost.kind.base_stats().size;
+        tile.x >= ghost.anchor.x
+            && tile.y >= ghost.anchor.y
+            && tile.x < ghost.anchor.x + w
+            && tile.y < ghost.anchor.y + h
+    }) {
+        return Some((
+            oxide_sim::AttackTarget::RememberedBuilding(oxide_sim::RememberedBuilding {
+                owner: ghost.owner,
+                building_kind: ghost.kind,
+                anchor: ghost.anchor,
+            }),
+            world,
+            Some(oxide_sim::stats::Domain::Ground),
+        ));
+    }
+    None
+}
+
 /// Digits are contextual: an open build palette spends them on
 /// structures, a selected own factory spends them on production, and
 /// otherwise the first five are control groups.
@@ -154,25 +198,24 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     let world = game.camera.to_world(screen);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     if game.selection.units.is_empty() {
-        if let Some((target, at, domain)) = visible_hostile_target_at(game, world, tile) {
-            let defenses: Vec<_> = game
-                .selection
-                .buildings
-                .iter()
-                .copied()
-                .filter(|id| {
-                    game.state.building(*id).is_some_and(|building| {
-                        building.player == game.human
-                            && building.built
-                            && building
-                                .kind
-                                .base_stats()
-                                .weapons
-                                .first()
-                                .is_some_and(|weapon| weapon.targets.covers(domain))
+        if let Some((target, at, domain)) = known_hostile_target_at(game, world, tile) {
+            let defenses: Vec<_> =
+                game.selection
+                    .buildings
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        game.state.building(*id).is_some_and(|building| {
+                            building.player == game.human
+                                && building.built
+                                && building.kind.base_stats().weapons.first().is_some_and(
+                                    |weapon| {
+                                        domain.is_none_or(|domain| weapon.targets.covers(domain))
+                                    },
+                                )
+                        })
                     })
-                })
-                .collect();
+                    .collect();
             if !defenses.is_empty() {
                 game.issue(Command::FocusFire {
                     buildings: defenses,
@@ -289,7 +332,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     }
     // Fog rules what right-click may target: unseen enemies aren't there
     // as far as the player is concerned (the sim enforces this too).
-    if let Some((target, at, _)) = visible_hostile_target_at(game, world, tile) {
+    if let Some((target, at, _)) = known_hostile_target_at(game, world, tile) {
         game.issue(Command::Attack {
             units,
             target,

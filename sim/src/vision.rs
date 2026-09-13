@@ -20,6 +20,9 @@ use chassis::path::AstarScratch;
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
 
+mod tracking;
+pub use tracking::{ContactSample, ContactTrack};
+
 /// A remembered enemy building: what its ground looked like the last time
 /// this player saw it. Ghosts are beliefs, not facts — the building may be
 /// long gone.
@@ -89,6 +92,8 @@ pub struct Vision {
     /// Array's outer ring but outside true sight. A contact without
     /// identity — no kind, no owner, no memory (rebuilt every tick).
     contacts: Vec<TilePos>,
+    #[serde(default)]
+    tracking: tracking::Tracking,
     /// Recent tiles where this team saw one of its own assets take damage.
     /// Sorted and deduplicated by (y, x); old snapshots predate the field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -104,6 +109,7 @@ impl Vision {
             remembered_scrap: Grid::new(width, height, 0),
             remembered_wreck: Grid::new(width, height, 0),
             contacts: Vec::new(),
+            tracking: tracking::Tracking::default(),
             salvage_incidents: Vec::new(),
         }
     }
@@ -155,6 +161,31 @@ impl Vision {
     /// Radar blips: sorted (y, x), deduplicated, rebuilt every tick.
     pub fn contacts(&self) -> &[TilePos] {
         &self.contacts
+    }
+
+    /// Continuous mobile contacts, including identified units in true sight.
+    pub fn tracks(&self) -> &[ContactTrack] {
+        &self.tracking.tracks
+    }
+
+    /// A live observation identity; lost identities never resolve again.
+    pub fn track(&self, id: crate::ContactId) -> Option<&ContactTrack> {
+        self.tracks()
+            .binary_search_by_key(&id, |track| track.id)
+            .ok()
+            .map(|index| &self.tracks()[index])
+    }
+
+    pub(crate) fn tracking_valid(&self, state: &State, player: PlayerId) -> bool {
+        self.tracking.valid(self, state, player)
+    }
+
+    pub(crate) fn shares_tracking(&self, other: &Self) -> bool {
+        self.tracking == other.tracking
+    }
+
+    pub(crate) fn minted_contact(&self, id: crate::ContactId) -> bool {
+        id.0 < self.tracking.next_id
     }
 
     pub(crate) fn salvage_incidents(&self) -> &[SalvageIncident] {
@@ -223,6 +254,7 @@ impl Vision {
             remembered_scrap,
             remembered_wreck,
             contacts,
+            tracking,
             salvage_incidents,
         } = self;
         visible.copy_from(&src.visible);
@@ -231,6 +263,7 @@ impl Vision {
         remembered_scrap.copy_from(&src.remembered_scrap);
         remembered_wreck.copy_from(&src.remembered_wreck);
         contacts.clone_from(&src.contacts);
+        tracking.clone_from(&src.tracking);
         salvage_incidents.clone_from(&src.salvage_incidents);
     }
 
@@ -932,8 +965,27 @@ pub(crate) fn refresh(state: &mut State) {
             view.contacts.sort_unstable_by_key(|t| (t.y, t.x));
             view.contacts.dedup();
         }
+        let mut tracking = std::mem::take(&mut view.tracking);
+        tracking.refresh(view, state, PlayerId(index as u8));
+        view.tracking = tracking;
     }
     state.vision = vision;
+}
+
+/// Initialize pre-contact snapshots from their validated, stored observations.
+pub(crate) fn initialize_legacy_tracking(state: &mut State) -> bool {
+    let mut vision = std::mem::take(&mut state.vision);
+    let mut initialized = false;
+    for (index, view) in vision.iter_mut().enumerate() {
+        if view.tracking.next_id == 0 && view.tracking.tracks.is_empty() {
+            let mut tracking = std::mem::take(&mut view.tracking);
+            tracking.refresh(view, state, PlayerId(index as u8));
+            initialized |= tracking.next_id != 0;
+            view.tracking = tracking;
+        }
+    }
+    state.vision = vision;
+    initialized
 }
 
 #[cfg(test)]

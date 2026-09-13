@@ -1079,7 +1079,7 @@ fn lethal_fire_wins_a_structure_repair_pulse_and_forfeits_its_coin() {
         1,
         Command::Attack {
             units: vec![attacker],
-            target: Target::Building(patient),
+            target: Target::Building(patient).into(),
             queue: false,
         },
     )]);
