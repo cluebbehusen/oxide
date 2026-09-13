@@ -20,6 +20,8 @@ type PanelGeometry = (
     bool,
 );
 
+const CARD_RIGHT_INSET: f32 = 12.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PanelPacking {
     right: f32,
@@ -60,7 +62,7 @@ fn panel_packing_at_right(
     hides_minimap: bool,
 ) -> PanelPacking {
     let (cards_x, card_w, card_h, gap) = card_metrics(viewport, scale, compact);
-    let available = (right - cards_x).max(card_w);
+    let available = (right - cards_x - CARD_RIGHT_INSET * scale).max(card_w);
     let per_row = (((available + gap) / (card_w + gap)).floor() as usize).max(1);
     let (roster_w, roster_h, roster_gap) = (64.0 * scale, 64.0 * scale, 5.0 * scale);
     let roster_per_row =
@@ -197,6 +199,55 @@ fn grouped_card_gap(
     let ordinary_width = cards_in_boundary_row as f32 * card_width
         + cards_in_boundary_row.saturating_sub(1) as f32 * ordinary_gap;
     (available - ordinary_width).clamp(0.0, 10.0 * card_width / 66.0)
+}
+
+fn command_card_geometry(
+    viewport: Vec2,
+    scale: f32,
+    compact: bool,
+    packing: PanelPacking,
+    cards: &[crate::panel::Card],
+) -> (Vec<Rect>, f32) {
+    use crate::panel::CardAction;
+    let (left, width, height, gap) = card_metrics(viewport, scale, compact);
+    let shown = cards.len().min(16);
+    let rally_count = cards[..shown]
+        .iter()
+        .take_while(|card| matches!(card.action, CardAction::ArmRally | CardAction::ClearRally))
+        .count();
+    let section_gap = grouped_card_gap(
+        shown,
+        rally_count,
+        packing.per_row,
+        packing.available,
+        width,
+        gap,
+    );
+    let slots: Vec<Rect> = (0..shown)
+        .map(|index| {
+            let (row, column, after_rally) = grouped_card_slot(index, rally_count, packing.per_row);
+            Rect::new(
+                left + column as f32 * (width + gap) + if after_rally { section_gap } else { 0.0 },
+                packing.top
+                    + 10.0 * scale
+                    + packing.capabilities_h
+                    + packing.roster_h
+                    + row as f32 * (height + 4.0 * scale),
+                width,
+                height,
+            )
+        })
+        .collect();
+    let band_width = if shown == 0 {
+        left
+    } else {
+        slots
+            .iter()
+            .map(|rect| rect.x + rect.w)
+            .fold(left, f32::max)
+            + CARD_RIGHT_INSET * scale
+    };
+    (slots, band_width.min(packing.right))
 }
 
 fn panel_sub_lines(sub: &str) -> Vec<String> {
@@ -479,7 +530,8 @@ pub(crate) fn draw_panel(
     // push the panel through the top bar, the command surface takes the
     // width for this frame; only a still-overfull palette temporarily
     // yields the mixed roster.
-    let (cards_x, cw, ch, gap) = card_metrics(vec2(screen_width(), screen_height()), s, compact);
+    let viewport = vec2(screen_width(), screen_height());
+    let (cards_x, cw, _, _) = card_metrics(viewport, s, compact);
     let sub_size = 15.0 * s;
     let sub_width = cards_x - 70.0 * s;
     let sub_lines: Vec<_> = panel_sub_lines(&panel.sub)
@@ -495,28 +547,14 @@ pub(crate) fn draw_panel(
     let portrait_h = (60.0 + sub_lines.len().saturating_sub(1) as f32 * 18.0) * s;
     packing.band_h = packing.band_h.max(portrait_h);
     packing.top = screen_height() - packing.band_h;
-    let available = packing.available;
-    let per_row = packing.per_row;
     let roster_shown = packing.roster_shown;
     let (rw, rh, roster_gap) = (64.0 * s, 64.0 * s, 5.0 * s);
     let roster_per_row = packing.roster_per_row;
-    let roster_h = packing.roster_h;
-    let shown = panel.cards.len().min(16);
-    let rally_shown = panel.cards[..shown]
-        .iter()
-        .take_while(|card| matches!(card.action, CardAction::ArmRally | CardAction::ClearRally))
-        .count();
-    let section_gap = grouped_card_gap(shown, rally_shown, per_row, available, cw, gap);
     let capabilities_shown = packing.capabilities_shown;
     let capabilities_h = packing.capabilities_h;
     let band_h = packing.band_h;
     let top = packing.top;
-    let cards_w = if shown == 0 {
-        cards_x
-    } else {
-        let used_cols = shown.min(per_row).max(1) as f32;
-        (cards_x + used_cols * (cw + gap)).max(220.0 * s) + 6.0 * s
-    };
+    let (card_rects, cards_w) = command_card_geometry(viewport, s, compact, packing, &panel.cards);
     let capabilities_w = panel
         .capabilities
         .iter()
@@ -776,14 +814,7 @@ pub(crate) fn draw_panel(
     // Command cards, wrapping into as many rows as the width demands.
     let mut cards = [(zero, CardAction::None); 16];
     let mut card_count = 0;
-    for (i, card) in panel.cards.iter().take(16).enumerate() {
-        let (row, col, after_rally) = grouped_card_slot(i, rally_shown, per_row);
-        let rect = Rect::new(
-            cards_x + col as f32 * (cw + gap) + if after_rally { section_gap } else { 0.0 },
-            top + 10.0 * s + capabilities_h + roster_h + row as f32 * (ch + 4.0 * s),
-            cw,
-            ch,
-        );
+    for (card, rect) in panel.cards.iter().zip(card_rects) {
         let hovered = rect.contains(input.mouse);
         let selected =
             matches!(card.action, CardAction::ArmBuild(kind) if input.placing == Some(kind));
@@ -1173,6 +1204,127 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_cards_stay_inside_the_band_across_layouts_and_actions() {
+        use crate::action::BindingMap;
+        use oxide_sim::{BuildingKind, Command, Faction, PlayerCommand, Scenario};
+
+        for faction in [Faction::Ferrous, Faction::Cupric] {
+            for kind in BuildingKind::ALL
+                .into_iter()
+                .filter(|kind| !kind.base_stats().produces.is_empty())
+            {
+                for full_queue in [false, true] {
+                    let mut scenario = Scenario::skirmish();
+                    scenario.players[0].faction = faction;
+                    scenario.players[0].scrap = if full_queue { 10_000 } else { 0 };
+                    if kind != BuildingKind::Foundry {
+                        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+                            player: 0,
+                            kind,
+                            x: 9,
+                            y: 3,
+                        });
+                    }
+                    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+                    let building = game
+                        .state
+                        .buildings()
+                        .iter()
+                        .find(|building| building.player == game.human && building.kind == kind)
+                        .unwrap()
+                        .id;
+                    game.selection.buildings = vec![building];
+                    if full_queue {
+                        let unit = *kind
+                            .base_stats()
+                            .produces
+                            .iter()
+                            .find(|unit| unit.faction().is_none_or(|owner| owner == faction))
+                            .unwrap();
+                        for _ in 0..oxide_sim::stats::QUEUE_CAP {
+                            game.state.tick(&[PlayerCommand {
+                                player: game.human,
+                                command: Command::Train {
+                                    building,
+                                    kind: unit,
+                                },
+                            }]);
+                        }
+                        assert_eq!(
+                            game.state.building(building).unwrap().queue.len(),
+                            oxide_sim::stats::QUEUE_CAP
+                        );
+                    }
+                    for rally in [false, true] {
+                        if rally {
+                            game.state.tick(&[PlayerCommand {
+                                player: game.human,
+                                command: Command::SetRally {
+                                    building,
+                                    rally: Some(chassis::grid::TilePos::new(12, 8)),
+                                },
+                            }]);
+                        }
+                        let panel =
+                            crate::panel::build_for_palette(&game, &BindingMap::classic(), false)
+                                .unwrap();
+                        for width in (640..=1920).step_by(17).chain([799, 800, 1280, 1440, 1920]) {
+                            for height in [400, 499, 500, 600, 800, 1080] {
+                                let viewport = vec2(width as f32, height as f32);
+                                for preference in [0.75, 1.0, 1.25, 1.5] {
+                                    let scale = effective_ui_scale(preference, viewport);
+                                    let minimap = minimap_rect_scaled(40, 24, viewport, scale);
+                                    let packing = panel_packing(
+                                        viewport,
+                                        minimap,
+                                        scale,
+                                        panel.roster.len(),
+                                        panel.cards.len(),
+                                        panel.capabilities.len(),
+                                        false,
+                                    );
+                                    let (slots, right) = command_card_geometry(
+                                        viewport,
+                                        scale,
+                                        false,
+                                        packing,
+                                        &panel.cards,
+                                    );
+                                    assert_eq!(slots.len(), panel.cards.len());
+                                    assert!(packing.top >= crate::layout::TOP_BAR_H * scale);
+                                    for (index, rect) in slots.iter().enumerate() {
+                                        assert!(
+                                            rect.x + rect.w + CARD_RIGHT_INSET * scale
+                                                <= right + 0.001,
+                                            "{kind:?} {faction:?} rally={rally} queue={full_queue} viewport={viewport:?} scale={scale}: card {index} ends at {}, band ends at {right}",
+                                            rect.x + rect.w
+                                        );
+                                        assert!(
+                                            rect.y >= packing.top
+                                                && rect.y + rect.h <= viewport.y + 0.001
+                                        );
+                                        assert!(
+                                            rect.w >= crate::layout::MIN_TOUCH_TARGET * scale
+                                                && rect.h
+                                                    >= crate::layout::MIN_TOUCH_TARGET * scale
+                                        );
+                                        assert!(
+                                            slots[..index]
+                                                .iter()
+                                                .all(|other| !rect.overlaps(other))
+                                        );
+                                        assert!(packing.hides_minimap || !rect.overlaps(&minimap));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn narrow_cards_wrap_compound_orders_without_losing_the_hyphen() {
