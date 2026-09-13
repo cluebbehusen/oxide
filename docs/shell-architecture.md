@@ -169,7 +169,9 @@ information occupies a left column at least as tall as the action strip, while
 commands occupy a separate bottom strip. Their enclosing bounds are
 observational only: the open notch accepts battlefield input. The queue remains
 a separate dock above the information column and wraps into multiple columns to
-keep its entries accessible. The debug UI response exposes both exact selection
+keep its entries accessible. Production countdowns reserve label width from the
+complete queued jobs, including a blocked head's ready label, so progress alone
+does not resize the dock. The debug UI response exposes both exact selection
 regions alongside its legacy enclosing bounds.
 
 The HUD's supported layout floor is 1280×800 at the default UI scale, matching

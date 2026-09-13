@@ -228,6 +228,40 @@ fn queue_grid(queue_len: usize, panel_top: f32, scale: f32) -> (Rect, [Rect; 8],
     (dock, slots, count)
 }
 
+fn queue_label_width(panel: &crate::panel::Panel, measure: impl Fn(&str) -> f32) -> f32 {
+    use crate::panel::{CardAction, CardIcon};
+
+    let ticks = panel
+        .queue
+        .iter()
+        .filter_map(|card| match (card.action, card.icon) {
+            (CardAction::CancelQueue(..), CardIcon::Unit(kind)) => Some(kind.stats().train_ticks),
+            _ => None,
+        });
+    if ticks.clone().next().is_none() {
+        return measure(&panel.queue_label);
+    }
+
+    // Reserve from complete jobs, not their changing progress. Digit widths
+    // can differ, and a completed head may stay queued while its exit is blocked.
+    let digit_width = (0..=9)
+        .map(|digit| measure(&digit.to_string()))
+        .fold(0.0_f32, f32::max);
+    let time_width = |ticks: u32| {
+        let seconds = ticks.div_ceil(oxide_sim::TICKS_PER_SECOND).max(1);
+        let digits = seconds.ilog10() + 1;
+        (digits + 1) as f32 * digit_width + measure(".s")
+    };
+    let total_ticks = ticks.clone().sum();
+    let later_ticks = ticks.skip(1).sum();
+    let ready_width = if later_ticks == 0 {
+        measure("queue ready")
+    } else {
+        measure("queue ready + ") + time_width(later_ticks)
+    };
+    (measure("queue ") + time_width(total_ticks)).max(ready_width)
+}
+
 fn catalog_geometry(
     viewport: Vec2,
     scale: f32,
@@ -927,8 +961,9 @@ pub(crate) fn draw_panel(
     let mut dock = Rect::new(0.0, 0.0, 0.0, 0.0);
     if !panel.queue.is_empty() {
         let (mut grid_dock, grid_slots, n) = queue_grid(panel.queue.len(), top, s);
-        let queue_label_width =
-            measure_text(&panel.queue_label, None, (13.0 * s) as u16, 1.0).width + 16.0 * s;
+        let queue_label_width = queue_label_width(panel, |text| {
+            measure_text(text, None, (13.0 * s) as u16, 1.0).width
+        }) + 16.0 * s;
         grid_dock.w = grid_dock.w.max(queue_label_width);
         dock = grid_dock;
         let hidden = panel.queue.len().saturating_sub(n);
@@ -1212,6 +1247,63 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_dock_width_survives_countdowns_and_blocked_completion() {
+        let mut game =
+            Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0)).unwrap();
+        let foundry = game
+            .state
+            .buildings()
+            .iter()
+            .find(|b| b.player == game.human && b.kind == oxide_sim::BuildingKind::Foundry)
+            .unwrap()
+            .id;
+        game.selection.buildings = vec![foundry];
+        let train = oxide_sim::PlayerCommand {
+            player: game.human,
+            command: oxide_sim::Command::Train {
+                building: foundry,
+                kind: oxide_sim::UnitKind::Harvester,
+            },
+        };
+        game.state.tick(&[train.clone(), train]);
+        let measure = |text: &str| {
+            text.chars()
+                .map(|c| match c {
+                    '1' => 3.0,
+                    '8' => 9.0,
+                    _ => 7.0,
+                })
+                .sum::<f32>()
+        };
+        let mut widths = Vec::new();
+        let mut labels = Vec::new();
+        for _ in 0..oxide_sim::UnitKind::Harvester.stats().train_ticks {
+            let mut panel = crate::panel::build_for_palette(
+                &game,
+                &crate::action::BindingMap::classic(),
+                false,
+            )
+            .unwrap();
+            if panel.queue.len() < 2 {
+                assert!(queue_label_width(&panel, measure) < widths[0]);
+                break;
+            }
+            let width = queue_label_width(&panel, measure);
+            assert!(measure(&panel.queue_label) <= width);
+            labels.push(panel.queue_label.clone());
+            widths.push(width);
+            panel.queue_label = "queue ready + 5s".into();
+            assert_eq!(queue_label_width(&panel, measure), width);
+            assert!(measure(&panel.queue_label) <= width);
+            game.state.tick(&[]);
+        }
+        assert!(labels.iter().any(|label| label == "queue 10s"));
+        assert!(labels.iter().any(|label| label == "queue 9.9s"));
+        assert!(widths.iter().all(|width| *width == widths[0]));
+        assert_eq!(game.state.building(foundry).unwrap().queue.len(), 1);
+    }
 
     #[test]
     fn fabricator_corner_reaches_wrapped_actions_and_keeps_queue_above_it() {
