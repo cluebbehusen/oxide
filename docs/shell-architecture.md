@@ -133,7 +133,10 @@ HUD drawing publishes one `LayoutModel` for the frame. The same rectangles drive
 hit testing for the top bar, panel band, order dock, minimap, roster, cards,
 queue, idle-worker badge, and armed-mode ribbon. Drawing and interaction must
 not recalculate competing geometry. Logical input coordinates are used
-throughout; platform DPI conversion occurs once at the hardware adapter.
+throughout; platform DPI conversion occurs once at the hardware adapter. The
+command band measures its width from the placed card rectangles, including the
+separator after rally controls. Row packing reserves the same right inset used
+by the background so wrapped production cards remain inside the panel.
 
 Construction uses one 13-card catalog, grouped by economy, production, defense,
 and utility when space permits. Visual grouping preserves each building's digit
