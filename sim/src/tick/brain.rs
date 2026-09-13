@@ -60,6 +60,8 @@ impl PendingHit {
 /// must never come online — no free turret shot, no "online" fanfare
 /// before death.
 struct PendingHpGain {
+    /// The first crew work, even when rounding gives it no hp gain.
+    starts: bool,
     site: crate::ids::BuildingId,
     step: u32,
     completes: bool,
@@ -352,6 +354,12 @@ fn resolve_hits(
     for (victim, tile) in incidents {
         state.record_salvage_incident(victim, tile);
     }
+    let starts: Vec<_> = builds
+        .iter()
+        .filter(|gain| gain.starts)
+        .map(|gain| gain.site)
+        .collect();
+    super::charges::detonate_under_construction(state, &starts, events);
     // Stacked welders each prepaid their own meter against the same
     // start-of-tick hp reading, but the ceiling accepts hp in decision
     // order — a welder whose WHOLE step lands past it gets this tick's
@@ -746,6 +754,7 @@ fn repair_bay_aura(
             state.player_mut(owner).scrap = bank - due as u32;
             in_flight.insert(id, queued + step);
             builds.push(PendingHpGain {
+                starts: false,
                 site: id,
                 step,
                 completes: false,
@@ -933,6 +942,53 @@ fn resolve_founds(state: &mut State, mut founds: Vec<PendingFounding>, events: &
 #[cfg(test)]
 mod damage_tests {
     use super::*;
+
+    #[test]
+    fn a_lethal_volley_precedes_construction_triggers_and_completion() {
+        use crate::{BuildingKind, PlayerId};
+        use chassis::grid::TilePos;
+        for kill_mine in [false, true] {
+            let mut state = crate::Scenario::skirmish().build().unwrap();
+            let anchor = TilePos::new(12, 8);
+            let mine = state.place_building(PlayerId(1), BuildingKind::ScuttleCharge, anchor);
+            let site = state.place_site(PlayerId(0), BuildingKind::Barricade, anchor);
+            let victim = if kill_mine { mine } else { site };
+            let hit = PendingHit::along(
+                &state,
+                Target::Unit(state.units[0].id),
+                Target::Building(victim),
+                state.building(victim).unwrap().hp,
+                anchor.center(),
+                anchor.center(),
+            );
+            let gain = PendingHpGain {
+                starts: true,
+                site,
+                step: 1,
+                completes: true,
+                player: PlayerId(0),
+                kind: BuildingKind::Barricade,
+                paid: 0,
+                repair_bay: None,
+            };
+            let mut events = Vec::new();
+            resolve_hits(
+                &mut state,
+                vec![hit],
+                vec![gain],
+                vec![],
+                vec![],
+                &mut events,
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, Event::ChargeDetonated { .. }))
+            );
+            assert_eq!(state.building(site).unwrap().built, kill_mine);
+            assert_eq!(state.building(mine).unwrap().hp == 0, kill_mine);
+        }
+    }
 
     #[test]
     fn damage_evidence_survives_same_tick_repair_and_excludes_zero_damage() {

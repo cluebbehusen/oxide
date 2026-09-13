@@ -6,33 +6,14 @@ use crate::stats::BuildingKind;
 use chassis::grid::TilePos;
 
 impl State {
-    /// Whether `player` may claim `kind` at `anchor` *this instant*:
-    /// every footprint tile currently visible to them, open ground, and
-    /// free of buildings and standing units. The real invariant is
-    /// narrower than visibility: a placement verdict may only read facts
-    /// the issuer knows — static terrain, own memory, own and allied
-    /// entities. Requiring current sight is how THIS predicate earns the
-    /// right to read live occupancy (`building_at`, the hostile-unit
-    /// scan); [`State::place_intent_refusal`] earns it differently, by
-    /// answering from memory and re-checking here at arrival. This is
-    /// literally [`State::place_refusal`] with the reason thrown away,
-    /// and it stays the final word on every actual ground claim —
-    /// instant builds, bot builds, and the deferred founder's arrival
-    /// all resolve through it.
+    /// Whether a currently visible site can be claimed from the issuer's
+    /// knowledge. Concealed enemy charges do not refuse a claim; detection
+    /// cancels unstarted work, and construction trips an undiscovered charge.
     pub fn can_place(&self, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> bool {
         self.place_refusal(player, kind, anchor).is_none()
     }
 
-    /// Why a placement is refused, or `None` when it is allowed — the
-    /// toast's vocabulary. The first blocking reason in footprint scan
-    /// order wins; every check is fog-safe by construction (it reads
-    /// only what `player` currently sees, exactly like the predicate).
-    ///
-    /// One deliberate exception: occupancy reads TRUE occupancy, hidden
-    /// charges included, because this is the final word on actual
-    /// ground claims and the sim cannot let two buildings share ground
-    /// whatever the issuer knows. The intent path stays fog-honest
-    /// instead; a claim over a hidden charge dies here, at arrival.
+    /// The first known placement blocker, requiring current footprint sight.
     pub fn place_refusal(
         &self,
         player: PlayerId,
@@ -79,7 +60,7 @@ impl State {
                 if !self.map.terrain_passable(t) {
                     return Some(PlaceRefusal::Terrain);
                 }
-                if self.building_at(t).is_some() {
+                if self.known_building_at(player, t) {
                     return Some(PlaceRefusal::Building);
                 }
             }
@@ -100,6 +81,30 @@ impl State {
                 }
         });
         hostile_in_footprint.then_some(PlaceRefusal::Unit)
+    }
+
+    fn known_building_at(&self, player: PlayerId, tile: TilePos) -> bool {
+        self.buildings_at(tile)
+            .any(|b| self.building_apparent(player, b))
+            || self
+                .vision(player)
+                .ghosts()
+                .iter()
+                .any(|ghost| ghost.kind.is_stealthy() && ghost.footprint().any(|t| t == tile))
+    }
+
+    pub(crate) fn known_charge_at(&self, player: PlayerId, tile: TilePos) -> bool {
+        self.vision(player)
+            .ghosts()
+            .iter()
+            .any(|ghost| ghost.kind.is_stealthy() && ghost.footprint().any(|t| t == tile))
+            || (self.vision(player).visible(tile)
+                && self.buildings_at(tile).any(|b| {
+                    b.hp > 0
+                        && b.kind.is_stealthy()
+                        && self.hostile(player, b.player)
+                        && self.building_apparent(player, b)
+                }))
     }
 
     /// Whether `player` owns a completed building of every kind that
@@ -252,15 +257,7 @@ impl State {
                     if !self.map.terrain_passable(t) {
                         return Some(PlaceRefusal::Terrain);
                     }
-                    // The intent verdict reads only what the issuer
-                    // knows: an undetected buried charge is not
-                    // knowledge, so it neither reds a preview ghost nor
-                    // refuses the intent — the claim dies honestly at
-                    // arrival, where truth re-proves the ground.
-                    if self
-                        .building_at(t)
-                        .is_some_and(|b| self.building_apparent(player, b))
-                    {
+                    if self.known_building_at(player, t) {
                         return Some(PlaceRefusal::Building);
                     }
                     continue;

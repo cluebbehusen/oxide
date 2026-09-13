@@ -1437,6 +1437,10 @@ impl State {
     /// scenario build so tick 0 already has sight.
     pub(crate) fn refresh_vision(&mut self) {
         crate::vision::refresh(self);
+        self.reconcile_attack_knowledge();
+    }
+
+    pub(crate) fn reconcile_attack_knowledge(&mut self) {
         let keep: Vec<bool> = self
             .buildings
             .iter()
@@ -1529,9 +1533,11 @@ impl State {
             .map(|i| &mut self.buildings[i])
     }
 
-    /// The building whose footprint covers `pos`, if any.
-    pub fn building_at(&self, pos: TilePos) -> Option<&Building> {
-        self.buildings.iter().find(|b| b.contains(pos))
+    /// Every building covering `pos`, in id order. A buried charge can share
+    /// ground with an unstarted site; filter by visibility, ownership, or
+    /// movement rules before choosing an occupant.
+    pub fn buildings_at(&self, pos: TilePos) -> impl Iterator<Item = &Building> {
+        self.buildings.iter().filter(move |b| b.contains(pos))
     }
 
     /// Whether a unit may stand on `pos`: ground terrain, no live scrap, no
@@ -1612,9 +1618,9 @@ impl State {
         }
     }
 
-    /// Whether `viewer` is allowed to KNOW this building exists, over
-    /// and above ordinary tile sight. True for everything except an
-    /// enemy [`BuildingKind::is_stealthy`] charge, which must be
+    /// Whether `viewer` may observe this building's current condition, over
+    /// and above ordinary tile sight. Retained memory is a separate surface. True for everything except an
+    /// completed enemy [`BuildingKind::is_stealthy`] charge, which must be
     /// actively detected: an allied scout-role flyer within
     /// [`crate::stats::CHARGE_SCOUT_DETECT_RADIUS`] tiles, or an allied
     /// built Array whose detection ring covers it —
@@ -1625,10 +1631,15 @@ impl State {
     /// Every fog-honest surface — ghosts, targeting, views, rendering —
     /// must consult this before showing a hostile building.
     pub fn building_apparent(&self, viewer: PlayerId, building: &Building) -> bool {
-        if !building.kind.is_stealthy() || !self.hostile(viewer, building.player) {
+        if !building.kind.is_stealthy() || !building.built || !self.hostile(viewer, building.player)
+        {
             return true;
         }
-        let anchor = building.anchor;
+        self.charge_detected_at(viewer, building.anchor)
+    }
+
+    /// Detector coverage is independent of whether a charge still exists.
+    pub(crate) fn charge_detected_at(&self, viewer: PlayerId, anchor: TilePos) -> bool {
         let scout_r = crate::stats::CHARGE_SCOUT_DETECT_RADIUS;
         let scouted = self.units.iter().any(|u| {
             u.hp > 0

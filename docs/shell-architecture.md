@@ -310,6 +310,13 @@ ghosts and radar dots. Attack labels and markers use player knowledge; defense
 focus appears as a target preference cleared by Stop. Blind firing events supply
 coordinates without a victim id, allowing launch and firing feedback on misses.
 
+Unfinished enemy mines use ordinary building visibility. A completed concealed
+mine can retain a last-seen marker on visible ground; it is a memory, not a live
+selection or hp readout. Detector coverage restores current information.
+Construction over an unknown mine exposes the same preview, scaffold selection,
+and resume interaction as empty ground. Picking and placement inspect eligible
+occupants rather than letting a buried charge mask an overlapping scaffold.
+
 ## Rendering and assets
 
 The shell GPU renderer draws the actual player-facing frame: camera-clipped

@@ -904,10 +904,7 @@ fn southeast_brain_ignores_an_unactionable_public_extractor_without_learning_its
     );
 }
 
-// Concealed-mine placement can reject an otherwise legal bot command:
-// https://linear.app/cluebbehusen/issue/CL-33/building-placement-exposes-concealed-enemy-mines
 #[test]
-#[ignore = "Blocked by the concealed-mine placement leak (CL-33)"]
 fn balanced_mirror_plays_a_complete_decisive_match() {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {

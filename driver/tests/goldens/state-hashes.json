@@ -32,17 +32,17 @@
     "overburden": "0x6135c6f61ad232df",
     "overburden@6000": "0xd22d1789c1b88b2e",
     "paired-claims": "0x56ef28b40a15aa20",
-    "paired-claims@6000": "0x07116893c8a52e06",
+    "paired-claims@6000": "0xac1b0b90be04ca2e",
     "parallel-works": "0xbd88049a408b0770",
     "parallel-works@6000": "0xb782804edd81280f",
-    "pentangle-claim": "0x4ef05cf586309ffe",
-    "pentangle-claim@6000": "0x020a20629ef41793",
+    "pentangle-claim": "0xc568ce83075c925f",
+    "pentangle-claim@6000": "0x957e960f0b310118",
     "powder-keg": "0x508e86b673841c72",
     "powder-keg@6000": "0x17dff0a90de61bd6",
-    "salvage-triangle": "0xbdaa50879f37ebb7",
-    "salvage-triangle@6000": "0x44b115d8b5d1af0c",
+    "salvage-triangle": "0xf2aa46537ce6bccd",
+    "salvage-triangle@6000": "0xce51614f37f10c69",
     "scramble-basin": "0x611c33873bc47262",
-    "scramble-basin@6000": "0x0e6aae33599db4e3",
+    "scramble-basin@6000": "0x4090f329993f58c9",
     "severance": "0xfc2f790ac5fba2e9",
     "severance@6000": "0x664efe7f6a59cc57",
     "skirmish": "0x5d87bd11024a9c18",
@@ -66,6 +66,6 @@
     "trident-plateau": "0x94e493f2c3c77c02",
     "trident-plateau@6000": "0xfbce28aace2897c8",
     "twin-forges": "0x3b5d3ef34e89e5dd",
-    "twin-forges@6000": "0x30ff263c390fece0"
+    "twin-forges@6000": "0x2abe4546a1fb4a92"
   }
 }
