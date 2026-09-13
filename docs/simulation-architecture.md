@@ -672,6 +672,11 @@ confidence, value, time-to-impact, and safety bands decide first; personality
 resolves only a genuine semantic tie and never removes a domain or defensive
 role from consideration.
 
+Production preflight rejects overlapping fixed execution intervals on the same
+factory before enumerating flexible schedules. A job occupies its completion
+tick, so the next fixed job may start on the following tick. Extra forecast
+income and alternative assignments for other jobs cannot resolve that overlap.
+
 Defense derivation skips expensive placement for roles whose real current cost
 cannot fit after imported fixed capital. This prefilter leaves viable quotes
 unchanged; the allocator still owns producer funding and portfolio

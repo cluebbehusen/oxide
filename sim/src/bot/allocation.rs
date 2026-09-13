@@ -2729,7 +2729,7 @@ impl ClaimState {
         &self,
         capacity: &AllocationCapacity,
     ) -> Result<ResolvedClaimState, AllocationConflict> {
-        self.validate_production_funding_bound(capacity)?;
+        self.validate_production_bounds(capacity)?;
         self.resolve_with_funding_mode(capacity, JointFundingMode::PreferPriority)
             .or_else(|| {
                 self.resolve_with_funding_mode(
@@ -2819,7 +2819,7 @@ impl ClaimState {
         })
     }
 
-    fn validate_production_funding_bound(
+    fn validate_production_bounds(
         &self,
         capacity: &AllocationCapacity,
     ) -> Result<(), AllocationConflict> {
@@ -2908,6 +2908,22 @@ impl ClaimState {
                     requested,
                     available,
                 });
+            }
+        }
+        for (index, job) in self.producer_jobs.iter().enumerate() {
+            let Some(fixed) = job.claim.fixed_assignment() else {
+                continue;
+            };
+            if self.producer_jobs[index + 1..]
+                .iter()
+                .filter_map(|other| other.claim.fixed_assignment())
+                .any(|other| {
+                    fixed.producer == other.producer
+                        && fixed.starts_at <= other.ready_at
+                        && other.starts_at <= fixed.ready_at
+                })
+            {
+                return Err(producer_schedule_conflict(&self.producer_jobs));
             }
         }
         Ok(())
@@ -7420,6 +7436,53 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_producer_overlap_is_rejected_before_enumerating_flexible_jobs() {
+        let owner = ClaimOwner::Proposal(ProposalKey::StandingForce(StandingForceKey::fixture(
+            UnitKind::Sentinel,
+        )));
+        let basis = capacity(1_000, 1_000, vec![], vec![]);
+        for (producer, starts_at, conflicts) in [
+            (BuildingId(7), 100, true),
+            (BuildingId(7), 249, true),
+            (BuildingId(7), 250, false),
+            (BuildingId(8), 100, false),
+        ] {
+            let mut jobs = [
+                ProducerJobClaim::fixed(BuildingId(7), UnitKind::Sentinel, 100, 100, 249, 1_000),
+                ProducerJobClaim::fixed(
+                    producer,
+                    UnitKind::Sentinel,
+                    starts_at,
+                    starts_at,
+                    starts_at + 149,
+                    1_000,
+                ),
+            ];
+            for _ in 0..2 {
+                let claims = ClaimState {
+                    producer_jobs: jobs
+                        .iter()
+                        .enumerate()
+                        .map(|(ordinal, claim)| OwnedProducerJob {
+                            claim: claim.clone(),
+                            owner,
+                            ordinal,
+                            funding_priority: FundingPriority::fresh_proposal(owner, 0),
+                        })
+                        .collect(),
+                    ..ClaimState::default()
+                };
+                assert_eq!(
+                    claims.validate_production_bounds(&basis).is_err(),
+                    conflicts,
+                    "producer={producer:?}, starts_at={starts_at}, jobs={jobs:?}"
+                );
+                jobs.reverse();
             }
         }
     }
