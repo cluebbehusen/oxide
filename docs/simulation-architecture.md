@@ -1132,6 +1132,14 @@ it could not enter. A* still constructs every uncached selected path. Investment
 scores, threat evidence, asset values, and budgets are recomputed from the
 current observation rather than retained with passability.
 
+Exact Build-route checks index observed and public ground passability once per
+defensive grounding and reuse A* storage across builders and candidate sites.
+Proposed footprints, extra blockers, danger checks, and authoritative doorstep
+ranking remain query-local, so cached terrain cannot change the selected route.
+Travel-cost and safety checks share only their most recent exact route; danger
+is checked again on every use, and a changed builder, target, or orientation
+requires a new route.
+
 The pre-core emergency path is deliberately narrower than voluntary allocation.
 It uses only a current visible armed ground threat for a Turret or a current
 visible ground-attack aircraft for Flak, places only the matching defense, and

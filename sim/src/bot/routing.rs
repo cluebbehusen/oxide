@@ -637,67 +637,6 @@ fn build_command_path_avoids_with_public_terrain_projected(
         .is_some_and(|path| !blocked(unit.tile) && path.into_iter().all(|tile| !blocked(tile)))
 }
 
-/// Movement cost, in path tenths, of the route an ordinary Build command will
-/// actually select against current dynamic knowledge and authored terrain.
-pub(super) fn build_command_path_cost_with_public_terrain(
-    obs: &Observation,
-    briefing: &PublicMapBriefing,
-    unit: &UnitObs,
-    anchor: TilePos,
-    size: (i32, i32),
-    defer: bool,
-) -> Option<u32> {
-    build_command_path_cost_with_public_terrain_projected(
-        obs, briefing, unit, anchor, size, defer, None,
-    )
-}
-
-/// Build-command movement cost with authoritative world-frame doorstep
-/// ranking and policy-frame pathfinding.
-pub(super) fn build_command_path_cost_with_public_terrain_and_orientation(
-    obs: &Observation,
-    briefing: &PublicMapBriefing,
-    unit: &UnitObs,
-    anchor: TilePos,
-    size: (i32, i32),
-    defer: bool,
-    orientation: Orientation,
-) -> Option<u32> {
-    build_command_path_cost_with_public_terrain_projected(
-        obs,
-        briefing,
-        unit,
-        anchor,
-        size,
-        defer,
-        Some(orientation),
-    )
-}
-
-fn build_command_path_cost_with_public_terrain_projected(
-    obs: &Observation,
-    briefing: &PublicMapBriefing,
-    unit: &UnitObs,
-    anchor: TilePos,
-    size: (i32, i32),
-    defer: bool,
-    orientation: Option<Orientation>,
-) -> Option<u32> {
-    selected_build_command_path(
-        obs,
-        unit,
-        BuildCommandTarget {
-            anchor,
-            size,
-            defer,
-        },
-        Some(briefing),
-        orientation,
-        |_| false,
-    )
-    .map(|path| path_cost_from(unit.tile, &path))
-}
-
 /// The exact Build-command route with authored terrain and additional frozen
 /// footprints, ranking doorsteps in the authoritative world frame.
 pub(super) fn build_command_path_avoids_with_public_terrain_and_blockers_and_orientation(
@@ -740,6 +679,116 @@ fn build_command_path_avoids_with_public_terrain_and_blockers_projected(
     .is_some_and(|path| !blocked(unit.tile) && path.into_iter().all(|tile| !blocked(tile)))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct BuildRouteKey {
+    unit: UnitId,
+    player: crate::ids::PlayerId,
+    start: TilePos,
+    domain: Domain,
+    target: BuildCommandTarget,
+    orientation: Option<Orientation>,
+}
+
+struct CachedBuildRoute {
+    key: BuildRouteKey,
+    path: Option<Vec<TilePos>>,
+}
+
+/// Indexed passability and reusable search storage for exact Build routes in
+/// one immutable observation. Candidate footprints stay query-local.
+pub(super) struct BuildRouteProjection<'a> {
+    routes: RouteProjection<'a>,
+    scratch: std::cell::RefCell<chassis::path::AstarScratch>,
+    last_path: std::cell::RefCell<Option<CachedBuildRoute>>,
+    #[cfg(test)]
+    searches: std::cell::Cell<usize>,
+}
+
+impl<'a> BuildRouteProjection<'a> {
+    pub(super) fn new(obs: &'a Observation, briefing: Option<&'a PublicMapBriefing>) -> Self {
+        Self {
+            routes: briefing.map_or_else(
+                || RouteProjection::new(obs, Domain::Ground),
+                |map| RouteProjection::with_public_terrain(obs, Domain::Ground, map),
+            ),
+            scratch: Default::default(),
+            last_path: Default::default(),
+            #[cfg(test)]
+            searches: Default::default(),
+        }
+    }
+
+    fn path(
+        &self,
+        unit: &UnitObs,
+        target: BuildCommandTarget,
+        orientation: Option<Orientation>,
+        additional_blocked: impl Fn(TilePos) -> bool,
+    ) -> Option<Vec<TilePos>> {
+        #[cfg(test)]
+        self.searches.set(self.searches.get() + 1);
+        selected_build_command_path_with_open(
+            self.routes.obs,
+            unit,
+            target,
+            orientation,
+            |tile| self.routes.open(tile) && !additional_blocked(tile),
+            &mut self.scratch.borrow_mut(),
+        )
+    }
+
+    fn cached_path(
+        &self,
+        unit: &UnitObs,
+        target: BuildCommandTarget,
+        orientation: Option<Orientation>,
+    ) -> Option<Vec<TilePos>> {
+        let key = BuildRouteKey {
+            unit: unit.id,
+            player: unit.player,
+            start: unit.tile,
+            domain: unit.kind.stats().domain,
+            target,
+            orientation,
+        };
+        let mut last = self.last_path.borrow_mut();
+        if let Some(previous) = last.as_ref()
+            && previous.key == key
+        {
+            return previous.path.clone();
+        }
+        let path = self.path(unit, target, orientation, |_| false);
+        // Travel cost and danger validation consume the same selected route.
+        // Retain only the most recent query, including an exact failed search.
+        *last = Some(CachedBuildRoute {
+            key,
+            path: path.clone(),
+        });
+        path
+    }
+
+    pub(super) fn cost(
+        &self,
+        unit: &UnitObs,
+        target: BuildCommandTarget,
+        orientation: Option<Orientation>,
+    ) -> Option<u32> {
+        self.cached_path(unit, target, orientation)
+            .map(|path| path_cost_from(unit.tile, &path))
+    }
+
+    pub(super) fn avoids(
+        &self,
+        unit: &UnitObs,
+        target: BuildCommandTarget,
+        orientation: Option<Orientation>,
+        mut blocked: impl FnMut(TilePos) -> bool,
+    ) -> bool {
+        self.cached_path(unit, target, orientation)
+            .is_some_and(|path| !blocked(unit.tile) && path.into_iter().all(|tile| !blocked(tile)))
+    }
+}
+
 fn selected_build_command_path(
     obs: &Observation,
     unit: &UnitObs,
@@ -747,6 +796,17 @@ fn selected_build_command_path(
     briefing: Option<&PublicMapBriefing>,
     orientation: Option<Orientation>,
     additional_blocked: impl Fn(TilePos) -> bool,
+) -> Option<Vec<TilePos>> {
+    BuildRouteProjection::new(obs, briefing).path(unit, target, orientation, additional_blocked)
+}
+
+fn selected_build_command_path_with_open(
+    obs: &Observation,
+    unit: &UnitObs,
+    target: BuildCommandTarget,
+    orientation: Option<Orientation>,
+    base_open: impl Fn(TilePos) -> bool,
+    scratch: &mut chassis::path::AstarScratch,
 ) -> Option<Vec<TilePos>> {
     if unit.kind.stats().domain != Domain::Ground || !in_bounds(obs, unit.tile) {
         return None;
@@ -762,15 +822,7 @@ fn selected_build_command_path(
             && tile.y >= anchor.y
             && tile.y < anchor.y + size.1
     };
-    let open = |tile: TilePos| {
-        domain_open(obs, Domain::Ground, tile)
-            && briefing.is_none_or(|map| {
-                map.terrain_at(tile)
-                    .is_some_and(|terrain| !terrain.blocks_ground())
-            })
-            && !additional_blocked(tile)
-            && (defer || !inside(tile))
-    };
+    let open = |tile: TilePos| base_open(tile) && (defer || !inside(tile));
     let mut candidates: Vec<_> = crate::tick::rect_adjacent_tiles(anchor, size)
         .filter(|tile| open(*tile))
         .collect();
@@ -819,13 +871,14 @@ fn selected_build_command_path(
         candidates[..near].rotate_left(rank % near);
     }
     for goal in candidates {
-        let Some(path) = chassis::path::astar(
+        let Some(path) = chassis::path::astar_with_scratch(
             obs.map_width,
             obs.map_height,
             unit.tile,
             goal,
             &open,
             crate::stats::PATH_EXPANSION_CAP,
+            scratch,
         ) else {
             continue;
         };
@@ -1365,6 +1418,122 @@ mod tests {
             visible: vec![false; 12 * 8],
             explored: vec![false; 12 * 8],
             ..Observation::default()
+        }
+    }
+
+    #[test]
+    fn build_cost_and_safety_share_only_the_exact_last_route() {
+        let obs = observation();
+        let map = public_map(&obs, Vec::new());
+        let routes = BuildRouteProjection::new(&obs, Some(&map));
+        let target = BuildCommandTarget {
+            anchor: TilePos::new(8, 4),
+            size: (2, 2),
+            defer: false,
+        };
+        let builder = &obs.my_units[0];
+        assert!(routes.cost(builder, target, None).is_some());
+        assert!(routes.avoids(builder, target, None, |_| false));
+        assert!(!routes.avoids(builder, target, None, |tile| tile == builder.tile));
+        assert_eq!(routes.searches.get(), 1);
+        for other in [
+            BuildCommandTarget {
+                defer: true,
+                ..target
+            },
+            BuildCommandTarget {
+                anchor: TilePos::new(7, 4),
+                ..target
+            },
+            BuildCommandTarget {
+                size: (1, 1),
+                ..target
+            },
+            target,
+        ] {
+            let before = routes.searches.get();
+            routes.cost(builder, other, None);
+            assert_eq!(routes.searches.get(), before + 1);
+        }
+        let orientation = Some(Orientation::for_home(&obs, TilePos::new(10, 6)));
+        routes.cost(builder, target, orientation);
+        let before = routes.searches.get();
+        routes.cost(&obs.my_units[1], target, orientation);
+        assert_eq!(routes.searches.get(), before + 1);
+        let mut moved = obs.my_units[1].clone();
+        moved.tile = TilePos::new(1, 1);
+        routes.cost(&moved, target, orientation);
+        assert_eq!(routes.searches.get(), before + 2);
+        moved.kind = UnitKind::Buzzard;
+        assert_eq!(routes.cost(&moved, target, orientation), None);
+        let failed = routes.searches.get();
+        assert!(!routes.avoids(&moved, target, orientation, |_| false));
+        assert_eq!(routes.searches.get(), failed);
+    }
+
+    #[test]
+    fn shared_build_routes_preserve_exact_paths_across_footprints_and_overlays() {
+        for layout in 0..12 {
+            let mut obs = observation();
+            obs.known_rock = (0..obs.map_height)
+                .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
+                .filter(|tile| (tile.x * 7 + tile.y * 13 + layout) % 19 == 0)
+                .collect();
+            obs.known_scrap = vec![(TilePos::new(4, 4), 20)];
+            obs.enemy_buildings = vec![building(
+                8,
+                1,
+                BuildingKind::Turret,
+                TilePos::new(8, 3),
+                true,
+            )];
+            let map = public_map(&obs, vec![(TilePos::new(6, 2), Terrain::Pit)]);
+            let routes = BuildRouteProjection::new(&obs, Some(&map));
+            for orientation in [None, Some(Orientation::for_home(&obs, TilePos::new(10, 6)))] {
+                for anchor in [TilePos::new(2, 3), TilePos::new(5, 4), TilePos::new(10, 6)] {
+                    for defer in [false, true, false] {
+                        for overlay in [false, true, false] {
+                            for builder in &obs.my_units {
+                                let target = BuildCommandTarget {
+                                    anchor,
+                                    size: (2, 2),
+                                    defer,
+                                };
+                                let additional = |tile: TilePos| overlay && tile.x == 7;
+                                let expected = selected_build_command_path_with_open(
+                                    &obs,
+                                    builder,
+                                    target,
+                                    orientation,
+                                    |tile| {
+                                        ground_open(&obs, tile)
+                                            && map
+                                                .terrain_at(tile)
+                                                .is_some_and(|terrain| !terrain.blocks_ground())
+                                            && !additional(tile)
+                                    },
+                                    &mut chassis::path::AstarScratch::default(),
+                                );
+                                assert_eq!(
+                                    routes.path(builder, target, orientation, additional),
+                                    expected
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            let target = BuildCommandTarget {
+                anchor: TilePos::new(5, 4),
+                size: (2, 2),
+                defer: true,
+            };
+            let builder = &obs.my_units[0];
+            assert!(!routes.avoids(builder, target, None, |tile| tile == builder.tile));
+            assert_eq!(
+                routes.avoids(builder, target, None, |_| false),
+                routes.path(builder, target, None, |_| false).is_some()
+            );
         }
     }
 
@@ -2086,25 +2255,27 @@ mod tests {
             .to_vec();
         let map = public_map(&obs, Vec::new());
         assert_eq!(
-            build_command_path_cost_with_public_terrain(
-                &obs,
-                &map,
+            BuildRouteProjection::new(&obs, Some(&map)).cost(
                 &obs.my_units[0],
-                anchor,
-                size,
-                false,
+                BuildCommandTarget {
+                    anchor,
+                    size,
+                    defer: false
+                },
+                None,
             ),
             Some(54),
             "rank zero must retain the rotated first doorstep rather than the globally shortest one"
         );
         assert_eq!(
-            build_command_path_cost_with_public_terrain(
-                &obs,
-                &map,
+            BuildRouteProjection::new(&obs, Some(&map)).cost(
                 &obs.my_units[1],
-                anchor,
-                size,
-                false,
+                BuildCommandTarget {
+                    anchor,
+                    size,
+                    defer: false
+                },
+                None,
             ),
             Some(50),
             "rank one rotates the globally shortest west doorstep into first place"
@@ -2281,14 +2452,14 @@ mod tests {
             "frozen-layout safety must rank that same authoritative route"
         );
         assert_eq!(
-            build_command_path_cost_with_public_terrain_and_orientation(
-                &obs,
-                &map,
+            BuildRouteProjection::new(&obs, Some(&map)).cost(
                 builder,
-                anchor,
-                (1, 1),
-                false,
-                orientation,
+                BuildCommandTarget {
+                    anchor,
+                    size: (1, 1),
+                    defer: false
+                },
+                Some(orientation),
             ),
             Some(10),
             "costing must use that same one-step authoritative route"

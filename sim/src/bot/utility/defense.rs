@@ -164,6 +164,7 @@ struct FutureGroundProducerEgress {
 pub(super) struct DefenseGrounding<'a> {
     public_starts: Vec<StartingFoundry>,
     ground: GroundKnowledge<'a>,
+    build_routes: routing::BuildRouteProjection<'a>,
     assets: Vec<DefendedAsset>,
     future_ground_producers: Vec<FutureGroundProducerEgress>,
 }
@@ -185,7 +186,7 @@ struct BuilderTravelKey {
 #[derive(Clone, Copy)]
 struct BuilderSafetyContext<'a> {
     obs: &'a Observation,
-    briefing: &'a PublicMapBriefing,
+    routes: &'a routing::BuildRouteProjection<'a>,
     danger: &'a super::danger::HarvestDangerProjection,
     orientation: Option<Orientation>,
 }
@@ -320,6 +321,7 @@ impl<'a> DefenseGrounding<'a> {
         Self {
             public_starts,
             ground,
+            build_routes: routing::BuildRouteProjection::new(obs, Some(briefing)),
             assets,
             future_ground_producers,
         }
@@ -343,27 +345,15 @@ impl<'a> DefenseGrounding<'a> {
             (0..placement.size.0)
                 .any(|dx| !self.ground.obs.visible(placement.anchor.offset(dx, dy)))
         });
-        match orientation {
-            Some(orientation) => {
-                routing::build_command_path_cost_with_public_terrain_and_orientation(
-                    self.ground.obs,
-                    self.ground.briefing,
-                    builder,
-                    placement.anchor,
-                    placement.size,
-                    defer,
-                    orientation,
-                )
-            }
-            None => routing::build_command_path_cost_with_public_terrain(
-                self.ground.obs,
-                self.ground.briefing,
-                builder,
-                placement.anchor,
-                placement.size,
+        self.build_routes.cost(
+            builder,
+            routing::BuildCommandTarget {
+                anchor: placement.anchor,
+                size: placement.size,
                 defer,
-            ),
-        }
+            },
+            orientation,
+        )
     }
 }
 
@@ -511,7 +501,7 @@ impl<'a> DefenseThinkContext<'a> {
             policy,
             BuilderSafetyContext {
                 obs: self.obs,
-                briefing: self.briefing,
+                routes: &self.grounding.build_routes,
                 danger: &self.danger,
                 orientation: self.future_egress_orientation,
             },
@@ -842,13 +832,14 @@ impl<'a> ResourceAccessGuard<'a> {
             (0..placement.size.0)
                 .any(|dx| !self.ground.obs.visible(placement.anchor.offset(dx, dy)))
         });
-        routing::build_command_path_cost_with_public_terrain(
-            self.ground.obs,
-            self.ground.briefing,
+        routing::BuildRouteProjection::new(self.ground.obs, Some(self.ground.briefing)).cost(
             builder,
-            anchor,
-            placement.size,
-            defer,
+            routing::BuildCommandTarget {
+                anchor,
+                size: placement.size,
+                defer,
+            },
+            None,
         )
     }
 }
@@ -882,31 +873,16 @@ fn cached_safe_implicit_builder(
         } else {
             let blocked =
                 |tile| policy.harvest_location_contested(tile) || context.danger.contains(tile);
-            let safe = match context.orientation {
-                Some(orientation) => {
-                    routing::build_command_path_avoids_with_public_terrain_and_orientation(
-                        context.obs,
-                        context.briefing,
-                        builder,
-                        routing::BuildCommandTarget {
-                            anchor,
-                            size,
-                            defer,
-                        },
-                        orientation,
-                        blocked,
-                    )
-                }
-                None => routing::build_command_path_avoids_with_public_terrain(
-                    context.obs,
-                    context.briefing,
-                    builder,
+            let safe = context.routes.avoids(
+                builder,
+                routing::BuildCommandTarget {
                     anchor,
                     size,
                     defer,
-                    blocked,
-                ),
-            };
+                },
+                context.orientation,
+                blocked,
+            );
             cache.builder_safety.insert(key, safe);
             #[cfg(test)]
             {
@@ -2191,7 +2167,7 @@ fn strategic_defense_quote_from_projection(
                 policy,
                 BuilderSafetyContext {
                     obs,
-                    briefing,
+                    routes: &grounding.build_routes,
                     danger,
                     orientation: future_egress_orientation,
                 },
