@@ -1115,10 +1115,13 @@ fog-honest passability surface. Directed endpoint paths include the candidate
 footprint in their key; air routes ignore ground-only footprints. Normal ground,
 hypothetical combined-build layouts, and air surfaces have independent bounded
 retention: one normal generation has an 8 MiB budget, two hypothetical
-generations have 1 MiB each, and air has 2 MiB. These bound accounted retained
-payload and entry allowances, not process RSS. Cache eviction or an oversized
-entry falls back to search. Successful hits clear old exhausted-component
-evidence, while failures are not stored as bare unreachable results.
+generations have 1 MiB each, and air has 8 MiB. After the blocking grid,
+endpoint paths and reverse distance fields each own half the payload budget;
+eviction in one class cannot discard the other class. These bound accounted
+retained payload and entry allowances, not process RSS. Cache eviction or an
+oversized entry falls back to search. Successful hits clear old
+exhausted-component evidence, while failures are not stored as bare unreachable
+results.
 
 Lazy reverse distance fields use the same open-tile graph, 10/14 movement costs,
 and diagonal corner rules. They only reject endpoint pairs whose no-candidate

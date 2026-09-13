@@ -31,32 +31,49 @@ struct Generation {
     path_order: VecDeque<PathKey>,
     distances: BTreeMap<TilePos, Box<[u32]>>,
     distance_order: VecDeque<TilePos>,
-    bytes: usize,
+    path_bytes: usize,
+    distance_bytes: usize,
     budget: usize,
 }
 
 impl Generation {
-    fn reserve(&mut self, bytes: usize) -> bool {
-        // Bound retained payload with a conservative allowance per tree entry.
-        // Allocator bookkeeping and temporary search buffers are not retained.
-        if self.blocked.len().saturating_add(bytes) > self.budget {
+    fn payload_budget(&self) -> usize {
+        self.budget.saturating_sub(self.blocked.len()) / 2
+    }
+
+    fn reserve_path(&mut self, bytes: usize) -> bool {
+        let budget = self.payload_budget();
+        if bytes > budget {
             return false;
         }
-        while self.bytes.saturating_add(bytes) > self.budget {
-            // Preserve costly distance fields while individual route entries
-            // can make room. Eviction never discards the entire generation.
-            if let Some(key) = self.path_order.pop_front() {
-                let path = self.paths.remove(&key).expect("retained route key");
-                self.bytes -= path.len() * size_of::<TilePos>() + ENTRY_ALLOWANCE;
-            } else if let Some(goal) = self.distance_order.pop_front() {
-                let field = self
-                    .distances
-                    .remove(&goal)
-                    .expect("retained distance goal");
-                self.bytes -= field.len() * size_of::<u32>() + ENTRY_ALLOWANCE;
-            }
+        while self.path_bytes.saturating_add(bytes) > budget {
+            let key = self.path_order.pop_front().expect("retained route budget");
+            let path = self.paths.remove(&key).expect("retained route key");
+            self.path_bytes -= path.len() * size_of::<TilePos>() + ENTRY_ALLOWANCE;
         }
-        self.bytes += bytes;
+        self.path_bytes += bytes;
+        true
+    }
+
+    fn reserve_distance(&mut self, bytes: usize) -> bool {
+        let budget = self.payload_budget();
+        if bytes > budget {
+            return false;
+        }
+        // Full-map distance fields must not evict the endpoint routes they
+        // help prune. Each payload class owns half the retained budget.
+        while self.distance_bytes.saturating_add(bytes) > budget {
+            let goal = self
+                .distance_order
+                .pop_front()
+                .expect("retained distance budget");
+            let field = self
+                .distances
+                .remove(&goal)
+                .expect("retained distance goal");
+            self.distance_bytes -= field.len() * size_of::<u32>() + ENTRY_ALLOWANCE;
+        }
+        self.distance_bytes += bytes;
         true
     }
 }
@@ -68,7 +85,7 @@ impl DefenseRoutingCache {
         domain: DefenseDomain,
     ) -> Option<&mut Generation> {
         let (entries, blocked, budget, limit) = match domain {
-            DefenseDomain::Air => (&mut self.air, &ground.air_blocked, 2 * MIB, 1),
+            DefenseDomain::Air => (&mut self.air, &ground.air_blocked, 8 * MIB, 1),
             DefenseDomain::Ground if ground.hypothetical => {
                 (&mut self.hypothetical, &ground.ground_blocked, MIB, 2)
             }
@@ -96,7 +113,8 @@ impl DefenseRoutingCache {
                 path_order: VecDeque::new(),
                 distances: BTreeMap::new(),
                 distance_order: VecDeque::new(),
-                bytes: blocked.len(),
+                path_bytes: 0,
+                distance_bytes: 0,
                 budget,
             });
         }
@@ -143,7 +161,7 @@ pub(super) fn path(
     // Retain neither as a bare absence without that query's scratch evidence.
     if let Some(path) = &result
         && let Some(generation) = ground.routing().borrow_mut().generation(ground, domain)
-        && generation.reserve(path.len() * size_of::<TilePos>() + ENTRY_ALLOWANCE)
+        && generation.reserve_path(path.len() * size_of::<TilePos>() + ENTRY_ALLOWANCE)
     {
         generation
             .paths
@@ -175,7 +193,7 @@ pub(super) fn bound(
     if let Some(field) = generation.distances.get(&goal) {
         return field[index];
     }
-    if !generation.reserve(generation.blocked.len() * size_of::<u32>() + ENTRY_ALLOWANCE) {
+    if !generation.reserve_distance(generation.blocked.len() * size_of::<u32>() + ENTRY_ALLOWANCE) {
         return fallback;
     }
     let field = distance_field(ground.obs.map_width, ground.obs.map_height, goal, |tile| {

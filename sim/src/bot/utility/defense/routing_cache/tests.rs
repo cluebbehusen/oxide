@@ -342,10 +342,10 @@ fn cache_hits_clear_exhaustion_and_eviction_preserves_answers() {
         .is_none()
     );
     assert!(!scratch.last_search_exhausted());
-    // A single retained field fits, but evicts the earlier path and itself
-    // when a different goal needs the same budget.
+    // A single field fits in its partition; replacing it retains the path.
     let cells = ground.ground_blocked.len();
-    policy.defense_routing_cache.borrow_mut().ground[0].budget = cells * 5 + ENTRY_ALLOWANCE;
+    policy.defense_routing_cache.borrow_mut().ground[0].budget =
+        cells + 2 * (cells * 4 + ENTRY_ALLOWANCE);
     assert_eq!(bound(&ground, start, goal, DefenseDomain::Ground), 40);
     assert_eq!(
         bound(&ground, start, unreachable, DefenseDomain::Ground),
@@ -363,9 +363,23 @@ fn cache_hits_clear_exhaustion_and_eviction_preserves_answers() {
         Some(expected.clone())
     );
     let cache = policy.defense_routing_cache.borrow();
-    assert!(cache.ground[0].bytes <= cache.ground[0].budget);
+    assert!(
+        cells + cache.ground[0].path_bytes + cache.ground[0].distance_bytes
+            <= cache.ground[0].budget
+    );
+    assert!(cache.ground[0].paths.contains_key(&(None, start, goal)));
     drop(cache);
-    policy.defense_routing_cache.borrow_mut().ground[0].budget = cells;
+    {
+        let mut cache = policy.defense_routing_cache.borrow_mut();
+        let generation = &mut cache.ground[0];
+        generation.paths.clear();
+        generation.path_order.clear();
+        generation.distances.clear();
+        generation.distance_order.clear();
+        generation.path_bytes = 0;
+        generation.distance_bytes = 0;
+        generation.budget = cells;
+    }
     assert_eq!(
         bound(&ground, start, goal, DefenseDomain::Ground),
         octile_cost(start, goal)
@@ -391,4 +405,47 @@ fn cache_hits_clear_exhaustion_and_eviction_preserves_answers() {
         bound(&ground, TilePos::new(-1, 0), goal, DefenseDomain::Ground),
         octile_cost(TilePos::new(-1, 0), goal)
     );
+}
+
+#[test]
+fn distance_field_churn_preserves_routes_and_bounds_both_payload_classes() {
+    let policy = UtilityPolicy::new();
+    let scenario = scenario_with(|_| '.');
+    let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+    let obs = observation(PlayerId(0), LEFT_HOME);
+    let ground = GroundKnowledge::new(&obs, &map, &[]).retained(&policy, false);
+    let mut scratch = AstarScratch::default();
+    let start = TilePos::new(8, 12);
+    let goal = TilePos::new(30, 12);
+    let expected = path(&ground, start, goal, None, DefenseDomain::Air, &mut scratch).unwrap();
+    let cells = ground.air_blocked.len();
+    let field_bytes = cells * size_of::<u32>() + ENTRY_ALLOWANCE;
+    policy.defense_routing_cache.borrow_mut().air[0].budget = cells + 2 * field_bytes;
+    for x in 10..35 {
+        bound(&ground, start, TilePos::new(x, 15), DefenseDomain::Air);
+        let cache = policy.defense_routing_cache.borrow();
+        let generation = &cache.air[0];
+        assert_eq!(
+            generation.paths.get(&(None, start, goal)).unwrap().as_ref(),
+            expected
+        );
+        assert_eq!(generation.distances.len(), 1);
+        assert!(generation.path_bytes <= generation.payload_budget());
+        assert!(generation.distance_bytes <= generation.payload_budget());
+    }
+    for x in 9..35 {
+        path(
+            &ground,
+            start,
+            TilePos::new(x, 16),
+            None,
+            DefenseDomain::Air,
+            &mut scratch,
+        );
+    }
+    let cache = policy.defense_routing_cache.borrow();
+    let generation = &cache.air[0];
+    assert!(generation.distances.contains_key(&TilePos::new(34, 15)));
+    assert!(generation.path_bytes <= generation.payload_budget());
+    assert!(generation.paths.len() < 27);
 }
