@@ -1543,6 +1543,7 @@ mod tests {
                 let inside_slot = 1 - outside_slot;
                 state.units[outside_slot].pos = Vec2Fx::new(Fx::lit("5.5"), outside_y);
                 state.units[inside_slot].pos = Vec2Fx::new(Fx::lit("5.5"), inside_y);
+                state.refresh_vision();
                 state
                     .validate_invariants()
                     .expect("the accepted coordinate envelope includes border rows");

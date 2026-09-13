@@ -691,6 +691,9 @@ impl Game {
         };
         for event in events {
             match event {
+                Event::DamageTaken { player, pos } if *player == self.human => {
+                    self.raise_alert(world_vec(*pos));
+                }
                 Event::AttackHit {
                     attacker,
                     attacker_kind,
@@ -705,17 +708,18 @@ impl Game {
                     // the same stamp.
                     let d = world_vec(*target_pos) - world_vec(*attacker_pos);
                     if d.length_squared() > 1e-6 {
-                        self.aim_unit_targets.insert(attacker.0, *target);
+                        if let Some(target) = target {
+                            self.aim_unit_targets.insert(attacker.0, *target);
+                        } else {
+                            self.aim_unit_targets.remove(&attacker.0);
+                        }
                         self.aim_units.insert(
                             attacker.0,
                             (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
                         );
                     }
-                    let target_owner = event_target_owner(&self.state, events, *target);
-                    let own_target = target_owner == Some(self.human);
-                    if own_target {
-                        self.raise_alert(world_vec(*target_pos));
-                    }
+                    let target_owner =
+                        target.and_then(|target| event_target_owner(&self.state, events, target));
                     // Kind rides in the event: the attacker itself may have
                     // died later this same tick, and a rail shot deserves
                     // its report either way. The weapon's character decides
@@ -801,29 +805,17 @@ impl Game {
                     target,
                     ..
                 } => {
-                    self.aim_building_targets.insert(turret.0, *target);
+                    if let Some(target) = target {
+                        self.aim_building_targets.insert(turret.0, *target);
+                    } else {
+                        self.aim_building_targets.remove(&turret.0);
+                    }
                     let d = world_vec(*target_pos) - world_vec(*turret_pos);
                     if d.length_squared() > 1e-6 {
                         self.aim_buildings.insert(
                             turret.0,
                             (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
                         );
-                    }
-                    // A defense chewing on one of our entities is an
-                    // attack like any other; the death event raises its
-                    // own alert too.
-                    let own_target = match target {
-                        oxide_sim::Target::Unit(id) => self
-                            .state
-                            .unit(*id)
-                            .is_some_and(|unit| unit.player == self.human),
-                        oxide_sim::Target::Building(id) => self
-                            .state
-                            .building(*id)
-                            .is_some_and(|building| building.player == self.human),
-                    };
-                    if own_target {
-                        self.raise_alert(world_vec(*target_pos));
                     }
                     // Kind rides in the event: the turret may be rubble by
                     // now (destroyed the tick it fired), and its shot still
@@ -866,10 +858,16 @@ impl Game {
                     let tier = self.state.building(*building).map_or(0, |b| b.tier);
                     if tier > 0 {
                         self.sounds_pending.push((SoundKind::UpgradeDone, None));
-                        self.toast(format!("{} online", kind.tier_name(tier)));
+                        self.toast(format!(
+                            "{} online",
+                            crate::typography::entity_name(kind.tier_name(tier))
+                        ));
                     } else {
                         self.sounds_pending.push((SoundKind::TrainDone, None));
-                        self.toast(format!("{} online", kind.name()));
+                        self.toast(format!(
+                            "{} online",
+                            crate::typography::entity_name(kind.name())
+                        ));
                     }
                 }
                 Event::BuildCancelled { player, refund, .. } if *player == self.human => {
@@ -1051,7 +1049,11 @@ impl Game {
                                 self.aim_units.insert(uid.0, (angle, self.fx_clock));
                             }
                             oxide_sim::Target::Building(bid) => {
-                                self.aim_building_targets.insert(bid.0, *target);
+                                if let Some(target) = target {
+                                    self.aim_building_targets.insert(bid.0, *target);
+                                } else {
+                                    self.aim_building_targets.remove(&bid.0);
+                                }
                                 self.aim_buildings.insert(bid.0, (angle, self.fx_clock));
                             }
                         }
@@ -1276,6 +1278,155 @@ mod tests {
     use super::*;
     use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
 
+    fn blind_bulwark_scene(victim: UnitKind) -> Game {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        let mut rows = vec![vec!['.'; 40]; 30];
+        rows[1][1] = '1';
+        rows[27][37] = '2';
+        scenario.map = rows
+            .into_iter()
+            .map(|row| row.into_iter().collect())
+            .collect();
+        for player in &mut scenario.players {
+            player.bot_config = None;
+        }
+        scenario.units = vec![oxide_sim::scenario::UnitSpec {
+            player: 0,
+            kind: victim,
+            x: 12,
+            y: 8,
+        }];
+        scenario.buildings = vec![
+            oxide_sim::scenario::BuildingSpec {
+                player: 1,
+                kind: BuildingKind::Turret,
+                x: 5,
+                y: 6,
+            },
+            oxide_sim::scenario::BuildingSpec {
+                player: 1,
+                kind: BuildingKind::Array,
+                x: 5,
+                y: 16,
+            },
+        ];
+        let mut game = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
+        let mut wire = serde_json::to_value(&*game.state).unwrap();
+        for building in wire["buildings"].as_array_mut().unwrap() {
+            if building["kind"] == "turret" {
+                building["tier"] = serde_json::json!(2);
+            }
+        }
+        let state: oxide_sim::State = serde_json::from_value(wire).unwrap();
+        state.validate_invariants().unwrap();
+        game.replace_state_after_jump(&state);
+        assert!(
+            state
+                .vision(oxide_sim::PlayerId(1))
+                .tracks()
+                .iter()
+                .any(|track| track.visible_unit.is_none())
+        );
+        game
+    }
+
+    #[test]
+    fn blind_hitscan_damage_alerts_only_its_owner_in_live_and_playback() {
+        let mut live = blind_bulwark_scene(UnitKind::Excavator);
+        let victim = live.state.units()[0].id;
+        let before = live.state.unit(victim).unwrap().hp;
+        let report = live.do_tick();
+        assert_eq!(live.state.unit(victim).unwrap().hp, before - 60);
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::TurretFired { target: None, .. }))
+        );
+        assert_eq!(live.alerts.len(), 1);
+        assert_eq!(
+            live.sounds_pending
+                .iter()
+                .filter(|(sound, _)| *sound == SoundKind::Alert)
+                .count(),
+            1
+        );
+        for human in [0, 1] {
+            let mut playback = blind_bulwark_scene(UnitKind::Excavator);
+            playback.human = oxide_sim::PlayerId(human);
+            playback.playback_present(&live.state, &report.events, &report.movement);
+            assert_eq!(playback.alerts.len(), usize::from(human == 0));
+            assert_eq!(playback.last_alert.is_some(), human == 0);
+            assert!(playback.aim_building_targets.is_empty());
+            assert!(playback.aim_unit_targets.is_empty());
+        }
+    }
+
+    #[test]
+    fn blind_hitscan_miss_does_not_raise_an_attack_alert() {
+        let mut game = blind_bulwark_scene(UnitKind::Gnat);
+        let victim = game.state.units()[0].id;
+        let hp = game.state.unit(victim).unwrap().hp;
+        let report = game.do_tick();
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::TurretFired { target: None, .. }))
+        );
+        assert!(
+            !report
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::DamageTaken { .. }))
+        );
+        assert_eq!(game.state.unit(victim).unwrap().hp, hp);
+        assert!(game.alerts.is_empty());
+        assert!(
+            !game
+                .sounds_pending
+                .iter()
+                .any(|(sound, _)| *sound == SoundKind::Alert)
+        );
+    }
+
+    #[test]
+    fn anonymous_unit_hitscan_uses_owner_damage_evidence_for_alerts() {
+        let mut source = blind_bulwark_scene(UnitKind::Excavator);
+        let report = source.do_tick();
+        let events: Vec<_> = report
+            .events
+            .iter()
+            .map(|event| match event {
+                Event::TurretFired {
+                    turret_pos,
+                    target_pos,
+                    ..
+                } => Event::AttackHit {
+                    attacker: UnitId(99),
+                    attacker_kind: UnitKind::Lancer,
+                    weapon: 0,
+                    target: None,
+                    attacker_pos: *turret_pos,
+                    target_pos: *target_pos,
+                },
+                other => other.clone(),
+            })
+            .collect();
+        for (human, hit) in [(0, true), (1, true), (0, false)] {
+            let mut game = blind_bulwark_scene(UnitKind::Excavator);
+            game.human = oxide_sim::PlayerId(human);
+            let events: Vec<_> = events
+                .iter()
+                .filter(|event| hit || !matches!(event, Event::DamageTaken { .. }))
+                .cloned()
+                .collect();
+            game.playback_present(&source.state, &events, &[]);
+            assert_eq!(game.alerts.len(), usize::from(human == 0 && hit));
+            assert!(game.aim_unit_targets.is_empty());
+        }
+    }
+
     #[test]
     fn casualty_art_survives_unit_removal_in_live_and_playback() {
         for (kind, attacker) in [
@@ -1416,6 +1567,15 @@ mod tests {
             wire["units"][0]["hp"] = serde_json::json!(40);
             wire["tick"] = serde_json::json!(13);
             wire["aircraft_crashes"] = serde_json::json!([crash]);
+            for view in wire["vision"].as_array_mut().unwrap() {
+                let tracks = view["tracking"]["tracks"].as_array_mut().unwrap();
+                tracks.retain(|track| track["visible_unit"].as_u64() != Some(0));
+                for track in tracks {
+                    for sample in track["history"].as_array_mut().unwrap() {
+                        sample["tick"] = serde_json::json!(13);
+                    }
+                }
+            }
             game.replace_state_after_jump(&serde_json::from_value(wire).unwrap());
             let tile = chassis::grid::TilePos::containing(at);
             assert_eq!(game.my_vision().visible(tile), witnessed);
@@ -1649,7 +1809,7 @@ mod tests {
             player: oxide_sim::PlayerId(1),
             command: oxide_sim::Command::Attack {
                 units: vec![UnitId(0)],
-                target: Target::Building(BuildingId(2)),
+                target: Target::Building(BuildingId(2)).into(),
                 queue: false,
             },
         }]);
@@ -1855,7 +2015,7 @@ mod tests {
                 attacker,
                 attacker_kind: UnitKind::Sapper,
                 weapon: 0,
-                target: Target::Building(BuildingId(999)),
+                target: Some(Target::Building(BuildingId(999))),
                 attacker_pos: at,
                 target_pos: at,
             },
@@ -1895,7 +2055,7 @@ mod tests {
                 attacker,
                 attacker_kind: UnitKind::Sapper,
                 weapon: 0,
-                target: Target::Unit(victim),
+                target: Some(Target::Unit(victim)),
                 attacker_pos: at,
                 target_pos: at,
             },

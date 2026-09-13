@@ -35,7 +35,7 @@ fn fog_reveals_persists_and_gates_attacks() {
         0,
         Command::Attack {
             units: vec![scout],
-            target: Target::Unit(quarry),
+            target: Target::Unit(quarry).into(),
             queue: false,
         },
     )]);
@@ -393,7 +393,7 @@ fn destroying_the_last_foundry_wins_and_freezes() {
         0,
         Command::Attack {
             units: ids,
-            target: Target::Building(enemy_foundry),
+            target: Target::Building(enemy_foundry).into(),
             queue: false,
         },
     )]);

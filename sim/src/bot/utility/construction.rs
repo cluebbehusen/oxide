@@ -6483,6 +6483,7 @@ mod tests {
                 &[],
                 0,
                 0,
+                0,
             )
             .into_iter()
             .find(|proposal| proposal.kind() == BuildingKind::Turret)

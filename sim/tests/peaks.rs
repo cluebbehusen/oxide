@@ -218,7 +218,7 @@ fn ground_guns_do_not_shoot_through_mountains() {
             0,
             Command::Attack {
                 units: vec![gun],
-                target: Target::Unit(victim),
+                target: Target::Unit(victim).into(),
                 queue: false,
             },
         )])
@@ -257,7 +257,7 @@ fn artillery_arcs_break_on_the_ridge() {
             0,
             Command::Attack {
                 units: vec![bombard],
-                target: Target::Unit(victim),
+                target: Target::Unit(victim).into(),
                 queue: false,
             },
         )])
@@ -293,7 +293,7 @@ fn flak_cannot_burst_through_stone() {
             0,
             Command::Attack {
                 units: vec![flak],
-                target: Target::Unit(wisp),
+                target: Target::Unit(wisp).into(),
                 queue: false,
             },
         )])
@@ -421,7 +421,7 @@ fn a_building_flush_against_the_ridge_is_safe_from_the_far_side() {
         0,
         Command::Attack {
             units: vec![lancer],
-            target: Target::Building(west),
+            target: Target::Building(west).into(),
             queue: false,
         },
     )]);

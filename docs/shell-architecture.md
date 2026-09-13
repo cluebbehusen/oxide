@@ -66,10 +66,11 @@ presentation-only and refreshed by live and playback ticks.
 
 `App` owns resources and state that outlive an individual screen: the live
 `Game`, configuration, input funnel, cross-screen scenario draft, tutorial,
-atlas, sounds, soundtrack, debug channels, and frame profiler. The `Screen` enum
-pairs each active mode with its screen-local state, so the variant and its
-payload cannot disagree. Cross-screen state such as the draft and live session
-remains in `App` rather than being duplicated across variants.
+atlas, sounds, soundtrack, debug channels, frame profiler, and player-facing
+performance collector. The `Screen` enum pairs each active mode with its
+screen-local state, so the variant and its payload cannot disagree. Cross-screen
+state such as the draft and live session remains in `App` rather than being
+duplicated across variants.
 
 The screen graph includes Home, Settings/Controls, the Codex (the roster read
 from `stats.rs`), the New Match wizard, Playing, Playback, the Saves & Replays
@@ -107,6 +108,31 @@ The frame loop has a fixed shape:
 4. Render the active world and screen using interpolated presentation state.
 5. Capture requested screenshots from the completed frame and reply.
 
+The persisted Performance display setting defaults to Off, including when
+loading older configs. FPS and Detailed are available in Playing (including a
+paused simulation), Playback, and Final Map; menus and results hide them. FPS
+fits beside the clock when measured resource, unit, and idle-badge content
+leaves room. Otherwise it moves below the status bar. Detailed adds a backed
+timing panel below the bar; spectator views use a backed upper-right header. The
+panel participates in the shared chrome hit testing, and debug text clears its
+bottom.
+
+The performance collector is independent of debug profiling and cannot arm a
+capture window, pause a match, or reveal fog. Off reads no additional clocks and
+retains no samples. Enabled modes measure frame-start intervals, including
+presentation waits; Detailed also measures CPU work from after debug-request
+handling through the presentation handoff, excluding `next_frame().await`. These
+are not GPU timestamps. Each display uses completed measurements from the
+preceding frame. Mode, screen-context, and session changes reset its history.
+
+Fifty 100 ms buckets retain five seconds of frame-interval maxima, sums, and
+counts. Numeric labels refresh four times per second from the ten most recent
+buckets; FPS divides frame count by summed interval duration. The graph retains
+individual hitch maxima with a fixed 0–50 ms scale and 16.7/33.3 ms reference
+lines. Clipped spikes are marked and the five-second maximum remains numeric.
+Missing samples show placeholders, invalid intervals are discarded, and real
+long intervals remain visible.
+
 ## Input and layout
 
 `oxide_protocol::RawEvent` is the common input vocabulary for mouse, keyboard,
@@ -130,10 +156,48 @@ but order generation remains gated to the controlled seat. Multi-select and card
 actions must preserve set semantics when they become commands.
 
 HUD drawing publishes one `LayoutModel` for the frame. The same rectangles drive
-hit testing for the top bar, panel band, order dock, minimap, roster, cards,
-queue, idle-worker badge, and armed-mode ribbon. Drawing and interaction must
-not recalculate competing geometry. Logical input coordinates are used
-throughout; platform DPI conversion occurs once at the hardware adapter.
+hit testing for the top bar, selection regions, order dock, minimap, roster,
+cards, queue, idle-worker badge, and armed-mode ribbon. Drawing and interaction
+must not recalculate competing geometry. Logical input coordinates are used
+throughout; platform DPI conversion occurs once at the hardware adapter. The
+command band measures its width from the placed card rectangles, including the
+separator after rally controls. Rally controls stack in their own column;
+production cards wrap within the grid beside it. When only one card column fits,
+the two groups stack vertically. Row packing reserves the same right inset used
+by the background so wrapped production cards remain inside the panel. Selection
+information occupies a left column at least as tall as the action strip, while
+commands occupy a separate bottom strip. Their enclosing bounds are
+observational only: the open notch accepts battlefield input. The queue remains
+a separate dock above the information column and wraps into multiple columns to
+keep its entries accessible. The debug UI response exposes both exact selection
+regions alongside its legacy enclosing bounds.
+
+The HUD's supported layout floor is 1280×800 at the default UI scale, matching
+the Steam Deck display. Smaller windows remain useful overflow stress tests, but
+do not determine the normal layout or spacing.
+
+Unit and building display names use Title Case through the shared typography
+formatter, including tier names, cards, queues, tooltips, notifications, and
+codex entries. Section headings retain uppercase and descriptions use sentence
+case. Simulation names and asset keys keep their canonical spelling.
+
+The selection information model supplies health, status, and labeled stat rows
+from existing simulation accessors. Text measurement wraps labels and values
+before rendering; weapon damage, range, reload, salvo, and blast radius are
+distinct facts. Sight remains visible on every single selection. Routine worker
+repair reach and weapon implementation properties stay out of the persistent
+readout; support distances remain in build-card and codex details. Health
+includes its exact value and a proportional bar. Static capabilities remain
+inspectable on foreign selections, while current enemy loads and orders and
+foreign building income remain private. Tooltips anchor to their cards or dock
+instead of reserving the tallest column across the screen.
+
+Upgrade hovers show the completed next-tier values for changed stats under
+"After upgrade", alongside the cost, downtime, and prerequisites. Current values
+remain in the adjacent selection panel. The preview includes slower reloads as
+well as benefits, and tier-specific income and mine detection. Health shows
+maximum capacity, not the selected building's current damage. Disabled upgrade
+cards retain the same preview.
 
 Construction uses one 13-card catalog, grouped by economy, production, defense,
 and utility when space permits. Visual grouping preserves each building's digit
@@ -241,7 +305,10 @@ It is legible, not exact; compare `State::hash` for deterministic identity.
 `FogView::capture` is the canonical player-knowledge view shared by live and
 headless servers. It redacts hostile intent and economy, exposes live enemies
 only under true sight, and carries only the sim's ghosts, remembered salvage,
-and anonymous radar contacts.
+and anonymous radar contact tracks. Right-click can target displayed building
+ghosts and radar dots. Attack labels and markers use player knowledge; defense
+focus appears as a target preference cleared by Stop. Blind firing events supply
+coordinates without a victim id, allowing launch and firing feedback on misses.
 
 ## Rendering and assets
 

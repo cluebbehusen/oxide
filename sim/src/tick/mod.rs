@@ -1050,7 +1050,8 @@ mod tests {
                 .find(|unit| unit.player == player)
                 .expect("the mirrored shooter exists")
                 .order = Order::Attack {
-                target,
+                pursue: false,
+                target: target.into(),
                 resume: None,
             };
         }

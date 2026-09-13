@@ -4,94 +4,51 @@
 
 use super::*;
 
-/// The panel's clickable geometry: cards, card count, queue slots,
-/// queue count, band bounds, orders dock, and whether the compact
-/// layout had to yield the minimap.
-type PanelGeometry = (
-    [(Rect, crate::panel::CardAction); 8],
-    usize,
-    [(Rect, crate::panel::CardAction); 16],
-    usize,
-    [(Rect, crate::panel::CardAction); 8],
-    usize,
-    f32,
-    f32,
-    Rect,
-    bool,
-);
+use super::panel_layout::{PanelGeometry, measure_info};
+
+const CARD_RIGHT_INSET: f32 = 12.0;
+const CARD_LEFT_INSET: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PanelPacking {
     right: f32,
     available: f32,
     per_row: usize,
-    roster_shown: usize,
-    roster_per_row: usize,
-    roster_h: f32,
-    capabilities_shown: usize,
-    capabilities_h: f32,
+    rally_count: usize,
     band_h: f32,
     top: f32,
     hides_minimap: bool,
 }
 
-fn card_metrics(viewport: Vec2, scale: f32, compact: bool) -> (f32, f32, f32, f32) {
+fn card_metrics(viewport: Vec2, scale: f32) -> (f32, f32, f32, f32) {
     let small = viewport.x / scale < 800.0 || viewport.y / scale < 500.0;
-    let left = if compact {
-        250.0
-    } else if small {
-        150.0
-    } else {
-        210.0
-    };
+    let left = if small { 204.0 } else { 228.0 };
     let (width, height) = if small { (66.0, 76.0) } else { (116.0, 48.0) };
     (left * scale, width * scale, height * scale, 6.0 * scale)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn panel_packing_at_right(
     viewport: Vec2,
     scale: f32,
     right: f32,
-    roster_shown: usize,
     cards_shown: usize,
-    capabilities_len: usize,
-    compact: bool,
+    rally_count: usize,
     hides_minimap: bool,
 ) -> PanelPacking {
-    let (cards_x, card_w, card_h, gap) = card_metrics(viewport, scale, compact);
-    let available = (right - cards_x).max(card_w);
+    let (cards_x, card_w, card_h, gap) = card_metrics(viewport, scale);
+    let available = (right - cards_x - (CARD_LEFT_INSET + CARD_RIGHT_INSET) * scale).max(card_w);
     let per_row = (((available + gap) / (card_w + gap)).floor() as usize).max(1);
-    let (roster_w, roster_h, roster_gap) = (64.0 * scale, 64.0 * scale, 5.0 * scale);
-    let roster_per_row =
-        (((available + roster_gap) / (roster_w + roster_gap)).floor() as usize).max(1);
-    let roster_rows = roster_shown.div_ceil(roster_per_row);
-    let roster_h = if roster_shown == 0 {
-        0.0
-    } else {
-        22.0 * scale + roster_rows as f32 * (roster_h + 5.0 * scale)
-    };
     let cards_h = if cards_shown == 0 {
         0.0
     } else {
-        grouped_card_rows(cards_shown, per_row) as f32 * (card_h + 4.0 * scale)
+        grouped_card_rows(cards_shown, rally_count, per_row) as f32 * (card_h + 4.0 * scale)
     };
-    let capabilities_h = if capabilities_len == 0 {
-        0.0
-    } else {
-        (10.0 + 22.0 * capabilities_len as f32) * scale
-    };
-    let minimum_h = if compact { 72.0 } else { 76.0 } * scale;
-    let band_h = (20.0 * scale + capabilities_h + roster_h + cards_h).max(minimum_h);
+    let band_h = (16.0 * scale + cards_h).max(72.0 * scale);
     PanelPacking {
         right,
         available,
         per_row,
-        roster_shown,
-        roster_per_row,
-        roster_h,
-        capabilities_shown: capabilities_len,
-        capabilities_h,
+        rally_count,
         band_h,
         top: viewport.y - band_h,
         hides_minimap,
@@ -102,12 +59,9 @@ fn panel_packing(
     viewport: Vec2,
     minimap: Rect,
     scale: f32,
-    roster_len: usize,
     cards_len: usize,
-    capabilities_len: usize,
-    compact: bool,
+    rally_count: usize,
 ) -> PanelPacking {
-    let roster_shown = roster_len.min(8);
     let cards_shown = cards_len.min(16);
     let reserved_right = if minimap.w > 0.0 {
         (minimap.x - 8.0 * scale).max(300.0 * scale).min(viewport.x)
@@ -115,69 +69,61 @@ fn panel_packing(
         viewport.x
     };
     let max_band_h = (viewport.y - crate::layout::TOP_BAR_H * scale).max(0.0);
-    let mut packing = panel_packing_at_right(
+    let packing = panel_packing_at_right(
         viewport,
         scale,
         reserved_right,
-        roster_shown,
         cards_shown,
-        capabilities_len,
-        compact,
+        rally_count,
         false,
     );
     if packing.band_h > max_band_h && reserved_right < viewport.x {
-        packing = panel_packing_at_right(
-            viewport,
-            scale,
-            viewport.x,
-            roster_shown,
-            cards_shown,
-            capabilities_len,
-            compact,
-            true,
-        );
+        panel_packing_at_right(viewport, scale, viewport.x, cards_shown, rally_count, true)
+    } else {
+        packing
     }
-    if packing.band_h > max_band_h && packing.roster_shown > 0 {
-        packing = panel_packing_at_right(
-            viewport,
-            scale,
-            viewport.x,
-            0,
-            cards_shown,
-            capabilities_len,
-            compact,
-            true,
-        );
+}
+
+fn action_panel_rect(packing: PanelPacking, left: f32, right: f32, has_cards: bool) -> Rect {
+    if has_cards {
+        Rect::new(left, packing.top, right - left, packing.band_h)
+    } else {
+        Rect::new(0.0, 0.0, 0.0, 0.0)
     }
-    if packing.band_h > max_band_h && packing.capabilities_shown > 0 {
-        packing = panel_packing_at_right(
-            viewport,
-            scale,
-            viewport.x,
-            0,
-            cards_shown,
-            0,
-            compact,
-            true,
-        );
-    }
-    packing
 }
 
 fn grouped_card_slot(index: usize, rally_count: usize, per_row: usize) -> (usize, usize, bool) {
     let per_row = per_row.max(1);
-    let row = index / per_row;
-    let column = index % per_row;
-    let boundary_row = rally_count / per_row;
-    let follows_rally_in_same_row = rally_count > 0
-        && !rally_count.is_multiple_of(per_row)
-        && index >= rally_count
-        && row == boundary_row;
-    (row, column, follows_rally_in_same_row)
+    if rally_count == 0 || per_row == 1 {
+        return (index / per_row, index % per_row, false);
+    }
+    if index < rally_count {
+        return (index, 0, false);
+    }
+    let production_index = index - rally_count;
+    let production_columns = per_row - 1;
+    (
+        production_index / production_columns,
+        1 + production_index % production_columns,
+        true,
+    )
 }
 
-fn grouped_card_rows(shown: usize, per_row: usize) -> usize {
-    shown.div_ceil(per_row.max(1)).max(1)
+fn grouped_card_rows(shown: usize, rally_count: usize, per_row: usize) -> usize {
+    if rally_count == 0 || per_row <= 1 {
+        shown.div_ceil(per_row.max(1)).max(1)
+    } else {
+        rally_count.max((shown - rally_count).div_ceil(per_row - 1))
+    }
+}
+
+fn rally_card_count(cards: &[crate::panel::Card]) -> usize {
+    use crate::panel::CardAction;
+    cards
+        .iter()
+        .take(16)
+        .take_while(|card| matches!(card.action, CardAction::ArmRally | CardAction::ClearRally))
+        .count()
 }
 
 fn grouped_card_gap(
@@ -189,21 +135,55 @@ fn grouped_card_gap(
     ordinary_gap: f32,
 ) -> f32 {
     let per_row = per_row.max(1);
-    if rally_count == 0 || rally_count >= shown || rally_count.is_multiple_of(per_row) {
+    if rally_count == 0 || rally_count >= shown || per_row == 1 {
         return 0.0;
     }
-    let boundary_row_start = rally_count / per_row * per_row;
-    let cards_in_boundary_row = (shown - boundary_row_start).min(per_row);
-    let ordinary_width = cards_in_boundary_row as f32 * card_width
-        + cards_in_boundary_row.saturating_sub(1) as f32 * ordinary_gap;
+    let occupied_columns = 1 + (shown - rally_count).min(per_row - 1);
+    let ordinary_width = occupied_columns as f32 * card_width
+        + occupied_columns.saturating_sub(1) as f32 * ordinary_gap;
     (available - ordinary_width).clamp(0.0, 10.0 * card_width / 66.0)
 }
 
-fn panel_sub_lines(sub: &str) -> Vec<String> {
-    sub.lines()
-        .flat_map(|line| line.split(" | "))
-        .map(str::to_string)
-        .collect()
+fn command_card_geometry(
+    viewport: Vec2,
+    scale: f32,
+    packing: PanelPacking,
+    cards: &[crate::panel::Card],
+) -> (Vec<Rect>, f32) {
+    let (left, width, height, gap) = card_metrics(viewport, scale);
+    let shown = cards.len().min(16);
+    let rally_count = packing.rally_count;
+    let section_gap = grouped_card_gap(
+        shown,
+        rally_count,
+        packing.per_row,
+        packing.available,
+        width,
+        gap,
+    );
+    let slots: Vec<Rect> = (0..shown)
+        .map(|index| {
+            let (row, column, after_rally) = grouped_card_slot(index, rally_count, packing.per_row);
+            Rect::new(
+                left + CARD_LEFT_INSET * scale
+                    + column as f32 * (width + gap)
+                    + if after_rally { section_gap } else { 0.0 },
+                packing.top + 10.0 * scale + row as f32 * (height + 4.0 * scale),
+                width,
+                height,
+            )
+        })
+        .collect();
+    let band_width = if shown == 0 {
+        left
+    } else {
+        slots
+            .iter()
+            .map(|rect| rect.x + rect.w)
+            .fold(left, f32::max)
+            + CARD_RIGHT_INSET * scale
+    };
+    (slots, band_width.min(packing.right))
 }
 
 fn card_title_lines(title: &str, measure: impl Fn(&str) -> f32, width: f32) -> Vec<String> {
@@ -216,7 +196,7 @@ fn card_title_lines(title: &str, measure: impl Fn(&str) -> f32, width: f32) -> V
 
 /// Packs every visible queue chip above the command band. A single
 /// column stays pleasantly quiet when it fits; a full eight-slot
-/// production queue becomes a 2×4 dock at the 640×400 contract instead
+/// production queue becomes a 2×4 dock in the 640×400 stress case instead
 /// of hiding paid, cancelable work behind a "+4" label.
 fn queue_grid(queue_len: usize, panel_top: f32, scale: f32) -> (Rect, [Rect; 8], usize) {
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
@@ -438,18 +418,23 @@ fn draw_catalog(
         );
     }
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    (
-        [(zero, CardAction::None); 8],
-        0,
+    PanelGeometry {
+        info: zero,
+        actions: band,
+        orders: zero,
+        roster_slots: [(zero, CardAction::None); 8],
+        roster_count: 0,
         cards,
-        panel.cards.len(),
-        [(zero, CardAction::None); 8],
-        0,
-        band.y,
-        band.w,
-        zero,
-        false,
-    )
+        card_count: panel.cards.len(),
+        queue_slots: [(zero, CardAction::None); 8],
+        queue_count: 0,
+        hides_minimap: false,
+    }
+}
+
+fn selection_info_rect(viewport: Vec2, width: f32, content_height: f32, actions: Rect) -> Rect {
+    let height = content_height.max(actions.h);
+    Rect::new(0.0, viewport.y - height, width, height)
 }
 
 /// Draws the command panel band and returns its clickable geometry.
@@ -462,75 +447,26 @@ pub(crate) fn draw_panel(
     use crate::panel::{CardAction, CardIcon};
     let s = ui_scale();
     let mini = minimap_rect(game);
-    let compact = matches!(panel.portrait, CardIcon::Building(_, _))
-        && panel.cards.is_empty()
-        && panel.roster.is_empty();
-    let mut packing = panel_packing(
-        vec2(screen_width(), screen_height()),
+    let viewport = vec2(screen_width(), screen_height());
+    let small = viewport.x / s < 800.0 || viewport.y / s < 500.0;
+    let packing = panel_packing(
+        viewport,
         mini,
         s,
-        panel.roster.len(),
         panel.cards.len(),
-        panel.capabilities.len(),
-        compact,
+        rally_card_count(&panel.cards),
     );
-    let right = packing.right;
-    // Cards wrap instead of vanishing. If reserving the minimap would
-    // push the panel through the top bar, the command surface takes the
-    // width for this frame; only a still-overfull palette temporarily
-    // yields the mixed roster.
-    let (cards_x, cw, ch, gap) = card_metrics(vec2(screen_width(), screen_height()), s, compact);
-    let sub_size = 15.0 * s;
-    let sub_width = cards_x - 70.0 * s;
-    let sub_lines: Vec<_> = panel_sub_lines(&panel.sub)
-        .iter()
-        .flat_map(|line| {
-            wrap_words(
-                line,
-                |text| measure_text(text, None, sub_size as u16, 1.0).width,
-                sub_width,
-            )
-        })
-        .collect();
-    let portrait_h = (60.0 + sub_lines.len().saturating_sub(1) as f32 * 18.0) * s;
-    packing.band_h = packing.band_h.max(portrait_h);
-    packing.top = screen_height() - packing.band_h;
-    let available = packing.available;
-    let per_row = packing.per_row;
-    let roster_shown = packing.roster_shown;
-    let (rw, rh, roster_gap) = (64.0 * s, 64.0 * s, 5.0 * s);
-    let roster_per_row = packing.roster_per_row;
-    let roster_h = packing.roster_h;
-    let shown = panel.cards.len().min(16);
-    let rally_shown = panel.cards[..shown]
-        .iter()
-        .take_while(|card| matches!(card.action, CardAction::ArmRally | CardAction::ClearRally))
-        .count();
-    let section_gap = grouped_card_gap(shown, rally_shown, per_row, available, cw, gap);
-    let capabilities_shown = packing.capabilities_shown;
-    let capabilities_h = packing.capabilities_h;
-    let band_h = packing.band_h;
-    let top = packing.top;
-    let cards_w = if shown == 0 {
-        cards_x
-    } else {
-        let used_cols = shown.min(per_row).max(1) as f32;
-        (cards_x + used_cols * (cw + gap)).max(220.0 * s) + 6.0 * s
-    };
-    let capabilities_w = panel
-        .capabilities
-        .iter()
-        .take(capabilities_shown)
-        .map(|fact| measure_text(&fact.text, None, (16.0 * s) as u16, 1.0).width + 24.0 * s)
-        .fold(0.0, f32::max);
-    let band_w = cards_w
-        .max((cards_x + capabilities_w + 12.0 * s).min(right))
-        .min(right);
-    // Opaque, unlike the translucent HUD panels: machines drifting
-    // beneath the band would ghost through the cards. Top and right
-    // edges get the same line — a content-width band needs a corner,
-    // not a fill that falls off mid-screen.
-
+    let (cards_x, _, _, _) = card_metrics(viewport, s);
+    let measured = measure_info(panel, cards_x, s, small, |text, size| {
+        crate::typography::measure(text, size).width
+    });
+    let (card_rects, cards_w) = command_card_geometry(viewport, s, packing, &panel.cards);
+    let action_rect = action_panel_rect(packing, cards_x, cards_w, !panel.cards.is_empty());
+    let info_rect = selection_info_rect(viewport, cards_x, measured.height, action_rect);
+    let top = info_rect.y;
+    let roster_shown = panel.roster.len().min(8);
+    let (rw, rh, roster_gap) = (measured.roster_size, measured.roster_size, 4.0 * s);
+    let roster_per_row = measured.roster_columns;
     // The panel says whose colors it wears: an inspected ally or
     // enemy draws in its owner's faction, not the viewer's. Own
     // panels carry the human's faction, so roster cards stay right.
@@ -637,71 +573,119 @@ pub(crate) fn draw_panel(
         return draw_catalog(panel, input, mini, &draw_icon);
     }
 
-    draw_rectangle(0.0, top, band_w, band_h, Color::from_rgba(20, 24, 26, 255));
-    draw_rectangle(
-        0.0,
-        top,
-        band_w,
-        1.0 * s,
-        Color::from_rgba(119, 107, 79, 180),
-    );
-
-    let psize = 38.0 * s;
+    for rect in [info_rect, action_rect] {
+        if rect.w == 0.0 {
+            continue;
+        }
+        draw_rectangle(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            Color::from_rgba(20, 24, 26, 255),
+        );
+        draw_rectangle(
+            rect.x,
+            rect.y,
+            rect.w,
+            s,
+            Color::from_rgba(119, 107, 79, 180),
+        );
+    }
     draw_icon(
-        Rect::new(10.0 * s, top + 13.0 * s, psize, psize),
+        Rect::new(10.0 * s, top + 6.0 * s, 32.0 * s, 32.0 * s),
         &panel.portrait,
         WHITE,
     );
-    let text_x = 58.0 * s;
-    let mut title_size = 15.0 * s;
-    while crate::typography::measure(&panel.title, title_size).width > cards_x - text_x - 8.0 * s
-        && title_size > 12.0 * s
-    {
-        title_size -= 0.5 * s;
-    }
-    crate::typography::draw(
-        &panel.title,
-        text_x,
-        top + 30.0 * s,
-        title_size,
-        TEXT_PRIMARY,
-    );
-    for (i, line) in sub_lines.iter().enumerate() {
-        draw_text(
-            line,
-            text_x,
-            top + (50.0 + i as f32 * 18.0) * s,
+    for (index, title) in measured.title.iter().enumerate() {
+        crate::typography::draw(
+            title,
+            52.0 * s,
+            top + (24.0 + index as f32 * 17.0) * s,
             15.0 * s,
+            TEXT_PRIMARY,
+        );
+    }
+    for (index, status) in measured.status.iter().enumerate() {
+        draw_text(
+            status,
+            12.0 * s,
+            top + measured.health_y
+                - (measured.status.len() - index - 1) as f32 * measured.line_h
+                - 4.0 * s,
+            measured.font,
             TEXT_SECONDARY,
         );
     }
-
-    if capabilities_shown > 0 {
-        let max_width = (band_w - cards_x - 12.0 * s).max(40.0 * s);
-        for (i, fact) in panel
-            .capabilities
-            .iter()
-            .take(capabilities_shown)
-            .enumerate()
-        {
-            let y = top + (23.0 + 22.0 * i as f32) * s;
-            let icon_color = capability_icon_color(fact.icon);
-            draw_capability_icon(
-                vec2(cards_x + 7.0 * s, y - 4.5 * s),
-                5.2 * s,
-                fact.icon,
-                icon_color,
-                false,
-            );
-            let text_x = cards_x + 20.0 * s;
-            let mut font_size = 16.0 * s;
-            let mut dims = measure_text(&fact.text, None, font_size as u16, 1.0);
-            while dims.width > max_width - 20.0 * s && font_size > 9.0 * s {
-                font_size -= 0.5 * s;
-                dims = measure_text(&fact.text, None, font_size as u16, 1.0);
+    if let Some((hp, max_hp)) = panel.info.health {
+        let y = top + measured.health_y;
+        let value = format!("{hp}/{max_hp}");
+        draw_text(
+            "Health",
+            12.0 * s,
+            y + 13.0 * s,
+            measured.font,
+            TEXT_SECONDARY,
+        );
+        draw_text(
+            &value,
+            cards_x - 12.0 * s - measure_text(&value, None, measured.font as u16, 1.0).width,
+            y + 13.0 * s,
+            measured.font,
+            TEXT_PRIMARY,
+        );
+        draw_rectangle(
+            12.0 * s,
+            y + 19.0 * s,
+            cards_x - 24.0 * s,
+            3.0 * s,
+            Color::from_rgba(49, 61, 49, 255),
+        );
+        draw_rectangle(
+            12.0 * s,
+            y + 19.0 * s,
+            (cards_x - 24.0 * s) * (hp as f32 / max_hp.max(1) as f32).clamp(0.0, 1.0),
+            3.0 * s,
+            Color::from_rgba(165, 180, 142, 255),
+        );
+    }
+    for line in &measured.lines {
+        let y = top + line.offset + measured.font;
+        if let Some(icon) = line.icon {
+            match icon {
+                crate::panel::info::StatIcon::Capability(icon) => draw_capability_icon(
+                    vec2(18.0 * s, y - 5.0 * s),
+                    6.0 * s,
+                    icon,
+                    capability_icon_color(icon),
+                    false,
+                ),
+                crate::panel::info::StatIcon::Verb(icon) => draw_icon(
+                    Rect::new(11.0 * s, y - 12.0 * s, 14.0 * s, 14.0 * s),
+                    &CardIcon::Verb(icon),
+                    TEXT_SECONDARY,
+                ),
             }
-            draw_text(&fact.text, text_x, y, font_size, TEXT_PRIMARY);
         }
+        draw_text(
+            &line.label,
+            32.0 * s,
+            y,
+            measured.font,
+            if line.section {
+                TEXT_PRIMARY
+            } else {
+                TEXT_SECONDARY
+            },
+        );
+        let value_width = measure_text(&line.value, None, measured.font as u16, 1.0).width;
+        draw_text(
+            &line.value,
+            cards_x - 12.0 * s - value_width,
+            y,
+            measured.font,
+            TEXT_PRIMARY,
+        );
     }
 
     // Mixed-selection roster, visually and geometrically separate from
@@ -710,13 +694,19 @@ pub(crate) fn draw_panel(
     let mut roster_slots = [(zero, CardAction::None); 8];
     let mut roster_count = 0;
     if roster_shown > 0 {
-        let label_y = top + capabilities_h + 15.0 * s;
-        draw_text("SELECTED UNITS", cards_x, label_y, 12.0 * s, TEXT_SECONDARY);
+        let label_y = top + measured.roster_y - 4.0 * s;
+        draw_text(
+            "SELECTED UNITS",
+            12.0 * s,
+            label_y,
+            12.0 * s,
+            TEXT_SECONDARY,
+        );
         for (index, card) in panel.roster.iter().take(roster_shown).enumerate() {
             let (row, column) = (index / roster_per_row, index % roster_per_row);
             let rect = Rect::new(
-                cards_x + column as f32 * (rw + roster_gap),
-                top + capabilities_h + 22.0 * s + row as f32 * (rh + 5.0 * s),
+                8.0 * s + column as f32 * (rw + roster_gap),
+                top + measured.roster_y + row as f32 * (rh + roster_gap),
                 rw,
                 rh,
             );
@@ -744,7 +734,7 @@ pub(crate) fn draw_panel(
                     Color::new(0.48, 0.48, 0.56, 0.9)
                 },
             );
-            let icon_size = 42.0 * s;
+            let icon_size = (if small { 28.0 } else { 42.0 }) * s;
             draw_icon(
                 Rect::new(
                     rect.x + (rect.w - icon_size) * 0.5,
@@ -755,14 +745,21 @@ pub(crate) fn draw_panel(
                 &card.icon,
                 WHITE,
             );
+            let label = if small {
+                card.title
+                    .rsplit_once(" x")
+                    .map_or(card.title.as_str(), |(_, count)| count)
+            } else {
+                &card.title
+            };
             let mut size = 11.0 * s;
-            let mut dims = measure_text(&card.title, None, size as u16, 1.0);
+            let mut dims = measure_text(label, None, size as u16, 1.0);
             while dims.width > rect.w - 6.0 * s && size > 8.0 * s {
                 size -= 0.5 * s;
-                dims = measure_text(&card.title, None, size as u16, 1.0);
+                dims = measure_text(label, None, size as u16, 1.0);
             }
             draw_text(
-                &card.title,
+                label,
                 rect.x + (rect.w - dims.width) * 0.5,
                 rect.y + rect.h - 6.0 * s,
                 size,
@@ -776,14 +773,7 @@ pub(crate) fn draw_panel(
     // Command cards, wrapping into as many rows as the width demands.
     let mut cards = [(zero, CardAction::None); 16];
     let mut card_count = 0;
-    for (i, card) in panel.cards.iter().take(16).enumerate() {
-        let (row, col, after_rally) = grouped_card_slot(i, rally_shown, per_row);
-        let rect = Rect::new(
-            cards_x + col as f32 * (cw + gap) + if after_rally { section_gap } else { 0.0 },
-            top + 10.0 * s + capabilities_h + roster_h + row as f32 * (ch + 4.0 * s),
-            cw,
-            ch,
-        );
+    for (card, rect) in panel.cards.iter().zip(card_rects) {
         let hovered = rect.contains(input.mouse);
         let selected =
             matches!(card.action, CardAction::ArmBuild(kind) if input.placing == Some(kind));
@@ -810,7 +800,7 @@ pub(crate) fn draw_panel(
         } else {
             Color::new(1.0, 1.0, 1.0, 0.35)
         };
-        let horizontal = cw >= 100.0 * s;
+        let horizontal = rect.w >= 100.0 * s;
         let icon_size = 24.0 * s;
         draw_icon(
             Rect::new(
@@ -831,17 +821,43 @@ pub(crate) fn draw_panel(
         } else {
             rect.x + 4.0 * s
         };
-        let names = card_title_lines(
-            &card.title,
-            |text| measure_text(text, None, (14.0 * s) as u16, 1.0).width,
-            rect.x + rect.w - name_x - 4.0 * s,
-        );
+        let title_top = rect.y + if horizontal { 4.0 } else { 32.0 } * s;
+        let title_bottom = if let Some(cost) = card.cost {
+            let dims = measure_text(cost.to_string(), None, (16.0 * s) as u16, 1.0);
+            rect.y + rect.h - 5.0 * s - dims.offset_y - 3.0 * s
+        } else {
+            rect.y + rect.h - 4.0 * s
+        };
+        let title_width = rect.x + rect.w - name_x - 4.0 * s;
+        let mut title_size = 14.0 * s;
+        let (names, ascent) = loop {
+            let names = card_title_lines(
+                &card.title,
+                |text| measure_text(text, None, title_size as u16, 1.0).width,
+                title_width,
+            );
+            let mut ascent = 0.0_f32;
+            let mut descent = 0.0_f32;
+            let mut width = 0.0_f32;
+            for name in &names {
+                let dims = measure_text(name, None, title_size as u16, 1.0);
+                ascent = ascent.max(dims.offset_y);
+                descent = descent.max(dims.height - dims.offset_y);
+                width = width.max(dims.width);
+            }
+            let height = ascent + descent + names.len().saturating_sub(1) as f32 * title_size;
+            if (height <= title_bottom - title_top && width <= title_width) || title_size <= 8.0 * s
+            {
+                break (names, ascent);
+            }
+            title_size -= 0.5 * s;
+        };
         for (line_index, name) in names.iter().enumerate() {
             draw_text(
                 name,
                 name_x,
-                rect.y + if horizontal { 19.0 } else { 41.0 } * s + line_index as f32 * 14.0 * s,
-                14.0 * s,
+                title_top + ascent + line_index as f32 * title_size,
+                title_size,
                 TEXT_PRIMARY,
             );
         }
@@ -1021,18 +1037,18 @@ pub(crate) fn draw_panel(
             );
         }
     }
-    (
+    PanelGeometry {
+        info: info_rect,
+        actions: action_rect,
+        orders: dock,
         roster_slots,
         roster_count,
         cards,
         card_count,
         queue_slots,
         queue_count,
-        top,
-        band_w,
-        dock,
-        packing.hides_minimap,
-    )
+        hides_minimap: packing.hides_minimap,
+    }
 }
 
 /// The hover tooltip for panel cards, drawn over everything: name,
@@ -1089,6 +1105,10 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
     if let Some(cost) = card.cost {
         lines.push((format!("{cost} scrap"), SCRAP_COLOR));
     }
+    let intro_lines = lines.len();
+    let comparison = matches!(card.action, crate::panel::CardAction::Upgrade(_))
+        .then_some(panel.info.upgrade.as_ref())
+        .flatten();
     let size = 17.0 * s;
     let pad = 12.0 * s;
     // Descriptions run to two sentences; the box wraps them at a
@@ -1105,13 +1125,30 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
     if let Some(why) = &card.why {
         lines.push((why.clone(), DANGER));
     }
-    let width = lines
+    let text_width = lines
         .iter()
         .map(|(l, _)| measure_text(l, None, size as u16, 1.0).width)
-        .fold(0.0f32, f32::max)
-        + pad * 2.0;
+        .fold(0.0f32, f32::max);
+    let mut columns = [0.0_f32; 2];
+    if let Some(comparison) = comparison {
+        for (column, header) in columns.iter_mut().zip(["Changes", "After upgrade"]) {
+            *column = measure_text(header, None, size as u16, 1.0).width;
+        }
+        for row in &comparison.rows {
+            for (column, text) in columns.iter_mut().zip([&row.label, &row.upgraded]) {
+                *column = column.max(measure_text(text, None, size as u16, 1.0).width);
+            }
+        }
+    }
+    let table_width = if comparison.is_some() {
+        columns.iter().sum::<f32>() + 20.0 * s
+    } else {
+        0.0
+    };
+    let width = text_width.max(table_width) + pad * 2.0;
     let line_h = 22.0 * s;
-    let height = lines.len() as f32 * line_h + pad * 1.5;
+    let table_height = comparison.map_or(0.0, |c| (c.rows.len() + 2) as f32 * line_h);
+    let height = lines.len() as f32 * line_h + table_height + pad * 1.5;
     // The box's room is the window BETWEEN the top bar and the band:
     // a tooltip that spilled over the command cards would cover what
     // the hand is about to click next.
@@ -1119,7 +1156,16 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
         anchor,
         vec2(width, height),
         side,
-        vec2(screen_width(), layout.panel_top.min(screen_height())),
+        vec2(
+            screen_width(),
+            if matches!(side, TooltipSide::Above) {
+                anchor.y
+            } else if layout.panel_regions[1].w > 0.0 {
+                layout.panel_regions[1].y
+            } else {
+                screen_height()
+            },
+        ),
         layout.top_bar_h,
         6.0 * s,
     );
@@ -1137,16 +1183,213 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
         draw_text(
             line,
             x + pad,
-            y + pad + (i as f32 + 0.6) * line_h,
+            y + pad + (i as f32 + 0.6) * line_h + if i >= intro_lines { table_height } else { 0.0 },
             size,
             *color,
         );
+    }
+    if let Some(comparison) = comparison {
+        let table_y = y + pad + intro_lines as f32 * line_h;
+        let upgraded_x = x + pad + columns[0] + 20.0 * s;
+        for (label, left) in [("Changes", x + pad), ("After upgrade", upgraded_x)] {
+            draw_text(label, left, table_y + 0.6 * line_h, size, TEXT_SECONDARY);
+        }
+        draw_rectangle(
+            x + pad,
+            table_y + line_h,
+            table_width,
+            s,
+            Color::from_rgba(55, 65, 66, 180),
+        );
+        for (i, row) in comparison.rows.iter().enumerate() {
+            let baseline = table_y + (i as f32 + 1.8) * line_h;
+            draw_text(&row.label, x + pad, baseline, size, TEXT_BODY);
+            draw_text(&row.upgraded, upgraded_x, baseline, size, SCRAP_COLOR);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fabricator_corner_reaches_wrapped_actions_and_keeps_queue_above_it() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: oxide_sim::BuildingKind::Fabricator,
+            x: 9,
+            y: 3,
+        });
+        let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+        game.selection.buildings = vec![
+            game.state
+                .buildings()
+                .iter()
+                .find(|b| b.player == game.human && b.kind == oxide_sim::BuildingKind::Fabricator)
+                .unwrap()
+                .id,
+        ];
+        let panel =
+            crate::panel::build_for_palette(&game, &crate::action::BindingMap::classic(), false)
+                .unwrap();
+        for (viewport, scale) in [(vec2(1280.0, 800.0), 1.0), (vec2(1920.0, 1200.0), 1.5)] {
+            let minimap = minimap_rect_scaled(40, 24, viewport, scale);
+            let packing = panel_packing(
+                viewport,
+                minimap,
+                scale,
+                panel.cards.len(),
+                rally_card_count(&panel.cards),
+            );
+            let (left, _, _, _) = card_metrics(viewport, scale);
+            let measured = measure_info(&panel, left, scale, false, |text, size| {
+                text.len() as f32 * size * 0.5
+            });
+            let (cards, right) = command_card_geometry(viewport, scale, packing, &panel.cards);
+            let actions = action_panel_rect(packing, left, right, !panel.cards.is_empty());
+            assert!(cards.iter().any(|card| card.y > cards[0].y));
+            assert!(measured.height < actions.h);
+            let info = selection_info_rect(viewport, left, measured.height, actions);
+            assert_eq!(info.y, actions.y);
+            assert_eq!(info.bottom(), viewport.y);
+            let (dock, slots, count) = queue_grid(8, info.y, scale);
+            assert_eq!(count, 8);
+            assert_eq!(dock.bottom(), info.y);
+            assert!(slots[..count].iter().all(|slot| slot.bottom() <= info.y));
+        }
+    }
+
+    #[test]
+    fn production_cards_stay_inside_the_band_across_layouts_and_actions() {
+        use crate::action::BindingMap;
+        use oxide_sim::{BuildingKind, Command, Faction, PlayerCommand, Scenario};
+
+        for faction in [Faction::Ferrous, Faction::Cupric] {
+            for kind in BuildingKind::ALL
+                .into_iter()
+                .filter(|kind| !kind.base_stats().produces.is_empty())
+            {
+                for full_queue in [false, true] {
+                    let mut scenario = Scenario::skirmish();
+                    scenario.players[0].faction = faction;
+                    scenario.players[0].scrap = if full_queue { 10_000 } else { 0 };
+                    if kind != BuildingKind::Foundry {
+                        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+                            player: 0,
+                            kind,
+                            x: 9,
+                            y: 3,
+                        });
+                    }
+                    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+                    let building = game
+                        .state
+                        .buildings()
+                        .iter()
+                        .find(|building| building.player == game.human && building.kind == kind)
+                        .unwrap()
+                        .id;
+                    game.selection.buildings = vec![building];
+                    if full_queue {
+                        let unit = *kind
+                            .base_stats()
+                            .produces
+                            .iter()
+                            .find(|unit| unit.faction().is_none_or(|owner| owner == faction))
+                            .unwrap();
+                        for _ in 0..oxide_sim::stats::QUEUE_CAP {
+                            game.state.tick(&[PlayerCommand {
+                                player: game.human,
+                                command: Command::Train {
+                                    building,
+                                    kind: unit,
+                                },
+                            }]);
+                        }
+                        assert_eq!(
+                            game.state.building(building).unwrap().queue.len(),
+                            oxide_sim::stats::QUEUE_CAP
+                        );
+                    }
+                    for rally in [false, true] {
+                        if rally {
+                            game.state.tick(&[PlayerCommand {
+                                player: game.human,
+                                command: Command::SetRally {
+                                    building,
+                                    rally: Some(chassis::grid::TilePos::new(12, 8)),
+                                },
+                            }]);
+                        }
+                        let panel =
+                            crate::panel::build_for_palette(&game, &BindingMap::classic(), false)
+                                .unwrap();
+                        for width in (640..=1920).step_by(17).chain([799, 800, 1280, 1440, 1920]) {
+                            for height in [400, 499, 500, 600, 800, 1080] {
+                                let viewport = vec2(width as f32, height as f32);
+                                for preference in [0.75, 1.0, 1.25, 1.5] {
+                                    let scale = effective_ui_scale(preference, viewport);
+                                    let minimap = minimap_rect_scaled(40, 24, viewport, scale);
+                                    let packing = panel_packing(
+                                        viewport,
+                                        minimap,
+                                        scale,
+                                        panel.cards.len(),
+                                        rally_card_count(&panel.cards),
+                                    );
+                                    let (slots, right) = command_card_geometry(
+                                        viewport,
+                                        scale,
+                                        packing,
+                                        &panel.cards,
+                                    );
+                                    assert_eq!(slots.len(), panel.cards.len());
+                                    let rally_count = rally_card_count(&panel.cards);
+                                    if rally_count > 0 {
+                                        assert!(
+                                            slots[..rally_count].iter().all(|r| r.x == slots[0].x)
+                                        );
+                                        let production_x = slots[rally_count].x;
+                                        assert!(
+                                            slots[rally_count..]
+                                                .iter()
+                                                .all(|r| r.x >= production_x)
+                                        );
+                                    }
+                                    assert!(packing.top >= crate::layout::TOP_BAR_H * scale);
+                                    for (index, rect) in slots.iter().enumerate() {
+                                        assert!(
+                                            rect.x + rect.w + CARD_RIGHT_INSET * scale
+                                                <= right + 0.001,
+                                            "{kind:?} {faction:?} rally={rally} queue={full_queue} viewport={viewport:?} scale={scale}: card {index} ends at {}, band ends at {right}",
+                                            rect.x + rect.w
+                                        );
+                                        assert!(
+                                            rect.y >= packing.top
+                                                && rect.y + rect.h <= viewport.y + 0.001
+                                        );
+                                        assert!(
+                                            rect.w >= crate::layout::MIN_TOUCH_TARGET * scale
+                                                && rect.h
+                                                    >= crate::layout::MIN_TOUCH_TARGET * scale
+                                        );
+                                        assert!(
+                                            slots[..index]
+                                                .iter()
+                                                .all(|other| !rect.overlaps(other))
+                                        );
+                                        assert!(packing.hides_minimap || !rect.overlaps(&minimap));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn narrow_cards_wrap_compound_orders_without_losing_the_hyphen() {
@@ -1160,8 +1403,8 @@ mod tests {
             ["Attack-move"]
         );
         assert_eq!(
-            card_title_lines("Scuttle charge", width, 8.0),
-            ["Scuttle", "charge"]
+            card_title_lines("Scuttle Charge", width, 8.0),
+            ["Scuttle", "Charge"]
         );
     }
 
@@ -1187,25 +1430,28 @@ mod tests {
     }
 
     #[test]
-    fn rally_cards_get_a_compact_visual_break_before_production() {
-        assert_eq!(grouped_card_rows(7, 5), 2);
-        assert_eq!(grouped_card_slot(0, 2, 5), (0, 0, false));
-        assert_eq!(grouped_card_slot(1, 2, 5), (0, 1, false));
-        assert_eq!(grouped_card_slot(2, 2, 5), (0, 2, true));
-        assert_eq!(grouped_card_slot(4, 2, 5), (0, 4, true));
-        assert_eq!(grouped_card_slot(5, 2, 5), (1, 0, false));
-        assert_eq!(grouped_card_slot(6, 2, 5), (1, 1, false));
+    fn production_wraps_in_its_own_columns_beside_rally_controls() {
+        assert_eq!(grouped_card_rows(7, 1, 6), 2);
+        assert_eq!(grouped_card_slot(1, 1, 6), (0, 1, true));
+        assert_eq!(grouped_card_slot(6, 1, 6), (1, 1, true));
+        assert_eq!(grouped_card_rows(8, 2, 6), 2);
+        assert_eq!(grouped_card_slot(0, 2, 6), (0, 0, false));
+        assert_eq!(grouped_card_slot(1, 2, 6), (1, 0, false));
+        assert_eq!(grouped_card_slot(2, 2, 6), (0, 1, true));
+        assert_eq!(grouped_card_slot(7, 2, 6), (1, 1, true));
         assert_eq!(grouped_card_gap(7, 2, 5, 400.0, 66.0, 6.0), 10.0);
         assert_eq!(grouped_card_gap(7, 2, 5, 354.0, 66.0, 6.0), 0.0);
 
-        assert_eq!(grouped_card_rows(7, 5), 2);
+        assert_eq!(grouped_card_rows(7, 0, 5), 2);
         assert_eq!(grouped_card_slot(5, 0, 5), (1, 0, false));
+        assert_eq!(grouped_card_rows(7, 2, 1), 7);
+        assert_eq!(grouped_card_slot(2, 2, 1), (2, 0, false));
     }
 
     #[test]
     fn eight_paid_slots_form_a_fully_clickable_small_window_dock() {
-        // A 120px command band leaves panel_top=280 at the supported
-        // 640×400 floor. Every slot must remain present, above the band,
+        // A 120px command band leaves panel_top=280 in the
+        // 640×400 stress case. Every slot must remain present, above the band,
         // and below the top bar rather than folding into "+N".
         let (dock, slots, count) = queue_grid(8, 280.0, 1.0);
         assert_eq!(count, 8);
@@ -1246,32 +1492,52 @@ mod tests {
     fn a_dense_small_window_panel_yields_the_minimap_before_overflowing() {
         let viewport = vec2(640.0, 400.0);
         let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
-        let packing = panel_packing(viewport, minimap, 1.0, 8, 16, 5, false);
+        let packing = panel_packing(viewport, minimap, 1.0, 16, 0);
 
         assert!(packing.hides_minimap);
         assert_eq!(packing.right, viewport.x);
-        assert_eq!(packing.roster_shown, 0, "the open palette gets the room");
-        assert_eq!(
-            packing.capabilities_shown, 0,
-            "cards stay reachable before facts"
-        );
         assert!(packing.top >= crate::layout::TOP_BAR_H);
         assert!(packing.top + packing.band_h <= viewport.y);
     }
 
     #[test]
-    fn a_mixed_small_window_selection_keeps_its_large_roster() {
-        let viewport = vec2(640.0, 400.0);
-        let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
-        let packing = panel_packing(viewport, minimap, 1.0, 8, 6, 0, false);
-
-        assert!(packing.hides_minimap);
-        assert_eq!(packing.roster_shown, 8);
-        assert!(packing.top >= crate::layout::TOP_BAR_H);
-        assert!(packing.top + packing.band_h <= viewport.y);
-        let (dock, slots, count) = queue_grid(8, packing.top, 1.0);
+    fn a_mixed_small_window_selection_keeps_roster_and_queue_in_the_corner() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.units.clear();
+        for (index, kind) in [
+            oxide_sim::UnitKind::Sentinel,
+            oxide_sim::UnitKind::Harvester,
+            oxide_sim::UnitKind::Tender,
+            oxide_sim::UnitKind::Skyhook,
+            oxide_sim::UnitKind::Scuttler,
+            oxide_sim::UnitKind::Lancer,
+            oxide_sim::UnitKind::Bombard,
+            oxide_sim::UnitKind::Kestrel,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            scenario.units.push(oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind,
+                x: 6 + index as i32,
+                y: 5,
+            });
+        }
+        let mut game = Game::with_viewport(scenario, vec2(640.0, 400.0)).unwrap();
+        game.selection.units = game.state.units().iter().map(|u| u.id).collect();
+        let panel =
+            crate::panel::build_for_palette(&game, &crate::action::BindingMap::classic(), false)
+                .unwrap();
+        let info = measure_info(&panel, 204.0, 1.0, true, |text, size| {
+            text.len() as f32 * size * 0.5
+        });
+        assert_eq!(panel.roster.len(), 8);
+        assert_eq!(info.roster_columns, 4);
+        let (dock, slots, count) = queue_grid(8, 400.0 - info.height, 1.0);
         assert_eq!(count, 8);
         assert!(dock.y >= crate::layout::TOP_BAR_H);
+        assert!(dock.w <= 204.0);
         assert!(
             slots[..count]
                 .iter()
@@ -1283,7 +1549,7 @@ mod tests {
     fn a_simple_panel_keeps_the_minimap() {
         let viewport = vec2(640.0, 400.0);
         let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
-        let packing = panel_packing(viewport, minimap, 1.0, 0, 2, 0, false);
+        let packing = panel_packing(viewport, minimap, 1.0, 2, 0);
 
         assert!(!packing.hides_minimap);
         assert!(packing.right < viewport.x);
@@ -1293,29 +1559,11 @@ mod tests {
     fn a_commandless_building_does_not_reserve_an_empty_card_row() {
         let viewport = vec2(1280.0, 800.0);
         let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
-        let compact = panel_packing(viewport, minimap, 1.0, 0, 0, 1, true);
-        let ordinary = panel_packing(viewport, minimap, 1.0, 0, 0, 1, false);
-
-        assert_eq!(compact.band_h, 72.0);
-        assert_eq!(ordinary.band_h, 76.0);
-        assert_eq!(compact.top, viewport.y - 72.0);
-    }
-
-    #[test]
-    fn unit_speed_breaks_onto_a_second_portrait_line() {
-        assert_eq!(
-            panel_sub_lines("60/60 hp | speed 2.5 tiles/sec"),
-            ["60/60 hp", "speed 2.5 tiles/sec"]
-        );
-        assert_eq!(
-            panel_sub_lines("hostile | Standard / Balanced AI | 60/60 hp | speed 3.1 tiles/sec"),
-            [
-                "hostile",
-                "Standard / Balanced AI",
-                "60/60 hp",
-                "speed 3.1 tiles/sec"
-            ]
-        );
-        assert_eq!(panel_sub_lines("3 types"), ["3 types"]);
+        let packing = panel_packing(viewport, minimap, 1.0, 0, 0);
+        let actions = action_panel_rect(packing, 228.0, 228.0, false);
+        assert_eq!(actions.w, 0.0);
+        assert_eq!(actions.h, 0.0);
+        let info = selection_info_rect(viewport, 228.0, 218.0, actions);
+        assert_eq!(info.y, 582.0);
     }
 }

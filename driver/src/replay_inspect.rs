@@ -395,6 +395,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::UpgradeBuilding { .. } => "upgrade_building",
         Command::Load { .. } => "load",
         Command::Unload { .. } => "unload",
+        Command::ClearFocus { .. } => "clear_focus",
     }
 }
 

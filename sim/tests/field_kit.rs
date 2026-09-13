@@ -120,7 +120,7 @@ fn a_charge_is_invisible_until_scouted() {
         0,
         Command::Attack {
             units: vec![warden],
-            target: Target::Building(charge),
+            target: Target::Building(charge).into(),
             queue: false,
         },
     )]);
@@ -169,7 +169,7 @@ fn a_charge_is_invisible_until_scouted() {
         0,
         Command::Attack {
             units: vec![warden],
-            target: Target::Building(charge),
+            target: Target::Building(charge).into(),
             queue: false,
         },
     )]);
@@ -443,7 +443,7 @@ fn saturation_fire_clears_a_field_without_detonation() {
         0,
         Command::Attack {
             units: vec![gun],
-            target: Target::Building(wall),
+            target: Target::Building(wall).into(),
             queue: false,
         },
     )]);
@@ -501,7 +501,7 @@ fn the_sapper_cracks_the_wall_and_is_consumed() {
         0,
         Command::Attack {
             units: vec![sapper],
-            target: Target::Building(wall),
+            target: Target::Building(wall).into(),
             queue: false,
         },
     )]);

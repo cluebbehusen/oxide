@@ -784,8 +784,16 @@ impl<'a> AllocationSession<'a> {
         } else {
             Vec::new()
         };
-        let mut fresh =
-            self.prepare_fresh_investments(&claims, &saved, &mut obligations, active_revision);
+        // Revision recovery can release imported claims after quote generation.
+        let defense_admission_reserve = active_revision
+            .defense_admission_reserve(air_lift.voluntary_scrap_guard, prospective_carrier_floor);
+        let mut fresh = self.prepare_fresh_investments(
+            &claims,
+            &saved,
+            &mut obligations,
+            active_revision,
+            defense_admission_reserve,
+        );
         self.downgrade_unfundable_active_revision(
             &claims,
             &mut saved,
@@ -2242,6 +2250,7 @@ impl<'a> AllocationSession<'a> {
         saved: &SavedFoundryPreparation,
         obligations: &mut ObligationPreparation,
         active_revision: ActiveRevisionPreparation,
+        defense_admission_reserve: u32,
     ) -> FreshInvestmentPreparation {
         let admission_tick = strategic_admission_tick(self.context.observation.tick)
             && claims.opening_core.ready
@@ -2373,7 +2382,13 @@ impl<'a> AllocationSession<'a> {
                     .saturating_add(connected_preparation_horizon())
             });
         let committed_production = self.committed_standing_production();
-        let mut defense = if admission_tick {
+        let saved_layout_allows_defense = saved.obligation.is_none_or(|foundry| {
+            !UtilityPolicy::build_layout_covers_assigned_builder(
+                self.context.observation,
+                &[(BuildingKind::Foundry, foundry.anchor(), foundry.builder())],
+            )
+        });
+        let mut defense = if admission_tick && saved_layout_allows_defense {
             self.participants.policy.fresh_defense_proposals(
                 self.context.profile,
                 self.context.observation,
@@ -2387,6 +2402,7 @@ impl<'a> AllocationSession<'a> {
                 &defense_reinforcement_exclusions,
                 0,
                 fixed_production_current_reserve(&obligations.resources, &obligations.obligations),
+                defense_admission_reserve,
             )
         } else {
             Vec::new()
@@ -3089,22 +3105,7 @@ impl<'a> AllocationSession<'a> {
         {
             horizon = horizon.max(operation.deadline);
         }
-        if let Some(proposal) = fresh.foundry.as_ref() {
-            horizon = horizon.max(proposal.forecast_deadline());
-        }
-        if let Some(proposal) = fresh.connected.as_ref() {
-            horizon = horizon.max(proposal.deadline());
-        }
-        for proposal in &fresh.defense {
-            horizon = horizon.max(proposal.ready_at());
-        }
-        for proposal in &fresh.economy {
-            horizon = horizon.max(proposal.deadline);
-        }
-        fresh.standing_force.for_each(|proposal| {
-            horizon = horizon.max(proposal.reservation_deadline());
-        });
-        horizon
+        fresh.funding_horizon(horizon)
     }
 
     /// Resolves the complete prepared portfolio once. Domain payloads stay
@@ -4236,6 +4237,17 @@ struct ActiveRevisionPreparation {
     rejected: Option<RejectedConnectedCandidate>,
 }
 
+impl ActiveRevisionPreparation {
+    fn defense_admission_reserve(&self, voluntary_guard: u32, carrier_floor: u32) -> u32 {
+        if self.proposal.is_some() {
+            0
+        } else {
+            super::voluntary_construction_admission_reserve(voluntary_guard, carrier_floor)
+        }
+    }
+}
+
+#[derive(Default)]
 struct FreshInvestmentPreparation {
     foundry: Option<FreshFoundryProposal>,
     defense: Vec<FreshDefenseProposal>,
@@ -4248,6 +4260,27 @@ struct FreshInvestmentPreparation {
     rejected_connected_candidate: Option<RejectedConnectedCandidate>,
 }
 
+impl FreshInvestmentPreparation {
+    fn funding_horizon(&self, mut horizon: Tick) -> Tick {
+        if let Some(proposal) = &self.foundry {
+            horizon = horizon.max(proposal.forecast_deadline());
+        }
+        if let Some(proposal) = &self.connected {
+            horizon = horizon.max(proposal.deadline());
+        }
+        // Defense pays current capital only; completion times rank its utility
+        // but must not extend the funding window of unrelated investments.
+        for proposal in &self.economy {
+            horizon = horizon.max(proposal.deadline);
+        }
+        self.standing_force.for_each(|proposal| {
+            horizon = horizon.max(proposal.reservation_deadline());
+        });
+        horizon
+    }
+}
+
+#[derive(Default)]
 struct StandingForceDerivation {
     projection_targets: Vec<StandingGroundTarget>,
     expansion_security_need: Option<(TilePos, u64)>,
@@ -8395,6 +8428,71 @@ mod tests {
             })
             .expect("the accepted defense remains visible in the trace");
         assert_eq!(proposal.claims.minimum_residual_scrap, carrier_floor);
+    }
+
+    #[test]
+    fn active_revision_keeps_full_defense_admission_until_claims_are_stable() {
+        let mut revision = ActiveRevisionPreparation::default();
+        assert_eq!(revision.defense_admission_reserve(90, 110), 110);
+        revision.proposal = Some(fixture_connected_proposal(3_000, vec![]));
+        assert_eq!(revision.defense_admission_reserve(90, 110), 0);
+        revision.proposal = None;
+        assert_eq!(revision.defense_admission_reserve(90, 0), 90);
+    }
+
+    #[test]
+    fn fresh_funding_horizon_includes_delayed_reinforcement_readiness() {
+        let standing = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: 120,
+            ready_before: 420,
+            kind: UnitKind::Lancer,
+            reason: StandingForceReason::SiegePressure,
+            specialty: Specialty::Siege,
+            personality_emphasis: 100,
+            case: ProposalCase {
+                urgency: Urgency::Developmental,
+                confidence: Confidence::Current,
+                value: StrategicValue::Incremental,
+                time_to_impact: TimeToImpact::Patient,
+                safety: ExecutionSafety::Managed,
+            },
+            eligible_producers: vec![BuildingId(7)],
+        })
+        .with_accumulation(3_000, 50);
+        let fresh = FreshInvestmentPreparation {
+            standing_force: StandingForcePreparation::Unconditional(vec![standing]),
+            ..FreshInvestmentPreparation::default()
+        };
+        assert_eq!(fresh.funding_horizon(2_400), 3_300);
+    }
+
+    #[test]
+    fn distant_current_paid_defense_does_not_extend_other_domains_funding() {
+        let mut fresh = FreshInvestmentPreparation {
+            connected: Some(fixture_connected_proposal(3_000, vec![])),
+            ..FreshInvestmentPreparation::default()
+        };
+        let expected = fresh.funding_horizon(2_400);
+        assert_eq!(expected, 3_000);
+        fresh.defense.push(
+            FreshDefenseProposal::fixture(
+                DefenseConstruction::Turret,
+                TilePos::new(9, 11),
+                UnitId(7),
+                ProposalCase {
+                    urgency: Urgency::Developmental,
+                    confidence: Confidence::Prior,
+                    value: StrategicValue::Incremental,
+                    time_to_impact: TimeToImpact::Patient,
+                    safety: ExecutionSafety::Managed,
+                },
+                100,
+                0,
+            )
+            .with_ready_at(6_000),
+        );
+        assert_eq!(fresh.defense[0].ready_at(), 6_000);
+        assert_eq!(fresh.funding_horizon(2_400), expected);
     }
 
     #[test]

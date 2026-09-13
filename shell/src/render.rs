@@ -195,6 +195,8 @@ mod environment;
 mod minimap;
 mod motion;
 mod panel_draw;
+mod panel_layout;
+mod performance;
 mod pits;
 mod world;
 use chrome::*;
@@ -574,6 +576,15 @@ fn view_height() -> f32 {
 
 /// Draws one frame.
 pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
+    draw_with_performance(game, sprites, input, None);
+}
+
+pub(crate) fn draw_with_performance(
+    game: &Game,
+    sprites: &Sprites,
+    input: &InputState,
+    performance: Option<&crate::performance::PerformanceView>,
+) {
     clear_background(OUTSIDE);
     environment::draw_backdrop(game);
     let alpha = game.render_alpha();
@@ -609,7 +620,10 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     draw_placement_ghost(game, sprites, input);
     draw_drag_rect(game, input);
     draw_salvage_tooltip(game, input);
-    draw_hud(game, sprites, input);
+    draw_hud(game, sprites, input, performance);
+    if game.overlay {
+        draw_overlay_info(game);
+    }
     draw_minimap(game);
     draw_result_overlay(game);
     draw_panel_tooltip(game, input);
@@ -718,7 +732,9 @@ fn tracked_mount_angle(game: &Game, unit: &oxide_sim::Unit, alpha: f32) -> Optio
         if unit.kind == oxide_sim::UnitKind::Sapper
             && let oxide_sim::Order::Attack { target, .. } = unit.order
         {
-            Some(target)
+            game.state
+                .attack_view(unit.player, target)
+                .and_then(|view| view.entity)
         } else {
             None
         }
@@ -1227,9 +1243,14 @@ mod tests {
 
     #[test]
     fn articulated_mount_tracks_interpolated_positions_without_reading_hidden_targets() {
-        let mut game =
-            crate::game::Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0))
-                .unwrap();
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+            player: 1,
+            kind: oxide_sim::BuildingKind::Reclaimer,
+            x: 9,
+            y: 3,
+        });
+        let mut game = crate::game::Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
         let unit = game
             .state
             .units()
@@ -1280,13 +1301,27 @@ mod tests {
         game.aim_unit_targets.clear();
         let mut sapper = unit;
         sapper.kind = oxide_sim::UnitKind::Sapper;
+        let known = game
+            .state
+            .buildings()
+            .iter()
+            .find(|b| b.kind == oxide_sim::BuildingKind::Reclaimer)
+            .unwrap();
+        let direction = known.closest_point_to(sapper.pos) - sapper.pos;
+        let expected = direction
+            .y
+            .to_num::<f32>()
+            .atan2(direction.x.to_num::<f32>())
+            + std::f32::consts::FRAC_PI_2;
         sapper.order = oxide_sim::Order::Attack {
-            target: oxide_sim::Target::Building(own),
+            pursue: false,
+            target: oxide_sim::Target::Building(known.id).into(),
             resume: None,
         };
         assert!((super::tracked_mount_angle(&game, &sapper, 1.0).unwrap() - expected).abs() < 1e-5);
         sapper.order = oxide_sim::Order::Attack {
-            target: oxide_sim::Target::Building(hidden),
+            pursue: false,
+            target: oxide_sim::Target::Building(hidden).into(),
             resume: None,
         };
         assert_eq!(super::tracked_mount_angle(&game, &sapper, 1.0), None);

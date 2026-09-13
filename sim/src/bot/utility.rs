@@ -824,6 +824,7 @@ impl Dials {
 /// memory, and the scout rotation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UtilityPolicy {
+    defense_routing_cache: std::cell::RefCell<defense::DefenseRoutingCache>,
     pub(in crate::bot) work_experience: experience_work::WorkExperience,
     pub(in crate::bot) ground_inputs: Option<combat::GroundMissionInputs>,
     pub(in crate::bot) battlefield: std::sync::Arc<super::battlefield::BattlefieldAssessment>,

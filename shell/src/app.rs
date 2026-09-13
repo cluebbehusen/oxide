@@ -149,6 +149,7 @@ struct App {
     soundtrack: Option<crate::soundtrack::Soundtrack>,
     /// Opt-in bounded native-frame timing, queried over the debug socket.
     frame_profiler: FrameProfiler,
+    performance: crate::performance::Performance,
 }
 
 #[derive(Debug, Clone)]
@@ -639,6 +640,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         mixer: Mixer::default(),
         soundtrack,
         frame_profiler: FrameProfiler::new(profile_frames),
+        performance: crate::performance::Performance::default(),
     };
     let mut ui_view = capture_ui(&screen, &app);
 
@@ -661,7 +663,14 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         // Debug requests are control-plane work between presented frames, not
         // native frame work. Start timing after draining them so Resume and
         // status polling cannot become an artificial slow frame.
-        let frame_started = app.frame_profiler.enabled().then(std::time::Instant::now);
+        let performance_started = app
+            .performance
+            .begin(app.config.performance_display, performance_context(&screen));
+        let frame_started = if app.frame_profiler.enabled() {
+            performance_started.or_else(|| Some(std::time::Instant::now()))
+        } else {
+            None
+        };
         let frame_tick_start = visible_tick(&screen, &app);
         let frame_mode = visible_profile_mode(&screen);
         // The camera never queries the window itself; feed it the viewport
@@ -724,6 +733,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         let rerun = screen_frame.rerun;
         let profile_frame_active = screen_frame.profile_frame_active;
         if rerun {
+            app.performance.reset();
             record_profile_frame(
                 &mut app,
                 &screen,
@@ -893,6 +903,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             }
         }
 
+        app.performance.finish(performance_started);
         record_profile_frame(
             &mut app,
             &screen,
@@ -928,6 +939,15 @@ fn visible_tick(screen: &Screen, app: &App) -> u64 {
     match screen {
         Screen::Playback(playback) => playback.engine.position(),
         _ => app.game.state.current_tick(),
+    }
+}
+
+fn performance_context(screen: &Screen) -> u8 {
+    match screen {
+        Screen::Playing => 1,
+        Screen::Playback(_) => 2,
+        Screen::FinalMap(_) => 3,
+        _ => 0,
     }
 }
 
@@ -1039,6 +1059,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 visible_range: Some(visible),
                 hover: w.ui_hover(),
                 chrome: None,
+                panel_regions: None,
             };
         }
         Screen::Playing => ("playing", None),
@@ -1053,6 +1074,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 visible_range: Some([0, 4]),
                 hover: results.hover(),
                 chrome: None,
+                panel_regions: None,
             };
         }
         Screen::Replays(shelf) => ("replays", Some(&shelf.menu)),
@@ -1076,6 +1098,13 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
         items: menu.map_or_else(Vec::new, |menu| menu.items.clone()),
         visible_range: menu.map(Menu::visible_range),
         hover: menu.and_then(Menu::hover),
+        panel_regions: matches!(screen, Screen::Playing).then(|| {
+            app.game
+                .layout
+                .get()
+                .panel_regions
+                .map(|r| [r.x, r.y, r.w, r.h])
+        }),
         chrome: matches!(screen, Screen::Playing).then(|| {
             let l = app.game.layout.get();
             let m = l.minimap;
@@ -1372,6 +1401,7 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
                 .map(|fresh| {
                     app.tutorial = None;
                     *game = keep_flags(fresh, game);
+                    app.performance.reset();
                     *screen = Screen::Playing;
                     app.input.reset_session();
                     Reply::Ok
@@ -1384,6 +1414,7 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
                 .map(|fresh| {
                     app.tutorial = None;
                     *game = keep_flags(fresh, game);
+                    app.performance.reset();
                     *screen = Screen::Playing;
                     app.input.reset_session();
                     Reply::Status(game.status_view())

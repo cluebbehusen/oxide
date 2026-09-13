@@ -37,6 +37,7 @@ fn obs_base() -> Observation {
         known_wrecks: Vec::new(),
         salvage_incidents: Vec::new(),
         blips: Vec::new(),
+        contact_tracks: Vec::new(),
         faction: Faction::Ferrous,
         my_shells: 0,
         incoming_shells: Vec::new(),
@@ -2306,7 +2307,7 @@ fn exact_group_intents_lower_canonical_live_owned_members_only() {
                 player: PlayerId(0),
                 command: Command::Attack {
                     units: vec![UnitId(7)],
-                    target,
+                    target: target.into(),
                     queue: false,
                 },
             },

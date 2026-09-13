@@ -154,7 +154,7 @@ pub struct BuildingView {
     /// allied buildings; hostile targeting intent is redacted with rally
     /// and production state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub focus: Option<oxide_sim::Target>,
+    pub focus: Option<oxide_sim::AttackTarget>,
     /// Whether construction has finished.
     #[serde(
         default = "default_true",
@@ -210,6 +210,8 @@ pub struct FogView {
     /// Radar blips: bare tiles, no kind, no owner — detection without
     /// identification, exactly what the Array's outer ring grants.
     pub contacts: Vec<[i32; 2]>,
+    /// Continuously observed contacts; entity identity appears only in true sight.
+    pub contact_tracks: Vec<oxide_sim::vision::ContactTrack>,
 }
 
 /// An enemy building as one seat remembers it.
@@ -324,6 +326,7 @@ impl FogView {
             scrap,
             wrecks,
             contacts: vision.contacts().iter().map(|t| [t.x, t.y]).collect(),
+            contact_tracks: vision.tracks().to_vec(),
         }
     }
 }
@@ -408,6 +411,10 @@ pub struct UiView {
     /// zero-sized when absent. Menu modes report `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chrome: Option<[f32; 11]>,
+    /// Exact information and action rectangles [x, y, width, height].
+    /// The legacy chrome array describes only the enclosing bounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel_regions: Option<[[f32; 4]; 2]>,
 }
 
 impl StateView {
@@ -902,7 +909,7 @@ mod tests {
             queue: std::collections::VecDeque::new(),
             progress: 0,
             rally: None,
-            focus: Some(target),
+            focus: Some(target.into()),
             built: true,
             tier: 0,
             cooldown: 0,
@@ -911,7 +918,7 @@ mod tests {
             salvaged: false,
         };
 
-        assert_eq!(building_view(&building).focus, Some(target));
+        assert_eq!(building_view(&building).focus, Some(target.into()));
         assert_eq!(building_view_redacted(&building).focus, None);
     }
 

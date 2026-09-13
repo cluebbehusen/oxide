@@ -102,6 +102,10 @@ fn settings_menu(config: &Config) -> Menu {
             format!("Invert zoom: {}", onoff(config.camera.zoom_inverted)),
             format!("Reduced motion: {}", onoff(config.reduced_motion)),
             format!("Colorblind accents: {}", onoff(config.colorblind)),
+            format!(
+                "Performance display: {}",
+                config.performance_display.label()
+            ),
             "Apply left-handed bindings".to_string(),
             "Controls...".to_string(),
             "Back".to_string(),
@@ -113,8 +117,9 @@ fn settings_menu(config: &Config) -> Menu {
 /// from the Controls face re-select it, and a stale literal here once
 /// left the cursor on Colorblind accents after two rows were inserted
 /// above (a test pins the label to this index).
-const PRESET_ROW: usize = 9;
-const CONTROLS_ROW: usize = 10;
+const PERFORMANCE_ROW: usize = 9;
+const PRESET_ROW: usize = 10;
+const CONTROLS_ROW: usize = 11;
 
 /// Advances one settings row to its next value step. Returns false on
 /// rows that navigate instead of cycling.
@@ -149,6 +154,7 @@ fn cycle_setting(config: &mut Config, row: usize) -> bool {
             config.colorblind = !config.colorblind;
             render::set_colorblind(config.colorblind);
         }
+        PERFORMANCE_ROW => config.performance_display = config.performance_display.next(),
         _ => return false, // preset, Controls..., and Back route in update
     }
     true
@@ -492,6 +498,68 @@ mod tests {
         assert!(update.dirty);
         assert_eq!(config.volumes.music, 0.0);
         assert_eq!(screen.menu.selected, 3);
+    }
+
+    #[test]
+    fn performance_cycles_with_keyboard_mouse_and_touch_in_small_windows() {
+        use crate::config::PerformanceDisplay;
+        use oxide_protocol::MouseButton;
+        for scale in [0.75, 1.0, 1.25, 1.5] {
+            crate::render::set_viewport(640.0, 400.0);
+            crate::render::set_user_scale(scale);
+            let mut config = Config::default();
+            let mut live = config.bindings.clone();
+            let mut screen = SettingsScreen::open(&config);
+            for _ in 0..PERFORMANCE_ROW {
+                drive(
+                    &mut screen,
+                    &mut config,
+                    &mut live,
+                    &press(Key::Down),
+                    false,
+                );
+            }
+            for mode in [
+                PerformanceDisplay::Fps,
+                PerformanceDisplay::Detailed,
+                PerformanceDisplay::Off,
+            ] {
+                let rect = screen
+                    .menu
+                    .item_rect(PERFORMANCE_ROW)
+                    .expect("selected row visible");
+                let (x, y) = (rect.center().x, rect.center().y);
+                let events = match mode {
+                    PerformanceDisplay::Fps => press(Key::Enter),
+                    PerformanceDisplay::Detailed => vec![
+                        RawEvent::MouseDown {
+                            button: MouseButton::Left,
+                            x,
+                            y,
+                        },
+                        RawEvent::MouseUp {
+                            button: MouseButton::Left,
+                            x,
+                            y,
+                        },
+                    ],
+                    PerformanceDisplay::Off => vec![
+                        RawEvent::TouchDown { id: 1, x, y },
+                        RawEvent::TouchUp { id: 1, x, y },
+                    ],
+                };
+                let update = drive(&mut screen, &mut config, &mut live, &events, false);
+                assert!(update.dirty);
+                assert_eq!(config.performance_display, mode);
+                assert_eq!(screen.menu.selected, PERFORMANCE_ROW);
+                assert_eq!(
+                    screen.menu.items[PERFORMANCE_ROW],
+                    format!("Performance display: {}", mode.label())
+                );
+            }
+            assert_eq!(screen.menu.items[PRESET_ROW], "Apply left-handed bindings");
+            assert_eq!(screen.menu.items[CONTROLS_ROW], "Controls...");
+        }
     }
 
     #[test]

@@ -17,6 +17,7 @@ mod layout;
 mod menu;
 mod panel;
 mod paths;
+mod performance;
 mod presentation_animation;
 mod render;
 mod rocket_audio;

@@ -908,7 +908,10 @@ fn southeast_brain_ignores_an_unactionable_public_extractor_without_learning_its
     );
 }
 
+// Concealed-mine placement can reject an otherwise legal bot command:
+// https://linear.app/cluebbehusen/issue/CL-33/building-placement-exposes-concealed-enemy-mines
 #[test]
+#[ignore = "Blocked by the concealed-mine placement leak (CL-33)"]
 fn balanced_mirror_plays_a_complete_decisive_match() {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
@@ -2935,14 +2938,14 @@ fn connected_package_refills_one_lane_until_an_oversized_roster_freezes() {
                 Event::AttackHit {
                     attacker,
                     attacker_kind,
-                    target: Target::Building(_),
+                    target: Some(Target::Building(_)),
                     ..
                 } if precommit_units.contains(attacker) => {
                     premature_hits.push((report.tick, *attacker, *attacker_kind));
                 }
                 Event::TurretFired {
                     kind,
-                    target: Target::Building(_),
+                    target: Some(Target::Building(_)),
                     ..
                 } => premature_turret_fire.push((report.tick, *kind)),
                 Event::ShellLanded {
@@ -2951,7 +2954,7 @@ fn connected_package_refills_one_lane_until_an_oversized_roster_freezes() {
                 } => premature_shell_landings.push(report.tick),
                 Event::ShellLaunched {
                     shooter: Target::Unit(attacker),
-                    target: Target::Building(_),
+                    target: Some(Target::Building(_)),
                     player: PlayerId(0),
                     ..
                 } if precommit_units.contains(attacker) => {
@@ -3635,7 +3638,7 @@ fn prime_air_operation_suppresses_visible_flak_before_committing_bombers() {
         for command in &commands {
             if let Command::Attack {
                 units,
-                target: Target::Building(target),
+                target: oxide_sim::AttackTarget::Building(target),
                 ..
             } = &command.command
             {

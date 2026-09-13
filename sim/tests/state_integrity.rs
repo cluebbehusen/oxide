@@ -263,6 +263,7 @@ fn well_formed_additions_are_accepted() {
     // mutate must themselves be legal — otherwise a fixture could be
     // passing for the wrong reason.
     let mut base = snapshot();
+    let shift = 100 - base["tick"].as_u64().unwrap();
     base["tick"] = json!(100);
     base["shells"].as_array_mut().unwrap().push(shell(
         json!({"kind": "unit", "id": 1}),
@@ -273,7 +274,13 @@ fn well_formed_additions_are_accepted() {
         .as_array_mut()
         .unwrap()
         .push(ghost(1, 12, 5));
-    base["vision"][0]["contacts"] = json!([{"x": 3, "y": 3}, {"x": 1, "y": 4}]);
+    for view in base["vision"].as_array_mut().unwrap() {
+        for track in view["tracking"]["tracks"].as_array_mut().unwrap() {
+            for sample in track["history"].as_array_mut().unwrap() {
+                sample["tick"] = json!(sample["tick"].as_u64().unwrap() + shift);
+            }
+        }
+    }
     base["vision"][0]["salvage_incidents"] = json!([incident(4, 3, 100), incident(2, 4, 100)]);
     serde_json::from_value::<State>(base).expect("legal additions stay legal");
 }
@@ -369,10 +376,11 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::InvalidGroundSpeed(_) => 70,
         E::InvalidAirMotion(_) => 71,
         E::InvalidAircraftCrash(_) => 72,
+        E::InvalidContactTracking(_) => 73,
     }
 }
 
-const ROWS: usize = 73;
+const ROWS: usize = 74;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -458,6 +466,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::InvalidGroundSpeed(UnitId(0)),
         E::InvalidAirMotion(UnitId(0)),
         E::InvalidAircraftCrash(0),
+        E::InvalidContactTracking(PlayerId(0)),
     ]
 }
 
@@ -981,6 +990,11 @@ fn every_checklist_row_refuses_its_forgery() {
             "shell 0 has a projectile kind inconsistent with its shooter",
         ),
         (
+            "an overflowing contact identity counter",
+            |d| d["vision"][0]["tracking"]["next_id"] = json!(u32::MAX),
+            "player p0 has invalid contact tracking",
+        ),
+        (
             "a memory of a building owned off the table",
             |d| d["vision"][0]["ghosts"] = json!([ghost(9, 12, 5)]),
             "player p0 remembers a building owned outside the table",
@@ -1175,7 +1189,8 @@ fn the_ghost_sort_key_carries_the_owner() {
         .as_array_mut()
         .unwrap()
         .push(json!({"name": "Third", "faction": "ferrous", "team": 2, "scrap": 0}));
-    let view = base["vision"][0].clone();
+    let mut view = base["vision"][0].clone();
+    view.as_object_mut().unwrap().remove("tracking");
     base["vision"].as_array_mut().unwrap().push(view);
     base["vision"][0]["ghosts"] = json!([ghost(1, 6, 6), ghost(2, 6, 6)]);
     serde_json::from_value::<State>(base.clone()).expect("owner-ordered memories are canonical");

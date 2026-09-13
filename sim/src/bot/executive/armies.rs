@@ -647,7 +647,7 @@ impl Executive {
                                         player: me,
                                         command: Command::Attack {
                                             units: army.members.clone(),
-                                            target: crate::ids::Target::Unit(target),
+                                            target: crate::ids::Target::Unit(target).into(),
                                             queue: false,
                                         },
                                     });
@@ -682,7 +682,7 @@ impl Executive {
                                         player: me,
                                         command: Command::Attack {
                                             units,
-                                            target: crate::ids::Target::Unit(target),
+                                            target: crate::ids::Target::Unit(target).into(),
                                             queue: false,
                                         },
                                     });
@@ -819,7 +819,10 @@ impl Executive {
         if let Some((target, buildings)) = selected {
             out.push(PlayerCommand {
                 player: me,
-                command: Command::FocusFire { buildings, target },
+                command: Command::FocusFire {
+                    buildings,
+                    target: target.into(),
+                },
             });
         }
     }
@@ -1993,7 +1996,7 @@ mod tests {
                 player: PlayerId(0),
                 command: Command::FocusFire {
                     buildings: vec![BuildingId(9), BuildingId(11)],
-                    target: Target::Unit(UnitId(100)),
+                    target: crate::AttackTarget::Unit(UnitId(100)),
                 },
             }]
         );
@@ -2015,7 +2018,7 @@ mod tests {
                 player: PlayerId(0),
                 command: Command::FocusFire {
                     buildings: vec![BuildingId(9), BuildingId(11)],
-                    target: Target::Unit(UnitId(101)),
+                    target: Target::Unit(UnitId(101)).into(),
                 },
             }],
             "losing the preferred contact should retarget the same overlapping line once"
@@ -2116,7 +2119,7 @@ mod tests {
                 player: PlayerId(0),
                 command: Command::FocusFire {
                     buildings: vec![BuildingId(9), BuildingId(11)],
-                    target: Target::Unit(UnitId(100)),
+                    target: Target::Unit(UnitId(100)).into(),
                 },
             }],
             "the atomic command must exclude an incompatible ground-only turret"
@@ -2685,7 +2688,7 @@ mod tests {
         assert!(
             matches!(
                 &commands[0].command,
-                Command::Attack { units, target: Target::Unit(UnitId(101)), queue: false }
+                Command::Attack { units, target: crate::AttackTarget::Unit(UnitId(101)), queue: false }
                     if units == &vec![UnitId(1), UnitId(2), UnitId(3)]
             ),
             "unexpected contact command: {commands:?}"
@@ -2812,7 +2815,7 @@ mod tests {
             initial.as_slice(),
             [PlayerCommand {
                 command: Command::Attack {
-                    target: Target::Unit(UnitId(101)),
+                    target: crate::AttackTarget::Unit(UnitId(101)),
                     ..
                 },
                 ..
@@ -2861,7 +2864,7 @@ mod tests {
                     commands.as_slice(),
                     [PlayerCommand {
                         command: Command::Attack {
-                            target: Target::Unit(UnitId(102)),
+                            target: crate::AttackTarget::Unit(UnitId(102)),
                             ..
                         },
                         ..
@@ -2957,7 +2960,7 @@ mod tests {
                     player: PlayerId(0),
                     command: Command::Attack {
                         units: vec![UnitId(1), UnitId(2)],
-                        target: Target::Unit(UnitId(102)),
+                        target: Target::Unit(UnitId(102)).into(),
                         queue: false,
                     },
                 }],
@@ -3025,7 +3028,7 @@ mod tests {
                 player: PlayerId(0),
                 command: Command::Attack {
                     units: vec![UnitId(1), UnitId(2)],
-                    target: Target::Unit(UnitId(101)),
+                    target: Target::Unit(UnitId(101)).into(),
                     queue: false,
                 },
             }],
@@ -3043,7 +3046,7 @@ mod tests {
             commands.iter().all(|command| !matches!(
                 &command.command,
                 Command::Attack {
-                    target: Target::Unit(UnitId(101)),
+                    target: crate::AttackTarget::Unit(UnitId(101)),
                     ..
                 }
             )),
@@ -3196,7 +3199,7 @@ mod tests {
                 player: PlayerId(0),
                 command: Command::Attack {
                     units: vec![UnitId(1), UnitId(2), UnitId(3)],
-                    target: Target::Unit(UnitId(101)),
+                    target: Target::Unit(UnitId(101)).into(),
                     queue: false,
                 },
             }],
@@ -3338,7 +3341,7 @@ mod tests {
                 player: PlayerId(0),
                 command: Command::Attack {
                     units: vec![UnitId(1), UnitId(2)],
-                    target: Target::Unit(UnitId(101)),
+                    target: Target::Unit(UnitId(101)).into(),
                     queue: false,
                 },
             }]
@@ -3416,7 +3419,7 @@ mod tests {
                 player: PlayerId(0),
                 command: Command::Attack {
                     units: vec![UnitId(1), UnitId(2), UnitId(3)],
-                    target: Target::Unit(UnitId(101)),
+                    target: Target::Unit(UnitId(101)).into(),
                     queue: false,
                 },
             }]
@@ -3761,7 +3764,7 @@ mod tests {
         assert!(matches!(
             commands[0].command,
             Command::Attack {
-                target: Target::Unit(UnitId(101)),
+                target: crate::AttackTarget::Unit(UnitId(101)),
                 ..
             }
         ));

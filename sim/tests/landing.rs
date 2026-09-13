@@ -340,7 +340,7 @@ fn flak_ignores_a_parked_condor() {
             1,
             Command::Attack {
                 units: vec![flak, lancer],
-                target: Target::Unit(condor),
+                target: Target::Unit(condor).into(),
                 queue: false,
             },
         )
@@ -354,7 +354,7 @@ fn flak_ignores_a_parked_condor() {
     assert!(
         matches!(
             state.unit(lancer).unwrap().order,
-            Order::Attack { target: Target::Unit(id), .. } if id == condor
+            Order::Attack { target, .. } if state.attack_view(PlayerId(1), target).and_then(|v| v.entity) == Some(Target::Unit(condor))
         ),
         "a ground gun could not attack the parked airframe: {:?}",
         state.unit(lancer).unwrap().order
@@ -372,7 +372,7 @@ fn flak_ignores_a_parked_condor() {
     assert!(
         matches!(
             state.unit(flak).unwrap().order,
-            Order::Attack { target: Target::Unit(id), .. } if id == condor
+            Order::Attack { target, .. } if state.attack_view(PlayerId(1), target).and_then(|v| v.entity) == Some(Target::Unit(condor))
         ),
         "flak lost the airborne Condor: {:?}",
         state.unit(flak).unwrap().order
@@ -1020,10 +1020,10 @@ fn an_unseen_enemy_never_pulls_a_landing_into_an_attack() {
     for _ in 0..900 {
         state.tick(&[]);
         let unit = state.unit(condor).unwrap();
-        if let Order::Attack {
-            target: Target::Building(id),
-            ..
-        } = unit.order
+        if let Order::Attack { target, .. } = unit.order
+            && let Some(Target::Building(id)) = state
+                .attack_view(unit.player, target)
+                .and_then(|view| view.entity)
         {
             let seen = state
                 .building(id)

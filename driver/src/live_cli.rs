@@ -497,7 +497,7 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             player: PlayerId(player),
             command: Command::Attack {
                 units: units(ids),
-                target: Target::Unit(UnitId(target)),
+                target: Target::Unit(UnitId(target)).into(),
                 queue,
             },
         },
@@ -510,7 +510,7 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             player: PlayerId(player),
             command: Command::Attack {
                 units: units(ids),
-                target: Target::Building(BuildingId(target)),
+                target: Target::Building(BuildingId(target)).into(),
                 queue,
             },
         },

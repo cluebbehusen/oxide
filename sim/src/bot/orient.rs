@@ -180,6 +180,12 @@ impl Orientation {
         o.known_rock.sort_by_key(|p| (p.y, p.x));
         o.known_peaks.sort_by_key(|p| (p.y, p.x));
         o.blips.sort_by_key(|p| (p.y, p.x));
+        for track in &mut o.contact_tracks {
+            track.tile = self.tile(track.tile);
+            for sample in &mut track.history {
+                sample.tile = self.tile(sample.tile);
+            }
+        }
         o.salvage_incidents.sort_by_key(|p| (p.y, p.x));
         o.incoming_shells.sort_by_key(|p| (p.y, p.x));
         o.enemy_buildings
@@ -425,6 +431,7 @@ mod tests {
             known_wrecks: vec![(TilePos::new(2, 4), 30)],
             salvage_incidents: vec![TilePos::new(3, 4)],
             blips: vec![TilePos::new(4, 4)],
+            contact_tracks: Vec::new(),
             faction: Faction::Ferrous,
             my_shells: 2,
             incoming_shells: vec![TilePos::new(1, 5), TilePos::new(5, 5)],

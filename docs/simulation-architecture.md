@@ -505,22 +505,41 @@ planted. Advance does not fire Bombard potshots. Deserialization bounds the
 deployment counter, rejects it on other kinds and requires transported riders to
 have stowed spades.
 
-Targeted attacks require current team sight. Shared allied sight can spot for a
-long-range weapon, but a remembered building or unidentified radar contact
-cannot authorize a shot. Direct ground-to-ground fire traces terrain: rocks
-provide cover, while buildings and scrap do not. Fire involving aircraft and
-indirect weapons ignores ordinary rock cover. Peaks block every relevant line
-and artillery arc.
+`AttackTarget` resolves through team knowledge to a visible entity, remembered
+building footprint, or mobile contact. Explicit attacks approach weapon range
+without requiring sight. Building attacks end when observation clears the
+memory; contact attacks end when sight and radar are both lost, or
+identification reveals an incompatible domain. Contact loss also clears defense
+focus and advances queued orders.
+
+Automatic acquisition prefers visible eligible enemies over radar contacts and
+does not acquire building ghosts. Automatic radar fire may stop Idle,
+AttackMove, or Patrol to aim, but cannot pursue, retreat, or start a bomber run.
+Move and Advance retain their existing movement and firing rules. A fireable
+explicit target takes priority. Defenses retain blocked or out-of-range focus
+while firing at fallback targets; Stop clears focus.
+
+Direct ground-to-ground fire traces terrain: rocks provide cover, while
+buildings and scrap do not. Fire involving aircraft and indirect weapons ignores
+ordinary rock cover. For anonymous contacts, ground-capable direct fire uses
+ground cover and air-only fire uses air rules. Peaks block both. Blind hitscan
+spends a shot and selects one eligible hostile in the reported tile by distance
+to its center, then id. Remembered-building hitscan resolves against a footprint
+at the aim point. Both retain normal splash rules and report firing coordinates
+without a victim id, including on misses.
 
 Hitscan attacks buffer damage for same-tick resolution. Projectile weapons
 launch a serialized `Shell` toward a fixed fire-time aim point. Predictive aim
 samples ground motor speed and heading, including pathless coasting; air units
 retain the current steering-line estimate. The snapshot precedes unit brains and
 does not consult later route turns. A shell is unguided after it leaves the
-weapon. A serialized projectile kind preserves missile, bomb, or shell identity
-independently of shooter survival. Deserialization rejects a kind inconsistent
-with a shooter that still exists. On arrival, buildings take only a direct hit;
-eligible enemy units may take splash according to the weapon's domain mask.
+weapon. Radar aim uses a fixed-point velocity estimated from the rolling
+one-second tile-center history, clamped to a global movement bound; a fresh
+contact has zero estimated velocity. A serialized projectile kind preserves
+missile, bomb, or shell identity independently of shooter survival.
+Deserialization rejects a kind inconsistent with a shooter that still exists. On
+arrival, buildings take only a direct hit; eligible enemy units may take splash
+according to the weapon's domain mask.
 
 ## Fog, memory, radar, and teams
 
@@ -532,10 +551,10 @@ memory, computed once per team and cloned to later seats.
 The bot `Observation` copies both masks in canonical row-major order. Policies
 therefore distinguish current sight from remembered terrain without consulting
 authoritative state; seat orientation transforms both masks with the rest of the
-observed world. Observation schema 17 also exposes each own carried unit's
-identity, kind, health, and carrier separately from available units. This is
-presence evidence, not permission to assign or command a passenger. Allied and
-enemy manifests remain opaque.
+observed world. Observation schema 18 exposes continuous contact tracks and each
+own carried unit's identity, kind, health, and carrier separately from available
+units. This is presence evidence, not permission to assign or command a
+passenger. Allied and enemy manifests remain opaque.
 
 The maintained player-facing controller also receives a `PublicMapBriefing`
 derived from the final authored `Scenario`. It contains static terrain,
@@ -551,13 +570,19 @@ briefing.
 Enemy buildings remain as last-seen ghosts until their footprint is observed
 again. Scrap and wreck amounts likewise freeze at the last visible value. Arrays
 add sorted, deduplicated radar contact tiles outside true sight; a contact
-carries no owner, type, program, or persistent memory. Salvage-relevant hostile
-incidents, such as a Harvester hit or an allied loss, remember only the victim's
-tile for a bounded caution period, never the attacker's identity or location. A
-worker already inside a remembered static firing envelope may retreat laterally
-or outward, without approaching any overlapping gun. This escape rule never
-makes the source eligible for work and does not permit crossing mobile or radar
-pressure.
+carries no owner, type, domain, or concealed entity id. Team-shared tracks
+retain a contact id and one second of reported positions. Spatial buckets bound
+one-to-one matching, ranked by predicted distance, previous distance, contact
+id, and coordinates. Visible identity can link visible observations; radar
+matching uses only reported movement. Unmatched tracks end immediately, and ids
+are never reused.
+
+Salvage-relevant hostile incidents, such as a Harvester hit or an allied loss,
+remember only the victim's tile for a bounded caution period, never the
+attacker's identity or location. A worker already inside a remembered static
+firing envelope may retreat laterally or outward, without approaching any
+overlapping gun. This escape rule never makes the source eligible for work and
+does not permit crossing mobile or radar pressure.
 
 All allegiance checks route through normalized team ids. Teammates share vision,
 cannot target one another, and win or lose as a team. Resignation makes a seat
@@ -1062,6 +1087,20 @@ not treated as live obstacles. The accepted proposal retains the scorer's exact
 site and builder through `BuildWith`. The frozen Overseer retains its legacy
 placement and sequential construction rules.
 
+Voluntary defense checks a necessary current-capital bound before quoting each
+kind. It includes imported fixed claims and the maximum of the carrier floor and
+the smaller of the shallow guard or a Sentinel purchase. A current shallow
+Sentinel can discharge the voluntary guard; the admission bound therefore never
+becomes an additional proposal debit. Active Connected revisions retain full
+quotation because subsequent recovery can release imported claims. Defense
+completion times rank utility but do not extend the allocator's funding horizon:
+these proposals pay construction capital entirely from current scrap. When a
+saved Foundry's footprint covers its assigned worker, every combined defense
+layout would fail the existing builder-start check. The session detects that
+overlap before quoting defense. Full layout validation uses the same cheap check
+for selected workers covered by any blocking footprint; nonblocking mines do not
+cover starts, and unselected workers do not trigger this rejection.
+
 The site search evaluates candidates in descending order of conservative score
 bounds. Unchanged approach routes retain their coverage score; assets whose
 routes could change receive the maximum positive contribution, and bounds omit
@@ -1069,6 +1108,26 @@ penalties and builder travel. A site is skipped only when it cannot provide
 coverage or its bound falls below the best exact candidate. Surviving sites
 still undergo every builder, egress, resource-route, and support check. The
 existing score and coordinate tie-breaks determine the selected site.
+
+Defensive geometry shares a bot-owned route cache across economic and defensive
+valuation. Each retained generation compares map dimensions and the complete
+fog-honest passability surface. Directed endpoint paths include the candidate
+footprint in their key; air routes ignore ground-only footprints. Normal ground,
+hypothetical combined-build layouts, and air surfaces have independent bounded
+retention: one normal generation has an 8 MiB budget, two hypothetical
+generations have 1 MiB each, and air has 2 MiB. These bound accounted retained
+payload and entry allowances, not process RSS. Cache eviction or an oversized
+entry falls back to search. Successful hits clear old exhausted-component
+evidence, while failures are not stored as bare unreachable results.
+
+Lazy reverse distance fields use the same open-tile graph, 10/14 movement costs,
+and diagonal corner rules. They only reject endpoint pairs whose no-candidate
+cost exceeds a route already found. Adding a blocking footprint cannot improve
+that lower bound; equal-cost pairs remain eligible for the full route-choice
+key. A blocked start retains the octile bound because A* permits leaving a tile
+it could not enter. A* still constructs every uncached selected path. Investment
+scores, threat evidence, asset values, and budgets are recomputed from the
+current observation rather than retained with passability.
 
 The pre-core emergency path is deliberately narrower than voluntary allocation.
 It uses only a current visible armed ground threat for a Turret or a current

@@ -66,13 +66,14 @@ enum CommandTag {
     UpgradeBuilding,
     Load,
     Unload,
+    ClearFocus,
 }
 
 /// The draw pool. Paired with the exhaustive matches below, the array and
 /// the variant list cannot drift apart — the old `next_below(10)` bound
 /// against nine arms is exactly how `Repair`, `Salvage`, and
 /// `CancelTrain` went unfuzzed.
-const COMMAND_TAGS: [CommandTag; 21] = [
+const COMMAND_TAGS: [CommandTag; 22] = [
     CommandTag::Move,
     CommandTag::Attack,
     CommandTag::AttackMove,
@@ -94,6 +95,7 @@ const COMMAND_TAGS: [CommandTag; 21] = [
     CommandTag::UpgradeBuilding,
     CommandTag::Load,
     CommandTag::Unload,
+    CommandTag::ClearFocus,
 ];
 
 /// How rarely a drawn [`CommandTag::Surrender`] is kept: one landed
@@ -131,6 +133,7 @@ fn tag_index(tag: CommandTag) -> usize {
         CommandTag::UpgradeBuilding => 18,
         CommandTag::Load => 19,
         CommandTag::Unload => 20,
+        CommandTag::ClearFocus => 21,
     }
 }
 
@@ -158,6 +161,7 @@ fn tag_of(command: &Command) -> CommandTag {
         Command::CancelFound { .. } => CommandTag::CancelFound,
         Command::Load { .. } => CommandTag::Load,
         Command::Unload { .. } => CommandTag::Unload,
+        Command::ClearFocus { .. } => CommandTag::ClearFocus,
     }
 }
 
@@ -374,11 +378,36 @@ fn buildings(rng: &mut Pcg32, state: &State) -> Vec<BuildingId> {
     ids
 }
 
-fn target(rng: &mut Pcg32, state: &State) -> Target {
-    if rng.next_below(2) == 0 {
-        Target::Unit(unit_id(rng, state))
-    } else {
-        Target::Building(building_id(rng, state))
+fn target(rng: &mut Pcg32, state: &State) -> oxide_sim::AttackTarget {
+    match rng.next_below(4) {
+        0 => Target::Unit(unit_id(rng, state)).into(),
+        1 => Target::Building(building_id(rng, state)).into(),
+        2 => {
+            let tracks = state.vision(PlayerId(0)).tracks();
+            let id = if tracks.is_empty() {
+                oxide_sim::ContactId(rng.next_u32())
+            } else {
+                tracks[rng.next_below(tracks.len() as u32) as usize].id
+            };
+            oxide_sim::AttackTarget::Contact(id)
+        }
+        _ => {
+            let ghosts = state.vision(PlayerId(0)).ghosts();
+            let memory = if let Some(ghost) = ghosts.first() {
+                oxide_sim::RememberedBuilding {
+                    owner: ghost.owner,
+                    building_kind: ghost.kind,
+                    anchor: ghost.anchor,
+                }
+            } else {
+                oxide_sim::RememberedBuilding {
+                    owner: PlayerId(1),
+                    building_kind: BuildingKind::Foundry,
+                    anchor: TilePos::new(i32::MAX, i32::MIN),
+                }
+            };
+            oxide_sim::AttackTarget::RememberedBuilding(memory)
+        }
     }
 }
 
@@ -461,6 +490,9 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
             target: unit_id(rng, state),
             queue: queue(rng),
         },
+        CommandTag::ClearFocus => Command::ClearFocus {
+            buildings: vec![building_id(rng, state)],
+        },
         CommandTag::FocusFire => Command::FocusFire {
             buildings: buildings(rng, state),
             target: target(rng, state),
@@ -497,6 +529,7 @@ struct Reach {
     rejected: u64,
     /// Verbs the generator actually drew, indexed like [`COMMAND_TAGS`].
     drawn: [u64; COMMAND_TAGS.len()],
+    attack_targets: [u64; 4],
     /// Deepest order program any unit carried.
     order_queue: usize,
     /// Deepest production queue any building carried.
@@ -513,6 +546,9 @@ impl Reach {
         self.sent += other.sent;
         self.rejected += other.rejected;
         for (a, b) in self.drawn.iter_mut().zip(other.drawn) {
+            *a += b;
+        }
+        for (a, b) in self.attack_targets.iter_mut().zip(other.attack_targets) {
             *a += b;
         }
         self.order_queue = self.order_queue.max(other.order_queue);
@@ -667,6 +703,19 @@ fn fuzz_run(seed: u64) -> Run {
             })
             .collect();
         reach.sent += commands.len() as u64;
+        for command in &commands {
+            if let Command::Attack { target, .. } | Command::FocusFire { target, .. } =
+                command.command
+            {
+                let tag = match target {
+                    oxide_sim::AttackTarget::Unit(_) => 0,
+                    oxide_sim::AttackTarget::Building(_) => 1,
+                    oxide_sim::AttackTarget::RememberedBuilding(_) => 2,
+                    oxide_sim::AttackTarget::Contact(_) => 3,
+                };
+                reach.attack_targets[tag] += 1;
+            }
+        }
 
         let report = state.tick(&commands);
         for event in &report.events {
@@ -797,6 +846,11 @@ fn seeded_garbage_never_panics_and_reproduces() {
     assert_eq!(
         reach.order_queue, ORDER_QUEUE_CAP,
         "the sweep must drive an order program to its cap"
+    );
+    assert!(
+        reach.attack_targets.iter().all(|n| *n > 0),
+        "the sweep must draw every attack objective: {:?}",
+        reach.attack_targets
     );
     assert!(
         reach.train_queue > 1,

@@ -64,23 +64,23 @@ an ordinary command source rather than a separate ruleset.
   preferences affect future unpaid alternatives, not ordinary rules. Context
   contributions retain their individual ages, failed approaches retain frozen
   objective sites through fog, and Array ranking uses exact builder readiness.
-  Observation schema 17 includes owner-only carried identities and health
-  separately from available units. Decision trace schema 12 separates raw
-  evidence from adjusted return, mission ownership, and bounded experience. All
-  seven domains compete in shared allocation, and forecast income never funds a
-  command. Current-threat emergency defense remains exact survival work with
-  precedence over voluntary proposals, and admitted island-air work advances
-  through the same transaction. Accepted domain payloads keep their exact
-  choices; compatible work may proceed together, while unmigrated planners and
-  utility use only the residual capacity. Connected air-and-siege operations
-  derive opportunity-scaled reconnaissance, suppression, direct strike, and
-  current-visible non-suppression bombing value, then freeze exact members at
-  commitment. Their route and queue preflight covers the complete admitted
-  target cluster, whose canonical anchors are exposed in optional decision
-  traces without entering controller state. See
-  [Bot Strategy](../docs/bot-strategy.md) for the policy direction and
-  [Simulation Architecture](../docs/simulation-architecture.md) for the current
-  implementation contracts.
+  Observation schema 18 includes continuous contact tracks and owner-only
+  carried identities and health separately from available units. Decision trace
+  schema 12 separates raw evidence from adjusted return, mission ownership, and
+  bounded experience. All seven domains compete in shared allocation, and
+  forecast income never funds a command. Current-threat emergency defense
+  remains exact survival work with precedence over voluntary proposals, and
+  admitted island-air work advances through the same transaction. Accepted
+  domain payloads keep their exact choices; compatible work may proceed
+  together, while unmigrated planners and utility use only the residual
+  capacity. Connected air-and-siege operations derive opportunity-scaled
+  reconnaissance, suppression, direct strike, and current-visible
+  non-suppression bombing value, then freeze exact members at commitment. Their
+  route and queue preflight covers the complete admitted target cluster, whose
+  canonical anchors are exposed in optional decision traces without entering
+  controller state. See [Bot Strategy](../docs/bot-strategy.md) for the policy
+  direction and [Simulation Architecture](../docs/simulation-architecture.md)
+  for the current implementation contracts.
 - `vision` provides visibility and explored-world state.
 
 Repair and salvage share one damage-first building-work resolver and remain
@@ -96,10 +96,15 @@ footprint-, or map-relative frames instead of global entity ids or an absolute
 screen corner. Airworks aircraft spawn at the authoritative center of the open
 roof bay, then obey their ordinary orders from there.
 
-Defensive route evaluation retains A* allocation buffers per thread, clearing
-reachability evidence between query contexts. Successful endpoint paths are
-reused only within one candidate footprint, map snapshot, and movement domain;
-failed searches retain their exhaustion or expansion-cap semantics.
+Defensive route evaluation retains A* allocation buffers per thread and bounded
+route answers per bot. Exact known-passability generations share successful
+endpoint paths and lazy distance bounds across defense and economic valuation.
+Temporary build layouts have separate retention from normal boards, and ground
+changes do not invalidate air routes. Actual paths keep the existing A* tie
+rules; failed searches retain their exhaustion or expansion-cap semantics.
+Voluntary defense rejects construction kinds that cannot meet the current
+allocation reserve before searching for sites. Final allocation still owns the
+exact funding and compatibility decision.
 
 ## Development
 
