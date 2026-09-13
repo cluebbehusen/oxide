@@ -1,4 +1,4 @@
-//! Mirrored economic work must not seed a physical advantage before battle.
+//! Mirrored economic work and attack follow-ups must preserve physical fairness.
 
 use chassis::fx::{Fx, Vec2Fx};
 use oxide_sim::bot::seat_bots;
@@ -6,7 +6,7 @@ use oxide_sim::scenario::BotConfig;
 use oxide_sim::{Event, PlayerId, Scenario};
 
 #[test]
-fn mirrored_workers_and_mustering_armies_preserve_positions_and_income() {
+fn mirrored_economies_and_attack_followups_preserve_positions_and_income() {
     let mut scenario = Scenario::skirmish();
     let mut rows: Vec<Vec<char>> = scenario
         .map
@@ -44,7 +44,7 @@ fn mirrored_workers_and_mustering_armies_preserve_positions_and_income() {
         Fx::from_num(state.map().width()),
         Fx::from_num(state.map().height()),
     );
-    for tick in 0..5000 {
+    for tick in 0..12_300 {
         let commands: Vec<_> = bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
         let report = state.tick(&commands);
         assert!(

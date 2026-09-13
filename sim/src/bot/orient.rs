@@ -90,6 +90,15 @@ impl Orientation {
         }
     }
 
+    pub(crate) fn episode(&self, report: &mut super::experience::EpisodeReport) {
+        let tile = self.tile(TilePos::new(report.context.x, report.context.y));
+        report.context.x = tile.x;
+        report.context.y = tile.y;
+        if let Some(objective) = &mut report.objective {
+            objective.anchor = self.anchor(objective.anchor, objective.kind.base_stats().size);
+        }
+    }
+
     /// A copy of the observation with every position oriented. Sorted
     /// fields are re-sorted so iteration order is oriented too — that
     /// is the point.
@@ -419,6 +428,74 @@ mod tests {
             faction: Faction::Ferrous,
             my_shells: 2,
             incoming_shells: vec![TilePos::new(1, 5), TilePos::new(5, 5)],
+        }
+    }
+
+    #[test]
+    fn ground_episode_keeps_its_objective_in_the_observation_frame() {
+        use crate::bot::executive::ArmyObjective;
+        use crate::bot::experience::{
+            Doctrine, EpisodeId, EpisodeOwner, EpisodeReport, ExperienceKey, Outcome, OutcomeReason,
+        };
+        for home in [
+            TilePos::new(4, 4),
+            TilePos::new(34, 4),
+            TilePos::new(34, 24),
+        ] {
+            for kind in [
+                BuildingKind::Foundry,
+                BuildingKind::Extractor,
+                BuildingKind::Turret,
+            ] {
+                let target = building(17, 1, kind, TilePos::new(15, 9));
+                let obs = Observation {
+                    map_width: 40,
+                    map_height: 32,
+                    enemy_buildings: vec![target.clone()],
+                    ..Default::default()
+                };
+                let orientation = Orientation::for_home(&obs, home);
+                let id = EpisodeId {
+                    owner: EpisodeOwner::Ground,
+                    serial: 3,
+                };
+                let original = EpisodeReport {
+                    id,
+                    credit: id,
+                    context: ExperienceKey {
+                        doctrine: Doctrine::Siege,
+                        x: 16,
+                        y: 10,
+                        subject: 17,
+                    },
+                    objective: Some(ArmyObjective::from_building(&target)),
+                    started_at: 100,
+                    finished_at: 300,
+                    participants: vec![UnitId(9)],
+                    phase: 1,
+                    outcome: Outcome::Ineffective,
+                    reason: OutcomeReason::ObservedCounter,
+                    observed_progress: 1,
+                    own_lost_value: 90,
+                    confidence: 1000,
+                    doctrine_eligible: false,
+                };
+                for has_objective in [false, true] {
+                    let mut original = original.clone();
+                    if !has_objective {
+                        original.objective = None;
+                    }
+                    let mut report = original.clone();
+                    orientation.episode(&mut report);
+                    let point = orientation.tile(TilePos::new(16, 10));
+                    assert_eq!((report.context.x, report.context.y), (point.x, point.y));
+                    if let Some(objective) = report.objective {
+                        assert!(objective.matches(&orientation.observe(&obs).enemy_buildings[0]));
+                    }
+                    orientation.episode(&mut report);
+                    assert_eq!(report, original);
+                }
+            }
         }
     }
 

@@ -325,9 +325,7 @@ impl Brain {
             self.policy.observe_work_experience(&oriented);
             for journal in self.exec.ground_outcomes.values_mut() {
                 for mut report in std::mem::take(&mut journal.pending) {
-                    let tile = orientation.tile(TilePos::new(report.context.x, report.context.y));
-                    report.context.x = tile.x;
-                    report.context.y = tile.y;
+                    orientation.episode(&mut report);
                     mind.experience.report(report);
                 }
             }

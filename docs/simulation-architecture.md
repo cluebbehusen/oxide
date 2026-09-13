@@ -108,7 +108,9 @@ Inconclusive lost-contact or deadline reports with known own casualties retain
 half-strength contextual evidence and can request approach reconnaissance. They
 remain inconclusive about the objective and never contribute to doctrine. Frozen
 objective owner, kind, and footprint anchor link failed approaches to remembered
-buildings without relying on their placeholder ids. Defensive service uses a
+buildings without relying on their placeholder ids. Ground reports entering
+policy memory orient both their context point and frozen objective footprint, so
+later observation matching uses one coordinate frame. Defensive service uses a
 provider's movement domain for routing, including parked aircraft; target
 exposure still uses its current body domain.
 
