@@ -13,6 +13,7 @@ use crate::stats::{
 use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::{CARDINALS, DIAGONALS};
 use routes::{CandidateRoutes, Scratch};
+use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -1217,6 +1218,7 @@ struct GroundKnowledge<'a> {
     terrain: Vec<Terrain>,
     ground_blocked: Vec<bool>,
     scrap: BTreeMap<TilePos, u32>,
+    endpoint_paths: RefCell<BTreeMap<(DefenseDomain, TilePos, TilePos), Vec<TilePos>>>,
 }
 
 impl<'a> GroundKnowledge<'a> {
@@ -1302,7 +1304,36 @@ impl<'a> GroundKnowledge<'a> {
             terrain,
             ground_blocked,
             scrap,
+            endpoint_paths: RefCell::default(),
         }
+    }
+
+    fn baseline_path(
+        &self,
+        start: TilePos,
+        goal: TilePos,
+        domain: DefenseDomain,
+        scratch: &mut Scratch,
+    ) -> Option<Vec<TilePos>> {
+        let key = (domain, start, goal);
+        if let Some(path) = self.endpoint_paths.borrow().get(&key) {
+            scratch.clear_search_evidence();
+            return Some(path.clone());
+        }
+        let path = chassis::path::astar_with_scratch(
+            self.obs.map_width,
+            self.obs.map_height,
+            start,
+            goal,
+            |tile| self.open(tile, None, domain),
+            PATH_EXPANSION_CAP,
+            scratch,
+        );
+        // Failed searches retain their exhaustion or expansion-cap evidence.
+        if let Some(path) = &path {
+            self.endpoint_paths.borrow_mut().insert(key, path.clone());
+        }
+        path
     }
 
     fn open(
@@ -3366,15 +3397,20 @@ fn shortest_path_between(
             // bound, so none can replace the complete route-choice key.
             break;
         }
-        let Some(mut path) = chassis::path::astar_with_scratch(
-            ground.obs.map_width,
-            ground.obs.map_height,
-            start,
-            goal,
-            |tile| ground.open(tile, candidate, domain),
-            PATH_EXPANSION_CAP,
-            &mut scratch,
-        ) else {
+        let path = if candidate.is_none() {
+            ground.baseline_path(start, goal, domain, &mut scratch)
+        } else {
+            chassis::path::astar_with_scratch(
+                ground.obs.map_width,
+                ground.obs.map_height,
+                start,
+                goal,
+                |tile| ground.open(tile, candidate, domain),
+                PATH_EXPANSION_CAP,
+                &mut scratch,
+            )
+        };
+        let Some(mut path) = path else {
             if scratch.last_search_exhausted() {
                 // One exhaustive search proves the whole passability
                 // component. Reuse that proof for its other doorsteps.
@@ -3460,15 +3496,7 @@ fn shortest_path_between_cached(
         let baseline = match baseline_endpoint_routes.entry(key) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
-                let mut path = chassis::path::astar_with_scratch(
-                    ground.obs.map_width,
-                    ground.obs.map_height,
-                    start,
-                    goal,
-                    |tile| ground.open(tile, None, domain),
-                    PATH_EXPANSION_CAP,
-                    &mut scratch,
-                );
+                let mut path = ground.baseline_path(start, goal, domain, &mut scratch);
                 if let Some(path) = path.as_mut() {
                     path.insert(0, start);
                 }
@@ -6437,6 +6465,48 @@ mod tests {
             !scratch.last_search_exhausted(),
             "a blocked goal is not an exhaustive search"
         );
+    }
+
+    #[test]
+    fn baseline_route_cache_preserves_paths_domains_and_search_evidence() {
+        let scenario = scenario_with(|tile| if tile.x == 20 { '#' } else { '.' });
+        let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+        let obs = observation(PlayerId(0), LEFT_HOME);
+        let ground = GroundKnowledge::new(&obs, &map, &[]);
+        let start = TilePos::new(8, 12);
+        let reachable = TilePos::new(12, 12);
+        let unreachable = TilePos::new(30, 12);
+        let mut scratch = Scratch::default();
+        let path = ground
+            .baseline_path(start, reachable, DefenseDomain::Ground, &mut scratch)
+            .unwrap();
+        assert_eq!(ground.endpoint_paths.borrow().len(), 1);
+        assert!(
+            ground
+                .baseline_path(start, unreachable, DefenseDomain::Ground, &mut scratch)
+                .is_none()
+        );
+        assert!(scratch.last_search_exhausted());
+        assert_eq!(ground.endpoint_paths.borrow().len(), 1);
+        assert_eq!(
+            ground.baseline_path(start, reachable, DefenseDomain::Ground, &mut scratch),
+            Some(path)
+        );
+        assert!(!scratch.last_search_exhausted());
+        assert!(!scratch.last_search_reached(start));
+        assert!(
+            ground
+                .baseline_path(start, unreachable, DefenseDomain::Air, &mut scratch)
+                .is_some()
+        );
+        assert_eq!(ground.endpoint_paths.borrow().len(), 2);
+        assert!(
+            ground
+                .baseline_path(start, unreachable, DefenseDomain::Ground, &mut scratch)
+                .is_none()
+        );
+        let fresh = GroundKnowledge::new(&obs, &map, &[]);
+        assert!(fresh.endpoint_paths.borrow().is_empty());
     }
 
     #[test]

@@ -16,9 +16,10 @@ use super::{
     active_connected_revision_producer_assignments, clamped_current_reserve_obligation,
     connected_investment_proposal, connected_producer_assignments, current_reserve_at,
     defense_investment_proposals, economic_investment_claims, economic_investment_proposal,
-    forecast_reserve_through, foundry_investment_proposal, fresh_emergency_defense_obligation,
-    imported_obligation, legacy_decision_obligation, legacy_unit_obligation,
-    observed_builder_obligations, saved_foundry_obligation, standing_force_investment_proposals,
+    fixed_production_current_reserve, forecast_reserve_through, foundry_investment_proposal,
+    fresh_emergency_defense_obligation, imported_obligation, legacy_decision_obligation,
+    legacy_unit_obligation, observed_builder_obligations, saved_foundry_obligation,
+    standing_force_investment_proposals,
 };
 use crate::bot::PublicMapBriefing;
 use crate::bot::difficulty::{DifficultyTuning, strategic_admission_tick};
@@ -2385,11 +2386,7 @@ impl<'a> AllocationSession<'a> {
                 &available_builder_units,
                 &defense_reinforcement_exclusions,
                 0,
-                obligations
-                    .obligations
-                    .iter()
-                    .map(|obligation| obligation.claims.current_scrap())
-                    .fold(0, u32::saturating_add),
+                fixed_production_current_reserve(&obligations.resources, &obligations.obligations),
             )
         } else {
             Vec::new()

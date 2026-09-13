@@ -1015,6 +1015,14 @@ then intersects credible hostile approaches with each kind's actual weapon,
 spotting, trigger, or path-disruption geometry. Current contacts, remembered
 enemy sites, and uncleared public starts form descending evidence tiers.
 
+Before site search, fixed producer payments retain the current capital they
+still need after completed-source income at each payment deadline. Defense roles
+whose construction cost exceeds the remaining bank are omitted; joint allocation
+still checks all future claims and exact producer scheduling. Initial approaches
+and candidate evaluations reuse successful canonical endpoint paths within the
+same immutable grounding, separately for ground and air. Failed searches retain
+their exhaustion or expansion-limit evidence.
+
 The investment case prices only marginal protection not already owned by a live
 defense or reserved by a paid unfinished footprint. New protected value counts
 fully and reinforced value has diminishing return. Current or remembered

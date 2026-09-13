@@ -691,6 +691,40 @@ pub(crate) fn current_reserve_at(obligations: &[ImportedObligation], decision_ti
         .fold(0, u32::saturating_add)
 }
 
+/// Lower bound on current capital needed by imported fixed producer payments.
+/// Other future claims are omitted, so this can only overestimate discretionary
+/// spending capacity before the exact portfolio funding check.
+pub(crate) fn fixed_production_current_reserve(
+    resources: &ResourceSnapshot,
+    obligations: &[ImportedObligation],
+) -> u32 {
+    let now = resources.forecast().observed_at();
+    let mut payments: Vec<_> = obligations
+        .iter()
+        .flat_map(|obligation| obligation.claims.producer_jobs())
+        .filter_map(|job| {
+            job.fixed_assignment()
+                .map(|fixed| (fixed.enqueued_at, job.kind().stats().cost))
+        })
+        .collect();
+    payments.sort_unstable();
+    let mut required = obligations
+        .iter()
+        .map(|obligation| u64::from(obligation.claims.current_scrap()))
+        .fold(0_u64, u64::saturating_add);
+    let mut reserve = required;
+    for (through, cost) in payments {
+        required = required.saturating_add(u64::from(cost));
+        let income = if through <= now {
+            0
+        } else {
+            resources.forecast().income_through(through).amount()
+        };
+        reserve = reserve.max(required.saturating_sub(u64::from(income)));
+    }
+    u32::try_from(reserve).unwrap_or(u32::MAX)
+}
+
 /// Exact non-production forecast capital promised no later than one deadline.
 ///
 /// Producer jobs remain outside this pre-sizing hint because joint allocation
@@ -2284,6 +2318,62 @@ mod tests {
             accepted_keys(&control),
             vec![ProposalKey::ConnectedOffenseMinimum(connected_key)],
             "the fixture must exercise the existing Foundry-versus-offense ordering"
+        );
+    }
+
+    #[test]
+    fn fixed_production_reserve_preserves_each_payment_deadline() {
+        let mut obs = observation();
+        obs.tick = 120;
+        obs.my_buildings.push(crate::bot::observation::BuildingObs {
+            id: BuildingId(1),
+            player: obs.me,
+            kind: BuildingKind::Reclaimer,
+            anchor: TilePos::new(2, 2),
+            hp: BuildingKind::Reclaimer.base_stats().max_hp,
+            built: true,
+            seen: true,
+            tier: 0,
+        });
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let kind = UnitKind::Sentinel;
+        let cost = kind.stats().cost;
+        let later = obs.tick + 10_000;
+        assert!(resources.forecast().income_through(later).amount() > cost * 2);
+        let job = |due| {
+            let ready = due + Tick::from(kind.stats().train_ticks) - 1;
+            ProducerJobClaim::fixed(BuildingId(9), kind, due, due, ready, ready + 2)
+        };
+        let obligation = |jobs| {
+            imported_obligation(
+                ObligationClass::PersistentPlan,
+                90,
+                ObligationKey::OpeningCore { sequence: 3 },
+                ClaimBundle::new(25, Vec::new(), Vec::new(), Vec::new(), Vec::new(), jobs).unwrap(),
+            )
+        };
+        assert_eq!(
+            fixed_production_current_reserve(
+                &resources,
+                &[obligation(vec![job(later), job(obs.tick)])],
+            ),
+            25 + cost,
+            "later income cannot release the money needed for a command now"
+        );
+        assert_eq!(
+            fixed_production_current_reserve(&resources, &[obligation(vec![job(later)])]),
+            25,
+            "income before the retained purchase leaves current discretionary cash available"
+        );
+        obs.my_buildings.clear();
+        let resources = ResourceSnapshot::from_observation(&obs);
+        assert_eq!(
+            fixed_production_current_reserve(
+                &resources,
+                &[obligation(vec![job(later), job(obs.tick + 1)])],
+            ),
+            25 + cost * 2,
+            "all fixed purchases share the same bank when recurring income is absent"
         );
     }
 
