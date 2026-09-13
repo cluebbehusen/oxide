@@ -14,6 +14,7 @@ struct PanelPacking {
     right: f32,
     available: f32,
     per_row: usize,
+    rally_count: usize,
     band_h: f32,
     top: f32,
     hides_minimap: bool,
@@ -31,6 +32,7 @@ fn panel_packing_at_right(
     scale: f32,
     right: f32,
     cards_shown: usize,
+    rally_count: usize,
     hides_minimap: bool,
 ) -> PanelPacking {
     let (cards_x, card_w, card_h, gap) = card_metrics(viewport, scale);
@@ -39,20 +41,27 @@ fn panel_packing_at_right(
     let cards_h = if cards_shown == 0 {
         0.0
     } else {
-        grouped_card_rows(cards_shown, per_row) as f32 * (card_h + 4.0 * scale)
+        grouped_card_rows(cards_shown, rally_count, per_row) as f32 * (card_h + 4.0 * scale)
     };
     let band_h = (16.0 * scale + cards_h).max(72.0 * scale);
     PanelPacking {
         right,
         available,
         per_row,
+        rally_count,
         band_h,
         top: viewport.y - band_h,
         hides_minimap,
     }
 }
 
-fn panel_packing(viewport: Vec2, minimap: Rect, scale: f32, cards_len: usize) -> PanelPacking {
+fn panel_packing(
+    viewport: Vec2,
+    minimap: Rect,
+    scale: f32,
+    cards_len: usize,
+    rally_count: usize,
+) -> PanelPacking {
     let cards_shown = cards_len.min(16);
     let reserved_right = if minimap.w > 0.0 {
         (minimap.x - 8.0 * scale).max(300.0 * scale).min(viewport.x)
@@ -60,9 +69,16 @@ fn panel_packing(viewport: Vec2, minimap: Rect, scale: f32, cards_len: usize) ->
         viewport.x
     };
     let max_band_h = (viewport.y - crate::layout::TOP_BAR_H * scale).max(0.0);
-    let packing = panel_packing_at_right(viewport, scale, reserved_right, cards_shown, false);
+    let packing = panel_packing_at_right(
+        viewport,
+        scale,
+        reserved_right,
+        cards_shown,
+        rally_count,
+        false,
+    );
     if packing.band_h > max_band_h && reserved_right < viewport.x {
-        panel_packing_at_right(viewport, scale, viewport.x, cards_shown, true)
+        panel_packing_at_right(viewport, scale, viewport.x, cards_shown, rally_count, true)
     } else {
         packing
     }
@@ -78,18 +94,36 @@ fn action_panel_rect(packing: PanelPacking, left: f32, right: f32, has_cards: bo
 
 fn grouped_card_slot(index: usize, rally_count: usize, per_row: usize) -> (usize, usize, bool) {
     let per_row = per_row.max(1);
-    let row = index / per_row;
-    let column = index % per_row;
-    let boundary_row = rally_count / per_row;
-    let follows_rally_in_same_row = rally_count > 0
-        && !rally_count.is_multiple_of(per_row)
-        && index >= rally_count
-        && row == boundary_row;
-    (row, column, follows_rally_in_same_row)
+    if rally_count == 0 || per_row == 1 {
+        return (index / per_row, index % per_row, false);
+    }
+    if index < rally_count {
+        return (index, 0, false);
+    }
+    let production_index = index - rally_count;
+    let production_columns = per_row - 1;
+    (
+        production_index / production_columns,
+        1 + production_index % production_columns,
+        true,
+    )
 }
 
-fn grouped_card_rows(shown: usize, per_row: usize) -> usize {
-    shown.div_ceil(per_row.max(1)).max(1)
+fn grouped_card_rows(shown: usize, rally_count: usize, per_row: usize) -> usize {
+    if rally_count == 0 || per_row <= 1 {
+        shown.div_ceil(per_row.max(1)).max(1)
+    } else {
+        rally_count.max((shown - rally_count).div_ceil(per_row - 1))
+    }
+}
+
+fn rally_card_count(cards: &[crate::panel::Card]) -> usize {
+    use crate::panel::CardAction;
+    cards
+        .iter()
+        .take(16)
+        .take_while(|card| matches!(card.action, CardAction::ArmRally | CardAction::ClearRally))
+        .count()
 }
 
 fn grouped_card_gap(
@@ -101,13 +135,12 @@ fn grouped_card_gap(
     ordinary_gap: f32,
 ) -> f32 {
     let per_row = per_row.max(1);
-    if rally_count == 0 || rally_count >= shown || rally_count.is_multiple_of(per_row) {
+    if rally_count == 0 || rally_count >= shown || per_row == 1 {
         return 0.0;
     }
-    let boundary_row_start = rally_count / per_row * per_row;
-    let cards_in_boundary_row = (shown - boundary_row_start).min(per_row);
-    let ordinary_width = cards_in_boundary_row as f32 * card_width
-        + cards_in_boundary_row.saturating_sub(1) as f32 * ordinary_gap;
+    let occupied_columns = 1 + (shown - rally_count).min(per_row - 1);
+    let ordinary_width = occupied_columns as f32 * card_width
+        + occupied_columns.saturating_sub(1) as f32 * ordinary_gap;
     (available - ordinary_width).clamp(0.0, 10.0 * card_width / 66.0)
 }
 
@@ -117,13 +150,9 @@ fn command_card_geometry(
     packing: PanelPacking,
     cards: &[crate::panel::Card],
 ) -> (Vec<Rect>, f32) {
-    use crate::panel::CardAction;
     let (left, width, height, gap) = card_metrics(viewport, scale);
     let shown = cards.len().min(16);
-    let rally_count = cards[..shown]
-        .iter()
-        .take_while(|card| matches!(card.action, CardAction::ArmRally | CardAction::ClearRally))
-        .count();
+    let rally_count = packing.rally_count;
     let section_gap = grouped_card_gap(
         shown,
         rally_count,
@@ -420,7 +449,13 @@ pub(crate) fn draw_panel(
     let mini = minimap_rect(game);
     let viewport = vec2(screen_width(), screen_height());
     let small = viewport.x / s < 800.0 || viewport.y / s < 500.0;
-    let packing = panel_packing(viewport, mini, s, panel.cards.len());
+    let packing = panel_packing(
+        viewport,
+        mini,
+        s,
+        panel.cards.len(),
+        rally_card_count(&panel.cards),
+    );
     let (cards_x, _, _, _) = card_metrics(viewport, s);
     let measured = measure_info(panel, cards_x, s, small, |text, size| {
         crate::typography::measure(text, size).width
@@ -1201,7 +1236,13 @@ mod tests {
                 .unwrap();
         for (viewport, scale) in [(vec2(1280.0, 800.0), 1.0), (vec2(1920.0, 1200.0), 1.5)] {
             let minimap = minimap_rect_scaled(40, 24, viewport, scale);
-            let packing = panel_packing(viewport, minimap, scale, panel.cards.len());
+            let packing = panel_packing(
+                viewport,
+                minimap,
+                scale,
+                panel.cards.len(),
+                rally_card_count(&panel.cards),
+            );
             let (left, _, _, _) = card_metrics(viewport, scale);
             let measured = measure_info(&panel, left, scale, false, |text, size| {
                 text.len() as f32 * size * 0.5
@@ -1291,8 +1332,13 @@ mod tests {
                                 for preference in [0.75, 1.0, 1.25, 1.5] {
                                     let scale = effective_ui_scale(preference, viewport);
                                     let minimap = minimap_rect_scaled(40, 24, viewport, scale);
-                                    let packing =
-                                        panel_packing(viewport, minimap, scale, panel.cards.len());
+                                    let packing = panel_packing(
+                                        viewport,
+                                        minimap,
+                                        scale,
+                                        panel.cards.len(),
+                                        rally_card_count(&panel.cards),
+                                    );
                                     let (slots, right) = command_card_geometry(
                                         viewport,
                                         scale,
@@ -1300,6 +1346,18 @@ mod tests {
                                         &panel.cards,
                                     );
                                     assert_eq!(slots.len(), panel.cards.len());
+                                    let rally_count = rally_card_count(&panel.cards);
+                                    if rally_count > 0 {
+                                        assert!(
+                                            slots[..rally_count].iter().all(|r| r.x == slots[0].x)
+                                        );
+                                        let production_x = slots[rally_count].x;
+                                        assert!(
+                                            slots[rally_count..]
+                                                .iter()
+                                                .all(|r| r.x >= production_x)
+                                        );
+                                    }
                                     assert!(packing.top >= crate::layout::TOP_BAR_H * scale);
                                     for (index, rect) in slots.iter().enumerate() {
                                         assert!(
@@ -1372,19 +1430,22 @@ mod tests {
     }
 
     #[test]
-    fn rally_cards_get_a_compact_visual_break_before_production() {
-        assert_eq!(grouped_card_rows(7, 5), 2);
-        assert_eq!(grouped_card_slot(0, 2, 5), (0, 0, false));
-        assert_eq!(grouped_card_slot(1, 2, 5), (0, 1, false));
-        assert_eq!(grouped_card_slot(2, 2, 5), (0, 2, true));
-        assert_eq!(grouped_card_slot(4, 2, 5), (0, 4, true));
-        assert_eq!(grouped_card_slot(5, 2, 5), (1, 0, false));
-        assert_eq!(grouped_card_slot(6, 2, 5), (1, 1, false));
+    fn production_wraps_in_its_own_columns_beside_rally_controls() {
+        assert_eq!(grouped_card_rows(7, 1, 6), 2);
+        assert_eq!(grouped_card_slot(1, 1, 6), (0, 1, true));
+        assert_eq!(grouped_card_slot(6, 1, 6), (1, 1, true));
+        assert_eq!(grouped_card_rows(8, 2, 6), 2);
+        assert_eq!(grouped_card_slot(0, 2, 6), (0, 0, false));
+        assert_eq!(grouped_card_slot(1, 2, 6), (1, 0, false));
+        assert_eq!(grouped_card_slot(2, 2, 6), (0, 1, true));
+        assert_eq!(grouped_card_slot(7, 2, 6), (1, 1, true));
         assert_eq!(grouped_card_gap(7, 2, 5, 400.0, 66.0, 6.0), 10.0);
         assert_eq!(grouped_card_gap(7, 2, 5, 354.0, 66.0, 6.0), 0.0);
 
-        assert_eq!(grouped_card_rows(7, 5), 2);
+        assert_eq!(grouped_card_rows(7, 0, 5), 2);
         assert_eq!(grouped_card_slot(5, 0, 5), (1, 0, false));
+        assert_eq!(grouped_card_rows(7, 2, 1), 7);
+        assert_eq!(grouped_card_slot(2, 2, 1), (2, 0, false));
     }
 
     #[test]
@@ -1431,7 +1492,7 @@ mod tests {
     fn a_dense_small_window_panel_yields_the_minimap_before_overflowing() {
         let viewport = vec2(640.0, 400.0);
         let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
-        let packing = panel_packing(viewport, minimap, 1.0, 16);
+        let packing = panel_packing(viewport, minimap, 1.0, 16, 0);
 
         assert!(packing.hides_minimap);
         assert_eq!(packing.right, viewport.x);
@@ -1488,7 +1549,7 @@ mod tests {
     fn a_simple_panel_keeps_the_minimap() {
         let viewport = vec2(640.0, 400.0);
         let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
-        let packing = panel_packing(viewport, minimap, 1.0, 2);
+        let packing = panel_packing(viewport, minimap, 1.0, 2, 0);
 
         assert!(!packing.hides_minimap);
         assert!(packing.right < viewport.x);
@@ -1498,7 +1559,7 @@ mod tests {
     fn a_commandless_building_does_not_reserve_an_empty_card_row() {
         let viewport = vec2(1280.0, 800.0);
         let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
-        let packing = panel_packing(viewport, minimap, 1.0, 0);
+        let packing = panel_packing(viewport, minimap, 1.0, 0, 0);
         let actions = action_panel_rect(packing, 228.0, 228.0, false);
         assert_eq!(actions.w, 0.0);
         assert_eq!(actions.h, 0.0);

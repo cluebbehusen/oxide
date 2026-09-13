@@ -161,7 +161,9 @@ cards, queue, idle-worker badge, and armed-mode ribbon. Drawing and interaction
 must not recalculate competing geometry. Logical input coordinates are used
 throughout; platform DPI conversion occurs once at the hardware adapter. The
 command band measures its width from the placed card rectangles, including the
-separator after rally controls. Row packing reserves the same right inset used
+separator after rally controls. Rally controls stack in their own column;
+production cards wrap within the grid beside it. When only one card column fits,
+the two groups stack vertically. Row packing reserves the same right inset used
 by the background so wrapped production cards remain inside the panel. Selection
 information occupies a left column at least as tall as the action strip, while
 commands occupy a separate bottom strip. Their enclosing bounds are
