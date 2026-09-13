@@ -2,6 +2,9 @@
 
 mod pruning;
 mod routes;
+mod routing_cache;
+
+pub(super) use routing_cache::DefenseRoutingCache;
 
 use super::*;
 use crate::bot::intelligence::ContactEvidence;
@@ -285,7 +288,7 @@ pub(super) struct DefenseThinkCacheStats {
 
 impl<'a> DefenseGrounding<'a> {
     pub(super) fn new(
-        policy: &UtilityPolicy,
+        policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
     ) -> Self {
@@ -293,13 +296,13 @@ impl<'a> DefenseGrounding<'a> {
     }
 
     fn new_inner(
-        policy: &UtilityPolicy,
+        policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
         future_egress_orientation: Option<Orientation>,
     ) -> Self {
         let public_starts = policy.uncleared_hostile_starts(briefing, obs.me);
-        let ground = GroundKnowledge::new(obs, briefing, &public_starts);
+        let ground = GroundKnowledge::new(obs, briefing, &public_starts).retained(policy, false);
         let assets = defended_assets(policy, obs, &ground);
         let future_ground_producers =
             future_egress_orientation.map_or_else(Vec::new, |orientation| {
@@ -367,7 +370,7 @@ impl<'a> DefenseGrounding<'a> {
 impl<'a> DefenseThinkContext<'a> {
     #[cfg(test)]
     pub(super) fn new(
-        policy: &UtilityPolicy,
+        policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
         unit_contacts: &'a [UnitContact],
@@ -384,7 +387,7 @@ impl<'a> DefenseThinkContext<'a> {
     }
 
     pub(super) fn new_oriented(
-        policy: &UtilityPolicy,
+        policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
         unit_contacts: &'a [UnitContact],
@@ -402,7 +405,7 @@ impl<'a> DefenseThinkContext<'a> {
     }
 
     fn new_inner(
-        policy: &UtilityPolicy,
+        policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
         unit_contacts: &'a [UnitContact],
@@ -801,12 +804,12 @@ pub(super) struct ResourceAccessGuard<'a> {
 #[cfg(test)]
 impl<'a> ResourceAccessGuard<'a> {
     pub(super) fn new(
-        policy: &UtilityPolicy,
+        policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
     ) -> Self {
         let public_starts = policy.uncleared_hostile_starts(briefing, obs.me);
-        let ground = GroundKnowledge::new(obs, briefing, &public_starts);
+        let ground = GroundKnowledge::new(obs, briefing, &public_starts).retained(policy, false);
         let assets = defended_assets(policy, obs, &ground);
         Self { ground, assets }
     }
@@ -1214,12 +1217,25 @@ struct PlannedDefense {
 struct GroundKnowledge<'a> {
     obs: &'a Observation,
     briefing: &'a PublicMapBriefing,
-    terrain: Vec<Terrain>,
+    air_blocked: Vec<bool>,
     ground_blocked: Vec<bool>,
+    routing: Option<&'a std::cell::RefCell<DefenseRoutingCache>>,
+    local_routing: std::cell::RefCell<DefenseRoutingCache>,
+    hypothetical: bool,
     scrap: BTreeMap<TilePos, u32>,
 }
 
 impl<'a> GroundKnowledge<'a> {
+    fn retained(mut self, policy: &'a UtilityPolicy, hypothetical: bool) -> Self {
+        self.routing = Some(&policy.defense_routing_cache);
+        self.hypothetical = hypothetical;
+        self
+    }
+
+    fn routing(&self) -> &std::cell::RefCell<DefenseRoutingCache> {
+        self.routing.unwrap_or(&self.local_routing)
+    }
+
     fn new(
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
@@ -1299,8 +1315,11 @@ impl<'a> GroundKnowledge<'a> {
         Self {
             obs,
             briefing,
-            terrain,
+            air_blocked: terrain.iter().map(|terrain| terrain.blocks_air()).collect(),
             ground_blocked,
+            routing: None,
+            local_routing: Default::default(),
+            hypothetical: false,
             scrap,
         }
     }
@@ -1319,7 +1338,7 @@ impl<'a> GroundKnowledge<'a> {
                 !self.ground_blocked[index]
                     && candidate.is_none_or(|placement| !placement.blocks(tile))
             }
-            DefenseDomain::Air => !self.terrain[index].blocks_air(),
+            DefenseDomain::Air => !self.air_blocked[index],
         }
     }
 }
@@ -1494,6 +1513,29 @@ fn future_ground_producer_keeps_egress(
 }
 
 impl UtilityPolicy {
+    /// A frozen blocking foundation cannot cover any selected builder's start.
+    /// This is a necessary layout condition, independent of route searches.
+    pub(in crate::bot) fn build_layout_covers_assigned_builder(
+        obs: &Observation,
+        builds: &[(BuildingKind, TilePos, UnitId)],
+    ) -> bool {
+        builds.iter().any(|(_, _, builder)| {
+            obs.my_units
+                .iter()
+                .find(|unit| unit.id == *builder)
+                .is_some_and(|unit| {
+                    builds.iter().any(|(kind, anchor, _)| {
+                        let size = kind.base_stats().size;
+                        !kind.is_stealthy()
+                            && (0..i64::from(size.0))
+                                .contains(&(i64::from(unit.tile.x) - i64::from(anchor.x)))
+                            && (0..i64::from(size.1))
+                                .contains(&(i64::from(unit.tile.y) - i64::from(anchor.y)))
+                    })
+                })
+        })
+    }
+
     /// Verifies a frozen set of construction footprints as one layout, without
     /// reranking any proposal. This is the pairwise allocator preflight for
     /// independently selected Foundry and defense opportunities.
@@ -1528,6 +1570,9 @@ impl UtilityPolicy {
         orientation: Orientation,
         builds: &[(BuildingKind, TilePos, UnitId)],
     ) -> bool {
+        if Self::build_layout_covers_assigned_builder(obs, builds) {
+            return false;
+        }
         let footprints: Vec<_> = builds
             .iter()
             .map(|(kind, anchor, _)| (*kind, *anchor))
@@ -1596,9 +1641,11 @@ impl UtilityPolicy {
         }
 
         let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
-        let baseline_ground = GroundKnowledge::new(obs, briefing, &public_starts);
+        let baseline_ground =
+            GroundKnowledge::new(obs, briefing, &public_starts).retained(self, false);
         let assets = defended_assets(self, obs, &baseline_ground);
-        let mut combined_ground = GroundKnowledge::new(obs, briefing, &public_starts);
+        let mut combined_ground =
+            GroundKnowledge::new(obs, briefing, &public_starts).retained(self, true);
         for site in &sites {
             if !site.blocks_ground {
                 continue;
@@ -1710,7 +1757,8 @@ impl UtilityPolicy {
             unit.founding = None;
         }
         let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
-        let ground = GroundKnowledge::new(&unclaimed, briefing, &public_starts);
+        let ground =
+            GroundKnowledge::new(&unclaimed, briefing, &public_starts).retained(self, true);
         let assets = defended_assets(self, &unclaimed, &ground);
         if assets.is_empty() {
             return false;
@@ -1745,7 +1793,8 @@ impl UtilityPolicy {
             return false;
         }
         let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
-        let ground = GroundKnowledge::new(&unclaimed, briefing, &public_starts);
+        let ground =
+            GroundKnowledge::new(&unclaimed, briefing, &public_starts).retained(self, true);
         let assets = defended_assets(self, &unclaimed, &ground);
         if assets.is_empty() {
             return false;
@@ -1821,7 +1870,7 @@ impl UtilityPolicy {
     #[expect(clippy::too_many_arguments, reason = "mirrors strategic_defense_site")]
     #[cfg(test)]
     pub(super) fn strategic_defense_site_grounded<'a>(
-        &self,
+        &'a self,
         kind: BuildingKind,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
@@ -1850,7 +1899,7 @@ impl UtilityPolicy {
     #[expect(clippy::too_many_arguments, reason = "mirrors strategic_defense_site")]
     #[cfg(test)]
     pub(super) fn strategic_defense_site_exists_grounded<'a>(
-        &self,
+        &'a self,
         kind: BuildingKind,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
@@ -1901,7 +1950,7 @@ impl UtilityPolicy {
     #[expect(clippy::too_many_arguments, reason = "mirrors strategic_defense_site")]
     #[cfg(test)]
     pub(super) fn strategic_defense_quote_grounded<'a>(
-        &self,
+        &'a self,
         kind: BuildingKind,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
@@ -3366,15 +3415,14 @@ fn shortest_path_between(
             // bound, so none can replace the complete route-choice key.
             break;
         }
-        let Some(mut path) = chassis::path::astar_with_scratch(
-            ground.obs.map_width,
-            ground.obs.map_height,
-            start,
-            goal,
-            |tile| ground.open(tile, candidate, domain),
-            PATH_EXPANSION_CAP,
-            &mut scratch,
-        ) else {
+        if best.as_ref().is_some_and(|(_, _, path)| {
+            routing_cache::bound(ground, start, goal, domain) > path_cost(path)
+        }) {
+            continue;
+        }
+        let Some(mut path) =
+            routing_cache::path(ground, start, goal, candidate, domain, &mut scratch)
+        else {
             if scratch.last_search_exhausted() {
                 // One exhaustive search proves the whole passability
                 // component. Reuse that proof for its other doorsteps.
@@ -3456,19 +3504,16 @@ fn shortest_path_between_cached(
             break;
         }
 
+        if best.as_ref().is_some_and(|(_, _, path)| {
+            routing_cache::bound(ground, start, goal, domain) > path_cost(path)
+        }) {
+            continue;
+        }
         let key = (domain, start, goal);
         let baseline = match baseline_endpoint_routes.entry(key) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
-                let mut path = chassis::path::astar_with_scratch(
-                    ground.obs.map_width,
-                    ground.obs.map_height,
-                    start,
-                    goal,
-                    |tile| ground.open(tile, None, domain),
-                    PATH_EXPANSION_CAP,
-                    &mut scratch,
-                );
+                let mut path = routing_cache::path(ground, start, goal, None, domain, &mut scratch);
                 if let Some(path) = path.as_mut() {
                     path.insert(0, start);
                 }
@@ -4149,7 +4194,7 @@ mod tests {
 
     const WIDTH: i32 = 40;
     const HEIGHT: i32 = 24;
-    const LEFT_HOME: TilePos = TilePos::new(4, 10);
+    pub(super) const LEFT_HOME: TilePos = TilePos::new(4, 10);
     const RIGHT_HOME: TilePos = TilePos::new(34, 10);
 
     macro_rules! scored_coverage {
@@ -4169,7 +4214,7 @@ mod tests {
         };
     }
 
-    fn scenario_with(terrain: impl FnMut(TilePos) -> char) -> Scenario {
+    pub(super) fn scenario_with(terrain: impl FnMut(TilePos) -> char) -> Scenario {
         scenario_with_starts(LEFT_HOME, RIGHT_HOME, terrain)
     }
 
@@ -4307,7 +4352,7 @@ mod tests {
         }
     }
 
-    fn observation(me: PlayerId, home: TilePos) -> Observation {
+    pub(super) fn observation(me: PlayerId, home: TilePos) -> Observation {
         let worker_tile = if me == PlayerId(0) {
             home.offset(3, 3)
         } else {
@@ -4470,7 +4515,8 @@ mod tests {
             .map(|id| unit(id, PlayerId(1), UnitKind::Sentinel, TilePos::new(10, 6)))
             .to_vec();
         obs.visible.fill(true);
-        let grounding = DefenseGrounding::new(&UtilityPolicy::new(), &obs, &map);
+        let policy = UtilityPolicy::new();
+        let grounding = DefenseGrounding::new(&policy, &obs, &map);
         let placement = PlacementFootprint {
             anchor: TilePos::new(8, 3),
             size: BuildingKind::Bastion.base_stats().size,
@@ -4741,6 +4787,74 @@ mod tests {
     }
 
     #[test]
+    fn covered_builder_preflight_matches_the_full_frozen_layout_rejection() {
+        let scenario = scenario_with(|_| '.');
+        let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        let anchor = TilePos::new(18, 10);
+        let builder = UnitId(7);
+        let orientation = Orientation::for_home(&obs, LEFT_HOME);
+        for kind in [BuildingKind::Foundry, BuildingKind::ScuttleCharge] {
+            for tile in [
+                anchor,
+                anchor.offset(1, 1),
+                anchor.offset(-1, 0),
+                anchor.offset(2, 0),
+            ] {
+                obs.my_units = vec![unit(builder.0, PlayerId(0), UnitKind::Harvester, tile)];
+                let builds = [(kind, anchor, builder)];
+                let covered =
+                    !kind.is_stealthy() && footprint_contains(anchor, kind.base_stats().size, tile);
+                assert_eq!(
+                    UtilityPolicy::build_layout_covers_assigned_builder(&obs, &builds),
+                    covered
+                );
+                let policy = UtilityPolicy::new();
+                let original = policy.combined_build_layout_is_safe_inner(
+                    CombinedLayoutContext {
+                        obs: &obs,
+                        briefing: &map,
+                        unit_contacts: &[],
+                        building_contacts: &[],
+                        orientation: Some(orientation),
+                    },
+                    &[(kind, anchor)],
+                    &builds,
+                );
+                if covered {
+                    assert!(!original);
+                }
+                assert_eq!(
+                    policy.combined_build_layout_with_builders_is_safe(
+                        &obs,
+                        &map,
+                        &[],
+                        &[],
+                        orientation,
+                        &builds
+                    ),
+                    original
+                );
+            }
+        }
+        obs.my_units = vec![
+            unit(7, PlayerId(0), UnitKind::Harvester, anchor.offset(-1, 0)),
+            unit(8, PlayerId(0), UnitKind::Harvester, anchor),
+        ];
+        let builds = [
+            (BuildingKind::Foundry, anchor, UnitId(7)),
+            (BuildingKind::Turret, anchor.offset(6, 0), UnitId(8)),
+        ];
+        assert!(UtilityPolicy::build_layout_covers_assigned_builder(
+            &obs, &builds
+        ));
+        assert!(
+            !UtilityPolicy::build_layout_covers_assigned_builder(&obs, &builds[..1]),
+            "an unselected worker does not create an assigned-builder rejection"
+        );
+    }
+
+    #[test]
     fn combined_layout_preserves_a_proposed_foundry_egress() {
         let foundry_anchor = TilePos::new(10, 10);
         let exit = TilePos::new(12, 10);
@@ -4888,14 +5002,9 @@ mod tests {
         obs.known_rock = obs.known_peaks.clone();
         obs.my_units[0].founding = Some((BuildingKind::Foundry, foundry_anchor));
         let orientation = Orientation::for_home(&obs, LEFT_HOME);
-        let mut context = DefenseThinkContext::new_oriented(
-            &UtilityPolicy::new(),
-            &obs,
-            &map,
-            &[],
-            &[],
-            orientation,
-        );
+        let policy = UtilityPolicy::new();
+        let mut context =
+            DefenseThinkContext::new_oriented(&policy, &obs, &map, &[], &[], orientation);
 
         assert!(context.future_ground_producer_egress_survives(BuildingKind::Turret, safe_site,));
         assert!(!context.future_ground_producer_egress_survives(BuildingKind::Turret, exit,));

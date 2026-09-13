@@ -13,6 +13,8 @@ use macroquad::prelude::{Rect, Vec2};
 /// Where the persistent HUD chrome sits, in window pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutModel {
+    /// Read-only performance panel; pointer presses must not reach the map.
+    pub performance: Rect,
     /// Height of the top status bar.
     pub top_bar_h: f32,
     /// Top edge of the bottom panel band; the band runs to the window
@@ -22,6 +24,8 @@ pub struct LayoutModel {
     /// instead of spanning the window, so clicks past it reach the
     /// world. Zero when no panel is shown.
     pub panel_right: f32,
+    /// Actual information and action regions; their open notch belongs to the world.
+    pub panel_regions: [Rect; 2],
     /// The orders dock on the left edge (production ghosts / order
     /// chips); zero-sized when the queue is empty.
     pub orders: Rect,
@@ -53,9 +57,11 @@ pub struct LayoutModel {
 impl Default for LayoutModel {
     fn default() -> Self {
         Self {
+            performance: Rect::new(0.0, 0.0, 0.0, 0.0),
             top_bar_h: 0.0,
             panel_top: f32::INFINITY,
             panel_right: 0.0,
+            panel_regions: [Rect::new(0.0, 0.0, 0.0, 0.0); 2],
             orders: Rect::new(0.0, 0.0, 0.0, 0.0),
             minimap: Rect::new(0.0, 0.0, 0.0, 0.0),
             idle_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
@@ -142,7 +148,7 @@ impl LayoutModel {
     /// top edge (`f32::INFINITY` when no panel is shown).
     #[allow(clippy::too_many_arguments)]
     pub fn compute(
-        _viewport: Vec2,
+        viewport: Vec2,
         ui: f32,
         panel_top: f32,
         panel_right: f32,
@@ -160,8 +166,18 @@ impl LayoutModel {
     ) -> Self {
         Self {
             top_bar_h: TOP_BAR_H * ui,
+            performance: Rect::new(0.0, 0.0, 0.0, 0.0),
             panel_top,
             panel_right,
+            panel_regions: [
+                Rect::new(
+                    0.0,
+                    panel_top,
+                    panel_right,
+                    (viewport.y - panel_top).max(0.0),
+                ),
+                Rect::new(0.0, 0.0, 0.0, 0.0),
+            ],
             orders,
             minimap,
             idle_badge,
@@ -181,7 +197,11 @@ impl LayoutModel {
     /// its own richer meaning and is tested separately.
     pub fn chrome_owns(&self, p: Vec2) -> bool {
         p.y <= self.top_bar_h
-            || (p.y >= self.panel_top && p.x <= self.panel_right)
+            || (self.performance.w > 0.0 && self.performance.contains(p))
+            || self
+                .panel_regions
+                .iter()
+                .any(|rect| rect.w > 0.0 && rect.contains(p))
             || (self.orders.w > 0.0 && self.orders.contains(p))
             || (self.mode_ribbon.w > 0.0 && self.mode_ribbon.contains(p))
     }
@@ -191,6 +211,25 @@ impl LayoutModel {
 mod tests {
     use super::*;
     use macroquad::prelude::vec2;
+
+    #[test]
+    fn selection_corner_owns_its_arms_but_not_the_open_notch() {
+        let model = LayoutModel {
+            top_bar_h: 40.0,
+            panel_regions: [
+                Rect::new(0.0, 500.0, 228.0, 300.0),
+                Rect::new(228.0, 724.0, 500.0, 76.0),
+            ],
+            orders: Rect::new(0.0, 388.0, 204.0, 112.0),
+            ..LayoutModel::default()
+        };
+        assert!(model.chrome_owns(vec2(100.0, 600.0)));
+        assert!(model.chrome_owns(vec2(400.0, 760.0)));
+        assert!(model.chrome_owns(vec2(100.0, 410.0)));
+        assert!(!model.chrome_owns(vec2(400.0, 600.0)));
+        assert!(!model.chrome_owns(vec2(229.0, 723.0)));
+        assert!(!model.chrome_owns(vec2(800.0, 760.0)));
+    }
 
     fn compute_at(panel_top: f32, ui: f32) -> LayoutModel {
         let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
@@ -228,6 +267,7 @@ mod tests {
     fn the_band_owns_its_width_and_the_dock_its_rect() {
         let mut m = compute_at(700.0, 1.0);
         m.panel_right = 600.0;
+        m.panel_regions[0].w = 600.0;
         m.orders = Rect::new(0.0, 500.0, 60.0, 200.0);
         assert!(m.chrome_owns(vec2(400.0, 750.0)), "inside the band");
         assert!(

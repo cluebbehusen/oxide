@@ -109,8 +109,15 @@ impl FreshDefenseProposal {
         self.minimum_residual_scrap
     }
 
+    #[cfg(test)]
     pub(in crate::bot) const fn ready_at(&self) -> Tick {
         self.ready_at
+    }
+
+    #[cfg(test)]
+    pub(in crate::bot) fn with_ready_at(mut self, tick: Tick) -> Self {
+        self.ready_at = tick;
+        self
     }
 
     #[cfg(test)]
@@ -165,6 +172,7 @@ impl UtilityPolicy {
         unavailable_reinforcements: &[UnitId],
         minimum_residual_scrap: u32,
         committed_current_scrap: u32,
+        admission_reserve: u32,
     ) -> Vec<FreshDefenseProposal> {
         debug_assert_eq!(resources.forecast().observed_at(), obs.tick);
         let construction_builders = self.construction_builders(obs, &[], &[]);
@@ -202,7 +210,7 @@ impl UtilityPolicy {
                 .saturating_sub(committed_current_scrap)
                 < construction_stats
                     .cost
-                    .saturating_add(minimum_residual_scrap)
+                    .saturating_add(minimum_residual_scrap.max(admission_reserve))
             {
                 continue;
             }
@@ -896,6 +904,7 @@ mod tests {
             &[],
             0,
             0,
+            0,
         );
         assert!(!proposals.is_empty());
         assert!(
@@ -925,10 +934,51 @@ mod tests {
                     &[],
                     0,
                     0,
+                    0,
                 )
                 .is_empty(),
             "active scouts, evacuating workers, retreating recovery scouts, and saved Foundry builders are not voluntary defense fallbacks"
         );
+    }
+
+    #[test]
+    fn admission_reserve_skips_unfundable_geometry_without_becoming_a_claim() {
+        let (mut obs, briefing) = opportunity_fixture();
+        let profile = low_fortification_profile();
+        let reserve = crate::bot::allocation::voluntary_construction_admission_reserve(90, 0);
+        for committed in [0, 190] {
+            for spendable in [15, 119, 120, 129, 130, 179, 180, 189, 190] {
+                obs.scrap = committed + spendable;
+                let resources = ResourceSnapshot::from_observation(&obs);
+                let builders = obs.my_units.iter().collect::<Vec<_>>();
+                let quote = |policy: &UtilityPolicy, admission| {
+                    policy.fresh_defense_proposals(
+                        &profile,
+                        &obs,
+                        &resources,
+                        &briefing,
+                        Orientation::for_home(&obs, HOME),
+                        HOME,
+                        &[],
+                        &[],
+                        &builders,
+                        &[],
+                        0,
+                        committed,
+                        admission,
+                    )
+                };
+                let mut expected = quote(&UtilityPolicy::new(), 0);
+                expected.retain(|p| p.construction_capital().saturating_add(reserve) <= spendable);
+                let policy = UtilityPolicy::new();
+                let actual = quote(&policy, reserve);
+                assert_eq!(actual, expected, "bank={} committed={committed}", obs.scrap);
+                assert!(actual.iter().all(|p| p.minimum_residual_scrap() == 0));
+                if spendable == 15 {
+                    assert_eq!(*policy.defense_routing_cache.borrow(), Default::default());
+                }
+            }
+        }
     }
 
     #[test]
@@ -964,6 +1014,7 @@ mod tests {
             &[],
             &builders,
             &[],
+            0,
             0,
             0,
         );
@@ -1329,6 +1380,7 @@ mod tests {
                     &[],
                     0,
                     0,
+                    0,
                 )
                 .into_iter()
                 .find(|proposal| proposal.kind() == BuildingKind::FlakTurret)
@@ -1465,6 +1517,7 @@ mod tests {
             &[],
             90,
             0,
+            0,
         );
         let roles: BTreeSet<_> = proposals.iter().map(FreshDefenseProposal::kind).collect();
 
@@ -1513,6 +1566,7 @@ mod tests {
                 &[],
                 90,
                 committed,
+                0,
             )
         };
         let baseline = derive(0);
@@ -1558,6 +1612,7 @@ mod tests {
                     &builders,
                     &[],
                     90,
+                    0,
                     0,
                 )
                 .into_iter()

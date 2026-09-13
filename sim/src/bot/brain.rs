@@ -4062,6 +4062,29 @@ mod tests {
                 "the fog-honest snapshot warrants exactly one prospective carrier for {difficulty:?}"
             );
 
+            let resources = super::super::resources::ResourceSnapshot::from_observation(&oriented);
+            let public_map = orientation.briefing(&brain.mind().public_map);
+            let builders = oriented.my_units.iter().collect::<Vec<_>>();
+            let unguarded_defense = brain.policy.clone().fresh_defense_proposals(
+                &brain.mind().profile,
+                &oriented,
+                &resources,
+                &public_map,
+                orientation,
+                oriented_home,
+                expected_intelligence.units(),
+                expected_intelligence.buildings(),
+                &builders,
+                &[],
+                0,
+                0,
+                0,
+            );
+            assert!(
+                !unguarded_defense.is_empty(),
+                "the fixture offers defense without the carrier hold for {difficulty:?}"
+            );
+
             let act = brain.act_traced(&state);
             let first_trace = act
                 .trace
@@ -4091,11 +4114,11 @@ mod tests {
                     .proposals
                     .entries
                     .iter()
-                    .any(|proposal| matches!(
+                    .all(|proposal| !matches!(
                         proposal.key,
                         super::super::trace::ProposalKeyTrace::Defense { .. }
                     )),
-                "the fixture must expose a competing defense for {difficulty:?}"
+                "unaffordable defense is rejected before expensive quotation for {difficulty:?}"
             );
             assert!(
                 first_trace

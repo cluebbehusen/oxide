@@ -858,10 +858,16 @@ impl Game {
                     let tier = self.state.building(*building).map_or(0, |b| b.tier);
                     if tier > 0 {
                         self.sounds_pending.push((SoundKind::UpgradeDone, None));
-                        self.toast(format!("{} online", kind.tier_name(tier)));
+                        self.toast(format!(
+                            "{} online",
+                            crate::typography::entity_name(kind.tier_name(tier))
+                        ));
                     } else {
                         self.sounds_pending.push((SoundKind::TrainDone, None));
-                        self.toast(format!("{} online", kind.name()));
+                        self.toast(format!(
+                            "{} online",
+                            crate::typography::entity_name(kind.name())
+                        ));
                     }
                 }
                 Event::BuildCancelled { player, refund, .. } if *player == self.human => {

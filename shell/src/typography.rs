@@ -3,6 +3,20 @@
 use macroquad::prelude::*;
 use std::cell::RefCell;
 
+pub(crate) fn entity_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut start = true;
+    for c in name.chars() {
+        if start {
+            out.extend(c.to_uppercase());
+        } else {
+            out.push(c);
+        }
+        start = c == ' ';
+    }
+    out
+}
+
 thread_local! {
     static DISPLAY: RefCell<Option<Font>> = const { RefCell::new(None) };
 }

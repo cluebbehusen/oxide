@@ -860,6 +860,7 @@ mod tests {
             visible_range: Some([0, 0]),
             hover: None,
             chrome: None,
+            panel_regions: None,
         };
         let json = serde_json::to_string(&ResponseEnvelope::ok(3, Reply::Ui(ui.clone()))).unwrap();
         assert!(
@@ -1088,6 +1089,7 @@ mod tests {
                 world_rect: [0.0, 0.0, 25.0, 18.0],
             }),
             Reply::Ui(UiView {
+                panel_regions: Some([[0.0, 500.0, 228.0, 300.0], [228.0, 724.0, 500.0, 76.0]]),
                 mode: "main_menu".into(),
                 title: Some("Oxide".into()),
                 selected: Some(2),

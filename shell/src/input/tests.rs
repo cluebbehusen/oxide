@@ -65,6 +65,51 @@ fn click(x: f32, y: f32) -> [RawEvent; 2] {
     ]
 }
 
+#[test]
+fn performance_panel_swallows_orders_and_selection_without_revealing_fog() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let unit = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| unit.player == game.human)
+        .unwrap()
+        .id;
+    game.selection.units.push(unit);
+    let mut layout = game.layout.get();
+    layout.performance = macroquad::prelude::Rect::new(1028.0, 46.0, 240.0, 158.0);
+    game.layout.set(layout);
+    let pos = layout.performance.center();
+    let before = game.state.hash();
+    for events in [
+        click(pos.x, pos.y).to_vec(),
+        vec![RawEvent::MouseDown {
+            button: MouseButton::Right,
+            x: pos.x,
+            y: pos.y,
+        }],
+        vec![
+            RawEvent::TouchDown {
+                id: 23,
+                x: pos.x,
+                y: pos.y,
+            },
+            RawEvent::TouchUp {
+                id: 23,
+                x: pos.x,
+                y: pos.y,
+            },
+        ],
+    ] {
+        apply_events(&mut game, &mut input, &events);
+        assert_eq!(game.selection.units, vec![unit]);
+        assert!(game.pending.is_empty());
+        assert_eq!(game.state.hash(), before);
+        assert!(!game.all_seeing());
+    }
+}
+
 fn skyhook_interaction_game() -> Game {
     let scenario = oxide_sim::Scenario::from_json(
         "{
@@ -1060,7 +1105,7 @@ fn the_armed_mode_ribbon_cancel_is_a_real_touch_action() {
 fn every_targeting_mode_has_persistent_human_copy() {
     let mut input = InputState::new();
     input.placing = Some(oxide_sim::BuildingKind::Bastion);
-    assert_eq!(input.armed_mode().unwrap().label(), "BUILD BASTION");
+    assert_eq!(input.armed_mode().unwrap().label(), "BUILD Bastion");
     input.disarm_click_verbs();
     input.rallying = vec![oxide_sim::BuildingId(0)];
     assert_eq!(input.armed_mode().unwrap().label(), "SET RALLY");
@@ -2079,14 +2124,28 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
     let panel = crate::panel::build_for_palette(&game, &input.bindings, false).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on an ally panel");
     assert!(
-        panel.sub.contains("Standard / Balanced AI"),
+        panel
+            .info
+            .status
+            .iter()
+            .any(|status| status.contains("Standard / Balanced AI")),
         "the ally's controller stays visible"
     );
     assert!(
-        panel.capabilities.is_empty(),
+        !panel
+            .info
+            .rows
+            .iter()
+            .any(|row| matches!(row.label.as_str(), "Ground" | "Air")),
         "an unarmed ally needs no capability band"
     );
-    assert!(panel.sub.contains("speed 2.5 tiles/sec"));
+    assert!(
+        panel
+            .info
+            .rows
+            .iter()
+            .any(|row| row.label == "Speed" && row.value == "2.5 tiles/s")
+    );
     assert!(!panel.queue.is_empty(), "the ally's orders show");
     assert_eq!(
         panel.faction,
@@ -2141,17 +2200,33 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
     assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
     assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
     assert!(
-        panel.sub.contains("Standard / Balanced AI"),
+        panel
+            .info
+            .status
+            .iter()
+            .any(|status| status.contains("Standard / Balanced AI")),
         "the enemy's controller stays visible"
     );
-    assert_eq!(panel.capabilities.len(), 1);
+    let weapon = panel
+        .info
+        .rows
+        .iter()
+        .find(|row| row.label == "Ground")
+        .unwrap();
     assert_eq!(
-        panel.capabilities[0].icon,
-        crate::panel::CapabilityIcon::Weapon
+        weapon.icon,
+        Some(crate::panel::info::StatIcon::Capability(
+            crate::panel::CapabilityIcon::Weapon
+        ))
     );
-    assert!(panel.capabilities[0].text.contains("dmg"));
-    assert!(panel.capabilities[0].text.contains("tiles"));
-    assert!(panel.capabilities[0].text.contains("ground"));
+    assert!(weapon.value.contains("dmg"));
+    assert!(
+        panel
+            .info
+            .rows
+            .iter()
+            .any(|row| row.label == "Range" && row.value.contains("tiles"))
+    );
 
     // And no breadcrumbs, whatever program the enemy runs.
     let unit = game.state.unit(foe).unwrap();
@@ -5125,6 +5200,7 @@ fn mouse_and_touch_switch_construction_without_cancelling_or_placing_in_the_worl
         let mut layout = game.layout.get();
         layout.panel_top = 680.0;
         layout.panel_right = 600.0;
+        layout.panel_regions[0] = Rect::new(0.0, 680.0, 600.0, 120.0);
         layout.cards[0] = (
             Rect::new(300.0, 700.0, 100.0, 90.0),
             CardAction::ArmBuild(oxide_sim::BuildingKind::Reclaimer),

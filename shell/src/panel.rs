@@ -8,9 +8,13 @@
 //! card raises a tooltip: what it is, what it costs, how it fights, and
 //! the key that does the same thing.
 
+pub(crate) mod info;
+mod upgrade;
+
 use crate::action::{Action, BindingMap};
 use crate::bot_label::{BotLabelStyle, bot_label};
 use crate::game::Game;
+use crate::typography::entity_name;
 use oxide_sim::stats::{BuildingKind, UnitKind, WeaponStats};
 use oxide_sim::{BuildingId, Order};
 
@@ -149,30 +153,19 @@ pub enum CapabilityIcon {
     EconomySupport,
 }
 
-/// One compact capability row in the selection panel.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapabilityFact {
-    /// Symbol shared with the corresponding battlefield ring.
-    pub icon: CapabilityIcon,
-    /// Numeric capability details, without explaining the ring style.
-    pub text: String,
-}
-
 /// The panel for the current selection.
 pub struct Panel {
+    pub(crate) info: info::SelectionInfo,
     /// Header line: name (and count for multi-selections).
     pub title: String,
-    /// Sub-line: hp, status.
-    pub sub: String,
+    /// Summary for grouped selections.
+    pub summary: String,
     /// Portrait icon.
     pub portrait: CardIcon,
     /// Whose colors the portrait and queue sprites wear — the SELECTED
     /// entity's owner, not the viewer (an inspected Cupric ally must
     /// not draw in Ferrous rust).
     pub faction: oxide_sim::Faction,
-    /// Capability facts and own-building income, shown without a hover.
-    /// Foreign entities expose only static facts, never private state.
-    pub capabilities: Vec<CapabilityFact>,
     /// A mixed selection's unit-kind filters. Kept separate from
     /// command cards so choosing a roster slice can never crowd out a
     /// verb or make the verb row look like more selected units.
@@ -182,7 +175,7 @@ pub struct Panel {
     /// Queue thumbnails (production or orders).
     pub queue: Vec<Card>,
     /// What the queue strip is labeled — for order docks, WHOSE
-    /// program it shows ("orders - harvester"), because the dock draws
+    /// program it shows ("orders - Harvester"), because the dock draws
     /// one unit's story while breadcrumbs draw many.
     pub queue_label: String,
 }
@@ -365,89 +358,6 @@ pub fn building_weapon_lines(kind: BuildingKind, tier: u8) -> Vec<String> {
         .collect()
 }
 
-fn building_capability_lines(kind: BuildingKind, tier: u8) -> Vec<CapabilityFact> {
-    let stats = kind.tier_stats(tier);
-    let mut lines: Vec<CapabilityFact> = stats
-        .weapons
-        .iter()
-        .map(|weapon| CapabilityFact {
-            icon: weapon_capability_icon(weapon),
-            text: weapon_line(weapon),
-        })
-        .collect();
-    if let Some(minimum) = stats
-        .weapons
-        .iter()
-        .map(|weapon| weapon.minimum_range)
-        .find(|minimum| *minimum > chassis::fx::Fx::ZERO)
-    {
-        lines.push(CapabilityFact {
-            icon: CapabilityIcon::DeadZone,
-            text: format!("{:.1} tiles", minimum.to_num::<f32>()),
-        });
-    }
-    if stats
-        .weapons
-        .iter()
-        .any(|weapon| weapon.range.to_num::<f32>() > stats.vision as f32)
-        || kind == BuildingKind::Array
-    {
-        lines.push(CapabilityFact {
-            icon: CapabilityIcon::Vision,
-            text: format!("{} tiles", stats.vision),
-        });
-    }
-    if kind == BuildingKind::Array {
-        lines.push(CapabilityFact {
-            icon: CapabilityIcon::Radar,
-            text: format!("{} tiles", oxide_sim::stats::RADAR_DETECT_RADIUS),
-        });
-    }
-    if kind == BuildingKind::RepairBay {
-        lines.push(CapabilityFact {
-            icon: CapabilityIcon::Repair,
-            text: format!(
-                "{:.1} tiles",
-                oxide_sim::stats::REPAIR_BAY_RADIUS.to_num::<f32>()
-            ),
-        });
-    }
-    if matches!(kind, BuildingKind::Foundry | BuildingKind::Extractor) {
-        lines.push(CapabilityFact {
-            icon: CapabilityIcon::EconomySupport,
-            text: format!(
-                "Extractor support | {} footprint tiles",
-                oxide_sim::stats::EXTRACTOR_SUPPORT_RADIUS
-            ),
-        });
-    }
-    lines
-}
-
-/// Always-visible capability facts for a selected unit.
-pub fn unit_capability_lines(kind: UnitKind) -> Vec<CapabilityFact> {
-    let stats = kind.stats();
-    let mut lines: Vec<_> = stats
-        .weapons
-        .iter()
-        .map(|weapon| CapabilityFact {
-            icon: weapon_capability_icon(weapon),
-            text: weapon_line(weapon),
-        })
-        .collect();
-    if stats
-        .weapons
-        .iter()
-        .any(|weapon| weapon.range.to_num::<f32>() > stats.vision as f32)
-    {
-        lines.push(CapabilityFact {
-            icon: CapabilityIcon::Vision,
-            text: format!("{} tiles", stats.vision),
-        });
-    }
-    lines
-}
-
 fn tick_time_label(ticks: u32) -> String {
     let per_second = oxide_sim::TICKS_PER_SECOND;
     let tenths = ticks.saturating_mul(10).div_ceil(per_second);
@@ -503,15 +413,6 @@ fn bot_controller_label(game: &Game, player: oxide_sim::PlayerId) -> Option<Stri
         .map(|config| bot_label(config.difficulty, config.stance, BotLabelStyle::Controller))
 }
 
-fn foreign_sub(game: &Game, owner: oxide_sim::PlayerId, hostile: bool, detail: &str) -> String {
-    let relation = if hostile { "hostile" } else { "ally" };
-    if let Some(controller) = bot_controller_label(game, owner) {
-        format!("{relation} | {controller} | {detail}")
-    } else {
-        format!("{relation} | {detail}")
-    }
-}
-
 /// The subject an order chip may show, plus the lines that name it —
 /// OWN programs only. An ally's chips stay bare pictograms rather than
 /// resting the panel on a claim about what team sight shares, and an
@@ -531,7 +432,7 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
             let frac = (b.progress as f32 / ticks as f32).clamp(0.0, 1.0);
             Some((
                 OrderSubject::Building(b.kind, faction_of(b.player)),
-                b.kind.name().to_string(),
+                entity_name(b.kind.tier_name(b.tier)),
                 !b.built,
                 Some(frac),
             ))
@@ -541,7 +442,7 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
             let frac = (b.hp as f32 / b.stats().max_hp.max(1) as f32).clamp(0.0, 1.0);
             Some((
                 OrderSubject::Building(b.kind, faction_of(b.player)),
-                b.kind.name().to_string(),
+                entity_name(b.kind.tier_name(b.tier)),
                 !b.built,
                 Some(frac),
             ))
@@ -549,7 +450,7 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
         Order::Attack { target, .. } => match game.state.attack_objective(game.human, *target)? {
             oxide_sim::AttackTarget::RememberedBuilding(memory) => Some((
                 OrderSubject::Building(memory.building_kind, faction_of(memory.owner)),
-                memory.building_kind.name().to_string(),
+                entity_name(memory.building_kind.name()),
                 false,
                 None,
             )),
@@ -559,7 +460,7 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
                     let unit = game.state.unit(uid)?;
                     Some((
                         OrderSubject::Unit(unit.kind, faction_of(unit.player)),
-                        unit.kind.name().into(),
+                        entity_name(unit.kind.name()),
                         false,
                         None,
                     ))
@@ -576,7 +477,7 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
             let frac = (u.hp as f32 / u.kind.stats().max_hp.max(1) as f32).clamp(0.0, 1.0);
             Some((
                 OrderSubject::Unit(u.kind, faction_of(u.player)),
-                u.kind.name().to_string(),
+                entity_name(u.kind.name()),
                 false,
                 Some(frac),
             ))
@@ -585,7 +486,7 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
         // a ghost, since nothing stands yet.
         Order::Found { kind, .. } => Some((
             OrderSubject::Building(*kind, faction_of(game.human)),
-            kind.name().to_string(),
+            entity_name(kind.name()),
             true,
             None,
         )),
@@ -792,6 +693,12 @@ pub fn build_for_palette(
     bindings: &BindingMap,
     build_menu_open: bool,
 ) -> Option<Panel> {
+    let mut panel = build_panel(game, bindings, build_menu_open)?;
+    panel.info = info::selection_info(game, &panel);
+    Some(panel)
+}
+
+fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Option<Panel> {
     let faction = game.state.player(game.human).faction;
     let selected_buildings: Vec<_> = game
         .selection
@@ -803,8 +710,9 @@ pub fn build_for_palette(
         let first = selected_buildings[0];
         let owner = first.player;
         let mut panel = Panel {
+            info: info::SelectionInfo::default(),
             title: format!("{} BUILDINGS", selected_buildings.len()),
-            sub: {
+            summary: {
                 let mut kinds: Vec<BuildingKind> = selected_buildings
                     .iter()
                     .map(|building| building.kind)
@@ -815,15 +723,12 @@ pub fn build_for_palette(
             },
             portrait: CardIcon::Building(first.kind, first.tier),
             faction: game.state.player(owner).faction,
-            capabilities: Vec::new(),
             roster: Vec::new(),
             cards: Vec::new(),
             queue: Vec::new(),
             queue_label: "queue".to_string(),
         };
         if owner != game.human {
-            let hostile = game.state.hostile(game.human, owner);
-            panel.sub = foreign_sub(game, owner, hostile, &panel.sub);
             return Some(panel);
         }
         let producers: Vec<BuildingId> = selected_buildings
@@ -876,69 +781,27 @@ pub fn build_for_palette(
         let stats = building.stats();
         let owner = building.player;
         let mut panel = Panel {
+            info: info::SelectionInfo::default(),
             title: if building.tier > 0 {
-                building.kind.tier_name(building.tier).to_uppercase()
+                entity_name(building.kind.tier_name(building.tier))
             } else {
-                building.kind.name().to_uppercase()
+                entity_name(building.kind.name())
             },
-            sub: format!("{}/{} hp", building.hp, stats.max_hp),
+            summary: String::new(),
             portrait: CardIcon::Building(building.kind, building.tier),
             faction: game.state.player(owner).faction,
-            capabilities: building_capability_lines(building.kind, building.tier),
             roster: Vec::new(),
             cards: Vec::new(),
             queue: Vec::new(),
             queue_label: production_queue_label(&building.queue, building.progress)
                 .unwrap_or_else(|| "queue".to_string()),
         };
-        if owner == game.human
-            && let Some(income) = game.state.extractor_income(building.id)
-        {
-            panel.capabilities.insert(
-                0,
-                CapabilityFact {
-                    icon: CapabilityIcon::EconomySupport,
-                    text: format!(
-                        "+{} scrap/min  |  {}",
-                        income.scrap_per_minute(),
-                        if income.is_supported() {
-                            "Foundry supported"
-                        } else {
-                            "Remote"
-                        }
-                    ),
-                },
-            );
-        } else if owner == game.human
-            && matches!(
-                building.kind,
-                BuildingKind::Reclaimer | BuildingKind::Foundry
-            )
-        {
-            let income = building_income(game, building);
-            let text = if building.built && building.kind == BuildingKind::Foundry && income == 0 {
-                let remaining = oxide_sim::stats::FOUNDRY_DRIP_START_TICK
-                    .saturating_sub(game.state.current_tick())
-                    .div_ceil(u64::from(oxide_sim::TICKS_PER_SECOND));
-                format!("Passive income starts in {remaining}s")
-            } else {
-                format!("+{income} scrap/min")
-            };
-            panel.capabilities.insert(
-                0,
-                CapabilityFact {
-                    icon: CapabilityIcon::EconomySupport,
-                    text,
-                },
-            );
-        }
         if owner != game.human {
             // Foreign buildings inspect read-only: an allied building says
             // whose they are; a hostile shows hp and kind, nothing
             // more — no queue chips, no cards, no rally, no reach
             // into anyone's production.
             let hostile = game.state.hostile(game.human, owner);
-            panel.sub = foreign_sub(game, owner, hostile, &panel.sub);
             if !hostile {
                 panel.cards.push(Card {
                     icon: CardIcon::Verb(VerbIcon::Idle),
@@ -958,7 +821,6 @@ pub fn build_for_palette(
             // A committed upgrade is not a scrappable site: the sim
             // refuses to demolish it, so the card must not offer to.
             if building.tier > 0 {
-                panel.sub = format!("upgrading | {}", panel.sub);
                 panel.cards.push(Card {
                     icon: CardIcon::Verb(VerbIcon::Cancel),
                     title: "Upgrading".into(),
@@ -975,7 +837,6 @@ pub fn build_for_palette(
                 });
                 return Some(panel);
             }
-            panel.sub = format!("under construction | {}", panel.sub);
             panel.cards.push(Card {
                 icon: CardIcon::Verb(VerbIcon::Cancel),
                 title: "Scrap site".into(),
@@ -1017,7 +878,7 @@ pub fn build_for_palette(
         }
         let scrap = game.state.player(game.human).scrap;
         if let Some(upgrade) = building.kind.upgrade_from(building.tier) {
-            let next = building.kind.tier_name(building.tier + 1);
+            let next = entity_name(building.kind.tier_name(building.tier + 1));
             let tech_ok = upgrade.requires.iter().all(|req| {
                 game.state
                     .buildings()
@@ -1028,7 +889,7 @@ pub fn build_for_palette(
                 let need = upgrade
                     .requires
                     .iter()
-                    .map(|k| k.name())
+                    .map(|k| entity_name(k.name()))
                     .collect::<Vec<_>>()
                     .join(", ");
                 (false, Some(format!("needs a standing {need}")))
@@ -1037,7 +898,6 @@ pub fn build_for_palette(
             } else {
                 (true, None)
             };
-            let seconds = upgrade.build_ticks as f32 / oxide_sim::TICKS_PER_SECOND as f32;
             panel.cards.push(Card {
                 icon: CardIcon::Building(building.kind, building.tier),
                 title: format!("Upgrade: {next}"),
@@ -1046,12 +906,10 @@ pub fn build_for_palette(
                 action: CardAction::Upgrade(building.id),
                 enabled,
                 why,
-                desc: vec![
-                    format!(
-                        "Rebuilds this works as a {next}; it stays offline for about {seconds:.0} seconds."
-                    ),
-                    "The upgrade runs automatically and cannot be cancelled.".into(),
-                ],
+                desc: vec![format!(
+                    "Offline for {} while upgrading.",
+                    tick_time_label(upgrade.build_ticks)
+                )],
                 progress: None,
             });
         }
@@ -1109,7 +967,10 @@ pub fn build_for_palette(
             let (enabled, why) = if queue_full {
                 (false, Some("queue is full".to_string()))
             } else if let Some(req) = missing_tech {
-                (false, Some(format!("needs a standing {}", req.name())))
+                (
+                    false,
+                    Some(format!("needs a standing {}", entity_name(req.name()))),
+                )
             } else if scrap < cost {
                 (false, Some(format!("needs {cost} scrap")))
             } else {
@@ -1119,7 +980,7 @@ pub fn build_for_palette(
             desc.extend(weapon_lines(kind));
             panel.cards.push(Card {
                 icon: CardIcon::Unit(kind),
-                title: kind.name().to_string(),
+                title: entity_name(kind.name()),
                 cost: Some(cost),
                 hotkey: format!("{}", i + 1),
                 action: CardAction::Dispatch(Action::TrainSlot(i as u8)),
@@ -1137,7 +998,7 @@ pub fn build_for_palette(
             });
             panel.queue.push(Card {
                 icon: CardIcon::Unit(kind),
-                title: kind.name().to_string(),
+                title: entity_name(kind.name()),
                 cost: None,
                 hotkey: String::new(),
                 action: CardAction::CancelQueue(building.id, i as u8),
@@ -1164,33 +1025,14 @@ pub fn build_for_palette(
     let has_builder = units.iter().any(|u| u.kind.stats().harvest.is_some());
     let has_welder = units.iter().any(|u| u.kind.stats().welder);
     let mut panel = Panel {
+        info: info::SelectionInfo::default(),
         title: if units.len() == 1 {
-            first.kind.name().to_uppercase()
+            entity_name(first.kind.name())
         } else {
             format!("{} UNITS", units.len())
         },
-        sub: if units.len() == 1 {
-            let mut sub = format!(
-                "{}/{} hp | speed {}",
-                first.hp,
-                first.kind.stats().max_hp,
-                unit_speed_label(first.kind)
-            );
-            let capacity = first.kind.stats().transport_capacity;
-            // A hostile sling's load is intelligence the fog view
-            // redacts from bots; the panel owes the player no more.
-            if capacity > 0 && !game.state.hostile(game.human, owner) {
-                let held: u8 = first
-                    .cargo
-                    .iter()
-                    .map(|r| r.kind.stats().transport_size)
-                    .sum();
-                sub = format!("{sub} | sling {held}/{capacity}");
-            }
-            if first.landed {
-                sub = format!("{sub} | landed");
-            }
-            sub
+        summary: if units.len() == 1 {
+            String::new()
         } else {
             let (kinds, extra) = {
                 let mut ks: Vec<UnitKind> = units.iter().map(|u| u.kind).collect();
@@ -1199,7 +1041,7 @@ pub fn build_for_palette(
                 ks.sort_by_key(|k| k.name());
                 ks.dedup();
                 let extra = ks.len().saturating_sub(4);
-                let named: Vec<&str> = ks.iter().map(|k| k.name()).take(4).collect();
+                let named: Vec<String> = ks.iter().map(|k| entity_name(k.name())).take(4).collect();
                 (named, extra)
             };
             if extra > 0 {
@@ -1210,11 +1052,6 @@ pub fn build_for_palette(
         },
         portrait: CardIcon::Unit(first.kind),
         faction: game.state.player(owner).faction,
-        capabilities: if units.len() == 1 {
-            unit_capability_lines(first.kind)
-        } else {
-            Vec::new()
-        },
         roster: Vec::new(),
         cards: Vec::new(),
         queue: Vec::new(),
@@ -1222,7 +1059,7 @@ pub fn build_for_palette(
             "orders".to_string()
         } else {
             // The dock shows ONE unit's program; say whose.
-            format!("orders - {}", first.kind.name())
+            format!("orders - {}", entity_name(first.kind.name()))
         },
     };
     if owner != game.human {
@@ -1230,7 +1067,6 @@ pub fn build_for_palette(
         // for any visible unit. An ally also shows its orders, while a
         // hostile's order state remains hidden because it reveals intent.
         let hostile = game.state.hostile(game.human, owner);
-        panel.sub = foreign_sub(game, owner, hostile, &panel.sub);
         if !hostile && units.len() == 1 {
             panel
                 .queue
@@ -1257,12 +1093,12 @@ pub fn build_for_palette(
             // The counted portrait tiles below already name every kind.
             // Repeating the same list here makes long mixed selections run
             // into those tiles and gives the eye two competing summaries.
-            panel.sub.clear();
+            panel.summary.clear();
             counts.sort_by_key(|(k, _)| k.name());
             for (kind, n) in counts.into_iter().take(8) {
                 panel.roster.push(Card {
                     icon: CardIcon::Unit(kind),
-                    title: format!("{} x{n}", kind.name()),
+                    title: format!("{} x{n}", entity_name(kind.name())),
                     cost: None,
                     hotkey: String::new(),
                     action: CardAction::FilterKind(kind),
@@ -1365,7 +1201,7 @@ pub fn build_for_palette(
         });
     }
     // A selected own transport offers its drop verb; the readout in
-    // the sub line shows what the sling holds.
+    // the info column shows what the sling holds.
     if units.len() == 1 && first.player == game.human && first.kind.stats().transport_capacity > 0 {
         let loaded = !first.cargo.is_empty();
         panel.cards.push(Card {
@@ -1388,10 +1224,9 @@ pub fn build_for_palette(
         let palette_key = chord(bindings, Action::ToggleBuildPalette);
         if build_menu_open {
             panel.cards.clear();
-            panel.capabilities.clear();
             panel.roster.clear();
             panel.title = "CONSTRUCTION".into();
-            panel.sub = "Choose a building\nEsc to return".into();
+            panel.summary = "Choose a building\nEsc to return".into();
             panel.portrait = CardIcon::Verb(VerbIcon::Build);
         } else {
             panel.cards.push(Card {
@@ -1421,7 +1256,7 @@ pub fn build_for_palette(
                     .map(|c| c.requires)
                     .unwrap_or_default()
                     .iter()
-                    .map(|k| k.name())
+                    .map(|k| entity_name(k.name()))
                     .collect::<Vec<_>>()
                     .join(", ");
                 (false, Some(format!("needs a standing {need}")))
@@ -1434,7 +1269,7 @@ pub fn build_for_palette(
             desc.extend(building_economy_lines(kind));
             panel.cards.push(Card {
                 icon: CardIcon::Building(kind, 0),
-                title: kind.name().to_string(),
+                title: entity_name(kind.name()),
                 cost: Some(cost),
                 hotkey: if i < 9 {
                     (i + 1).to_string()
@@ -1464,6 +1299,15 @@ pub fn build_for_palette(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stat<'a>(panel: &'a Panel, label: &str) -> &'a info::StatRow {
+        panel
+            .info
+            .rows
+            .iter()
+            .find(|row| row.label == label)
+            .unwrap()
+    }
     use macroquad::prelude::vec2;
     use oxide_sim::{Command, PlayerCommand, Scenario};
 
@@ -1541,24 +1385,13 @@ mod tests {
         game.selection.buildings = vec![supported];
         let panel =
             build_for_palette(&game, &BindingMap::classic(), false).expect("supported panel");
-        assert!(
-            panel
-                .capabilities
-                .iter()
-                .any(|fact| fact.text == "+180 scrap/min  |  Foundry supported")
-        );
-        assert!(panel.capabilities.iter().any(|fact| {
-            fact.icon == CapabilityIcon::EconomySupport && fact.text.contains("8 footprint tiles")
-        }));
+        assert_eq!(stat(&panel, "Income").value, "180 scrap/min");
+        assert_eq!(stat(&panel, "Support").value, "Foundry");
 
         game.selection.buildings = vec![remote];
         let panel = build_for_palette(&game, &BindingMap::classic(), false).expect("remote panel");
-        assert!(
-            panel
-                .capabilities
-                .iter()
-                .any(|fact| fact.text == "+120 scrap/min  |  Remote")
-        );
+        assert_eq!(stat(&panel, "Income").value, "120 scrap/min");
+        assert_eq!(stat(&panel, "Support").value, "Remote");
 
         let foreign = game
             .state
@@ -1576,25 +1409,18 @@ mod tests {
         );
         game.selection.buildings = vec![foreign];
         let panel = build_for_palette(&game, &BindingMap::classic(), false).expect("foreign panel");
-        assert!(!panel.sub.contains("SUPPORTED"), "{}", panel.sub);
-        assert!(!panel.sub.contains("REMOTE"), "{}", panel.sub);
         assert!(
             panel
-                .capabilities
+                .info
+                .rows
                 .iter()
-                .all(|fact| !fact.text.starts_with('+'))
+                .all(|row| !matches!(row.label.as_str(), "Income" | "Support"))
         );
         assert_eq!(
             building_income(&game, game.state.building(foreign).unwrap()),
             0
         );
-        assert!(
-            panel
-                .capabilities
-                .iter()
-                .any(|fact| fact.icon == CapabilityIcon::EconomySupport),
-            "static capability remains safe to inspect"
-        );
+        assert_eq!(stat(&panel, "Sight").value, "4 tiles");
     }
 
     #[test]
@@ -1650,7 +1476,7 @@ mod tests {
         assert_eq!(rate(&game, reclaimer), 120);
         game.selection.buildings = vec![reclaimer];
         let panel = build_for_palette(&game, &BindingMap::classic(), false).unwrap();
-        assert_eq!(panel.title, "REFINERY");
+        assert_eq!(panel.title, "Refinery");
         assert_eq!(
             panel.portrait,
             CardIcon::Building(BuildingKind::Reclaimer, 1)
@@ -1710,7 +1536,7 @@ mod tests {
         let extractor_card = panel
             .cards
             .iter()
-            .find(|card| card.title == "extractor")
+            .find(|card| card.title == "Extractor")
             .expect("advanced palette contains Extractor");
         assert!(
             extractor_card
@@ -1791,7 +1617,7 @@ mod tests {
         let foundry = human_foundry(&game);
         game.selection.buildings = vec![foundry];
         let panel = build_for_palette(&game, &BindingMap::classic(), false).expect("panel");
-        assert_eq!(panel.title, "FOUNDRY");
+        assert_eq!(panel.title, "Foundry");
         assert_eq!(panel.cards.len(), 5, "four units plus the rally affordance");
         assert_eq!(panel.cards[0].title, "Set rally");
         assert_eq!(panel.cards[0].action, CardAction::ArmRally);
@@ -1926,7 +1752,7 @@ mod tests {
     }
 
     #[test]
-    fn an_upgrade_needs_no_harvester_and_explains_its_automatic_downtime() {
+    fn an_upgrade_needs_no_harvester_and_explains_its_downtime() {
         let mut scenario = Scenario::skirmish();
         scenario.players[0].scrap = 500;
         scenario
@@ -1965,12 +1791,8 @@ mod tests {
             .expect("turret offers its upgrade");
         assert!(upgrade.enabled, "automatic upgrades need no crew");
         assert!(
-            upgrade.desc.iter().any(|line| line.contains("offline"))
-                && upgrade
-                    .desc
-                    .iter()
-                    .any(|line| line.contains("automatically")),
-            "the card explains the downtime and automatic progress: {:?}",
+            upgrade.desc.iter().any(|line| line.contains("Offline")),
+            "the card explains the downtime: {:?}",
             upgrade.desc
         );
 
@@ -2060,16 +1882,20 @@ mod tests {
             .id;
         game.selection.units = vec![harvester];
         let panel = build_for_palette(&game, &BindingMap::classic(), false).expect("panel");
-        assert_eq!(panel.title, "HARVESTER");
+        assert_eq!(panel.title, "Harvester");
         assert_eq!(panel.cards[0].title, "Stop");
         assert_eq!(panel.cards[1].title, "Run");
         assert_eq!(panel.cards[2].title, "Attack-move");
         assert_eq!(panel.cards[3].title, "Patrol");
         assert!(
-            panel.capabilities.is_empty(),
-            "an unarmed unit needs no capability band"
+            !panel
+                .info
+                .rows
+                .iter()
+                .any(|row| matches!(row.label.as_str(), "Ground" | "Air"))
         );
-        assert_eq!(panel.sub, "60/60 hp | speed 2.5 tiles/sec");
+        assert_eq!(panel.info.health, Some((60, 60)));
+        assert_eq!(stat(&panel, "Speed").value, "2.5 tiles/s");
         assert!(panel.cards.iter().any(|card| card.title == "Build"));
         assert!(
             !panel
@@ -2192,12 +2018,12 @@ mod tests {
             }
         );
         assert!(
-            panel.queue[0].title.starts_with("Build - turret"),
+            panel.queue[0].title.starts_with("Build - Turret"),
             "{}",
             panel.queue[0].title
         );
         assert!(
-            panel.queue[1].title.starts_with("Build - array"),
+            panel.queue[1].title.starts_with("Build - Array"),
             "{}",
             panel.queue[1].title
         );
@@ -2319,14 +2145,24 @@ mod tests {
         };
         let assert_panel = |panel: &Panel| {
             assert!(supported(&panel.title), "panel title: {}", panel.title);
-            assert!(supported(&panel.sub), "panel subtitle: {}", panel.sub);
+            assert!(
+                supported(&panel.summary),
+                "panel subtitle: {}",
+                panel.summary
+            );
             assert!(
                 supported(&panel.queue_label),
                 "panel queue label: {}",
                 panel.queue_label
             );
-            for fact in &panel.capabilities {
-                assert!(supported(&fact.text), "panel capability: {}", fact.text);
+            for row in &panel.info.rows {
+                assert!(
+                    supported(&row.label) && supported(&row.value),
+                    "panel stat: {row:?}"
+                );
+            }
+            for status in &panel.info.status {
+                assert!(supported(status), "panel status: {status}");
             }
             for card in panel.roster.iter().chain(&panel.cards).chain(&panel.queue) {
                 assert_card(card);
@@ -2337,25 +2173,9 @@ mod tests {
             for line in weapon_lines(kind) {
                 assert!(supported(&line), "{} weapon: {line}", kind.name());
             }
-            for fact in unit_capability_lines(kind) {
-                assert!(
-                    supported(&fact.text),
-                    "{} capability: {}",
-                    kind.name(),
-                    fact.text
-                );
-            }
         }
         for kind in buildings {
             assert!(supported(building_flavor(kind)), "{} flavor", kind.name());
-            for fact in building_capability_lines(kind, 0) {
-                assert!(
-                    supported(&fact.text),
-                    "{} capability: {}",
-                    kind.name(),
-                    fact.text
-                );
-            }
         }
 
         let mut foundry_game = game();
@@ -2380,65 +2200,19 @@ mod tests {
     }
 
     #[test]
-    fn capability_facts_use_semantic_icons_instead_of_explaining_line_styles() {
-        let bastion = building_capability_lines(BuildingKind::Bastion, 0);
-        assert!(
-            bastion.iter().any(|fact| {
-                fact.icon == CapabilityIcon::Weapon && fact.text.contains("2.5-9.5 tiles")
-            }),
-            "{bastion:?}"
-        );
-        assert!(
-            bastion
-                .iter()
-                .any(|fact| { fact.icon == CapabilityIcon::DeadZone && fact.text == "2.5 tiles" }),
-            "{bastion:?}"
-        );
-        assert!(
-            bastion
-                .iter()
-                .any(|fact| fact.icon == CapabilityIcon::Vision && fact.text == "6 tiles"),
-            "{bastion:?}"
-        );
-        assert!(bastion.iter().all(|fact| {
-            !fact.text.contains("dash")
-                && !fact.text.contains("solid")
-                && !fact.text.contains("amber")
-                && !fact.text.contains("blue")
-        }));
-
-        let bombard = unit_capability_lines(UnitKind::Bombard);
-        assert!(
-            bombard
-                .iter()
-                .any(|fact| fact.icon == CapabilityIcon::Vision && fact.text == "5 tiles"),
-            "{bombard:?}"
-        );
-    }
-
-    #[test]
-    fn a_selected_bastion_keeps_the_dead_zone_symbol_visible() {
+    fn a_selected_bastion_shows_its_minimum_and_maximum_range() {
         let (mut game, harvester) = builder_game();
         let bastion = place(&mut game, harvester, BuildingKind::Bastion, false);
         game.selection.units.clear();
         game.selection.buildings = vec![bastion];
 
         let panel = build_for_palette(&game, &BindingMap::classic(), false).expect("Bastion panel");
-        assert_eq!(panel.title, "BASTION");
-        assert!(
-            panel.capabilities.iter().any(|fact| {
-                fact.icon == CapabilityIcon::Weapon && fact.text.contains("2.5-9.5 tiles")
-            }),
-            "{:?}",
-            panel.capabilities
-        );
-        assert!(
-            panel
-                .capabilities
-                .iter()
-                .any(|fact| { fact.icon == CapabilityIcon::DeadZone && fact.text == "2.5 tiles" }),
-            "{:?}",
-            panel.capabilities
+        assert_eq!(panel.title, "Bastion");
+        assert_eq!(stat(&panel, "Range").value, "2.5-9.5 tiles");
+        assert_eq!(stat(&panel, "Sight").value, "6 tiles");
+        assert_eq!(
+            stat(&panel, "Ground").icon,
+            Some(info::StatIcon::Capability(CapabilityIcon::Weapon))
         );
     }
 
@@ -2454,53 +2228,17 @@ mod tests {
             .id;
         game.selection.units = vec![sentinel];
         let panel = build_for_palette(&game, &BindingMap::classic(), false).expect("panel");
+        assert_eq!(stat(&panel, "Ground").value, "10 dmg/hit");
         assert_eq!(
-            panel.capabilities.len(),
-            2,
-            "the two weapons stay in the capability band"
+            stat(&panel, "Ground").icon,
+            Some(info::StatIcon::Capability(CapabilityIcon::Weapon))
         );
-        assert!(
-            panel.capabilities.iter().any(|fact| {
-                fact.icon == CapabilityIcon::Weapon && fact.text.contains("ground")
-            })
+        assert_eq!(stat(&panel, "Air").value, "4 dmg/hit");
+        assert_eq!(
+            stat(&panel, "Air").icon,
+            Some(info::StatIcon::Capability(CapabilityIcon::AirWeapon))
         );
-        assert!(
-            panel.capabilities.iter().any(|fact| {
-                fact.icon == CapabilityIcon::AirWeapon && fact.text.contains("air")
-            }),
-            "the anti-air range uses a targeted-aircraft mark"
-        );
-        assert!(panel.sub.ends_with("speed 2.2 tiles/sec"));
-        assert!(
-            panel
-                .capabilities
-                .iter()
-                .filter(|fact| {
-                    matches!(
-                        fact.icon,
-                        CapabilityIcon::Weapon | CapabilityIcon::AirWeapon
-                    )
-                })
-                .all(|fact| fact.text.contains("dmg"))
-        );
-        assert!(
-            panel
-                .capabilities
-                .iter()
-                .all(|fact| fact.text.contains("tiles"))
-        );
-        assert!(
-            panel
-                .capabilities
-                .iter()
-                .any(|fact| fact.text.contains("ground"))
-        );
-        assert!(
-            panel
-                .capabilities
-                .iter()
-                .any(|fact| fact.text.contains("air"))
-        );
+        assert_eq!(stat(&panel, "Speed").value, "2.2 tiles/s");
 
         let harvester = game
             .state
@@ -2512,7 +2250,7 @@ mod tests {
         game.selection.units = vec![sentinel, harvester];
         let panel = build_for_palette(&game, &BindingMap::classic(), false).expect("panel");
         assert!(
-            panel.capabilities.is_empty(),
+            panel.info.rows.is_empty(),
             "mixed selections keep combat detail out of the command band"
         );
         assert_eq!(
@@ -2521,7 +2259,7 @@ mod tests {
             "each selected kind gets one roster chip"
         );
         assert!(
-            panel.sub.is_empty(),
+            panel.summary.is_empty(),
             "the counted roster tiles replace the redundant kind list"
         );
         assert!(

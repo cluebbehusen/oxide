@@ -411,6 +411,10 @@ pub struct UiView {
     /// zero-sized when absent. Menu modes report `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chrome: Option<[f32; 11]>,
+    /// Exact information and action rectangles [x, y, width, height].
+    /// The legacy chrome array describes only the enclosing bounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel_regions: Option<[[f32; 4]; 2]>,
 }
 
 impl StateView {

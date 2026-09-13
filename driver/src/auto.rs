@@ -227,6 +227,7 @@ mod tests {
             visible_range: None,
             hover: None,
             chrome: None,
+            panel_regions: None,
         }
     }
 

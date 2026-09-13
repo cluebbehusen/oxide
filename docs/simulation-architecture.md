@@ -1006,6 +1006,20 @@ not treated as live obstacles. The accepted proposal retains the scorer's exact
 site and builder through `BuildWith`. The frozen Overseer retains its legacy
 placement and sequential construction rules.
 
+Voluntary defense checks a necessary current-capital bound before quoting each
+kind. It includes imported fixed claims and the maximum of the carrier floor and
+the smaller of the shallow guard or a Sentinel purchase. A current shallow
+Sentinel can discharge the voluntary guard; the admission bound therefore never
+becomes an additional proposal debit. Active Connected revisions retain full
+quotation because subsequent recovery can release imported claims. Defense
+completion times rank utility but do not extend the allocator's funding horizon:
+these proposals pay construction capital entirely from current scrap. When a
+saved Foundry's footprint covers its assigned worker, every combined defense
+layout would fail the existing builder-start check. The session detects that
+overlap before quoting defense. Full layout validation uses the same cheap check
+for selected workers covered by any blocking footprint; nonblocking mines do not
+cover starts, and unselected workers do not trigger this rejection.
+
 The site search evaluates candidates in descending order of conservative score
 bounds. Unchanged approach routes retain their coverage score; assets whose
 routes could change receive the maximum positive contribution, and bounds omit
@@ -1013,6 +1027,26 @@ penalties and builder travel. A site is skipped only when it cannot provide
 coverage or its bound falls below the best exact candidate. Surviving sites
 still undergo every builder, egress, resource-route, and support check. The
 existing score and coordinate tie-breaks determine the selected site.
+
+Defensive geometry shares a bot-owned route cache across economic and defensive
+valuation. Each retained generation compares map dimensions and the complete
+fog-honest passability surface. Directed endpoint paths include the candidate
+footprint in their key; air routes ignore ground-only footprints. Normal ground,
+hypothetical combined-build layouts, and air surfaces have independent bounded
+retention: one normal generation has an 8 MiB budget, two hypothetical
+generations have 1 MiB each, and air has 2 MiB. These bound accounted retained
+payload and entry allowances, not process RSS. Cache eviction or an oversized
+entry falls back to search. Successful hits clear old exhausted-component
+evidence, while failures are not stored as bare unreachable results.
+
+Lazy reverse distance fields use the same open-tile graph, 10/14 movement costs,
+and diagonal corner rules. They only reject endpoint pairs whose no-candidate
+cost exceeds a route already found. Adding a blocking footprint cannot improve
+that lower bound; equal-cost pairs remain eligible for the full route-choice
+key. A blocked start retains the octile bound because A* permits leaving a tile
+it could not enter. A* still constructs every uncached selected path. Investment
+scores, threat evidence, asset values, and budgets are recomputed from the
+current observation rather than retained with passability.
 
 The pre-core emergency path is deliberately narrower than voluntary allocation.
 It uses only a current visible armed ground threat for a Turret or a current

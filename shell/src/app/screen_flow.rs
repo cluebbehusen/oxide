@@ -114,6 +114,7 @@ pub(super) fn update_and_draw(
                     {
                         app.tutorial = None;
                         app.game = keep_flags(fresh, &app.game);
+                        app.performance.reset();
                         app.game.paused = app.args.paused;
                         app.input.reset_session();
                         next = Some(Screen::Playing);
@@ -129,6 +130,7 @@ pub(super) fn update_and_draw(
                     // lesson cards riding on top.
                     let fresh = Game::new(tutorial::tutorial_scenario())?;
                     app.game = keep_flags(fresh, &app.game);
+                    app.performance.reset();
                     app.game.paused = app.args.paused;
                     app.tutorial = Some(tutorial::Tutorial::new());
                     app.input.reset_session();
@@ -250,6 +252,7 @@ pub(super) fn update_and_draw(
                     Ok(fresh) => {
                         app.tutorial = None;
                         app.game = keep_flags(fresh, &app.game);
+                        app.performance.reset();
                         app.game.paused = app.args.paused;
                         app.input.reset_session();
                         render::draw(&app.game, &app.sprites, &app.input);
@@ -374,7 +377,12 @@ pub(super) fn update_and_draw(
                 // the report, not a bare frozen battlefield.
                 rerun = true;
             }
-            render::draw(&app.game, &app.sprites, &app.input);
+            render::draw_with_performance(
+                &app.game,
+                &app.sprites,
+                &app.input,
+                Some(app.performance.view()),
+            );
             if let Some(t) = &app.tutorial {
                 render::draw_tutorial(t, &app.game);
             }
@@ -400,7 +408,12 @@ pub(super) fn update_and_draw(
                     PlaybackReturn::Home => Screen::Home(HomeScreen::open()),
                 }
             } else {
-                render::draw(&pb.game, &app.sprites, &app.input);
+                render::draw_with_performance(
+                    &pb.game,
+                    &app.sprites,
+                    &app.input,
+                    Some(app.performance.view()),
+                );
                 screens::playback::playback_hud(&pb, vec2(screen_width(), screen_height()));
                 Screen::Playback(pb)
             }
@@ -414,7 +427,12 @@ pub(super) fn update_and_draw(
                 &mut app.input.mouse,
                 &mut app.game,
             );
-            render::draw(&app.game, &app.sprites, &app.input);
+            render::draw_with_performance(
+                &app.game,
+                &app.sprites,
+                &app.input,
+                Some(app.performance.view()),
+            );
             FinalMapScreen::draw_hud();
             if leave {
                 app.game.spectate = false;
@@ -440,6 +458,7 @@ pub(super) fn update_and_draw(
                     Ok(_) => {
                         let fresh = rebuild_match(&app.game)?;
                         app.game = keep_flags(fresh, &app.game);
+                        app.performance.reset();
                         app.game.paused = app.args.paused;
                         app.tutorial = None;
                         app.input.reset_session();
@@ -517,6 +536,7 @@ pub(super) fn update_and_draw(
                     Ok(fresh) => {
                         app.tutorial = None;
                         app.game = keep_flags(fresh, &app.game);
+                        app.performance.reset();
                         app.game.paused = app.args.paused;
                         app.input.reset_session();
                         render::draw(&app.game, &app.sprites, &app.input);
@@ -624,6 +644,7 @@ pub(super) fn update_and_draw(
                         app.tutorial = Some(tutorial::Tutorial::new());
                     }
                     app.game = keep_flags(fresh, &app.game);
+                    app.performance.reset();
                     app.game.paused = app.args.paused;
                     app.input.reset_session();
                     Screen::Playing
