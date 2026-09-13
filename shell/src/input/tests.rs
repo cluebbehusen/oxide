@@ -194,7 +194,7 @@ fn hostile_skyhook_visible_edge_accepts_an_attack_order() {
     assert!(game.pending.iter().any(|command| matches!(
         command.command,
         Command::Attack {
-            target: oxide_sim::Target::Unit(unit),
+            target: oxide_sim::AttackTarget::Unit(unit),
             ..
         } if unit == target
     )));
@@ -511,7 +511,7 @@ fn a_selected_defense_right_clicks_a_visible_enemy_into_focus() {
         [PlayerCommand {
             command: Command::FocusFire { buildings, target },
             ..
-        }] if buildings == &vec![turret] && *target == oxide_sim::Target::Unit(enemy_id)
+        }] if buildings == &vec![turret] && *target == oxide_sim::Target::Unit(enemy_id).into()
     ));
     assert!(
         game.pending
@@ -1312,7 +1312,7 @@ fn a_shift_click_on_the_wounded_wall_queues_the_weld_not_the_rat() {
         player: oxide_sim::PlayerId(1),
         command: Command::Attack {
             units: vec![rat],
-            target: oxide_sim::Target::Building(foundry),
+            target: oxide_sim::Target::Building(foundry).into(),
             queue: false,
         },
     }]);
@@ -5151,4 +5151,131 @@ fn mouse_and_touch_switch_construction_without_cancelling_or_placing_in_the_worl
             assert_eq!(game.state.hash(), hash);
         }
     }
+}
+
+fn knowledge_attack_game() -> Game {
+    use oxide_sim::scenario::{BuildingSpec, UnitSpec};
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    let mut rows = vec![vec!['.'; 40]; 30];
+    rows[1][1] = '1';
+    rows[27][37] = '2';
+    scenario.map = rows.into_iter().map(|r| r.into_iter().collect()).collect();
+    scenario.units = vec![
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Avalanche,
+            x: 2,
+            y: 7,
+        },
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Harvester,
+            x: 12,
+            y: 14,
+        },
+        UnitSpec {
+            player: 1,
+            kind: UnitKind::Gnat,
+            x: 14,
+            y: 8,
+        },
+    ];
+    scenario.buildings = vec![
+        BuildingSpec {
+            player: 0,
+            kind: oxide_sim::BuildingKind::Array,
+            x: 5,
+            y: 16,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: oxide_sim::BuildingKind::Bastion,
+            x: 5,
+            y: 6,
+        },
+        BuildingSpec {
+            player: 1,
+            kind: oxide_sim::BuildingKind::Reclaimer,
+            x: 16,
+            y: 16,
+        },
+    ];
+    for (seat, player) in scenario.players.iter_mut().enumerate() {
+        player.bot = seat != 0;
+        player.bot_config = None;
+    }
+    Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap()
+}
+
+#[test]
+fn right_click_uses_building_memory_and_anonymous_contacts_and_stop_clears_focus() {
+    let mut game = knowledge_attack_game();
+    let gun = game.state.units()[0].id;
+    let scout = game.state.units()[1].id;
+    game.state.tick(&[PlayerCommand {
+        player: game.human,
+        command: Command::Move {
+            units: vec![scout],
+            goal: TilePos::new(2, 3),
+            queue: false,
+        },
+    }]);
+    for _ in 0..200 {
+        game.state.tick(&[]);
+    }
+    assert!(!game.my_vision().visible(TilePos::new(16, 16)));
+    game.selection.units = vec![gun];
+    let screen = game.camera.to_screen(vec2(16.5, 16.5));
+    context_order(&mut game, screen, false);
+    assert!(matches!(
+        game.pending.last().unwrap().command,
+        Command::Attack {
+            target: oxide_sim::AttackTarget::RememberedBuilding(_),
+            ..
+        }
+    ));
+    game.pending.clear();
+    let track = game
+        .my_vision()
+        .tracks()
+        .iter()
+        .find(|t| t.visible_unit.is_none())
+        .unwrap();
+    let contact = track.id;
+    let screen = game
+        .camera
+        .to_screen(vec2(track.tile.x as f32 + 0.5, track.tile.y as f32 + 0.5));
+    context_order(&mut game, screen, false);
+    assert!(
+        matches!(game.pending.last().unwrap().command, Command::Attack {
+        target: oxide_sim::AttackTarget::Contact(id), ..
+    } if id == contact)
+    );
+    game.pending.clear();
+    game.selection.units.clear();
+    let defense = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == oxide_sim::BuildingKind::Bastion)
+        .unwrap()
+        .id;
+    game.selection.buildings = vec![defense];
+    context_order(&mut game, screen, false);
+    assert!(
+        matches!(game.pending.last().unwrap().command, Command::FocusFire {
+        target: oxide_sim::AttackTarget::Contact(id), ..
+    } if id == contact)
+    );
+    let commands = std::mem::take(&mut game.pending);
+    game.state.tick(&commands);
+    assert!(game.state.building(defense).unwrap().focus.is_some());
+    super::dispatch::dispatch_action(&mut game, &mut InputState::new(), Action::StopOrScrap);
+    assert!(matches!(
+        game.pending.last().unwrap().command,
+        Command::ClearFocus { .. }
+    ));
+    let commands = std::mem::take(&mut game.pending);
+    game.state.tick(&commands);
+    assert!(game.state.building(defense).unwrap().focus.is_none());
 }

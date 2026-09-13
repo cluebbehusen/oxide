@@ -79,7 +79,7 @@ fn attack_building(
             attacker,
             Command::Attack {
                 units: units.to_vec(),
-                target: Target::Building(building),
+                target: Target::Building(building).into(),
                 queue: false,
             },
         )])

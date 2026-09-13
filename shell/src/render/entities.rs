@@ -128,16 +128,11 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
             oxide_sim::Order::Unload { at } => *at,
             oxide_sim::Order::Land { goal } => *goal,
             oxide_sim::Order::Attack { target, .. } => {
-                // A chase target draws only while its ground is
-                // seen — the victim may have slipped back into fog.
-                let tile = match target {
-                    oxide_sim::Target::Unit(uid) => game.state.unit(*uid)?.tile(),
-                    oxide_sim::Target::Building(bid) => game.state.building(*bid)?.anchor,
-                };
-                if game.all_seeing() || game.my_vision().visible(tile) {
-                    return Some((tile, verb_color(order)));
-                }
-                return None;
+                let view = game.state.attack_view(game.human, *target)?;
+                return Some((
+                    chassis::grid::TilePos::containing(view.position),
+                    verb_color(order),
+                ));
             }
             oxide_sim::Order::Idle => return None,
         };

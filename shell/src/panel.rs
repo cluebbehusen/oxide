@@ -546,30 +546,29 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
                 Some(frac),
             ))
         }
-        Order::Attack { target, .. } => {
-            // The same gate the breadcrumb chase point uses: a victim
-            // back in the fog is named by neither surface.
-            let (subject, name, tile) = match target {
-                oxide_sim::Target::Unit(uid) => {
-                    let u = game.state.unit(*uid)?;
-                    (
-                        OrderSubject::Unit(u.kind, faction_of(u.player)),
-                        u.kind.name().to_string(),
-                        u.tile(),
-                    )
+        Order::Attack { target, .. } => match game.state.attack_objective(game.human, *target)? {
+            oxide_sim::AttackTarget::RememberedBuilding(memory) => Some((
+                OrderSubject::Building(memory.building_kind, faction_of(memory.owner)),
+                memory.building_kind.name().to_string(),
+                false,
+                None,
+            )),
+            oxide_sim::AttackTarget::Contact(id) => {
+                let track = game.my_vision().track(id)?;
+                if let Some(uid) = track.visible_unit {
+                    let unit = game.state.unit(uid)?;
+                    Some((
+                        OrderSubject::Unit(unit.kind, faction_of(unit.player)),
+                        unit.kind.name().into(),
+                        false,
+                        None,
+                    ))
+                } else {
+                    None
                 }
-                oxide_sim::Target::Building(bid) => {
-                    let b = game.state.building(*bid)?;
-                    (
-                        OrderSubject::Building(b.kind, faction_of(b.player)),
-                        b.kind.name().to_string(),
-                        b.anchor,
-                    )
-                }
-            };
-            (game.all_seeing() || game.my_vision().visible(tile))
-                .then_some((subject, name, false, None))
-        }
+            }
+            _ => None,
+        },
         // A weld patient is own by construction — no fog gate needed,
         // and its meter is the wound closing.
         Order::RepairUnit { unit } => {
@@ -621,7 +620,7 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
         Order::Attack { .. } => (
             VerbIcon::Attack,
             "Attack",
-            "Chasing one target until it is gone.",
+            "Attacking the selected target while it remains known.",
         ),
         Order::Build { .. } => (
             VerbIcon::Build,
@@ -695,7 +694,21 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
                 progress,
             )
         }
-        None => (CardIcon::Verb(icon), title.to_string(), None),
+        None => (
+            CardIcon::Verb(icon),
+            if matches!(
+                order,
+                Order::Attack {
+                    target: oxide_sim::AttackTarget::Contact(_),
+                    ..
+                }
+            ) {
+                "Attack - Radar contact".into()
+            } else {
+                title.to_string()
+            },
+            None,
+        ),
     };
     Card {
         icon: face,
@@ -975,6 +988,32 @@ pub fn build_for_palette(
                 progress: None,
             });
             return Some(panel);
+        }
+        if !building.stats().weapons.is_empty() {
+            if let Some(target) = building.focus {
+                panel.queue_label = "target preference".into();
+                panel.queue.push(order_card(
+                    game,
+                    &Order::Attack {
+                        target,
+                        resume: None,
+                        pursue: true,
+                    },
+                    true,
+                    true,
+                ));
+            }
+            panel.cards.push(Card {
+                icon: CardIcon::Verb(VerbIcon::Stop),
+                title: "Stop".into(),
+                cost: None,
+                hotkey: chord(bindings, Action::StopOrScrap),
+                action: CardAction::Dispatch(Action::StopOrScrap),
+                enabled: true,
+                why: None,
+                desc: vec!["Clear target preference; resume automatic fire.".into()],
+                progress: None,
+            });
         }
         let scrap = game.state.player(game.human).scrap;
         if let Some(upgrade) = building.kind.upgrade_from(building.tier) {
@@ -1868,14 +1907,13 @@ mod tests {
         game.selection.buildings = vec![turret];
 
         let panel = build_for_palette(&game, &BindingMap::classic(), false).expect("Turret panel");
-        // A defense exposes only its tier upgrade.
         assert_eq!(
             panel.cards.len(),
-            1,
-            "the turret's only command is its upgrade"
+            2,
+            "the turret offers Stop and its tier upgrade"
         );
         assert!(
-            matches!(panel.cards[0].action, CardAction::Upgrade(_)),
+            matches!(panel.cards[1].action, CardAction::Upgrade(_)),
             "the turret's card lifts its tier"
         );
         assert!(

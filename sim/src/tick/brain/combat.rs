@@ -3,6 +3,9 @@
 //! the retaliation contract. Every shot buffers into the tick's volley;
 //! nothing here applies damage directly.
 
+mod blind;
+pub(super) use blind::{ShotBuffers, attack_known, automatic_radar, normalize_order};
+
 use super::super::flight;
 use super::super::landing;
 use super::super::route_for;
@@ -302,6 +305,7 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
         // (id order) takes the hit.
         let direct = state.buildings.iter().find(|b| {
             b.hp > 0
+                && shell.targets.ground
                 && state.hostile(shell.player, b.player)
                 && b.closest_point_to(shell.impact).dist_sq(shell.impact)
                     <= chassis::fx::Fx::lit("0.0001")
@@ -457,12 +461,10 @@ pub(super) fn turret_fire(
             b.tier,
             b.focus,
         );
-        let focus_domain = focus.and_then(|target| {
-            state
-                .visible_hostile_target_domain(me, target)
-                .filter(|domain| atk.targets.covers(*domain))
-        });
-        if focus.is_some() && focus_domain.is_none() {
+        let focused = focus
+            .and_then(|target| state.attack_view(me, target))
+            .filter(|view| view.domain.is_none_or(|domain| atk.targets.covers(domain)));
+        if focus.is_some() && focused.is_none() {
             state.building_mut(id).expect("just seen").focus = None;
         }
         if cooling {
@@ -471,23 +473,16 @@ pub(super) fn turret_fire(
             if b.cooldown > 0 {
                 continue;
             }
-            // Reached zero this tick: fire now, like unit cooldowns do.
         }
         let shot_open = |t: TilePos, full: bool| shot_crosses(state, t, full);
-        // The owner must see the victim's tile — a turret that outranges
-        // its own mast fires on a spotter's eyes, never into fog.
-        let focused_victim = focus.zip(focus_domain).and_then(|(target, domain)| {
-            let aim = match target {
-                Target::Unit(unit) => state.unit(unit)?.pos,
-                Target::Building(building) => state.building(building)?.closest_point_to(center),
-            };
-            let distance = center.dist_sq(aim);
-            let full = traces_terrain(atk, Domain::Ground, domain);
-            (within_weapon_reach(atk, distance)
-                && shot_open(TilePos::containing(aim), full)
-                && !chassis::path::line_blocked(center, aim, |tile| shot_open(tile, full)))
-            .then_some((target, aim))
-        });
+        let focused =
+            focused.filter(|view| blind::solution(state, center, Domain::Ground, *view, atk));
+        if let Some(view) = focused.filter(|view| view.entity.is_none()) {
+            blind::fire_building(state, id, view, events, hits, launches);
+            continue;
+        }
+        let focused_victim =
+            focused.and_then(|view| view.entity.map(|target| (target, view.aim_from(center))));
         let unit_victim = focused_victim
             .is_none()
             .then(|| {
@@ -537,6 +532,9 @@ pub(super) fn turret_fire(
         } else if let Some((_, target, position)) = building_victim {
             (Target::Building(target), position)
         } else {
+            if let Some(view) = blind::radar_in_range(state, me, center, Domain::Ground, atk) {
+                blind::fire_building(state, id, view, events, hits, launches);
+            }
             continue;
         };
         let aim = if atk.projectile {
@@ -562,7 +560,7 @@ pub(super) fn turret_fire(
             events.push(Event::ShellLaunched {
                 shooter: Target::Building(id),
                 unit_pose: None,
-                target: victim,
+                target: Some(victim),
                 player: me,
                 from: center,
                 to: aim,
@@ -574,7 +572,7 @@ pub(super) fn turret_fire(
                 turret: id,
                 kind,
                 tier,
-                target: victim,
+                target: Some(victim),
                 turret_pos: center,
                 target_pos: aim,
             });
@@ -926,6 +924,7 @@ pub(super) fn advance(
                 .map(|(_, bid, aim)| (Target::Building(bid), aim))
         });
     let Some((target, aim)) = target else {
+        automatic_radar(state, index, id, true, events, hits, launches);
         return;
     };
 
@@ -967,7 +966,7 @@ pub(super) fn advance(
             unit_pose: Some(UnitLaunchPose::from(
                 state.unit(id).expect("shooter exists during combat"),
             )),
-            target,
+            target: Some(target),
             player: me,
             from: pos,
             to: aim,
@@ -979,7 +978,7 @@ pub(super) fn advance(
             attacker: id,
             attacker_kind: kind,
             weapon: 0,
-            target,
+            target: Some(target),
             attacker_pos: pos,
             target_pos: aim,
         });
@@ -1014,14 +1013,10 @@ fn sapper_attack(
     };
     let victim_domain = target_domain(state, target);
     let Some((aim_point, target_tile)) = target_info else {
-        let unit = state.unit_mut(id).expect("caller checked");
-        match resume {
-            Some(goal) => {
-                unit.order = Order::AttackMove { goal };
-                unit.path = None;
-            }
-            None => unit.advance_queue(),
-        }
+        state
+            .unit_mut(id)
+            .expect("caller checked")
+            .complete_attack(resume);
         return;
     };
     // A charge only ever presses on ground: air victims are simply out
@@ -1084,7 +1079,7 @@ fn sapper_attack(
             attacker: id,
             attacker_kind: kind,
             weapon: 0,
-            target,
+            target: Some(target),
             attacker_pos: pos,
             target_pos: aim_point,
         });
@@ -1198,14 +1193,10 @@ fn bomber_attack(
         .iter()
         .position(|w| w.targets.covers(victim_domain));
     let (Some((aim_point, target_tile)), Some(pi)) = (target_info, primary) else {
-        let unit = state.unit_mut(id).expect("caller checked");
-        match resume {
-            Some(goal) => {
-                unit.order = Order::AttackMove { goal };
-                unit.path = None;
-            }
-            None => unit.advance_queue(),
-        }
+        state
+            .unit_mut(id)
+            .expect("caller checked")
+            .complete_attack(resume);
         return;
     };
     let weapon = &stats.weapons[pi];
@@ -1265,7 +1256,7 @@ fn bomber_attack(
                 unit_pose: Some(UnitLaunchPose::from(
                     state.unit(id).expect("shooter exists during combat"),
                 )),
-                target,
+                target: Some(target),
                 player: me,
                 from: pos,
                 to: impact,
@@ -1464,7 +1455,8 @@ pub(super) fn attack(
     {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.order = Order::Attack {
-            target: better,
+            pursue: false,
+            target: better.into(),
             resume,
         };
         unit.path = None;
@@ -1490,29 +1482,10 @@ pub(super) fn attack(
         .iter()
         .position(|w| w.targets.covers(victim_domain));
     let (Some((aim_point, target_tile)), Some(pi)) = (target_info, primary) else {
-        let unit = state.unit_mut(id).expect("caller checked");
-        match resume {
-            Some(goal) => {
-                unit.order = Order::AttackMove { goal };
-                unit.path = None;
-            }
-            None => {
-                // VICTORY (the target is gone) keeps the baseline
-                // rhythm exactly: stand down where the fight ended
-                // and let next tick's idle() pick the next one —
-                // walking home mid-battle lost duels, and re-hunting
-                // inside this arm perturbed scripted battles enough
-                // to flip whole tier rungs onto the seat-parity coin.
-                // A tethered victor stays STATIONED though, so its
-                // next acquisition re-tethers on the spot: one
-                // sacrificial unit must not buy the bait an
-                // unleashed guard.
-                if unit.leash.take().is_some() {
-                    unit.settled = crate::stats::LEASH_STATION_TICKS;
-                }
-                unit.advance_queue();
-            }
-        }
+        state
+            .unit_mut(id)
+            .expect("caller checked")
+            .complete_attack(resume);
         return;
     };
     let weapon = &stats.weapons[pi];
@@ -1604,7 +1577,7 @@ pub(super) fn attack(
                     unit_pose: Some(UnitLaunchPose::from(
                         state.unit(id).expect("shooter exists during combat"),
                     )),
-                    target,
+                    target: Some(target),
                     player: me,
                     from: pos,
                     to: aim_point,
@@ -1624,7 +1597,7 @@ pub(super) fn attack(
                     attacker: id,
                     attacker_kind: kind,
                     weapon: pi,
-                    target,
+                    target: Some(target),
                     attacker_pos: pos,
                     target_pos: aim_point,
                 });
@@ -1856,6 +1829,7 @@ fn fire_sidearms(
         }
         let victim = sidearm_victim(state, index, pos, me, stats.domain, weapon);
         let Some((_, uid, upos, _)) = victim else {
+            blind::sidearm_radar(state, id, wi, hits, events);
             continue;
         };
         if !super::super::movement::ground_weapon_aligned(
@@ -1878,7 +1852,7 @@ fn fire_sidearms(
             attacker: id,
             attacker_kind: kind,
             weapon: wi,
-            target: Target::Unit(uid),
+            target: Some(Target::Unit(uid)),
             attacker_pos: pos,
             target_pos: upos,
         });
@@ -1928,12 +1902,20 @@ pub(super) fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
         // neighbor fell in the volley, and without this arm the busy-guard
         // would let a surviving out-of-aggro shooter fire unanswered for
         // another full cooldown. Live targets stay protected.
-        Order::Attack { target, resume } if !target_standing(state, target) => resume,
+        Order::Attack { target, resume, .. }
+            if state.attack_view(unit.player, target).is_none() =>
+        {
+            resume
+        }
         _ => return, // already busy fighting or working
     };
+    let target = state
+        .attack_objective(unit.player, attacker.into())
+        .unwrap_or(attacker.into());
     let unit = state.unit_mut(victim).expect("checked above");
     unit.order = Order::Attack {
-        target: attacker,
+        pursue: false,
+        target,
         resume,
     };
     unit.path = None;
@@ -2108,6 +2090,7 @@ mod tests {
         ] {
             state.units[0].pos = inside.center();
             state.units[1].pos = outside.center();
+            state.refresh_vision();
             state
                 .validate_invariants()
                 .expect("the accepted coordinate envelope includes border rows");

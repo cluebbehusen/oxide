@@ -158,7 +158,7 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(wisp),
+            target: Target::Unit(wisp).into(),
             queue: false,
         },
     )]);
@@ -244,7 +244,7 @@ fn a_fogged_flyer_footing_never_leaks_through_the_stall_reason() {
             0,
             Command::Attack {
                 units: vec![flak],
-                target: Target::Unit(wisp),
+                target: Target::Unit(wisp).into(),
                 queue: false,
             },
         ),
@@ -258,30 +258,21 @@ fn a_fogged_flyer_footing_never_leaks_through_the_stall_reason() {
         ),
     ]);
 
-    let mut stalled = None;
     for _ in 0..600 {
         let report = state.tick(&[]);
-        if let Some(reason) = report.events.iter().find_map(|e| match e {
-            Event::OrderStalled { unit, reason, .. } if *unit == flak => Some(*reason),
-            _ => None,
-        }) {
-            stalled = Some((
-                reason,
-                state.can_see(PlayerId(0), state.unit(wisp).unwrap().tile()),
-            ));
-            break;
+        if !state.can_see(PlayerId(0), state.unit(wisp).unwrap().tile()) {
+            state.tick(&[]);
+            assert_eq!(state.unit(flak).unwrap().order, Order::Idle);
+            assert!(
+                !report
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == flak))
+            );
+            return;
         }
     }
-    let (reason, saw_victim) = stalled.expect("the impossible chase stalls");
-    assert!(
-        !saw_victim,
-        "the scenario must exercise the fogged case: the victim's tile is unseen at the stall"
-    );
-    assert_eq!(
-        reason,
-        oxide_sim::StallReason::NoRoute,
-        "an unseen victim's footing must not narrow the reason to NoFiringPosition"
-    );
+    panic!("the fleeing flyer never left sight");
 }
 
 #[test]
@@ -306,7 +297,7 @@ fn a_sidearm_downs_a_flyer_without_pulling_the_main_gun_off_its_order() {
         0,
         Command::Attack {
             units: vec![sentinel],
-            target: Target::Unit(scuttler),
+            target: Target::Unit(scuttler).into(),
             queue: false,
         },
     )]);
@@ -320,7 +311,7 @@ fn a_sidearm_downs_a_flyer_without_pulling_the_main_gun_off_its_order() {
         for e in &report.events {
             if let Event::AttackHit {
                 attacker,
-                target: Target::Unit(t),
+                target: Some(Target::Unit(t)),
                 ..
             } = e
                 && *attacker == sentinel
@@ -332,7 +323,7 @@ fn a_sidearm_downs_a_flyer_without_pulling_the_main_gun_off_its_order() {
         assert!(
             matches!(
                 state.unit(sentinel).unwrap().order,
-                Order::Attack { target: Target::Unit(t), .. } if t == scuttler
+                Order::Attack { target, .. } if state.attack_view(state.unit(sentinel).unwrap().player, target).and_then(|v| v.entity) == Some(Target::Unit(scuttler))
             ),
             "the sidearm's war never steals the main gun's order"
         );
@@ -370,7 +361,7 @@ fn a_sidearm_holds_fire_when_nothing_it_covers_is_in_range() {
         0,
         Command::Attack {
             units: vec![sentinel],
-            target: Target::Unit(scuttler),
+            target: Target::Unit(scuttler).into(),
             queue: false,
         },
     )]);
@@ -381,7 +372,7 @@ fn a_sidearm_holds_fire_when_nothing_it_covers_is_in_range() {
         for e in &report.events {
             if let Event::AttackHit {
                 attacker,
-                target: Target::Unit(t),
+                target: Some(Target::Unit(t)),
                 ..
             } = e
                 && *attacker == sentinel
@@ -477,7 +468,7 @@ fn a_dead_attacker_draws_no_answer() {
             1,
             Command::Attack {
                 units: vec![a],
-                target: Target::Unit(victim),
+                target: Target::Unit(victim).into(),
                 queue: false,
             },
         ),
@@ -485,7 +476,7 @@ fn a_dead_attacker_draws_no_answer() {
             0,
             Command::Attack {
                 units: vec![k1, k2],
-                target: Target::Unit(a),
+                target: Target::Unit(a).into(),
                 queue: false,
             },
         ),
@@ -563,7 +554,7 @@ fn a_surviving_shooter_is_answered_when_the_victims_own_target_falls() {
         0,
         Command::Attack {
             units: vec![victim],
-            target: Target::Unit(prey),
+            target: Target::Unit(prey).into(),
             queue: false,
         },
     )]);
@@ -579,7 +570,7 @@ fn a_surviving_shooter_is_answered_when_the_victims_own_target_falls() {
         1,
         Command::Attack {
             units: vec![rail],
-            target: Target::Unit(victim),
+            target: Target::Unit(victim).into(),
             queue: false,
         },
     )]);
@@ -589,7 +580,10 @@ fn a_surviving_shooter_is_answered_when_the_victims_own_target_falls() {
     assert_eq!(
         answered.order,
         Order::Attack {
-            target: Target::Unit(rail),
+            pursue: false,
+            target: state
+                .attack_objective(answered.player, Target::Unit(rail).into())
+                .unwrap(),
             resume: None
         },
         "the surviving out-of-aggro shooter gets the answer"
@@ -802,7 +796,7 @@ fn a_ground_chaser_flanks_to_a_firing_position_it_can_actually_shoot_from() {
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(wisp),
+            target: Target::Unit(wisp).into(),
             queue: false,
         },
     )]);

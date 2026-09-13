@@ -54,6 +54,55 @@ pub enum Target {
     Building(BuildingId),
 }
 
+/// A team-local observation identity. Never reused after contact is lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ContactId(pub u32);
+
+/// A building footprint known through friendly observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RememberedBuilding {
+    /// Last observed owner.
+    pub owner: PlayerId,
+    /// Last observed type.
+    pub building_kind: crate::stats::BuildingKind,
+    /// Top-left footprint tile.
+    pub anchor: chassis::grid::TilePos,
+}
+
+/// Player knowledge identifying an attack objective, independently of a victim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum AttackTarget {
+    /// A currently visible hostile unit, resolved to its contact at dispatch.
+    Unit(UnitId),
+    /// A currently visible hostile building, resolved to its remembered footprint.
+    Building(BuildingId),
+    /// A remembered hostile footprint, which may now be empty.
+    RememberedBuilding(RememberedBuilding),
+    /// A continuously observed mobile contact.
+    Contact(ContactId),
+}
+
+impl From<Target> for AttackTarget {
+    fn from(target: Target) -> Self {
+        match target {
+            Target::Unit(id) => Self::Unit(id),
+            Target::Building(id) => Self::Building(id),
+        }
+    }
+}
+
+impl AttackTarget {
+    /// The explicit entity reference, if this is an unnormalized command.
+    pub fn entity(self) -> Option<Target> {
+        match self {
+            Self::Unit(id) => Some(Target::Unit(id)),
+            Self::Building(id) => Some(Target::Building(id)),
+            Self::RememberedBuilding(_) | Self::Contact(_) => None,
+        }
+    }
+}
+
 impl core::fmt::Display for UnitId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "u{}", self.0)

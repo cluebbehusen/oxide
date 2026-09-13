@@ -355,7 +355,7 @@ fn a_later_trip_loss_keeps_replacement_workers_out_of_the_same_kill_zone() {
         1,
         Command::Attack {
             units: vec![bombard],
-            target: oxide_sim::Target::Unit(original),
+            target: oxide_sim::Target::Unit(original).into(),
             queue: false,
         },
     )]);
@@ -454,7 +454,7 @@ fn omniscient_observation_reports_frames_and_fresh_battlefield_wrecks() {
         0,
         Command::Attack {
             units: vec![lancer],
-            target: oxide_sim::Target::Unit(victim),
+            target: oxide_sim::Target::Unit(victim).into(),
             queue: false,
         },
     )]);
@@ -1409,6 +1409,7 @@ fn qa_rear_line_stays_frozen_while_player_facing_releases_repaired_units() {
         known_wrecks: Vec::new(),
         salvage_incidents: Vec::new(),
         blips: Vec::new(),
+        contact_tracks: Vec::new(),
         faction: oxide_sim::Faction::Ferrous,
         my_shells: 0,
         incoming_shells: Vec::new(),
@@ -1901,7 +1902,7 @@ fn scripted_brain_completes_a_real_raid_and_releases_the_pair_for_reuse() {
             match &command.command {
                 Command::Attack {
                     units,
-                    target: oxide_sim::Target::Unit(candidate),
+                    target: oxide_sim::AttackTarget::Unit(candidate),
                     queue: false,
                 } if units == &raiders && *candidate == target => {
                     strike_at.get_or_insert(tick);
@@ -2052,7 +2053,7 @@ fn artillery_in_fog_cannot_touch_a_fog_honest_observation() {
         1,
         Command::Attack {
             units: vec![bombard],
-            target: oxide_sim::Target::Unit(target),
+            target: oxide_sim::Target::Unit(target).into(),
             queue: false,
         },
     )]);
@@ -2088,7 +2089,7 @@ fn a_watched_bombardment_reports_its_impact_tiles() {
         1,
         Command::Attack {
             units: vec![bombard],
-            target: oxide_sim::Target::Unit(target),
+            target: oxide_sim::Target::Unit(target).into(),
             queue: false,
         },
     )]);

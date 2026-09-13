@@ -126,7 +126,7 @@ fn the_condor_bombs_on_passes_and_never_hovers_to_strafe() {
         0,
         Command::Attack {
             units: vec![condor],
-            target: Target::Building(turret),
+            target: oxide_sim::AttackTarget::Building(turret),
             queue: false,
         },
     )]);
@@ -191,7 +191,7 @@ fn a_condor_replans_when_its_wide_turn_meets_a_peak() {
         0,
         Command::Attack {
             units: vec![condor],
-            target: Target::Building(foundry),
+            target: Target::Building(foundry).into(),
             queue: false,
         },
     )]);
@@ -275,7 +275,7 @@ fn the_moth_lays_its_whole_stick_in_one_release() {
         1,
         Command::Attack {
             units: vec![moth],
-            target: Target::Building(turret),
+            target: Target::Building(turret).into(),
             queue: false,
         },
     )]);
@@ -466,7 +466,7 @@ fn a_bomber_never_turns_faster_than_its_rate() {
         0,
         Command::Attack {
             units: vec![condor],
-            target: Target::Building(turret),
+            target: Target::Building(turret).into(),
             queue: false,
         },
     )]);
@@ -539,7 +539,7 @@ fn attack(player: u8, unit: oxide_sim::ids::UnitId, target: Target) -> PlayerCom
         player,
         Command::Attack {
             units: vec![unit],
-            target,
+            target: target.into(),
             queue: false,
         },
     )
@@ -895,7 +895,8 @@ fn a_bomber_whose_target_dies_keeps_flying() {
     assert_ne!(
         state.unit(condor).unwrap().order,
         oxide_sim::state::Order::Attack {
-            target: Target::Unit(harvester),
+            pursue: false,
+            target: Target::Unit(harvester).into(),
             resume: None,
         },
         "the direct attack hands back once its victim is gone"

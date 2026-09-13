@@ -235,7 +235,7 @@ fn cargo_dies_with_the_airframe() {
         1,
         Command::Attack {
             units: vec![hunter],
-            target: Target::Unit(sky),
+            target: Target::Unit(sky).into(),
             queue: false,
         },
     )]);
@@ -619,7 +619,7 @@ fn a_rider_survives_when_its_sling_is_destroyed_during_boarding() {
             1,
             Command::Attack {
                 units: hunters,
-                target: Target::Unit(sky),
+                target: Target::Unit(sky).into(),
                 queue: false,
             },
         ),
@@ -698,7 +698,7 @@ fn a_lethally_hit_rider_is_not_entombed_as_cargo() {
             1,
             Command::Attack {
                 units: attackers,
-                target: Target::Unit(rider),
+                target: Target::Unit(rider).into(),
                 queue: false,
             },
         ),

@@ -262,7 +262,7 @@ fn a_second_builder_resumes_a_dead_builders_site() {
         1,
         Command::Attack {
             units: vec![killer],
-            target: Target::Unit(first),
+            target: Target::Unit(first).into(),
             queue: false,
         },
     )]);
@@ -351,7 +351,7 @@ fn cancel_refunds_by_health_and_damage_burns_it() {
             1,
             Command::Attack {
                 units: vec![raider],
-                target: Target::Building(site),
+                target: Target::Building(site).into(),
                 queue: false,
             },
         ),
@@ -615,7 +615,7 @@ fn a_zeroed_site_cannot_be_revived_by_its_builder() {
             1,
             Command::Attack {
                 units: lancers,
-                target: Target::Building(site),
+                target: Target::Building(site).into(),
                 queue: false,
             },
         )])
@@ -1032,7 +1032,7 @@ fn same_tick_construction_cannot_absorb_a_lethal_hit() {
         1,
         Command::Attack {
             units: vec![chewer],
-            target: Target::Building(site),
+            target: Target::Building(site).into(),
             queue: false,
         },
     )]);
@@ -1065,7 +1065,7 @@ fn same_tick_construction_cannot_absorb_a_lethal_hit() {
                 1,
                 Command::Attack {
                     units: vec![sniper],
-                    target: Target::Building(site),
+                    target: Target::Building(site).into(),
                     queue: false,
                 },
             ),
@@ -1156,7 +1156,7 @@ fn a_doomed_site_never_comes_online() {
                 1,
                 Command::Attack {
                     units: vec![s1, s2],
-                    target: Target::Building(site),
+                    target: Target::Building(site).into(),
                     queue: false,
                 },
             )])
@@ -1177,7 +1177,7 @@ fn a_doomed_site_never_comes_online() {
                 1,
                 Command::Attack {
                     units: vec![l1, l2, l3],
-                    target: Target::Building(site),
+                    target: Target::Building(site).into(),
                     queue: false,
                 },
             )])

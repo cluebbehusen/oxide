@@ -13,6 +13,8 @@
 //! - `result` is set at most once; once set, ticks are frozen no-ops.
 
 mod placement;
+mod targeting;
+pub use targeting::AttackView;
 
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::map::{MAX_MAP_EDGE, Map};
@@ -120,7 +122,11 @@ pub enum Order {
     /// Chase and attack one target until it is gone.
     Attack {
         /// The victim.
-        target: crate::ids::Target,
+        target: crate::AttackTarget,
+        /// An explicit commitment may pursue an anonymous contact; automatic
+        /// engagements may only fire while radar remains in reach.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        pursue: bool,
         /// Where to resume attack-moving once the victim is gone. `None`
         /// for a plain attack order (absent in old replays, hence the
         /// default).
@@ -395,6 +401,23 @@ impl Unit {
         self.progress = 0;
     }
 
+    /// Completes an engagement without recycling its target into a patrol.
+    pub(crate) fn complete_attack(&mut self, resume: Option<TilePos>) {
+        self.order = if let Some(goal) = resume {
+            Order::AttackMove { goal }
+        } else {
+            if self.leash.take().is_some() {
+                self.settled = crate::stats::LEASH_STATION_TICKS;
+            }
+            self.queue.pop_front().unwrap_or_else(|| {
+                self.looping = false;
+                Order::Idle
+            })
+        };
+        self.path = None;
+        self.progress = 0;
+    }
+
     /// Abandons the whole program: a stalled or overridden order never
     /// half-continues its queue.
     pub(crate) fn clear_program(&mut self) {
@@ -433,7 +456,7 @@ pub struct Building {
     /// cover only decide whether the preference can be fired on now; they do
     /// not erase it or suppress ordinary fallback acquisition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub focus: Option<Target>,
+    pub focus: Option<crate::AttackTarget>,
     /// Whether construction has finished. Sites (`false`) block ground and
     /// take damage but don't see, fight, or produce.
     #[serde(
@@ -1015,6 +1038,11 @@ impl State {
                     return Err(E::UnmintedOrderTarget(u.id));
                 }
             }
+            if std::iter::once(&u.order).chain(&u.queue).any(|order| {
+                matches!(order, Order::Attack { target, .. } if !self.valid_attack_reference(u.player, *target))
+            }) {
+                return Err(E::UnmintedOrderTarget(u.id));
+            }
             // Cargo is a trusted enclave: nothing in the tick pipeline
             // re-examines a rider until it is set down, so a forged
             // save must not smuggle in anything the sling could never
@@ -1145,19 +1173,21 @@ impl State {
                 return Err(E::BuildingCooldownOutOfRange(b.id));
             }
             if let Some(target) = b.focus {
-                if !self.minted(target) {
+                if !self.valid_attack_reference(b.player, target) {
                     return Err(E::UnmintedBuildingFocus(b.id));
                 }
-                let target_is_live = match target {
+                let current = self.attack_view(b.player, target);
+                let live_entity = target.entity().is_some_and(|entity| match entity {
                     Target::Unit(id) => self.unit(id).is_some(),
                     Target::Building(id) => self.building(id).is_some(),
-                };
+                });
                 if !b.built
                     || stats.weapons.is_empty()
-                    || (target_is_live
-                        && self
-                            .visible_hostile_target_domain(b.player, target)
-                            .is_none_or(|domain| !stats.weapons[0].targets.covers(domain)))
+                    || ((live_entity || target.entity().is_none()) && current.is_none())
+                    || current.is_some_and(|view| {
+                        view.domain
+                            .is_some_and(|domain| !stats.weapons[0].targets.covers(domain))
+                    })
                 {
                     return Err(E::InvalidBuildingFocus(b.id));
                 }
@@ -1319,6 +1349,14 @@ impl State {
             {
                 return Err(E::UnsortedSalvageIncidents(seat));
             }
+            if !v.tracking_valid(self, seat) {
+                return Err(E::InvalidContactTracking(seat));
+            }
+            if let Some(other) = (0..i).find(|&j| self.players[j].team == self.players[i].team)
+                && !v.shares_tracking(&self.vision[other])
+            {
+                return Err(E::InvalidContactTracking(seat));
+            }
         }
         Ok(())
     }
@@ -1401,16 +1439,35 @@ impl State {
             .map(|building| {
                 building.focus.is_none_or(|target| {
                     building.built
-                        && building.stats().weapons.first().is_some_and(|weapon| {
-                            self.visible_hostile_target_domain(building.player, target)
-                                .is_some_and(|domain| weapon.targets.covers(domain))
-                        })
+                        && self
+                            .attack_view(building.player, target)
+                            .is_some_and(|view| {
+                                building.stats().weapons.first().is_some_and(|weapon| {
+                                    view.domain
+                                        .is_none_or(|domain| weapon.targets.covers(domain))
+                                })
+                            })
                 })
             })
             .collect();
         for (building, keep) in self.buildings.iter_mut().zip(keep) {
             if !keep {
                 building.focus = None;
+            }
+        }
+        for index in 0..self.units.len() {
+            while let Order::Attack { target, resume, .. } = self.units[index].order {
+                let unit = &self.units[index];
+                let stats = unit.kind.stats();
+                if self.attack_view(unit.player, target).is_some_and(|view| {
+                    view.domain.is_none_or(|domain| {
+                        stats.can_target(domain)
+                            || (stats.demolition && domain == crate::stats::Domain::Ground)
+                    })
+                }) {
+                    break;
+                }
+                self.units[index].complete_attack(resume);
             }
         }
     }
@@ -1816,7 +1873,7 @@ fn order_reference(order: &Order) -> Option<Target> {
         | Order::Advance { .. }
         | Order::Found { .. }
         | Order::Land { .. } => None,
-        Order::Attack { target, .. } => Some(*target),
+        Order::Attack { target, .. } => target.entity(),
         Order::Build { site } => Some(Target::Building(*site)),
         Order::Repair { building } | Order::Salvage { building } => {
             Some(Target::Building(*building))
@@ -2061,6 +2118,9 @@ pub enum StateIntegrityError {
     /// The vision table does not match the player list.
     #[error("vision table does not match the player list")]
     VisionTableMismatch,
+    /// A contact history or its current observation is inconsistent.
+    #[error("player {0} has invalid contact tracking")]
+    InvalidContactTracking(PlayerId),
     /// A vision grid disagrees with the map dimensions.
     #[error("a vision table disagrees with the map dimensions")]
     MalformedVisionGrid,

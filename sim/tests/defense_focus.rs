@@ -34,6 +34,14 @@ fn unit_ids(state: &State, player: u8) -> Vec<UnitId> {
         .collect()
 }
 
+fn focus_entity(state: &State, id: BuildingId) -> Option<Target> {
+    let building = state.building(id).unwrap();
+    building
+        .focus
+        .and_then(|target| state.attack_view(building.player, target))
+        .and_then(|view| view.entity)
+}
+
 fn two_turret_state() -> State {
     let mut scenario = open_arena(
         30,
@@ -64,7 +72,7 @@ fn focus_fire_canonicalizes_a_multi_defense_selection_deterministically() {
         0,
         Command::FocusFire {
             buildings: defenses.to_vec(),
-            target,
+            target: target.into(),
         },
     )]);
     assert!(
@@ -79,13 +87,13 @@ fn focus_fire_canonicalizes_a_multi_defense_selection_deterministically() {
         0,
         Command::FocusFire {
             buildings: vec![defenses[1], defenses[0], defenses[1]],
-            target,
+            target: target.into(),
         },
     )]);
 
     assert_eq!(repeated.hash(), canonical.hash());
     for defense in defenses {
-        assert_eq!(canonical.building(defense).unwrap().focus, Some(target));
+        assert_eq!(focus_entity(&canonical, defense), Some(target));
     }
 }
 
@@ -103,10 +111,10 @@ fn focus_fire_validation_is_atomic_for_mixed_or_foreign_buildings() {
         0,
         Command::FocusFire {
             buildings: vec![turret],
-            target: first,
+            target: first.into(),
         },
     )]);
-    assert_eq!(state.building(turret).unwrap().focus, Some(first));
+    assert_eq!(focus_entity(&state, turret), Some(first));
 
     for (invalid, reason) in [
         (own_foundry, RejectReason::InvalidTarget),
@@ -116,7 +124,7 @@ fn focus_fire_validation_is_atomic_for_mixed_or_foreign_buildings() {
             0,
             Command::FocusFire {
                 buildings: vec![turret, invalid],
-                target: replacement,
+                target: replacement.into(),
             },
         )]);
         assert!(report.events.contains(&Event::CommandRejected {
@@ -124,7 +132,7 @@ fn focus_fire_validation_is_atomic_for_mixed_or_foreign_buildings() {
             reason,
         }));
         assert_eq!(
-            state.building(turret).unwrap().focus,
+            focus_entity(&state, turret),
             Some(first),
             "a rejected mixed selection partially changed its valid member"
         );
@@ -155,14 +163,14 @@ fn focus_fire_rejects_hidden_and_wrong_domain_targets() {
             0,
             Command::FocusFire {
                 buildings: vec![defense],
-                target: Target::Unit(target),
+                target: Target::Unit(target).into(),
             },
         )]);
         assert!(report.events.contains(&Event::CommandRejected {
             player: PlayerId(0),
             reason: RejectReason::InvalidTarget,
         }));
-        assert_eq!(state.building(defense).unwrap().focus, None);
+        assert_eq!(focus_entity(&state, defense), None);
     }
 }
 
@@ -187,14 +195,14 @@ fn a_reachable_focus_preempts_the_nearest_ordinary_target() {
         0,
         Command::FocusFire {
             buildings: vec![turret],
-            target: Target::Unit(targets[1]),
+            target: Target::Unit(targets[1]).into(),
         },
     )]);
     assert!(report.events.iter().any(|event| matches!(
         event,
         Event::TurretFired {
             turret: fired,
-            target: Target::Unit(target),
+            target: Some(Target::Unit(target)),
             ..
         } if *fired == turret && *target == targets[1]
     )));
@@ -224,21 +232,18 @@ fn an_out_of_range_focus_is_retained_while_the_defense_fires_normally() {
         0,
         Command::FocusFire {
             buildings: vec![turret],
-            target: Target::Unit(targets[1]),
+            target: Target::Unit(targets[1]).into(),
         },
     )]);
     assert!(report.events.iter().any(|event| matches!(
         event,
         Event::TurretFired {
             turret: fired,
-            target: Target::Unit(target),
+            target: Some(Target::Unit(target)),
             ..
         } if *fired == turret && *target == targets[0]
     )));
-    assert_eq!(
-        state.building(turret).unwrap().focus,
-        Some(Target::Unit(targets[1]))
-    );
+    assert_eq!(focus_entity(&state, turret), Some(Target::Unit(targets[1])));
 }
 
 #[test]
@@ -263,7 +268,7 @@ fn focus_clears_as_soon_as_fresh_true_sight_loses_the_target() {
             0,
             Command::FocusFire {
                 buildings: vec![turret],
-                target: Target::Unit(target),
+                target: Target::Unit(target).into(),
             },
         ),
         cmd(
@@ -276,7 +281,7 @@ fn focus_clears_as_soon_as_fresh_true_sight_loses_the_target() {
         ),
     ]);
     run_until(&mut state, 500, |state, _| {
-        state.building(turret).unwrap().focus.is_none()
+        focus_entity(state, turret).is_none()
     });
     assert!(!state.can_see(PlayerId(0), state.unit(target).unwrap().tile()));
 }
@@ -292,12 +297,12 @@ fn lethal_focus_fire_does_not_leave_a_dangling_preference() {
         0,
         Command::FocusFire {
             buildings: vec![turret],
-            target: Target::Unit(target),
+            target: Target::Unit(target).into(),
         },
     )]);
 
     run_until(&mut state, 500, |state, _| state.unit(target).is_none());
-    assert_eq!(state.building(turret).unwrap().focus, None);
+    assert_eq!(focus_entity(&state, turret), None);
 }
 
 #[test]
@@ -320,7 +325,7 @@ fn a_bastion_focuses_a_visible_building_ahead_of_an_ordinary_unit() {
         0,
         Command::FocusFire {
             buildings: vec![bastion],
-            target: Target::Building(target),
+            target: Target::Building(target).into(),
         },
     )]);
     assert!(report.events.iter().any(|event| matches!(
@@ -332,7 +337,7 @@ fn a_bastion_focuses_a_visible_building_ahead_of_an_ordinary_unit() {
         } if *shooter == bastion && *to == aim
     )));
     assert_eq!(
-        state.building(bastion).unwrap().focus,
+        focus_entity(&state, bastion),
         Some(Target::Building(target))
     );
 }
@@ -353,14 +358,14 @@ fn a_direct_fire_turret_can_focus_a_hostile_building() {
         0,
         Command::FocusFire {
             buildings: vec![turret],
-            target: Target::Building(target),
+            target: Target::Building(target).into(),
         },
     )]);
     assert!(report.events.iter().any(|event| matches!(
         event,
         Event::TurretFired {
             turret: fired,
-            target: Target::Building(hit),
+            target: Some(Target::Building(hit)),
             ..
         } if *fired == turret && *hit == target
     )));
@@ -383,7 +388,7 @@ fn focused_defense_does_not_fire_when_the_footprint_aim_lands_on_a_peak() {
         0,
         Command::FocusFire {
             buildings: vec![turret],
-            target: Target::Building(target),
+            target: Target::Building(target).into(),
         },
     )]);
 
@@ -391,13 +396,13 @@ fn focused_defense_does_not_fire_when_the_footprint_aim_lands_on_a_peak() {
         event,
         Event::TurretFired {
             turret: fired,
-            target: Target::Building(hit),
+            target: Some(Target::Building(hit)),
             ..
         } if *fired == turret && *hit == target
     )));
     assert_eq!(state.building(target).unwrap().hp, before);
     assert_eq!(
-        state.building(turret).unwrap().focus,
+        focus_entity(&state, turret),
         Some(Target::Building(target)),
         "cover delays a valid preference instead of clearing it"
     );
@@ -412,7 +417,7 @@ fn missing_focus_field_deserializes_as_no_preference() {
         0,
         Command::FocusFire {
             buildings: vec![turret],
-            target,
+            target: target.into(),
         },
     )]);
     let mut document = serde_json::to_value(&state).unwrap();
@@ -453,18 +458,15 @@ fn peak_obstruction_keeps_focus_but_allows_a_clear_fallback() {
         0,
         Command::FocusFire {
             buildings: vec![turret],
-            target: Target::Unit(targets[1]),
+            target: Target::Unit(targets[1]).into(),
         },
     )]);
     assert!(report.events.iter().any(|event| matches!(
         event,
         Event::TurretFired {
-            target: Target::Unit(target),
+            target: Some(Target::Unit(target)),
             ..
         } if *target == targets[0]
     )));
-    assert_eq!(
-        state.building(turret).unwrap().focus,
-        Some(Target::Unit(targets[1]))
-    );
+    assert_eq!(focus_entity(&state, turret), Some(Target::Unit(targets[1])));
 }

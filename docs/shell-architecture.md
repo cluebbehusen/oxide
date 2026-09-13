@@ -241,7 +241,10 @@ It is legible, not exact; compare `State::hash` for deterministic identity.
 `FogView::capture` is the canonical player-knowledge view shared by live and
 headless servers. It redacts hostile intent and economy, exposes live enemies
 only under true sight, and carries only the sim's ghosts, remembered salvage,
-and anonymous radar contacts.
+and anonymous radar contact tracks. Right-click can target displayed building
+ghosts and radar dots. Attack labels and markers use player knowledge; defense
+focus appears as a target preference cleared by Stop. Blind firing events supply
+coordinates without a victim id, allowing launch and firing feedback on misses.
 
 ## Rendering and assets
 

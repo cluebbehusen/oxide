@@ -405,7 +405,7 @@ fn attack(player: u8, unit: UnitId, victim: UnitId) -> PlayerCommand {
         player: PlayerId(player),
         command: Command::Attack {
             units: vec![unit],
-            target: Target::Unit(victim),
+            target: Target::Unit(victim).into(),
             queue: false,
         },
     }
@@ -578,10 +578,11 @@ fn showcase_state() -> State {
                 if unit.kind.stats().domain != oxide_sim::stats::Domain::Ground {
                     continue;
                 }
-                let aim = match target {
-                    Target::Unit(id) => state.unit(id).unwrap().pos,
-                    Target::Building(id) => state.building(id).unwrap().closest_point_to(unit.pos),
-                } - unit.pos;
+                let aim = state
+                    .attack_view(unit.player, target)
+                    .expect("showcase target is known")
+                    .aim_from(unit.pos)
+                    - unit.pos;
                 let heading = (0..=255u8)
                     .max_by_key(|&step| {
                         let direction = chassis::compass::dir(step);

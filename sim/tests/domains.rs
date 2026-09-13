@@ -359,7 +359,7 @@ fn ground_only_weapons_cannot_answer_air() {
         0,
         Command::Attack {
             units: vec![darter],
-            target: Target::Unit(scuttler),
+            target: Target::Unit(scuttler).into(),
             queue: false,
         },
     )]);
@@ -396,7 +396,7 @@ fn splash_kills_the_cluster_in_one_shell() {
         0,
         Command::Attack {
             units: vec![state.units()[0].id],
-            target: Target::Unit(target),
+            target: Target::Unit(target).into(),
             queue: false,
         },
     )]);
@@ -439,7 +439,7 @@ fn splash_victims_all_turn_on_the_shooter() {
         0,
         Command::Attack {
             units: vec![bombard],
-            target: Target::Unit(s1),
+            target: Target::Unit(s1).into(),
             queue: false,
         },
     )]);
@@ -454,7 +454,10 @@ fn splash_victims_all_turn_on_the_shooter() {
         assert_eq!(
             u.order,
             Order::Attack {
-                target: Target::Unit(bombard),
+                pursue: false,
+                target: state
+                    .attack_objective(u.player, Target::Unit(bombard).into())
+                    .unwrap(),
                 resume: None
             },
             "every splash victim answers the gun that fired"
@@ -477,7 +480,7 @@ fn indirect_fire_arcs_over_rock() {
         0,
         Command::Attack {
             units: vec![bombard],
-            target: Target::Unit(victim),
+            target: Target::Unit(victim).into(),
             queue: false,
         },
     )]);
@@ -544,7 +547,7 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
         0,
         Command::Attack {
             units: vec![bombard],
-            target: Target::Unit(victim),
+            target: Target::Unit(victim).into(),
             queue: false,
         },
     )]);
@@ -585,13 +588,12 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
     assert_eq!(blind_launches, 0, "no eyes, no shells");
     assert_eq!(state.unit(victim).unwrap().hp, hp_after_first);
 
-    // The gun is not broken, just blind: once its crawl brings the
-    // victim inside its own five tiles of sight, the shelling resumes.
-    run_until(&mut state, 400, |_, events| {
-        events
-            .iter()
-            .any(|e| matches!(e, Event::ShellLaunched { .. }))
-    });
+    assert_eq!(state.unit(bombard).unwrap().order, Order::Idle);
+    let stopped = state.unit(bombard).unwrap().pos;
+    for _ in 0..100 {
+        state.tick(&[]);
+    }
+    assert_eq!(state.unit(bombard).unwrap().pos, stopped);
 }
 
 #[test]
@@ -610,7 +612,7 @@ fn attack_orders_on_uncoverable_targets_walk_instead() {
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(harv),
+            target: Target::Unit(harv).into(),
             queue: false,
         },
     )]);
@@ -739,7 +741,7 @@ fn the_sidearm_fights_its_own_war_alongside_the_main_gun() {
         0,
         Command::Attack {
             units: vec![mine],
-            target: Target::Unit(foe),
+            target: Target::Unit(foe).into(),
             queue: false,
         },
     )]);
@@ -753,8 +755,8 @@ fn the_sidearm_fights_its_own_war_alongside_the_main_gun() {
                 && *attacker == mine
             {
                 match target {
-                    Target::Unit(uid) if *uid == foe => ground_hits += 1,
-                    Target::Unit(uid) if *uid == darter => air_hits += 1,
+                    Some(Target::Unit(uid)) if *uid == foe => ground_hits += 1,
+                    Some(Target::Unit(uid)) if *uid == darter => air_hits += 1,
                     _ => {}
                 }
             }
@@ -830,7 +832,7 @@ fn radar_blips_detect_without_identifying_or_authorizing() {
         0,
         Command::Attack {
             units: vec![fighter],
-            target: Target::Unit(intruder),
+            target: Target::Unit(intruder).into(),
             queue: false,
         },
     )]);
@@ -899,7 +901,7 @@ fn splash_hits_the_unseen_but_reveals_nothing() {
         0,
         Command::Attack {
             units: vec![bombard],
-            target: Target::Unit(victim),
+            target: Target::Unit(victim).into(),
             queue: false,
         },
     )]);
@@ -912,7 +914,7 @@ fn splash_hits_the_unseen_but_reveals_nothing() {
             .iter()
             .any(|e| matches!(e, Event::ShellLanded { .. }));
         named_bystander |= report.events.iter().any(
-            |e| matches!(e, Event::AttackHit { target: Target::Unit(u), .. } if *u == bystander),
+            |e| matches!(e, Event::AttackHit { target: Some(Target::Unit(u)), .. } if *u == bystander),
         );
         if landed {
             break;
@@ -965,7 +967,7 @@ fn ground_anti_air_reaches_a_flyer_parked_over_rock() {
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(wisp),
+            target: Target::Unit(wisp).into(),
             queue: false,
         },
     )]);

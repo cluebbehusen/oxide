@@ -10,7 +10,7 @@
 //! with a panic — a stale command (target died in transit) is normal RTS
 //! traffic, not a bug.
 
-use crate::ids::{BuildingId, PlayerId, Target, UnitId};
+use crate::ids::{AttackTarget, BuildingId, PlayerId, UnitId};
 use crate::stats::UnitKind;
 use chassis::grid::TilePos;
 use serde::{Deserialize, Serialize};
@@ -32,12 +32,12 @@ pub enum Command {
         queue: bool,
     },
     /// Attack one enemy. Units that cannot fight walk there instead.
-    /// Rejected unless the issuer can currently see the target.
+    /// Requires a visible enemy, remembered building, or live radar contact.
     Attack {
         /// The units to commit.
         units: Vec<UnitId>,
-        /// An enemy unit or building.
-        target: Target,
+        /// An objective in the issuer's current team knowledge.
+        target: AttackTarget,
         /// Append instead of replace (see [`Command::Move::queue`]).
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
@@ -197,15 +197,20 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
     },
-    /// Give built armed buildings a preferred visible hostile target.
-    /// The preference persists while the target remains valid and in true
-    /// sight. A focused defense still fires at an ordinary target when its
+    /// Give built armed buildings a preferred known hostile objective.
+    /// The preference persists until contact loss, observed invalidation,
+    /// replacement, or ClearFocus. A defense still fires at an ordinary target when its
     /// preference is currently out of reach or behind blocking terrain.
     FocusFire {
         /// The defenses to retask. The sim reads this as a sorted set.
         buildings: Vec<BuildingId>,
-        /// The visible hostile unit or building to prefer.
-        target: Target,
+        /// The visible enemy, remembered building, or radar contact to prefer.
+        target: AttackTarget,
+    },
+    /// Clear owned defenses' targeting preferences and resume automatic fire.
+    ClearFocus {
+        /// Owned completed armed buildings.
+        buildings: Vec<BuildingId>,
     },
     /// Cancel one logical deferred construction site. Every own Harvester
     /// carrying that exact [`crate::state::Order::Found`] promise drops it,

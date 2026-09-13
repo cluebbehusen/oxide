@@ -427,8 +427,22 @@ fn reject_unknown_command_value_fields(
         Command::Move { .. } | Command::AttackMove { .. } | Command::Advance { .. } => {
             reject_unknown_object_fields(wire.get("goal"), "command.goal", &["x", "y"])
         }
-        Command::Attack { .. } | Command::FocusFire { .. } => {
-            reject_unknown_object_fields(wire.get("target"), "command.target", &["kind", "id"])
+        Command::Attack { target, .. } | Command::FocusFire { target, .. } => {
+            reject_unknown_object_fields(wire.get("target"), "command.target", &["kind", "id"])?;
+            if matches!(target, oxide_sim::AttackTarget::RememberedBuilding(_)) {
+                let memory = wire.get("target").and_then(|target| target.get("id"));
+                reject_unknown_object_fields(
+                    memory,
+                    "command.target.id",
+                    &["owner", "building_kind", "anchor"],
+                )?;
+                reject_unknown_object_fields(
+                    memory.and_then(|v| v.get("anchor")),
+                    "command.target.id.anchor",
+                    &["x", "y"],
+                )?;
+            }
+            Ok(())
         }
         Command::Harvest { .. } => {
             reject_unknown_object_fields(wire.get("node"), "command.node", &["x", "y"])
@@ -465,7 +479,8 @@ fn reject_unknown_command_value_fields(
         | Command::Surrender
         | Command::RepairUnit { .. }
         | Command::UpgradeBuilding { .. }
-        | Command::Load { .. } => Ok(()),
+        | Command::Load { .. }
+        | Command::ClearFocus { .. } => Ok(()),
     }
 }
 
@@ -485,6 +500,7 @@ fn reject_unknown_object_fields(
 
 fn command_wire_fields(command: &Command) -> &'static [&'static str] {
     match command {
+        Command::ClearFocus { .. } => &["type", "buildings"],
         Command::Move {
             units: _,
             goal: _,
@@ -788,10 +804,11 @@ mod tests {
             Command::UpgradeBuilding { .. } => 18,
             Command::Load { .. } => 19,
             Command::Unload { .. } => 20,
+            Command::ClearFocus { .. } => 21,
         }
     }
 
-    const COMMAND_VARIANTS: usize = 21;
+    const COMMAND_VARIANTS: usize = 22;
 
     #[test]
     fn an_omitted_screenshot_path_survives_the_roundtrip() {
@@ -931,7 +948,7 @@ mod tests {
             },
             Command::Attack {
                 units: vec![UnitId(2)],
-                target: Target::Building(BuildingId(1)),
+                target: Target::Building(BuildingId(1)).into(),
                 queue: false,
             },
             Command::AttackMove {
@@ -996,7 +1013,7 @@ mod tests {
             },
             Command::FocusFire {
                 buildings: vec![BuildingId(8), BuildingId(7)],
-                target: Target::Unit(UnitId(13)),
+                target: Target::Unit(UnitId(13)).into(),
             },
             Command::CancelFound {
                 kind: BuildingKind::Array,
@@ -1009,6 +1026,9 @@ mod tests {
                 units: vec![UnitId(5), UnitId(6)],
                 transport: UnitId(9),
                 queue: false,
+            },
+            Command::ClearFocus {
+                buildings: vec![BuildingId(0)],
             },
             Command::Unload {
                 transport: UnitId(9),
@@ -1192,6 +1212,14 @@ mod tests {
     #[test]
     fn typos_inside_command_values_are_rejected() {
         for (line, path) in [
+            (
+                r#"{"id":15,"method":"send_command","params":{"player":0,"command":{"type":"attack","units":[1],"target":{"kind":"remembered_building","id":{"owner":1,"building_kind":"reclaimer","anchor":{"x":3,"y":4,"z":0}}}}}}"#,
+                "command.target.id.anchor",
+            ),
+            (
+                r#"{"id":16,"method":"send_command","params":{"player":0,"command":{"type":"focus_fire","buildings":[1],"target":{"kind":"contact","id":0,"domain":"ground"}}}}"#,
+                "command.target",
+            ),
             (
                 r#"{"id":8,"method":"send_command","params":{"player":0,"command":{"type":"move","units":[],"goal":{"x":3,"y":4,"z":99}}}}"#,
                 "command.goal",

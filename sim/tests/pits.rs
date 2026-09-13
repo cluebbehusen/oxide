@@ -160,7 +160,7 @@ fn direct_fire_crosses_the_void_that_rock_would_block() {
         0,
         Command::Attack {
             units: vec![west],
-            target: Target::Unit(east),
+            target: Target::Unit(east).into(),
             queue: false,
         },
     )]);
@@ -188,7 +188,7 @@ fn direct_fire_crosses_the_void_that_rock_would_block() {
         0,
         Command::Attack {
             units: vec![west],
-            target: Target::Unit(east),
+            target: Target::Unit(east).into(),
             queue: false,
         },
     )]);
@@ -222,7 +222,7 @@ fn artillery_arcs_sail_over_the_chasm() {
         0,
         Command::Attack {
             units: vec![gun],
-            target: Target::Unit(victim),
+            target: Target::Unit(victim).into(),
             queue: false,
         },
     )]);
@@ -252,7 +252,7 @@ fn a_flyer_downed_over_the_void_leaves_nothing() {
         0,
         Command::Attack {
             units: vec![flak],
-            target: Target::Unit(wisp),
+            target: Target::Unit(wisp).into(),
             queue: false,
         },
     )]);

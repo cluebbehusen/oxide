@@ -573,7 +573,7 @@ fn destroying_the_supporting_foundry_returns_the_extractor_to_remote_yield() {
         1,
         Command::Attack {
             units: artillery,
-            target: oxide_sim::Target::Building(expansion),
+            target: oxide_sim::Target::Building(expansion).into(),
             queue: false,
         },
     )]);
@@ -629,7 +629,7 @@ fn the_contest_cycle_re_derelicts_and_rebuilds() {
         1,
         Command::Attack {
             units: vec![raider],
-            target: oxide_sim::Target::Building(machine),
+            target: oxide_sim::Target::Building(machine).into(),
             queue: false,
         },
     )]);

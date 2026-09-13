@@ -23,6 +23,12 @@ Request decoding is strict: unknown envelope or method-parameter fields,
 including fields inside commands and injected input events, are errors. A
 misspelled harness instruction cannot appear to succeed.
 
+Attack and focus commands accept the existing unit/building target encodings,
+remembered-building references (`owner`, `building_kind`, `anchor`), and contact
+ids from the issuing seat's fog view. `clear_focus` clears armed defenses'
+target preferences. Fog views retain tile-based radar and add continuous contact
+tracks; anonymous tracks expose neither entity identity nor domain.
+
 ## Development
 
 Run commands from the workspace root:

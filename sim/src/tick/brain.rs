@@ -171,9 +171,20 @@ pub(super) fn run(
             for cd in &mut unit.cooldowns {
                 *cd = cd.saturating_sub(1);
             }
-            if !matches!(unit.order, Order::Attack { .. }) {
-                unit.retract_braces();
-            }
+        }
+        let automatic = matches!(
+            state.unit(id).expect("live unit").order,
+            Order::Idle | Order::AttackMove { .. }
+        );
+        if automatic
+            && combat::automatic_radar(state, index, id, false, events, &mut hits, &mut launches)
+        {
+            continue;
+        }
+        if let Some(unit) = state.unit_mut(id)
+            && !matches!(unit.order, Order::Attack { .. })
+        {
+            unit.retract_braces();
         }
         let order = state.unit(id).expect("just seen").order;
         {
@@ -205,16 +216,21 @@ pub(super) fn run(
                 });
                 harvest(state, danger, id, node, anchor, retiring, events);
             }
-            Order::Attack { target, resume } => attack(
+            Order::Attack {
+                target,
+                resume,
+                pursue,
+            } => combat::attack_known(
                 state,
                 index,
                 &motion,
                 id,
-                target,
-                resume,
-                events,
-                &mut hits,
-                &mut launches,
+                (target, resume, pursue),
+                combat::ShotBuffers {
+                    events,
+                    hits: &mut hits,
+                    launches: &mut launches,
+                },
             ),
             Order::AttackMove { goal } => attack_move(state, index, id, goal, events),
             Order::Advance { goal } => advance(
@@ -240,6 +256,7 @@ pub(super) fn run(
             }
             Order::Land { goal } => land(state, index, id, goal, events),
         }
+        combat::normalize_order(state, id);
     }
     advance_upgrades(state, &mut builds);
     commit_unit_welds(state, field_welds, events, &mut heals);
@@ -260,7 +277,6 @@ mod economy;
 mod locomotion;
 pub(super) mod logistics;
 
-use combat::attack;
 use combat::{MotionSnapshot, advance, land_shells, retaliate, target_standing, turret_fire};
 use economy::{
     advance_upgrades, build, commit_unit_welds, found, harvest, repair, repair_unit, salvage,
@@ -286,6 +302,12 @@ fn resolve_hits(
         match hit.victim {
             Target::Unit(uid) => {
                 if let Some(v) = state.unit_mut(uid) {
+                    if v.hp > 0 && hit.damage > 0 {
+                        events.push(Event::DamageTaken {
+                            player: v.player,
+                            pos: v.pos,
+                        });
+                    }
                     let relevant_hit = v.kind == crate::stats::UnitKind::Harvester;
                     let relevant_loss =
                         hit.damage >= v.hp && v.domain() == crate::stats::Domain::Ground;
@@ -307,6 +329,12 @@ fn resolve_hits(
                     })
                 });
                 if let Some(b) = state.building_mut(bid) {
+                    if b.hp > 0 && hit.damage > 0 {
+                        events.push(Event::DamageTaken {
+                            player: b.player,
+                            pos: b.center(),
+                        });
+                    }
                     let relevant_hit = b.kind == crate::stats::BuildingKind::Reclaimer;
                     let relevant_loss = hit.damage >= b.hp;
                     if b.hp > 0
@@ -899,5 +927,79 @@ fn resolve_founds(state: &mut State, mut founds: Vec<PendingFounding>, events: &
             }
             Err(_) => stall(state, StallReason::NoRoute, events),
         }
+    }
+}
+
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+
+    #[test]
+    fn damage_evidence_survives_same_tick_repair_and_excludes_zero_damage() {
+        let mut state = crate::Scenario::skirmish().build().unwrap();
+        let victim = state.units[0].id;
+        let attacker = state.units.last().unwrap().id;
+        state.units[0].hp -= 10;
+        let (hp, player, pos) = {
+            let unit = state.unit(victim).unwrap();
+            (unit.hp, unit.player, unit.pos)
+        };
+        let hit = PendingHit::along(
+            &state,
+            Target::Unit(attacker),
+            Target::Unit(victim),
+            4,
+            pos,
+            pos,
+        );
+        let heal = PendingUnitHeal {
+            unit: victim,
+            step: 4,
+            player,
+            paid: 0,
+            source: crate::event::UnitRepairSource::FieldWelder { unit: victim },
+        };
+        let mut events = Vec::new();
+        resolve_hits(
+            &mut state,
+            vec![hit],
+            vec![],
+            vec![heal],
+            vec![],
+            &mut events,
+        );
+        assert_eq!(state.unit(victim).unwrap().hp, hp);
+        assert!(
+            matches!(events.first(), Some(Event::DamageTaken { player: owner, pos: at }) if *owner == player && *at == pos)
+        );
+        assert!(events.iter().any(
+            |event| matches!(event, Event::UnitRepaired { unit, amount: 4, .. } if *unit == victim)
+        ));
+
+        let hit = PendingHit::along(
+            &state,
+            Target::Unit(attacker),
+            Target::Unit(victim),
+            0,
+            pos,
+            pos,
+        );
+        events.clear();
+        resolve_hits(&mut state, vec![hit], vec![], vec![], vec![], &mut events);
+        assert!(events.is_empty());
+
+        let building = &state.buildings[0];
+        let (id, hp, player, pos) = (building.id, building.hp, building.player, building.center());
+        let hit = PendingHit::along(
+            &state,
+            Target::Unit(attacker),
+            Target::Building(id),
+            4,
+            pos,
+            pos,
+        );
+        resolve_hits(&mut state, vec![hit], vec![], vec![], vec![], &mut events);
+        assert_eq!(state.building(id).unwrap().hp, hp - 4);
+        assert_eq!(events, vec![Event::DamageTaken { player, pos }]);
     }
 }

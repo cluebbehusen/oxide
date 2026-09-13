@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 /// 15 exposes exact owner-visible progress for the front of each training
 /// queue. Version 16 exposes exact own active repair targets. Version 17 adds
 /// owner-only carried identities separately from available units.
-pub const OBSERVATION_VERSION: u32 = 17;
+pub const OBSERVATION_VERSION: u32 = 18;
 
 /// An own passenger that remains alive but is unavailable for new assignments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +225,9 @@ pub struct Observation {
     /// omniscient builder (it has no unidentified anything). Sorted by
     /// (y, x).
     pub blips: Vec<TilePos>,
+    /// Team-local contacts usable by ordinary attack commands.
+    #[serde(default)]
+    pub contact_tracks: Vec<crate::vision::ContactTrack>,
     /// The seat's faction — which variants of the varied roles it may
     /// train.
     pub faction: Faction,
@@ -273,6 +276,7 @@ impl Default for Observation {
             known_wrecks: Vec::new(),
             salvage_incidents: Vec::new(),
             blips: Vec::new(),
+            contact_tracks: Vec::new(),
             faction: crate::state::Faction::Ferrous,
             my_shells: 0,
             incoming_shells: Vec::new(),
@@ -567,6 +571,7 @@ impl Observation {
         }
         // Blips ride through untouched: tiles only, by construction.
         obs.blips = vision.contacts().to_vec();
+        obs.contact_tracks = vision.tracks().to_vec();
         obs.my_shells = state.shells().iter().filter(|s| s.player == me).count();
         obs.incoming_shells = state
             .shells()
@@ -613,6 +618,7 @@ impl Observation {
                 .map(|incident| incident.tile)
                 .collect(),
             blips: Vec::new(),
+            contact_tracks: Vec::new(),
             faction: state.player(me).faction,
             my_shells: 0,
             incoming_shells: Vec::new(),

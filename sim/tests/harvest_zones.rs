@@ -618,7 +618,7 @@ fn a_hidden_artillery_hit_diverts_autonomous_work_without_revealing_the_gun() {
         1,
         Command::Attack {
             units: vec![bombard],
-            target: Target::Unit(worker),
+            target: Target::Unit(worker).into(),
             queue: false,
         },
     )]);
@@ -700,7 +700,7 @@ fn an_own_loss_retires_a_worker_home_before_it_surfaces_idle() {
             1,
             Command::Attack {
                 units: vec![bombard],
-                target: Target::Building(victim),
+                target: Target::Building(victim).into(),
                 queue: false,
             },
         ),

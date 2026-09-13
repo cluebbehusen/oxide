@@ -112,7 +112,7 @@ fn allied_fighters_ignore_and_cannot_target_each_other() {
         0,
         Command::Attack {
             units: vec![mine],
-            target: Target::Unit(ally),
+            target: Target::Unit(ally).into(),
             queue: false,
         },
     )]);
@@ -145,7 +145,7 @@ fn splash_spares_the_teammate_in_the_blast() {
         0,
         Command::Attack {
             units: vec![bombard],
-            target: Target::Unit(foe),
+            target: Target::Unit(foe).into(),
             queue: false,
         },
     )]);
@@ -235,7 +235,7 @@ fn victory_takes_every_enemy_foundry_and_spectators_stay_muted() {
         0,
         Command::Attack {
             units: guns.clone(),
-            target: Target::Building(east_foundry),
+            target: Target::Building(east_foundry).into(),
             queue: false,
         },
     )]);
@@ -290,7 +290,7 @@ fn victory_takes_every_enemy_foundry_and_spectators_stay_muted() {
         0,
         Command::Attack {
             units: guns,
-            target: Target::Building(east_foundry_2),
+            target: Target::Building(east_foundry_2).into(),
             queue: false,
         },
     )]);

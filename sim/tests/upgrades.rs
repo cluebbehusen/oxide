@@ -393,7 +393,7 @@ fn an_upgrading_works_is_committed_offline_and_mortal() {
         1,
         Command::Attack {
             units: vec![raider],
-            target: oxide_sim::Target::Building(turret),
+            target: oxide_sim::Target::Building(turret).into(),
             queue: false,
         },
     )]);
@@ -459,7 +459,7 @@ fn lethal_fire_wins_an_upgrades_completion_tick() {
         1,
         Command::Attack {
             units: sappers,
-            target: oxide_sim::Target::Building(turret),
+            target: oxide_sim::Target::Building(turret).into(),
             queue: false,
         },
     )]);

@@ -13,7 +13,7 @@ pub mod vision;
 
 pub use command::{Command, PlayerCommand};
 pub use event::{Event, GroundMotion, StallReason, TickReport, UnitRepairSource};
-pub use ids::{BuildingId, PlayerId, Target, UnitId};
+pub use ids::{AttackTarget, BuildingId, ContactId, PlayerId, RememberedBuilding, Target, UnitId};
 pub use scenario::Scenario;
 pub use state::{
     Building, ExtractorIncome, Faction, GameResult, Leash, Order, PlaceRefusal, Player,

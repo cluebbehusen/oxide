@@ -116,7 +116,7 @@ mod tests {
                 player: PlayerId(0),
                 command: Command::Attack {
                     units: vec![UnitId(0)],
-                    target: Target::Building(oxide_sim::BuildingId(2)),
+                    target: Target::Building(oxide_sim::BuildingId(2)).into(),
                     queue: false,
                 },
             }]);
@@ -139,6 +139,9 @@ mod tests {
             check(&releases, &state);
             let mut value = serde_json::to_value(&state).unwrap();
             value["units"] = serde_json::json!([]);
+            for view in value["vision"].as_array_mut().unwrap() {
+                view["tracking"]["tracks"] = serde_json::json!([]);
+            }
             let after_loss: State = serde_json::from_value(value).unwrap();
             let mut releases = ProjectileReleases::default();
             releases.observe(&after_loss, &report.events);

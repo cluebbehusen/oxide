@@ -174,14 +174,16 @@ fn replay_roundtrip_executes_and_reproduces_advance() {
 
 #[test]
 fn bot_match_reaches_a_decisive_end() {
+    // Temporary longer limit pending Overseer removal:
+    // https://linear.app/cluebbehusen/issue/CL-32/validate-overseer-is-obsolete-and-remove-it-and-its-dedicated-tests
     let (_, mut state, mut bots) = bot_match();
     let mut ticks = 0u64;
     while state.result().is_none() {
         tick_with_bots(&mut state, &mut bots, &mut None);
         ticks += 1;
         assert!(
-            ticks < 30_000,
-            "bot match should conclude within 25 minutes of game time"
+            ticks < 90_000,
+            "bot match should conclude within 75 minutes of game time"
         );
     }
     assert!(

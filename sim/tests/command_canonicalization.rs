@@ -40,10 +40,11 @@ fn command_tag(command: &Command) -> usize {
         Command::UpgradeBuilding { .. } => 18,
         Command::Load { .. } => 19,
         Command::Unload { .. } => 20,
+        Command::ClearFocus { .. } => 21,
     }
 }
 
-const COMMAND_VARIANTS: usize = 21;
+const COMMAND_VARIANTS: usize = 22;
 
 /// The verbs that carry a unit list — every one of them owes this file a
 /// duplicate-id row.
@@ -53,7 +54,7 @@ const UNIT_BEARING_TAGS: [usize; 12] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 14, 15, 19];
 const BUILDING_ONLY_TAGS: [usize; 5] = [6, 10, 11, 12, 18];
 
 /// The one verb whose building operand is a canonicalized set.
-const BUILDING_BEARING_TAGS: [usize; 1] = [16];
+const BUILDING_BEARING_TAGS: [usize; 2] = [16, 21];
 
 /// The one verb that addresses a logical site, with no entity list to canonicalize.
 const SITE_ONLY_TAGS: [usize; 1] = [17];
@@ -167,7 +168,7 @@ fn stage() -> Stage {
         1,
         Command::Attack {
             units: vec![raider],
-            target: Target::Building(turret),
+            target: Target::Building(turret).into(),
             queue: false,
         },
     )]);
@@ -245,7 +246,7 @@ fn families(stage: &Stage) -> Vec<Family> {
             actor: guard,
             make: Box::new(move |units, queue| Command::Attack {
                 units,
-                target: enemy,
+                target: enemy.into(),
                 queue,
             }),
         },

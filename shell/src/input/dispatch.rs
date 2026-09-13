@@ -46,6 +46,23 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if !game.selection.units.is_empty() {
                 let units = game.selection.units.clone();
                 game.issue(Command::Stop { units });
+            } else if game.selection.buildings.iter().any(|id| {
+                game.state.building(*id).is_some_and(|b| {
+                    b.player == game.human && b.built && !b.stats().weapons.is_empty()
+                })
+            }) {
+                let buildings = game
+                    .selection
+                    .buildings
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        game.state.building(*id).is_some_and(|b| {
+                            b.player == game.human && b.built && !b.stats().weapons.is_empty()
+                        })
+                    })
+                    .collect();
+                game.issue(Command::ClearFocus { buildings });
             } else if let [id] = game.selection.buildings.as_slice()
                 && let Some(tier) = game
                     .state
