@@ -357,6 +357,12 @@ orderings. Airworks aircraft instead spawn at the authoritative center of the
 open roof bay and follow ordinary idle, rally, or player-issued orders from
 there.
 
+Autonomous harvest replacement preserves worker distance, safe route length,
+source amount, anchor distance and source kind as its economic priorities. Exact
+ties use coordinates oriented by the worker's approach to the work-zone anchor.
+A worker standing on that anchor uses its hull bearing instead, so mirrored
+workers choose mirrored sources without depending on seat or unit ids.
+
 Group `Move`, `Advance`, and `AttackMove` commands likewise resolve a blocked
 center and spread per-unit destinations in the approaching body's half-turn
 frame. The same orientation governs both decisions: mirroring a group, its
@@ -462,6 +468,12 @@ per-tick budgets and alternating order. No future journey, service timetable or
 contact-steering coordinator controls ground travel. Motor speed is serialized
 and validated; observational motion reports split propulsion from collision
 correction without affecting state or hashes.
+
+Collision corrections require every tile touching the proposed position to be
+passable in the body's domain. An exact grid edge touches two tiles and a corner
+touches four; neither face of a blocking tile admits an exact-edge correction.
+This contact rule is separate from ordinary `TilePos::containing` lookup and
+retains the same displacement budget and deterministic pair order.
 
 Ground weapons require alignment within two compass steps before firing.
 Sentinel, Warden, and Lancer have independent serialized `turret_heading`

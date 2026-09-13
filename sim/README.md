@@ -90,11 +90,11 @@ with active or queued salvage commitments.
 
 Outcome-relevant geometry is also fair under a map half-turn. Fixed-point vector
 scaling, equal-cost paths, group-goal snapping and spreading, footprint
-doorsteps, ground-production spawns, and perfectly stacked collision separation
-use owner-local ranks and query-, footprint-, or map-relative frames instead of
-global entity ids or an absolute screen corner. Airworks aircraft spawn at the
-authoritative center of the open roof bay, then obey their ordinary orders from
-there.
+doorsteps, ground-production spawns, autonomous harvest replacement, and
+perfectly stacked collision separation use owner-local ranks and query-,
+footprint-, or map-relative frames instead of global entity ids or an absolute
+screen corner. Airworks aircraft spawn at the authoritative center of the open
+roof bay, then obey their ordinary orders from there.
 
 Defensive route evaluation retains A* allocation buffers per thread, clearing
 reachability evidence between query contexts. Successful endpoint paths are

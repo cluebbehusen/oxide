@@ -506,6 +506,15 @@ fn envelope_bound(state: &State, domain: crate::stats::Domain, to: Vec2Fx) -> Ve
     }
 }
 
+fn collision_position_open(state: &State, domain: crate::stats::Domain, pos: Vec2Fx) -> bool {
+    let tile = TilePos::containing(pos);
+    // An exact edge touches both cells (a corner touches four). Testing only
+    // the containing cell admits one face of an obstacle but rejects its mirror.
+    let edge_x = i32::from(pos.x.frac() == Fx::ZERO);
+    let edge_y = i32::from(pos.y.frac() == Fx::ZERO);
+    (-edge_y..=0).all(|dy| (-edge_x..=0).all(|dx| state.passable_for(domain, tile.offset(dx, dy))))
+}
+
 /// A unit that is standing still to work — extracting, welding, or
 /// holding fire on a target — resists shoving; movers yield around it.
 fn is_anchored(unit: &crate::state::Unit) -> bool {
@@ -872,7 +881,7 @@ fn relaxation_pass(
         if step_j > Fx::ZERO {
             for cand in dirs_j.into_iter().flatten() {
                 let to = envelope_bound(state, dom_j, pos_j + cand * step_j);
-                if state.passable_for(dom_j, TilePos::containing(to)) {
+                if collision_position_open(state, dom_j, to) {
                     state.units[j].pos = to;
                     spent[j] += step_j;
                     break;
@@ -883,7 +892,7 @@ fn relaxation_pass(
         if step_i > Fx::ZERO {
             for cand in dirs_i.into_iter().flatten() {
                 let to = envelope_bound(state, dom_i, pos_i + cand * step_i);
-                if state.passable_for(dom_i, TilePos::containing(to)) {
+                if collision_position_open(state, dom_i, to) {
                     state.units[i].pos = to;
                     spent[i] += step_i;
                     break;
@@ -901,6 +910,146 @@ mod tests {
     use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
     use crate::state::Faction;
     use crate::stats::UnitKind;
+
+    #[test]
+    fn mirrored_collision_pushes_agree_at_rock_faces_and_corners() {
+        let radius = UnitKind::Sentinel.stats().radius;
+        let separation = Fx::lit("0.5");
+        let step = ((radius + radius - separation) * chassis::fx::HALF).min(COLLISION_MAX_STEP);
+        let extent = Vec2Fx::new(Fx::from_num(40), Fx::from_num(24));
+        for (boundary, inward) in [
+            (
+                Vec2Fx::new(Fx::lit("12.5"), Fx::from_num(8)),
+                Vec2Fx::new(Fx::ZERO, Fx::ONE),
+            ),
+            (
+                Vec2Fx::new(Fx::from_num(13), Fx::lit("7.5")),
+                Vec2Fx::new(Fx::ONE, Fx::ZERO),
+            ),
+            (
+                Vec2Fx::new(Fx::from_num(13), Fx::from_num(8)),
+                Vec2Fx::new(Fx::ZERO, Fx::ONE),
+            ),
+        ] {
+            for offset in [-Fx::DELTA, Fx::ZERO, Fx::DELTA] {
+                let mut scenario = Scenario::skirmish();
+                let mut rows = vec![vec!['.'; 40]; 24];
+                for (x, y, tile) in [(4, 4, '1'), (34, 18, '2'), (12, 7, '#'), (27, 16, '#')] {
+                    rows[y][x] = tile;
+                }
+                scenario.map = rows
+                    .into_iter()
+                    .map(|row| row.into_iter().collect())
+                    .collect();
+                scenario.units = (0..4)
+                    .map(|i| UnitSpec {
+                        player: i / 2,
+                        kind: UnitKind::Sentinel,
+                        x: 15 + i32::from(i),
+                        y: 10,
+                    })
+                    .collect();
+                let mut state = scenario.build().unwrap();
+                let first = boundary + inward * (step + offset);
+                let second = first + inward * separation;
+                for (unit, position) in
+                    state
+                        .units
+                        .iter_mut()
+                        .zip([first, second, extent - first, extent - second])
+                {
+                    unit.pos = position;
+                }
+                let ranks = owner_local_ranks(&state);
+                let mut index = UnitIndex::new();
+                relaxation_pass(
+                    &mut state,
+                    false,
+                    &[Vec2Fx::ZERO; 4],
+                    &mut index,
+                    &ranks,
+                    &mut vec![],
+                );
+                for (a, b) in [(0, 2), (1, 3)] {
+                    assert_eq!(
+                        state.units[b].pos,
+                        extent - state.units[a].pos,
+                        "boundary={boundary:?}, offset={offset}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn collision_boundaries_respect_domain_and_all_touching_obstacles() {
+        use crate::stats::Domain;
+        for terrain in ['#', '^', 's'] {
+            let mut scenario = Scenario::skirmish();
+            let mut rows = vec![vec!['.'; 40]; 24];
+            rows[4][4] = '1';
+            rows[18][34] = '2';
+            rows[7][12] = terrain;
+            rows[16][27] = terrain;
+            scenario.map = rows
+                .into_iter()
+                .map(|row| row.into_iter().collect())
+                .collect();
+            scenario.units.clear();
+            let state = scenario.build().unwrap();
+            let extent = Vec2Fx::new(Fx::from_num(40), Fx::from_num(24));
+            for (edge, direction) in [
+                (
+                    Vec2Fx::new(Fx::lit("12.5"), Fx::from_num(8)),
+                    Vec2Fx::new(Fx::ZERO, Fx::ONE),
+                ),
+                (
+                    Vec2Fx::new(Fx::from_num(13), Fx::lit("7.5")),
+                    Vec2Fx::new(Fx::ONE, Fx::ZERO),
+                ),
+                (
+                    Vec2Fx::new(Fx::from_num(13), Fx::from_num(8)),
+                    Vec2Fx::new(Fx::ONE, Fx::ONE),
+                ),
+            ] {
+                for delta in [-Fx::DELTA, Fx::ZERO, Fx::DELTA] {
+                    let pos = edge + direction * delta;
+                    for domain in [Domain::Ground, Domain::Air] {
+                        let expected =
+                            delta > Fx::ZERO || (domain == Domain::Air && terrain != '^');
+                        assert_eq!(collision_position_open(&state, domain, pos), expected);
+                        assert_eq!(
+                            collision_position_open(&state, domain, extent - pos),
+                            expected
+                        );
+                    }
+                }
+            }
+            for pos in [
+                Vec2Fx::new(Fx::from_num(6), Fx::from_num(5)),
+                Vec2Fx::new(Fx::from_num(6), Fx::from_num(6)),
+            ] {
+                assert!(!collision_position_open(&state, Domain::Ground, pos));
+                assert!(!collision_position_open(
+                    &state,
+                    Domain::Ground,
+                    extent - pos
+                ));
+                assert!(collision_position_open(&state, Domain::Air, pos));
+                assert!(collision_position_open(&state, Domain::Air, extent - pos));
+            }
+            assert!(collision_position_open(
+                &state,
+                Domain::Ground,
+                TilePos::new(20, 12).center()
+            ));
+            assert!(collision_position_open(
+                &state,
+                Domain::Ground,
+                Vec2Fx::new(Fx::from_num(20), Fx::from_num(12))
+            ));
+        }
+    }
 
     #[test]
     fn shallow_air_bearing_does_not_alternate_across_the_goal_ray() {
