@@ -3730,6 +3730,18 @@ fn first_duplicate<T: Copy + PartialEq>(values: &[T]) -> Option<T> {
         .map(|pair| pair[0])
 }
 
+/// Necessary capital beside a voluntary construction purchase. A current
+/// Sentinel enqueue can satisfy the soft guard; it cannot discharge a hard
+/// residual floor. This admission bound must not become a proposal debit.
+pub(in crate::bot) fn voluntary_construction_admission_reserve(
+    voluntary_guard: u32,
+    minimum_residual_scrap: u32,
+) -> u32 {
+    voluntary_guard
+        .min(UnitKind::Sentinel.stats().cost)
+        .max(minimum_residual_scrap)
+}
+
 fn tile_key(tile: TilePos) -> (i32, i32) {
     (tile.y, tile.x)
 }
@@ -4021,6 +4033,113 @@ mod tests {
     ) -> InvestmentProposal<&'static str> {
         proposal.claims_mut().producer_jobs = jobs;
         proposal
+    }
+
+    #[test]
+    fn reserve_prefilter_preserves_defense_and_exact_sentinel_budget_boundaries() {
+        let producer = BuildingId(7);
+        for committed in [0u32, 50, 190] {
+            for cost in [30u32, 40, 90, 100] {
+                for guard in [0u32, 90, 180] {
+                    for floor in [0u32, 40, 110] {
+                        let threshold = committed
+                            + cost
+                            + voluntary_construction_admission_reserve(guard, floor);
+                        for bank in [
+                            committed,
+                            threshold - 1,
+                            threshold,
+                            threshold + 1,
+                            threshold + 90,
+                        ] {
+                            for lane in 0..3 {
+                                let producers = match lane {
+                                    0 => vec![],
+                                    1 => vec![producer_fixture(
+                                        producer,
+                                        0,
+                                        vec![UnitKind::Sentinel],
+                                    )],
+                                    _ => vec![timed_producer_fixture(
+                                        producer,
+                                        0,
+                                        1,
+                                        200,
+                                        vec![0, 0, 0, 100, 200],
+                                        vec![UnitKind::Sentinel],
+                                    )],
+                                };
+                                let cap = capacity(bank, 0, vec![], producers);
+                                let obligations = vec![ImportedObligation {
+                                    class: ObligationClass::PaidWork,
+                                    accepted_at: 0,
+                                    key: ObligationKey::PaidConstruction(BuildingId(20)),
+                                    claims: bundle(
+                                        committed,
+                                        vec![],
+                                        vec![],
+                                        vec![],
+                                        vec![],
+                                        vec![],
+                                    ),
+                                }];
+                                let mut proposals = vec![
+                                    defense(
+                                        BuildingKind::Turret,
+                                        TilePos::new(12, 12),
+                                        cost,
+                                        ordinary_case(),
+                                    )
+                                    .with_voluntary_scrap_guard(guard)
+                                    .with_minimum_residual_scrap(floor),
+                                ];
+                                if lane != 0 {
+                                    proposals.push(
+                                        with_jobs(
+                                            standing(UnitKind::Sentinel, 0, ordinary_case()),
+                                            vec![ProducerJobClaim::immediate(
+                                                UnitKind::Sentinel,
+                                                0,
+                                                1_000,
+                                                vec![producer],
+                                            )],
+                                        )
+                                        .satisfies_voluntary_scrap_guard_within(2),
+                                    );
+                                }
+                                let original = allocate(
+                                    &cap,
+                                    obligations.clone(),
+                                    proposals.clone(),
+                                    AllocationPersonality::default(),
+                                )
+                                .unwrap();
+                                if bank < threshold {
+                                    proposals.remove(0);
+                                }
+                                let filtered = allocate(
+                                    &cap,
+                                    obligations,
+                                    proposals,
+                                    AllocationPersonality::default(),
+                                )
+                                .unwrap();
+                                assert_eq!(
+                                    accepted_keys(&original),
+                                    accepted_keys(&filtered),
+                                    "bank={bank} committed={committed} cost={cost} guard={guard} floor={floor} lane={lane}"
+                                );
+                                assert_eq!(original.producer_schedule, filtered.producer_schedule);
+                                assert_eq!(
+                                    original.voluntary_scrap_guard_satisfied,
+                                    filtered.voluntary_scrap_guard_satisfied
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
