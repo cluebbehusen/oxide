@@ -100,7 +100,8 @@ behavior is credible or fun.
 
 ## Validation
 
-Run focused tests while developing, then all Rust gates before finishing:
+Run focused tests while developing. The full validation gates run locally or
+through the PR's CI:
 
 ```sh
 cargo fmt --all --check
@@ -111,6 +112,11 @@ npx --yes prettier@3.9.6 --check "**/*.md"
 cargo cov-unit
 cargo cov-combined
 ```
+
+Do not poll GitHub PR checks unless the user explicitly asks. While the PR's CI
+is running a check, do not run the same check locally unless the user explicitly
+asks. Stop any duplicate local run and leave that validation to CI. Report
+pending checks as pending; do not wait for or repeatedly fetch their status.
 
 Do not weaken a gate to pass it. Fix the implementation or discuss why the
 contract is wrong.

@@ -1059,6 +1059,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 visible_range: Some(visible),
                 hover: w.ui_hover(),
                 chrome: None,
+                panel_regions: None,
             };
         }
         Screen::Playing => ("playing", None),
@@ -1073,6 +1074,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 visible_range: Some([0, 4]),
                 hover: results.hover(),
                 chrome: None,
+                panel_regions: None,
             };
         }
         Screen::Replays(shelf) => ("replays", Some(&shelf.menu)),
@@ -1096,6 +1098,13 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
         items: menu.map_or_else(Vec::new, |menu| menu.items.clone()),
         visible_range: menu.map(Menu::visible_range),
         hover: menu.and_then(Menu::hover),
+        panel_regions: matches!(screen, Screen::Playing).then(|| {
+            app.game
+                .layout
+                .get()
+                .panel_regions
+                .map(|r| [r.x, r.y, r.w, r.h])
+        }),
         chrome: matches!(screen, Screen::Playing).then(|| {
             let l = app.game.layout.get();
             let m = l.minimap;
