@@ -1,4 +1,4 @@
-use super::{DefenseDomain, GroundKnowledge, PATH_EXPANSION_CAP, PlacementFootprint};
+use super::{DefenseDomain, GroundKnowledge, PlacementFootprint};
 use chassis::{grid::TilePos, path::AstarScratch};
 use std::{
     cell::RefCell,
@@ -76,13 +76,12 @@ impl<'a, 'b> CandidateRoutes<'a, 'b> {
             scratch.clear_search_evidence();
             return Some(path.clone());
         }
-        let path = chassis::path::astar_with_scratch(
-            self.ground.obs.map_width,
-            self.ground.obs.map_height,
+        let path = super::routing_cache::path(
+            self.ground,
             start,
             goal,
-            |tile| self.ground.open(tile, Some(self.candidate), self.domain),
-            PATH_EXPANSION_CAP,
+            Some(self.candidate),
+            self.domain,
             scratch,
         );
         // Failed searches also carry reachability evidence; do not cache them

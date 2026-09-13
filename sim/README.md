@@ -94,10 +94,15 @@ global entity ids or an absolute screen corner. Airworks aircraft spawn at the
 authoritative center of the open roof bay, then obey their ordinary orders from
 there.
 
-Defensive route evaluation retains A* allocation buffers per thread, clearing
-reachability evidence between query contexts. Successful endpoint paths are
-reused only within one candidate footprint, map snapshot, and movement domain;
-failed searches retain their exhaustion or expansion-cap semantics.
+Defensive route evaluation retains A* allocation buffers per thread and bounded
+route answers per bot. Exact known-passability generations share successful
+endpoint paths and lazy distance bounds across defense and economic valuation.
+Temporary build layouts have separate retention from normal boards, and ground
+changes do not invalidate air routes. Actual paths keep the existing A* tie
+rules; failed searches retain their exhaustion or expansion-cap semantics.
+Voluntary defense rejects construction kinds that cannot meet the current
+allocation reserve before searching for sites. Final allocation still owns the
+exact funding and compatibility decision.
 
 ## Development
 
