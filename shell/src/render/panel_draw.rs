@@ -831,17 +831,43 @@ pub(crate) fn draw_panel(
         } else {
             rect.x + 4.0 * s
         };
-        let names = card_title_lines(
-            &card.title,
-            |text| measure_text(text, None, (14.0 * s) as u16, 1.0).width,
-            rect.x + rect.w - name_x - 4.0 * s,
-        );
+        let title_top = rect.y + if horizontal { 4.0 } else { 32.0 } * s;
+        let title_bottom = if let Some(cost) = card.cost {
+            let dims = measure_text(cost.to_string(), None, (16.0 * s) as u16, 1.0);
+            rect.y + rect.h - 5.0 * s - dims.offset_y - 3.0 * s
+        } else {
+            rect.y + rect.h - 4.0 * s
+        };
+        let title_width = rect.x + rect.w - name_x - 4.0 * s;
+        let mut title_size = 14.0 * s;
+        let (names, ascent) = loop {
+            let names = card_title_lines(
+                &card.title,
+                |text| measure_text(text, None, title_size as u16, 1.0).width,
+                title_width,
+            );
+            let mut ascent = 0.0_f32;
+            let mut descent = 0.0_f32;
+            let mut width = 0.0_f32;
+            for name in &names {
+                let dims = measure_text(name, None, title_size as u16, 1.0);
+                ascent = ascent.max(dims.offset_y);
+                descent = descent.max(dims.height - dims.offset_y);
+                width = width.max(dims.width);
+            }
+            let height = ascent + descent + names.len().saturating_sub(1) as f32 * title_size;
+            if (height <= title_bottom - title_top && width <= title_width) || title_size <= 8.0 * s
+            {
+                break (names, ascent);
+            }
+            title_size -= 0.5 * s;
+        };
         for (line_index, name) in names.iter().enumerate() {
             draw_text(
                 name,
                 name_x,
-                rect.y + if horizontal { 19.0 } else { 41.0 } * s + line_index as f32 * 14.0 * s,
-                14.0 * s,
+                title_top + ascent + line_index as f32 * title_size,
+                title_size,
                 TEXT_PRIMARY,
             );
         }
