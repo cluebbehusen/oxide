@@ -1730,31 +1730,41 @@ pub(super) fn attack(
         }
     };
     if let Err(reason) = reached {
-        let unit = state.unit_mut(id).expect("caller checked");
-        // A tethered chase that cannot route breaks off home quietly:
-        // abandoning its own acquisition is the guard's decision, not
-        // a player order failing — no stall toast.
-        if resume.is_none()
-            && let Some(leash) = unit.leash
-        {
-            unit.order = Order::Move { goal: leash.anchor };
-            unit.path = None;
-            return;
-        }
-        let (player, pos) = (unit.player, unit.pos);
-        // A chase that could not be prosecuted leaves the unit stationed,
-        // so its next idle acquisition tethers and the leash cooldown
-        // paces re-acquisition instead of the same refused chase firing
-        // every tick.
-        unit.settled = crate::stats::LEASH_STATION_TICKS;
-        unit.clear_program();
-        events.push(Event::OrderStalled {
-            unit: id,
-            player,
-            pos,
-            reason,
-        });
+        stall_attack(state, id, resume, reason, events);
     }
+}
+
+fn stall_attack(
+    state: &mut State,
+    id: UnitId,
+    resume: Option<TilePos>,
+    reason: StallReason,
+    events: &mut Vec<Event>,
+) {
+    let unit = state.unit_mut(id).expect("caller checked");
+    // A tethered chase that cannot route breaks off home quietly:
+    // abandoning its own acquisition is the guard's decision, not
+    // a player order failing — no stall toast.
+    if resume.is_none()
+        && let Some(leash) = unit.leash
+    {
+        unit.order = Order::Move { goal: leash.anchor };
+        unit.path = None;
+        return;
+    }
+    let (player, pos) = (unit.player, unit.pos);
+    // A chase that could not be prosecuted leaves the unit stationed,
+    // so its next idle acquisition tethers and the leash cooldown
+    // paces re-acquisition instead of the same refused chase firing
+    // every tick.
+    unit.settled = crate::stats::LEASH_STATION_TICKS;
+    unit.clear_program();
+    events.push(Event::OrderStalled {
+        unit: id,
+        player,
+        pos,
+        reason,
+    });
 }
 
 /// The sidearm's opportunist victim: the nearest hostile unit the weapon

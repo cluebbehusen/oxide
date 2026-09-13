@@ -100,6 +100,18 @@ fn known_hostile_target_at(
     if let Some((target, at, domain)) = visible_hostile_target_at(game, world, tile) {
         return Some((target.into(), at, Some(domain)));
     }
+    if let Some(track) = game
+        .my_vision()
+        .tracks()
+        .iter()
+        .find(|track| track.visible_unit.is_none() && track.tile == tile)
+    {
+        return Some((
+            oxide_sim::AttackTarget::Contact(track.id),
+            vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5),
+            None,
+        ));
+    }
     if let Some(ghost) = game.my_vision().ghosts().iter().find(|ghost| {
         let (w, h) = ghost.kind.base_stats().size;
         tile.x >= ghost.anchor.x
@@ -117,17 +129,7 @@ fn known_hostile_target_at(
             Some(oxide_sim::stats::Domain::Ground),
         ));
     }
-    game.my_vision()
-        .tracks()
-        .iter()
-        .find(|track| track.visible_unit.is_none() && track.tile == tile)
-        .map(|track| {
-            (
-                oxide_sim::AttackTarget::Contact(track.id),
-                vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5),
-                None,
-            )
-        })
+    None
 }
 
 /// Digits are contextual: an open build palette spends them on

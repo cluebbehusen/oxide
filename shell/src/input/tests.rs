@@ -5355,3 +5355,62 @@ fn right_click_uses_building_memory_and_anonymous_contacts_and_stop_clears_focus
     game.state.tick(&commands);
     assert!(game.state.building(defense).unwrap().focus.is_none());
 }
+
+#[test]
+fn radar_contact_above_a_building_ghost_wins_for_units_and_defenses() {
+    let mut scenario = knowledge_attack_game().scenario.clone();
+    scenario.units[0].kind = UnitKind::Talon;
+    scenario.units[2].x = 16;
+    scenario.units[2].y = 16;
+    scenario.buildings[1].kind = oxide_sim::BuildingKind::FlakTurret;
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+    let gun = game.state.units()[0].id;
+    let scout = game.state.units()[1].id;
+    let enemy = game.state.units()[2].id;
+    game.state.tick(&[PlayerCommand {
+        player: game.human,
+        command: Command::Move {
+            units: vec![scout],
+            goal: TilePos::new(2, 3),
+            queue: false,
+        },
+    }]);
+    for _ in 0..200 {
+        game.state.tick(&[]);
+    }
+    let tile = game.state.unit(enemy).unwrap().tile();
+    assert!(!game.my_vision().visible(tile));
+    assert!(
+        game.my_vision()
+            .ghosts()
+            .iter()
+            .any(|ghost| ghost.anchor == tile)
+    );
+    let contact = game
+        .my_vision()
+        .tracks()
+        .iter()
+        .find(|track| track.tile == tile && track.visible_unit.is_none())
+        .unwrap()
+        .id;
+    let screen = game
+        .camera
+        .to_screen(vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5));
+    game.selection.units = vec![gun];
+    context_order(&mut game, screen, false);
+    assert!(matches!(game.pending.last().unwrap().command,
+        Command::Attack { target: oxide_sim::AttackTarget::Contact(id), .. } if id == contact));
+    game.pending.clear();
+    game.selection.units.clear();
+    game.selection.buildings = vec![
+        game.state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == oxide_sim::BuildingKind::FlakTurret)
+            .unwrap()
+            .id,
+    ];
+    context_order(&mut game, screen, false);
+    assert!(matches!(game.pending.last().unwrap().command,
+        Command::FocusFire { target: oxide_sim::AttackTarget::Contact(id), .. } if id == contact));
+}

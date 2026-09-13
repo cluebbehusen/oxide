@@ -729,3 +729,230 @@ fn explicit_radar_attack_routes_to_a_firing_stand_beside_impassable_ground() {
     );
     assert_ne!(state.unit(gun).unwrap().pos, before);
 }
+
+#[test]
+fn unreachable_blind_attacks_stall_once_and_clear_the_program() {
+    for kind in [UnitKind::Avalanche, UnitKind::Sapper] {
+        for remembered in [false, true] {
+            let mut scenario = open_arena(40, 30, vec![unit(0, kind, 5, 10)]);
+            let mut rows: Vec<Vec<char>> = scenario
+                .map
+                .iter()
+                .map(|row| row.chars().collect())
+                .collect();
+            rows[27][37] = '.';
+            rows[27][1] = '2';
+            for row in &mut rows {
+                row[16] = '^';
+            }
+            scenario.map = rows
+                .into_iter()
+                .map(|row| row.into_iter().collect())
+                .collect();
+            scenario.buildings = vec![BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Array,
+                x: 10,
+                y: 18,
+            }];
+            if remembered {
+                scenario.units.push(unit(0, UnitKind::Harvester, 22, 13));
+                scenario.buildings.push(BuildingSpec {
+                    player: 1,
+                    kind: BuildingKind::Reclaimer,
+                    x: 22,
+                    y: 10,
+                });
+            } else {
+                scenario.units.push(unit(1, UnitKind::Gnat, 22, 10));
+            }
+            let mut state = scenario.build().unwrap();
+            let gun = state.units()[0].id;
+            let target = if remembered {
+                let building = state
+                    .buildings()
+                    .iter()
+                    .find(|b| b.kind == BuildingKind::Reclaimer)
+                    .unwrap()
+                    .id;
+                let target = state
+                    .attack_objective(PlayerId(0), Target::Building(building).into())
+                    .unwrap();
+                let scout = state.units()[1].id;
+                state.tick(&[cmd(
+                    0,
+                    Command::Move {
+                        units: vec![scout],
+                        goal: TilePos::new(34, 25),
+                        queue: false,
+                    },
+                )]);
+                for _ in 0..250 {
+                    state.tick(&[]);
+                }
+                assert!(
+                    state
+                        .attack_view(PlayerId(0), target)
+                        .unwrap()
+                        .entity
+                        .is_none()
+                );
+                target
+            } else {
+                blip(&state)
+            };
+            let start = state.unit(gun).unwrap().pos;
+            let report = state.tick(&[
+                cmd(
+                    0,
+                    Command::Attack {
+                        units: vec![gun],
+                        target,
+                        queue: false,
+                    },
+                ),
+                cmd(
+                    0,
+                    Command::Move {
+                        units: vec![gun],
+                        goal: TilePos::new(4, 10),
+                        queue: true,
+                    },
+                ),
+            ]);
+            assert!(report.events.iter().any(|event| matches!(event, Event::OrderStalled { unit, reason: oxide_sim::event::StallReason::NoRoute, .. } if *unit == gun)), "{kind:?} remembered={remembered}: {:?}", report.events);
+            for _ in 0..20 {
+                assert!(!state.tick(&[]).events.iter().any(
+                    |event| matches!(event, Event::OrderStalled { unit, .. } if *unit == gun)
+                ));
+                state.validate_invariants().unwrap();
+            }
+            let unit = state.unit(gun).unwrap();
+            assert_eq!(unit.order, Order::Idle);
+            assert!(unit.path.is_none());
+            assert!(unit.queue.is_empty());
+            assert_eq!(unit.pos, start);
+        }
+    }
+}
+
+#[test]
+fn legacy_focus_initializes_tracks_without_losing_its_preference() {
+    let mut scenario = open_arena(32, 24, vec![unit(1, UnitKind::Harvester, 12, 10)]);
+    scenario.players[0].team = Some(0);
+    scenario.players[1].team = Some(1);
+    let ally = scenario.players[0].clone();
+    scenario.players.push(ally);
+    scenario.map[20].replace_range(1..2, "3");
+    scenario.buildings = vec![
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Bastion,
+            x: 8,
+            y: 10,
+        },
+        BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Reclaimer,
+            x: 12,
+            y: 12,
+        },
+    ];
+    let state = scenario.build().unwrap();
+    let defense = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Bastion)
+        .unwrap()
+        .id;
+    let building = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Reclaimer)
+        .unwrap()
+        .id;
+    for target in [
+        Target::Unit(state.units()[0].id),
+        Target::Building(building),
+    ] {
+        let mut data = serde_json::to_value(&state).unwrap();
+        for view in data["vision"].as_array_mut().unwrap() {
+            view.as_object_mut().unwrap().remove("tracking");
+        }
+        let row = data["buildings"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|b| b["id"] == serde_json::json!(defense))
+            .unwrap();
+        row["focus"] = serde_json::to_value(target).unwrap();
+        let mut loaded: oxide_sim::State = serde_json::from_value(data).unwrap();
+        loaded.validate_invariants().unwrap();
+        assert_eq!(
+            loaded.vision(PlayerId(0)).tracks(),
+            loaded.vision(PlayerId(2)).tracks()
+        );
+        assert_eq!(
+            loaded
+                .attack_view(PlayerId(0), target.into())
+                .unwrap()
+                .entity,
+            Some(target)
+        );
+        let round_trip: oxide_sim::State =
+            serde_json::from_value(serde_json::to_value(&loaded).unwrap()).unwrap();
+        assert_eq!(loaded.hash(), round_trip.hash());
+        let report = loaded.tick(&[]);
+        assert!(loaded.building(defense).unwrap().focus.is_some());
+        assert!(report.events.iter().any(|event| matches!(event, Event::ShellLaunched { shooter: Target::Building(id), target: Some(victim), .. } if *id == defense && *victim == target)));
+    }
+}
+
+#[test]
+fn legacy_focus_still_rejects_friendly_hidden_and_incompatible_units() {
+    for case in ["friendly", "hidden", "air"] {
+        let enemy_kind = if case == "air" {
+            UnitKind::Gnat
+        } else {
+            UnitKind::Harvester
+        };
+        let mut scenario = open_arena(
+            32,
+            24,
+            vec![unit(
+                if case == "friendly" { 0 } else { 1 },
+                enemy_kind,
+                if case == "hidden" { 24 } else { 12 },
+                10,
+            )],
+        );
+        scenario.buildings = vec![BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Bastion,
+            x: 8,
+            y: 10,
+        }];
+        let state = scenario.build().unwrap();
+        let defense = state
+            .buildings()
+            .iter()
+            .find(|b| b.kind == BuildingKind::Bastion)
+            .unwrap()
+            .id;
+        let mut data = serde_json::to_value(&state).unwrap();
+        for view in data["vision"].as_array_mut().unwrap() {
+            view.as_object_mut().unwrap().remove("tracking");
+        }
+        data["buildings"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|b| b["id"] == serde_json::json!(defense))
+            .unwrap()["focus"] = serde_json::to_value(Target::Unit(state.units()[0].id)).unwrap();
+        let error = serde_json::from_value::<oxide_sim::State>(data).unwrap_err();
+        assert!(
+            error.to_string().contains("invalid defense focus"),
+            "{case}: {error}"
+        );
+    }
+}

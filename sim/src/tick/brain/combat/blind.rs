@@ -299,14 +299,16 @@ pub(in crate::tick::brain) fn automatic_radar(
     {
         return false;
     }
-    let Some(view) = radar_in_range(state, u.player, u.pos, stats.domain, &stats.weapons[0]) else {
+    let Some((slot, view)) = stats.weapons.iter().enumerate().find_map(|(slot, weapon)| {
+        radar_in_range(state, u.player, u.pos, stats.domain, weapon).map(|view| (slot, view))
+    }) else {
         return false;
     };
     fire_unit(
         state,
         id,
         view,
-        0,
+        slot,
         moving,
         ShotBuffers {
             events,
@@ -314,7 +316,7 @@ pub(in crate::tick::brain) fn automatic_radar(
             launches,
         },
     );
-    fire_sidearms(state, index, id, 0, hits, events);
+    fire_sidearms(state, index, id, slot, hits, events);
     true
 }
 
@@ -456,7 +458,9 @@ pub(in crate::tick::brain) fn attack_known(
         pos.dist_sq(aim) < stats.weapons[i].minimum_range * stats.weapons[i].minimum_range
     });
     if inside_dead_zone {
-        route_to_firing_stand(state, id, view, &stats.weapons[primary.expect("weapon")]);
+        if !route_to_firing_stand(state, id, view, &stats.weapons[primary.expect("weapon")]) {
+            stall_attack(state, id, resume, StallReason::NoRoute, events);
+        }
         return;
     }
     let routed = if let Some((anchor, size)) = view.footprint
@@ -481,16 +485,20 @@ pub(in crate::tick::brain) fn attack_known(
     } else {
         false
     };
-    if !routed {
-        if let Some(primary) = primary {
-            route_to_firing_stand(state, id, view, &stats.weapons[primary]);
-        } else {
-            state.unit_mut(id).expect("live unit").path = None;
-        }
+    if !routed
+        && !primary
+            .is_some_and(|primary| route_to_firing_stand(state, id, view, &stats.weapons[primary]))
+    {
+        stall_attack(state, id, resume, StallReason::NoRoute, events);
     }
 }
 
-fn route_to_firing_stand(state: &mut State, id: UnitId, view: AttackView, weapon: &WeaponStats) {
+fn route_to_firing_stand(
+    state: &mut State,
+    id: UnitId,
+    view: AttackView,
+    weapon: &WeaponStats,
+) -> bool {
     let unit = state.unit(id).expect("live unit");
     let (kind, from, start) = (unit.kind, unit.pos, unit.tile());
     let domain = kind.stats().domain;
@@ -502,7 +510,7 @@ fn route_to_firing_stand(state: &mut State, id: UnitId, view: AttackView, weapon
         .as_ref()
         .is_some_and(|path| legal(state, path.goal))
     {
-        return;
+        return true;
     }
     let (anchor, (width, height)) = view
         .footprint
@@ -529,7 +537,9 @@ fn route_to_firing_stand(state: &mut State, id: UnitId, view: AttackView, weapon
             next: 0,
         })
     });
+    let found = routed.is_some();
     state.unit_mut(id).expect("live unit").path = routed;
+    found
 }
 
 pub(in crate::tick::brain) fn normalize_order(state: &mut State, id: UnitId) {
@@ -554,6 +564,79 @@ mod tests {
     use super::*;
     use crate::UnitKind;
     use crate::scenario::UnitSpec;
+
+    #[test]
+    fn automatic_radar_uses_a_secondary_solution_without_pursuit() {
+        let mut scenario = crate::Scenario::skirmish();
+        scenario.units = vec![
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 5,
+                y: 7,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Gnat,
+                x: 14,
+                y: 8,
+            },
+        ];
+        let mut rows = vec![vec!['.'; 40]; 30];
+        rows[1][1] = '1';
+        rows[27][37] = '2';
+        scenario.map = rows
+            .into_iter()
+            .map(|row| row.into_iter().collect())
+            .collect();
+        scenario.buildings = vec![crate::scenario::BuildingSpec {
+            player: 0,
+            kind: crate::BuildingKind::Array,
+            x: 5,
+            y: 16,
+        }];
+        let mut state = scenario.build().unwrap();
+        // Retain radar-only observations to exercise reach beyond the current roster's sight.
+        state.units[0].pos = TilePos::new(12, 6).center();
+        state.units[0].heading = 32;
+        state.units[1].pos = TilePos::new(30, 20).center();
+        let gun = state.units[0].id;
+        let start = state.units[0].pos;
+        assert!(
+            radar_in_range(
+                &state,
+                PlayerId(0),
+                start,
+                Domain::Ground,
+                &UnitKind::Sentinel.stats().weapons[0]
+            )
+            .is_none()
+        );
+        let mut index = super::super::super::super::spatial::UnitIndex::new();
+        index.rebuild(&state.units);
+        let mut events = Vec::new();
+        let mut hits = Vec::new();
+        let mut launches = Vec::new();
+        assert!(automatic_radar(
+            &mut state,
+            &index,
+            gun,
+            false,
+            &mut events,
+            &mut hits,
+            &mut launches
+        ));
+        assert!(events.iter().any(|event| matches!(event,
+            Event::AttackHit { attacker, weapon: 1, target: None, .. } if *attacker == gun)));
+        assert_eq!(state.units[0].cooldowns[0], 0);
+        assert_eq!(
+            state.units[0].cooldowns[1],
+            UnitKind::Sentinel.stats().weapons[1].cooldown_ticks
+        );
+        assert_eq!(state.units[0].pos, start);
+        assert_eq!(state.units[0].order, Order::Idle);
+        assert!(state.units[0].path.is_none());
+    }
 
     #[test]
     fn automatic_contact_yields_to_sight_but_explicit_contact_keeps_preference() {

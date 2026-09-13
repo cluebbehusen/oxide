@@ -972,6 +972,22 @@ pub(crate) fn refresh(state: &mut State) {
     state.vision = vision;
 }
 
+/// Initialize pre-contact snapshots from their validated, stored observations.
+pub(crate) fn initialize_legacy_tracking(state: &mut State) -> bool {
+    let mut vision = std::mem::take(&mut state.vision);
+    let mut initialized = false;
+    for (index, view) in vision.iter_mut().enumerate() {
+        if view.tracking.next_id == 0 && view.tracking.tracks.is_empty() {
+            let mut tracking = std::mem::take(&mut view.tracking);
+            tracking.refresh(view, state, PlayerId(index as u8));
+            initialized |= tracking.next_id != 0;
+            view.tracking = tracking;
+        }
+    }
+    state.vision = vision;
+    initialized
+}
+
 #[cfg(test)]
 mod danger_tests {
     use super::*;

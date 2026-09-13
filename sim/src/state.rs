@@ -1176,17 +1176,21 @@ impl State {
                 if !self.valid_attack_reference(b.player, target) {
                     return Err(E::UnmintedBuildingFocus(b.id));
                 }
-                let current = self.attack_view(b.player, target);
+                let current_domain = match target.entity() {
+                    Some(entity) => self
+                        .visible_hostile_target_domain(b.player, entity)
+                        .map(Some),
+                    None => self.attack_view(b.player, target).map(|view| view.domain),
+                };
                 let live_entity = target.entity().is_some_and(|entity| match entity {
                     Target::Unit(id) => self.unit(id).is_some(),
                     Target::Building(id) => self.building(id).is_some(),
                 });
                 if !b.built
                     || stats.weapons.is_empty()
-                    || ((live_entity || target.entity().is_none()) && current.is_none())
-                    || current.is_some_and(|view| {
-                        view.domain
-                            .is_some_and(|domain| !stats.weapons[0].targets.covers(domain))
+                    || ((live_entity || target.entity().is_none()) && current_domain.is_none())
+                    || current_domain.is_some_and(|domain| {
+                        domain.is_some_and(|domain| !stats.weapons[0].targets.covers(domain))
                     })
                 {
                     return Err(E::InvalidBuildingFocus(b.id));
@@ -2478,6 +2482,11 @@ impl<'de> Deserialize<'de> for State {
         state
             .validate_invariants()
             .map_err(serde::de::Error::custom)?;
+        if crate::vision::initialize_legacy_tracking(&mut state) {
+            state
+                .validate_invariants()
+                .map_err(serde::de::Error::custom)?;
+        }
         Ok(state)
     }
 }
