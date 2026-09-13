@@ -917,14 +917,14 @@ pub(crate) fn refresh(state: &mut State) {
                 return true;
             }
             // Ordinary sight cannot prove that a buried mine has vanished.
-            // An unfinished mine is observable, so its live record replaces
-            // the previous memory just like any other construction site.
+            // A visible replacement from the mine's team proves its removal:
+            // that team cannot place over its own charge. Hostile scaffolds
+            // can overlap a concealed mine and do not disprove the memory.
             ghost.kind.is_stealthy()
                 && !state.charge_detected_at(PlayerId(index as u8), ghost.anchor)
                 && !state.buildings.iter().any(|b| {
-                    b.anchor == ghost.anchor
-                        && b.kind == ghost.kind
-                        && b.player == ghost.owner
+                    b.contains(ghost.anchor)
+                        && !state.hostile(ghost.owner, b.player)
                         && state.building_apparent(PlayerId(index as u8), b)
                 })
         });

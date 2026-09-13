@@ -598,3 +598,309 @@ fn construction_trips_a_mine_even_when_the_first_work_rounds_to_zero_hp() {
     assert_eq!(state.player(PlayerId(0)).scrap, 970);
     roundtrip(&state);
 }
+
+#[test]
+fn artillery_hits_the_scaffold_above_a_concealed_mine() {
+    for mined in [false, true] {
+        let mut scenario = open_arena_with(
+            40,
+            24,
+            vec![
+                unit(0, UnitKind::Harvester, 5, 8),
+                unit(0, UnitKind::Harvester, 14, 6),
+                unit(2, UnitKind::Bombard, 20, 8),
+            ],
+            |rows| rows[20][1] = '3',
+        );
+        let mut third = scenario.players[0].clone();
+        third.name = "Third".into();
+        scenario.players.push(third);
+        scenario.players[0].scrap = 1000;
+        if mined {
+            scenario.buildings.push(BuildingSpec {
+                player: 1,
+                kind: BuildingKind::ScuttleCharge,
+                x: SITE.x,
+                y: SITE.y,
+            });
+        }
+        let mut state = scenario.build().unwrap();
+        let worker = state.units()[0].id;
+        let gun = state.units()[2].id;
+        build(&mut state, false);
+        let site = state
+            .buildings()
+            .iter()
+            .find(|b| b.kind == BuildingKind::Barricade)
+            .unwrap()
+            .id;
+        assert!(
+            state
+                .buildings()
+                .iter()
+                .filter(|b| b.kind.is_stealthy())
+                .all(|b| !state.building_apparent(PlayerId(2), b))
+        );
+        let report = state.tick(&[
+            cmd(
+                0,
+                Command::Stop {
+                    units: vec![worker],
+                },
+            ),
+            cmd(
+                2,
+                Command::Attack {
+                    units: vec![gun],
+                    target: oxide_sim::Target::Building(site).into(),
+                    queue: false,
+                },
+            ),
+        ]);
+        assert!(
+            !report
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::CommandRejected { .. }))
+        );
+        let mut landed = false;
+        for _ in 0..180 {
+            let before = state.building(site).unwrap().hp;
+            let report = state.tick(&[]);
+            if report
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::ShellLanded { player, .. } if *player == PlayerId(2)))
+            {
+                assert_eq!(state.building(site).unwrap().hp, before - 45);
+                assert!(!state.buildings().iter().any(|b| b.kind.is_stealthy()));
+                assert!(
+                    !report
+                        .events
+                        .iter()
+                        .any(|e| matches!(e, Event::ChargeDetonated { .. }))
+                );
+                landed = true;
+                break;
+            }
+        }
+        assert!(landed);
+        roundtrip(&state);
+    }
+}
+
+#[test]
+fn a_visible_replacement_by_the_mines_team_clears_its_memory() {
+    for (owner, kind, anchor) in [
+        (1, BuildingKind::Barricade, SITE),
+        (2, BuildingKind::Fabricator, SITE.offset(-1, 0)),
+    ] {
+        let mut scenario = open_arena_with(
+            40,
+            24,
+            vec![
+                unit(0, UnitKind::Harvester, 14, 6),
+                unit(1, UnitKind::Harvester, 16, 8),
+                unit(2, UnitKind::Harvester, 18, 10),
+            ],
+            |rows| rows[1][37] = '3',
+        );
+        scenario.players[1].team = Some(1);
+        scenario.players[1].scrap = 1000;
+        let mut ally = scenario.players[1].clone();
+        ally.name = "Ally".into();
+        scenario.players.push(ally);
+        scenario.buildings.push(BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Fabricator,
+            x: 25,
+            y: 12,
+        });
+        let mut state = scenario.build().unwrap();
+        let builder = state.units()[1].id;
+        let replacement_builder = state.units()[owner as usize].id;
+        state.tick(&[cmd(
+            1,
+            Command::Build {
+                units: vec![builder],
+                kind: BuildingKind::ScuttleCharge,
+                anchor: SITE,
+                queue: false,
+                defer: false,
+            },
+        )]);
+        let mine = state
+            .buildings()
+            .iter()
+            .find(|b| b.kind.is_stealthy())
+            .unwrap()
+            .id;
+        run_until(&mut state, 100, |s, _| s.building(mine).unwrap().built);
+        let viewer = PlayerId(0);
+        assert!(!state.building_apparent(viewer, state.building(mine).unwrap()));
+        let mut intelligence = oxide_sim::bot::StrategicIntelligence::new();
+        intelligence.update(&oxide_sim::bot::Observation::fog_honest(&state, viewer));
+        state.tick(&[cmd(
+            1,
+            Command::Salvage {
+                units: vec![builder],
+                building: mine,
+                queue: false,
+            },
+        )]);
+        run_until(&mut state, 200, |s, _| s.building(mine).is_none());
+        assert!(
+            state
+                .vision(viewer)
+                .ghosts()
+                .iter()
+                .any(|g| g.kind.is_stealthy())
+        );
+        let report = state.tick(&[cmd(
+            owner,
+            Command::Build {
+                units: vec![replacement_builder],
+                kind,
+                anchor,
+                queue: false,
+                defer: false,
+            },
+        )]);
+        assert!(
+            !report
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::CommandRejected { .. }))
+        );
+        assert!(
+            !state
+                .vision(viewer)
+                .ghosts()
+                .iter()
+                .any(|g| g.kind.is_stealthy())
+        );
+        let observation = oxide_sim::bot::Observation::fog_honest(&state, viewer);
+        assert!(
+            !observation
+                .enemy_buildings
+                .iter()
+                .any(|b| b.kind.is_stealthy())
+        );
+        intelligence.update(&observation);
+        assert!(
+            !intelligence
+                .buildings()
+                .iter()
+                .any(|b| b.kind.is_stealthy())
+        );
+        let contact = intelligence
+            .buildings()
+            .iter()
+            .find(|b| b.anchor == anchor)
+            .unwrap();
+        assert_eq!(contact.kind, kind);
+        assert_eq!(contact.evidence, oxide_sim::bot::ContactEvidence::Current);
+        assert!(contact.id.is_some());
+        roundtrip(&state);
+    }
+}
+
+#[test]
+fn a_hostile_scaffold_does_not_disprove_a_remembered_mine() {
+    let mut scenario = open_arena_with(
+        40,
+        24,
+        vec![
+            unit(0, UnitKind::Harvester, 14, 6),
+            unit(1, UnitKind::Harvester, 16, 8),
+            unit(2, UnitKind::Harvester, 5, 18),
+        ],
+        |rows| rows[1][37] = '3',
+    );
+    let mut third = scenario.players[0].clone();
+    third.name = "Third".into();
+    third.scrap = 1000;
+    scenario.players.push(third);
+    scenario.players[1].scrap = 1000;
+    scenario.buildings.push(BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Fabricator,
+        x: 25,
+        y: 12,
+    });
+    let mut state = scenario.build().unwrap();
+    let mine_builder = state.units()[1].id;
+    let site_builder = state.units()[2].id;
+    state.tick(&[cmd(
+        1,
+        Command::Build {
+            units: vec![mine_builder],
+            kind: BuildingKind::ScuttleCharge,
+            anchor: SITE,
+            queue: false,
+            defer: false,
+        },
+    )]);
+    let mine = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind.is_stealthy())
+        .unwrap()
+        .id;
+    run_until(&mut state, 100, |s, _| s.building(mine).unwrap().built);
+    let remembered = *state
+        .vision(PlayerId(0))
+        .ghosts()
+        .iter()
+        .find(|g| g.anchor == SITE)
+        .unwrap();
+    state.tick(&[cmd(
+        2,
+        Command::Move {
+            units: vec![site_builder],
+            goal: TilePos::new(14, 11),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| {
+        s.unit(site_builder).unwrap().order == Order::Idle
+    });
+    assert!(state.vision(PlayerId(2)).visible(SITE));
+    assert!(
+        !state
+            .vision(PlayerId(2))
+            .ghosts()
+            .iter()
+            .any(|g| g.kind.is_stealthy())
+    );
+    let report = state.tick(&[cmd(
+        2,
+        Command::Build {
+            units: vec![site_builder],
+            kind: BuildingKind::Barricade,
+            anchor: SITE,
+            queue: false,
+            defer: false,
+        },
+    )]);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::CommandRejected { .. }))
+    );
+    assert_eq!(state.buildings_at(SITE).count(), 2);
+    assert!(state.vision(PlayerId(0)).ghosts().contains(&remembered));
+    let obs = oxide_sim::bot::Observation::fog_honest(&state, PlayerId(0));
+    assert!(
+        obs.enemy_buildings
+            .iter()
+            .any(|b| b.anchor == SITE && b.kind.is_stealthy() && !b.seen)
+    );
+    assert!(
+        obs.enemy_buildings
+            .iter()
+            .any(|b| b.anchor == SITE && b.kind == BuildingKind::Barricade && b.seen)
+    );
+    roundtrip(&state);
+}

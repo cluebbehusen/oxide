@@ -387,20 +387,22 @@ site when the worker arrives.
 Completed enemy Scuttle Charges remain concealed without detector coverage;
 unfinished charges are visible under ordinary sight. A witnessed charge retains
 its last-seen marker after concealment, even on visible ground, without
-revealing its current hp or completion. Only detection or observed removal
-clears that memory. Known live or remembered charges block placement. An
-undiscovered charge allows the same immediate or deferred order as empty ground;
-an unstarted paid site can temporarily overlap it. Discovery cancels that site's
-active and queued construction commitments and refunds its full price. Deferred
-unpaid claims are removed without a charge. Unrelated queued orders survive
-cancellation.
+revealing its current hp or completion. Detection, observed removal, or a
+visible replacement covering the mine's tile from its own team clears that
+memory. Known live or remembered charges block placement. An undiscovered charge
+allows the same immediate or deferred order as empty ground; an unstarted paid
+site can temporarily overlap it. Discovery cancels that site's active and queued
+construction commitments and refunds its full price. Deferred unpaid claims are
+removed without a charge. Unrelated queued orders survive cancellation.
 
 The first actual crew work over an undiscovered armed charge triggers its blast
 before construction hp or completion resolves. The new site is destroyed; nearby
 hostile ground units and charges take the ordinary mine damage. Ground movement
 retains its existing post-movement trigger. Construction triggers resolve in
 mine-id order after the volley; a charge destroyed by the volley or an earlier
-blast does not fire. Multiple workers cannot multiply one detonation.
+blast does not fire. Multiple workers cannot multiply one detonation. An
+artillery impact on an overlapping scaffold hits the scaffold directly; the
+buried charge remains vulnerable to the shell's ordinary splash damage.
 
 An unfinished tier-zero site decays on a fixed cadence only when no living own
 construction-capable worker has an active or queued commitment to build it. An
