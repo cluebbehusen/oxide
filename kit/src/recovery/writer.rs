@@ -1,0 +1,437 @@
+use super::*;
+use oxide_sim::Command;
+use std::{
+    io::BufWriter,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        mpsc::{self, SyncSender},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+const QUEUE_BYTES: usize = 1024 * 1024;
+const FLUSH_BYTES: usize = 64 * 1024;
+
+/// Nonblocking recording health; durable progress can lag live progress.
+#[derive(Debug, Clone, Serialize)]
+pub struct WriterStatus {
+    /// Last completed tick acknowledged after fsync.
+    pub durable_tick: u64,
+    /// Pending command memory reservation.
+    pub pending_bytes: usize,
+    /// A durable clean-close record has been published.
+    pub clean: bool,
+    /// First capture failure. The intact older prefix remains available.
+    pub error: Option<String>,
+}
+#[derive(Default)]
+struct Shared {
+    durable: AtomicU64,
+    pending: AtomicUsize,
+    stopped: AtomicBool,
+    clean: AtomicBool,
+    error: Mutex<Option<String>>,
+}
+impl Shared {
+    fn fail(&self, error: impl ToString) {
+        self.stopped.store(true, Ordering::Release);
+        if let Ok(mut slot) = self.error.lock()
+            && slot.is_none()
+        {
+            *slot = Some(error.to_string());
+        }
+    }
+}
+struct Queued {
+    event: Event,
+    bytes: usize,
+}
+
+/// One session's bounded command sink. Dropping it preserves an interrupted record.
+/// Disk work belongs to its worker; gameplay uses only `try_send` and atomic reservations.
+pub struct RecoveryWriter {
+    directory: PathBuf,
+    sender: SyncSender<Queued>,
+    shared: Arc<Shared>,
+}
+impl RecoveryWriter {
+    /// Start a fresh recording from an already resolved replay prefix.
+    /// Directory initialization and baseline serialization run on the worker.
+    pub fn start(root: PathBuf, mut base: GameReplay, tick: u64) -> Result<Self> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let session = format!(
+            "session-{:020}-{}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+        base.meta.ticks = Some(tick);
+        let directory = root.join(&session);
+        let header = Header {
+            session,
+            build: BuildIdentity::default(),
+            base,
+        };
+        let shared = Arc::new(Shared::default());
+        let worker_shared = shared.clone();
+        let worker_directory = directory.clone();
+        let (sender, receiver) = mpsc::sync_channel::<Queued>(4096);
+        std::thread::Builder::new()
+            .name("oxide-recovery".into())
+            .spawn(move || {
+                let mut lease = None;
+                if let Err(error) = run(
+                    &root,
+                    &worker_directory,
+                    header,
+                    receiver,
+                    &worker_shared,
+                    &mut lease,
+                ) {
+                    worker_shared.fail(format!("{error:#}"));
+                }
+                let status = snapshot(&worker_shared);
+                if lease.is_some() {
+                    let _ = chassis::fsx::write_atomic(
+                        worker_directory.join("status.json"),
+                        |writer| {
+                            serde_json::to_writer(writer, &status).map_err(std::io::Error::other)
+                        },
+                    );
+                }
+            })?;
+        Ok(Self {
+            directory,
+            sender,
+            shared,
+        })
+    }
+    /// Directory containing this recording and its diagnostic sidecars.
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+    /// Atomically sampled writer progress. Never waits for disk I/O.
+    pub fn status(&self) -> WriterStatus {
+        snapshot(&self.shared)
+    }
+    /// Freeze the command batch before invoking the authoritative tick.
+    pub fn prepared(&self, tick: u64, commands: &[PlayerCommand]) {
+        let bytes = commands.iter().fold(256usize, |total, command| {
+            total.saturating_add(command_bytes(&command.command))
+        });
+        if self.reserve(bytes) {
+            self.send(Queued {
+                event: Event::Prepared {
+                    tick,
+                    commands: commands.to_vec(),
+                },
+                bytes,
+            });
+        }
+    }
+    /// Mark successful tick completion; presentation failures cannot undo this boundary.
+    pub fn completed(&self, tick: u64) {
+        if self.reserve(256) {
+            self.send(Queued {
+                event: Event::Completed { tick },
+                bytes: 256,
+            });
+        }
+    }
+    /// Request a durable clean close after the ordinary save succeeded.
+    /// Callers may poll status during shutdown; this method never waits.
+    pub fn finish(&self, tick: u64) {
+        if self.reserve(256) {
+            self.send(Queued {
+                event: Event::Clean { tick },
+                bytes: 256,
+            });
+            self.shared.stopped.store(true, Ordering::Release);
+        }
+    }
+    fn reserve(&self, bytes: usize) -> bool {
+        if self.shared.stopped.load(Ordering::Acquire) {
+            return false;
+        }
+        if self
+            .shared
+            .pending
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
+                old.checked_add(bytes).filter(|n| *n <= QUEUE_BYTES)
+            })
+            .is_err()
+        {
+            self.shared
+                .fail("recovery queue is full; recording stopped at its intact prefix");
+            return false;
+        }
+        true
+    }
+    fn send(&self, queued: Queued) {
+        if let Err(error) = self.sender.try_send(queued) {
+            self.shared.pending.fetch_sub(
+                match error {
+                    mpsc::TrySendError::Full(q) | mpsc::TrySendError::Disconnected(q) => q.bytes,
+                },
+                Ordering::AcqRel,
+            );
+            self.shared
+                .fail("recovery writer unavailable; recording stopped");
+        }
+    }
+}
+fn snapshot(shared: &Shared) -> WriterStatus {
+    WriterStatus {
+        durable_tick: shared.durable.load(Ordering::Acquire),
+        pending_bytes: shared.pending.load(Ordering::Acquire),
+        clean: shared.clean.load(Ordering::Acquire),
+        error: shared.error.try_lock().ok().and_then(|error| error.clone()),
+    }
+}
+fn command_bytes(command: &Command) -> usize {
+    // Conservative accounting covers cloned vectors, enum storage and queue overhead.
+    let (ids, points) = match command {
+        Command::Move { units, .. }
+        | Command::Attack { units, .. }
+        | Command::AttackMove { units, .. }
+        | Command::Harvest { units, .. }
+        | Command::Stop { units }
+        | Command::Build { units, .. }
+        | Command::Repair { units, .. }
+        | Command::Salvage { units, .. }
+        | Command::RepairUnit { units, .. }
+        | Command::Advance { units, .. }
+        | Command::Load { units, .. } => (units.len(), 0),
+        Command::Patrol { units, waypoints } => (units.len(), waypoints.len()),
+        Command::FocusFire { buildings, .. } | Command::ClearFocus { buildings } => {
+            (buildings.len(), 0)
+        }
+        Command::Train { .. }
+        | Command::Cancel { .. }
+        | Command::CancelTrain { .. }
+        | Command::SetRally { .. }
+        | Command::Surrender
+        | Command::CancelFound { .. }
+        | Command::UpgradeBuilding { .. }
+        | Command::Unload { .. } => (0, 0),
+    };
+    1024usize
+        .saturating_add(ids.saturating_mul(16))
+        .saturating_add(points.saturating_mul(64))
+}
+
+fn run(
+    root: &Path,
+    directory: &Path,
+    header: Header,
+    receiver: mpsc::Receiver<Queued>,
+    shared: &Shared,
+    lease_guard: &mut Option<File>,
+) -> Result<()> {
+    std::fs::create_dir_all(root)?;
+    let budget = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join("budget.lock"))?;
+    budget.lock()?;
+    prune(root);
+    ensure!(
+        managed_size(root) < MANAGED_BYTES.saturating_sub(1024 * 1024),
+        "recovery storage budget exhausted"
+    );
+    std::fs::create_dir(directory)?;
+    let lease = File::options()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(directory.join("lease"))?;
+    lease.lock()?;
+    *lease_guard = Some(lease);
+    budget.unlock()?;
+    header.base.validate(Some(SIM_VERSION))?;
+    ensure!(
+        header
+            .base
+            .meta
+            .ticks
+            .is_some_and(|tick| tick <= MAX_REPLAY_TICKS),
+        "recovery base tick limit"
+    );
+    let mut buffer = Vec::from(MAGIC.as_slice());
+    write_frame(&mut buffer, &header)?;
+    ensure!(
+        buffer.len() as u64 <= MAX_BYTES,
+        "recovery baseline too large"
+    );
+    let file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(directory.join("recovery.bin"))?;
+    #[cfg(unix)]
+    File::open(directory)?.sync_all()?;
+    let mut file = BufWriter::new(file);
+    let mut total = 0;
+    let mut tick = header.base.meta.ticks.unwrap_or(0);
+    let mut prepared = false;
+    let mut count = header.base.commands.len();
+    let mut sequence = 0;
+    let mut last_flush = Instant::now();
+    flush(
+        root,
+        &budget,
+        &mut file,
+        &mut buffer,
+        &mut total,
+        tick,
+        shared,
+    )?;
+    loop {
+        let message = receiver.recv_timeout(Duration::from_millis(250));
+        match message {
+            Ok(queued) => {
+                shared.pending.fetch_sub(queued.bytes, Ordering::AcqRel);
+                match &queued.event {
+                    Event::Prepared { tick: at, commands } => {
+                        ensure!(
+                            *at == tick && !prepared && tick < MAX_REPLAY_TICKS,
+                            "invalid recovery preparation"
+                        );
+                        count = count.saturating_add(commands.len());
+                        ensure!(
+                            count <= chassis::replay::MAX_REPLAY_COMMANDS,
+                            "recovery command limit"
+                        );
+                        prepared = true;
+                    }
+                    Event::Completed { tick: at } => {
+                        ensure!(*at == tick + 1 && prepared, "invalid recovery completion");
+                        tick = *at;
+                        prepared = false;
+                    }
+                    Event::Clean { tick: at } => {
+                        ensure!(*at == tick && !prepared, "invalid recovery close")
+                    }
+                }
+                let clean = matches!(queued.event, Event::Clean { .. });
+                write_frame(
+                    &mut buffer,
+                    &Record {
+                        session: header.session.clone(),
+                        sequence,
+                        event: queued.event,
+                    },
+                )?;
+                sequence += 1;
+                if clean {
+                    flush(
+                        root,
+                        &budget,
+                        &mut file,
+                        &mut buffer,
+                        &mut total,
+                        tick,
+                        shared,
+                    )?;
+                    shared.clean.store(true, Ordering::Release);
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                flush(
+                    root,
+                    &budget,
+                    &mut file,
+                    &mut buffer,
+                    &mut total,
+                    tick,
+                    shared,
+                )?;
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if !buffer.is_empty()
+            && (buffer.len() >= FLUSH_BYTES || last_flush.elapsed() >= Duration::from_secs(1))
+        {
+            flush(
+                root,
+                &budget,
+                &mut file,
+                &mut buffer,
+                &mut total,
+                tick,
+                shared,
+            )?;
+            last_flush = Instant::now();
+        }
+    }
+    Ok(())
+}
+fn flush(
+    root: &Path,
+    budget: &File,
+    file: &mut BufWriter<File>,
+    buffer: &mut Vec<u8>,
+    total: &mut u64,
+    tick: u64,
+    shared: &Shared,
+) -> Result<()> {
+    if buffer.is_empty() {
+        return Ok(());
+    }
+    ensure!(
+        total.saturating_add(buffer.len() as u64) <= MAX_BYTES,
+        "recovery journal reached its size limit"
+    );
+    budget.lock()?;
+    let result = (|| -> Result<()> {
+        ensure!(
+            managed_size(root).saturating_add(buffer.len() as u64) <= MANAGED_BYTES,
+            "managed recording storage limit"
+        );
+        file.write_all(buffer)?;
+        file.flush()?;
+        file.get_ref().sync_all()?;
+        #[cfg(unix)]
+        File::open(root)?.sync_all()?;
+        *total += buffer.len() as u64;
+        buffer.clear();
+        shared.durable.store(tick, Ordering::Release);
+        Ok(())
+    })();
+    budget.unlock()?;
+    result
+}
+fn managed_size(root: &Path) -> u64 {
+    session_directories(root)
+        .iter()
+        .flat_map(|directory| std::fs::read_dir(directory).into_iter().flatten())
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .sum()
+}
+fn prune(root: &Path) {
+    let mut directories = session_directories(root);
+    directories.sort();
+    let mut remaining = directories.len();
+    for directory in directories {
+        if remaining < 3 && managed_size(root) < MANAGED_BYTES.saturating_sub(MAX_BYTES) {
+            break;
+        }
+        let Some(_lease) = inactive(&directory) else {
+            continue;
+        };
+        // Only our valid recordings are retention candidates.
+        if inspect(&directory).is_ok() && std::fs::remove_dir_all(&directory).is_ok() {
+            remaining -= 1;
+        }
+    }
+}

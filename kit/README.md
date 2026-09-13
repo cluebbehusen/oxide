@@ -16,6 +16,9 @@ while reusable game-independent primitives stay in `chassis`.
   Batch workers that already run matches concurrently use `serially` to avoid
   adding bot threads to a saturated workload.
 
+- `recovery` keeps a bounded incremental command journal, distinguishes prepared
+  commands from completed ticks, and exports verified replay prefixes with build
+  provenance. Its worker handles disk durability without blocking the caller.
 - `load_replay` owns bounded Oxide replay loading and version-scoped setup
   compatibility.
 - `runner` executes scenarios and replays headlessly through the same
