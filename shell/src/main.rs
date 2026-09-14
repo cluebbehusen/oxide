@@ -11,6 +11,7 @@ mod camera;
 mod config;
 mod debug_server;
 mod diagnostic_report;
+mod entity_lod;
 mod frame_profile;
 mod game;
 mod input;
@@ -30,7 +31,6 @@ mod theme;
 mod track_motion;
 mod tutorial;
 mod typography;
-mod unit_lod;
 
 use clap::Parser;
 use macroquad::prelude::*;

@@ -669,20 +669,7 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
 pub(crate) fn draw_extractor_frames(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
     for &frame in game.state.map().extractor_frames() {
-        let known = game.all_seeing()
-            || (0..2).any(|dy| (0..2).any(|dx| game.my_vision().explored(frame.offset(dx, dy))));
-        if !known {
-            continue;
-        }
-        let claimed = if game.all_seeing() {
-            game.state
-                .buildings()
-                .iter()
-                .any(|building| building.hp > 0 && building.anchor == frame)
-        } else {
-            game.state.extractor_frame_claim_known(game.human, frame)
-        };
-        if claimed {
+        if !crate::strategic_markers::extractor_frame_visible(game, frame) {
             continue;
         }
         let screen = game.camera.to_screen(vec2(frame.x as f32, frame.y as f32));

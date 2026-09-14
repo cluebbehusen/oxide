@@ -594,7 +594,10 @@ pub(crate) fn draw_with_performance(
     environment::draw_boundary(game, sprites.quarry_dressing(0).is_some());
     draw_scorches(game, sprites);
     destruction::draw_ground_effects(game, sprites);
+    crate::strategic_markers::draw_resources(game);
+    crate::strategic_markers::draw_extractor_frames(game);
     draw_buildings(game, sprites);
+    crate::strategic_markers::draw_buildings(game);
     draw_units(game, sprites, alpha);
     crate::strategic_markers::draw_markers(game, alpha);
     draw_fx(game, sprites);

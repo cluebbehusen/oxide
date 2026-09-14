@@ -11,7 +11,7 @@ use oxide_sim::{BuildingKind, Faction, UnitKind};
 /// Sprite regions share bounded texture pages instead of per-sprite textures.
 pub struct Sprites {
     textures: Vec<Texture2D>,
-    unit_lod: crate::unit_lod::UnitLod,
+    entity_lod: crate::entity_lod::EntityLod,
     page_height: f32,
     sentinel_rig: Option<UnitRig>,
     warden_rig: Option<UnitRig>,
@@ -528,7 +528,7 @@ pub(crate) fn unit_stem(kind: UnitKind) -> &'static str {
 
 /// The atlas stem a building kind's rows live under. Exhaustive on
 /// purpose: a new kind must say where its art is before it compiles.
-fn building_stem(kind: BuildingKind) -> &'static str {
+pub(crate) fn building_stem(kind: BuildingKind) -> &'static str {
     match kind {
         BuildingKind::Foundry => "foundry",
         BuildingKind::Turret => "turret",
@@ -963,12 +963,6 @@ impl Sprites {
         let texture = load_texture(&resource("assets/sprites/atlas.png"))
             .await
             .context("loading assets/sprites/atlas.png (run from the workspace root)")?;
-        let filter = std::env::var("OXIDE_SPRITE_FILTER").unwrap_or_else(|_| "nearest".into());
-        let filter = match filter.as_str() {
-            "linear" => FilterMode::Linear,
-            "nearest" => FilterMode::Nearest,
-            _ => anyhow::bail!("OXIDE_SPRITE_FILTER must be linear or nearest"),
-        };
         let manifest = macroquad::file::load_string(&resource("assets/sprites/atlas.json"))
             .await
             .context("loading assets/sprites/atlas.json")?;
@@ -979,14 +973,14 @@ impl Sprites {
             .map(|row| atlas_page(Rect::new(row[0], row[1], row[2], row[3]), page_height).0 + 1)
             .max()
             .unwrap_or(1);
-        texture.set_filter(filter);
+        texture.set_filter(FilterMode::Nearest);
         let mut textures = vec![texture];
         for page in 1..page_count {
             let name = format!("assets/sprites/atlas_{page}.png");
             let texture = load_texture(&resource(&name))
                 .await
                 .with_context(|| format!("loading {name}"))?;
-            texture.set_filter(filter);
+            texture.set_filter(FilterMode::Nearest);
             textures.push(texture);
         }
 
@@ -1002,7 +996,7 @@ impl Sprites {
             air_shadow,
             burst,
         ] = pick(&rects, SINGLE_KEYS)?;
-        let unit_lod = crate::unit_lod::UnitLod::load(&rects, page_height).await?;
+        let entity_lod = crate::entity_lod::EntityLod::load(&rects, page_height).await?;
         let unit = |kind| variant_row(&rects, unit_stem(kind), "");
         let building = |kind| variant_row(&rects, building_stem(kind), "");
         Ok(Self {
@@ -1016,7 +1010,7 @@ impl Sprites {
                 .get("scout_radar")
                 .map(|&[x, y, w, h]| Rect::new(x, y, w, h)),
             textures,
-            unit_lod,
+            entity_lod,
             page_height,
             verb_icons: pick(&rects, VERB_ICON_KEYS)?,
             ground: pick(&rects, GROUND_KEYS)?,
@@ -1187,6 +1181,15 @@ impl Sprites {
 
     /// Draw an atlas region from its page while preserving its authored canvas.
     pub fn draw(&self, x: f32, y: f32, tint: Color, mut params: DrawTextureParams) {
+        if tint.a <= 0.0 {
+            return;
+        }
+        if self
+            .entity_lod
+            .draw(macroquad::prelude::vec2(x, y), tint, &params)
+        {
+            return;
+        }
         let page = if let Some(source) = params.source {
             let (page, local) = atlas_page(source, self.page_height);
             params.source = Some(local);
@@ -1202,17 +1205,52 @@ impl Sprites {
             a: tint.a * (1.0 - crate::strategic_markers::marker_alpha(zoom)),
             ..tint
         };
-        if self.unit_lod.draw(
-            macroquad::prelude::vec2(x, y),
-            tint,
-            &params,
-            zoom,
-            &self.textures,
-            self.page_height,
-        ) {
-            return;
-        }
         self.draw(x, y, tint, params);
+    }
+
+    pub fn draw_building(&self, x: f32, y: f32, tint: Color, params: DrawTextureParams, zoom: f32) {
+        let fade = 1.0 - 0.45 * crate::strategic_markers::marker_alpha(zoom);
+        self.draw(
+            x,
+            y,
+            Color {
+                r: tint.r * fade,
+                g: tint.g * fade,
+                b: tint.b * fade,
+                ..tint
+            },
+            params,
+        );
+    }
+
+    pub fn draw_portrait(&self, dest: Rect, layers: &[(Rect, Color)]) {
+        use macroquad::prelude::*;
+        let bounds = layers
+            .iter()
+            .map(|(source, _)| self.entity_lod.bounds(*source))
+            .reduce(|a, b| a.combine_with(b))
+            .unwrap_or(Rect::new(0.0, 0.0, 1.0, 1.0));
+        let inset = dest.w.min(dest.h) * 0.05;
+        let extent =
+            (dest.w - 2.0 * inset).min(dest.h - 2.0 * inset) / bounds.w.max(bounds.h).max(0.01);
+        let dpi = screen_dpi_scale();
+        let x =
+            ((dest.x + dest.w * 0.5 - (bounds.x + bounds.w * 0.5) * extent) * dpi).round() / dpi;
+        let y =
+            ((dest.y + dest.h * 0.5 - (bounds.y + bounds.h * 0.5) * extent) * dpi).round() / dpi;
+        let extent = (extent * dpi).round() / dpi;
+        for &(source, tint) in layers {
+            self.draw(
+                x,
+                y,
+                tint,
+                DrawTextureParams {
+                    source: Some(source),
+                    dest_size: Some(vec2(extent, extent)),
+                    ..Default::default()
+                },
+            );
+        }
     }
 
     /// A verb pictogram's atlas region.

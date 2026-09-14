@@ -506,16 +506,7 @@ pub(crate) fn draw_panel(
     // panels carry the human's faction, so roster cards stay right.
     let faction = panel.faction;
     let blit = |dest: Rect, source: Rect, tint: Color| {
-        sprites.draw(
-            dest.x,
-            dest.y,
-            tint,
-            DrawTextureParams {
-                dest_size: Some(vec2(dest.w, dest.h)),
-                source: Some(source),
-                ..Default::default()
-            },
-        );
+        sprites.draw_portrait(dest, &[(source, tint)]);
     };
     // Defense art is authored as a base plus a north-facing live mount.
     // Static cards compose the same silhouette without inventing aim.
@@ -524,10 +515,11 @@ pub(crate) fn draw_panel(
                          tier: u8,
                          faction: oxide_sim::Faction,
                          tint: Color| {
-        blit(dest, sprites.building_tiered(kind, tier, faction), tint);
+        let mut layers = vec![(sprites.building_tiered(kind, tier, faction), tint)];
         if let Some(mount) = sprites.defense_mount(kind, tier, faction) {
-            blit(dest, mount, tint);
+            layers.push((mount, tint));
         }
+        sprites.draw_portrait(dest, &layers);
     };
     // An order chip is two composed draws: the subject's own silhouette
     // (translucent under a scaffold while its site is still rising) and
@@ -561,13 +553,11 @@ pub(crate) fn draw_panel(
                 blit(dest, sprites.unit(*kind, *f), hull);
             }
             crate::panel::OrderSubject::Building(kind, f) => {
-                blit(dest, sprites.building(*kind, *f), hull);
-                // A construction ghost is still a bare foundation under
-                // scaffold; live targets and finished orders keep the
-                // complete defense silhouette.
+                let mut layers = vec![(sprites.building(*kind, *f), hull)];
                 if !*ghost && let Some(mount) = sprites.defense_mount(*kind, 0, *f) {
-                    blit(dest, mount, hull);
+                    layers.push((mount, hull));
                 }
+                sprites.draw_portrait(dest, &layers);
             }
         }
         if *ghost {
