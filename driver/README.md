@@ -109,8 +109,18 @@ and reconstruction of the recorded command stream are checked throughout.
 matrix.
 
 `tests/player_facing_hashes.rs` separately pins the current controller's state
-and command streams. The all-map integration harness seats Standard/Balanced
-bots with personality seed zero and checks activity, invariants, serialization,
-and elimination. Bot measurements describe that configured controller
-interacting with the simulation. The opening image and renderer showcase cover
-drawing without depending on an autonomous midgame.
+and command streams. The regular liveness harness runs Skirmish, Twin Forges,
+and Basalt Spine for 12,000 ticks each, covering an open duel, team play, and
+constrained terrain. It seats Standard/Balanced bots with personality seed zero
+and checks activity, invariants, serialization, and elimination. The exhaustive
+all-map sweep is ignored by default and remains available on demand; both use
+the same assertions. Cheap map gates and exact-hash fixtures retain their
+existing scope. Bot measurements describe that configured controller interacting
+with the simulation. The opening image and renderer showcase cover drawing
+without depending on an autonomous midgame.
+
+Run the exhaustive sweep explicitly:
+
+```sh
+cargo test -p oxide-driver --test headless --locked every_shipped_scenario_stays_valid_and_live -- --ignored --exact --nocapture
+```
