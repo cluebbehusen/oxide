@@ -149,6 +149,7 @@ struct App {
     soundtrack: Option<crate::soundtrack::Soundtrack>,
     /// Opt-in bounded native-frame timing, queried over the debug socket.
     frame_profiler: FrameProfiler,
+    report_job: crate::diagnostic_report::ReportJob,
     performance: crate::performance::Performance,
 }
 
@@ -567,7 +568,38 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     let mut game = if let Some(path) = &args.replay {
         let replay =
             oxide_kit::load_replay(path).with_context(|| format!("loading replay {path}"))?;
-        Game::from_replay(replay)?
+        let recording = if args.diagnostics || config.diagnostics {
+            crate::paths::recovery_dir().and_then(|root| {
+                let ticks = replay.meta.ticks.unwrap_or_else(|| {
+                    replay
+                        .commands
+                        .last()
+                        .map_or(0, |command| command.tick.saturating_add(1))
+                });
+                oxide_kit::recovery::RecoveryWriter::start(root, replay.clone(), ticks)
+                    .map(std::sync::Arc::new)
+                    .map_err(|error| eprintln!("Recovery unavailable: {error}"))
+                    .ok()
+            })
+        } else {
+            None
+        };
+        let diagnostics = recording.as_ref().and_then(|recording| {
+            oxide_kit::diagnostics::Recorder::start(recording.clone())
+                .map_err(|error| eprintln!("Diagnostics unavailable: {error}"))
+                .ok()
+        });
+        if let Some(recorder) = &diagnostics {
+            recorder.install_panic_hook();
+        }
+        let mut game = if diagnostics.is_some() {
+            Game::from_replay_observed(replay, diagnostics.as_ref())?
+        } else {
+            Game::from_replay(replay)?
+        };
+        game.recovery = recording;
+        game.diagnostics = diagnostics;
+        game
     } else {
         let scenario = match &args.scenario {
             Some(path) => Scenario::load(path).with_context(|| format!("loading {path}"))?,
@@ -575,6 +607,10 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         };
         Game::new(scenario)?
     };
+    game.recovery_root = crate::paths::recovery_dir();
+    if game.recovery_root.is_none() {
+        game.toast("Recovery unavailable: no writable data folder is configured.");
+    }
     game.paused = args.paused;
     game.speed = args.speed;
     mark("game built");
@@ -640,11 +676,52 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         mixer: Mixer::default(),
         soundtrack,
         frame_profiler: FrameProfiler::new(profile_frames),
+        report_job: Default::default(),
         performance: crate::performance::Performance::default(),
     };
     let mut ui_view = capture_ui(&screen, &app);
 
     loop {
+        if let Some(result) = app.report_job.poll() {
+            let (text, danger) = match result {
+                Ok(text) => (text, false),
+                Err(error) => (format!("Diagnostic operation failed: {error}"), true),
+            };
+            if let Screen::Settings {
+                screen: settings, ..
+            } = &mut screen
+            {
+                settings.notice = Some(crate::screens::settings::Notice { text, danger });
+            } else {
+                app.menu_notice = Some((text, get_time() + 8.0));
+            }
+        }
+        app.game
+            .configure_diagnostics(app.args.diagnostics || app.config.diagnostics);
+        if let Some(recorder) = &app.game.diagnostics {
+            let (diagnostic_tick, diagnostic_units, diagnostic_buildings) =
+                visible_profile_state(&screen, &app);
+            recorder.frame(oxide_kit::diagnostics::FrameContext {
+                mode: visible_profile_mode(&screen),
+                tick: diagnostic_tick,
+                units: diagnostic_units,
+                buildings: diagnostic_buildings,
+                speed: app.game.speed,
+                width: screen_width() as u32,
+                height: screen_height() as u32,
+                dpi: macroquad::miniquad::window::dpi_scale() as f64,
+                paused: match &screen {
+                    Screen::Playback(playback) => playback.paused,
+                    Screen::Pause(_) => true,
+                    _ => app.game.paused,
+                },
+                minimized: input::reported_minimized(),
+            });
+        }
+        let input_diagnostic_scope = app
+            .game
+            .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+        app.game.poll_recovery();
         let dt = get_frame_time();
         if let Some(rx) = &debug_rx {
             while let Ok(incoming) = rx.try_recv() {
@@ -660,6 +737,13 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             }
         }
 
+        drop(input_diagnostic_scope);
+        let frame_diagnostic_scope = app
+            .game
+            .diagnostic_span(oxide_kit::diagnostics::Phase::Frame);
+        let screen_diagnostic_scope = app
+            .game
+            .diagnostic_span(oxide_kit::diagnostics::Phase::Screen);
         // Debug requests are control-plane work between presented frames, not
         // native frame work. Start timing after draining them so Resume and
         // status polling cannot become an artificial slow frame.
@@ -913,7 +997,13 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             frame_started,
         );
 
+        drop(screen_diagnostic_scope);
+        drop(frame_diagnostic_scope);
+        let wait_diagnostic_scope = app
+            .game
+            .diagnostic_span(oxide_kit::diagnostics::Phase::FrameWait);
         next_frame().await;
+        drop(wait_diagnostic_scope);
     }
 }
 
@@ -921,10 +1011,13 @@ pub(crate) async fn run(args: Args) -> Result<()> {
 /// Home's Continue and the shelf's Load, so the two verbs cannot drift.
 /// A resume IS a replay load; validation and the tick-count cap live in
 /// [`Game::from_replay`].
-fn resume(path: &std::path::Path) -> Result<Game> {
+fn resume(
+    path: &std::path::Path,
+    diagnostics: Option<&oxide_kit::diagnostics::Recorder>,
+) -> Result<Game> {
     let replay = oxide_kit::load_replay(path)
         .with_context(|| format!("loading record {}", path.display()))?;
-    Game::from_replay(replay)
+    Game::from_replay_observed(replay, diagnostics)
 }
 
 /// Whether the human's seat can still concede: it holds a Foundry and
@@ -1031,9 +1124,11 @@ fn track_pointer_position(mouse: &mut Vec2, event: &RawEvent) {
 
 /// Carries session-level toggles (pause/speed/overlay) onto a fresh game.
 fn keep_flags(mut fresh: Game, old: &Game) -> Game {
+    old.finish_recovery();
     fresh.paused = old.paused;
     fresh.speed = old.speed;
     fresh.overlay = old.overlay;
+    fresh.recovery_root.clone_from(&old.recovery_root);
     fresh
 }
 
@@ -1409,7 +1504,8 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
             Request::LoadReplay { path } => oxide_kit::load_replay(&path)
                 .map_err(|err| format!("loading replay {path}: {err}"))
                 .and_then(|replay| {
-                    Game::from_replay(replay).map_err(|err| format!("resuming replay: {err:#}"))
+                    Game::from_replay_observed(replay, game.diagnostics.as_ref())
+                        .map_err(|err| format!("resuming replay: {err:#}"))
                 })
                 .map(|fresh| {
                     app.tutorial = None;

@@ -83,6 +83,7 @@ impl SaveError {
 /// `match-` — the shelf lists both, so a completed game is always
 /// watchable afterward.
 pub fn save(game: &mut Game) -> Result<SaveOutcome, SaveError> {
+    let _scope = game.diagnostic_span(oxide_kit::diagnostics::Phase::Save);
     // The nothing-to-do gates come before directory resolution so a
     // cold quit on a machine with no data dir stays a quiet success.
     if game.state.current_tick() == 0 {
@@ -136,6 +137,7 @@ fn write_record_with(
     let path = free_path(dir, prefix, tick, game.scenario.seed)?
         .publish(|path| save_replay(&game.recorder, path))
         .map_err(|(path, source)| SaveError::Write { path, source })?;
+    game.finish_recovery();
     game.autosave_done = true;
     rotate(dir);
     Ok(SaveOutcome::Wrote(path))
@@ -149,6 +151,7 @@ fn write_record_with(
 /// quit-autosave must not inherit the name) and never marks the session
 /// saved: explicit saves and quit autosaves are independent records.
 pub fn save_named(game: &Game, name: &str) -> Result<PathBuf, SaveError> {
+    let _scope = game.diagnostic_span(oxide_kit::diagnostics::Phase::Save);
     let dir = crate::paths::saves_dir().ok_or(SaveError::NoDataDir)?;
     write_named(game, name, &dir, now_unix())
 }

@@ -29,6 +29,10 @@ pub enum Face {
 pub enum Out {
     /// Still tuning.
     Stay,
+    /// Reveal local diagnostic records in the file manager.
+    OpenDiagnostics,
+    /// Export a consistent local report in the background.
+    ExportDiagnostics,
     /// Back to wherever the screen was opened from — the coordinator
     /// holds the displaced screen and restores it wholesale.
     Leave,
@@ -108,6 +112,9 @@ fn settings_menu(config: &Config) -> Menu {
             ),
             "Apply left-handed bindings".to_string(),
             "Controls...".to_string(),
+            format!("Diagnostics: {}", onoff(config.diagnostics)),
+            "Open diagnostics folder".to_string(),
+            "Export diagnostic report".to_string(),
             "Back".to_string(),
         ],
     )
@@ -120,6 +127,9 @@ fn settings_menu(config: &Config) -> Menu {
 const PERFORMANCE_ROW: usize = 9;
 const PRESET_ROW: usize = 10;
 const CONTROLS_ROW: usize = 11;
+const DIAGNOSTICS_ROW: usize = 12;
+const OPEN_DIAGNOSTICS_ROW: usize = 13;
+const EXPORT_DIAGNOSTICS_ROW: usize = 14;
 
 /// Advances one settings row to its next value step. Returns false on
 /// rows that navigate instead of cycling.
@@ -155,6 +165,7 @@ fn cycle_setting(config: &mut Config, row: usize) -> bool {
             render::set_colorblind(config.colorblind);
         }
         PERFORMANCE_ROW => config.performance_display = config.performance_display.next(),
+        DIAGNOSTICS_ROW => config.diagnostics = !config.diagnostics,
         _ => return false, // preset, Controls..., and Back route in update
     }
     true
@@ -299,6 +310,10 @@ impl SettingsScreen {
                         let selected = self.menu.selected;
                         self.menu = settings_menu(config);
                         self.menu.select(selected);
+                    } else if row == OPEN_DIAGNOSTICS_ROW {
+                        update.out = Out::OpenDiagnostics;
+                    } else if row == EXPORT_DIAGNOSTICS_ROW {
+                        update.out = Out::ExportDiagnostics;
                     } else if row == CONTROLS_ROW {
                         self.goto_controls(config, 0);
                     } else {
@@ -758,5 +773,32 @@ mod tests {
             screen.menu.selected, CONTROLS_ROW,
             "the cursor comes back to the row that was activated"
         );
+    }
+    #[test]
+    fn diagnostics_is_opt_in_and_keeps_existing_settings_rows_stable() {
+        let mut config = Config::default();
+        assert!(!config.diagnostics);
+        assert_eq!(
+            settings_menu(&config).items[DIAGNOSTICS_ROW],
+            "Diagnostics: off"
+        );
+        assert!(cycle_setting(&mut config, DIAGNOSTICS_ROW));
+        assert!(config.diagnostics);
+        assert_eq!(
+            settings_menu(&config).items[DIAGNOSTICS_ROW],
+            "Diagnostics: on"
+        );
+        assert_eq!(
+            settings_menu(&config).items[OPEN_DIAGNOSTICS_ROW],
+            "Open diagnostics folder"
+        );
+        assert_eq!(
+            settings_menu(&config).items[EXPORT_DIAGNOSTICS_ROW],
+            "Export diagnostic report"
+        );
+        assert_eq!(settings_menu(&config).items[CONTROLS_ROW], "Controls...");
+        let mut old = serde_json::to_value(&config).unwrap();
+        old.as_object_mut().unwrap().remove("diagnostics");
+        assert!(!serde_json::from_value::<Config>(old).unwrap().diagnostics);
     }
 }

@@ -106,11 +106,45 @@ pub(super) fn update_and_draw(
                 screens::home::Out::Stay
                 | screens::home::Out::Settings
                 | screens::home::Out::Roster => {}
+                screens::home::Out::Recover => {
+                    let _scope = app
+                        .game
+                        .diagnostic_span(oxide_kit::diagnostics::Phase::ReplayLoad);
+                    let recovered = home
+                        .recovery
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("recording is no longer available"))
+                        .and_then(|record| oxide_kit::recovery::inspect(&record.directory))
+                        .and_then(|record| {
+                            Game::from_replay_observed(record.replay, app.game.diagnostics.as_ref())
+                        });
+                    match recovered {
+                        Ok(fresh) => {
+                            app.tutorial = None;
+                            app.game = keep_flags(fresh, &app.game);
+                            app.game.paused = true;
+                            app.game.recovery_source = home
+                                .recovery
+                                .as_ref()
+                                .map(|record| record.directory.clone());
+                            app.game.start_recovery();
+                            app.game
+                                .toast("Recovered match is paused. Resume when ready.");
+                            app.performance.reset();
+                            app.input.reset_session();
+                            next = Some(Screen::Playing);
+                        }
+                        Err(error) => app.game.toast(format!("Recovery unavailable: {error:#}")),
+                    }
+                }
                 screens::home::Out::Continue => {
+                    let _scope = app
+                        .game
+                        .diagnostic_span(oxide_kit::diagnostics::Phase::ReplayLoad);
                     // Resume the newest autosave — a replay load, so
                     // it cannot desync from its own history.
-                    if let Some(fresh) =
-                        autosave::latest_compatible().and_then(|path| resume(&path).ok())
+                    if let Some(fresh) = autosave::latest_compatible()
+                        .and_then(|path| resume(&path, app.game.diagnostics.as_ref()).ok())
                     {
                         app.tutorial = None;
                         app.game = keep_flags(fresh, &app.game);
@@ -175,6 +209,18 @@ pub(super) fn update_and_draw(
             screen: mut sc,
             back,
         } => {
+            if sc.notice.is_none()
+                && let Some(error) = app
+                    .game
+                    .recovery
+                    .as_ref()
+                    .and_then(|writer| writer.status().error)
+            {
+                sc.notice = Some(screens::settings::Notice {
+                    text: format!("Recovery stopped: {error}"),
+                    danger: true,
+                });
+            }
             let up = sc.update(
                 &events,
                 &mut app.input.mouse,
@@ -184,6 +230,29 @@ pub(super) fn update_and_draw(
                 ctrl_at_frame_start,
                 shift_at_frame_start,
             );
+            match up.out {
+                screens::settings::Out::OpenDiagnostics => {
+                    if let Err(error) = app.report_job.open_folder() {
+                        sc.notice = Some(screens::settings::Notice {
+                            text: error.to_string(),
+                            danger: true,
+                        });
+                    }
+                }
+                screens::settings::Out::ExportDiagnostics => {
+                    sc.notice = Some(match app.report_job.start(&app.game) {
+                        Ok(()) => screens::settings::Notice {
+                            text: "Exporting diagnostic report...".into(),
+                            danger: false,
+                        },
+                        Err(error) => screens::settings::Notice {
+                            text: error.to_string(),
+                            danger: true,
+                        },
+                    });
+                }
+                _ => {}
+            }
             if up.dirty
                 && let Err(err) = app.config.save()
             {
@@ -530,23 +599,25 @@ pub(super) fn update_and_draw(
                         }
                     }
                 }
-                screens::shelf::Out::Load(path) => match resume(&path) {
-                    // The same loader Continue uses, so the two
-                    // verbs cannot drift apart.
-                    Ok(fresh) => {
-                        app.tutorial = None;
-                        app.game = keep_flags(fresh, &app.game);
-                        app.performance.reset();
-                        app.game.paused = app.args.paused;
-                        app.input.reset_session();
-                        render::draw(&app.game, &app.sprites, &app.input);
-                        rerun = true;
-                        leave = Some(Screen::Playing);
+                screens::shelf::Out::Load(path) => {
+                    match resume(&path, app.game.diagnostics.as_ref()) {
+                        // The same loader Continue uses, so the two
+                        // verbs cannot drift apart.
+                        Ok(fresh) => {
+                            app.tutorial = None;
+                            app.game = keep_flags(fresh, &app.game);
+                            app.performance.reset();
+                            app.game.paused = app.args.paused;
+                            app.input.reset_session();
+                            render::draw(&app.game, &app.sprites, &app.input);
+                            rerun = true;
+                            leave = Some(Screen::Playing);
+                        }
+                        Err(_) => {
+                            app.game.sounds_pending.push((SoundKind::Denied, None));
+                        }
                     }
-                    Err(_) => {
-                        app.game.sounds_pending.push((SoundKind::Denied, None));
-                    }
-                },
+                }
                 screens::shelf::Out::Deleted => {
                     // Re-list; Home re-evaluates its Continue row on
                     // the way out, since every exit rebuilds it.

@@ -38,3 +38,20 @@ cargo run -p oxide-shell --release
 cargo test -p oxide-shell --locked
 cargo run -p oxide-driver -- smoke --spawn
 ```
+
+## Recovery and diagnostics
+
+Ordinary play preserves a recent completed match prefix in the platform data
+folder. After an abnormal exit, Home offers **Recover interrupted match** and
+opens it paused. Ordinary Continue and named saves remain separate.
+
+Settings provides **Diagnostics**, **Open diagnostics folder**, and **Export
+diagnostic report**. Detailed capture defaults Off; `--diagnostics` enables it
+for one launch. Reports stay local and contain a replay plus available phase,
+frame, and suspected-stall evidence. Diagnostic capture does not require the
+debug server. `diagnostic_report` runs exports and folder operations off the
+frame thread; `kit::recovery` and `kit::diagnostics` own bounded persistence.
+
+See [the persistence contract](../docs/shell-architecture.md) for durability,
+retention, compatibility, and timing semantics. Recovery warnings mean the
+recording stopped at its last intact prefix, not that gameplay stopped.

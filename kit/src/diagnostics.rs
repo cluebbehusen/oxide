@@ -350,6 +350,16 @@ impl Recorder {
             Ordering::Relaxed,
         );
     }
+    /// Publish progress within a long reconstruction without ending its phase.
+    pub fn replay_progress(&self, tick: u64) {
+        if self.enabled() {
+            self.inner.slots[0].tick.store(tick, Ordering::Relaxed);
+            self.inner.slots[0]
+                .progress
+                .store(self.inner.micros(), Ordering::Release);
+            self.inner.frame_tick.store(tick, Ordering::Relaxed);
+        }
+    }
     /// Begin a main-thread operation. Dropping its guard records completion.
     pub fn span(&self, phase: Phase, tick: u64) -> Option<Span> {
         self.enabled().then(|| {

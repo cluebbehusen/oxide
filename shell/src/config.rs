@@ -133,6 +133,9 @@ impl TouchPrefs {
 /// The whole persisted surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
+    /// Optional local detailed diagnostics; recovery recording is independent.
+    #[serde(default)]
+    pub diagnostics: bool,
     /// Optional performance HUD; older configs leave it disabled.
     #[serde(default)]
     pub performance_display: PerformanceDisplay,
@@ -173,6 +176,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            diagnostics: false,
             performance_display: PerformanceDisplay::Off,
             version: CONFIG_VERSION,
             bindings: BindingMap::classic(),

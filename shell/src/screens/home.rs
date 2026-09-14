@@ -12,6 +12,8 @@ use oxide_protocol::RawEvent;
 pub enum Out {
     /// Still at the door.
     Stay,
+    /// Resume an interrupted recording, initially paused.
+    Recover,
     /// Resume the newest autosave.
     Continue,
     /// Open the New Match wizard.
@@ -34,13 +36,34 @@ pub struct HomeScreen {
     pub menu: Menu,
     /// Whether row zero is Continue (a compatible autosave exists).
     pub resumable: bool,
+    /// Independently recoverable interrupted session, if any.
+    pub recovery: Option<oxide_kit::recovery::InterruptedMatch>,
 }
 
 impl HomeScreen {
     /// Builds the door, checking for a resumable autosave.
     pub fn open() -> Self {
         let resumable = autosave::latest_compatible().is_some();
-        Self::with_resumable(resumable)
+        Self::with_resumable(resumable).with_recovery(
+            crate::paths::recovery_dir()
+                .and_then(|root| oxide_kit::recovery::latest_interrupted(&root)),
+        )
+    }
+
+    fn with_recovery(mut self, recovery: Option<oxide_kit::recovery::InterruptedMatch>) -> Self {
+        self.recovery = recovery;
+        if let Some(record) = &self.recovery {
+            let seconds = record.ticks / oxide_sim::TICKS_PER_SECOND as u64;
+            self.menu.items.insert(
+                0,
+                format!(
+                    "Recover interrupted match ({:02}:{:02})",
+                    seconds / 60,
+                    seconds % 60
+                ),
+            );
+        }
+        self
     }
 
     /// Builds the door with resumability decided by the caller (tests).
@@ -55,6 +78,7 @@ impl HomeScreen {
         Self {
             menu: Menu::new("OXIDE", items),
             resumable,
+            recovery: None,
         }
     }
 
@@ -74,6 +98,10 @@ impl HomeScreen {
             return Out::Stay;
         };
         sounds.push((SoundKind::Click, None));
+        if self.recovery.is_some() && choice == 0 {
+            return Out::Recover;
+        }
+        let choice = choice - usize::from(self.recovery.is_some());
         let base = if self.resumable { choice } else { choice + 1 };
         match base {
             0 => Out::Continue,
@@ -123,5 +151,24 @@ mod tests {
         assert_eq!(pick(&mut resumable, 1), Out::Play);
         assert_eq!(pick(&mut resumable, 4), Out::Roster);
         assert_eq!(pick(&mut resumable, 6), Out::Quit);
+    }
+    #[test]
+    fn recovery_is_explicit_and_does_not_change_continue_or_play() {
+        for resumable in [false, true] {
+            let mut home = HomeScreen::with_resumable(resumable).with_recovery(Some(
+                oxide_kit::recovery::InterruptedMatch {
+                    directory: "/unused".into(),
+                    ticks: 2400,
+                    scenario: "test".into(),
+                },
+            ));
+            assert!(home.menu.items[0].contains("02:00"));
+            assert_eq!(pick(&mut home, 0), Out::Recover);
+            assert_eq!(
+                pick(&mut home, 1),
+                if resumable { Out::Continue } else { Out::Play }
+            );
+            assert_eq!(pick(&mut home, usize::from(resumable) + 5), Out::Settings);
+        }
     }
 }

@@ -242,6 +242,60 @@ only to restore their controller-local memory; their regenerated commands are
 discarded because the log is authoritative. The resumed `Game` continues
 recording onto that same command history.
 
+Ordinary play also writes a separate incremental recovery journal under the
+platform data root's `recovery/` directory. Its worker establishes a replay
+baseline, then appends checksummed, length-framed prepared-command batches and
+completed-tick boundaries. Recovery includes only a contiguous completed prefix;
+a prepared but unfinished tick is report evidence, never an implicit resume
+command. Discovery validates the recorded scenario and simulation version and
+starts the selected recovery paused. The original interrupted source is retired
+only after an identical replacement baseline is durable.
+
+The gameplay path uses a bounded 1 MiB queue without serialization or disk I/O.
+The worker targets a durable flush each second or 64 KiB, and publishes its
+acknowledged tick separately from live progress. This is not a guaranteed
+one-second loss bound: slow storage, an oversized command, queue exhaustion, or
+the replay size limit stops capture with a visible warning while play continues.
+Explicit leave/save and session replacement may wait up to one second for a
+clean marker; only a durable marker makes a session clean. Force quit relies on
+previously written bytes. It cannot execute a shutdown hook.
+
+Sessions hold an exclusive filesystem lease. Retention skips active writers and
+report readers, keeping at most five managed sessions, including at most three
+interrupted recoveries, within 256 MiB. Each active writer reserves 96 MiB for a
+journal, timing history, and atomic-write temporaries. If active records cannot
+fit, new capture reports failure rather than deleting them. Explicit exports
+under `recovery/reports/` and named saves are outside automatic retention.
+Malformed directories are preserved for investigation and still count against
+the byte budget.
+
+Detailed diagnostics default Off. Settings changes persist; `--diagnostics`
+enables capture for that launch without enabling the debug server. Kit records
+nested inclusive and exclusive phase durations, per-seat bot work on the normal
+worker pool, frame CPU work, and frame intervals. The sim exposes clock-free
+observational phase callbacks and receives no diagnostic input. Recent detail is
+limited to 60 seconds and 32,768 events, with 256 completed operations over 100
+ms retained separately. Queue losses and history eviction are explicit. Turning
+capture off stops new samples and periodic diagnostic writes.
+
+An independent watchdog checks atomic main-thread and bot-seat progress every
+250 ms. Five seconds without progress produces a suspected-stall marker and a
+later resumption marker. Context includes paused/loading/screen state, native
+minimize state when reported, display scale, requested speed, entity counts,
+build identity, and recording health. Presentation waits can include OS sleep or
+driver delay; these are not measured GPU durations or proof of deadlock. The
+chained panic hook sends fixed-size location/message metadata without waiting;
+persistence is best effort before process termination.
+
+Settings can reveal the folder or export a report on a background thread. An
+export contains a standard replay, prepared-tick evidence, available timing and
+watchdog sidecars, and build/capture provenance. Its completion manifest is
+published last and binds the replay digest, so an interrupted export is refused
+by `driver recovery-inspect`. Sidecars are independently published observations
+and can have different timestamps. A differing/unknown build identity remains
+visible even when the simulation version permits playback. Nothing uploads
+automatically, and no screenshots are captured automatically.
+
 Restart and Rematch rebuild from `Game::scenario`, while replay and save loading
 rebuild from the recorded setup. Consequently all of those paths preserve the
 exact opponent difficulty, stance, and personality seed. They never consult the
