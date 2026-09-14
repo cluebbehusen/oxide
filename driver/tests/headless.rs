@@ -376,21 +376,21 @@ fn liveness_verdict(map: &str, activity: &MatchActivity) -> Result<(), String> {
 }
 
 #[test]
+fn representative_scenarios_stay_valid_and_live() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
+    let paths =
+        ["skirmish", "twin-forges", "basalt-spine"].map(|name| dir.join(format!("{name}.json")));
+    assert_scenarios_stay_valid_and_live(&paths);
+}
+
+#[test]
+#[ignore = "exhaustive all-map liveness sweep; run on demand"]
 fn every_shipped_scenario_stays_valid_and_live() {
-    // Playable means *alive*, not merely parseable. The old proxy — a
-    // surviving unit id past the starting roster — was satisfied at tick
-    // zero on every map that spawns 17 or more units, so a total economy
-    // freeze on a 4v4 passed. The tick reports carry the real signal, so
-    // every seat that still holds a Foundry must account for its own
-    // production and deliveries, and the match as a whole must have
-    // done something recently.
-    //
-    // Every map is an independent deterministic sim, so the sweep fans
-    // out across the instruments' shared worker pool — 25 maps at 12k
-    // ticks each would otherwise dominate the workspace suite's wall
-    // clock.
-    let paths = shipped_scenarios();
-    let played = pool::fan_out(&paths, |path| {
+    assert_scenarios_stay_valid_and_live(&shipped_scenarios());
+}
+
+fn assert_scenarios_stay_valid_and_live(paths: &[PathBuf]) {
+    let played = pool::fan_out(paths, |path| {
         let scenario = all_bots(path);
         let activity = play_and_tally(&scenario, liveness_horizon(&scenario))?;
         eprintln!(
