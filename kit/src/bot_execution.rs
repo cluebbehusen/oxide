@@ -30,15 +30,24 @@ pub fn serially<T>(work: impl FnOnce() -> T) -> T {
 /// Single-seat ticks, unavailable workers, and concurrent matches use the serial
 /// path. Worker availability never changes command ordering or bot inputs.
 pub fn commands(state: &State, bots: &mut [SeatBot]) -> Vec<PlayerCommand> {
+    commands_observed(state, bots, None)
+}
+
+/// Preserve ordinary scheduling while optionally observing each seat on its worker.
+pub fn commands_observed(
+    state: &State,
+    bots: &mut [SeatBot],
+    observer: Option<&crate::diagnostics::Recorder>,
+) -> Vec<PlayerCommand> {
     if !parallel_due(state, bots) {
-        return serial_commands(state, bots);
+        return serial_commands(state, bots, observer);
     }
     static EXECUTOR: OnceLock<BotExecutor> = OnceLock::new();
     EXECUTOR
         .get_or_init(|| {
             BotExecutor::new(std::thread::available_parallelism().map_or(1, |n| n.get()))
         })
-        .commands(state, bots)
+        .commands_observed(state, bots, observer)
 }
 
 fn parallel_due(state: &State, bots: &[SeatBot]) -> bool {
@@ -51,8 +60,26 @@ fn parallel_due(state: &State, bots: &[SeatBot]) -> bool {
             == 2
 }
 
-fn serial_commands(state: &State, bots: &mut [SeatBot]) -> Vec<PlayerCommand> {
-    bots.iter_mut().flat_map(|bot| bot.act(state)).collect()
+fn serial_commands(
+    state: &State,
+    bots: &mut [SeatBot],
+    observer: Option<&crate::diagnostics::Recorder>,
+) -> Vec<PlayerCommand> {
+    bots.iter_mut()
+        .flat_map(|bot| act(state, bot, observer))
+        .collect()
+}
+
+fn act(
+    state: &State,
+    bot: &mut SeatBot,
+    observer: Option<&crate::diagnostics::Recorder>,
+) -> Vec<PlayerCommand> {
+    if let Some(observer) = observer {
+        observer.bot_commands(state, bot)
+    } else {
+        bot.act(state)
+    }
 }
 
 #[derive(Default)]
@@ -76,18 +103,31 @@ impl BotExecutor {
         }
     }
 
+    #[cfg(test)]
     fn commands(&self, state: &State, bots: &mut [SeatBot]) -> Vec<PlayerCommand> {
+        self.commands_observed(state, bots, None)
+    }
+
+    fn commands_observed(
+        &self,
+        state: &State,
+        bots: &mut [SeatBot],
+        observer: Option<&crate::diagnostics::Recorder>,
+    ) -> Vec<PlayerCommand> {
         if parallel_due(state, bots)
             && let Some(pool) = &self.pool
             // Batch runners already parallelize matches. A busy pool must not
             // serialize those matches behind another match's planning work.
             && let Ok(pool) = pool.try_lock()
         {
-            let batches: Vec<Vec<PlayerCommand>> =
-                pool.install(|| bots.par_iter_mut().map(|bot| bot.act(state)).collect());
+            let batches: Vec<Vec<PlayerCommand>> = pool.install(|| {
+                bots.par_iter_mut()
+                    .map(|bot| act(state, bot, observer))
+                    .collect()
+            });
             batches.into_iter().flatten().collect()
         } else {
-            serial_commands(state, bots)
+            serial_commands(state, bots, observer)
         }
     }
 }
@@ -170,7 +210,7 @@ mod tests {
             } else {
                 executor.commands(&state, &mut bots)
             };
-            assert_eq!(commands, serial_commands(&state, &mut expected_bots));
+            assert_eq!(commands, serial_commands(&state, &mut expected_bots, None));
             state.tick(&commands);
         }
     }

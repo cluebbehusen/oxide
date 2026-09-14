@@ -187,8 +187,8 @@ pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Op
         || unit.domain() != crate::stats::Domain::Ground
         || unit.path.is_some()
         || state
-            .building_at(unit.tile())
-            .is_none_or(|b| b.kind.is_stealthy())
+            .buildings_at(unit.tile())
+            .all(|b| b.kind.is_stealthy())
     {
         return None;
     }

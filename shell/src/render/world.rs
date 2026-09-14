@@ -576,18 +576,7 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
             // Stamp what is on show; fade what is only remembered. The
             // map stays bounded: only tiles carrying salvage enter it.
             let mem_fade = if scrap > 0 || wreck > 0 {
-                let key = (x, y);
-                if seen_now {
-                    game.last_seen.borrow_mut().insert(key, game.fx_time());
-                    1.0
-                } else {
-                    let age = {
-                        let mut seen = game.last_seen.borrow_mut();
-                        let stamp = *seen.entry(key).or_insert_with(|| game.fx_time());
-                        game.fx_time() - stamp
-                    };
-                    1.0 - super::staleness_fade(age)
-                }
+                super::resource_memory_opacity(game, pos)
             } else {
                 1.0
             };
@@ -669,20 +658,7 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
 pub(crate) fn draw_extractor_frames(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
     for &frame in game.state.map().extractor_frames() {
-        let known = game.all_seeing()
-            || (0..2).any(|dy| (0..2).any(|dx| game.my_vision().explored(frame.offset(dx, dy))));
-        if !known {
-            continue;
-        }
-        let claimed = if game.all_seeing() {
-            game.state
-                .buildings()
-                .iter()
-                .any(|building| building.hp > 0 && building.anchor == frame)
-        } else {
-            game.state.extractor_frame_claim_known(game.human, frame)
-        };
-        if claimed {
+        if !crate::strategic_markers::extractor_frame_visible(game, frame) {
             continue;
         }
         let screen = game.camera.to_screen(vec2(frame.x as f32, frame.y as f32));

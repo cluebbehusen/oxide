@@ -19,6 +19,19 @@ use oxide_sim::{
 use std::collections::HashMap;
 use std::ops::Deref;
 
+pub(crate) fn finish_recording(writer: &oxide_kit::recovery::RecoveryWriter, tick: u64) {
+    writer.finish(tick);
+    // Only the existing explicit leave/save path waits. A failed or slow
+    // writer leaves an interrupted record, even if the ordinary save landed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while !writer.status().clean
+        && writer.status().error.is_none()
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 /// Seconds per sim tick.
 pub const TICK_DT: f32 = 1.0 / TICKS_PER_SECOND as f32;
 /// Ticks a single frame may run before we let rendering catch up. Sized
@@ -103,6 +116,12 @@ pub struct Game {
     pub bots: Vec<SeatBot>,
     /// Every command of the session, tick-stamped — always recording.
     pub recorder: GameReplay,
+    pub(crate) recovery_root: Option<std::path::PathBuf>,
+    pub(crate) recovery: Option<std::sync::Arc<oxide_kit::recovery::RecoveryWriter>>,
+    recovery_warned: bool,
+    diagnostics_warned: bool,
+    pub(crate) recovery_source: Option<std::path::PathBuf>,
+    pub(crate) diagnostics: Option<oxide_kit::diagnostics::Recorder>,
     /// Commands staged for the next tick (human + debug socket).
     pub(crate) pending: PendingCommands,
     /// The seat local input controls.
@@ -298,6 +317,12 @@ impl Game {
             audio_timeline: crate::audio_timeline::AudioTimeline::default(),
             sounds_pending: Vec::new(),
             autosave_done: false,
+            recovery_root: None,
+            recovery: None,
+            recovery_warned: false,
+            diagnostics_warned: false,
+            recovery_source: None,
+            diagnostics: None,
             last_seen: std::cell::RefCell::new(HashMap::new()),
             minimap_layer: std::cell::RefCell::new(None),
             toasts: Vec::new(),
@@ -324,6 +349,15 @@ impl Game {
     /// onto the same log. In a deterministic sim a replay *is* a save file
     /// — this is "load game".
     pub fn from_replay(replay: GameReplay) -> Result<Self> {
+        Self::from_replay_observed(replay, None)
+    }
+
+    pub(crate) fn from_replay_observed(
+        replay: GameReplay,
+        diagnostics: Option<&oxide_kit::diagnostics::Recorder>,
+    ) -> Result<Self> {
+        let _load = diagnostics
+            .and_then(|recorder| recorder.span(oxide_kit::diagnostics::Phase::ReplayLoad, 0));
         // Untrusted file: enforce the invariants recording guarantees, and
         // refuse cross-version saves outright — resuming one would keep
         // recording onto a log that can no longer reproduce.
@@ -355,7 +389,10 @@ impl Game {
         let mut live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         let mut projectile_releases = projectiles::ProjectileReleases::default();
         for _ in 0..total {
-            let _ = oxide_kit::bot_execution::commands(&state, &mut bots);
+            if let Some(recorder) = diagnostics {
+                recorder.replay_progress(state.current_tick());
+            }
+            let _ = oxide_kit::bot_execution::commands_observed(&state, &mut bots, diagnostics);
             let commands: Vec<PlayerCommand> = cursor
                 .take_tick(state.current_tick())
                 .iter()
@@ -391,10 +428,79 @@ impl Game {
         Ok(game)
     }
 
+    pub(crate) fn configure_diagnostics(&mut self, enabled: bool) {
+        if !enabled {
+            self.diagnostics_warned = false;
+        }
+        if enabled && self.diagnostics.is_none() && !self.diagnostics_warned {
+            self.start_recovery();
+            if let Some(recording) = &self.recovery {
+                match oxide_kit::diagnostics::Recorder::start(recording.clone()) {
+                    Ok(recorder) => {
+                        recorder.install_panic_hook();
+                        self.diagnostics = Some(recorder);
+                    }
+                    Err(error) => {
+                        self.diagnostics_warned = true;
+                        self.toast(format!("Diagnostics unavailable: {error}"));
+                    }
+                }
+            }
+        }
+        if let Some(recorder) = &self.diagnostics {
+            recorder.set_enabled(enabled);
+        }
+    }
+    pub(crate) fn diagnostic_span(
+        &self,
+        phase: oxide_kit::diagnostics::Phase,
+    ) -> Option<oxide_kit::diagnostics::Span> {
+        self.diagnostics
+            .as_ref()
+            .and_then(|recorder| recorder.span(phase, self.state.current_tick()))
+    }
+
+    pub(crate) fn start_recovery(&mut self) {
+        if self.recovery.is_none()
+            && !self.recovery_warned
+            && let Some(root) = &self.recovery_root
+        {
+            match oxide_kit::recovery::RecoveryWriter::start_recovered(
+                root.clone(),
+                self.recorder.clone(),
+                self.state.current_tick(),
+                self.recovery_source.take(),
+            ) {
+                Ok(writer) => self.recovery = Some(std::sync::Arc::new(writer)),
+                Err(error) => {
+                    self.recovery_warned = true;
+                    self.toast(format!("Recovery unavailable: {error}"));
+                }
+            }
+        }
+    }
+
+    pub(crate) fn poll_recovery(&mut self) {
+        if !self.recovery_warned
+            && let Some(writer) = &self.recovery
+            && let Some(error) = writer.status().error
+        {
+            self.recovery_warned = true;
+            self.toast(format!("Recovery stopped: {error}"));
+        }
+    }
+
+    pub(crate) fn finish_recovery(&self) {
+        if let Some(writer) = &self.recovery {
+            finish_recording(writer, self.state.current_tick());
+        }
+    }
+
     /// Runs exactly one tick: bots think, staged commands drain, everything
     /// is recorded, presentation caches update. The only place `state.current_tick()`
     /// is called.
     pub fn do_tick(&mut self) -> oxide_sim::TickReport {
+        self.start_recovery();
         // New ticks make any earlier autosave stale.
         self.autosave_done = false;
         // Interpolation cache; pointless during suppressed bulk advances
@@ -409,15 +515,29 @@ impl Game {
             .filter(|pc| pc.player == self.human)
             .map(|pc| pc.command.clone())
             .collect();
-        commands.extend(oxide_kit::bot_execution::commands(
+        let bot_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Bots);
+        commands.extend(oxide_kit::bot_execution::commands_observed(
             &self.state,
             &mut self.bots,
+            self.diagnostics
+                .as_ref()
+                .filter(|recorder| recorder.enabled()),
         ));
+        drop(bot_scope);
         for command in &commands {
             self.recorder
                 .record(self.state.current_tick(), command.clone());
         }
+        if let Some(recovery) = &self.recovery {
+            recovery.prepared(self.state.current_tick(), &commands);
+        }
+        let sim_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Simulation);
         let report = self.state.0.tick(&commands);
+        drop(sim_scope);
+        if let Some(recovery) = &self.recovery {
+            recovery.completed(self.state.current_tick());
+        }
+        let _presentation_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Presentation);
         self.projectile_releases
             .observe(&self.state, &report.events);
         self.live_stats.observe(&self.state, &report.events);
@@ -520,9 +640,10 @@ impl Game {
             self.state.building(*id).is_some_and(|building| {
                 !self.state.hostile(human, building.player)
                     || all_seeing
-                    || building
+                    || (building
                         .tiles()
                         .any(|tile| self.state.vision(human).visible(tile))
+                        && self.state.building_apparent(human, building))
             })
         });
         report
@@ -1013,6 +1134,45 @@ impl oxide_protocol::DebugSession for Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_records_the_shell_boundary_and_resumes_the_same_future() {
+        use std::time::{Duration, Instant};
+        let root =
+            std::env::temp_dir().join(format!("oxide-shell-recovery-{}", std::process::id()));
+        let mut original = Game::new(Scenario::skirmish()).unwrap();
+        original.recovery_root = Some(root.clone());
+        original.configure_diagnostics(true);
+        original.advance_ticks(180);
+        let writer = original.recovery.as_ref().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while writer.status().durable_tick < 180 {
+            assert!(Instant::now() < deadline, "{:?}", writer.status());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let replay = oxide_kit::recovery::inspect(writer.directory())
+            .unwrap()
+            .replay;
+        let mut resumed =
+            Game::from_replay_observed(replay, original.diagnostics.as_ref()).unwrap();
+        assert_eq!(original.hash_hex(), resumed.hash_hex());
+        original.advance_ticks(120);
+        resumed.advance_ticks(120);
+        assert_eq!(original.hash_hex(), resumed.hash_hex());
+        original.finish_recovery();
+        assert!(original.recovery.as_ref().unwrap().status().clean);
+        let directory = original.recovery.as_ref().unwrap().directory().to_owned();
+        drop(original);
+        loop {
+            let lease = std::fs::File::open(directory.join("lease")).unwrap();
+            if lease.try_lock().is_ok() {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// The resume guarantee the hash check alone cannot see: the
     /// watch-back loop replays every re-executed tick through the

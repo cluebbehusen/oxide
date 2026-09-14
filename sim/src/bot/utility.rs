@@ -55,6 +55,7 @@ pub(crate) use reconnaissance::{
     ReconQuestionKey,
 };
 mod sensor;
+#[cfg(test)]
 mod support;
 mod support_allocation;
 pub(in crate::bot) use support_allocation::SupportWorkSnapshot;
@@ -93,8 +94,6 @@ const SOLO_SCOUT_RETRY_TICKS: u64 = SCOUT_REFRESH * 2;
 /// between hostile sightings is not evidence that another overflight differs
 /// from the one which just failed.
 const SOLO_SCOUT_QUIET_TICKS: u64 = SCOUT_REFRESH / 6;
-/// Most turrets the policy will pay for in answer to raids.
-const TURRET_CAP: usize = 2;
 /// Scrap kept banked past a Fabricator's price before teching — the
 /// fighting reserve that keeps the sentinel drip alive.
 const TECH_RESERVE: u32 = 70;
@@ -102,40 +101,19 @@ const TECH_RESERVE: u32 = 70;
 /// hoard scrap in trains that cannot be redirected. The strategic air
 /// and lift planners keep their own equal constants for their queues.
 pub(in crate::bot) const SHALLOW_QUEUE_DEPTH: usize = 2;
-/// Most flak turrets the policy will pay for against an air threat.
-const FLAK_CAP: usize = 2;
-/// Most Reclaimers the policy will run at once.
-const RECLAIMER_CAP: usize = 3;
 /// Ground-attack wings gathered before an air raid launches.
 const AIR_WING: usize = 3;
 /// How far around home the policy counts remaining salvage (Chebyshev)
 /// when judging whether the patches are running dry.
 const HOME_SALVAGE_RADIUS: i32 = 14;
-/// Below this much known salvage near home, Reclaimers earn their keep.
-const SALVAGE_LOW: u32 = 250;
-/// Recurring scrap per minute the player-facing policy wants behind each
-/// completed producer before adding another Reclaimer. This is an economic
-/// demand signal rather than a controller-only building ceiling.
-const PASSIVE_INCOME_PER_PRODUCER: u32 = 120;
+
 /// Known anti-air within this range of a raid target scrubs the raid.
 const RAID_AA_RADIUS: i32 = 6;
-/// Frozen profile-free Overseer distance gate for salvage expansion.
-const EXPANSION_RADIUS: i32 = 12;
-/// Frozen profile-free Overseer expansion boundary.
-const LEGACY_FOUNDRY_CAP: usize = 2;
-/// Idle ground fighters gathered before the ferry loads a lift.
-const FERRY_SQUAD: usize = 3;
 
 fn is_air_threat(unit: &UnitObs) -> bool {
     unit.kind.stats().domain == Domain::Air && unit.kind.role() != crate::stats::Role::Scout
 }
 
-fn is_mobile_support_patient(unit: &UnitObs) -> bool {
-    let stats = unit.kind.stats();
-    stats.domain == Domain::Ground
-        && stats.can_fight()
-        && unit.hp.saturating_mul(4) < stats.max_hp.saturating_mul(3)
-}
 /// Persistent quarantine covers the anonymous incident's actual danger area.
 /// Route projection rejects paths through it separately, so widening the
 /// source radius would suppress unrelated work without adding route safety.
@@ -172,6 +150,7 @@ struct ContestedRecon {
 }
 
 impl ContestedRecon {
+    #[cfg(test)]
     const fn at(region: TilePos) -> Self {
         Self {
             region,
@@ -263,23 +242,15 @@ impl ScoutDispatch {
     }
 }
 
-/// Inputs retained by the profile-free Overseer's frozen shuttle channel.
-struct FerryClaims<'a> {
-    enlisted: &'a [UnitId],
-    player_facing: bool,
-}
-
 #[derive(Clone, Copy)]
 struct AirRaidContext<'a> {
     home: TilePos,
     enlisted: &'a [UnitId],
     reserved: &'a [UnitId],
-    player_facing: bool,
 }
 
 #[derive(Clone, Copy)]
 struct ConstructionClaims<'a> {
-    player_facing: bool,
     enlisted: &'a [UnitId],
     reserved: &'a [UnitId],
 }
@@ -429,15 +400,6 @@ impl<'a> ProductionContext<'a> {
     }
 }
 
-struct AdvancedConstructionContext<'a> {
-    home: TilePos,
-    player_facing: bool,
-    builders: &'a [&'a UnitObs],
-    unit_contacts: Option<&'a [UnitContact]>,
-    building_contacts: Option<&'a [BuildingContact]>,
-    voluntary_scrap_guard: Reserve,
-}
-
 struct ExtractorClaimContext<'a> {
     home: TilePos,
     builders: &'a [&'a UnitObs],
@@ -474,12 +436,8 @@ struct OpeningClaimContext<'a> {
     building_contacts: Option<&'a [BuildingContact]>,
     public_map: Option<&'a PublicMapBriefing>,
 }
-/// Most Scuttle Charges the lane-mining arm keeps in the ground.
-const MINE_CAP: usize = 3;
 const ADAPTIVE_HARVESTER_BOOTSTRAP: u32 = 4;
-/// How far out from home (per axis) the mining arm centers its field
-/// along the approach.
-const MINE_LEAN: i32 = 5;
+
 /// Static assets the bot may liquidate when its economy is exhausted,
 /// ordered from least to most strategically costly.
 const SALVAGE_PRIORITY: [BuildingKind; 6] = [
@@ -503,8 +461,8 @@ pub struct Dials {
     /// Fighters gathered before an army is committed.
     pub army_size: u32,
     /// Ordinary ground strength required before voluntary capital spending,
-    /// measured in full-health Sentinel equivalents. Profile-free policies
-    /// leave this at zero to preserve their existing build order.
+    /// measured in full-health Sentinel equivalents. Focused policy fixtures
+    /// can use zero to isolate work from the opening commitment.
     pub minimum_core_equivalents: u32,
     /// Ground-attack flyers gathered before an ordinary harassment sortie.
     pub air_wing: usize,
@@ -517,21 +475,7 @@ pub struct Dials {
     pub support_target: usize,
     /// Fast ground raiders kept alive or queued.
     pub raider_target: usize,
-    /// Legacy profile-free Turret ceiling, retained for policy compatibility.
-    /// Player-facing typed defensive investment does not read this cap.
-    pub turret_cap: usize,
-    /// Legacy profile-free Flak Turret ceiling, retained for policy compatibility.
-    /// Player-facing typed defensive investment does not read this cap.
-    pub flak_cap: usize,
-    /// Maximum late-economy Reclaimers.
-    pub reclaimer_cap: usize,
-    /// Legacy profile-free Scuttle Charge ceiling, retained for policy compatibility.
-    /// Player-facing typed defensive investment does not read this cap.
-    pub mine_cap: usize,
-    /// Legacy Barricade appetite retained for policy compatibility. The frozen
-    /// QA policy keeps this at zero, and player-facing typed defensive
-    /// investment does not read it.
-    pub barricade_cap: usize,
+
     /// Appetite for expansion payback and its supporting security investment.
     /// This changes when a legal expansion becomes worthwhile, never whether
     /// the controller is allowed to build one.
@@ -624,9 +568,7 @@ fn expansion_economy(
 }
 
 impl Dials {
-    /// The player-facing rules-based opponent. Keep this as its own
-    /// literal so later balance work can tune the opponent without
-    /// changing the Overseer QA anchor.
+    /// Default strategic channels before difficulty and personality shaping.
     pub fn balanced() -> Self {
         Self {
             cadence: 8,
@@ -638,11 +580,7 @@ impl Dials {
             siege_target: 2,
             support_target: 1,
             raider_target: 4,
-            turret_cap: TURRET_CAP,
-            flak_cap: FLAK_CAP,
-            reclaimer_cap: RECLAIMER_CAP,
-            mine_cap: MINE_CAP,
-            barricade_cap: 0,
+
             expansion_greed: 50,
             adaptive_composition: false,
             own_strength_scale: 10_000,
@@ -682,11 +620,7 @@ impl Dials {
             siege_target: 2,
             support_target: 1,
             raider_target: 4,
-            turret_cap: TURRET_CAP,
-            flak_cap: FLAK_CAP,
-            reclaimer_cap: RECLAIMER_CAP,
-            mine_cap: MINE_CAP,
-            barricade_cap: 0,
+
             expansion_greed: 50,
             adaptive_composition: false,
             own_strength_scale: 10_000,
@@ -710,53 +644,6 @@ impl Dials {
             expansion: false,
             ferry: false,
             mines: false,
-        }
-    }
-
-    /// The stable QA controller's full strategic surface: deep tech,
-    /// Extractors, upgrades, expansions, transports, and mines. Every field
-    /// is spelled out because these values anchor the blessed state-hash
-    /// fixtures; inheriting from another constructor would let a test-fixture
-    /// edit silently redefine the frozen yardstick.
-    pub fn overseer() -> Self {
-        Self {
-            cadence: 8,
-            harvester_target: 5,
-            army_size: 5,
-            minimum_core_equivalents: 0,
-            air_wing: AIR_WING,
-            bomber_target: 2,
-            siege_target: 2,
-            support_target: 1,
-            raider_target: 4,
-            turret_cap: TURRET_CAP,
-            flak_cap: FLAK_CAP,
-            reclaimer_cap: RECLAIMER_CAP,
-            mine_cap: MINE_CAP,
-            barricade_cap: 0,
-            expansion_greed: 50,
-            adaptive_composition: false,
-            own_strength_scale: 10_000,
-            enemy_strength_scale: 10_000,
-            opponent_force_memory: 0,
-            coordinated_focus: true,
-            coordinated_defense_focus: false,
-            tech: true,
-            turret_response: true,
-            scouting: true,
-            fog_honest: true,
-            aa_response: true,
-            radar: true,
-            reclaimers: true,
-            repair: true,
-            air_harass: true,
-            salvage: true,
-            deep_tech: true,
-            extractors: true,
-            upgrades: true,
-            expansion: true,
-            ferry: true,
-            mines: true,
         }
     }
 
@@ -796,14 +683,7 @@ impl Dials {
             // preserves its force, not how much combat strength it removes
             // from the ordinary army channel.
             raider_target: 2,
-            turret_cap: (1 + usize::from(traits.fortification) / 25).clamp(1, 4),
-            flak_cap: (1 + usize::from(traits.support) / 35).clamp(1, 3),
-            reclaimer_cap: (1 + usize::from(traits.greed) / 25).clamp(1, 4),
-            mine_cap: (1 + (usize::from(traits.fortification) + usize::from(traits.guile)) / 50)
-                .clamp(1, 5),
-            barricade_cap: usize::from(traits.fortification >= 55)
-                + usize::from(traits.fortification >= 75)
-                + usize::from(traits.fortification >= 90),
+
             expansion_greed: traits.greed,
             adaptive_composition: true,
             own_strength_scale: tuning
@@ -852,8 +732,7 @@ pub struct UtilityPolicy {
     last_sent: Vec<(UnitId, TilePos, TilePos)>,
     /// Nodes that bounced a harvester back.
     dead_nodes: Vec<TilePos>,
-    /// Harvester count at the last think; a drop means raiders.
-    harvesters_seen: usize,
+
     /// Bank reading at the last think and the last tick it grew — the
     /// starvation clock behind the desperation endgame. A bank that has
     /// not grown in eighty seconds is a dead economy whatever its
@@ -874,13 +753,7 @@ pub struct UtilityPolicy {
     /// the fund and climb to the sky.
     desperate_march: bool,
     desperate_road: bool,
-    /// Set when a harvester died on this watch. Player-facing typed defense
-    /// derives opportunities directly from fog-honest current and remembered
-    /// evidence instead of reading this legacy latch; the profile-free QA
-    /// controller retains its one-site reset.
-    raided: bool,
-    /// Turret-site count at the last profile-free think.
-    turrets_seen: usize,
+
     /// Build commands dispatched last think, by anchor — one that never
     /// appeared was rejected by ground truth the observation lacks
     /// (an unseen unit in the footprint, say); blacklist the anchor.
@@ -939,10 +812,7 @@ pub struct UtilityPolicy {
     /// Whether enemy air has ever been sighted — the sky stays suspect
     /// afterward.
     seen_air: bool,
-    /// Riders sent to board the profile-free Overseer's ferry on its last
-    /// Load. The player-facing controller owns transport waves in its
-    /// persistent strategic planner instead.
-    ferry_boarding: Vec<UnitId>,
+
     /// Player-facing controller memory for work regions where allied losses
     /// tied to a current or last-observed worker made anonymous salvage unsafe.
     /// Elapsed time alone never proves a mobile threat left, so only fresh
@@ -1236,7 +1106,6 @@ impl PolicyCommitments {
 
 #[derive(Clone, Copy)]
 struct PolicyMode<'a> {
-    player_facing: bool,
     admit_voluntary_macro: bool,
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
@@ -1538,7 +1407,6 @@ impl UtilityPolicy {
             ConstructionContext::new(
                 home,
                 ConstructionClaims {
-                    player_facing: true,
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -2124,54 +1992,17 @@ impl UtilityPolicy {
         Self::deferred_claims_commitment(&Self::deferred_claims(obs))
     }
 
-    fn projected_count(obs: &Observation, kind: BuildingKind, player_facing: bool) -> usize {
+    fn projected_count(obs: &Observation, kind: BuildingKind) -> usize {
         let standing = obs
             .my_buildings
             .iter()
             .filter(|building| building.kind == kind)
             .count();
-        if !player_facing {
-            return standing;
-        }
         standing
             + Self::deferred_claims(obs)
                 .iter()
                 .filter(|(pending, _)| *pending == kind)
                 .count()
-    }
-
-    /// One think: intents for this observation, in lowering order.
-    /// `armies` and `enlisted` are the executive's bookkeeping,
-    /// pre-oriented by the caller when the policy thinks in flipped space.
-    pub fn think(
-        &mut self,
-        dials: &Dials,
-        obs: &Observation,
-        armies: &[Army],
-        enlisted: &[UnitId],
-    ) -> Vec<Intent> {
-        self.think_inner(
-            dials,
-            obs,
-            ThinkContext {
-                armies,
-                enlisted,
-                reserved: &[],
-                combat_core_exclusions: &[],
-                outstanding_air_production_ticks: None,
-                prior_scrap_commitment: 0,
-                voluntary_scrap_guard: None,
-                prelude: Vec::new(),
-                producer_lane_reservations: ProducerLaneReservations::empty(),
-                mode: PolicyMode {
-                    player_facing: false,
-                    admit_voluntary_macro: true,
-                    unit_contacts: None,
-                    building_contacts: None,
-                    public_map: None,
-                },
-            },
-        )
     }
 
     /// One player-facing residual-utility think without controller-level
@@ -2203,7 +2034,6 @@ impl UtilityPolicy {
                 prelude: Vec::new(),
                 producer_lane_reservations: ProducerLaneReservations::empty(),
                 mode: PolicyMode {
-                    player_facing: true,
                     admit_voluntary_macro: strategic_admission_tick(obs.tick),
                     unit_contacts: None,
                     building_contacts: None,
@@ -2237,7 +2067,6 @@ impl UtilityPolicy {
                 prelude: context.prelude,
                 producer_lane_reservations: context.producer_lane_reservations,
                 mode: PolicyMode {
-                    player_facing: true,
                     admit_voluntary_macro: strategic_admission_tick(obs.tick),
                     unit_contacts: Some(context.unit_contacts),
                     building_contacts: Some(context.building_contacts),
@@ -2266,7 +2095,7 @@ impl UtilityPolicy {
             mode,
         } = context;
         let strategic_reserved = reserved;
-        let player_facing = mode.player_facing;
+
         let strategic_production = strategic_production_claims(&prelude);
         let mut intents = prelude;
         if let Some((builder, kind, anchor)) = self.economic_cancelled_founder.take()
@@ -2296,7 +2125,7 @@ impl UtilityPolicy {
             self.seen_air = true;
         }
 
-        if player_facing {
+        {
             if let Some(public_map) = mode.public_map {
                 self.clear_visible_public_starts(obs, public_map);
             }
@@ -2319,7 +2148,7 @@ impl UtilityPolicy {
             );
         }
         let mut protected = strategic_reserved.to_vec();
-        if player_facing {
+        {
             protected.extend(self.evacuating_workers.iter().copied());
             protected.extend(self.retreating_contested_scout.map(|retreat| retreat.unit));
         }
@@ -2335,20 +2164,16 @@ impl UtilityPolicy {
         // player-facing difficulty.
         if !mode.admit_voluntary_macro {
             self.army(dials, obs, armies, home_tile, mode, &mut intents);
-            if player_facing {
-                self.stop_unfunded_repairs(obs, &mut intents);
-            }
+            self.stop_unfunded_repairs(obs, &mut intents);
             return intents;
         }
 
-        let mut commitments = player_facing.then(|| {
-            PolicyCommitments::new(
-                obs,
-                prior_scrap_commitment,
-                strategic_reserved,
-                &strategic_production,
-            )
-        });
+        let mut commitments = Some(PolicyCommitments::new(
+            obs,
+            prior_scrap_commitment,
+            strategic_reserved,
+            &strategic_production,
+        ));
         let utility_admission_scrap = commitments
             .as_ref()
             .map_or(obs.scrap, PolicyCommitments::available_scrap);
@@ -2371,10 +2196,8 @@ impl UtilityPolicy {
         }
         self.audit_harvests(admission_obs);
         self.audit_sites(admission_obs);
-        self.audit_raids(dials, admission_obs, player_facing);
 
-        let has_ground_objective = player_facing
-            && dials.minimum_core_equivalents > 0
+        let has_ground_objective = dials.minimum_core_equivalents > 0
             && self.has_honest_ground_objective(dials, admission_obs, home_tile, mode.public_map);
 
         let opening_core_at_start = combat_core_status(
@@ -2384,10 +2207,8 @@ impl UtilityPolicy {
             u64::from(dials.minimum_core_equivalents),
         );
         let opening_core_active =
-            player_facing && dials.minimum_core_equivalents > 0 && !opening_core_at_start.ready;
-        if player_facing {
-            self.validated_foundry_saving(admission_obs, !opening_core_active);
-        }
+            dials.minimum_core_equivalents > 0 && !opening_core_at_start.ready;
+        self.validated_foundry_saving(admission_obs, !opening_core_active);
         let retained_deferred_claims = if opening_core_active {
             self.opening_core_deferred_claims(
                 admission_obs,
@@ -2400,8 +2221,7 @@ impl UtilityPolicy {
                 },
                 &mut intents,
             )
-        } else if player_facing
-            && dials.minimum_core_equivalents > 0
+        } else if dials.minimum_core_equivalents > 0
             && has_ground_objective
             && !Self::shallow_sentinel_reinforcement(obs, &intents)
         {
@@ -2426,7 +2246,7 @@ impl UtilityPolicy {
                 self.retain_blocked_foundry_saving(admission_obs.tick);
             }
         }
-        if player_facing {
+        {
             for unit in &mut spendable.my_units {
                 if unit
                     .founding
@@ -2448,11 +2268,10 @@ impl UtilityPolicy {
             .iter()
             .filter(|u| u.kind.stats().harvest.is_some())
             .count();
-        let contested_recon = player_facing
+        let contested_recon = true
             .then(|| self.contested_recon_target(obs, home_tile))
             .flatten();
-        let scouting_admitted = player_facing
-            && dials.scouting
+        let scouting_admitted = dials.scouting
             && (harvesters >= immediate_harvester_target(dials) as usize
                 || contested_recon.is_some());
         if scouting_admitted && self.reconnaissance.observed_at != Some(obs.tick) {
@@ -2474,7 +2293,7 @@ impl UtilityPolicy {
                 &unavailable,
                 &mut intents,
             );
-        } else if player_facing && self.reconnaissance.observed_at != Some(obs.tick) {
+        } else if self.reconnaissance.observed_at != Some(obs.tick) {
             // Production still consumes this recomputable demand when the
             // roster is not yet large enough to dispatch the scouting channel.
             self.contested_recon_air_scout_needed = false;
@@ -2483,16 +2302,11 @@ impl UtilityPolicy {
         self.economy(
             obs,
             home_tile,
-            player_facing,
             mode.unit_contacts,
             mode.building_contacts,
             &mut intents,
         );
-        let construction_claims = ConstructionClaims {
-            player_facing,
-            enlisted,
-            reserved,
-        };
+        let construction_claims = ConstructionClaims { enlisted, reserved };
         let mut unavailable_builders = Vec::new();
         for intent in &intents {
             Self::claim_non_preemptible_intent_units(intent, &mut unavailable_builders);
@@ -2501,7 +2315,7 @@ impl UtilityPolicy {
             .with_intelligence(mode.unit_contacts, mode.building_contacts)
             .with_public_map(mode.public_map)
             .excluding_builders(&unavailable_builders);
-        let manages_opening = player_facing && dials.minimum_core_equivalents > 0;
+        let manages_opening = dials.minimum_core_equivalents > 0;
         let mut opening_core_deficient = false;
 
         if manages_opening {
@@ -2570,10 +2384,9 @@ impl UtilityPolicy {
                     &mut intents,
                 );
             }
-        } else if !player_facing || dials.minimum_core_equivalents == 0 {
-            // Preserve the profile-free controller's frozen ordering, and
-            // keep zero-floor policy fixtures useful for testing individual
-            // channels without implicitly enabling the player-facing escrow.
+        } else if dials.minimum_core_equivalents == 0 {
+            // Zero-floor fixtures isolate residual work from the opening
+            // commitment while preserving the same resource ledger.
             let healthy_home_screen = obs
                 .my_units
                 .iter()
@@ -2584,7 +2397,7 @@ impl UtilityPolicy {
                 .count()
                 >= 3;
             let construction_precedes_discretionary =
-                player_facing && healthy_home_screen && outstanding_air_production_ticks.is_none();
+                healthy_home_screen && outstanding_air_production_ticks.is_none();
             let mut planned_construction = Vec::new();
             if construction_precedes_discretionary {
                 let mut construction_budget = budget;
@@ -2633,28 +2446,7 @@ impl UtilityPolicy {
                 );
             }
         }
-        if !player_facing {
-            self.repairs(dials, obs, mode, &mut budget, &mut intents);
-        }
-        if !player_facing
-            && !opening_core_deficient
-            && !opening_bootstrap_active
-            && shallow_capital_guard == 0
-        {
-            self.mobile_support(dials, obs, player_facing, budget, &mut intents);
-        }
         self.salvage(dials, obs, &mut intents);
-        if !player_facing && dials.scouting && harvesters >= dials.harvester_target as usize {
-            self.scouting(obs, home_tile, None, enlisted, &mut intents);
-        }
-        // The profile-free ferry gathers before the army channel so its Load
-        // claims riders ahead of the draft. Player-facing transport waves are
-        // already present in the strategic prelude and reservations.
-        let ferry_claims = FerryClaims {
-            enlisted,
-            player_facing,
-        };
-        self.ferry(dials, obs, armies, home_tile, ferry_claims, &mut intents);
         self.army(dials, obs, armies, home_tile, mode, &mut intents);
         if !opening_core_deficient {
             self.air_raid(
@@ -2664,14 +2456,11 @@ impl UtilityPolicy {
                     home: home_tile,
                     enlisted,
                     reserved,
-                    player_facing,
                 },
                 &mut intents,
             );
         }
-        if player_facing {
-            self.stop_unfunded_repairs(obs, &mut intents);
-        }
+        self.stop_unfunded_repairs(obs, &mut intents);
         intents
     }
 
@@ -3241,6 +3030,7 @@ impl UtilityPolicy {
     /// think's refusal audit. Existing sites are orphan relief, and an
     /// Extractor frame has only one legal anchor, so neither may enter
     /// the site blacklist.
+    #[cfg(test)]
     pub(super) fn record_dispatched_build(
         &mut self,
         obs: &Observation,
@@ -3276,41 +3066,6 @@ impl UtilityPolicy {
             self.foundry_saving = None;
         }
     }
-
-    /// A shrinking harvest line updates the legacy raid latch. Player-facing
-    /// typed defense derives its opportunities from fog-honest current and
-    /// remembered evidence instead of using this latch for eligibility; the
-    /// profile-free controller preserves its historical one-site reset.
-    fn audit_raids(&mut self, dials: &Dials, obs: &Observation, player_facing: bool) {
-        let harvesters = obs
-            .my_units
-            .iter()
-            .filter(|u| u.kind.stats().harvest.is_some())
-            .count();
-        if harvesters < self.harvesters_seen {
-            self.raided = true;
-        }
-        self.harvesters_seen = harvesters;
-        let turret_sites = obs
-            .my_buildings
-            .iter()
-            .filter(|b| b.kind == BuildingKind::Turret)
-            .count();
-        let built_turrets = obs
-            .my_buildings
-            .iter()
-            .filter(|building| building.kind == BuildingKind::Turret && building.built)
-            .count();
-        let response_satisfied = if player_facing {
-            built_turrets >= dials.turret_cap
-        } else {
-            turret_sites > self.turrets_seen
-        };
-        if self.raided && response_satisfied {
-            self.raided = false;
-        }
-        self.turrets_seen = turret_sites;
-    }
 }
 
 #[cfg(test)]
@@ -3336,7 +3091,7 @@ mod tests {
         }
     }
 
-    fn public_map(obs: &Observation) -> PublicMapBriefing {
+    pub(super) fn public_map(obs: &Observation) -> PublicMapBriefing {
         let width = usize::try_from(obs.map_width).expect("the test map has a positive width");
         let height = usize::try_from(obs.map_height).expect("the test map has a positive height");
         assert!(width >= 2 && height >= 2);
@@ -3929,9 +3684,9 @@ mod tests {
             "growth already owned by strategy must not reset utility's starvation clock"
         );
 
-        let mut profile_free = UtilityPolicy::new();
-        profile_free.think(&dials, &obs, &[], &[]);
-        assert_eq!(profile_free.bank_seen, obs.scrap);
+        let mut uncommitted = UtilityPolicy::new();
+        uncommitted.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+        assert_eq!(uncommitted.bank_seen, obs.scrap);
     }
 
     #[test]
@@ -4430,7 +4185,6 @@ mod tests {
                 ConstructionContext::new(
                     home,
                     ConstructionClaims {
-                        player_facing: true,
                         enlisted: &[],
                         reserved: &[],
                     },
@@ -4521,8 +4275,6 @@ mod tests {
             assert_eq!(policy.scout_leg, 0);
             assert_eq!(policy.scout_sent_at, 0);
             assert_eq!(policy.scouted_at, 0);
-            assert_eq!(policy.harvesters_seen, 0);
-            assert_eq!(policy.turrets_seen, 0);
 
             obs.tick = super::super::difficulty::STRATEGIC_ADMISSION_CADENCE;
             let admitted = policy.think_with_intelligence(
@@ -6135,7 +5887,6 @@ mod tests {
             ConstructionContext::new(
                 TilePos::new(2, 2),
                 ConstructionClaims {
-                    player_facing: false,
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -6192,7 +5943,6 @@ mod tests {
                 ConstructionContext::new(
                     home,
                     ConstructionClaims {
-                        player_facing: true,
                         enlisted: &[],
                         reserved: &[],
                     },
@@ -6653,11 +6403,10 @@ mod tests {
         let first_obs = Observation::omniscient(&state, me);
         let mut first_budget = first_obs.scrap;
         let mut first_intents = Vec::new();
-        policy.repairs(
+        policy.test_admit_building_repairs(
             &dials,
             &first_obs,
             PolicyMode {
-                player_facing: false,
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,
@@ -6666,7 +6415,9 @@ mod tests {
             &mut first_budget,
             &mut first_intents,
         );
-        assert_eq!(first_intents, vec![Intent::Repair { building: foundry }]);
+        assert!(
+            matches!(first_intents.as_slice(), [Intent::RepairWith { building, .. }] if *building == foundry)
+        );
         let first_commands = executive.apply(me, &first_obs, &first_intents);
         let welder = match first_commands.as_slice() {
             [
@@ -6701,11 +6452,10 @@ mod tests {
         );
         let mut persistent_budget = persistent_obs.scrap;
         let mut persistent_intents = Vec::new();
-        policy.repairs(
+        policy.test_admit_building_repairs(
             &dials,
             &persistent_obs,
             PolicyMode {
-                player_facing: false,
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,
@@ -6740,11 +6490,10 @@ mod tests {
         );
         let mut resumed_budget = stopped_obs.scrap;
         let mut resumed_intents = Vec::new();
-        policy.repairs(
+        policy.test_admit_building_repairs(
             &dials,
             &stopped_obs,
             PolicyMode {
-                player_facing: false,
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,
@@ -6754,8 +6503,7 @@ mod tests {
             &mut resumed_intents,
         );
         assert_eq!(
-            resumed_intents,
-            vec![Intent::Repair { building: foundry }],
+            resumed_intents, first_intents,
             "once the old program ends, the still-wounded building may be assigned once again"
         );
     }
@@ -6847,10 +6595,9 @@ mod tests {
         let low = dials_for_traits(low_traits);
         let high = dials_for_traits(high_traits);
         assert_eq!((low.support_target, high.support_target), (1, 3));
-        assert_eq!((low.flak_cap, high.flak_cap), (1, 3));
+
         assert_only_expected_dials_change(&low, &high, |candidate, expected| {
             candidate.support_target = expected.support_target;
-            candidate.flak_cap = expected.flak_cap;
         });
 
         low_traits = baseline;
@@ -6859,14 +6606,8 @@ mod tests {
         high_traits.fortification = 80;
         let low = dials_for_traits(low_traits);
         let high = dials_for_traits(high_traits);
-        assert_eq!((low.turret_cap, high.turret_cap), (1, 4));
-        assert_eq!((low.mine_cap, high.mine_cap), (2, 3));
-        assert_eq!((low.barricade_cap, high.barricade_cap), (0, 2));
-        assert_only_expected_dials_change(&low, &high, |candidate, expected| {
-            candidate.turret_cap = expected.turret_cap;
-            candidate.mine_cap = expected.mine_cap;
-            candidate.barricade_cap = expected.barricade_cap;
-        });
+
+        assert_eq!(low, high);
 
         low_traits = baseline;
         low_traits.greed = 24;
@@ -6875,11 +6616,11 @@ mod tests {
         let low = dials_for_traits(low_traits);
         let high = dials_for_traits(high_traits);
         assert_eq!((low.harvester_target, high.harvester_target), (4, 6));
-        assert_eq!((low.reclaimer_cap, high.reclaimer_cap), (1, 4));
+
         assert_eq!((low.expansion_greed, high.expansion_greed), (24, 80));
         assert_only_expected_dials_change(&low, &high, |candidate, expected| {
             candidate.harvester_target = expected.harvester_target;
-            candidate.reclaimer_cap = expected.reclaimer_cap;
+
             candidate.expansion_greed = expected.expansion_greed;
         });
 
@@ -6890,10 +6631,8 @@ mod tests {
         let low = dials_for_traits(low_traits);
         let high = dials_for_traits(high_traits);
         assert_eq!((low.raider_target, high.raider_target), (2, 2));
-        assert_eq!((low.mine_cap, high.mine_cap), (2, 3));
-        assert_only_expected_dials_change(&low, &high, |candidate, expected| {
-            candidate.mine_cap = expected.mine_cap;
-        });
+
+        assert_eq!(low, high);
     }
 
     #[test]
@@ -6932,11 +6671,7 @@ mod tests {
                 assert!((1..=4).contains(&dials.siege_target));
                 assert!((1..=3).contains(&dials.support_target));
                 assert_eq!(dials.raider_target, 2);
-                assert!((1..=4).contains(&dials.turret_cap));
-                assert!((1..=3).contains(&dials.flak_cap));
-                assert!((1..=4).contains(&dials.reclaimer_cap));
-                assert!((1..=5).contains(&dials.mine_cap));
-                assert!(dials.barricade_cap <= 3);
+
                 assert_eq!(dials.expansion_greed, profile.traits.greed);
                 assert!(dials.tech && dials.deep_tech && dials.scouting);
                 assert!(dials.repair && dials.aa_response && dials.turret_response);

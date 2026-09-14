@@ -147,7 +147,7 @@ fn scenario_load_rejects_a_legacy_bot_config() {
 }
 
 #[test]
-fn standard_uses_the_full_fog_honest_tree_without_redefining_the_overseer() {
+fn standard_uses_the_full_fog_honest_tree() {
     let balanced = Dials::balanced();
     assert!(balanced.fog_honest);
     assert!(balanced.tech);
@@ -168,32 +168,18 @@ fn standard_uses_the_full_fog_honest_tree_without_redefining_the_overseer() {
 
     let scenario = Scenario::skirmish();
     let scripted = Brain::balanced(PlayerId(1), public_map(&scenario));
-    let overseer = Brain::overseer(PlayerId(1), 73);
-    let profile = scripted
-        .profile()
-        .expect("player-facing brain has a profile");
+    let profile = scripted.profile();
     let scripted_expected = Dials::scripted(
         profile,
         oxide_sim::bot::DifficultyTuning::for_level(BotDifficulty::Standard),
     );
     assert_eq!(scripted.dials(), &scripted_expected);
-    let mut overseer_surface = overseer.dials().clone();
-    overseer_surface.army_size = Dials::overseer().army_size;
-    assert_eq!(overseer_surface, Dials::overseer());
-    assert!(
-        scripted.dials().cadence > overseer.dials().cadence,
-        "Standard loses attention cadence while retaining the full legal strategy surface"
-    );
     assert_eq!(profile.difficulty, BotDifficulty::Standard);
     assert_eq!(profile.stance, BotStance::Balanced);
-    assert!(
-        overseer.profile().is_none(),
-        "QA brain remains profile-free"
-    );
 }
 
 #[test]
-fn scripted_profile_is_seat_symmetric_while_overseer_keeps_legacy_jitter() {
+fn scripted_profile_is_seat_symmetric() {
     let config = BotConfig {
         difficulty: BotDifficulty::Prime,
         stance: BotStance::Aggressive,
@@ -206,14 +192,6 @@ fn scripted_profile_is_seat_symmetric_while_overseer_keeps_legacy_jitter() {
 
     assert_eq!(left.profile(), right.profile());
     assert_eq!(left.dials(), right.dials());
-
-    let left_overseer = Brain::overseer(PlayerId(0), 1);
-    let right_overseer = Brain::overseer(PlayerId(1), 1);
-    assert_ne!(
-        left_overseer.dials().army_size,
-        right_overseer.dials().army_size,
-        "the profile-free QA controller retains its frozen seat jitter"
-    );
 }
 
 #[test]
@@ -552,9 +530,19 @@ fn prime_skirmish_recalls_one_public_probe_without_reprobing_during_a_chase() {
         BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 9_000),
         briefing,
     );
-    let mut overseer = Brain::overseer_with_policy_seed(PlayerId(1), 0);
+    let pursuers: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(1) && unit.kind == UnitKind::Sentinel)
+        .map(|unit| unit.id)
+        .collect();
+    assert!(
+        !pursuers.is_empty(),
+        "the controlled chase needs an armed pursuer"
+    );
     let mut probes = BTreeSet::new();
     let mut recalls = Vec::new();
+    let mut chase_started = false;
     for tick in 0..1_800 {
         let decision = prime.act_traced(&state);
         if let Some(trace) = &decision.trace {
@@ -590,16 +578,35 @@ fn prime_skirmish_recalls_one_public_probe_without_reprobing_during_a_chase() {
             }
         }
         let mut commands = decision.commands;
-        commands.extend(overseer.act(&state));
+        if !chase_started
+            && let Some((_, observer)) = probes.first()
+            && Observation::fog_honest(&state, PlayerId(1))
+                .enemy_units
+                .iter()
+                .any(|unit| unit.id == *observer)
+        {
+            commands.push(oxide_sim::PlayerCommand {
+                player: PlayerId(1),
+                command: Command::Attack {
+                    units: pursuers.clone(),
+                    target: Target::Unit(*observer).into(),
+                    queue: false,
+                },
+            });
+            chase_started = true;
+        }
         let report = state.tick(&commands);
-        assert!(report.events.iter().all(|event| !matches!(
-            event,
-            Event::CommandRejected {
-                player: PlayerId(0),
-                ..
-            }
-        )));
+        assert!(
+            report
+                .events
+                .iter()
+                .all(|event| !matches!(event, Event::CommandRejected { .. }))
+        );
     }
+    assert!(
+        chase_started,
+        "the assigned observer must encounter the controlled pursuer"
+    );
     assert_eq!(
         probes.len(),
         1,
@@ -908,10 +915,7 @@ fn southeast_brain_ignores_an_unactionable_public_extractor_without_learning_its
     );
 }
 
-// Concealed-mine placement can reject an otherwise legal bot command:
-// https://linear.app/cluebbehusen/issue/CL-33/building-placement-exposes-concealed-enemy-mines
 #[test]
-#[ignore = "Blocked by the concealed-mine placement leak (CL-33)"]
 fn balanced_mirror_plays_a_complete_decisive_match() {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {

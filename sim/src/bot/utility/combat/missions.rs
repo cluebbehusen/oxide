@@ -94,7 +94,7 @@ impl UtilityPolicy {
             .map(|(army, _)| *army)
             .collect();
         let mut routes = None;
-        let minimum = coherent_attack_size(dials, true);
+        let minimum = coherent_attack_size(dials);
         let eligible = |army: &&Army| {
             army.state != ArmyState::Withdrawing
                 && army
@@ -734,7 +734,6 @@ impl UtilityPolicy {
             staging_army,
             objectives.first().map(|building| building.anchor),
             home,
-            true,
         );
         let count = staging_army.map_or(0, |army| army.members.len());
         let target = dials

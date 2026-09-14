@@ -965,12 +965,37 @@ fn apply_cancel(
         let cost = stats.construction.expect("sites are buildable kinds").cost;
         cost * b.hp / stats.max_hp
     };
+    cancel_site(state, player, building, refund, events);
+    Ok(())
+}
+
+pub(super) fn cancel_site(
+    state: &mut State,
+    player: PlayerId,
+    building: crate::ids::BuildingId,
+    refund: u32,
+    events: &mut Vec<Event>,
+) {
     let bank = &mut state.player_mut(player).scrap;
     *bank = bank.saturating_add(refund);
     if let Some(index) = state.buildings.iter().position(|b| b.id == building) {
         state.stamp_building_occupancy(index, false);
     }
+    crate::vision::forget_observed_building(state, building, false);
     state.buildings.retain(|b| b.id != building);
+    clear_site_orders(state, player, building);
+    events.push(Event::BuildCancelled {
+        building,
+        player,
+        refund,
+    });
+}
+
+pub(super) fn clear_site_orders(
+    state: &mut State,
+    player: PlayerId,
+    building: crate::ids::BuildingId,
+) {
     for unit in state.units.iter_mut().filter(|unit| unit.player == player) {
         unit.queue
             .retain(|order| !matches!(order, Order::Build { site } if *site == building));
@@ -978,12 +1003,6 @@ fn apply_cancel(
             remove_active_order(unit);
         }
     }
-    events.push(Event::BuildCancelled {
-        building,
-        player,
-        refund,
-    });
-    Ok(())
 }
 
 /// Welding is for standing, wounded, own buildings; sites are resumed
@@ -1244,7 +1263,7 @@ fn apply_cancel_train(
     Ok(())
 }
 
-fn apply_cancel_found(
+pub(super) fn apply_cancel_found(
     state: &mut State,
     player: PlayerId,
     kind: crate::stats::BuildingKind,

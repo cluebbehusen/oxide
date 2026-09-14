@@ -38,6 +38,7 @@
 
 mod aircraft_crashes;
 mod brain;
+mod charges;
 mod commands;
 pub(crate) mod flight;
 pub(crate) mod landing;
@@ -175,6 +176,7 @@ impl State {
             production::capture_recovery_entitlements(self);
             commands::apply(self, commands, &mut events);
             production::run(self, &mut events);
+            charges::cancel_discovered(self, &mut events);
             production::decay_abandoned_sites(self);
             let boardings = brain::run(self, &mut index, &mut events);
             // Embarkations and landings mutate the unit list, which must
@@ -201,12 +203,15 @@ impl State {
             ));
             aircraft_crashes::remember_motion(self, &air_positions);
             aircraft_crashes::land(self, &mut events);
-            detonate_charges(self, &mut events);
+            charges::detonate_under_units(self, &mut events);
             cleanup(self, &mut events);
             if self.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
                 self.map.decay_wrecks();
             }
             self.refresh_vision();
+            if charges::cancel_discovered(self, &mut events) {
+                self.reconcile_attack_knowledge();
+            }
             victory(self, &mut events);
         }
         self.tick += 1;
@@ -218,69 +223,20 @@ impl State {
     }
 }
 
-/// Buried charges under hostile treads go off — after movement, so the
-/// step onto the trigger and the blast share a tick. Charges detonate
-/// in id order against post-movement positions; a charge zeroed by
-/// combat (or by an earlier blast — mines never sympathetically
-/// detonate, they are simply destroyed) no longer fires. The blast
-/// hits every hostile ground machine in the ring and every hostile
-/// buried charge (the splash-vulnerability rule), and cleanup sweeps
-/// the casualties in the same tick.
-fn detonate_charges(state: &mut State, events: &mut Vec<Event>) {
-    use crate::stats::{BuildingKind, CHARGE_BLAST_RADIUS, CHARGE_DAMAGE, CHARGE_TRIGGER_RADIUS};
-    let trigger_sq = CHARGE_TRIGGER_RADIUS * CHARGE_TRIGGER_RADIUS;
-    let blast_sq = CHARGE_BLAST_RADIUS * CHARGE_BLAST_RADIUS;
-    for slot in 0..state.buildings.len() {
-        let b = &state.buildings[slot];
-        if b.kind != BuildingKind::ScuttleCharge || !b.built || b.hp == 0 {
-            continue;
-        }
-        let (id, owner, center) = (b.id, b.player, b.center());
-        let tripped = state.units.iter().any(|u| {
-            u.hp > 0
-                && state.hostile(owner, u.player)
-                && u.domain() == crate::stats::Domain::Ground
-                && u.pos.dist_sq(center) <= trigger_sq
-        });
-        if !tripped {
-            continue;
-        }
-        state.buildings[slot].hp = 0;
-        events.push(Event::ChargeDetonated {
-            building: id,
-            player: owner,
-            at: center,
-        });
-        for u in state.units.iter_mut() {
-            if u.hp > 0
-                && state.players[owner.0 as usize].team != state.players[u.player.0 as usize].team
-                && u.domain() == crate::stats::Domain::Ground
-                && u.pos.dist_sq(center) <= blast_sq
-            {
-                u.hp = u.hp.saturating_sub(CHARGE_DAMAGE);
-            }
-        }
-        for other in 0..state.buildings.len() {
-            if other == slot {
-                continue;
-            }
-            let ob = &state.buildings[other];
-            if ob.hp > 0
-                && ob.kind.is_stealthy()
-                && state.players[owner.0 as usize].team != state.players[ob.player.0 as usize].team
-                && ob.center().dist_sq(center) <= blast_sq
-            {
-                state.buildings[other].hp = ob.hp.saturating_sub(CHARGE_DAMAGE);
-            }
-        }
-    }
-}
-
 /// Removes entities that hit 0 hp this tick, reporting each — and leaves
 /// their price on the ground: a fraction of every destroyed machine's
 /// cost lands as wreck salvage (buildings split theirs across the
 /// footprint). Battles literally feed the salvagers.
 fn cleanup(state: &mut State, events: &mut Vec<Event>) {
+    let dead_charges: Vec<_> = state
+        .buildings
+        .iter()
+        .filter(|b| b.hp == 0 && b.kind.is_stealthy())
+        .map(|b| b.id)
+        .collect();
+    for id in dead_charges {
+        crate::vision::forget_observed_building(state, id, false);
+    }
     aircraft_crashes::schedule(state);
     let mut deposits: Vec<(TilePos, u32)> = Vec::new();
     for unit in state.units.iter().filter(|u| u.hp == 0) {
@@ -1378,6 +1334,7 @@ mod tests {
         production::run(state, &mut events);
         pair_new_calibration_units(state, unit_pairs);
         assert_calibration_open_symmetry(&stage("production"), state, unit_pairs);
+        charges::cancel_discovered(state, &mut events);
         production::decay_abandoned_sites(state);
         let pending = brain::run(state, &mut index, &mut events);
         assert_calibration_open_symmetry(&stage("brains"), state, unit_pairs);
@@ -1391,12 +1348,15 @@ mod tests {
         assert_calibration_open_symmetry(&stage("collisions"), state, unit_pairs);
         aircraft_crashes::remember_motion(state, &air_positions);
         aircraft_crashes::land(state, &mut events);
-        detonate_charges(state, &mut events);
+        charges::detonate_under_units(state, &mut events);
         cleanup(state, &mut events);
         if state.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
             state.map.decay_wrecks();
         }
         state.refresh_vision();
+        if charges::cancel_discovered(state, &mut events) {
+            state.reconcile_attack_knowledge();
+        }
         victory(state, &mut events);
         assert_calibration_open_symmetry(&stage("cleanup"), state, unit_pairs);
         state.tick += 1;

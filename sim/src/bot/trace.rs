@@ -40,7 +40,7 @@ const ALLOCATION_TRACE_ENTRY_LIMIT: usize = 32;
 
 /// Commands from one bot act plus its optional player-facing diagnostic.
 ///
-/// The trace is absent for the frozen Overseer and for ticks on which the
+/// The trace is absent for ticks on which the
 /// player-facing controller does not think.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TracedBotAct {

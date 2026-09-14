@@ -71,8 +71,8 @@ fn visible_hostile_target_at(
         return Some((Target::Unit(id), position, domain));
     }
     game.state
-        .building_at(tile)
-        .filter(|building| {
+        .buildings_at(tile)
+        .find(|building| {
             game.state.hostile(game.human, building.player)
                 && building
                     .tiles()
@@ -253,9 +253,12 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     // click's plain meaning is the building under the cursor, not the
     // rat beside it. No visibility condition on own targets — ownership
     // cannot probe fog, and own buildings always draw.
+    let own_building = game
+        .state
+        .buildings_at(tile)
+        .find(|b| b.player == game.human);
     if (has_worker || has_welder)
-        && let Some(building) = game.state.building_at(tile)
-        && building.player == game.human
+        && let Some(building) = own_building
     {
         if !building.built {
             if building.tier > 0 {

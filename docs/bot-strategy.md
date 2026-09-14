@@ -295,8 +295,7 @@ whether the resulting opponent is understandable, challenging, and fun.
 
 The existing controller boundaries remain valuable: fog-honest observation,
 timestamped intelligence, persistent domain planners, exact reservations, intent
-lowering, ordinary commands, deterministic replay, and the frozen Overseer
-evaluation anchor.
+lowering, ordinary commands, and deterministic replay.
 
 Generalization should happen at proven coordination seams: investment cases,
 resource claims, production demand, capacity forecasts, and exact ownership.

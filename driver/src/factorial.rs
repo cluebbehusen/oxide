@@ -1,39 +1,32 @@
-//! The factorial fairness probe: every advantage the shipped game binds
-//! to the seat index, permuted one lever at a time and all together.
+//! Factorial measurements of a configured bot interacting with the simulation.
+//! Faction, map geometry, starting unit-id order, and command order are crossed
+//! on the same simulation seeds while every seat uses the same complete profile.
 //!
-//! `sweep` seats the same commander in both chairs and reads the
-//! aggregate lean; this probe unbundles what the chair itself carries:
-//! which roster a seat plays, which end of the map it starts from,
-//! which id range its starting units claim, and where its commands land
-//! in the tick's command slice. Each is a factor with its own levels;
-//! the design is their full cross product, every cell played on the
-//! same seed set.
-//!
-//! The response is seat 0's win rate over decided matches, reported per
-//! factor level with a 95% Wilson interval, alongside decision-tick
-//! quartiles and the censored share. Marginals alone would lie here —
-//! the same-roster mirrors are known to lean in *opposite* directions,
-//! which an average erases — so the full cell table is part of the
-//! report, not an appendix.
+//! Reports include seat-zero win rate over decided matches, Wilson intervals,
+//! decision-tick quartiles, and the censored share. The full cell table exposes
+//! interactions that aggregate marginals can hide. These outcomes depend on
+//! the controller's response to each configuration as well as the game rules.
 //!
 //! Nothing in the probe changes the sim: every cell is a transform of
 //! the scenario or of how the harness assembles the tick, and the
-//! all-baseline cell reproduces a direct Overseer-vs-Overseer run bit
+//! all-baseline cell reproduces a direct configured-bot mirror run bit
 //! for bit (a test pins that against the sim stepped by hand).
 
 use crate::sweep::SweepOutcome;
 use anyhow::{Context, Result};
-use oxide_sim::bot::Brain;
+#[cfg(test)]
+use oxide_sim::PlayerId;
+use oxide_sim::bot::seat_bots;
 use oxide_sim::scenario::Scenario;
-use oxide_sim::{BuildingKind, Faction, GameResult, PlayerId, State};
+use oxide_sim::{BuildingKind, Faction, GameResult, State};
 use serde::Serialize;
 
 /// How many levers the design carries.
 pub const FACTOR_COUNT: usize = 4;
 
 /// One lever of the design. Every factor is something the shipped game
-/// ties to the seat number; a marginal that moves when the lever flips
-/// is an edge the chair carries, not the player sitting in it.
+/// ties to the seat number. Marginals measure its effect on the configured
+/// controller matchup, including the controller's response to that change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Factor {
     /// Which roster each seat plays, all four combinations.
@@ -219,6 +212,11 @@ pub struct RosterRecord {
 /// The probe's verdict.
 #[derive(Debug, Clone, Serialize)]
 pub struct FactorialReport {
+    /// Exact shared controller profile for this measurement.
+    #[serde(serialize_with = "crate::sweep::serialize_bot_config")]
+    pub bot_config: oxide_sim::scenario::BotConfig,
+    /// Simulation rules used by this measurement.
+    pub sim_version: String,
     /// Scenario name.
     pub scenario: String,
     /// Seeds each cell was played on.
@@ -406,6 +404,7 @@ pub fn run_factorial(
     seeds: u64,
     max_ticks: u64,
     seed_base: u64,
+    config: oxide_sim::scenario::BotConfig,
 ) -> Result<FactorialReport> {
     anyhow::ensure!(!enabled.is_empty(), "the design needs at least one factor");
     anyhow::ensure!(
@@ -427,7 +426,7 @@ pub fn run_factorial(
     let base = crate::runner::load_scenario(scenario)?;
     anyhow::ensure!(
         base.players.len() == 2,
-        "the factorial probe reads 1v1 fairness; {} has {} seats",
+        "the factorial probe requires a 1v1 matchup; {} has {} seats",
         base.name,
         base.players.len()
     );
@@ -443,7 +442,7 @@ pub fn run_factorial(
         .flat_map(|cell| (0..seeds).map(move |offset| (*cell, seed_base + offset)))
         .collect();
     let matches = crate::pool::fan_out(&jobs, |&(cell, seed)| {
-        let played = play(&base, seed, cell, max_ticks)?;
+        let played = play(&base, seed, cell, max_ticks, config)?;
         eprintln!(
             "  {} · seed {} · {} ticks · {:?}",
             labels(enabled, &cell).join(" "),
@@ -498,6 +497,8 @@ pub fn run_factorial(
 
     let overall = Tally::of(&matches.iter().collect::<Vec<_>>());
     Ok(FactorialReport {
+        bot_config: config,
+        sim_version: oxide_sim::SIM_VERSION.to_string(),
         scenario: base.name,
         seeds,
         seed_base,
@@ -623,9 +624,15 @@ fn wilson(wins: u32, n: u32) -> [f64; 2] {
 }
 
 /// Plays one cell on one seed. The all-baseline cell is a plain
-/// Overseer-vs-Overseer match: the scenario as authored and seat-order
+/// configured-bot mirror match: the scenario as authored and seat-order
 /// commands.
-fn play(base: &Scenario, seed: u64, cell: Cell, max_ticks: u64) -> Result<FactorialMatch> {
+fn play(
+    base: &Scenario,
+    seed: u64,
+    cell: Cell,
+    max_ticks: u64,
+    config: oxide_sim::scenario::BotConfig,
+) -> Result<FactorialMatch> {
     let mut sc = if cell[Factor::Geometry.index()] == 1 {
         rotate_180(base)?
     } else {
@@ -638,10 +645,9 @@ fn play(base: &Scenario, seed: u64, cell: Cell, max_ticks: u64) -> Result<Factor
     }
     permute_spawn_order(&mut sc, cell[Factor::Spawn.index()]);
 
+    oxide_kit::bench::all_bots_with_config(&mut sc, config);
     let mut state: State = sc.build().context("building scenario")?;
-    let mut bots: Vec<Brain> = (0u8..2)
-        .map(|seat| Brain::overseer(PlayerId(seat), seed))
-        .collect();
+    let mut bots = seat_bots(&sc)?;
     let order: [usize; 2] = if cell[Factor::Command.index()] == 1 {
         [1, 0]
     } else {
@@ -688,10 +694,12 @@ pub fn factorial_report(
     max_ticks: u64,
     seed_base: u64,
     out: Option<&str>,
+    config: oxide_sim::scenario::BotConfig,
 ) -> Result<()> {
-    let report = run_factorial(scenario, enabled, seeds, max_ticks, seed_base)?;
+    let report = run_factorial(scenario, enabled, seeds, max_ticks, seed_base, config)?;
+    println!("controller: {config:?}; sim {}", oxide_sim::SIM_VERSION);
     println!(
-        "\nFACTORIAL FAIRNESS  ·  {}  ·  Overseer both seats  ·  {} cells x {} seeds = {} matches  ·  cap {}",
+        "\nFACTORIAL MATCHUPS  ·  {}  ·  current controller both seats  ·  {} cells x {} seeds = {} matches  ·  cap {}",
         report.scenario, report.cells, report.seeds, report.matches_played, report.max_ticks
     );
     println!(
@@ -897,7 +905,7 @@ mod tests {
 
     /// Rotating twice is the identity — the transform that would
     /// silently hand the seats different worlds is exactly the one a
-    /// fairness verdict cannot survive.
+    /// controlled comparison cannot survive.
     #[test]
     fn rotation_is_an_involution_and_preserves_the_world() {
         let base = crate::runner::load_scenario("skirmish").unwrap();
@@ -977,19 +985,18 @@ mod tests {
     }
 
     /// The all-baseline cell must reproduce, bit for bit, a reference
-    /// run that seats [`Brain::overseer`] per seat and steps the sim
+    /// run that seats [`seat_bots`] per seat and steps the sim
     /// directly — proof that the harness transforms are neutral when
     /// every lever sits at its baseline.
     #[test]
-    fn the_baseline_cell_reproduces_a_direct_overseer_run() {
+    fn the_baseline_cell_reproduces_a_direct_scripted_run() {
         let base = crate::runner::load_scenario("skirmish").unwrap();
         for seed in [0u64, 17, 4_242] {
             let mut sc = base.clone();
             sc.seed = seed;
+            oxide_kit::bench::all_bots(&mut sc);
             let mut state = sc.build().unwrap();
-            let mut bots: Vec<Brain> = (0u8..2)
-                .map(|seat| Brain::overseer(PlayerId(seat), seed))
-                .collect();
+            let mut bots = seat_bots(&sc).unwrap();
             for _ in 0..200 {
                 let mut commands = Vec::new();
                 for bot in &mut bots {
@@ -1000,7 +1007,14 @@ mod tests {
                     break;
                 }
             }
-            let probed = play(&base, seed, [0; FACTOR_COUNT], 200).unwrap();
+            let probed = play(
+                &base,
+                seed,
+                [0; FACTOR_COUNT],
+                200,
+                oxide_sim::scenario::BotConfig::default(),
+            )
+            .unwrap();
             assert_eq!(probed.hash, state.hash(), "seed {seed}");
             assert_eq!(probed.ticks, state.current_tick(), "seed {seed}");
         }
@@ -1010,7 +1024,15 @@ mod tests {
     /// one cell, and the marginals account for all of them.
     #[test]
     fn the_design_accounts_for_every_cell() {
-        let report = run_factorial("skirmish", &Factor::ALL, 1, 30, 7_000).unwrap();
+        let report = run_factorial(
+            "skirmish",
+            &Factor::ALL,
+            1,
+            30,
+            7_000,
+            oxide_sim::scenario::BotConfig::default(),
+        )
+        .unwrap();
         assert_eq!(report.cells, 4 * 2 * 2 * 2);
         assert_eq!(report.matches_played as usize, report.cells);
         assert_eq!(report.per_cell.len(), report.cells);
@@ -1037,6 +1059,7 @@ mod tests {
             1,
             20,
             7_000,
+            oxide_sim::scenario::BotConfig::default(),
         )
         .unwrap();
         assert_eq!(report.cells, 4);
@@ -1060,6 +1083,7 @@ mod tests {
             1,
             20,
             7_000,
+            oxide_sim::scenario::BotConfig::default(),
         )
         .unwrap();
         assert_eq!(report.factors, ["faction", "geometry"]);
@@ -1073,6 +1097,7 @@ mod tests {
             1,
             20,
             7_000,
+            oxide_sim::scenario::BotConfig::default(),
         )
         .unwrap_err()
         .to_string();

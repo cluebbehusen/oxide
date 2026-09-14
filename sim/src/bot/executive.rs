@@ -94,8 +94,7 @@ pub enum Intent {
     /// Start a construction site with one exact policy-selected builder.
     ///
     /// Player-facing policy binds an implicit [`Self::Build`] only after it
-    /// has checked the worker's fog-honest command route. The profile-free
-    /// Overseer keeps the historical implicit-builder path.
+    /// has checked the worker's fog-honest command route.
     BuildWith {
         /// Exact Harvester whose route was checked.
         builder: UnitId,
@@ -274,8 +273,7 @@ pub struct Executive {
     /// repaired.
     exhausted_rear: Vec<UnitId>,
     /// Stable owner-facing tactical state. Player-facing brains latch it on
-    /// their first maintenance pass; the profile-free Overseer leaves it
-    /// absent and preserves its historical world-space centroids.
+    /// their first maintenance pass.
     player_frame: Option<PlayerFacingTactics>,
 }
 
@@ -501,13 +499,6 @@ mod tests {
                 .is_empty(),
             "the player-facing controller must not emit a repair that cannot route"
         );
-        assert!(matches!(
-            Executive::new().apply(me, &obs, &intent).as_slice(),
-            [PlayerCommand {
-                command: Command::Repair { units, building: target, queue: false },
-                ..
-            }] if units == &[blocked.id] && *target == building
-        ));
     }
 
     #[test]

@@ -61,15 +61,6 @@ pub(in crate::bot) struct FreshEmergencyDefenseContext<'a> {
     pub(in crate::bot) current_scrap: u32,
 }
 
-/// Inputs for the exact current-capital threshold that residual technology
-/// construction needs the shared allocator to leave available.
-#[derive(Clone, Copy)]
-#[cfg(test)]
-struct ResidualTechnologyReserveContext<'a> {
-    pub(in crate::bot) home: TilePos,
-    pub(in crate::bot) available_builders: &'a [UnitId],
-}
-
 /// One economically worthwhile, command-feasible player-facing expansion.
 ///
 /// Both the production reserve and construction channels consume this exact
@@ -600,10 +591,6 @@ pub(super) fn commit_foundry_plan(
     })
 }
 
-fn can_fund(budget: u32, cost: u32, ordinary_reserve: u32, voluntary_guard: Reserve) -> bool {
-    budget >= cost.saturating_add(voluntary_guard.amount(ordinary_reserve))
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FoundryCaseEvidence {
     foundry_cost: u32,
@@ -1064,9 +1051,6 @@ impl UtilityPolicy {
             unavailable_builders,
             ..
         } = context;
-        if !claims.player_facing {
-            return None;
-        }
         let builders: Vec<_> = self
             .construction_builders(obs, claims.enlisted, claims.reserved)
             .into_iter()
@@ -1098,9 +1082,6 @@ impl UtilityPolicy {
             public_map,
             ..
         } = context;
-        if !claims.player_facing {
-            return None;
-        }
         let briefing = public_map?;
         let starting_home = briefing
             .starting_foundries()
@@ -1789,6 +1770,7 @@ impl UtilityPolicy {
         Ok(())
     }
 
+    #[cfg(test)]
     fn recurring_income_per_minute(obs: &Observation) -> u32 {
         // This is construction planning, not a current-cash-flow report. Paid
         // sites and deferred claims count at their eventual rate so the bot
@@ -1826,221 +1808,6 @@ impl UtilityPolicy {
         standing.saturating_add(deferred)
     }
 
-    fn recurring_income_target(obs: &Observation) -> u32 {
-        let producers = obs
-            .my_buildings
-            .iter()
-            .filter(|building| {
-                building.built && !building.kind.tier_stats(building.tier).produces.is_empty()
-            })
-            .count();
-        u32::try_from(producers)
-            .unwrap_or(u32::MAX)
-            .saturating_mul(PASSIVE_INCOME_PER_PRODUCER)
-    }
-
-    /// Restore a known frame, raise advanced production, expand, and
-    /// upgrade one structure per think without starving the army budget.
-    /// Returns true when this channel spent the think.
-    fn advanced_construction(
-        &mut self,
-        dials: &Dials,
-        obs: &Observation,
-        context: AdvancedConstructionContext<'_>,
-        budget: &mut u32,
-        intents: &mut Vec<Intent>,
-    ) -> bool {
-        let AdvancedConstructionContext {
-            home,
-            player_facing,
-            builders,
-            unit_contacts,
-            building_contacts,
-            voluntary_scrap_guard,
-        } = context;
-        let have = |kind: BuildingKind| Self::projected_count(obs, kind, player_facing) > 0;
-        let have_built =
-            |kind: BuildingKind| obs.my_buildings.iter().any(|b| b.kind == kind && b.built);
-        // Restoring a frame is the cheapest, highest-yield act on the
-        // board: take the nearest known unclaimed frame.
-        if dials.extractors {
-            let cost = BuildingKind::Extractor
-                .base_stats()
-                .construction
-                .map(|c| c.cost)
-                .unwrap_or(0);
-            // A frame's anchor is FIXED, so it must never enter the
-            // pending/dead blacklists: one think whose builders were
-            // all claimed elsewhere would poison the only anchor the
-            // Extractor can ever have. The intent simply re-issues
-            // until a standing site claims the frame.
-            let frame = if player_facing {
-                self.player_facing_extractor_claim(
-                    obs,
-                    ExtractorClaimContext {
-                        home,
-                        builders,
-                        unit_contacts,
-                        building_contacts,
-                    },
-                    |frame| {
-                        can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
-                            || (can_fund(*budget, cost, 0, voluntary_scrap_guard)
-                                && Self::frame_has_foundry_support(obs, frame))
-                    },
-                )
-                .map(|(frame, builder)| (frame, Some(builder)))
-            } else {
-                let mut road_reach = None;
-                obs.known_frames
-                    .iter()
-                    .filter(|frame| {
-                        !obs.my_buildings
-                            .iter()
-                            .chain(obs.enemy_buildings.iter())
-                            .any(|building| building.anchor == **frame)
-                    })
-                    // A frame no builder can walk to must not be
-                    // claimed: the intent would re-issue forever and
-                    // starve every deeper construction rung (the
-                    // island-map deadlock). The road must be KNOWN —
-                    // the optimistic flood survives any unexplored
-                    // gulf, and a cross-strait frame it admits eats
-                    // every construction think until the map dies.
-                    .filter(|frame| {
-                        road_reach
-                            .get_or_insert_with(|| Self::known_road_reach(obs, home))
-                            .frame_reached(**frame)
-                    })
-                    .filter(|_| can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard))
-                    .min_by_key(|frame| (frame.chebyshev(home), frame.y, frame.x))
-                    .map(|frame| (*frame, None))
-            };
-            if let Some((anchor, builder)) = frame {
-                *budget -= cost;
-                if let Some(builder) = builder {
-                    let before_harvest = intents
-                        .iter()
-                        .position(|intent| matches!(intent, Intent::AssignHarvest { .. }))
-                        .unwrap_or(intents.len());
-                    intents.insert(
-                        before_harvest,
-                        Intent::BuildWith {
-                            builder,
-                            kind: BuildingKind::Extractor,
-                            anchor,
-                        },
-                    );
-                } else {
-                    intents.push(Intent::Build {
-                        kind: BuildingKind::Extractor,
-                        anchor,
-                    });
-                }
-                return true;
-            }
-        }
-        // Expansion is an economic project with a local protection burden,
-        // not a reward for reaching a particular base count.
-        if dials.expansion && have_built(BuildingKind::Foundry) && !player_facing {
-            let cost = BuildingKind::Foundry
-                .base_stats()
-                .construction
-                .map(|c| c.cost)
-                .unwrap_or(0);
-            let foundries: Vec<_> = obs
-                .my_buildings
-                .iter()
-                .filter(|building| building.kind == BuildingKind::Foundry)
-                .map(|building| building.anchor)
-                .collect();
-            if foundries.len() < LEGACY_FOUNDRY_CAP
-                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
-                && (!dials.deep_tech || have(BuildingKind::Airworks))
-            {
-                let mut road_reach = None;
-                let frontier = obs
-                    .known_scrap
-                    .iter()
-                    .filter(|(_, amount)| *amount > 0)
-                    .map(|(tile, _)| *tile)
-                    .chain(obs.known_frames.iter().copied().filter(|frame| {
-                        !obs.my_buildings
-                            .iter()
-                            .chain(obs.enemy_buildings.iter())
-                            .any(|building| building.anchor == *frame)
-                    }))
-                    .filter(|tile| {
-                        foundries
-                            .iter()
-                            .all(|f| f.chebyshev(*tile) > EXPANSION_RADIUS)
-                            && road_reach
-                                .get_or_insert_with(|| Self::known_road_reach(obs, home))
-                                .frame_reached(*tile)
-                    })
-                    .min_by_key(|tile| {
-                        let frontier = foundries
-                            .iter()
-                            .map(|f| f.chebyshev(*tile))
-                            .min()
-                            .unwrap_or(0);
-                        (frontier, tile.y, tile.x)
-                    });
-                if let Some(focus) = frontier
-                    && let Some(anchor) = self.placement_near(obs, BuildingKind::Foundry, focus)
-                {
-                    *budget -= cost;
-                    intents.push(Intent::Build {
-                        kind: BuildingKind::Foundry,
-                        anchor,
-                    });
-                    return true;
-                }
-            }
-        }
-        if dials.deep_tech && have_built(BuildingKind::Fabricator) {
-            for kind in [BuildingKind::Airworks, BuildingKind::Crucible] {
-                if have(kind) {
-                    continue;
-                }
-                let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
-                if can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
-                    && let Some(anchor) = self.placement_near(obs, kind, home)
-                {
-                    *budget -= cost;
-                    intents.push(Intent::Build { kind, anchor });
-                    return true;
-                }
-                // The next rung waits until this one is affordable.
-                return false;
-            }
-        }
-        if dials.upgrades {
-            for (kind, tier) in [(BuildingKind::Reclaimer, 0), (BuildingKind::Turret, 0)] {
-                let Some(upgrade) = kind.upgrade_from(tier) else {
-                    continue;
-                };
-                if upgrade.requires.iter().any(|req| !have_built(*req)) {
-                    continue;
-                }
-                if !can_fund(*budget, upgrade.cost, TECH_RESERVE, voluntary_scrap_guard) {
-                    continue;
-                }
-                let target = obs
-                    .my_buildings
-                    .iter()
-                    .filter(|b| b.kind == kind && b.built && b.tier == tier)
-                    .min_by_key(|b| (b.anchor.y, b.anchor.x));
-                if let Some(b) = target {
-                    *budget -= upgrade.cost;
-                    intents.push(Intent::Upgrade { building: b.id });
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     /// Construction channel: recover paid work first, then choose at most one
     /// economy, tech, support, or role-specific fortification project.
     #[cfg(test)]
@@ -2058,21 +1825,20 @@ impl UtilityPolicy {
     fn opening_construction_recovery(
         &self,
         obs: &Observation,
-        player_facing: bool,
+
         builders: &[&UnitObs],
     ) -> Option<Intent> {
-        if player_facing
-            && let Some(site) = obs
-                .my_buildings
-                .iter()
-                .filter(|site| {
-                    site.kind == BuildingKind::Turret
-                        && !site.built
-                        && site.tier == 0
-                        && !obs.my_units.iter().any(|unit| unit.site == Some(site.id))
-                        && Self::unfinished_turret_currently_unsafe(obs, site)
-                })
-                .min_by_key(|site| (site.anchor.y, site.anchor.x, site.id))
+        if let Some(site) = obs
+            .my_buildings
+            .iter()
+            .filter(|site| {
+                site.kind == BuildingKind::Turret
+                    && !site.built
+                    && site.tier == 0
+                    && !obs.my_units.iter().any(|unit| unit.site == Some(site.id))
+                    && Self::unfinished_turret_currently_unsafe(obs, site)
+            })
+            .min_by_key(|site| (site.anchor.y, site.anchor.x, site.id))
         {
             return Some(Intent::CancelSite { building: site.id });
         }
@@ -2089,11 +1855,10 @@ impl UtilityPolicy {
                         .any(|unit| unit.site == Some(building.id))
             })
             .filter(|site| {
-                !player_facing
-                    || (!self.harvest_location_contested(site.anchor)
-                        && builders.iter().any(|builder| {
-                            routes.group_reaches_command_goal(&[builder.id], site.anchor)
-                        }))
+                !self.harvest_location_contested(site.anchor)
+                    && builders.iter().any(|builder| {
+                        routes.group_reaches_command_goal(&[builder.id], site.anchor)
+                    })
             })
             .min_by_key(|building| (building.anchor.y, building.anchor.x))
             .map(|site| Intent::Build {
@@ -2138,11 +1903,7 @@ impl UtilityPolicy {
                         .is_none_or(|retreat| retreat.unit != builder.id)
             })
             .collect();
-        if builders.is_empty()
-            || self
-                .opening_construction_recovery(obs, true, &builders)
-                .is_some()
-        {
+        if builders.is_empty() || self.opening_construction_recovery(obs, &builders).is_some() {
             return None;
         }
 
@@ -2156,7 +1917,6 @@ impl UtilityPolicy {
         let bootstrap_context = ConstructionContext::new(
             home,
             ConstructionClaims {
-                player_facing: true,
                 enlisted: &[],
                 reserved: &[],
             },
@@ -2185,7 +1945,7 @@ impl UtilityPolicy {
                 .map_or(0, |construction| construction.cost);
             if allowed
                 && !already_planned
-                && Self::projected_count(obs, kind, true) == 0
+                && Self::projected_count(obs, kind) == 0
                 && current_scrap >= cost.saturating_add(bootstrap_reserve)
                 && let Some(placement) = self.emergency_defense_placement(
                     kind,
@@ -2225,48 +1985,6 @@ impl UtilityPolicy {
         );
     }
 
-    /// Current bank the still-residual technology ladder must be able to
-    /// reach before voluntary standing production spends again.
-    ///
-    /// This is not owned capital: the allocator leaves it for Utility, while
-    /// Standing and Defense proposals carry the constraint. The reserve
-    /// disappears once the technology tree is complete or no worker can act
-    /// on it.
-    #[cfg(test)]
-    fn residual_technology_reserve(
-        &self,
-        dials: &Dials,
-        obs: &Observation,
-        context: ResidualTechnologyReserveContext<'_>,
-    ) -> u32 {
-        let ResidualTechnologyReserveContext {
-            home,
-            available_builders,
-        } = context;
-        let builders = self
-            .construction_builders(obs, &[], &[])
-            .into_iter()
-            .filter(|builder| available_builders.contains(&builder.id))
-            .collect::<Vec<_>>();
-        if builders.is_empty()
-            || self
-                .opening_construction_recovery(obs, true, &builders)
-                .is_some()
-        {
-            return 0;
-        }
-
-        let construction = ConstructionContext::new(
-            home,
-            ConstructionClaims {
-                player_facing: true,
-                enlisted: &[],
-                reserved: &[],
-            },
-        );
-        self.capital_reserve(dials, obs, construction)
-    }
-
     pub(super) fn residual_construction(
         &mut self,
         dials: &Dials,
@@ -2276,27 +1994,19 @@ impl UtilityPolicy {
         intents: &mut Vec<Intent>,
     ) {
         let ConstructionContext {
-            home,
             claims,
-            unit_contacts,
-            building_contacts,
             unavailable_builders,
             scope,
-            voluntary_scrap_guard,
             ..
         } = context;
-        let ConstructionClaims {
-            player_facing,
-            enlisted,
-            reserved,
-        } = claims;
+        let ConstructionClaims { enlisted, reserved } = claims;
         // Orphan relief is free (resuming an own site charges nothing).
         let builders: Vec<_> = self
             .construction_builders(obs, enlisted, reserved)
             .into_iter()
             .filter(|builder| !unavailable_builders.contains(&builder.id))
             .collect();
-        if let Some(recovery) = self.opening_construction_recovery(obs, player_facing, &builders) {
+        if let Some(recovery) = self.opening_construction_recovery(obs, &builders) {
             intents.push(recovery);
             return;
         }
@@ -2323,442 +2033,6 @@ impl UtilityPolicy {
                     },
                 );
             }
-            return;
-        }
-
-        // One advanced construction rung per think, cheapest gate first.
-        if player_facing {
-            self.late_tech_rungs(dials, obs, context, budget, intents);
-            return;
-        }
-        if (dials.deep_tech || dials.extractors || dials.upgrades || dials.expansion)
-            && self.advanced_construction(
-                dials,
-                obs,
-                AdvancedConstructionContext {
-                    home,
-                    player_facing,
-                    builders: &builders,
-                    unit_contacts,
-                    building_contacts,
-                    voluntary_scrap_guard,
-                },
-                budget,
-                intents,
-            )
-        {
-            return;
-        }
-
-        if self.fabricator_step(dials, obs, context, budget, intents) {
-            return;
-        }
-        // The profile-free Overseer keeps its frozen sequential defense
-        // ladder. Player-facing voluntary defense is committed only from the
-        // shared allocator's typed proposal.
-        if !player_facing && self.defensive_rungs(dials, obs, context, budget, intents) {
-            return;
-        }
-        self.late_tech_rungs(dials, obs, context, budget, intents);
-    }
-
-    /// The first tech rung: one Fabricator once the harvest line stands.
-    fn fabricator_step(
-        &mut self,
-        dials: &Dials,
-        obs: &Observation,
-        context: ConstructionContext<'_>,
-        budget: &mut u32,
-        intents: &mut Vec<Intent>,
-    ) -> bool {
-        let ConstructionContext {
-            home,
-            claims,
-            voluntary_scrap_guard,
-            ..
-        } = context;
-        let player_facing = claims.player_facing;
-        let harvesters = obs
-            .my_units
-            .iter()
-            .filter(|u| u.kind.stats().harvest.is_some())
-            .count();
-        if dials.tech {
-            let fab_cost = BuildingKind::Fabricator
-                .base_stats()
-                .construction
-                .map(|c| c.cost);
-            let have_fab = Self::projected_count(obs, BuildingKind::Fabricator, player_facing) > 0;
-            if let Some(cost) = fab_cost
-                && !have_fab
-                && harvesters >= dials.harvester_target.min(3) as usize
-                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::Fabricator, home)
-            {
-                *budget -= cost;
-                intents.push(Intent::Build {
-                    kind: BuildingKind::Fabricator,
-                    anchor,
-                });
-                return true;
-            }
-        }
-        false
-    }
-
-    /// The frozen profile-free Overseer's threat-answering rungs, priciest
-    /// evidence first: Turret, Scuttle Charges, then flak over the harvest
-    /// line. One purchase per think.
-    fn defensive_rungs(
-        &mut self,
-        dials: &Dials,
-        obs: &Observation,
-        context: ConstructionContext<'_>,
-        budget: &mut u32,
-        intents: &mut Vec<Intent>,
-    ) -> bool {
-        let ConstructionContext {
-            home,
-            public_map,
-            voluntary_scrap_guard,
-            ..
-        } = context;
-        let harvesters = obs
-            .my_units
-            .iter()
-            .filter(|u| u.kind.stats().harvest.is_some())
-            .count();
-        let public_enemy_start = public_map
-            .is_some_and(|briefing| !self.uncleared_hostile_starts(briefing, obs.me).is_empty());
-        let turret_limit = self.turret_response_limit(dials, obs, home, public_enemy_start);
-        if dials.turret_response && turret_limit > 0 {
-            let turret_cost = BuildingKind::Turret
-                .base_stats()
-                .construction
-                .map(|c| c.cost);
-            let turrets = Self::projected_count(obs, BuildingKind::Turret, false);
-            if let Some(cost) = turret_cost
-                && turrets < turret_limit
-                && can_fund(
-                    *budget,
-                    cost,
-                    UnitKind::Harvester.stats().cost,
-                    voluntary_scrap_guard,
-                )
-                && let Some(anchor) = self
-                    .nearest_scrap(obs, home)
-                    .and_then(|node| self.placement_near(obs, BuildingKind::Turret, node))
-            {
-                *budget -= cost;
-                intents.push(Intent::Build {
-                    kind: BuildingKind::Turret,
-                    anchor,
-                });
-                return true;
-            }
-        }
-
-        // With the harvest line at strength and either a raid felt or
-        // the enemy's ground road
-        // known, bury a few cheap Scuttle Charges a few tiles out from
-        // home along the approach. Defense the enemy pays to discover,
-        // never the economy's opening.
-        if dials.mines {
-            let have_fab = obs
-                .my_buildings
-                .iter()
-                .any(|b| b.kind == BuildingKind::Fabricator && b.built);
-            let charges = Self::projected_count(obs, BuildingKind::ScuttleCharge, false);
-            let charge_cost = BuildingKind::ScuttleCharge
-                .base_stats()
-                .construction
-                .map(|c| c.cost);
-            if harvesters >= dials.harvester_target as usize
-                && have_fab
-                && charges < dials.mine_cap
-                && let Some(cost) = charge_cost
-                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
-            {
-                let site = Self::enemy_site(obs, home);
-                let route_known = site.is_some_and(|s| Self::ground_route_known(obs, home, s));
-                if self.raided || route_known {
-                    // The frozen Overseer retains its map-center fallback
-                    // after a blind raid and its fixed lean toward a known site.
-                    let toward =
-                        site.unwrap_or(TilePos::new(obs.map_width / 2, obs.map_height / 2));
-                    let lean = |from: i32, to: i32| from + (to - from).clamp(-MINE_LEAN, MINE_LEAN);
-                    let focus = TilePos::new(lean(home.x, toward.x), lean(home.y, toward.y));
-                    let anchor = self.placement_near(obs, BuildingKind::ScuttleCharge, focus);
-                    if let Some(anchor) = anchor {
-                        *budget -= cost;
-                        intents.push(Intent::Build {
-                            kind: BuildingKind::ScuttleCharge,
-                            anchor,
-                        });
-                        return true;
-                    }
-                }
-            }
-        }
-
-        // The profile-free controller retains its historical blip response.
-        let air_evidence = self.seen_air || !obs.blips.is_empty();
-        if dials.aa_response && air_evidence {
-            let flak_cost = BuildingKind::FlakTurret
-                .base_stats()
-                .construction
-                .map(|c| c.cost);
-            let flak = Self::projected_count(obs, BuildingKind::FlakTurret, false);
-            if let Some(cost) = flak_cost
-                && flak < dials.flak_cap
-                && can_fund(
-                    *budget,
-                    cost,
-                    UnitKind::Harvester.stats().cost,
-                    voluntary_scrap_guard,
-                )
-                && let Some(anchor) = self
-                    .nearest_scrap(obs, home)
-                    .and_then(|node| self.placement_near(obs, BuildingKind::FlakTurret, node))
-            {
-                *budget -= cost;
-                intents.push(Intent::Build {
-                    kind: BuildingKind::FlakTurret,
-                    anchor,
-                });
-                return true;
-            }
-        }
-        false
-    }
-
-    fn turret_response_limit(
-        &self,
-        dials: &Dials,
-        obs: &Observation,
-        home: TilePos,
-        public_enemy_start: bool,
-    ) -> usize {
-        if self.raided {
-            dials.turret_cap
-        } else {
-            usize::from(
-                dials.adaptive_composition
-                    && dials.turret_cap > 0
-                    && (Self::enemy_site(obs, home).is_some() || public_enemy_start),
-            )
-        }
-    }
-
-    /// Residual Repair Bay admission and the frozen Overseer's developed-base rungs.
-    fn late_tech_rungs(
-        &mut self,
-        dials: &Dials,
-        obs: &Observation,
-        context: ConstructionContext<'_>,
-        budget: &mut u32,
-        intents: &mut Vec<Intent>,
-    ) -> bool {
-        let ConstructionContext {
-            home,
-            claims,
-            voluntary_scrap_guard,
-            ..
-        } = context;
-        let player_facing = claims.player_facing;
-        // One Array once teched: the early-warning ring and the eyes
-        // long guns fire on.
-        if !player_facing && dials.radar {
-            let have_fab = obs
-                .my_buildings
-                .iter()
-                .any(|b| b.kind == BuildingKind::Fabricator && b.built);
-            let have_array = Self::projected_count(obs, BuildingKind::Array, player_facing) > 0;
-            let array_cost = BuildingKind::Array
-                .base_stats()
-                .construction
-                .map(|c| c.cost);
-            if have_fab
-                && !have_array
-                && let Some(cost) = array_cost
-                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::Array, home)
-            {
-                *budget -= cost;
-                intents.push(Intent::Build {
-                    kind: BuildingKind::Array,
-                    anchor,
-                });
-                return true;
-            }
-        }
-
-        // High-support identities establish one repair point once the first
-        // tech rung stands. It is sustain for a developed army, not opening
-        // infrastructure.
-        if !player_facing
-            && dials.adaptive_composition
-            && (dials.support_target >= 3 || obs.tick >= 6_000)
-        {
-            let have_fabricator = obs
-                .my_buildings
-                .iter()
-                .any(|building| building.kind == BuildingKind::Fabricator && building.built);
-            let have_repair_bay =
-                Self::projected_count(obs, BuildingKind::RepairBay, player_facing) > 0;
-            let cost = BuildingKind::RepairBay
-                .base_stats()
-                .construction
-                .map(|construction| construction.cost);
-            if have_fabricator
-                && !have_repair_bay
-                && let Some(cost) = cost
-                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::RepairBay, home)
-            {
-                *budget -= cost;
-                intents.push(Intent::Build {
-                    kind: BuildingKind::RepairBay,
-                    anchor,
-                });
-                return true;
-            }
-        }
-
-        // Siege-heavy identities anchor one long gun after locating the
-        // enemy. Mobile artillery remains the primary pressure tool; the
-        // Bastion makes a developed defensive line harder to rush through.
-        if !player_facing && dials.adaptive_composition && dials.siege_target >= 3 {
-            let have_fabricator = obs
-                .my_buildings
-                .iter()
-                .any(|building| building.kind == BuildingKind::Fabricator && building.built);
-            let have_bastion = Self::projected_count(obs, BuildingKind::Bastion, player_facing) > 0;
-            let cost = BuildingKind::Bastion
-                .base_stats()
-                .construction
-                .map(|construction| construction.cost);
-            if have_fabricator
-                && !have_bastion
-                && Self::enemy_site(obs, home).is_some()
-                && let Some(cost) = cost
-                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::Bastion, home)
-            {
-                *budget -= cost;
-                intents.push(Intent::Build {
-                    kind: BuildingKind::Bastion,
-                    anchor,
-                });
-                return true;
-            }
-        }
-
-        // Reclaimers once the patches near home run dry. Player-facing play
-        // adds passive capacity only while completed producers remain
-        // underfunded after already-paid and promised income comes online;
-        // the frozen Overseer retains its historical count cap.
-        if !player_facing && dials.reclaimers {
-            let near_home: u32 = obs
-                .known_scrap
-                .iter()
-                .chain(obs.known_wrecks.iter())
-                .filter(|(pos, _)| pos.chebyshev(home) <= HOME_SALVAGE_RADIUS)
-                .map(|(_, amount)| amount)
-                .sum();
-            let reclaimers = Self::projected_count(obs, BuildingKind::Reclaimer, player_facing);
-            let rec_cost = BuildingKind::Reclaimer
-                .base_stats()
-                .construction
-                .map(|c| c.cost);
-            let needs_income = if player_facing {
-                Self::recurring_income_per_minute(obs) < Self::recurring_income_target(obs)
-            } else {
-                reclaimers < dials.reclaimer_cap
-            };
-            if near_home < SALVAGE_LOW
-                && needs_income
-                && let Some(cost) = rec_cost
-                && can_fund(*budget, cost, TECH_RESERVE, voluntary_scrap_guard)
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::Reclaimer, home)
-            {
-                *budget -= cost;
-                intents.push(Intent::Build {
-                    kind: BuildingKind::Reclaimer,
-                    anchor,
-                });
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Repair channel: one weld order per think for the most wounded
-    /// standing building, funded only past a fighting reserve — welding
-    /// is upkeep, never the main line's budget.
-    pub(super) fn repairs(
-        &mut self,
-        dials: &Dials,
-        obs: &Observation,
-        mode: PolicyMode<'_>,
-        budget: &mut u32,
-        intents: &mut Vec<Intent>,
-    ) {
-        if !dials.repair {
-            return;
-        }
-        // Repair is a persistent unit program. Keep the active welder on its
-        // patient instead of emitting the same replacement command every
-        // think (and eventually drafting every other Harvester onto it).
-        if obs
-            .my_units
-            .iter()
-            .any(|unit| unit.kind.stats().harvest.is_some() && unit.repairing)
-        {
-            return;
-        }
-        // Reserve: a sentinel's price stays banked, and the trickle
-        // itself is cheap — gate on the reserve, not the full damage.
-        let reserve = UnitKind::Sentinel.stats().cost;
-        if *budget < reserve {
-            return;
-        }
-        let has_wounded_patient = obs.my_buildings.iter().any(|building| {
-            building.built && building.hp * 10 < building.kind.tier_stats(building.tier).max_hp * 8
-        });
-        let danger = (mode.player_facing && has_wounded_patient).then(|| {
-            self.harvest_danger_projection(obs, mode.unit_contacts, mode.building_contacts)
-        });
-        let patient = obs
-            .my_buildings
-            .iter()
-            .filter(|b| b.built && b.hp * 10 < b.kind.tier_stats(b.tier).max_hp * 8)
-            .filter(|b| {
-                !mode.player_facing
-                    || !self.repair_patient_unsafe(
-                        b,
-                        danger
-                            .as_deref()
-                            .expect("player-facing repair prepared worker danger"),
-                    )
-            })
-            // A building an own crew is stripping is being LIQUIDATED
-            // on purpose. Repair and salvage evict each other, so a repair
-            // intent here would reverse the teardown.
-            .filter(|b| !obs.my_units.iter().any(|u| u.salvaging == Some(b.id)))
-            .filter(|b| {
-                !intents.iter().any(
-                    |intent| matches!(intent, Intent::Upgrade { building } if *building == b.id),
-                )
-            })
-            .map(|b| {
-                let deficit = b.kind.tier_stats(b.tier).max_hp - b.hp;
-                (std::cmp::Reverse(deficit), b.anchor.y, b.anchor.x, b.id)
-            })
-            .min()
-            .map(|(.., id)| id);
-        if let Some(building) = patient {
-            intents.push(Intent::Repair { building });
         }
     }
 
@@ -2984,14 +2258,13 @@ mod tests {
         dials: &Dials,
         obs: &Observation,
     ) -> Vec<Intent> {
-        construction_intents_for(policy, dials, obs, true)
+        construction_intents_for(policy, dials, obs)
     }
 
     fn construction_intents_for(
         policy: &mut UtilityPolicy,
         dials: &Dials,
         obs: &Observation,
-        player_facing: bool,
     ) -> Vec<Intent> {
         let mut budget = obs.scrap;
         let mut intents = Vec::new();
@@ -3001,7 +2274,6 @@ mod tests {
             ConstructionContext::new(
                 HOME,
                 ConstructionClaims {
-                    player_facing,
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -3210,22 +2482,6 @@ mod tests {
             selected_coverage.saturating_mul(4) >= legacy_coverage.saturating_mul(5),
             "the strategic Array site must retain materially more useful map coverage than the legacy edge site; selected {anchor} covers {selected_coverage} tiles versus {legacy_coverage}"
         );
-    }
-
-    #[test]
-    fn profile_free_overseer_keeps_the_legacy_array_site() {
-        let obs = array_ready_observation();
-        let anchor = assert_build_kind(
-            &profile_free_construction_intents_with_public_map(
-                &mut UtilityPolicy::new(),
-                &array_dials(),
-                &obs,
-                &construction_briefing(),
-            ),
-            BuildingKind::Array,
-        );
-
-        assert_eq!(anchor, TilePos::new(1, 7));
     }
 
     #[test]
@@ -3517,49 +2773,6 @@ mod tests {
             ConstructionContext::new(
                 HOME,
                 ConstructionClaims {
-                    player_facing: true,
-                    enlisted: &[],
-                    reserved: &[],
-                },
-            )
-            .with_public_map(Some(public_map)),
-            &mut budget,
-            &mut intents,
-        );
-        intents
-    }
-
-    fn residual_technology_reserve_for(
-        policy: &UtilityPolicy,
-        dials: &Dials,
-        obs: &Observation,
-        available_builders: &[UnitId],
-    ) -> u32 {
-        policy.residual_technology_reserve(
-            dials,
-            obs,
-            ResidualTechnologyReserveContext {
-                home: HOME,
-                available_builders,
-            },
-        )
-    }
-
-    fn profile_free_construction_intents_with_public_map(
-        policy: &mut UtilityPolicy,
-        dials: &Dials,
-        obs: &Observation,
-        public_map: &PublicMapBriefing,
-    ) -> Vec<Intent> {
-        let mut budget = obs.scrap;
-        let mut intents = Vec::new();
-        policy.construction(
-            dials,
-            obs,
-            ConstructionContext::new(
-                HOME,
-                ConstructionClaims {
-                    player_facing: false,
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -3578,7 +2791,6 @@ mod tests {
                 ConstructionContext::new(
                     home,
                     ConstructionClaims {
-                        player_facing: true,
                         enlisted: &[],
                         reserved: &[],
                     },
@@ -4723,7 +3935,7 @@ mod tests {
             TilePos::new(obs.map_width - 4, obs.map_height - 4),
             |_| '.',
         );
-        let run = |policy: &mut UtilityPolicy, player_facing| {
+        let run = |policy: &mut UtilityPolicy, _mode: bool| {
             let mut budget = obs.scrap;
             let mut intents = Vec::new();
             policy.construction(
@@ -4732,7 +3944,6 @@ mod tests {
                 ConstructionContext::new(
                     HOME,
                     ConstructionClaims {
-                        player_facing,
                         enlisted: &[],
                         reserved: &[],
                     },
@@ -4763,13 +3974,6 @@ mod tests {
             )),
             "the residual facade cannot originate a fresh Foundry: {residual:?}"
         );
-        assert!(matches!(
-            run(&mut UtilityPolicy::new(), false).as_slice(),
-            [Intent::Build {
-                kind: BuildingKind::Foundry,
-                ..
-            }]
-        ));
     }
 
     fn generic_expansion_claim(
@@ -5043,7 +4247,7 @@ mod tests {
 
     #[test]
     fn valuable_nearby_scrap_is_not_hidden_by_the_legacy_distance_gate() {
-        let frontier = HOME.offset(EXPANSION_RADIUS - 1, 0);
+        let frontier = HOME.offset(12 - 1, 0);
         let mut obs = developed_expansion_observation();
         obs.known_scrap = vec![(frontier, 800)];
         let public_map = array_briefing(
@@ -5337,7 +4541,6 @@ mod tests {
             ConstructionContext::new(
                 HOME,
                 ConstructionClaims {
-                    player_facing: true,
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -5463,7 +4666,7 @@ mod tests {
         assert!(matches!(investment, Some(FreshFoundryInvestment::Ready(_))));
         let fifth_anchor = assert_build_kind(&intents, BuildingKind::Foundry);
         assert!(
-            fifth_anchor.chebyshev(TilePos::new(62, 12)) < EXPANSION_RADIUS,
+            fifth_anchor.chebyshev(TilePos::new(62, 12)) < 12,
             "the fifth Foundry should serve the remaining rich district"
         );
     }
@@ -5573,7 +4776,6 @@ mod tests {
                     ConstructionContext::new(
                         HOME,
                         ConstructionClaims {
-                            player_facing: true,
                             enlisted: &[],
                             reserved: &[],
                         },
@@ -5886,29 +5088,29 @@ mod tests {
         let mut turret_dials = focused_dials();
         turret_dials.turret_response = true;
         turret_dials.adaptive_composition = true;
-        turret_dials.turret_cap = 4;
+
         let mut turret_policy = UtilityPolicy::new();
-        turret_policy.raided = true;
+
         assert_absent("Turret", &turret_dials, &mut turret_policy);
 
         let mut barricade_dials = focused_dials();
         barricade_dials.harvester_target = 1;
-        barricade_dials.barricade_cap = 4;
+
         let mut barricade_policy = UtilityPolicy::new();
-        barricade_policy.raided = true;
+
         assert_absent("Barricade", &barricade_dials, &mut barricade_policy);
 
         let mut mine_dials = focused_dials();
         mine_dials.harvester_target = 1;
         mine_dials.mines = true;
-        mine_dials.mine_cap = 4;
+
         let mut mine_policy = UtilityPolicy::new();
-        mine_policy.raided = true;
+
         assert_absent("Scuttle Charge", &mine_dials, &mut mine_policy);
 
         let mut flak_dials = focused_dials();
         flak_dials.aa_response = true;
-        flak_dials.flak_cap = 4;
+
         let mut flak_policy = UtilityPolicy::new();
         flak_policy.seen_air = true;
         assert_absent("Flak Turret", &flak_dials, &mut flak_policy);
@@ -5920,260 +5122,6 @@ mod tests {
         assert_absent("Bastion", &bastion_dials, &mut UtilityPolicy::new());
 
         assert_absent("Array", &array_dials(), &mut UtilityPolicy::new());
-    }
-
-    #[test]
-    fn profile_free_overseer_keeps_its_full_blip_flak_cap() {
-        let mut dials = focused_dials();
-        dials.aa_response = true;
-        dials.flak_cap = 3;
-
-        let mut obs = observation();
-        obs.blips.push(TilePos::new(20, 10));
-        let mut policy = UtilityPolicy::new();
-        for id in 2..=4 {
-            let anchor = assert_build_kind(
-                &construction_intents_for(&mut policy, &dials, &obs, false),
-                BuildingKind::FlakTurret,
-            );
-            obs.my_buildings
-                .push(building(id, PlayerId(0), BuildingKind::FlakTurret, anchor));
-        }
-        assert!(
-            construction_intents_for(&mut policy, &dials, &obs, false).is_empty(),
-            "the stable profile-free QA controller retains its full response to radar blips"
-        );
-    }
-
-    #[test]
-    fn technology_has_no_residual_scalar_reserve() {
-        let mut dials = focused_dials();
-        dials.tech = true;
-        let mut obs = observation();
-        let policy = UtilityPolicy::new();
-
-        assert_eq!(
-            residual_technology_reserve_for(&policy, &dials, &obs, &[UnitId(1)]),
-            0,
-            "technology claims belong to exact economic proposals, not a blanket floor"
-        );
-        assert_eq!(
-            residual_technology_reserve_for(&policy, &dials, &obs, &[]),
-            0,
-            "technology with no free builder must not create a permanent hoard"
-        );
-
-        obs.my_buildings.push(building(
-            2,
-            PlayerId(0),
-            BuildingKind::Fabricator,
-            HOME.offset(5, -5),
-        ));
-        obs.my_queues.push(Vec::new());
-        assert_eq!(
-            residual_technology_reserve_for(&policy, &dials, &obs, &[UnitId(1)]),
-            0,
-            "a completed selected tech tree must release the temporary floor"
-        );
-    }
-
-    #[test]
-    fn residual_technology_reserve_never_prices_a_defense() {
-        let mut dials = focused_dials();
-        dials.turret_response = true;
-        dials.adaptive_composition = true;
-        dials.turret_cap = 4;
-        let mut obs = observation();
-        obs.enemy_buildings.push(building(
-            20,
-            PlayerId(1),
-            BuildingKind::Foundry,
-            TilePos::new(32, 10),
-        ));
-        let policy = UtilityPolicy::new();
-        assert_eq!(
-            residual_technology_reserve_for(&policy, &dials, &obs, &[UnitId(1)]),
-            0,
-            "defensive opportunity belongs to its typed proposal instead of a Standing floor"
-        );
-    }
-
-    #[test]
-    fn profile_free_overseer_keeps_the_exact_nearest_scrap_turret_site() {
-        let public_map = construction_briefing();
-        let dials = Dials::overseer();
-
-        let mut obs = observation();
-        obs.enemy_buildings.push(building(
-            20,
-            PlayerId(1),
-            BuildingKind::Foundry,
-            TilePos::new(32, 10),
-        ));
-        let mut policy = UtilityPolicy::new();
-        policy.raided = true;
-        let nearest_scrap = policy
-            .nearest_scrap(&obs, HOME)
-            .expect("the legacy fixture has a salvage focus");
-        assert_eq!(nearest_scrap, TilePos::new(10, 10));
-        let legacy_site = policy
-            .placement_near(&obs, BuildingKind::Turret, nearest_scrap)
-            .expect("the legacy ring scan has a legal Turret site");
-        assert_eq!(legacy_site, TilePos::new(7, 7));
-
-        let builders = policy.construction_builders(&obs, &[], &[]);
-        let strategic_site = policy
-            .strategic_defense_site(BuildingKind::Turret, &obs, &public_map, &[], &[], &builders)
-            .expect("the same fixture also admits a strategic player-facing site");
-        assert_ne!(
-            strategic_site, legacy_site,
-            "the fixture must distinguish the legacy and strategic placement branches"
-        );
-
-        let mut budget = obs.scrap;
-        let mut intents = Vec::new();
-        policy.construction(
-            &dials,
-            &obs,
-            ConstructionContext::new(
-                HOME,
-                ConstructionClaims {
-                    player_facing: false,
-                    enlisted: &[],
-                    reserved: &[],
-                },
-            )
-            .with_public_map(Some(&public_map)),
-            &mut budget,
-            &mut intents,
-        );
-
-        assert_eq!(
-            intents,
-            vec![Intent::Build {
-                kind: BuildingKind::Turret,
-                anchor: legacy_site,
-            }],
-            "even an accidentally supplied briefing must not move the frozen Overseer off its nearest-scrap ring scan"
-        );
-    }
-
-    #[test]
-    fn profile_free_overseer_keeps_the_exact_legacy_scuttle_site() {
-        let public_map = construction_briefing();
-        let mut dials = focused_dials();
-        dials.mines = true;
-        dials.harvester_target = 1;
-        dials.mine_cap = 1;
-        let mut obs = observation();
-        obs.my_buildings.push(building(
-            2,
-            PlayerId(0),
-            BuildingKind::Fabricator,
-            HOME.offset(5, -5),
-        ));
-        obs.my_queues.push(Vec::new());
-        let mut policy = UtilityPolicy::new();
-        policy.raided = true;
-
-        assert_eq!(
-            profile_free_construction_intents_with_public_map(
-                &mut policy,
-                &dials,
-                &obs,
-                &public_map,
-            ),
-            vec![Intent::Build {
-                kind: BuildingKind::ScuttleCharge,
-                anchor: TilePos::new(6, 9),
-            }]
-        );
-    }
-
-    #[test]
-    fn profile_free_overseer_keeps_the_exact_legacy_flak_site() {
-        let public_map = construction_briefing();
-        let mut dials = focused_dials();
-        dials.aa_response = true;
-        dials.flak_cap = 1;
-        let mut obs = observation();
-        obs.blips.push(TilePos::new(20, 10));
-
-        assert_eq!(
-            profile_free_construction_intents_with_public_map(
-                &mut UtilityPolicy::new(),
-                &dials,
-                &obs,
-                &public_map,
-            ),
-            vec![Intent::Build {
-                kind: BuildingKind::FlakTurret,
-                anchor: TilePos::new(7, 7),
-            }]
-        );
-    }
-
-    #[test]
-    fn profile_free_overseer_keeps_the_exact_legacy_bastion_site() {
-        let public_map = construction_briefing();
-        let mut dials = focused_dials();
-        dials.adaptive_composition = true;
-        dials.siege_target = 3;
-        dials.support_target = 0;
-        let mut obs = observation();
-        obs.my_buildings.push(building(
-            2,
-            PlayerId(0),
-            BuildingKind::Fabricator,
-            HOME.offset(5, -5),
-        ));
-        obs.my_queues.push(Vec::new());
-        obs.enemy_buildings.push(building(
-            20,
-            PlayerId(1),
-            BuildingKind::Foundry,
-            TilePos::new(32, 10),
-        ));
-
-        assert_eq!(
-            profile_free_construction_intents_with_public_map(
-                &mut UtilityPolicy::new(),
-                &dials,
-                &obs,
-                &public_map,
-            ),
-            vec![Intent::Build {
-                kind: BuildingKind::Bastion,
-                anchor: TilePos::new(1, 7),
-            }]
-        );
-    }
-
-    #[test]
-    fn profile_free_overseer_still_closes_a_raid_response_after_one_new_site() {
-        let dials = Dials::overseer();
-        let mut obs = observation();
-        let mut policy = UtilityPolicy::new();
-        obs.my_units.push(harvester(2, TilePos::new(9, 11), None));
-        policy.audit_raids(&dials, &obs, false);
-
-        obs.my_units.pop();
-        policy.audit_raids(&dials, &obs, false);
-        assert!(policy.raided, "the Harvester loss must latch a raid");
-
-        let anchor = assert_build_kind(
-            &construction_intents_for(&mut policy, &dials, &obs, false),
-            BuildingKind::Turret,
-        );
-        let mut site = building(2, PlayerId(0), BuildingKind::Turret, anchor);
-        site.built = false;
-        obs.my_buildings.push(site);
-        policy.audit_raids(&dials, &obs, false);
-
-        assert!(
-            !policy.raided,
-            "the frozen profile-free controller must retain its historical one-site response"
-        );
     }
 
     #[test]
@@ -6312,7 +5260,6 @@ mod tests {
             ConstructionContext::new(
                 HOME,
                 ConstructionClaims {
-                    player_facing: true,
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -6410,7 +5357,6 @@ mod tests {
             ConstructionContext::new(
                 HOME,
                 ConstructionClaims {
-                    player_facing: true,
                     enlisted: &[],
                     reserved: &[],
                 },

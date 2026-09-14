@@ -26,6 +26,7 @@ use super::intelligence::StrategicIntelligence;
 use super::lift::LiftAdmission;
 use super::lift::{LiftAirSupport, LiftPlanner};
 use super::observation::Observation;
+use super::observer::{BotPhase, PhaseObserver, PhaseScope};
 use super::orient::Orientation;
 use super::profile::ResolvedProfile;
 use super::raid::{RaidPlanner, RaidPlanningContext};
@@ -54,16 +55,10 @@ use crate::ids::{PlayerId, UnitId};
 use crate::scenario::BotConfig;
 use crate::state::State;
 use chassis::grid::TilePos;
-use chassis::rng::Pcg32;
 use std::sync::Arc;
 
-/// Everything only the player-facing controller owns: personality,
-/// intelligence, the strategic planners, and the authored map briefing.
-/// Living inside [`Controller::PlayerFacing`] makes a half-built
-/// player-facing brain unrepresentable — the profile-free QA path has
-/// nothing here to silently degrade into. The four planners stay
-/// individually optional because focused tests null one planner at a
-/// time to isolate another.
+/// The personality, intelligence, strategic planners, and authored map briefing.
+/// Focused tests may disable individual planners to isolate maintained behavior.
 #[derive(Debug, Clone, PartialEq)]
 struct PlayerFacingMind {
     profile: ResolvedProfile,
@@ -81,20 +76,12 @@ struct PlayerFacingMind {
     oriented_public_map: Option<PublicMapBriefing>,
 }
 
-/// Which controller a brain runs: the frozen profile-free QA policy, or
-/// the configurable player-facing opponent with its strategic mind.
-#[derive(Debug, Clone, PartialEq)]
-enum Controller {
-    ProfileFree,
-    PlayerFacing(Box<PlayerFacingMind>),
-}
-
 /// One brain, driving one player.
 #[derive(Debug, Clone)]
 pub struct Brain {
     player: PlayerId,
     dials: Dials,
-    controller: Controller,
+    mind: Box<PlayerFacingMind>,
     policy: UtilityPolicy,
     exec: Executive,
     /// The seat's frame of reference, latched at the first act and
@@ -106,37 +93,6 @@ pub struct Brain {
 }
 
 impl Brain {
-    /// Creates the brain for `player`. The scenario seed jitters the
-    /// army-size threshold (±1) so mirror matches don't march in
-    /// lockstep forever.
-    pub fn new(player: PlayerId, scenario_seed: u64, dials: Dials) -> Self {
-        Self::with_jitter(player, scenario_seed, 2000 + u64::from(player.0), dials)
-    }
-
-    fn with_jitter(
-        player: PlayerId,
-        jitter_seed: u64,
-        jitter_stream: u64,
-        mut dials: Dials,
-    ) -> Self {
-        let mut rng = Pcg32::new(jitter_seed, jitter_stream);
-        dials.army_size = (dials.army_size + rng.next_below(3))
-            .saturating_sub(1)
-            .max(2);
-        Self::with_dials(player, dials)
-    }
-
-    fn with_dials(player: PlayerId, dials: Dials) -> Self {
-        Self {
-            player,
-            dials,
-            controller: Controller::ProfileFree,
-            policy: UtilityPolicy::new(),
-            exec: Executive::default(),
-            orientation: None,
-        }
-    }
-
     /// The default Standard, Balanced, seed-zero player-facing profile.
     pub fn balanced(player: PlayerId, public_map: Arc<PublicMapBriefing>) -> Self {
         Self::scripted(player, BotConfig::default(), public_map)
@@ -150,37 +106,25 @@ impl Brain {
     ) -> Self {
         let profile = config.resolve_profile();
         let dials = Dials::scripted(&profile, DifficultyTuning::for_level(config.difficulty));
-        let mut brain = Self::with_dials(player, dials);
-        brain.controller = Controller::PlayerFacing(Box::new(PlayerFacingMind {
-            profile,
-            intelligence: StrategicIntelligence::new(),
-            battlefield: Default::default(),
-            experience: Default::default(),
-            strategy: Some(StrategicPlanner::new()),
-            lifts: Some(LiftPlanner::new()),
-            team: Some(TeamReliefPlanner::new()),
-            raids: Some(RaidPlanner::new()),
-            public_map,
-            oriented_public_map: None,
-        }));
-        brain
-    }
-
-    /// The stable full-tree QA controller. Keep it separate from the
-    /// player-facing constructor so bot tuning cannot silently move
-    /// deterministic probes and fairness measurements.
-    pub fn overseer(player: PlayerId, scenario_seed: u64) -> Self {
-        Self::new(player, scenario_seed, Dials::overseer())
-    }
-
-    /// Creates a frozen Overseer with one explicit policy identity that is
-    /// independent of the physical seat it drives.
-    ///
-    /// Evaluation pairs use this constructor so exchanging controllers does
-    /// not also exchange the legacy seat-derived army-size jitter. Seed `N`
-    /// exactly matches [`Self::overseer`] for seat zero at scenario seed `N`.
-    pub fn overseer_with_policy_seed(player: PlayerId, policy_seed: u64) -> Self {
-        Self::with_jitter(player, policy_seed, 2000, Dials::overseer())
+        Self {
+            player,
+            dials,
+            policy: UtilityPolicy::new(),
+            exec: Executive::default(),
+            orientation: None,
+            mind: Box::new(PlayerFacingMind {
+                profile,
+                intelligence: StrategicIntelligence::new(),
+                battlefield: Default::default(),
+                experience: Default::default(),
+                strategy: Some(StrategicPlanner::new()),
+                lifts: Some(LiftPlanner::new()),
+                team: Some(TeamReliefPlanner::new()),
+                raids: Some(RaidPlanner::new()),
+                public_map,
+                oriented_public_map: None,
+            }),
+        }
     }
 
     /// The player this brain drives.
@@ -193,28 +137,19 @@ impl Brain {
         &self.dials
     }
 
-    /// The resolved player-facing personality, absent on custom and QA brains.
-    pub fn profile(&self) -> Option<&ResolvedProfile> {
-        match &self.controller {
-            Controller::PlayerFacing(mind) => Some(&mind.profile),
-            Controller::ProfileFree => None,
-        }
+    /// The resolved player-facing personality.
+    pub fn profile(&self) -> &ResolvedProfile {
+        &self.mind.profile
     }
 
     #[cfg(test)]
     fn mind(&self) -> &PlayerFacingMind {
-        let Controller::PlayerFacing(mind) = &self.controller else {
-            panic!("a profile-free brain has no player-facing mind");
-        };
-        mind
+        &self.mind
     }
 
     #[cfg(test)]
     fn mind_mut(&mut self) -> &mut PlayerFacingMind {
-        let Controller::PlayerFacing(mind) = &mut self.controller else {
-            panic!("a profile-free brain has no player-facing mind");
-        };
-        mind
+        &mut self.mind
     }
 
     /// The executive's current bookkeeping (armies, rear line) — for
@@ -229,43 +164,53 @@ impl Brain {
 
     /// Commands for this tick (usually none — brains think on a cadence).
     pub fn act(&mut self, state: &State) -> Vec<PlayerCommand> {
-        self.act_inner(state, None)
+        self.act_inner(state, None, None)
     }
 
     /// Commands plus an observational trace for a player-facing decision tick.
     ///
-    /// Overseer, command-ineligible seats, post-result calls, and cadence skips
+    /// Command-ineligible seats, post-result calls, and cadence skips
     /// return no trace. The recorder is stack-local and cannot become controller
     /// or replay state.
     pub fn act_traced(&mut self, state: &State) -> TracedBotAct {
-        let mut recorder = matches!(&self.controller, Controller::PlayerFacing(_))
-            .then(DecisionTraceRecorder::default);
-        let commands = self.act_inner(state, recorder.as_mut());
+        let mut recorder = Some(DecisionTraceRecorder::default());
+        let commands = self.act_inner(state, recorder.as_mut(), None);
         TracedBotAct {
             commands,
             trace: recorder.and_then(DecisionTraceRecorder::finish),
         }
     }
 
+    pub(super) fn act_observed(
+        &mut self,
+        state: &State,
+        observer: &dyn PhaseObserver,
+    ) -> Vec<PlayerCommand> {
+        self.act_inner(state, None, Some(observer))
+    }
+
     fn act_inner(
         &mut self,
         state: &State,
         mut recorder: Option<&mut DecisionTraceRecorder>,
+        observer: Option<&dyn PhaseObserver>,
     ) -> Vec<PlayerCommand> {
         if !self.decision_due(state) {
             return Vec::new();
         }
+        let observation_scope = PhaseScope::new(observer, BotPhase::Observation);
         let obs = if self.dials.fog_honest {
             Observation::fog_honest(state, self.player)
         } else {
             Observation::omniscient(state, self.player)
         };
-        if matches!(self.controller, Controller::PlayerFacing(_))
-            && (state.player(self.player).resigned
-                || !obs
-                    .my_buildings
-                    .iter()
-                    .any(|building| building.kind == crate::stats::BuildingKind::Foundry))
+        drop(observation_scope);
+        let maintenance_scope = PhaseScope::new(observer, BotPhase::Maintenance);
+        if state.player(self.player).resigned
+            || !obs
+                .my_buildings
+                .iter()
+                .any(|building| building.kind == crate::stats::BuildingKind::Foundry)
         {
             return Vec::new();
         }
@@ -287,24 +232,15 @@ impl Brain {
         let orientation = *self
             .orientation
             .get_or_insert_with(|| Orientation::for_home(&obs, rear_anchor));
-        let player_facing = matches!(&self.controller, Controller::PlayerFacing(_));
-        let rear = if player_facing {
-            player_facing_rear_tile(orientation, rear_anchor, rear_size)
-        } else {
-            rear_anchor
-        };
-        let mut commands = if player_facing {
-            self.exec.mission_decisions.clear();
-            self.exec.maintain_player_facing_with_tactics(
-                self.player,
-                &obs,
-                rear,
-                self.dials.coordinated_focus,
-                self.dials.coordinated_defense_focus,
-            )
-        } else {
-            self.exec.maintain(self.player, &obs, rear)
-        };
+        let rear = player_facing_rear_tile(orientation, rear_anchor, rear_size);
+        self.exec.mission_decisions.clear();
+        let mut commands = self.exec.maintain_player_facing_with_tactics(
+            self.player,
+            &obs,
+            rear,
+            self.dials.coordinated_focus,
+            self.dials.coordinated_defense_focus,
+        );
         let maintenance_commands = commands.len();
         let oriented = orientation.observe(&obs);
         let armies: Vec<_> = self
@@ -313,7 +249,8 @@ impl Brain {
             .iter()
             .map(|army| orientation.army(army.clone()))
             .collect();
-        if let Controller::PlayerFacing(mind) = &mut self.controller {
+        {
+            let mind = &mut self.mind;
             let tuning = DifficultyTuning::for_level(mind.profile.difficulty);
             let map = mind
                 .oriented_public_map
@@ -372,36 +309,34 @@ impl Brain {
         }
         if let Some(recovery) = self.exec.harvester_recovery(self.player, &obs) {
             commands.extend(recovery);
-            let strategic_recovery = match &mut self.controller {
-                Controller::PlayerFacing(mind) => {
-                    let PlayerFacingMind {
+            let strategic_recovery = {
+                let mind = &mut self.mind;
+                let PlayerFacingMind {
+                    profile,
+                    strategy,
+                    public_map,
+                    oriented_public_map,
+                    ..
+                } = mind.as_mut();
+                let oriented_public_map: &PublicMapBriefing =
+                    oriented_public_map.get_or_insert_with(|| orientation.briefing(public_map));
+                let home = oriented
+                    .my_buildings
+                    .iter()
+                    .filter(|building| building.kind == crate::stats::BuildingKind::Foundry)
+                    .min_by_key(|building| building.id)
+                    .map(|building| building.anchor)
+                    .unwrap_or(TilePos::new(0, 0));
+                strategy.as_mut().and_then(|planner| {
+                    planner.recover_due_connected_for_economy_emergency(
                         profile,
-                        strategy,
-                        public_map,
-                        oriented_public_map,
-                        ..
-                    } = mind.as_mut();
-                    let oriented_public_map: &PublicMapBriefing =
-                        oriented_public_map.get_or_insert_with(|| orientation.briefing(public_map));
-                    let home = oriented
-                        .my_buildings
-                        .iter()
-                        .filter(|building| building.kind == crate::stats::BuildingKind::Foundry)
-                        .min_by_key(|building| building.id)
-                        .map(|building| building.anchor)
-                        .unwrap_or(TilePos::new(0, 0));
-                    strategy.as_mut().and_then(|planner| {
-                        planner.recover_due_connected_for_economy_emergency(
-                            profile,
-                            DifficultyTuning::for_level(profile.difficulty),
-                            &oriented,
-                            home,
-                            Some(oriented_public_map),
-                            orientation,
-                        )
-                    })
-                }
-                Controller::ProfileFree => None,
+                        DifficultyTuning::for_level(profile.difficulty),
+                        &oriented,
+                        home,
+                        Some(oriented_public_map),
+                        orientation,
+                    )
+                })
             };
             if let Some(strategic_recovery) = strategic_recovery {
                 let reservations = strategic_recovery.reservations;
@@ -428,23 +363,10 @@ impl Brain {
         // The policy thinks in seat-oriented space (see [`Orientation`]):
         // the same logic runs for both seats, so its compass-flavored
         // tie-breaks cannot systematically favor either one.
+        drop(maintenance_scope);
+        let strategy_scope = PhaseScope::new(observer, BotPhase::Strategy);
         let enlisted: Vec<_> = self.exec.enlisted().collect();
-        let Controller::PlayerFacing(mind) = &mut self.controller else {
-            let intents = self
-                .policy
-                .think(&self.dials, &oriented, &armies, &enlisted);
-            let intents = orientation.emit(intents);
-            let lowered = self.exec.apply(self.player, &obs, &intents);
-            for command in &lowered {
-                if let Command::Build { kind, anchor, .. } = command.command {
-                    let oriented_anchor = orientation.anchor(anchor, kind.base_stats().size);
-                    self.policy
-                        .record_dispatched_build(&oriented, kind, oriented_anchor);
-                }
-            }
-            commands.extend(lowered);
-            return commands;
-        };
+        let mind = &mut self.mind;
         let PlayerFacingMind {
             profile,
             intelligence,
@@ -655,6 +577,7 @@ impl Brain {
                 .as_deref_mut()
                 .map(|recorder| &mut recorder.trace_mut().allocation),
         )
+        .with_observer(observer)
         .run();
         let AllocationSessionOutcome {
             opening_core,
@@ -992,6 +915,8 @@ impl Brain {
             };
         }
         let intents = orientation.emit(intents);
+        drop(strategy_scope);
+        let _executive_scope = PhaseScope::new(observer, BotPhase::Executive);
         let lowered = self.exec.apply_with_builder_lease(
             self.player,
             &obs,
@@ -1360,9 +1285,7 @@ mod tests {
         let difficulty = BotDifficulty::Prime;
         let config = BotConfig::scripted(difficulty, BotStance::Balanced, 20_024);
         let brain = scripted_brain(scenario, player, config);
-        let profile = brain
-            .profile()
-            .expect("the scripted brain owns a resolved profile");
+        let profile = brain.profile();
         assert_eq!(
             (profile.primary, profile.secondary),
             (Specialty::Guile, Specialty::Fortification)
@@ -1423,7 +1346,7 @@ mod tests {
     fn assert_brain_unchanged(before: &Brain, after: &Brain) {
         assert_eq!(after.player, before.player);
         assert_eq!(after.dials, before.dials);
-        assert_eq!(after.controller, before.controller);
+        assert_eq!(after.mind, before.mind);
         assert_eq!(after.policy, before.policy);
         assert_eq!(after.exec, before.exec);
         assert_eq!(after.orientation, before.orientation);
@@ -1481,15 +1404,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_player_facing_controller_receives_the_public_map_briefing() {
+    fn the_brain_receives_the_public_map_briefing() {
         let scenario = Scenario::skirmish();
         let public_map = public_map(&scenario);
         let scripted = Brain::scripted(PlayerId(0), BotConfig::default(), Arc::clone(&public_map));
-        let overseer = Brain::overseer(PlayerId(0), scenario.seed);
 
         assert!(Arc::ptr_eq(&scripted.mind().public_map, &public_map));
         assert!(scripted.mind().oriented_public_map.is_none());
-        assert!(matches!(overseer.controller, Controller::ProfileFree));
     }
 
     #[test]
@@ -1771,7 +1692,7 @@ mod tests {
     }
 
     #[test]
-    fn traced_act_marks_recovery_and_omits_non_decisions_and_overseer() {
+    fn traced_act_marks_recovery_and_omits_non_decisions() {
         let mut scenario = Scenario::skirmish();
         scenario
             .units
@@ -1799,14 +1720,6 @@ mod tests {
             scripted.act_traced(&state).trace.is_none(),
             "a cadence skip is not a decision record"
         );
-
-        let fresh = scenario.build().expect("the stranded skirmish rebuilds");
-        let mut overseer = Brain::overseer(PlayerId(0), scenario.seed);
-        let mut direct = overseer.clone();
-        let traced = overseer.act_traced(&fresh);
-        assert!(traced.trace.is_none());
-        assert_eq!(traced.commands, direct.act(&fresh));
-        assert_brain_unchanged(&direct, &overseer);
     }
 
     #[test]
@@ -3921,9 +3834,7 @@ mod tests {
             let mut brain = scripted_brain(&scenario, PlayerId(0), config);
             enlist_opening_core(&mut brain, &prepared);
             brain.mind_mut().team = None;
-            let profile = *brain
-                .profile()
-                .expect("scripted brains own a resolved profile");
+            let profile = *brain.profile();
             let tuning = DifficultyTuning::for_level(difficulty);
             let obs = Observation::fog_honest(&prepared, PlayerId(0));
             let home = obs
@@ -6992,9 +6903,7 @@ mod tests {
         )
         .expect("the exact future lift schedule overlays the raw observation");
         let brain = foundry_competition_brain(&scenario);
-        let profile = *brain
-            .profile()
-            .expect("the scripted brain owns a resolved profile");
+        let profile = *brain.profile();
         let mut planner = StrategicPlanner::new();
         let result = planner.think_after_connected_adjudication(
             StrategicThinkContext::new(
@@ -7094,9 +7003,7 @@ mod tests {
         )
         .expect("the exact future lift schedule overlays the raw observation");
         let brain = foundry_competition_brain(&scenario);
-        let profile = *brain
-            .profile()
-            .expect("the scripted brain owns a resolved profile");
+        let profile = *brain.profile();
         let mut planner = StrategicPlanner::new();
         let result = planner.think_after_connected_adjudication(
             StrategicThinkContext::new(
@@ -7168,9 +7075,7 @@ mod tests {
         let mut brain = foundry_competition_brain(&scenario);
         brain.dials.expansion = false;
         brain.dials.minimum_core_equivalents = 0;
-        let profile = *brain
-            .profile()
-            .expect("the scripted brain owns a resolved profile");
+        let profile = *brain.profile();
         let tuning = DifficultyTuning::for_level(profile.difficulty);
         let raw = Observation::fog_honest(&state, PlayerId(0));
         let home = raw
@@ -7361,9 +7266,7 @@ mod tests {
         state.tick = 6_000;
 
         let mut brain = foundry_competition_brain(&scenario);
-        let profile = *brain
-            .profile()
-            .expect("the scripted brain owns a resolved profile");
+        let profile = *brain.profile();
         let tuning = DifficultyTuning::for_level(profile.difficulty);
         let raw = Observation::fog_honest(&state, PlayerId(0));
         let home = raw
@@ -8448,9 +8351,7 @@ mod tests {
 
         let mut brain = operation_identity_brain(PlayerId(0), &scenario);
         enlist_opening_core(&mut brain, &state);
-        let profile = *brain
-            .profile()
-            .expect("the scripted brain owns a resolved profile");
+        let profile = *brain.profile();
         let obs = Observation::fog_honest(&state, PlayerId(0));
         let home = obs
             .my_buildings
@@ -8538,9 +8439,7 @@ mod tests {
         brain.dials.minimum_core_equivalents = 0;
         brain.mind_mut().strategy = None;
         brain.mind_mut().raids = None;
-        let mut profile = *brain
-            .profile()
-            .expect("the scripted brain owns a resolved profile");
+        let mut profile = *brain.profile();
         profile.traits.support = 70;
         profile.traits.fortification = 65;
         brain.mind_mut().profile = profile;
@@ -8681,9 +8580,7 @@ mod tests {
 
         let briefing_scenario = Scenario::skirmish();
         let mut brain = operation_identity_brain(PlayerId(0), &briefing_scenario);
-        let profile = *brain
-            .profile()
-            .expect("the scripted brain owns a resolved profile");
+        let profile = *brain.profile();
         let tuning = DifficultyTuning::for_level(profile.difficulty);
         let raids = brain
             .mind_mut()

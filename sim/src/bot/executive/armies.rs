@@ -43,7 +43,6 @@ pub(super) struct CentroidFrame {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MaintenanceMode {
-    player_facing: bool,
     centroid_frame: Option<CentroidFrame>,
     coordinated_focus: bool,
     coordinated_defense_focus: bool,
@@ -140,30 +139,10 @@ impl Executive {
     /// Prune the dead, rotate the wounded to the rear, advance army
     /// states, and withdraw from fights that have turned. `rear` is
     /// behind the lines, not the army's rally (which may be the fight).
-    pub fn maintain(
-        &mut self,
-        me: PlayerId,
-        obs: &Observation,
-        rear: TilePos,
-    ) -> Vec<PlayerCommand> {
-        self.maintain_inner(
-            me,
-            obs,
-            rear,
-            MaintenanceMode {
-                player_facing: false,
-                centroid_frame: None,
-                coordinated_focus: true,
-                coordinated_defense_focus: false,
-            },
-        )
-    }
-
     /// Player-facing maintenance releases machines after a real repair, or
     /// once the retreat has consumed a full progress-patience window and the
     /// machine is idle. The latter prevents an unfunded rear line from
-    /// consuming the whole fighting roster forever. The Overseer keeps its
-    /// historical permanent rear-line behavior through [`Self::maintain`].
+    /// consuming the whole fighting roster forever.
     pub fn maintain_player_facing(
         &mut self,
         me: PlayerId,
@@ -193,7 +172,6 @@ impl Executive {
             obs,
             rear,
             MaintenanceMode {
-                player_facing: true,
                 centroid_frame: Some(frame),
                 coordinated_focus,
                 coordinated_defense_focus,
@@ -221,29 +199,23 @@ impl Executive {
         roster: &impl UnitLookup<'a>,
     ) -> Vec<PlayerCommand> {
         let MaintenanceMode {
-            player_facing,
             centroid_frame,
             coordinated_focus,
             coordinated_defense_focus,
         } = mode;
         let mut out = Vec::new();
-        if player_facing {
-            self.maintain_defense_focus(me, obs, coordinated_defense_focus, &mut out);
-        }
-        if player_facing {
-            self.exhausted_rear.retain(|id| {
-                roster.get(*id).is_some_and(|unit| {
-                    unit.hp.saturating_mul(4) < unit.kind.stats().max_hp.saturating_mul(3)
-                })
-            });
-        }
-        self.rear.retain(|rear_unit| {
-            roster.get(rear_unit.id).is_some_and(|unit| {
-                !player_facing
-                    || unit.hp.saturating_mul(4) < unit.kind.stats().max_hp.saturating_mul(3)
+        self.maintain_defense_focus(me, obs, coordinated_defense_focus, &mut out);
+        self.exhausted_rear.retain(|id| {
+            roster.get(*id).is_some_and(|unit| {
+                unit.hp.saturating_mul(4) < unit.kind.stats().max_hp.saturating_mul(3)
             })
         });
-        if player_facing {
+        self.rear.retain(|rear_unit| {
+            roster.get(rear_unit.id).is_some_and(|unit| {
+                unit.hp.saturating_mul(4) < unit.kind.stats().max_hp.saturating_mul(3)
+            })
+        });
+        {
             let releasable: Vec<UnitId> = self
                 .rear
                 .iter()
@@ -271,37 +243,35 @@ impl Executive {
             }
             let mut members = roster.members(&army.members);
             let unit_contact = enemies_near(obs, &members, CONTACT_RADIUS);
-            let static_contact = player_facing
-                && members.iter().any(|member| {
-                    obs.enemy_buildings.iter().any(|building| {
-                        building.seen
-                            && super::threats::building_threatens(
-                                obs,
-                                building,
-                                member.tile,
-                                member.body_domain(),
-                            )
-                    })
-                });
-            let siege_contact = player_facing
-                && army.target.is_some_and(|target| {
-                    obs.enemy_buildings.iter().any(|building| {
-                        building.seen && building.hp > 0 && building.anchor.chebyshev(target) <= 2
-                    }) && members.iter().any(|unit| {
-                        is_artillery(unit)
-                            && unit.kind.stats().weapons.iter().any(|weapon| {
-                                let distance = unit.tile.center().dist_sq(target.center());
-                                weapon.targets.covers(Domain::Ground)
-                                    && distance <= weapon.range * weapon.range
-                                    && distance >= weapon.minimum_range * weapon.minimum_range
-                                    && !chassis::path::line_blocked(
-                                        unit.tile.center(),
-                                        target.center(),
-                                        |tile| !obs.known_peaks.contains(&tile),
-                                    )
-                            })
-                    })
-                });
+            let static_contact = members.iter().any(|member| {
+                obs.enemy_buildings.iter().any(|building| {
+                    building.seen
+                        && super::threats::building_threatens(
+                            obs,
+                            building,
+                            member.tile,
+                            member.body_domain(),
+                        )
+                })
+            });
+            let siege_contact = army.target.is_some_and(|target| {
+                obs.enemy_buildings.iter().any(|building| {
+                    building.seen && building.hp > 0 && building.anchor.chebyshev(target) <= 2
+                }) && members.iter().any(|unit| {
+                    is_artillery(unit)
+                        && unit.kind.stats().weapons.iter().any(|weapon| {
+                            let distance = unit.tile.center().dist_sq(target.center());
+                            weapon.targets.covers(Domain::Ground)
+                                && distance <= weapon.range * weapon.range
+                                && distance >= weapon.minimum_range * weapon.minimum_range
+                                && !chassis::path::line_blocked(
+                                    unit.tile.center(),
+                                    target.center(),
+                                    |tile| !obs.known_peaks.contains(&tile),
+                                )
+                        })
+                })
+            });
             let in_contact = unit_contact || static_contact || siege_contact;
 
             // Rotate the badly wounded out, but only between fights.
@@ -316,7 +286,7 @@ impl Executive {
                     };
                     let max = u.kind.stats().max_hp;
                     if u.hp * PULLBACK_DEN < max * PULLBACK_NUM
-                        && (!player_facing || self.exhausted_rear.binary_search(id).is_err())
+                        && (self.exhausted_rear.binary_search(id).is_err())
                     {
                         pulled.push(*id);
                         false
@@ -350,8 +320,7 @@ impl Executive {
             }
 
             let centroid = centroid(&members, centroid_frame);
-            if player_facing
-                && matches!(army.state, ArmyState::Pushing | ArmyState::Engaging)
+            if matches!(army.state, ArmyState::Pushing | ArmyState::Engaging)
                 && !in_contact
                 && !tiles_within(centroid, army.staging, 2)
                 && self
@@ -383,13 +352,12 @@ impl Executive {
                 });
                 continue;
             }
-            if player_facing
-                && army.state != ArmyState::Withdrawing
+            if army.state != ArmyState::Withdrawing
                 && let Some(mission) = self.missions.get(&army.id)
                 && mission.purpose == ArmyPurpose::Recover
                 && centroid.chebyshev(mission.goal) > 2
             {
-                let (mine, theirs) = local_fight_strength(obs, &members, player_facing);
+                let (mine, theirs) = local_fight_strength(obs, &members);
                 if mine.saturating_mul(u64::from(WITHDRAW_MARGIN_DEN))
                     < theirs.saturating_mul(u64::from(WITHDRAW_MARGIN_NUM))
                     && !tiles_within(centroid, army.staging, 2)
@@ -416,10 +384,9 @@ impl Executive {
             }
             match army.state {
                 ArmyState::Staging => {
-                    if player_facing
-                        && army
-                            .target
-                            .is_some_and(|target| objective_cleared(obs, target))
+                    if army
+                        .target
+                        .is_some_and(|target| objective_cleared(obs, target))
                     {
                         army.members.clear();
                         continue;
@@ -444,14 +411,13 @@ impl Executive {
                     // idle exactly where it stood. Checked only on a LATER
                     // think than the order, since this think's commands
                     // have not executed yet.
-                    if player_facing
-                        && !in_contact
+                    if !in_contact
                         && all_idle
                         && artillery_has_escort_quorum_with_roster(army, roster)
                         && members.iter().any(|unit| is_artillery(unit) && !unit.idle)
                         && let Some(target) = army.target
                     {
-                        march_with_roster(me, obs, army, target, &mut out, roster, true);
+                        march_with_roster(me, obs, army, target, &mut out, roster);
                         army.issued = None;
                     }
                     let bounced = all_idle
@@ -466,16 +432,14 @@ impl Executive {
                     } else if let Some(target) = army.target
                         && tiles_within(vanguard, target, 2)
                     {
-                        if player_facing && objective_cleared(obs, target) {
+                        if objective_cleared(obs, target) {
                             army.members.clear();
                         } else {
                             // A live objective still needs a coherent body to
                             // hold the ground while its attack-move finishes it.
                             army.state = ArmyState::Staging;
                             army.staging = target;
-                            if !player_facing {
-                                army.target = None;
-                            }
+
                             army.progress = None;
                             army.issued = None;
                             army.bounces = 0;
@@ -489,42 +453,20 @@ impl Executive {
                         army.issued = None;
                         army.bounces = army.bounces.saturating_add(1);
                         if army.bounces >= 2 && army.target.is_some() {
-                            if player_facing {
-                                army.members.clear();
-                            } else {
-                                army.state = ArmyState::Staging;
-                                army.staging = centroid;
-                                army.target = None;
-                                army.progress = None;
-                                army.bounces = 0;
-                            }
+                            army.members.clear();
                         }
                     } else if let Some(target) = army.target
                         && wedged(&mut army.progress, vanguard.chebyshev(target), obs.tick)
                     {
-                        if player_facing {
-                            army.members.clear();
-                        } else {
-                            // The march has not gained a tile in the whole
-                            // patience window — usually an order across
-                            // terrain with no route. Rally where it stands
-                            // so the seat's verbs come back.
-                            army.state = ArmyState::Staging;
-                            army.staging = centroid;
-                            army.target = None;
-                            army.progress = None;
-                            army.issued = None;
-                            army.bounces = 0;
-                        }
+                        army.members.clear();
                     }
                 }
                 ArmyState::Engaging => {
-                    let (mine, theirs) = local_fight_strength(obs, &members, player_facing);
-                    if theirs == 0 && (!player_facing || !in_contact) {
-                        if player_facing
-                            && army
-                                .target
-                                .is_some_and(|target| objective_cleared(obs, target))
+                    let (mine, theirs) = local_fight_strength(obs, &members);
+                    if theirs == 0 && !in_contact {
+                        if army
+                            .target
+                            .is_some_and(|target| objective_cleared(obs, target))
                         {
                             army.members.clear();
                         } else {
@@ -536,20 +478,12 @@ impl Executive {
                             army.focus = None;
                             army.progress = None;
                             if let Some(target) = army.target {
-                                march_with_roster(
-                                    me,
-                                    obs,
-                                    army,
-                                    target,
-                                    &mut out,
-                                    roster,
-                                    player_facing,
-                                );
+                                march_with_roster(me, obs, army, target, &mut out, roster);
                             }
                         }
                     } else if mine * u64::from(WITHDRAW_MARGIN_DEN)
                         < theirs * u64::from(WITHDRAW_MARGIN_NUM)
-                        && (!player_facing || !tiles_within(centroid, army.staging, 2))
+                        && (!tiles_within(centroid, army.staging, 2))
                     {
                         // Losing decisively: leave together, fighting.
                         // Nothing here outruns its pursuers, so an
@@ -557,16 +491,12 @@ impl Executive {
                         // free the whole way home — the attack-move falls
                         // back along the same line but answers fire.
                         army.state = ArmyState::Withdrawing;
-                        army.target = if player_facing {
-                            withdrawal_threat(obs, &members, centroid_frame)
-                        } else {
-                            None
-                        };
+                        army.target = withdrawal_threat(obs, &members, centroid_frame);
                         army.focus = None;
                         army.progress = None;
                         out.push(PlayerCommand {
                             player: me,
-                            command: if player_facing && !unit_contact {
+                            command: if !unit_contact {
                                 Command::Move {
                                     units: army.members.clone(),
                                     goal: army.staging,
@@ -583,8 +513,7 @@ impl Executive {
                     } else {
                         // Player-facing coordination concentrates compatible
                         // front-line fire on a threat while specialists keep
-                        // their existing orders. The profile-free path retains
-                        // its historical whole-army weakest-gun choice.
+                        // their existing orders.
                         // Candidates stay inside contact radius so the sim's
                         // see-the-victim rule holds even for an omniscient
                         // policy.
@@ -596,10 +525,6 @@ impl Executive {
                                 .unwrap_or(i32::MAX)
                         };
                         let legal_focus = |unit: &UnitObs| {
-                            if !player_facing {
-                                return near(unit.tile) <= CONTACT_RADIUS
-                                    && unit.kind.stats().can_fight();
-                            }
                             let focus_members: Vec<_> = members
                                 .iter()
                                 .copied()
@@ -638,22 +563,7 @@ impl Executive {
                                     .min()
                                     .map(|(.., id)| id)
                             };
-                            if !player_facing {
-                                if let Some(target) = choose_focus()
-                                    && army.focus != Some(target)
-                                {
-                                    army.focus = Some(target);
-                                    out.push(PlayerCommand {
-                                        player: me,
-                                        command: Command::Attack {
-                                            units: army.members.clone(),
-                                            target: crate::ids::Target::Unit(target).into(),
-                                            queue: false,
-                                        },
-                                    });
-                                }
-                                continue;
-                            }
+
                             let current_focus = army.focus.filter(|target| {
                                 obs.enemy_units
                                     .iter()
@@ -728,7 +638,7 @@ impl Executive {
                         let threat_remains = army
                             .target
                             .is_some_and(|target| withdrawal_area_contested(obs, target));
-                        if !player_facing || (!in_contact && !threat_remains) {
+                        if !in_contact && !threat_remains {
                             army.state = ArmyState::Staging;
                             army.target = None;
                         }
@@ -753,9 +663,7 @@ impl Executive {
             }
         }
         self.armies.retain(|a| !a.members.is_empty());
-        if player_facing {
-            self.observe_ground_outcomes(obs);
-        }
+        self.observe_ground_outcomes(obs);
         out
     }
 
@@ -765,9 +673,8 @@ impl Executive {
         me: PlayerId,
         obs: &Observation,
         rear: TilePos,
-        player_facing: bool,
     ) -> Vec<PlayerCommand> {
-        let centroid_frame = if player_facing {
+        let centroid_frame = {
             Some(
                 self.player_frame
                     .get_or_insert_with(|| PlayerFacingTactics {
@@ -776,8 +683,6 @@ impl Executive {
                     })
                     .frame,
             )
-        } else {
-            None
         };
         let roster = LinearUnitRoster(&obs.my_units);
         self.maintain_with_roster(
@@ -785,7 +690,6 @@ impl Executive {
             obs,
             rear,
             MaintenanceMode {
-                player_facing,
                 centroid_frame,
                 coordinated_focus: true,
                 coordinated_defense_focus: false,
@@ -954,10 +858,9 @@ pub(super) fn march(
     army: &Army,
     target: TilePos,
     out: &mut Vec<PlayerCommand>,
-    player_facing: bool,
 ) {
     let roster = UnitRoster::new(&obs.my_units);
-    march_with_roster(me, obs, army, target, out, &roster, player_facing);
+    march_with_roster(me, obs, army, target, out, &roster);
 }
 
 fn march_with_roster<'a>(
@@ -967,14 +870,12 @@ fn march_with_roster<'a>(
     target: TilePos,
     out: &mut Vec<PlayerCommand>,
     roster: &impl UnitLookup<'a>,
-    player_facing: bool,
 ) {
     let (arty, escorts): (Vec<UnitId>, Vec<UnitId>) = army
         .members
         .iter()
         .partition(|id| roster.get(**id).is_some_and(is_artillery));
-    if player_facing
-        && !arty.is_empty()
+    if !arty.is_empty()
         && obs
             .enemy_buildings
             .iter()
@@ -1240,32 +1141,7 @@ fn objective_cleared(obs: &Observation, target: TilePos) -> bool {
 /// the estimate stable when the line bends — a mean position can land in
 /// empty ground and blind every radius test around it — while stragglers
 /// don't sweep distant enemies into the count.
-fn local_strength(obs: &Observation, members: &[&UnitObs]) -> (u64, u64) {
-    let engaged: Vec<TilePos> = members
-        .iter()
-        .filter(|m| {
-            obs.enemy_units
-                .iter()
-                .any(|e| mutually_relevant(m, e) && m.tile.chebyshev(e.tile) <= CONTACT_RADIUS)
-        })
-        .map(|m| m.tile)
-        .collect();
-    let opposition: Vec<&UnitObs> = obs
-        .enemy_units
-        .iter()
-        .filter(|e| engaged.iter().any(|m| m.chebyshev(e.tile) <= ENGAGE_RADIUS))
-        .collect();
-    matched_strength(members, &opposition)
-}
-
-fn local_fight_strength(
-    obs: &Observation,
-    members: &[&UnitObs],
-    player_facing: bool,
-) -> (u64, u64) {
-    if !player_facing {
-        return local_strength(obs, members);
-    }
+fn local_fight_strength(obs: &Observation, members: &[&UnitObs]) -> (u64, u64) {
     let defenses: Vec<_> = obs
         .enemy_buildings
         .iter()
@@ -1572,7 +1448,7 @@ mod tests {
         );
         body.target = Some(target);
         let mut out = Vec::new();
-        march(obs.me, &obs, &body, target, &mut out, true);
+        march(obs.me, &obs, &body, target, &mut out);
         let stand = out
             .iter()
             .find_map(|command| match command.command {
@@ -1606,14 +1482,7 @@ mod tests {
         let mut parity = obs.clone();
         parity.enemy_buildings[0].kind = BuildingKind::Bastion;
         let mut parity_commands = Vec::new();
-        march(
-            parity.me,
-            &parity,
-            &body,
-            target,
-            &mut parity_commands,
-            true,
-        );
+        march(parity.me, &parity, &body, target, &mut parity_commands);
         assert!(
             parity_commands
                 .iter()
@@ -1632,16 +1501,6 @@ mod tests {
             assert_eq!(executive.armies.len(), 1);
             assert_eq!(executive.armies[0].state, ArmyState::Engaging);
         }
-        let mut legacy = Vec::new();
-        march(
-            obs.me,
-            &obs,
-            &executive.armies[0],
-            target,
-            &mut legacy,
-            false,
-        );
-        assert!(legacy.iter().any(|command| matches!(command.command, Command::AttackMove { goal, ref units, .. } if goal == target && units.contains(&UnitId(2)))));
     }
 
     #[test]
@@ -1678,9 +1537,6 @@ mod tests {
         let mut body = army(0, vec![UnitId(1), UnitId(2)], ArmyState::Pushing, staging);
         body.target = Some(TilePos::new(32, 10));
         executive.armies.push(body);
-        let mut legacy = executive.clone();
-        legacy.maintain(PlayerId(0), &obs, staging);
-        assert_eq!(legacy.armies[0].state, ArmyState::Pushing);
         executive.maintain_player_facing(PlayerId(0), &obs, staging);
         assert_eq!(executive.armies[0].state, ArmyState::Engaging);
         obs.tick += 12;
@@ -1691,10 +1547,10 @@ mod tests {
 
         let members: Vec<_> = obs.my_units.iter().collect();
         obs.enemy_buildings[0].seen = false;
-        assert_eq!(local_fight_strength(&obs, &members, true), (0, 0));
+        assert_eq!(local_fight_strength(&obs, &members), (0, 0));
         obs.enemy_buildings[0].seen = true;
         obs.enemy_buildings[0].kind = BuildingKind::FlakTurret;
-        assert_eq!(local_fight_strength(&obs, &members, true), (0, 0));
+        assert_eq!(local_fight_strength(&obs, &members), (0, 0));
     }
 
     #[test]
@@ -2165,16 +2021,11 @@ mod tests {
         executive: &Executive,
         obs: &Observation,
         rear: TilePos,
-        player_facing: bool,
     ) -> (Executive, Vec<PlayerCommand>) {
         let mut optimized = executive.clone();
         let mut reference = executive.clone();
-        let commands = if player_facing {
-            optimized.maintain_player_facing(PlayerId(0), obs, rear)
-        } else {
-            optimized.maintain(PlayerId(0), obs, rear)
-        };
-        let expected = reference.maintain_reference(PlayerId(0), obs, rear, player_facing);
+        let commands = { optimized.maintain_player_facing(PlayerId(0), obs, rear) };
+        let expected = reference.maintain_reference(PlayerId(0), obs, rear);
         assert_eq!(
             commands, expected,
             "command order diverged from linear lookup"
@@ -3349,84 +3200,6 @@ mod tests {
     }
 
     #[test]
-    fn profile_free_focus_preserves_legacy_whole_army_targeting() {
-        let staging = TilePos::new(4, 4);
-        let members = vec![
-            unit(
-                1,
-                PlayerId(0),
-                UnitKind::Sentinel,
-                TilePos::new(10, 10),
-                UnitKind::Sentinel.stats().max_hp,
-                false,
-            ),
-            unit(
-                2,
-                PlayerId(0),
-                UnitKind::Flakhound,
-                TilePos::new(10, 11),
-                UnitKind::Flakhound.stats().max_hp,
-                false,
-            ),
-            unit(
-                3,
-                PlayerId(0),
-                UnitKind::Bombard,
-                TilePos::new(9, 10),
-                UnitKind::Bombard.stats().max_hp,
-                false,
-            ),
-        ];
-        let weakest_gun = unit(
-            101,
-            PlayerId(1),
-            UnitKind::Flakhound,
-            TilePos::new(13, 10),
-            1,
-            false,
-        );
-        let other_gun = unit(
-            102,
-            PlayerId(1),
-            UnitKind::Sentinel,
-            TilePos::new(13, 11),
-            UnitKind::Sentinel.stats().max_hp,
-            false,
-        );
-        let obs = observation(0, (40, 40), members, vec![weakest_gun, other_gun]);
-        let body = army(
-            0,
-            vec![UnitId(1), UnitId(2), UnitId(3)],
-            ArmyState::Engaging,
-            staging,
-        );
-        let mut executive = Executive {
-            armies: vec![body],
-            next_army: 1,
-            rear: Vec::new(),
-            exhausted_rear: Vec::new(),
-            player_frame: None,
-            missions: Default::default(),
-            ground_outcomes: Default::default(),
-            mission_decisions: Default::default(),
-        };
-
-        let commands = executive.maintain(PlayerId(0), &obs, staging);
-
-        assert_eq!(
-            commands,
-            vec![PlayerCommand {
-                player: PlayerId(0),
-                command: Command::Attack {
-                    units: vec![UnitId(1), UnitId(2), UnitId(3)],
-                    target: Target::Unit(UnitId(101)).into(),
-                    queue: false,
-                },
-            }]
-        );
-    }
-
-    #[test]
     fn losing_focus_after_the_last_frontliner_dies_emits_no_empty_order() {
         let staging = TilePos::new(4, 4);
         let bombard = unit(
@@ -3771,7 +3544,7 @@ mod tests {
     }
 
     #[test]
-    fn refused_pushes_release_player_facing_units_but_restage_overseer_units() {
+    fn refused_pushes_release_units() {
         let staging = TilePos::new(4, 4);
         let current = TilePos::new(10, 10);
         let target = TilePos::new(30, 10);
@@ -3801,16 +3574,9 @@ mod tests {
             mission_decisions: Default::default(),
         };
 
-        let (player_facing, commands) = assert_reference_parity(&executive, &obs, staging, true);
+        let (maintained, commands) = assert_reference_parity(&executive, &obs, staging);
         assert!(commands.is_empty());
-        assert!(player_facing.armies.is_empty());
-
-        let (overseer, commands) = assert_reference_parity(&executive, &obs, staging, false);
-        assert!(commands.is_empty());
-        assert_eq!(overseer.armies[0].state, ArmyState::Staging);
-        assert_eq!(overseer.armies[0].staging, current);
-        assert_eq!(overseer.armies[0].target, None);
-        assert_eq!(overseer.armies[0].bounces, 0);
+        assert!(maintained.armies.is_empty());
     }
 
     #[test]
@@ -3927,9 +3693,9 @@ mod tests {
             mission_decisions: Default::default(),
         };
 
-        for player_facing in [false, true] {
+        {
             let (maintained, commands) =
-                assert_reference_parity(&executive, &obs, TilePos::new(1, 1), player_facing);
+                assert_reference_parity(&executive, &obs, TilePos::new(1, 1));
             assert_eq!(maintained.armies.len(), 101);
             assert!(
                 maintained
@@ -4039,29 +3805,22 @@ mod tests {
             mission_decisions: Default::default(),
         };
 
-        let (player_facing, player_commands) =
-            assert_reference_parity(&executive, &obs, TilePos::new(2, 2), true);
+        let (maintained, player_commands) =
+            assert_reference_parity(&executive, &obs, TilePos::new(2, 2));
         assert_eq!(
-            player_facing
+            maintained
                 .rear
                 .iter()
                 .map(|unit| unit.id)
                 .collect::<Vec<_>>(),
             vec![UnitId(3)]
         );
-        assert_eq!(player_facing.exhausted_rear, vec![UnitId(1)]);
+        assert_eq!(maintained.exhausted_rear, vec![UnitId(1)]);
         assert!(player_commands.iter().any(|command| matches!(
             &command.command,
             Command::Move { units, .. } if units == &vec![UnitId(3)]
         )));
-        assert_eq!(player_facing.armies[0].state, ArmyState::Withdrawing);
-
-        let (overseer, _) = assert_reference_parity(&executive, &obs, TilePos::new(2, 2), false);
-        assert_eq!(
-            overseer.rear.iter().map(|unit| unit.id).collect::<Vec<_>>(),
-            vec![UnitId(1), UnitId(3)]
-        );
-        assert_eq!(overseer.exhausted_rear, vec![UnitId(997)]);
+        assert_eq!(maintained.armies[0].state, ArmyState::Withdrawing);
     }
 
     #[test]

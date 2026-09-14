@@ -1314,7 +1314,7 @@ fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
     state.tick(&commands);
     for _ in 0..200 {
         let obs = think(&state);
-        let cmds = exec.maintain(me, &obs, TilePos::new(2, 2));
+        let cmds = exec.maintain_player_facing(me, &obs, TilePos::new(2, 2));
         state.tick(&cmds);
     }
     assert_eq!(
@@ -1337,7 +1337,7 @@ fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
     let mut saw_withdrawing = false;
     for _ in 0..800 {
         let obs = think(&state);
-        let cmds = exec.maintain(me, &obs, TilePos::new(2, 2));
+        let cmds = exec.maintain_player_facing(me, &obs, TilePos::new(2, 2));
         state.tick(&cmds);
         match exec.armies().first().map(|a| a.state) {
             Some(ArmyState::Engaging) => saw_engaging = true,
@@ -1357,7 +1357,7 @@ fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
     // re-stages (or died to the last machine trying).
     for _ in 0..600 {
         let obs = think(&state);
-        let cmds = exec.maintain(me, &obs, TilePos::new(2, 2));
+        let cmds = exec.maintain_player_facing(me, &obs, TilePos::new(2, 2));
         state.tick(&cmds);
         if exec
             .armies()
@@ -1371,7 +1371,7 @@ fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
 }
 
 #[test]
-fn qa_rear_line_stays_frozen_while_player_facing_releases_repaired_units() {
+fn wounded_members_rotate_and_repaired_units_return_to_the_draft() {
     // Executive semantics, pinned against a synthetic observation (the
     // executive is a pure function of what it is shown): a member below
     // the 35% pullback line and out of contact is Move-ordered to the
@@ -1447,7 +1447,7 @@ fn qa_rear_line_stays_frozen_while_player_facing_releases_repaired_units() {
     // no rotation happens mid-fight.
     let mut contact = obs_with(vec![sentinel(0, 0, 4, 3, 10), sentinel(1, 0, 4, 2, 100)]);
     contact.enemy_units.push(sentinel(9, 1, 6, 3, 100));
-    let _ = exec.maintain(me, &contact, TilePos::new(1, 1));
+    let _ = exec.maintain_player_facing(me, &contact, TilePos::new(1, 1));
     assert!(
         exec.armies()[0].members.contains(&UnitId(0)),
         "no pullback while the fight is live"
@@ -1456,7 +1456,7 @@ fn qa_rear_line_stays_frozen_while_player_facing_releases_repaired_units() {
     // Same wound, enemy gone: the rotation fires, with a Move to the
     // rear tile — not to the army's staging point.
     let calm = obs_with(vec![sentinel(0, 0, 4, 3, 10), sentinel(1, 0, 4, 2, 100)]);
-    let cmds = exec.maintain(me, &calm, TilePos::new(1, 1));
+    let cmds = exec.maintain_player_facing(me, &calm, TilePos::new(1, 1));
     assert!(
         !exec.armies().is_empty() && !exec.armies()[0].members.contains(&UnitId(0)),
         "the wounded member left the army"
@@ -1486,31 +1486,14 @@ fn qa_rear_line_stays_frozen_while_player_facing_releases_repaired_units() {
         );
     }
 
-    // Maintenance retains even an externally healed rear member. Rear-line
-    // reservation is part of the current scripted controller's behavior.
+    // A repaired rear member becomes available to the draft again.
     let healed = obs_with(vec![sentinel(0, 0, 1, 1, 100), sentinel(1, 0, 4, 2, 100)]);
-    let _ = exec.maintain(me, &healed, TilePos::new(1, 1));
-    let _ = exec.apply(
-        me,
-        &healed,
-        &[Intent::FormArmy {
-            staging: TilePos::new(5, 3),
-            size: 5,
-        }],
-    );
-    assert!(
-        exec.armies()
-            .iter()
-            .all(|army| !army.members.contains(&UnitId(0))),
-        "QA maintenance retains the historical rear line"
-    );
-
     let _ = exec.maintain_player_facing(me, &healed, TilePos::new(1, 1));
     let _ = exec.apply(
         me,
         &healed,
         &[Intent::FormArmy {
-            staging: TilePos::new(6, 3),
+            staging: TilePos::new(5, 3),
             size: 5,
         }],
     );

@@ -10,6 +10,8 @@ mod bot_label;
 mod camera;
 mod config;
 mod debug_server;
+mod diagnostic_report;
+mod entity_lod;
 mod frame_profile;
 mod game;
 mod input;
@@ -29,7 +31,6 @@ mod theme;
 mod track_motion;
 mod tutorial;
 mod typography;
-mod unit_lod;
 
 use clap::Parser;
 use macroquad::prelude::*;
@@ -99,6 +100,10 @@ struct Args {
     /// for the packaged .app, where flags are awkward).
     #[arg(long)]
     trace_startup: bool,
+
+    /// Persist optional diagnostics without enabling the debug server.
+    #[arg(long)]
+    diagnostics: bool,
 
     /// Collect bounded native GPU-shell frame timings for
     /// query_performance. Off by default so ordinary play pays no timing or

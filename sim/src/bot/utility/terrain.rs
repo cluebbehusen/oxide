@@ -178,31 +178,6 @@ impl UtilityPolicy {
         false
     }
 
-    /// The nearest known enemy building no KNOWN ground road reaches —
-    /// the island war's objective — or `None` while every known site
-    /// has a walked road. Candidates are tried nearest-first by
-    /// (manhattan, y, x). One flood of home's known-road component
-    /// answers every candidate: per-site reachability from a fixed
-    /// origin is component membership, and the per-site BFS this
-    /// replaces re-walked the same component once per known enemy
-    /// building on any connected map.
-    pub(super) fn island_target(obs: &Observation, home: TilePos) -> Option<TilePos> {
-        let mut sites: Vec<(i32, i32, i32)> = obs
-            .enemy_buildings
-            .iter()
-            .map(|b| (b.anchor.manhattan(home), b.anchor.y, b.anchor.x))
-            .collect();
-        sites.sort_unstable();
-        if sites.is_empty() {
-            return None;
-        }
-        let reach = Self::known_road_reach(obs, home);
-        sites
-            .into_iter()
-            .map(|(_, y, x)| TilePos::new(x, y))
-            .find(|anchor| !reach.frame_reached(*anchor))
-    }
-
     /// Home's known-road component in membership form, answering
     /// [`Self::ground_route_known`] for any number of anchors with one
     /// flood. Use this wherever candidates are filtered by known ground
@@ -261,151 +236,6 @@ impl UtilityPolicy {
         count: usize,
     ) -> Option<Vec<TilePos>> {
         routing::ground_command_goals(obs, goal, count)
-    }
-
-    /// A drop point beside the enemy base, from the target side's own
-    /// known ground: the first ring-scanned tile ((r, y, x) order) that
-    /// is not known rock, scrap, or a known building footprint —
-    /// unexplored tiles count open, like every founding walk. The sim's
-    /// unload scan handles exact placement around it; everything nearby
-    /// known-blocked falls back to the anchor itself.
-    fn unload_site(&self, obs: &Observation, target: TilePos) -> TilePos {
-        for r in 2i32..=6 {
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    if dx.abs().max(dy.abs()) != r {
-                        continue;
-                    }
-                    let t = target.offset(dx, dy);
-                    let in_bounds =
-                        t.x >= 0 && t.y >= 0 && t.x < obs.map_width && t.y < obs.map_height;
-                    if in_bounds && self.tile_open(obs, t) {
-                        return t;
-                    }
-                }
-            }
-        }
-        target
-    }
-
-    /// Runs the profile-free Overseer's frozen single-shuttle channel. The
-    /// player-facing controller plans persistent multi-carrier waves before
-    /// utility work reaches this layer.
-    pub(super) fn ferry(
-        &mut self,
-        dials: &Dials,
-        obs: &Observation,
-        armies: &[Army],
-        home: TilePos,
-        claims: FerryClaims<'_>,
-        intents: &mut Vec<Intent>,
-    ) {
-        if !dials.ferry || claims.player_facing {
-            return;
-        }
-        self.ferry_legacy(dials, obs, armies, home, claims.enlisted, intents);
-    }
-
-    /// The profile-free Overseer's frozen ferry policy. Its command stream is
-    /// a stable QA baseline, so player-facing route and recovery refinements
-    /// must not silently change it.
-    fn ferry_legacy(
-        &mut self,
-        dials: &Dials,
-        obs: &Observation,
-        armies: &[Army],
-        home: TilePos,
-        enlisted: &[UnitId],
-        intents: &mut Vec<Intent>,
-    ) {
-        if !dials.ferry {
-            return;
-        }
-        let Some(sky) = obs
-            .my_units
-            .iter()
-            .filter(|unit| unit.kind.stats().transport_capacity > 0)
-            .min_by_key(|unit| unit.id)
-        else {
-            self.ferry_boarding.clear();
-            return;
-        };
-        let Some(target) = Self::island_target(obs, home).or_else(|| {
-            (self.desperate && !self.desperate_road)
-                .then(|| TilePos::new(obs.map_width - 1 - home.x, obs.map_height - 1 - home.y))
-        }) else {
-            return;
-        };
-        self.ferry_boarding
-            .retain(|id| obs.my_units.iter().any(|unit| unit.id == *id && !unit.idle));
-        if sky.cargo > 0 {
-            if sky.idle && self.ferry_boarding.is_empty() {
-                intents.push(Intent::Unload {
-                    transport: sky.id,
-                    at: self.unload_site(obs, target),
-                });
-            }
-            return;
-        }
-        if !sky.idle {
-            return;
-        }
-        let staging: Vec<UnitId> = armies
-            .iter()
-            .filter(|army| army.state == ArmyState::Staging)
-            .flat_map(|army| army.members.iter().copied())
-            .collect();
-        let pool: Vec<&UnitObs> = obs
-            .my_units
-            .iter()
-            .filter(|unit| {
-                let stats = unit.kind.stats();
-                stats.domain == Domain::Ground
-                    && stats.can_fight()
-                    && stats.transport_size > 0
-                    && unit.idle
-                    && (!enlisted.contains(&unit.id) || staging.contains(&unit.id))
-            })
-            .collect();
-        if pool.len() < FERRY_SQUAD {
-            return;
-        }
-        let mut ranked: Vec<(i32, UnitId, u8)> = pool
-            .iter()
-            .map(|unit| {
-                (
-                    unit.tile.chebyshev(sky.tile),
-                    unit.id,
-                    unit.kind.stats().transport_size,
-                )
-            })
-            .collect();
-        ranked.sort_unstable();
-        let mut room = sky.kind.stats().transport_capacity;
-        let mut riders = Vec::new();
-        for (_, id, size) in ranked {
-            if size > 0 && size <= room {
-                room -= size;
-                riders.push(id);
-            }
-        }
-        if riders.is_empty() {
-            return;
-        }
-        self.ferry_boarding = riders.clone();
-        intents.push(Intent::Load {
-            transport: sky.id,
-            riders,
-        });
-    }
-    /// Nearest known scrap by (manhattan, y, x), skipping bounced nodes.
-    pub(super) fn nearest_scrap(&self, obs: &Observation, from: TilePos) -> Option<TilePos> {
-        obs.known_scrap
-            .iter()
-            .filter(|(pos, amount)| *amount > 0 && !self.dead_nodes.contains(pos))
-            .map(|(pos, _)| (pos.manhattan(from), pos.y, pos.x))
-            .min()
-            .map(|(_, y, x)| TilePos::new(x, y))
     }
 
     /// First anchor for `kind` ring-scanned outward from `near` whose
@@ -1155,6 +985,47 @@ mod tests {
     }
 
     #[test]
+    fn construction_placement_respects_a_walking_founders_promised_footprint() {
+        let mut obs = observation();
+        let anchor = TilePos::new(2, 2);
+        let policy = UtilityPolicy::new();
+        assert!(placement_valid(
+            &policy,
+            &obs,
+            BuildingKind::Fabricator,
+            anchor
+        ));
+        obs.my_units.push(UnitObs {
+            id: UnitId(70),
+            player: obs.me,
+            kind: UnitKind::Harvester,
+            tile: TilePos::new(12, 10),
+            hp: 60,
+            idle: false,
+            carrying: 0,
+            harvesting: None,
+            cargo: 0,
+            site: None,
+            salvaging: None,
+            founding: Some((BuildingKind::Fabricator, anchor)),
+            repairing: false,
+            grounded: false,
+        });
+        assert!(!placement_valid(
+            &policy,
+            &obs,
+            BuildingKind::Fabricator,
+            anchor
+        ));
+        assert!(placement_valid(
+            &policy,
+            &obs,
+            BuildingKind::Fabricator,
+            TilePos::new(2, 9)
+        ));
+    }
+
+    #[test]
     fn fresh_foundations_do_not_displace_an_active_builder_from_its_work_tile() {
         let mut obs = observation();
         let site = TilePos::new(10, 5);
@@ -1177,9 +1048,9 @@ mod tests {
             repairing: false,
             grounded: false,
         });
-        let legacy = UtilityPolicy::new();
+        let unobserved = UtilityPolicy::new();
         assert!(placement_valid(
-            &legacy,
+            &unobserved,
             &obs,
             BuildingKind::Reclaimer,
             work
@@ -1478,124 +1349,6 @@ mod tests {
 
         assert_eq!(selected, expected, "the first open tile is on radius four");
         assert!(!obs.known_rock_at(selected));
-    }
-
-    #[test]
-    fn legacy_ferry_waits_for_partial_boarding_before_unloading_once() {
-        let mut obs = observation();
-        obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(10, y)).collect();
-        obs.enemy_buildings.push(BuildingObs {
-            id: BuildingId(20),
-            player: PlayerId(1),
-            kind: BuildingKind::Foundry,
-            anchor: TilePos::new(14, 5),
-            hp: BuildingKind::Foundry.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        });
-        let unit = |id, kind, tile| UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind,
-            tile,
-            hp: kind.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        };
-        obs.my_units = vec![
-            unit(1, UnitKind::Sentinel, TilePos::new(3, 3)),
-            unit(2, UnitKind::Sentinel, TilePos::new(4, 3)),
-            unit(3, UnitKind::Sentinel, TilePos::new(5, 3)),
-            unit(10, UnitKind::Skyhook, TilePos::new(4, 4)),
-        ];
-        let dials = Dials::overseer();
-        let mut policy = UtilityPolicy::new();
-        let mut intents = Vec::new();
-        policy.ferry(
-            &dials,
-            &obs,
-            &[],
-            TilePos::new(7, 5),
-            FerryClaims {
-                enlisted: &[],
-                player_facing: false,
-            },
-            &mut intents,
-        );
-        assert_eq!(
-            intents,
-            vec![Intent::Load {
-                transport: UnitId(10),
-                riders: vec![UnitId(1), UnitId(2), UnitId(3)],
-            }]
-        );
-
-        let one_rider = UnitKind::Sentinel.stats().transport_size;
-        obs.my_units.retain(|unit| unit.id != UnitId(1));
-        for rider in obs
-            .my_units
-            .iter_mut()
-            .filter(|unit| matches!(unit.id, UnitId(2) | UnitId(3)))
-        {
-            rider.idle = false;
-        }
-        let skyhook = obs
-            .my_units
-            .iter_mut()
-            .find(|unit| unit.id == UnitId(10))
-            .expect("the shuttle remains visible");
-        skyhook.cargo = one_rider;
-        skyhook.idle = true;
-        intents.clear();
-        policy.ferry(
-            &dials,
-            &obs,
-            &[],
-            TilePos::new(7, 5),
-            FerryClaims {
-                enlisted: &[],
-                player_facing: false,
-            },
-            &mut intents,
-        );
-        assert!(
-            intents.is_empty(),
-            "an idle shuttle must not unload while commanded riders are still boarding"
-        );
-
-        obs.my_units.retain(|unit| unit.id == UnitId(10));
-        let skyhook = obs
-            .my_units
-            .first_mut()
-            .expect("the loaded shuttle remains visible");
-        skyhook.cargo = one_rider * 3;
-        skyhook.idle = true;
-        policy.ferry(
-            &dials,
-            &obs,
-            &[],
-            TilePos::new(7, 5),
-            FerryClaims {
-                enlisted: &[],
-                player_facing: false,
-            },
-            &mut intents,
-        );
-        assert!(matches!(
-            intents.as_slice(),
-            [Intent::Unload {
-                transport: UnitId(10),
-                ..
-            }]
-        ));
     }
 
     #[test]

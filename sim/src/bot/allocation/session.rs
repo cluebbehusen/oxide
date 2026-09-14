@@ -412,6 +412,7 @@ pub(crate) struct AllocationSessionOutcome {
 
 /// One typed allocation transaction over already-advanced legacy planners.
 pub(crate) struct AllocationSession<'a> {
+    observer: Option<&'a dyn crate::bot::observer::PhaseObserver>,
     context: AllocationSessionContext<'a>,
     participants: AllocationParticipants<'a>,
     advanced: AdvancedPlannerWork,
@@ -431,6 +432,7 @@ impl<'a> AllocationSession<'a> {
         trace: Option<&'a mut AllocationTrace>,
     ) -> Self {
         Self {
+            observer: None,
             context,
             participants,
             advanced,
@@ -443,9 +445,21 @@ impl<'a> AllocationSession<'a> {
         }
     }
 
+    pub(crate) fn with_observer(
+        mut self,
+        observer: Option<&'a dyn crate::bot::observer::PhaseObserver>,
+    ) -> Self {
+        self.observer = observer;
+        self
+    }
+
     /// Runs the named prepare, resolve, and commit-or-restore phases exactly
     /// once. No domain is asked to rerank a payload after preparation.
     pub(crate) fn run(mut self) -> AllocationSessionOutcome {
+        let _scope = crate::bot::observer::PhaseScope::new(
+            self.observer,
+            crate::bot::observer::BotPhase::Allocation,
+        );
         let initial_claims = self.snapshot_claims();
         let resources = ResourceSnapshot::from_observation(self.context.observation);
         let observed_context = EconomicInvestmentContext {
@@ -2388,6 +2402,10 @@ impl<'a> AllocationSession<'a> {
                 &[(BuildingKind::Foundry, foundry.anchor(), foundry.builder())],
             )
         });
+        let defense_scope = crate::bot::observer::PhaseScope::new(
+            self.observer,
+            crate::bot::observer::BotPhase::Defense,
+        );
         let mut defense = if admission_tick && saved_layout_allows_defense {
             self.participants.policy.fresh_defense_proposals(
                 self.context.profile,
@@ -2428,6 +2446,7 @@ impl<'a> AllocationSession<'a> {
                     )
             });
         }
+        drop(defense_scope);
         let standing_force_derivation = StandingForceDerivation {
             projection_targets: self.standing_force_projection_targets(),
             expansion_security_need,
@@ -2554,6 +2573,10 @@ impl<'a> AllocationSession<'a> {
             .map(|unit| unit.id)
             .collect::<Vec<_>>();
         let air_work = self.economic_air_work();
+        let economy_scope = crate::bot::observer::PhaseScope::new(
+            self.observer,
+            crate::bot::observer::BotPhase::Economy,
+        );
         let economy = if admission_tick
             && claims.opening_core.ready
             && self.participants.policy.economic_saving().is_none()
@@ -2610,6 +2633,7 @@ impl<'a> AllocationSession<'a> {
         } else {
             Vec::new()
         };
+        drop(economy_scope);
         FreshInvestmentPreparation {
             foundry,
             defense,

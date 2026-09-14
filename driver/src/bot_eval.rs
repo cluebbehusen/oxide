@@ -1,10 +1,10 @@
 //! Deterministic, player-facing bot match evaluation.
 //!
-//! This runner complements the frozen Overseer sweeps: it executes the bot
+//! This runner executes the bot
 //! configuration serialized in an ordinary scenario, stops when the match is
 //! decided, and emits one compact row suitable for JSONL comparison.
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use oxide_kit::GameReplay;
 use oxide_sim::bot::{DecisionTrace, PublicMapBriefing, ResolvedProfile, SeatBot};
 use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
@@ -49,14 +49,9 @@ pub enum EvaluationControllerKind {
     None,
     /// The configurable opponent exposed to players.
     Scripted,
-    /// The frozen pre-0.16 QA yardstick.
-    Overseer,
 }
 
 /// Exact evaluation-only command source for one seat.
-///
-/// Overseer deliberately remains outside [`BotConfig`]: it is a frozen QA
-/// baseline, not a controller ordinary matches may select.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EvaluationController {
@@ -65,43 +60,24 @@ pub enum EvaluationController {
         /// Difficulty, stance, and deterministic personality seed.
         config: BotConfig,
     },
-    /// The frozen profile-free controller with one seat-independent policy
-    /// identity.
-    Overseer {
-        /// Seed for the legacy army-size jitter, evaluated on its canonical
-        /// stream regardless of which physical seat this leg drives.
-        policy_seed: u64,
-    },
 }
 
 impl EvaluationController {
     fn kind(self) -> EvaluationControllerKind {
         match self {
             Self::Scripted { .. } => EvaluationControllerKind::Scripted,
-            Self::Overseer { .. } => EvaluationControllerKind::Overseer,
         }
     }
 
     fn config(self) -> Option<BotConfig> {
         match self {
             Self::Scripted { config } => Some(config),
-            Self::Overseer { .. } => None,
-        }
-    }
-
-    fn overseer_policy_seed(self) -> Option<u64> {
-        match self {
-            Self::Scripted { .. } => None,
-            Self::Overseer { policy_seed } => Some(policy_seed),
         }
     }
 
     fn seat_bot(self, player: PlayerId, public_map: &Arc<PublicMapBriefing>) -> SeatBot {
         match self {
             Self::Scripted { config } => SeatBot::scripted(player, config, Arc::clone(public_map)),
-            Self::Overseer { policy_seed } => {
-                SeatBot::overseer_with_policy_seed(player, policy_seed)
-            }
         }
     }
 }
@@ -302,28 +278,6 @@ struct StallSample {
     count: u64,
 }
 
-/// The frozen Overseer has no severed-ground play: its legacy ferry and army
-/// channels re-issue unreachable orders on every think, so on a map whose
-/// seats share no ground route the yardstick measures a missing capability
-/// rather than Prime. Such a cell is refused instead of recorded.
-pub fn ensure_overseer_yardstick_ground(scenario: &Scenario) -> Result<()> {
-    let audit = crate::audit::audit(scenario)
-        .with_context(|| format!("auditing {} for the Overseer yardstick", scenario.name))?;
-    if let Some(route) = audit
-        .routes
-        .iter()
-        .find(|route| route.ground_steps.is_none())
-    {
-        bail!(
-            "{}: seats {} and {} share no ground route, and the frozen Overseer has no severed-ground play; it is not a valid yardstick there, so compare player-facing profiles instead",
-            scenario.name,
-            route.seats.0,
-            route.seats.1
-        );
-    }
-    Ok(())
-}
-
 /// Controller choices for one evaluation cell.
 ///
 /// The primary values apply to seat zero and, unless overridden, every other
@@ -409,9 +363,6 @@ pub struct SeatConfiguration {
     pub faction: Faction,
     /// The configured built-in controller, or `None` for an empty chair.
     pub config: Option<BotConfig>,
-    /// Frozen Overseer policy identity, absent for other command sources.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overseer_policy_seed: Option<u64>,
     /// Fully resolved hidden personality, included for exact comparison.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<ResolvedProfile>,
@@ -595,8 +546,8 @@ pub fn evaluate_artifact(
 
 /// Runs one exact evaluation plan and returns its row plus unpublished replay.
 ///
-/// Unlike [`evaluate_artifact`], this entry point can seat the frozen Overseer
-/// without pretending it is an ordinary player-facing [`BotConfig`].
+/// Controller identities come from the evaluation plan and are recorded in
+/// replay provenance independently of the physical scenario configuration.
 pub fn evaluate_plan_artifact(
     plan: &EvaluationPlan,
     tick_limit: u64,
@@ -622,7 +573,7 @@ pub fn evaluate_plan_artifact_with(
 /// diagnostics produced during that run.
 ///
 /// The returned replay and compact evaluation row are identical to those from
-/// [`evaluate_plan_artifact_with`]. The frozen Overseer produces no trace rows.
+/// [`evaluate_plan_artifact_with`]. Each current-controller seat emits decision traces.
 pub fn evaluate_plan_artifact_traced_with<F>(
     plan: &EvaluationPlan,
     tick_limit: u64,
@@ -748,8 +699,6 @@ fn evaluate_plan_artifact_impl(
                     .unwrap_or(EvaluationControllerKind::None),
                 faction: player.faction,
                 config: plan.controllers[seat].and_then(EvaluationController::config),
-                overseer_policy_seed: plan.controllers[seat]
-                    .and_then(EvaluationController::overseer_policy_seed),
                 profile: plan.controllers[seat]
                     .and_then(EvaluationController::config)
                     .map(BotConfig::resolve_profile),
@@ -855,65 +804,47 @@ pub fn configured_matchup_legs(
     ])
 }
 
-/// Builds a controlled player-facing-bot versus Overseer cell.
-///
-/// The transformed scenario is identical in both paired legs. Only the two
-/// evaluation-only command sources exchange seats. A full crossed matrix is
-/// still required to separate controller performance from faction and map-end
-/// effects.
-pub fn configured_overseer_plans(
+/// Builds a faction and geometry cell using complete current-controller profiles.
+/// Paired legs exchange the profiles while preserving the physical map and rosters.
+pub fn configured_matchup_plans(
     source: &Scenario,
     scenario_seed: u64,
-    config: BotConfig,
-    overseer_policy_seed: u64,
+    matchup: ProfileMatchup,
+    personality_seed_base: u64,
     paired: bool,
     faction_cell: EvaluationFactionCell,
     geometry: EvaluationGeometry,
 ) -> Result<Vec<EvaluationPlan>> {
     ensure!(
         source.players.len() == 2,
-        "scripted-versus-Overseer evaluations require exactly two seats, got {}",
+        "controlled evaluation axes require exactly two seats, got {}",
         source.players.len()
     );
     ensure!(
         source.players[0].team.is_none() || source.players[0].team != source.players[1].team,
-        "scripted-versus-Overseer evaluations require two opposing teams"
+        "controlled evaluation axes require two opposing teams"
     );
-
     let mut scenario = geometry.apply(source)?;
-    scenario.seed = scenario_seed;
     faction_cell.apply(&mut scenario)?;
-    for player in &mut scenario.players {
-        player.bot = false;
-        player.bot_config = None;
-    }
-
-    let scripted = EvaluationController::Scripted { config };
-    let overseer = EvaluationController::Overseer {
-        policy_seed: overseer_policy_seed,
-    };
-    let forward = EvaluationPlan {
-        leg: if paired {
-            EvaluationLeg::Forward
-        } else {
-            EvaluationLeg::Single
-        },
-        scenario: scenario.clone(),
-        controllers: vec![Some(scripted), Some(overseer)],
-        geometry,
-        faction_cell,
-    };
-    if !paired {
-        return Ok(vec![forward]);
-    }
-    let swapped = EvaluationPlan {
-        leg: EvaluationLeg::Swapped,
-        scenario,
-        controllers: vec![Some(overseer), Some(scripted)],
-        geometry,
-        faction_cell,
-    };
-    Ok(vec![forward, swapped])
+    configured_matchup_legs(
+        &scenario,
+        scenario_seed,
+        matchup,
+        personality_seed_base,
+        paired,
+    )?
+    .into_iter()
+    .map(|(leg, scenario)| {
+        let mut plan = EvaluationPlan::from_scenario(scenario, leg);
+        for player in &mut plan.scenario.players {
+            player.bot = false;
+            player.bot_config = None;
+        }
+        plan.geometry = geometry;
+        plan.faction_cell = faction_cell;
+        Ok(plan)
+    })
+    .collect()
 }
 
 /// Atomically writes compact evaluation records as one JSON object per line.
@@ -1375,7 +1306,6 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_REPLAY_ID: AtomicU64 = AtomicU64::new(0);
-    const TEST_OVERSEER_POLICY_SEED: u64 = 73;
 
     fn firing_squad() -> Scenario {
         let ground = ".".repeat(16);
@@ -1432,18 +1362,36 @@ mod tests {
         BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 8_100)
     }
 
-    fn overseer_controller() -> EvaluationController {
-        EvaluationController::Overseer {
-            policy_seed: TEST_OVERSEER_POLICY_SEED,
+    fn prime_matchup() -> ProfileMatchup {
+        ProfileMatchup {
+            difficulty: BotDifficulty::Prime,
+            stance: BotStance::Balanced,
+            opponent_difficulty: Some(BotDifficulty::Standard),
+            opponent_stance: Some(BotStance::Balanced),
+            same_personality_seed: false,
+        }
+    }
+
+    fn opponent_config() -> BotConfig {
+        BotConfig::scripted(
+            BotDifficulty::Standard,
+            BotStance::Balanced,
+            prime_config().personality_seed + 1,
+        )
+    }
+
+    fn opponent_controller() -> EvaluationController {
+        EvaluationController::Scripted {
+            config: opponent_config(),
         }
     }
 
     fn one_evaluation_trace() -> EvaluationTraceRow {
-        let plan = configured_overseer_plans(
+        let plan = configured_matchup_plans(
             &Scenario::skirmish(),
             73,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             false,
             EvaluationFactionCell::Authored,
             EvaluationGeometry::Authored,
@@ -1452,7 +1400,9 @@ mod tests {
         .remove(0);
         let mut trace = None;
         evaluate_plan_artifact_traced_with(&plan, 1, None, "candidate-a", |row| {
-            assert!(trace.replace(row.clone()).is_none());
+            if row.seat == 0 {
+                assert!(trace.replace(row.clone()).is_none());
+            }
             Ok(())
         })
         .unwrap();
@@ -1460,13 +1410,13 @@ mod tests {
     }
 
     #[test]
-    fn overseer_pair_swaps_only_controllers_on_one_transformed_scenario() {
+    fn profile_pair_swaps_only_controllers_on_one_transformed_scenario() {
         let source = Scenario::skirmish();
-        let plans = configured_overseer_plans(
+        let plans = configured_matchup_plans(
             &source,
             91,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             true,
             EvaluationFactionCell::Cf,
             EvaluationGeometry::Rot180,
@@ -1505,13 +1455,13 @@ mod tests {
                 Some(EvaluationController::Scripted {
                     config: prime_config()
                 }),
-                Some(overseer_controller()),
+                Some(opponent_controller()),
             ]
         );
         assert_eq!(
             swapped.controllers,
             [
-                Some(overseer_controller()),
+                Some(opponent_controller()),
                 Some(EvaluationController::Scripted {
                     config: prime_config()
                 }),
@@ -1523,22 +1473,22 @@ mod tests {
     #[test]
     fn controlled_faction_cells_retint_players_and_starting_rosters() {
         let source = Scenario::skirmish();
-        let fc = configured_overseer_plans(
+        let fc = configured_matchup_plans(
             &source,
             source.seed,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             false,
             EvaluationFactionCell::Fc,
             EvaluationGeometry::Authored,
         )
         .unwrap()
         .remove(0);
-        let cf = configured_overseer_plans(
+        let cf = configured_matchup_plans(
             &source,
             source.seed,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             false,
             EvaluationFactionCell::Cf,
             EvaluationGeometry::Authored,
@@ -1574,22 +1524,22 @@ mod tests {
     #[test]
     fn controlled_geometry_records_and_applies_the_exact_half_turn() {
         let source = Scenario::skirmish();
-        let authored = configured_overseer_plans(
+        let authored = configured_matchup_plans(
             &source,
             31,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             false,
             EvaluationFactionCell::Cf,
             EvaluationGeometry::Authored,
         )
         .unwrap()
         .remove(0);
-        let rotated = configured_overseer_plans(
+        let rotated = configured_matchup_plans(
             &source,
             31,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             false,
             EvaluationFactionCell::Cf,
             EvaluationGeometry::Rot180,
@@ -1608,12 +1558,12 @@ mod tests {
     }
 
     #[test]
-    fn overseer_evaluation_records_exact_controller_and_roster_provenance() {
-        let plans = configured_overseer_plans(
+    fn configured_evaluation_records_exact_controller_and_roster_provenance() {
+        let plans = configured_matchup_plans(
             &Scenario::skirmish(),
             73,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             true,
             EvaluationFactionCell::Cf,
             EvaluationGeometry::Authored,
@@ -1629,10 +1579,18 @@ mod tests {
                         Faction::Cupric,
                         Some(prime_config()),
                     ),
-                    (EvaluationControllerKind::Overseer, Faction::Ferrous, None),
+                    (
+                        EvaluationControllerKind::Scripted,
+                        Faction::Ferrous,
+                        Some(opponent_config()),
+                    ),
                 ],
                 EvaluationLeg::Swapped => [
-                    (EvaluationControllerKind::Overseer, Faction::Cupric, None),
+                    (
+                        EvaluationControllerKind::Scripted,
+                        Faction::Cupric,
+                        Some(opponent_config()),
+                    ),
                     (
                         EvaluationControllerKind::Scripted,
                         Faction::Ferrous,
@@ -1661,11 +1619,6 @@ mod tests {
                 assert_eq!(seat.controller, controller);
                 assert_eq!(seat.faction, faction);
                 assert_eq!(seat.config, config);
-                assert_eq!(
-                    seat.overseer_policy_seed,
-                    (controller == EvaluationControllerKind::Overseer)
-                        .then_some(TEST_OVERSEER_POLICY_SEED)
-                );
                 assert_eq!(seat.profile, config.map(BotConfig::resolve_profile));
             }
             assert!(
@@ -1675,19 +1628,17 @@ mod tests {
             let description = replay.meta.description.as_deref().unwrap();
             assert!(description.contains(&format!("evaluation={}", row.evaluation_fingerprint)));
             assert!(description.contains("\"kind\":\"scripted\""));
-            assert!(description.contains(&format!(
-                "\"kind\":\"overseer\",\"policy_seed\":{TEST_OVERSEER_POLICY_SEED}"
-            )));
+            assert!(description.contains(&serde_json::to_string(&opponent_controller()).unwrap()));
         }
     }
 
     #[test]
     fn traced_evaluation_is_deterministic_and_does_not_change_authoritative_evidence() {
-        let plan = configured_overseer_plans(
+        let plan = configured_matchup_plans(
             &Scenario::skirmish(),
             73,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             false,
             EvaluationFactionCell::Cf,
             EvaluationGeometry::Authored,
@@ -1736,7 +1687,7 @@ mod tests {
                 traced_row.evaluation_fingerprint
             );
             assert_eq!(row.leg, traced_row.leg);
-            assert_eq!(row.seat, 0, "the frozen Overseer must not emit traces");
+            assert!(row.seat < 2);
             assert_eq!(row.seat, row.trace.player.0);
             assert_eq!(row.tick, row.trace.tick);
             assert!(row.tick < traced_row.duration_ticks);
@@ -1746,22 +1697,22 @@ mod tests {
     #[test]
     fn nominal_axis_aliases_share_one_execution_identity_and_are_refused() {
         let source = Scenario::skirmish();
-        let authored = configured_overseer_plans(
+        let authored = configured_matchup_plans(
             &source,
             source.seed,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             false,
             EvaluationFactionCell::Authored,
             EvaluationGeometry::Authored,
         )
         .unwrap()
         .remove(0);
-        let explicit = configured_overseer_plans(
+        let explicit = configured_matchup_plans(
             &source,
             source.seed,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             false,
             EvaluationFactionCell::Fc,
             EvaluationGeometry::Authored,
@@ -1814,11 +1765,11 @@ mod tests {
 
     #[test]
     fn controller_swaps_have_one_scenario_but_distinct_evidence_identities() {
-        let plans = configured_overseer_plans(
+        let plans = configured_matchup_plans(
             &Scenario::skirmish(),
             73,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             true,
             EvaluationFactionCell::Fc,
             EvaluationGeometry::Rot180,
@@ -1848,11 +1799,11 @@ mod tests {
     fn evaluation_plan_refuses_missing_or_excess_controller_slots() {
         let scenario = firing_squad();
         for controllers in [
-            vec![Some(overseer_controller())],
+            vec![Some(opponent_controller())],
             vec![
-                Some(overseer_controller()),
-                Some(overseer_controller()),
-                Some(overseer_controller()),
+                Some(opponent_controller()),
+                Some(opponent_controller()),
+                Some(opponent_controller()),
             ],
         ] {
             let plan = EvaluationPlan {
@@ -1881,18 +1832,18 @@ mod tests {
     }
 
     #[test]
-    fn overseer_plans_refuse_non_duel_scenarios_before_transforming_them() {
+    fn controlled_plans_refuse_non_duel_scenarios_before_transforming_them() {
         let mut too_few = firing_squad();
         too_few.players.pop();
         let mut too_many = firing_squad();
         too_many.players.push(too_many.players[0].clone());
 
         for scenario in [&too_few, &too_many] {
-            let error = configured_overseer_plans(
+            let error = configured_matchup_plans(
                 scenario,
                 1,
-                prime_config(),
-                TEST_OVERSEER_POLICY_SEED,
+                prime_matchup(),
+                prime_config().personality_seed,
                 true,
                 EvaluationFactionCell::Fc,
                 EvaluationGeometry::Authored,
@@ -1906,16 +1857,16 @@ mod tests {
     }
 
     #[test]
-    fn overseer_plans_refuse_two_seats_on_the_same_team() {
+    fn controlled_plans_refuse_two_seats_on_the_same_team() {
         let mut allied = firing_squad();
         allied.players[0].team = Some(4);
         allied.players[1].team = Some(4);
 
-        let error = configured_overseer_plans(
+        let error = configured_matchup_plans(
             &allied,
             1,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             true,
             EvaluationFactionCell::Fc,
             EvaluationGeometry::Authored,
@@ -1929,11 +1880,11 @@ mod tests {
 
     #[test]
     fn replay_filename_refuses_a_seed_outside_its_plan() {
-        let plan = configured_overseer_plans(
+        let plan = configured_matchup_plans(
             &Scenario::skirmish(),
             73,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             false,
             EvaluationFactionCell::Fc,
             EvaluationGeometry::Authored,
@@ -2168,11 +2119,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let index_path = dir.join("rows.jsonl");
         let trace_path = dir.join("trace.jsonl");
-        let plan = configured_overseer_plans(
+        let plan = configured_matchup_plans(
             &Scenario::skirmish(),
             73,
-            prime_config(),
-            TEST_OVERSEER_POLICY_SEED,
+            prime_matchup(),
+            prime_config().personality_seed,
             false,
             EvaluationFactionCell::Authored,
             EvaluationGeometry::Authored,
@@ -2651,19 +2602,5 @@ mod tests {
                 .contains("\"stall_loop\":"),
             "an absent loop stays off the wire"
         );
-    }
-
-    #[test]
-    fn severed_ground_maps_are_refused_for_the_overseer_yardstick() {
-        assert!(ensure_overseer_yardstick_ground(&Scenario::skirmish()).is_ok());
-        let severance = Scenario::load(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../scenarios/severance.json"
-        ))
-        .expect("the shipped Severance map loads");
-        let error = ensure_overseer_yardstick_ground(&severance).unwrap_err();
-        let text = error.to_string();
-        assert!(text.contains("share no ground route"), "{text}");
-        assert!(text.contains("frozen Overseer"), "{text}");
     }
 }

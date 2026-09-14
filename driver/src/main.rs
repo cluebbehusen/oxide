@@ -19,8 +19,39 @@ struct Cli {
     cmd: Cmd,
 }
 
+#[derive(clap::Args)]
+struct MeasurementBotArgs {
+    /// Controller difficulty.
+    #[arg(long, default_value_t = oxide_sim::scenario::BotDifficulty::Standard)]
+    difficulty: oxide_sim::scenario::BotDifficulty,
+    /// Controller stance.
+    #[arg(long, default_value_t = oxide_sim::scenario::BotStance::Balanced)]
+    stance: oxide_sim::scenario::BotStance,
+    /// Fixed personality identity shared by every seat and simulation seed.
+    #[arg(long, default_value_t = 0)]
+    personality_seed: u64,
+}
+
+impl MeasurementBotArgs {
+    fn config(&self) -> oxide_sim::scenario::BotConfig {
+        oxide_sim::scenario::BotConfig::scripted(
+            self.difficulty,
+            self.stance,
+            self.personality_seed,
+        )
+    }
+}
+
 #[derive(Subcommand)]
 enum Cmd {
+    /// Verify an interrupted recording and optionally export a local report.
+    RecoveryInspect {
+        /// Session directory beneath Oxide's recovery directory.
+        directory: PathBuf,
+        /// New report directory; existing destinations are refused.
+        #[arg(long)]
+        export: Option<PathBuf>,
+    },
     /// Run a scenario headless at full speed.
     Run {
         /// Scenario path, or "skirmish" for the built-in map.
@@ -44,8 +75,7 @@ enum Cmd {
         map: bool,
     },
     /// Evaluate the player-facing rules bot and emit one compact JSONL row
-    /// per exact seed/profile leg. Unlike the frozen Overseer sweeps, this
-    /// follows the controller that ships to players and stops at the result.
+    /// per exact seed/profile leg, stopping at the match result.
     BotEval {
         /// Scenario paths, or "skirmish" for the built-in map.
         #[arg(required = true)]
@@ -63,21 +93,15 @@ enum Cmd {
             long,
             default_value_t = 1,
             value_parser = clap::value_parser!(u64).range(1..),
-            conflicts_with = "against_overseer"
+            conflicts_with_all = ["scenario_seeds", "personality_seeds", "faction_cells", "geometries"]
         )]
         runs: u64,
         /// First simulation seed. Defaults to each scenario's authored seed;
         /// subsequent runs increment it.
         #[arg(long, conflicts_with = "scenario_seeds")]
         scenario_seed_base: Option<u64>,
-        /// Exact simulation seeds to cross with every personality seed when
-        /// comparing against Overseer.
-        #[arg(
-            long,
-            value_delimiter = ',',
-            requires = "against_overseer",
-            conflicts_with = "scenario_seed_base"
-        )]
+        /// Exact simulation seeds to cross with every personality seed in a controlled comparison.
+        #[arg(long, value_delimiter = ',', conflicts_with = "scenario_seed_base")]
         scenario_seeds: Vec<u64>,
         /// First personality seed. Seats and subsequent runs receive
         /// deterministic seeds; use `--same-personality-seed` to consume one
@@ -85,13 +109,8 @@ enum Cmd {
         #[arg(long, conflicts_with = "personality_seeds")]
         personality_seed_base: Option<u64>,
         /// Exact player-facing personality seeds to cross with every
-        /// simulation seed when comparing against Overseer.
-        #[arg(
-            long,
-            value_delimiter = ',',
-            requires = "against_overseer",
-            conflicts_with = "personality_seed_base"
-        )]
+        /// simulation seed in a controlled comparison.
+        #[arg(long, value_delimiter = ',', conflicts_with = "personality_seed_base")]
         personality_seeds: Vec<u64>,
         /// Player-facing skill rung.
         #[arg(long, default_value_t = oxide_sim::scenario::BotDifficulty::Standard)]
@@ -111,26 +130,11 @@ enum Cmd {
         /// when both stances match and requires a two-seat scenario.
         #[arg(long)]
         same_personality_seed: bool,
-        /// Compare the player-facing controller with the frozen pre-0.16
-        /// Overseer yardstick instead of another player-facing profile.
-        #[arg(
-            long,
-            conflicts_with_all = [
-                "opponent_difficulty",
-                "opponent_stance",
-                "same_personality_seed"
-            ]
-        )]
-        against_overseer: bool,
-        /// Seat-independent identity for Overseer's frozen army-size jitter.
-        /// Defaults to zero and stays fixed across the full matrix.
-        #[arg(long, requires = "against_overseer")]
-        overseer_policy_seed: Option<u64>,
-        /// Physical-seat faction cells for an Overseer comparison.
-        #[arg(long, value_delimiter = ',', requires = "against_overseer")]
+        /// Physical-seat faction cells for a controlled comparison.
+        #[arg(long, value_delimiter = ',')]
         faction_cells: Vec<oxide_driver::bot_eval::EvaluationFactionCell>,
-        /// Map-end geometry cells for an Overseer comparison.
-        #[arg(long, value_delimiter = ',', requires = "against_overseer")]
+        /// Map-end geometry cells for a controlled comparison.
+        #[arg(long, value_delimiter = ',')]
         geometries: Vec<oxide_driver::bot_eval::EvaluationGeometry>,
         /// On a two-seat scenario, run a second leg with the two complete
         /// controller configurations exchanged between seats.
@@ -232,7 +236,7 @@ enum Cmd {
         #[arg(short, long)]
         out: PathBuf,
     },
-    /// Decisiveness seed sweep: N seeds of Overseer-vs-Overseer on one
+    /// Decisiveness seed sweep: N seeds of configured-bot mirror on one
     /// 1v1 map. Measures endings and seat lean.
     Sweep {
         /// Scenario path, or "skirmish".
@@ -250,6 +254,8 @@ enum Cmd {
         /// Raw JSON output path.
         #[arg(long)]
         out: Option<String>,
+        #[command(flatten)]
+        bot: MeasurementBotArgs,
     },
     /// Empirical pace measurement: the decisiveness sweep run over every
     /// 1v1 map in a directory, tabling measured decision-tick quartiles
@@ -259,7 +265,7 @@ enum Cmd {
         /// Scenario directory to sweep (other formats are skipped).
         #[arg(long, default_value = "scenarios")]
         dir: String,
-        /// Seeds per map (one Overseer-vs-Overseer match per seed).
+        /// Seeds per map (one configured-bot mirror match per seed).
         #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
         /// Tick cap per match; every map's slowest tail must fit under
@@ -272,11 +278,13 @@ enum Cmd {
         /// Raw JSON output path.
         #[arg(long)]
         out: Option<String>,
+        #[command(flatten)]
+        bot: MeasurementBotArgs,
     },
-    /// Factorial fairness probe: every advantage the game binds to the
+    /// Factorial matchup measurement: the factors the game binds to the
     /// seat index — roster, geometry, id range, command order —
     /// permuted as a full cross product on one seed set with the
-    /// Overseer in both chairs. Reports per-factor marginals with
+    /// same controller profile in both chairs. Reports per-factor marginals with
     /// Wilson intervals and the whole cell table, because the
     /// interactions are the finding.
     SweepFactorial {
@@ -299,6 +307,8 @@ enum Cmd {
         /// Raw JSON output path.
         #[arg(long)]
         out: Option<String>,
+        #[command(flatten)]
+        bot: MeasurementBotArgs,
     },
     /// Timed mass-battle bench: ticks/second at scale, plus a hash
     /// self-check. Wall-clock stays local; CI asserts only correctness.
@@ -309,11 +319,20 @@ enum Cmd {
         /// Ticks to run.
         #[arg(long, default_value_t = 2_000)]
         ticks: u32,
-        /// Bench a shipped scenario with the Overseer thinking in every
+        /// Bench a shipped scenario with the current controller thinking in every
         /// chair instead of the synthetic mass battle (e.g.
         /// "scenarios/compass-grand.json" — eight scripted minds).
         #[arg(long)]
         scenario: Option<String>,
+        /// Controller difficulty for a scenario benchmark.
+        #[arg(long, requires = "scenario")]
+        difficulty: Option<oxide_sim::scenario::BotDifficulty>,
+        /// Controller stance for a scenario benchmark.
+        #[arg(long, requires = "scenario")]
+        stance: Option<oxide_sim::scenario::BotStance>,
+        /// Fixed personality seed for every scenario seat.
+        #[arg(long, requires = "scenario")]
+        personality_seed: Option<u64>,
     },
     /// Paired, seat-neutral arena duel between two hand-picked armies
     /// (no economy): the balance review's controlled experiment.
@@ -474,6 +493,23 @@ fn ensure_distinct<T: PartialEq>(values: &[T], label: &str) -> Result<()> {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
+        Cmd::RecoveryInspect { directory, export } => {
+            let record = oxide_kit::recovery::inspect(&directory)?;
+            if let Some(destination) = export {
+                oxide_kit::recovery::export(&directory, &destination)?;
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "session": record.session, "build": record.build,
+                    "running_build": oxide_kit::recovery::BuildIdentity::default(),
+                    "scenario": record.replay.setup.name, "ticks": record.replay.meta.ticks,
+                    "commands": record.replay.commands.len(), "prepared_commands": record.prepared.as_ref().map(Vec::len),
+                    "clean": record.clean, "issue": record.issue, "kind": record.kind
+                }))?
+            );
+        }
+
         Cmd::Run {
             scenario,
             ticks,
@@ -517,8 +553,6 @@ fn main() -> Result<()> {
             opponent_difficulty,
             opponent_stance,
             same_personality_seed,
-            against_overseer,
-            overseer_policy_seed,
             faction_cells,
             geometries,
             paired,
@@ -551,9 +585,11 @@ fn main() -> Result<()> {
             let mut plans = Vec::new();
             for (scenario_index, scenario_name) in scenarios.iter().enumerate() {
                 let source = runner::load_scenario(scenario_name)?;
-                if against_overseer {
-                    oxide_driver::bot_eval::ensure_overseer_yardstick_ground(&source)?;
-                    let overseer_policy_seed = overseer_policy_seed.unwrap_or(0);
+                if !scenario_seeds.is_empty()
+                    || !personality_seeds.is_empty()
+                    || !faction_cells.is_empty()
+                    || !geometries.is_empty()
+                {
                     let scenario_seed_values = if scenario_seeds.is_empty() {
                         vec![scenario_seed_base.unwrap_or(source.seed)]
                     } else {
@@ -578,18 +614,13 @@ fn main() -> Result<()> {
                     let mut seed_cell = 0_u64;
                     for &scenario_seed in &scenario_seed_values {
                         for &personality_seed in &personality_seed_values {
-                            let config = oxide_sim::scenario::BotConfig::scripted(
-                                difficulty,
-                                stance,
-                                personality_seed,
-                            );
                             for &faction_cell in &faction_cells {
                                 for &geometry in &geometries {
-                                    for plan in oxide_driver::bot_eval::configured_overseer_plans(
+                                    for plan in oxide_driver::bot_eval::configured_matchup_plans(
                                         &source,
                                         scenario_seed,
-                                        config,
-                                        overseer_policy_seed,
+                                        matchup,
+                                        personality_seed,
                                         paired,
                                         faction_cell,
                                         geometry,
@@ -832,8 +863,16 @@ fn main() -> Result<()> {
             ticks,
             seed_base,
             out,
+            bot,
         } => {
-            oxide_driver::sweep::sweep_report(&scenario, seeds, ticks, seed_base, out.as_deref())?;
+            oxide_driver::sweep::sweep_report(
+                &scenario,
+                seeds,
+                ticks,
+                seed_base,
+                out.as_deref(),
+                bot.config(),
+            )?;
         }
         Cmd::PaceSweep {
             dir,
@@ -841,8 +880,16 @@ fn main() -> Result<()> {
             ticks,
             seed_base,
             out,
+            bot,
         } => {
-            oxide_driver::pace::pace_sweep_report(&dir, seeds, ticks, seed_base, out.as_deref())?;
+            oxide_driver::pace::pace_sweep_report(
+                &dir,
+                seeds,
+                ticks,
+                seed_base,
+                out.as_deref(),
+                bot.config(),
+            )?;
         }
         Cmd::SweepFactorial {
             scenario,
@@ -851,6 +898,7 @@ fn main() -> Result<()> {
             ticks,
             seed_base,
             out,
+            bot,
         } => {
             use oxide_driver::factorial::Factor;
             let enabled: Vec<Factor> = match factors.as_deref() {
@@ -867,25 +915,32 @@ fn main() -> Result<()> {
                 ticks,
                 seed_base,
                 out.as_deref(),
+                bot.config(),
             )?;
         }
         Cmd::Bench {
             units,
             ticks,
             scenario,
+            difficulty,
+            stance,
+            personality_seed,
         } => {
             if let Some(path) = scenario {
-                // Full-session bench: every seat thinks — the heaviest
-                // honest shape (eight Overseer minds on the 4v4 map),
-                // deciding whether a perf window is needed. Shipped
-                // playable maps author a human seat, so every chair is
-                // converted first; benching around an idle seat 0
-                // under-measured the claim. The stable Overseer keeps
-                // this performance fixture independent of bot tuning.
+                let config = oxide_sim::scenario::BotConfig::scripted(
+                    difficulty.unwrap_or(oxide_sim::scenario::BotDifficulty::Standard),
+                    stance.unwrap_or(oxide_sim::scenario::BotStance::Balanced),
+                    personality_seed.unwrap_or(0),
+                );
                 let mut sc = runner::load_scenario(&path)?;
-                oxide_kit::bench::all_bots(&mut sc);
+                oxide_kit::bench::all_bots_with_config(&mut sc, config);
                 let mut state = sc.build()?;
-                let mut bots = oxide_kit::bench::overseer_bots(&sc);
+                let mut bots = oxide_sim::bot::seat_bots(&sc)?;
+                println!(
+                    "controller: {config:?}; sim {}; simulation seed {}",
+                    oxide_sim::SIM_VERSION,
+                    sc.seed
+                );
                 // The timed loop stops at the decision: post-victory
                 // ticks simulate a world with nothing left to decide
                 // and average as free work, so a long --ticks quietly
@@ -894,6 +949,7 @@ fn main() -> Result<()> {
                 let mut ran: u64 = 0;
                 let mut tick_ns: Vec<u64> = Vec::with_capacity(ticks as usize);
                 let mut bot_ns: Vec<u64> = Vec::with_capacity(ticks as usize);
+                let mut sim_ns: Vec<u64> = Vec::with_capacity(ticks as usize);
                 for _ in 0..ticks {
                     if state.result().is_some() {
                         break;
@@ -905,6 +961,7 @@ fn main() -> Result<()> {
                     }
                     let bots_done = std::time::Instant::now();
                     state.tick(&commands);
+                    sim_ns.push(bots_done.elapsed().as_nanos() as u64);
                     bot_ns.push((bots_done - tick_start).as_nanos() as u64);
                     tick_ns.push(tick_start.elapsed().as_nanos() as u64);
                     ran += 1;
@@ -924,9 +981,10 @@ fn main() -> Result<()> {
                     state.hash()
                 );
                 println!(
-                    "bench-latency: whole tick {} | bot phase {}",
+                    "bench-latency: whole tick {} | bot phase {} | simulation phase {}",
                     latency_summary(&tick_ns),
                     latency_summary(&bot_ns),
+                    latency_summary(&sim_ns),
                 );
                 return Ok(());
             }

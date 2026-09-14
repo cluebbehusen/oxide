@@ -1881,7 +1881,7 @@ impl BuildingKind {
                 "Blocks ground movement. Does not block aircraft or gunfire."
             }
             BuildingKind::ScuttleCharge => {
-                "Hidden mine triggered by hostile ground units. Revealed by nearby scouts or an Array."
+                "Visible while building, concealed when armed. Triggered by hostile ground units or construction. Revealed by scouts or an Array."
             }
         }
     }

@@ -301,15 +301,19 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
         // containment: a shell aimed at a building lands on the
         // footprint's closest EDGE point, whose exact coordinate floors
         // into the neighboring tile — containment alone made sieges
-        // deal nothing. First hostile footprint touching the impact
-        // (id order) takes the hit.
-        let direct = state.buildings.iter().find(|b| {
-            b.hp > 0
-                && shell.targets.ground
-                && state.hostile(shell.player, b.player)
-                && b.closest_point_to(shell.impact).dist_sq(shell.impact)
-                    <= chassis::fx::Fx::lit("0.0001")
-        });
+        // deal nothing. A scaffold above a buried charge takes the direct
+        // hit; the charge still takes splash. Other ties stay in id order.
+        let direct = state
+            .buildings
+            .iter()
+            .filter(|b| {
+                b.hp > 0
+                    && shell.targets.ground
+                    && state.hostile(shell.player, b.player)
+                    && b.closest_point_to(shell.impact).dist_sq(shell.impact)
+                        <= chassis::fx::Fx::lit("0.0001")
+            })
+            .min_by_key(|b| (b.kind.is_stealthy() && b.built, b.id));
         if let Some(b) = direct {
             hits.push(PendingHit::along(
                 state,
