@@ -706,7 +706,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 tick: diagnostic_tick,
                 units: diagnostic_units,
                 buildings: diagnostic_buildings,
-                speed: app.game.speed,
+                speed: visible_speed(&screen, &app.game),
                 width: screen_width() as u32,
                 height: screen_height() as u32,
                 dpi: macroquad::miniquad::window::dpi_scale() as f64,
@@ -767,6 +767,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         render::set_viewport(screen_width(), screen_height());
         app.game.camera.update(dt);
 
+        let input_diagnostic_scope = app
+            .game
+            .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
         let mut events = if app.args.automation {
             Vec::new()
         } else {
@@ -804,6 +807,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             }
         }
 
+        drop(input_diagnostic_scope);
         let screen_before = std::mem::discriminant(&screen);
         let screen_frame = screen_flow::update_and_draw(
             &mut app,
@@ -1041,6 +1045,13 @@ fn performance_context(screen: &Screen) -> u8 {
         Screen::Playback(_) => 2,
         Screen::FinalMap(_) => 3,
         _ => 0,
+    }
+}
+
+fn visible_speed(screen: &Screen, live: &Game) -> f64 {
+    match screen {
+        Screen::Playback(playback) => f64::from(playback.speed),
+        _ => live.speed,
     }
 }
 
@@ -1556,6 +1567,31 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_follow_playback_speed_instead_of_the_hidden_live_clock() {
+        use oxide_protocol::DebugSession;
+
+        let mut live = Game::new(Scenario::skirmish()).unwrap();
+        live.speed = 4.0;
+        let replay = oxide_kit::GameReplay::new(oxide_sim::SIM_VERSION, Scenario::skirmish());
+        let mut playback = PlaybackSession::from_replay(replay).unwrap();
+        for speed in [0.5, 1.0, 8.0, 64.0] {
+            playback.set_speed(speed).unwrap();
+            let screen = Screen::Playback(Box::new(playback));
+            assert_eq!(visible_speed(&screen, &live), speed);
+            assert_eq!(live.speed, 4.0);
+            let Screen::Playback(session) = screen else {
+                unreachable!()
+            };
+            playback = *session;
+        }
+        assert_eq!(visible_speed(&Screen::Playing, &live), 4.0);
+        assert_eq!(
+            visible_speed(&Screen::Pause(PauseScreen::open(false, true)), &live),
+            4.0
+        );
+    }
 
     /// The routing guards, row by row: frozen-map precedence and the
     /// viewer's read-only boundary around local requests. Shared requests

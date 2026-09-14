@@ -329,10 +329,9 @@ impl PlaybackSession {
         (frac * self.engine.total() as f32).round() as u64
     }
 
-    /// Applies a frame of transport input and advances the reproduction.
-    /// Returns true when the viewer should close. `viewport` is injected
-    /// like everywhere else, so tests never need a window.
-    pub fn update(
+    /// Applies transport input without advancing replay time.
+    /// Returns true when the viewer should close.
+    pub fn apply_input(
         &mut self,
         events: &[RawEvent],
         dt: f32,
@@ -452,6 +451,11 @@ impl PlaybackSession {
             self.seeking = Some(target);
             self.accum = 0.0;
         }
+        false
+    }
+
+    /// Advances replay time and presentation after input has been handled.
+    pub fn advance_frame(&mut self, dt: f32, viewport: Vec2) {
         if let Some(target) = self.seeking {
             // Budgeted: a slice per frame keeps a long first jump from
             // hitching the render thread; sim ticks run thousands per
@@ -494,7 +498,23 @@ impl PlaybackSession {
         self.game.update_wall_clock_fx(dt);
         self.game.camera.set_viewport(viewport);
         self.game.camera.update(dt);
-        false
+    }
+
+    #[cfg(test)]
+    fn update(
+        &mut self,
+        events: &[RawEvent],
+        dt: f32,
+        viewport: Vec2,
+        zoom_inverted: bool,
+        pan_speed: f32,
+        mouse: &mut Vec2,
+    ) -> bool {
+        let leave = self.apply_input(events, dt, viewport, zoom_inverted, pan_speed, mouse);
+        if !leave {
+            self.advance_frame(dt, viewport);
+        }
+        leave
     }
 }
 
@@ -641,6 +661,41 @@ mod tests {
         replay.meta.ticks = Some(60);
         let pb = PlaybackSession::from_replay(replay).expect("a spectator needs no command seat");
         assert!(pb.game.spectate, "the viewer stays fog-free");
+    }
+
+    #[test]
+    fn transport_input_defers_replay_work_until_the_frame_advance() {
+        let mut pb = session();
+        let viewport = vec2(1280.0, 800.0);
+        let mut mouse = Vec2::ZERO;
+        assert!(!pb.apply_input(
+            &[RawEvent::KeyDown { key: Key::End }],
+            1.0,
+            viewport,
+            false,
+            1.0,
+            &mut mouse,
+        ));
+        assert_eq!(pb.engine.position(), 0);
+        assert_eq!(pb.seeking, Some(60));
+        pb.advance_frame(1.0, viewport);
+        assert_eq!(pb.engine.position(), 60);
+        assert_eq!(pb.game.state.current_tick(), 60);
+
+        assert!(!pb.apply_input(
+            &[RawEvent::KeyDown { key: Key::Home }],
+            0.0,
+            viewport,
+            false,
+            1.0,
+            &mut mouse,
+        ));
+        pb.advance_frame(0.0, viewport);
+        assert_eq!(pb.engine.position(), 0);
+        assert!(!pb.apply_input(&[], 0.1, viewport, false, 1.0, &mut mouse));
+        assert_eq!(pb.engine.position(), 0);
+        pb.advance_frame(0.1, viewport);
+        assert_eq!(pb.engine.position(), 2);
     }
 
     #[test]

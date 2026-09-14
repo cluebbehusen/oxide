@@ -96,7 +96,11 @@ pub(super) fn update_and_draw(
                     app.game.camera.pan(vec2(0.0, 0.0)); // re-clamp home
                 }
             }
+            let input_scope = app
+                .game
+                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
             let out = home.update(&events, &mut app.input.mouse, &mut app.game.sounds_pending);
+            drop(input_scope);
             // Session verbs first — Continue and Tutorial swap the
             // game this frame then draws under the menu. The menu
             // draw needs `home`, so verbs that displace it (only
@@ -226,6 +230,9 @@ pub(super) fn update_and_draw(
                     danger: true,
                 });
             }
+            let input_scope = app
+                .game
+                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
             let up = sc.update(
                 &events,
                 &mut app.input.mouse,
@@ -235,6 +242,7 @@ pub(super) fn update_and_draw(
                 ctrl_at_frame_start,
                 shift_at_frame_start,
             );
+            drop(input_scope);
             match up.out {
                 screens::settings::Out::OpenDiagnostics => {
                     if let Err(error) = app.report_job.open_folder() {
@@ -280,7 +288,11 @@ pub(super) fn update_and_draw(
             screen: mut codex,
             back,
         } => {
+            let input_scope = app
+                .game
+                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
             let out = codex.update(&events, &mut app.input.mouse, &mut app.game.sounds_pending);
+            drop(input_scope);
             render::draw(&app.game, &app.sprites, &app.input);
             veil();
             let viewer = app.game.state.player(app.game.human).faction;
@@ -298,6 +310,9 @@ pub(super) fn update_and_draw(
             // Wizard trouble — an unreadable map file, a scenario
             // that fails validation — is a dialog problem, never a
             // process abort: report and stay on the menu.
+            let input_scope = app
+                .game
+                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
             let out = match w.update(
                 &events,
                 &mut app.input.mouse,
@@ -312,6 +327,7 @@ pub(super) fn update_and_draw(
                 }
             };
             let mut next: Option<Screen> = None;
+            drop(input_scope);
             let launch_result = resolve_new_match(out, &app.draft, &mut app.personality_seeds);
             match out {
                 WizardOut::Home => {
@@ -353,6 +369,9 @@ pub(super) fn update_and_draw(
             }
         }
         Screen::Playing => {
+            let input_scope = app
+                .game
+                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
             // The tutorial card is chrome; clicks on it must not reach the
             // world or consume an armed gameplay action.
             if let Some(t) = &app.tutorial {
@@ -431,6 +450,7 @@ pub(super) fn update_and_draw(
                     }
                 }
             }
+            drop(input_scope);
             let profile_barrier = !app.game.paused && app.frame_profiler.take_start_barrier();
             profile_frame_active = !app.game.paused && !profile_barrier;
             let profile_stopped = if profile_barrier {
@@ -463,7 +483,10 @@ pub(super) fn update_and_draw(
             next.unwrap_or(Screen::Playing)
         }
         Screen::Playback(mut pb) => {
-            let leave = pb.update(
+            let input_scope = app.game.diagnostics.as_ref().and_then(|recorder| {
+                recorder.span(oxide_kit::diagnostics::Phase::Input, pb.engine.position())
+            });
+            let leave = pb.apply_input(
                 &events,
                 dt,
                 vec2(screen_width(), screen_height()),
@@ -471,6 +494,7 @@ pub(super) fn update_and_draw(
                 app.config.camera.pan_speed,
                 &mut app.input.mouse,
             );
+            drop(input_scope);
             if leave {
                 rerun = true;
                 match pb.return_to {
@@ -482,6 +506,7 @@ pub(super) fn update_and_draw(
                     PlaybackReturn::Home => Screen::Home(HomeScreen::open()),
                 }
             } else {
+                pb.advance_frame(dt, vec2(screen_width(), screen_height()));
                 render::draw_with_performance(
                     &pb.game,
                     &app.sprites,
@@ -493,6 +518,9 @@ pub(super) fn update_and_draw(
             }
         }
         Screen::FinalMap(mut final_map) => {
+            let input_scope = app
+                .game
+                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
             let leave = final_map.update(
                 &events,
                 dt,
@@ -501,6 +529,7 @@ pub(super) fn update_and_draw(
                 &mut app.input.mouse,
                 &mut app.game,
             );
+            drop(input_scope);
             render::draw_with_performance(
                 &app.game,
                 &app.sprites,
@@ -517,6 +546,9 @@ pub(super) fn update_and_draw(
             }
         }
         Screen::Results(mut results) => {
+            let input_scope = app
+                .game
+                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
             let out = results.update(
                 &events,
                 &mut app.input.mouse,
@@ -524,6 +556,7 @@ pub(super) fn update_and_draw(
                 render::ui_scale(),
                 &mut app.game.sounds_pending,
             );
+            drop(input_scope);
             render::draw(&app.game, &app.sprites, &app.input);
             results.draw(&app.game);
             match out {
@@ -583,7 +616,12 @@ pub(super) fn update_and_draw(
         }
         Screen::Replays(mut shelf) => {
             let mut leave: Option<Screen> = None;
-            match shelf.update(&events, &mut app.input.mouse, &mut app.game.sounds_pending) {
+            let input_scope = app
+                .game
+                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+            let out = shelf.update(&events, &mut app.input.mouse, &mut app.game.sounds_pending);
+            drop(input_scope);
+            match out {
                 screens::shelf::Out::Home => {
                     let home = HomeScreen::open();
                     render::draw(&app.game, &app.sprites, &app.input);
@@ -640,7 +678,11 @@ pub(super) fn update_and_draw(
             }
         }
         Screen::Pause(mut ps) => {
+            let input_scope = app
+                .game
+                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
             let out = ps.update(&events, &mut app.input.mouse, &mut app.game.sounds_pending);
+            drop(input_scope);
             render::draw(&app.game, &app.sprites, &app.input);
             veil();
             ps.menu.draw(ps.subtitle(&app.game.scenario.name));

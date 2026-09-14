@@ -502,17 +502,21 @@ fn write_timings(writer: Arc<Inner>, receiver: mpsc::Receiver<Timing>) {
 }
 fn watch(watchdog: Arc<Inner>, panics: mpsc::Receiver<PanicRecord>) {
     let mut incidents = VecDeque::new();
-    let mut stalled = false;
+    let mut stalled = Vec::new();
     while !watchdog.stop.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(250));
         let progress = watchdog.progress(watchdog.micros());
         let enabled = watchdog.enabled.load(Ordering::Acquire);
-        let now_stalled = enabled && progress.iter().any(|slot| slot.idle_ms >= 5000);
+        let now_stalled: Vec<_> = progress
+            .iter()
+            .filter(|slot| enabled && slot.idle_ms >= 5000)
+            .map(|slot| slot.slot)
+            .collect();
         let panic = panics.try_recv().ok();
         if now_stalled != stalled || panic.is_some() {
             let kind = if panic.is_some() {
                 "panic observed"
-            } else if now_stalled {
+            } else if !now_stalled.is_empty() {
                 "suspected stall"
             } else if !enabled {
                 "capture disabled"

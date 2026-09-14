@@ -185,3 +185,47 @@ fn chained_panic_metadata_is_bounded_and_persisted_best_effort() {
     assert!(data[0]["panic"]["line"].as_u64().unwrap() > 0);
     cleanup(root, writer, recorder);
 }
+
+#[test]
+fn watchdog_updates_when_stalled_workers_change_without_full_resumption() {
+    let (root, writer) = recording();
+    let recorder = Recorder::start(writer.clone()).unwrap();
+    let first = recorder.inner.micros();
+    recorder.inner.begin(1, BotPhase::Economy as u8, 30);
+    let path = writer.directory().join("watchdog.json");
+    until(|| path.exists());
+    let incidents = || -> Vec<serde_json::Value> {
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap()
+    };
+    let stalled_slots = |incident: &serde_json::Value| -> Vec<u64> {
+        incident["progress"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|slot| slot["idle_ms"].as_u64().unwrap() >= 5000)
+            .map(|slot| slot["slot"].as_u64().unwrap())
+            .collect()
+    };
+    assert_eq!(stalled_slots(&incidents()[0]), [1]);
+
+    let second = recorder.inner.micros();
+    recorder.inner.begin(2, BotPhase::Executive as u8, 30);
+    // The first incident establishes enough elapsed time to age the second slot.
+    recorder.inner.slots[2]
+        .progress
+        .store(recorder.inner.micros() - 5_000_000, Ordering::Release);
+    until(|| incidents().len() >= 2);
+    assert_eq!(stalled_slots(&incidents()[1]), [1, 2]);
+
+    recorder.inner.end(1, BotPhase::Economy as u8, 30, first);
+    until(|| incidents().len() >= 3);
+    let data = incidents();
+    assert_eq!(data[2]["kind"], "suspected stall");
+    assert_eq!(stalled_slots(&data[2]), [2]);
+    assert_eq!(data[2]["progress"].as_array().unwrap().len(), 1);
+
+    recorder.inner.end(2, BotPhase::Executive as u8, 30, second);
+    until(|| incidents().len() >= 4);
+    assert_eq!(incidents()[3]["kind"], "progress resumed");
+    cleanup(root, writer, recorder);
+}
