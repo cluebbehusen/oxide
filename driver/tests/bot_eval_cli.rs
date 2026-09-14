@@ -5,16 +5,15 @@ use std::collections::BTreeSet;
 use std::process::Command;
 
 #[test]
-fn overseer_matrix_keeps_controller_faction_and_geometry_provenance_separate() {
+fn controlled_matrix_keeps_controller_faction_and_geometry_provenance_separate() {
     let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
         .args([
             "bot-eval",
             "skirmish",
             "--ticks",
             "1",
-            "--against-overseer",
-            "--overseer-policy-seed",
-            "29",
+            "--opponent-difficulty",
+            "veteran",
             "--paired",
             "--scenario-seeds",
             "13",
@@ -30,7 +29,7 @@ fn overseer_matrix_keeps_controller_faction_and_geometry_provenance_separate() {
             "authored,rot180",
         ])
         .output()
-        .expect("run controlled Overseer evaluation matrix");
+        .expect("run controlled current-controller evaluation matrix");
     assert!(
         output.status.success(),
         "bot-eval failed: {}",
@@ -78,9 +77,9 @@ fn overseer_matrix_keeps_controller_faction_and_geometry_provenance_separate() {
         }
 
         for (row, scripted_seat) in [(&legs[0], 0), (&legs[1], 1)] {
-            let overseer_seat = 1 - scripted_seat;
+            let opponent_seat = 1 - scripted_seat;
             assert_eq!(row["seats"][scripted_seat]["controller"], "scripted");
-            assert_eq!(row["seats"][overseer_seat]["controller"], "overseer");
+            assert_eq!(row["seats"][opponent_seat]["controller"], "scripted");
             assert_eq!(
                 row["seats"][scripted_seat]["config"]["personality_seed"],
                 40
@@ -91,9 +90,15 @@ fn overseer_matrix_keeps_controller_faction_and_geometry_provenance_separate() {
                 "aggressive"
             );
             assert!(row["seats"][scripted_seat]["profile"].is_object());
-            assert!(row["seats"][overseer_seat]["config"].is_null());
-            assert!(row["seats"][overseer_seat]["profile"].is_null());
-            assert_eq!(row["seats"][overseer_seat]["overseer_policy_seed"], 29);
+            assert_eq!(
+                row["seats"][opponent_seat]["config"]["difficulty"],
+                "veteran"
+            );
+            assert!(row["seats"][opponent_seat]["profile"].is_object());
+            assert_eq!(
+                row["seats"][opponent_seat]["config"]["personality_seed"],
+                41
+            );
         }
     }
 
@@ -109,21 +114,20 @@ fn overseer_matrix_keeps_controller_faction_and_geometry_provenance_separate() {
 }
 
 #[test]
-fn overseer_seed_lists_form_a_cartesian_product() {
+fn controlled_seed_lists_form_a_cartesian_product() {
     let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
         .args([
             "bot-eval",
             "skirmish",
             "--ticks",
             "1",
-            "--against-overseer",
             "--scenario-seeds",
             "13,17",
             "--personality-seeds",
             "40,42,44",
         ])
         .output()
-        .expect("run explicit Overseer seed matrix");
+        .expect("run explicit current-controller seed matrix");
     assert!(
         output.status.success(),
         "bot-eval failed: {}",
@@ -144,7 +148,7 @@ fn overseer_seed_lists_form_a_cartesian_product() {
             assert_eq!(row["geometry"], "authored");
             assert_eq!(row["faction_cell"], "authored");
             assert_eq!(row["seats"][0]["controller"], "scripted");
-            assert_eq!(row["seats"][1]["controller"], "overseer");
+            assert_eq!(row["seats"][1]["controller"], "scripted");
             (
                 row["scenario_seed"].as_u64().unwrap(),
                 row["seats"][0]["config"]["personality_seed"]
@@ -160,66 +164,22 @@ fn overseer_seed_lists_form_a_cartesian_product() {
 }
 
 #[test]
-fn overseer_mode_refuses_player_facing_opponent_knobs() {
-    for (args, opponent_option) in [
-        (
-            &["--against-overseer", "--opponent-difficulty", "veteran"][..],
-            "--opponent-difficulty",
-        ),
-        (
-            &["--against-overseer", "--opponent-stance", "turtle"][..],
-            "--opponent-stance",
-        ),
-        (
-            &["--against-overseer", "--same-personality-seed"][..],
-            "--same-personality-seed",
-        ),
-    ] {
-        assert_skirmish_bot_eval_refuses(
-            args,
-            &["--against-overseer", opponent_option, "cannot be used with"],
-        );
+fn retired_controller_flags_are_rejected() {
+    for flag in ["--against-overseer", "--overseer-policy-seed"] {
+        assert_skirmish_bot_eval_refuses(&[flag], &["unexpected argument", flag]);
     }
 }
 
 #[test]
-fn overseer_axes_require_the_mode_and_exact_seed_lists_refuse_bases() {
-    for (args, overseer_option) in [
-        (&["--scenario-seeds", "13"][..], "--scenario-seeds"),
-        (&["--personality-seeds", "40"][..], "--personality-seeds"),
-        (&["--faction-cells", "fc"][..], "--faction-cells"),
-        (&["--geometries", "rot180"][..], "--geometries"),
-        (
-            &["--overseer-policy-seed", "29"][..],
-            "--overseer-policy-seed",
-        ),
-    ] {
-        assert_skirmish_bot_eval_refuses(
-            args,
-            &[overseer_option, "--against-overseer", "required"],
-        );
-    }
-
+fn controlled_exact_seed_lists_refuse_bases() {
     for (args, exact_option, base_option) in [
         (
-            &[
-                "--against-overseer",
-                "--scenario-seeds",
-                "13",
-                "--scenario-seed-base",
-                "17",
-            ][..],
+            &["--scenario-seeds", "13", "--scenario-seed-base", "17"][..],
             "--scenario-seeds",
             "--scenario-seed-base",
         ),
         (
-            &[
-                "--against-overseer",
-                "--personality-seeds",
-                "40",
-                "--personality-seed-base",
-                "44",
-            ][..],
+            &["--personality-seeds", "40", "--personality-seed-base", "44"][..],
             "--personality-seeds",
             "--personality-seed-base",
         ),
@@ -228,39 +188,27 @@ fn overseer_axes_require_the_mode_and_exact_seed_lists_refuse_bases() {
     }
 
     assert_skirmish_bot_eval_refuses(
-        &["--against-overseer", "--runs", "2"],
-        &["--against-overseer", "--runs", "cannot be used with"],
+        &["--scenario-seeds", "13", "--runs", "2"],
+        &["--scenario-seeds", "--runs", "cannot be used with"],
     );
 }
 
 #[test]
-fn overseer_axes_refuse_duplicate_cells() {
+fn controlled_axes_refuse_duplicate_cells() {
     for (args, option) in [
-        (
-            &["--against-overseer", "--scenario-seeds", "13,13"][..],
-            "--scenario-seeds",
-        ),
-        (
-            &["--against-overseer", "--personality-seeds", "40,40"][..],
-            "--personality-seeds",
-        ),
-        (
-            &["--against-overseer", "--faction-cells", "fc,fc"][..],
-            "--faction-cells",
-        ),
-        (
-            &["--against-overseer", "--geometries", "authored,authored"][..],
-            "--geometries",
-        ),
+        (&["--scenario-seeds", "13,13"][..], "--scenario-seeds"),
+        (&["--personality-seeds", "40,40"][..], "--personality-seeds"),
+        (&["--faction-cells", "fc,fc"][..], "--faction-cells"),
+        (&["--geometries", "authored,authored"][..], "--geometries"),
     ] {
         assert_skirmish_bot_eval_refuses(args, &[option, "contains a duplicate value"]);
     }
 }
 
 #[test]
-fn overseer_matrix_refuses_nominal_cells_that_execute_identically() {
+fn controlled_matrix_refuses_nominal_cells_that_execute_identically() {
     assert_skirmish_bot_eval_refuses(
-        &["--against-overseer", "--faction-cells", "authored,fc"],
+        &["--faction-cells", "authored,fc"],
         &["duplicate executable cells", "Authored", "Fc"],
     );
 }
@@ -292,25 +240,22 @@ fn replay_evidence_requires_its_jsonl_sidecar() {
 }
 
 #[test]
-fn overseer_mode_refuses_a_severed_ground_map() {
+fn controlled_mode_supports_a_severed_ground_map() {
     let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
         .args([
             "bot-eval",
             concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios/severance.json"),
             "--ticks",
             "1",
-            "--against-overseer",
+            "--scenario-seeds",
+            "13",
         ])
         .output()
-        .expect("run an Overseer evaluation on a severed map");
+        .expect("run an current-controller evaluation on a severed map");
     assert!(
-        !output.status.success(),
-        "a severed map was accepted as a yardstick"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("share no ground route") && stderr.contains("frozen Overseer"),
-        "refusal did not explain itself: {stderr}"
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -339,19 +284,19 @@ fn a_zero_stall_loop_limit_disables_the_early_stop() {
 }
 
 #[test]
-fn overseer_mode_refuses_a_non_two_seat_scenario() {
+fn controlled_mode_refuses_a_non_two_seat_scenario() {
     let scenario =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scenarios/compass-grand.json");
     let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
         .arg("bot-eval")
         .arg(scenario)
-        .args(["--ticks", "1", "--against-overseer"])
+        .args(["--ticks", "1", "--scenario-seeds", "13"])
         .output()
-        .expect("run invalid multiseat Overseer evaluation");
+        .expect("run invalid multiseat current-controller evaluation");
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("scripted-versus-Overseer evaluations require exactly two seats"),
+            .contains("controlled evaluation axes require exactly two seats"),
         "multiseat refusal was unclear: {}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -611,8 +556,8 @@ fn every_persisted_row_replays_to_its_reported_terminal_state() {
 }
 
 #[test]
-fn overseer_replay_and_sidecar_preserve_exact_controller_identity() {
-    let dir = scratch("overseer-provenance");
+fn controlled_replay_and_sidecar_preserve_exact_controller_identity() {
+    let dir = scratch("configured-provenance");
     let replay_dir = dir.join("replays");
     let out = dir.join("rows.jsonl");
     let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
@@ -621,9 +566,8 @@ fn overseer_replay_and_sidecar_preserve_exact_controller_identity() {
             "skirmish",
             "--ticks",
             "1",
-            "--against-overseer",
-            "--overseer-policy-seed",
-            "29",
+            "--opponent-difficulty",
+            "veteran",
             "--scenario-seeds",
             "13",
             "--personality-seeds",
@@ -636,7 +580,7 @@ fn overseer_replay_and_sidecar_preserve_exact_controller_identity() {
         .arg("--replay-dir")
         .arg(&replay_dir)
         .output()
-        .expect("run persisted Overseer evaluation");
+        .expect("run persisted current-controller evaluation");
     assert!(
         output.status.success(),
         "bot-eval failed: {}",
@@ -652,8 +596,8 @@ fn overseer_replay_and_sidecar_preserve_exact_controller_identity() {
             .as_bytes(),
     )
     .unwrap();
-    assert_eq!(row["seats"][1]["controller"], "overseer");
-    assert_eq!(row["seats"][1]["overseer_policy_seed"], 29);
+    assert_eq!(row["seats"][1]["controller"], "scripted");
+    assert_eq!(row["seats"][1]["config"]["difficulty"], "veteran");
     assert!(
         row["execution_fingerprint"]
             .as_str()
@@ -671,7 +615,7 @@ fn overseer_replay_and_sidecar_preserve_exact_controller_identity() {
     let replay = oxide_kit::load_replay(&replay_path).unwrap();
     let description = replay.meta.description.as_deref().unwrap();
     assert!(description.contains("\"kind\":\"scripted\""));
-    assert!(description.contains("\"kind\":\"overseer\",\"policy_seed\":29"));
+    assert!(description.contains("\"difficulty\":\"veteran\""));
     assert_eq!(
         oxide_driver::bot_eval::command_hash(&replay).unwrap(),
         row["command_hash"]
@@ -905,7 +849,7 @@ fn decision_trace_requires_a_persisted_index_and_candidate() {
 }
 
 #[test]
-fn decision_trace_is_deterministic_opt_in_evidence_and_omits_overseer() {
+fn decision_trace_is_deterministic_opt_in_evidence_for_both_seats() {
     let first = scratch("trace-determinism-first");
     let second = scratch("trace-determinism-second");
 
@@ -918,7 +862,6 @@ fn decision_trace_is_deterministic_opt_in_evidence_and_omits_overseer() {
                 "skirmish",
                 "--ticks",
                 "25",
-                "--against-overseer",
                 "--paired",
                 "--scenario-seeds",
                 "13",
@@ -932,7 +875,7 @@ fn decision_trace_is_deterministic_opt_in_evidence_and_omits_overseer() {
             .arg("--decision-trace-out")
             .arg(&trace)
             .output()
-            .expect("run traced Overseer evaluation");
+            .expect("run traced current-controller evaluation");
         assert!(
             output.status.success(),
             "traced bot-eval failed: {}",
@@ -958,7 +901,6 @@ fn decision_trace_is_deterministic_opt_in_evidence_and_omits_overseer() {
             "skirmish",
             "--ticks",
             "25",
-            "--against-overseer",
             "--paired",
             "--scenario-seeds",
             "13",
@@ -968,7 +910,7 @@ fn decision_trace_is_deterministic_opt_in_evidence_and_omits_overseer() {
             "candidate-a",
         ])
         .output()
-        .expect("run ordinary Overseer evaluation");
+        .expect("run ordinary current-controller evaluation");
     assert!(without_trace.status.success());
     assert_eq!(
         without_trace.stdout, first_rows,
@@ -989,12 +931,6 @@ fn decision_trace_is_deterministic_opt_in_evidence_and_omits_overseer() {
     assert!(!traces.is_empty());
     assert!(rows.iter().all(|row| row.get("trace").is_none()));
     for trace in &traces {
-        let leg = trace["leg"].as_str().unwrap();
-        let expected_scripted_seat = match leg {
-            "forward" => 0,
-            "swapped" => 1,
-            other => panic!("unexpected traced leg {other}"),
-        };
         let evaluation = rows.iter().find(|row| row["leg"] == trace["leg"]).unwrap();
         assert_eq!(trace["version"], 1);
         assert_eq!(trace["candidate"], evaluation["candidate"]);
@@ -1002,8 +938,8 @@ fn decision_trace_is_deterministic_opt_in_evidence_and_omits_overseer() {
             trace["evaluation_fingerprint"],
             evaluation["evaluation_fingerprint"]
         );
-        assert_eq!(trace["seat"], expected_scripted_seat);
-        assert_eq!(trace["trace"]["player"], expected_scripted_seat);
+        assert!(trace["seat"].as_u64().unwrap() < 2);
+        assert_eq!(trace["trace"]["player"], trace["seat"]);
         assert_eq!(trace["tick"], trace["trace"]["tick"]);
         assert!(trace["tick"].as_u64().unwrap() < evaluation["duration_ticks"].as_u64().unwrap());
     }
@@ -1081,4 +1017,117 @@ fn staged_trace_is_cleaned_up_when_replay_staging_fails() {
         "private trace staging files must be removed on another evidence failure"
     );
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn measurement_tools_record_the_complete_shared_profile_and_simulation_version() {
+    let dir = scratch("measurement-profile");
+    let maps = dir.join("maps");
+    std::fs::create_dir(&maps).unwrap();
+    std::fs::write(
+        maps.join("skirmish.json"),
+        serde_json::to_vec(&oxide_sim::Scenario::skirmish()).unwrap(),
+    )
+    .unwrap();
+    for command in ["sweep", "pace-sweep", "sweep-factorial"] {
+        for explicit in [false, true] {
+            let out = dir.join(format!("{command}-{explicit}.json"));
+            let mut run = Command::new(env!("CARGO_BIN_EXE_oxide-driver"));
+            run.args([
+                command,
+                "--seeds",
+                "1",
+                "--ticks",
+                "1",
+                "--seed-base",
+                "13",
+                "--out",
+            ])
+            .arg(&out);
+            if command == "pace-sweep" {
+                run.arg("--dir").arg(&maps);
+            }
+            if command == "sweep-factorial" {
+                run.args(["--factors", "faction"]);
+            }
+            if explicit {
+                run.args([
+                    "--difficulty",
+                    "veteran",
+                    "--stance",
+                    "aggressive",
+                    "--personality-seed",
+                    "31",
+                ]);
+            }
+            let output = run.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{command}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let report: Value = serde_json::from_slice(&std::fs::read(out).unwrap()).unwrap();
+            assert_eq!(report["sim_version"], oxide_sim::SIM_VERSION);
+            assert_eq!(
+                report["bot_config"],
+                if explicit {
+                    serde_json::json!({"difficulty":"veteran", "stance":"aggressive", "personality_seed":31})
+                } else {
+                    serde_json::json!({"difficulty":"standard", "stance":"balanced", "personality_seed":0})
+                }
+            );
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(text.contains(oxide_sim::SIM_VERSION));
+            assert!(text.contains(if explicit { "Veteran" } else { "Standard" }));
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn scenario_bench_reports_profile_and_separate_bot_and_simulation_phases() {
+    let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+        .args([
+            "bench",
+            "--scenario",
+            "skirmish",
+            "--ticks",
+            "1",
+            "--difficulty",
+            "veteran",
+            "--stance",
+            "aggressive",
+            "--personality-seed",
+            "31",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    for expected in [
+        "Veteran",
+        "Aggressive",
+        "personality_seed: 31",
+        "bot phase",
+        "simulation phase",
+        oxide_sim::SIM_VERSION,
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    for (flag, value) in [
+        ("--difficulty", "prime"),
+        ("--stance", "turtle"),
+        ("--personality-seed", "31"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+            .args(["bench", flag, value, "--ticks", "1"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("--scenario"));
+    }
 }

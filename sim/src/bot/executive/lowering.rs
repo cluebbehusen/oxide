@@ -66,7 +66,7 @@ impl Executive {
         obs: &Observation,
         intents: &[Intent],
     ) -> Vec<PlayerCommand> {
-        self.apply_inner(me, obs, intents, &[], None, false)
+        self.apply_inner(me, obs, intents, &[], None)
     }
 
     /// Applies intents while keeping an exact operation's members out of
@@ -80,7 +80,7 @@ impl Executive {
         intents: &[Intent],
         reservations: &[UnitId],
     ) -> Vec<PlayerCommand> {
-        self.apply_inner(me, obs, intents, reservations, None, true)
+        self.apply_inner(me, obs, intents, reservations, None)
     }
 
     pub(crate) fn apply_with_builder_lease(
@@ -91,7 +91,7 @@ impl Executive {
         reservations: &[UnitId],
         lease: Option<BuilderLease>,
     ) -> Vec<PlayerCommand> {
-        self.apply_inner(me, obs, intents, reservations, lease, true)
+        self.apply_inner(me, obs, intents, reservations, lease)
     }
 
     fn apply_inner(
@@ -101,10 +101,9 @@ impl Executive {
         intents: &[Intent],
         reservations: &[UnitId],
         lease: Option<BuilderLease>,
-        defer_unseen_builds: bool,
     ) -> Vec<PlayerCommand> {
         let mut out = Vec::new();
-        let centroid_frame = defer_unseen_builds
+        let centroid_frame = true
             .then(|| self.player_frame.as_ref().map(|tactics| tactics.frame))
             .flatten();
         let reserved = canonical_owned_units(me, obs, reservations, &[]);
@@ -143,13 +142,12 @@ impl Executive {
                         Some(kind.base_stats().size),
                         &claimed,
                         &implicit_reserved,
-                        defer_unseen_builds,
+                        true,
                     ) {
                         claimed.push(builder);
                         let (width, height) = kind.base_stats().size;
-                        let defer = defer_unseen_builds
-                            && (0..height)
-                                .any(|dy| (0..width).any(|dx| !obs.visible(anchor.offset(dx, dy))));
+                        let defer = (0..height)
+                            .any(|dy| (0..width).any(|dx| !obs.visible(anchor.offset(dx, dy))));
                         out.push(PlayerCommand {
                             player: me,
                             command: Command::Build {
@@ -187,9 +185,8 @@ impl Executive {
                     }
                     claimed.push(*builder);
                     let (width, height) = kind.base_stats().size;
-                    let defer = defer_unseen_builds
-                        && (0..height)
-                            .any(|dy| (0..width).any(|dx| !obs.visible(anchor.offset(dx, dy))));
+                    let defer = (0..height)
+                        .any(|dy| (0..width).any(|dx| !obs.visible(anchor.offset(dx, dy))));
                     out.push(PlayerCommand {
                         player: me,
                         command: Command::Build {
@@ -375,26 +372,13 @@ impl Executive {
                     // executive's arrival radius are one muster, not separate
                     // armies. Keeping them split lets the policy inspect only
                     // one under-strength fragment forever even when their
-                    // combined force is ready. The Overseer retains exact-rally
-                    // matching as its frozen QA behavior.
-                    let existing = if defer_unseen_builds {
-                        self.consolidate_staging_armies(obs, *staging)
-                    } else {
-                        self.armies
-                            .iter()
-                            .position(|a| a.state == ArmyState::Staging && a.staging == *staging)
-                    };
+                    // combined force is ready.
+                    let existing = { self.consolidate_staging_armies(obs, *staging) };
                     let want = existing
                         .map(|i| (*size as usize).saturating_sub(self.armies[i].members.len()))
                         .unwrap_or(*size as usize);
-                    let draft = self.draft(
-                        obs,
-                        *staging,
-                        want as u32,
-                        &claimed,
-                        &implicit_reserved,
-                        defer_unseen_builds,
-                    );
+                    let draft =
+                        self.draft(obs, *staging, want as u32, &claimed, &implicit_reserved);
                     if !draft.is_empty() {
                         claimed.extend(draft.iter().copied());
                         out.push(PlayerCommand {
@@ -427,7 +411,7 @@ impl Executive {
                 }
                 Intent::PushArmy { army, target } => {
                     if let Some(a) = self.armies.iter_mut().find(|a| a.id == *army) {
-                        if defer_unseen_builds && a.members.iter().any(|id| reserved.contains(id)) {
+                        if a.members.iter().any(|id| reserved.contains(id)) {
                             let available: Vec<_> = a
                                 .members
                                 .iter()
@@ -635,7 +619,7 @@ impl Executive {
                             None,
                             &claimed,
                             &implicit_reserved,
-                            defer_unseen_builds,
+                            true,
                         )
                     {
                         claimed.push(welder);
@@ -650,7 +634,7 @@ impl Executive {
                     }
                 }
                 Intent::Load { transport, riders } => {
-                    let riders = if defer_unseen_builds {
+                    let riders = {
                         let transport_is_valid = obs.my_units.iter().any(|unit| {
                             unit.id == *transport
                                 && unit.player == me
@@ -678,25 +662,11 @@ impl Executive {
                         members.push(*transport);
                         self.claim_exact_units(me, obs, &members, &mut claimed);
                         riders
-                    } else {
-                        // The frozen Overseer already supplies its exact
-                        // distance-ranked rider order. Preserve those command
-                        // bytes here; the simulation applies set semantics at
-                        // dispatch.
-                        riders.clone()
                     };
                     // A boarding rider leaves the world at the sling, and
                     // an army-wide command later this think would replace
                     // its boarding walk. Strike riders from the bodies
                     // and claim them before lowering later intents.
-                    if !defer_unseen_builds {
-                        for army in &mut self.armies {
-                            army.members.retain(|member| !riders.contains(member));
-                        }
-                        self.armies.retain(|army| !army.members.is_empty());
-                        claimed.extend(riders.iter().copied());
-                        claimed.push(*transport);
-                    }
                     out.push(PlayerCommand {
                         player: me,
                         command: Command::Load {
@@ -707,7 +677,7 @@ impl Executive {
                     });
                 }
                 Intent::Unload { transport, at } => {
-                    if defer_unseen_builds {
+                    {
                         let transport_is_valid = obs.my_units.iter().any(|unit| {
                             unit.id == *transport
                                 && unit.player == me
@@ -867,7 +837,7 @@ impl Executive {
     /// Drafts up to `size` un-enlisted, unclaimed fighters, nearest to
     /// the staging point first, ties to the lowest id. Player-facing drafts
     /// include only members whose explored ground component can accept the
-    /// resulting muster command; the frozen Overseer remains optimistic.
+    /// resulting muster command.
     fn draft(
         &self,
         obs: &Observation,
@@ -875,7 +845,6 @@ impl Executive {
         size: u32,
         claimed: &[UnitId],
         reserved: &[UnitId],
-        require_known_route: bool,
     ) -> Vec<UnitId> {
         let enlisted: Vec<UnitId> = self.enlisted().collect();
         let mut candidates: Vec<(i32, UnitId)> = obs
@@ -893,18 +862,11 @@ impl Executive {
                     && !enlisted.contains(&u.id)
                     && !claimed.contains(&u.id)
                     && !reserved.contains(&u.id)
-                    && (!require_known_route || self.exhausted_rear.binary_search(&u.id).is_err())
+                    && (self.exhausted_rear.binary_search(&u.id).is_err())
             })
             .map(|u| (u.tile.manhattan(staging), u.id))
             .collect();
         candidates.sort_unstable();
-        if !require_known_route {
-            return candidates
-                .into_iter()
-                .take(size as usize)
-                .map(|(_, id)| id)
-                .collect();
-        }
 
         let mut routes = crate::bot::routing::RouteProjection::known_ground(obs);
         let mut draft = Vec::with_capacity((size as usize).min(candidates.len()));
@@ -1632,26 +1594,6 @@ mod tests {
     }
 
     #[test]
-    fn overseer_muster_preserves_legacy_access_to_exhausted_rear_units() {
-        let (mut obs, mut executive) = target_holding_position();
-        let staging = TilePos::new(12, 8);
-        obs.my_units = vec![fighter(1, TilePos::new(4, 4), true)];
-        obs.my_units[0].hp = UnitKind::Sentinel.stats().max_hp / 4;
-        executive.armies.clear();
-        executive.exhausted_rear = vec![UnitId(1)];
-
-        let commands = executive.apply(PlayerId(0), &obs, &[Intent::FormArmy { staging, size: 1 }]);
-
-        assert!(matches!(
-            commands.as_slice(),
-            [PlayerCommand {
-                command: Command::AttackMove { units, goal, queue: false },
-                ..
-            }] if units == &[UnitId(1)] && *goal == staging
-        ));
-    }
-
-    #[test]
     fn a_partially_reserved_army_defends_without_retasking_operation_members() {
         let (obs, mut executive) = target_holding_position();
         let target = TilePos::new(12, 8);
@@ -1702,36 +1644,6 @@ mod tests {
 
         assert!(commands.is_empty());
         assert_eq!(executive.armies(), &[original]);
-    }
-
-    #[test]
-    fn overseer_keeps_exact_rally_reinforcement_behavior() {
-        let (obs, mut executive) = target_holding_position();
-        let target = TilePos::new(19, 9);
-
-        let commands = executive.apply(
-            PlayerId(0),
-            &obs,
-            &[Intent::FormArmy {
-                staging: target,
-                size: 7,
-            }],
-        );
-
-        assert_eq!(commands.len(), 1);
-        assert!(matches!(
-            &commands[0].command,
-            Command::AttackMove { units, goal, queue }
-                if units == &[UnitId(100)] && *goal == target && !queue
-        ));
-        assert_eq!(executive.armies().len(), 1);
-        let army = &executive.armies()[0];
-        assert_eq!(army.id, ArmyId(7));
-        assert_eq!(
-            army.members,
-            (1..=6).map(UnitId).chain([UnitId(100)]).collect::<Vec<_>>()
-        );
-        assert_eq!(army.target, Some(target));
     }
 
     #[test]
@@ -1932,6 +1844,36 @@ mod tests {
                 ..
             }] if units == &[builder] && *command_anchor == anchor
         ));
+    }
+
+    #[test]
+    fn salvage_keeps_its_nearest_free_crew_selection() {
+        let (mut obs, _) = target_holding_position();
+        let mut near = unit(1, 0, UnitKind::Harvester, 60);
+        near.tile = TilePos::new(9, 8);
+        let mut routed = unit(2, 0, UnitKind::Harvester, 60);
+        routed.tile = TilePos::new(18, 8);
+        obs.my_units = vec![near, routed];
+        obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(10, y)).collect();
+        let building = BuildingId(9);
+        obs.my_buildings = vec![BuildingObs {
+            id: building,
+            player: PlayerId(0),
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(11, 8),
+            hp: 1,
+            built: true,
+            seen: true,
+            tier: 0,
+        }];
+        let repair = Executive::new().apply(PlayerId(0), &obs, &[Intent::Repair { building }]);
+        assert!(matches!(repair.as_slice(), [PlayerCommand {
+            command: Command::Repair { units, .. }, ..
+        }] if units == &[UnitId(2)]));
+        let salvage = Executive::new().apply(PlayerId(0), &obs, &[Intent::Salvage { building }]);
+        assert!(matches!(salvage.as_slice(), [PlayerCommand {
+            command: Command::Salvage { units, .. }, ..
+        }] if units == &[UnitId(1)]));
     }
 
     #[test]

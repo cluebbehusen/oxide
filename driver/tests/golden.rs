@@ -54,26 +54,6 @@ fn skirmish_opening_matches_golden() {
     golden_check("skirmish-t0", &state);
 }
 
-#[test]
-fn skirmish_midgame_matches_golden() {
-    // The stable Overseer drives both seats by hand so this visual
-    // fixture stays independent of player-facing bot tuning.
-    let mut scenario = Scenario::skirmish();
-    for player in &mut scenario.players {
-        player.bot = true;
-    }
-    let mut state = scenario.build().unwrap();
-    let mut bots: Vec<oxide_sim::bot::Brain> = (0..scenario.players.len())
-        .map(|seat| oxide_sim::bot::Brain::overseer(PlayerId(seat as u8), scenario.seed))
-        .collect();
-    for _ in 0..1200 {
-        let commands: Vec<PlayerCommand> =
-            bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
-        state.tick(&commands);
-    }
-    golden_check("skirmish-t1200", &state);
-}
-
 // ---------------------------------------------------------------------------
 // The showcase: one state holding everything the CPU renderer draws.
 // ---------------------------------------------------------------------------

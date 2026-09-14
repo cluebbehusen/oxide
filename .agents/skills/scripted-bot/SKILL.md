@@ -75,8 +75,6 @@ immutable PublicMapBriefing + fog-honest Observation
   fog-honest route projection and exact command-subset checks.
 - `UtilityPolicy` fills work not claimed by those operations, while `Executive`
   owns exact-unit bookkeeping and lowers every intent to commands.
-- `Brain::overseer` is a separate stable QA anchor. Do not silently change it
-  while tuning the playable opponent.
 - `seat_bots` constructs controllers requested by scenario `BotConfig`.
 - Replays preserve the exact configuration and emitted commands, so playback
   does not rerun the controller.
@@ -126,9 +124,8 @@ from exact dispatched worker/target receipts, distinguishing death, preemption,
 exhaustion, missing funding, and currently occupied footprints from blocked
 paths. Remembered buildings alone cannot establish current site occupation.
 Fresh blocking foundations must not displace active builders from their current
-work tiles; test movement and completion release, nonblocking charges, and
-unchanged legacy placement. General retry expiry cannot clear contested-harvest
-quarantine. Preserve the frozen Overseer path.
+work tiles; test movement and completion release and nonblocking charges.
+General retry expiry cannot clear contested-harvest quarantine.
 
 Run the focused `battlefield_adaptation` integration suite alongside
 `recon_support`, owning planner tests, and required repository gates. Review
@@ -261,8 +258,7 @@ own Foundry as enemy-controlled, not as a reason to hoard. Count completed,
 upgrading, pending, and uniquely deferred Reclaimer income once when projecting
 supply. Reclaimer construction should answer completed production demand and
 known resource exhaustion; do not impose a fixed count ceiling that a human
-player does not share. Preserve Overseer's documented legacy Foundry cap and
-policy when evolving these rules.
+player does not share.
 
 For adaptive profiles, fill an ordinary unreserved ground core before voluntary
 investment. HP-weight live Sentinel, Warden, and Breaker hulls; count queued and
@@ -350,8 +346,7 @@ Persistent air and lift operations own partial bomber, ground-attack-air, and
 transport cohorts and their accepted producer work. Outstanding work contributes
 deadline-bound economic demand for additional Airworks; it does not reserve an
 unowned factory cost. Standing force may buy an independently useful air-defense
-provider only when that capacity is free. The profile-free Overseer retains its
-legacy production order.
+provider only when that capacity is free.
 
 For a connected air-and-siege operation, derive a shared capability minimum and
 an opportunity-specific useful capability target in reconnaissance, suppression,
@@ -424,8 +419,7 @@ while taking dynamic blockers only from current observation. Current contacts
 and remembered sites remain stronger evidence than an uncleared public starting
 prior. Ordinary construction prerequisites are the only role gates;
 fortification and the role's relevant secondary trait rank otherwise legal
-choices but never remove one. Keep the frozen Overseer's legacy placements and
-sequential ladder separate from this player-facing policy.
+choices but never remove one.
 
 Treat an Array as a persistent sensor, not as an unarmed defense. Its
 alternative shares the Defense portfolio domain but uses positive novel usable
@@ -439,8 +433,7 @@ credible approach. Off-map area and Peaks provide no detection value because no
 unit can occupy them. Preserve active resource access and bind the exact
 ordinary route-capable builder proven through public terrain and current dynamic
 danger. Keep sensor proposals below immediate survival defense, allow partial
-coverage on maps smaller than the radar diameter, and keep the frozen Overseer's
-first-valid Array placement unchanged.
+coverage on maps smaller than the radar diameter.
 
 Harvest work must also respect anonymous regional loss evidence, but a wreck
 near a dead combat unit is not automatically a dangerous replacement source. Use
@@ -609,7 +602,7 @@ Run focused bot tests first:
 cargo test -p oxide-sim --test bot_brain --locked
 cargo test -p oxide-sim --test bot_policy --locked
 cargo test -p oxide-sim --test scripted_bot --locked
-cargo test -p oxide-sim --test overseer --locked
+cargo test -p oxide-sim --test bot_frames --locked
 ```
 
 Then run complete seeded matches on representative shapes: a normal duel, an
@@ -652,55 +645,55 @@ complete combined-layout conflict sets. Test four-way closures even when every
 triple retains a route. Verify voluntary repair funding and preemption against
 ordinary commands, including decisions between macro-admission boundaries. It
 does not reconstruct explanations from a replay, infer reasons from absent
-planner output, or trace the frozen Overseer. Treat the sidecar as disposable
-diagnostic evidence and keep it out of production commits.
+planner output. Treat the sidecar as disposable diagnostic evidence and keep it
+out of production commits.
 
-For the maintained Prime-versus-Overseer yardstick, keep Overseer confined to
-the evaluation-only `--against-overseer` path. Do not encode it in `BotConfig`,
-a scenario, or player-facing match setup. Run a controlled paired block across
-both faction assignments and both map-end geometries:
+For controlled current-controller comparisons, run a paired block across both
+faction assignments and both map-end geometries:
 
 ```sh
 cargo run -p oxide-driver -- bot-eval skirmish \
-  --difficulty prime --stance balanced --against-overseer --paired \
+  --difficulty prime --stance balanced --opponent-difficulty standard --paired \
   --ticks 60000 --scenario-seeds 7000,7001 \
   --personality-seeds 9000,9001 --faction-cells fc,cf \
-  --geometries authored,rot180 --overseer-policy-seed 0 \
-  --candidate prime-overseer-a \
-  --out replays/prime-overseer-a.jsonl \
-  --replay-dir replays/prime-overseer-a
+  --geometries authored,rot180 --candidate prime-standard-a \
+  --out replays/prime-standard-a.jsonl \
+  --replay-dir replays/prime-standard-a
 ```
 
-`--paired` exchanges the two complete command sources while holding each
-transformed scenario fixed. `--overseer-policy-seed` fixes Overseer's legacy
-army-size jitter to one identity that moves with the controller; it defaults to
-zero and must not vary with the simulation seed. Crossing
-`--faction-cells fc,cf` with `--geometries authored,rot180` separates controller
-performance from physical seat, faction roster, and authored map end. Supply
-independent `--scenario-seeds` and `--personality-seeds`: simulation randomness
-and Prime's deterministic profile are separate factors, and the evaluator
-crosses the two lists instead of confounding them. Use `--runs N` for simpler
-consecutive seed cells outside this controlled workflow. The evaluator must
-refuse nominal axis cells that resolve to the same executable matchup.
+`--paired` exchanges complete profiles while holding the transformed world and
+faction rosters fixed. Cross independent `--scenario-seeds` and
+`--personality-seeds`; simulation randomness and personality are separate
+factors. Each personality value is the primary seat's seed, with ordinary
+opponent seed assignment unless `--same-personality-seed` is selected. Use
+`--runs N` for consecutive cells without explicit axes. Refuse nominal cells
+that resolve to the same executable matchup.
+
+Use `sweep`, `pace-sweep`, `sweep-factorial`, or `bench --scenario` to measure
+one configured controller interacting with the simulation. Select
+`--difficulty`, `--stance`, and `--personality-seed` explicitly for comparisons;
+defaults are Standard/Balanced/zero. Keep the complete profile identical in
+symmetric seats and fixed while varying simulation seeds. Preserve the exact
+profile and simulation version in reports. Symmetric bot matchups do not isolate
+engine or map fairness. Keep synthetic simulation benchmarks separate from bot
+timing.
 
 Use the per-unit stall breakdown to distinguish one blocked order from a broad
 command failure. A leg ends as `termination: stall_loop` once one unit stalls
 the same way `--stall-loop-limit` times (200 by default, 0 disables); that row
 names the seat, unit, reason, count, and tick, and is an anomaly to inspect, not
-a result. `--against-overseer` refuses maps whose seats share no ground route,
-because the frozen Overseer has no severed-ground play and is not a valid
-yardstick there. Treat rejections, stalls, and outcomes as diagnostic evidence,
-not a quality score. Persisted evidence requires an explicit stable
-`--candidate`; replay evidence also requires its JSONL `--out` sidecar. Rows
-record the complete scenario and execution fingerprints, the exact Overseer
-policy identity, a seed-independent command-stream hash, and the requested tick
-limit. Use repeated command hashes to identify seed cells that generated the
-same play rather than counting them as independent samples. The driver stages
-the whole invocation, rolls back normal publication errors, and refuses to
-replace an existing JSONL or replay. This is not a cross-path crash transaction:
-abrupt process termination can leave hidden staging files or a partial replay
-set. Inspect and remove the incomplete batch, then rerun it under a fresh
-candidate rather than treating those files as complete evidence.
+a result. Treat rejections, stalls, and outcomes as diagnostic evidence, not a
+quality score. Persisted evidence requires an explicit stable `--candidate`;
+replay evidence also requires its JSONL `--out` sidecar. Rows record the
+complete scenario and execution fingerprints, exact controller profiles, a
+seed-independent command-stream hash, and the requested tick limit. Use repeated
+command hashes to identify seed cells that generated the same play rather than
+counting them as independent samples. The driver stages the whole invocation,
+rolls back normal publication errors, and refuses to replace an existing JSONL
+or replay. This is not a cross-path crash transaction: abrupt process
+termination can leave hidden staging files or a partial replay set. Inspect and
+remove the incomplete batch, then rerun it under a fresh candidate rather than
+treating those files as complete evidence.
 
 For each candidate, preserve the scenario, seed, replay, final hash, result,
 duration, and a short behavioral verdict. Compare repeated identical runs for

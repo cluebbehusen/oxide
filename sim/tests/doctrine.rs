@@ -302,7 +302,7 @@ fn obs_with_home() -> Observation {
 }
 
 fn think(policy: &mut UtilityPolicy, obs: &Observation) -> Vec<Intent> {
-    policy.think(&Dials::full(), obs, &[], &[])
+    policy.think_player_facing(&Dials::full(), obs, &[], &[], &[], &public_map(obs))
 }
 
 fn player_think(policy: &mut UtilityPolicy, dials: &Dials, obs: &Observation) -> Vec<Intent> {
@@ -343,96 +343,6 @@ fn enemy_air_pulls_anti_air_out_of_the_fabricator() {
 }
 
 #[test]
-fn wounded_buildings_draw_a_weld_order_when_funded() {
-    let mut obs = obs_with_home();
-    obs.my_buildings[0].hp = 300; // foundry at 300/800
-    let mut policy = UtilityPolicy::new();
-    let intents = think(&mut policy, &obs);
-    assert!(
-        intents
-            .iter()
-            .any(|i| matches!(i, Intent::Repair { building } if *building == BuildingId(0))),
-        "a funded seat welds its wounds: {intents:?}"
-    );
-
-    // Broke: the torch stays cold.
-    obs.scrap = 10;
-    let mut policy = UtilityPolicy::new();
-    let intents = think(&mut policy, &obs);
-    assert!(!intents.iter().any(|i| matches!(i, Intent::Repair { .. })));
-}
-
-#[test]
-fn upgrade_policy_prefers_economic_plant_and_respects_its_tech_gate() {
-    let mut obs = obs_with_home();
-    obs.scrap = 1_000;
-    obs.my_buildings.extend([
-        building_obs(1, 0, BuildingKind::Fabricator, 5, 2),
-        building_obs(2, 0, BuildingKind::Reclaimer, 8, 2),
-        building_obs(3, 0, BuildingKind::Turret, 10, 2),
-    ]);
-    obs.my_queues = vec![
-        vec![UnitKind::Sentinel, UnitKind::Sentinel],
-        vec![UnitKind::Lancer, UnitKind::Lancer],
-        Vec::new(),
-        Vec::new(),
-    ];
-    let mut dials = Dials::full();
-    dials.upgrades = true;
-
-    let intents = UtilityPolicy::new().think(&dials, &obs, &[], &[]);
-    assert!(matches!(
-        intents.iter().find(|intent| matches!(intent, Intent::Upgrade { .. })),
-        Some(Intent::Upgrade { building }) if *building == BuildingId(2)
-    ));
-
-    obs.my_buildings
-        .retain(|building| building.kind != BuildingKind::Fabricator);
-    obs.my_queues.remove(1);
-    let intents = UtilityPolicy::new().think(&dials, &obs, &[], &[]);
-    assert!(
-        !intents
-            .iter()
-            .any(|intent| matches!(intent, Intent::Upgrade { .. })),
-        "neither upgrade starts before its Fabricator prerequisite stands: {intents:?}"
-    );
-}
-
-#[test]
-fn repairs_never_recrew_an_active_salvage() {
-    // Repair and salvage evict each other in the sim, so a repair
-    // intent on a building an own crew is stripping would reverse the
-    // liquidation the bot itself ordered. The policy must leave that
-    // active job alone.
-    let mut obs = obs_with_home();
-    obs.my_buildings
-        .push(building_obs(1, 0, BuildingKind::Turret, 5, 2));
-    obs.my_queues.push(Vec::new());
-    obs.my_buildings
-        .push(building_obs(2, 0, BuildingKind::Turret, 8, 2));
-    obs.my_queues.push(Vec::new());
-    obs.my_buildings[1].hp = 100; // both wounded below the weld line
-    obs.my_buildings[2].hp = 100;
-    let mut stripper = unit_obs(0, 0, UnitKind::Harvester, 5, 3);
-    stripper.salvaging = Some(BuildingId(1));
-    obs.my_units = vec![stripper];
-    let mut policy = UtilityPolicy::new();
-    let intents = think(&mut policy, &obs);
-    assert!(
-        !intents
-            .iter()
-            .any(|i| matches!(i, Intent::Repair { building } if *building == BuildingId(1))),
-        "a building being liquidated draws no weld: {intents:?}"
-    );
-    assert!(
-        intents
-            .iter()
-            .any(|i| matches!(i, Intent::Repair { building } if *building == BuildingId(2))),
-        "the untouched wound still welds: {intents:?}"
-    );
-}
-
-#[test]
 fn idle_harvesters_take_wreck_fields_as_readily_as_nodes() {
     let mut obs = obs_with_home();
     obs.my_units = vec![unit_obs(0, 0, UnitKind::Harvester, 6, 6)];
@@ -456,13 +366,6 @@ fn forward_enemy_guns_do_not_redefine_the_enemy_home_half() {
     obs.known_scrap = vec![(central, 200)];
     obs.enemy_buildings = vec![building_obs(9, 1, BuildingKind::FlakTurret, 10, 2)];
 
-    let legacy = UtilityPolicy::new().think(&Dials::full(), &obs, &[], &[]);
-    assert!(
-        legacy
-            .iter()
-            .all(|intent| !matches!(intent, Intent::AssignHarvest { .. })),
-        "the profile-free Overseer retains its historical nearest-building boundary: {legacy:?}"
-    );
     let intents = player_think(&mut UtilityPolicy::new(), &Dials::full(), &obs);
     assert!(
         intents.iter().any(|intent| matches!(
@@ -534,16 +437,6 @@ fn air_raids_ignore_unfinished_flak_but_scrub_against_completed_flak() {
     assert!(
         !intents.iter().any(|i| matches!(i, Intent::RaidAir { .. })),
         "completed remembered Flak remains actionable risk: {intents:?}"
-    );
-
-    obs.enemy_buildings[0].built = false;
-    let mut overseer_policy = UtilityPolicy::new();
-    let overseer = think(&mut overseer_policy, &obs);
-    assert!(
-        !overseer
-            .iter()
-            .any(|intent| matches!(intent, Intent::RaidAir { .. })),
-        "the frozen profile-free controller retains its legacy Flak assessment: {overseer:?}"
     );
 }
 
@@ -671,7 +564,7 @@ fn air_superiority_mass_does_not_rout_a_ground_only_engagement() {
         }],
     );
 
-    let _ = exec.maintain(PlayerId(0), &obs, TilePos::new(2, 2));
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert_eq!(
         exec.armies()[0].state,
         ArmyState::Staging,
@@ -680,17 +573,15 @@ fn air_superiority_mass_does_not_rout_a_ground_only_engagement() {
 
     obs.enemy_units
         .push(unit_obs(30, 1, UnitKind::Sentinel, 7, 5));
-    let _ = exec.maintain(PlayerId(0), &obs, TilePos::new(2, 2));
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
-    let _ = exec.maintain(PlayerId(0), &obs, TilePos::new(2, 2));
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert_eq!(
         exec.armies()[0].state,
         ArmyState::Engaging,
         "irrelevant interceptors must not turn one ordinary ground contact into a rout"
     );
 }
-
-// --- 0.15 Overseer channels: the ferry and the lane mines -------------
 
 /// An island world: home in the northwest, a known-rock wall severing
 /// the map top to bottom, and the enemy Foundry remembered across it.
@@ -716,129 +607,10 @@ fn staged_ground_push_intents(obs: &Observation) -> Vec<Intent> {
         issued: None,
         bounces: 0,
     };
-    let mut dials = Dials::overseer();
+    let mut dials = Dials::balanced();
     dials.own_strength_scale = u16::MAX;
     dials.enemy_strength_scale = 0;
     UtilityPolicy::new().think_player_facing(&dials, obs, &[army], &[], &[], &public_map(obs))
-}
-
-#[test]
-fn a_routeless_ground_scout_yields_to_a_purpose_built_flyer() {
-    let mut obs = obs_with_home();
-    obs.scrap = 1_000;
-    obs.my_buildings.extend([
-        building_obs(1, 0, BuildingKind::Fabricator, 5, 2),
-        building_obs(2, 0, BuildingKind::Airworks, 8, 2),
-    ]);
-    obs.my_queues = vec![
-        vec![UnitKind::Sentinel, UnitKind::Sentinel],
-        vec![UnitKind::Lancer, UnitKind::Lancer],
-        Vec::new(),
-    ];
-    obs.my_units = (0..5)
-        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
-        .collect();
-    obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(12, y)).collect();
-    let mut policy = UtilityPolicy::new();
-    let dials = Dials::full();
-
-    let first = policy.think(&dials, &obs, &[], &[]);
-    let ground_scout = first.iter().find_map(|intent| match intent {
-        Intent::Scout { unit, .. } => Some(*unit),
-        _ => None,
-    });
-    assert_eq!(
-        ground_scout,
-        Some(UnitId(0)),
-        "without an aircraft, the first sweep borrows the lowest-id Harvester"
-    );
-
-    // The simulation reports an unreachable Move by returning the unit
-    // to idle where it started. On the next think, that is direct route
-    // testimony rather than a reason to cycle the same ground scout.
-    obs.tick = dials.cadence;
-    let bounced = policy.think(&dials, &obs, &[], &[]);
-    assert!(
-        bounced
-            .iter()
-            .all(|intent| !matches!(intent, Intent::Scout { .. })),
-        "a bounced ground scout must be released: {bounced:?}"
-    );
-
-    obs.tick += dials.cadence;
-    let replacement = policy.think(&dials, &obs, &[], &[]);
-    assert!(
-        replacement.iter().any(|intent| matches!(
-            intent,
-            Intent::TrainAt {
-                building: BuildingId(2),
-                kind: UnitKind::Kestrel,
-            }
-        )),
-        "a known need for air reconnaissance buys one faction scout: {replacement:?}"
-    );
-    assert!(
-        replacement
-            .iter()
-            .all(|intent| !matches!(intent, Intent::Scout { .. })),
-        "ground units stay free while the airborne replacement is being built"
-    );
-
-    obs.my_units.push(unit_obs(99, 0, UnitKind::Kestrel, 8, 3));
-    obs.tick += dials.cadence;
-    let airborne = policy.think(&dials, &obs, &[], &[]);
-    assert!(
-        airborne.iter().any(|intent| matches!(
-            intent,
-            Intent::Scout {
-                unit: UnitId(99),
-                ..
-            }
-        )),
-        "the completed scout flyer takes over the sweep: {airborne:?}"
-    );
-}
-
-#[test]
-fn the_ferry_lifts_a_squad_over_a_severed_gulf() {
-    let mut obs = island_obs();
-    obs.my_units = vec![
-        unit_obs(1, 0, UnitKind::Sentinel, 3, 3),
-        unit_obs(2, 0, UnitKind::Sentinel, 4, 3),
-        unit_obs(3, 0, UnitKind::Sentinel, 5, 3),
-        unit_obs(10, 0, UnitKind::Skyhook, 4, 4),
-    ];
-    let mut policy = UtilityPolicy::new();
-    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
-    let load = intents.iter().find_map(|i| match i {
-        Intent::Load { transport, riders } => Some((*transport, riders.clone())),
-        _ => None,
-    });
-    let (transport, riders) = load.expect("an idle skyhook and three idle fighters make a lift");
-    assert_eq!(transport, UnitId(10));
-    assert_eq!(
-        riders,
-        vec![UnitId(1), UnitId(2), UnitId(3)],
-        "the nearest fighters board, ties to the lowest id"
-    );
-
-    // Two fighters are a trickle, not a squad: no lift yet.
-    let mut short = obs.clone();
-    short.my_units.remove(0);
-    let mut policy = UtilityPolicy::new();
-    let intents = policy.think(&Dials::overseer(), &short, &[], &[]);
-    assert!(
-        !intents.iter().any(|i| matches!(i, Intent::Load { .. })),
-        "the ferry waits for a squad: {intents:?}"
-    );
-
-    // The same world under the 0.14 dials never ferries.
-    let mut policy = UtilityPolicy::new();
-    let intents = policy.think(&Dials::full(), &obs, &[], &[]);
-    assert!(
-        !intents.iter().any(|i| matches!(i, Intent::Load { .. })),
-        "the ferry is dial-gated: {intents:?}"
-    );
 }
 
 #[test]
@@ -857,7 +629,7 @@ fn ground_armies_only_push_enemy_sites_in_their_own_known_component() {
         bounces: 0,
     };
     let ids: Vec<UnitId> = (1..=6).map(UnitId).collect();
-    let mut dials = Dials::overseer();
+    let mut dials = Dials::balanced();
     dials.own_strength_scale = u16::MAX;
     dials.enemy_strength_scale = 0;
 
@@ -865,18 +637,7 @@ fn ground_armies_only_push_enemy_sites_in_their_own_known_component() {
     home_side.my_units = (1..=6)
         .map(|id| unit_obs(id, 0, UnitKind::Sentinel, 5 + id as i32, 6))
         .collect();
-    let legacy = UtilityPolicy::new().think(
-        &dials,
-        &home_side,
-        &[army(ids.clone(), TilePos::new(7, 6))],
-        &[],
-    );
-    assert!(
-        legacy
-            .iter()
-            .any(|intent| matches!(intent, Intent::PushArmy { .. })),
-        "the profile-free Overseer keeps its frozen preflight behavior: {legacy:?}"
-    );
+
     let blocked = UtilityPolicy::new().think_player_facing(
         &dials,
         &home_side,
@@ -981,16 +742,7 @@ fn only_the_player_facing_controller_route_checks_defensive_retargets() {
         issued: None,
         bounces: 0,
     };
-    let dials = Dials::overseer();
-
-    let legacy = UtilityPolicy::new().think(&dials, &obs, std::slice::from_ref(&army), &[]);
-    assert!(legacy.iter().any(|intent| matches!(
-        intent,
-        Intent::PushArmy {
-            army: ArmyId(7),
-            target
-        } if *target == TilePos::new(5, 4)
-    )));
+    let dials = Dials::balanced();
 
     let player_facing = UtilityPolicy::new().think_player_facing(
         &dials,
@@ -1024,7 +776,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
         &[],
     );
     let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
-    let mut legacy_retarget_exec = exec.clone();
+
     let retreat = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert_eq!(exec.armies()[0].state, ArmyState::Withdrawing);
     assert!(matches!(
@@ -1037,7 +789,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
 
     let enlisted: Vec<_> = exec.enlisted().collect();
     let intents = UtilityPolicy::new().think_player_facing(
-        &Dials::overseer(),
+        &Dials::balanced(),
         &obs,
         exec.armies(),
         &enlisted,
@@ -1052,39 +804,16 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
         "the retreat must remain the body's only queue-replacing order: {intents:?}"
     );
 
-    let legacy_retreat = legacy_retarget_exec.maintain(PlayerId(0), &obs, TilePos::new(2, 2));
-    assert!(matches!(
-        legacy_retreat.as_slice(),
-        [oxide_sim::PlayerCommand {
-            command: Command::AttackMove { units, goal, queue: false },
-            ..
-        }] if units == &vec![UnitId(1)] && *goal == staging
-    ));
-    let legacy_enlisted: Vec<_> = legacy_retarget_exec.enlisted().collect();
-    let legacy = UtilityPolicy::new().think(
-        &Dials::overseer(),
-        &obs,
-        legacy_retarget_exec.armies(),
-        &legacy_enlisted,
-    );
-    assert!(
-        legacy.iter().any(|intent| matches!(
-            intent,
-            Intent::PushArmy { army, .. } if *army == exec.armies()[0].id
-        )),
-        "the profile-free Overseer retains its historical retargeting path"
-    );
-
     obs.my_units[0].tile = staging;
     obs.my_units[0].idle = true;
     obs.enemy_units[0].tile = TilePos::new(6, 4);
-    obs.tick = Dials::overseer().cadence;
+    obs.tick = Dials::balanced().cadence;
     let settled = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert!(settled.is_empty());
     assert_eq!(exec.armies()[0].state, ArmyState::Withdrawing);
     let enlisted: Vec<_> = exec.enlisted().collect();
     let player_facing = UtilityPolicy::new().think_player_facing(
-        &Dials::overseer(),
+        &Dials::balanced(),
         &obs,
         exec.armies(),
         &enlisted,
@@ -1100,7 +829,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     );
 
     for _ in 0..4 {
-        obs.tick += Dials::overseer().cadence;
+        obs.tick += Dials::balanced().cadence;
         assert!(
             exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
                 .is_empty()
@@ -1111,16 +840,9 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
             "a faster think cadence must not turn fallback contact into focus/retreat churn"
         );
     }
-    let mut settled_legacy = exec.clone();
-    assert!(
-        settled_legacy
-            .maintain(PlayerId(0), &obs, TilePos::new(2, 2))
-            .is_empty()
-    );
-    assert_eq!(settled_legacy.armies()[0].state, ArmyState::Staging);
 
     obs.enemy_units[0].tile = TilePos::new(12, 4);
-    obs.tick += Dials::overseer().cadence;
+    obs.tick += Dials::balanced().cadence;
     assert!(
         exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
             .is_empty()
@@ -1132,7 +854,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     );
 
     obs.enemy_units[0].tile = TilePos::new(18, 4);
-    obs.tick += Dials::overseer().cadence;
+    obs.tick += Dials::balanced().cadence;
     assert!(
         exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
             .is_empty()
@@ -1140,13 +862,13 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     assert_eq!(exec.armies()[0].state, ArmyState::Staging);
 
     obs.enemy_units[0].tile = TilePos::new(6, 4);
-    obs.tick += Dials::overseer().cadence;
+    obs.tick += Dials::balanced().cadence;
     let contact = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert!(contact.is_empty());
     assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
     let enlisted: Vec<_> = exec.enlisted().collect();
     let engaged = UtilityPolicy::new().think_player_facing(
-        &Dials::overseer(),
+        &Dials::balanced(),
         &obs,
         exec.armies(),
         &enlisted,
@@ -1161,20 +883,11 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
         "defense must not replace the order of a body already handling local contact: {engaged:?}"
     );
 
-    obs.tick += Dials::overseer().cadence;
-    let mut legacy_exec = exec.clone();
+    obs.tick += Dials::balanced().cadence;
+
     let holding = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert!(holding.is_empty());
     assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
-
-    let legacy_retreat = legacy_exec.maintain(PlayerId(0), &obs, TilePos::new(2, 2));
-    assert!(matches!(
-        legacy_retreat.as_slice(),
-        [oxide_sim::PlayerCommand {
-            command: Command::AttackMove { units, goal, queue: false },
-            ..
-        }] if units == &vec![UnitId(1)] && *goal == staging
-    ));
 }
 
 #[test]
@@ -1241,7 +954,7 @@ fn a_routed_defender_musters_before_retrying_the_same_remote_fight() {
 
     let enlisted: Vec<_> = exec.enlisted().collect();
     let outmatched = UtilityPolicy::new().think_player_facing(
-        &Dials::overseer(),
+        &Dials::balanced(),
         &obs,
         exec.armies(),
         &enlisted,
@@ -1284,7 +997,7 @@ fn a_routed_defender_musters_before_retrying_the_same_remote_fight() {
         .id;
     let enlisted: Vec<_> = exec.enlisted().collect();
     let reinforced = UtilityPolicy::new().think_player_facing(
-        &Dials::overseer(),
+        &Dials::balanced(),
         &obs,
         exec.armies(),
         &enlisted,
@@ -1343,13 +1056,13 @@ fn player_facing_army_at_a_live_objective_is_not_reissued_every_think() {
         unit.idle = false;
     }
     obs.tick = 6;
-    let mut legacy_exec = exec.clone();
+
     let maintenance = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert!(maintenance.is_empty());
     assert_eq!(exec.armies()[0].state, ArmyState::Staging);
     assert_eq!(exec.armies()[0].staging, target);
 
-    let mut dials = Dials::overseer();
+    let mut dials = Dials::balanced();
     dials.army_size = 4;
     dials.own_strength_scale = u16::MAX;
     dials.enemy_strength_scale = 0;
@@ -1369,19 +1082,6 @@ fn player_facing_army_at_a_live_objective_is_not_reissued_every_think() {
                 if *army == army_id && *next == target
         )),
         "the standing attack-move must keep owning the live objective: {player_facing:?}"
-    );
-
-    let legacy_maintenance = legacy_exec.maintain(PlayerId(0), &obs, TilePos::new(2, 2));
-    assert!(legacy_maintenance.is_empty());
-    let legacy_enlisted: Vec<_> = legacy_exec.enlisted().collect();
-    let legacy = UtilityPolicy::new().think(&dials, &obs, legacy_exec.armies(), &legacy_enlisted);
-    assert!(
-        legacy.iter().any(|intent| matches!(
-            intent,
-            Intent::PushArmy { army, target: next }
-                if *army == army_id && *next == target
-        )),
-        "the frozen Overseer retains its historical arrival behavior"
     );
 }
 
@@ -1450,7 +1150,6 @@ fn player_facing_completed_forward_army_rejoins_the_safe_muster() {
     assert_eq!(exec.armies()[0].state, ArmyState::Staging);
     assert_eq!(exec.armies()[0].target, Some(target));
 
-    let mut legacy = exec.clone();
     obs.enemy_buildings.clear();
     for unit in obs.my_units.iter_mut().take(2) {
         unit.idle = true;
@@ -1483,13 +1182,6 @@ fn player_facing_completed_forward_army_rejoins_the_safe_muster() {
             ..
         }] if units == &vec![UnitId(1), UnitId(2)] && *goal == home_staging
     ));
-
-    assert!(legacy.maintain(PlayerId(0), &obs, home_staging).is_empty());
-    assert_eq!(
-        legacy.armies().len(),
-        2,
-        "the frozen Overseer retains a completed forward staging body"
-    );
 }
 
 #[test]
@@ -1548,7 +1240,6 @@ fn player_facing_refused_forward_army_cannot_mask_a_reachable_muster() {
         }],
         &[],
     );
-    let mut legacy = exec.clone();
 
     obs.tick = 12;
     let _ = exec.maintain_player_facing(PlayerId(0), &obs, left);
@@ -1565,10 +1256,6 @@ fn player_facing_refused_forward_army_cannot_mask_a_reachable_muster() {
     );
     assert!(commands.is_empty());
     assert_eq!(exec.armies()[0].members, vec![UnitId(2)]);
-
-    let _ = legacy.maintain(PlayerId(0), &obs, left);
-    assert_eq!(legacy.armies().len(), 2);
-    assert_eq!(legacy.armies()[0].state, ArmyState::Staging);
 }
 
 #[test]
@@ -1611,20 +1298,12 @@ fn player_facing_army_finishes_a_harmless_target_without_restarting_its_march() 
     assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
 
     obs.tick = 6;
-    let mut legacy = exec.clone();
+
     let commands = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
     assert!(
         commands.is_empty(),
         "an in-range harmless contact should not replace the objective march with an explicit chase"
-    );
-
-    let legacy_commands = legacy.maintain(PlayerId(0), &obs, TilePos::new(2, 2));
-    assert_eq!(legacy.armies()[0].state, ArmyState::Pushing);
-    assert!(
-        legacy_commands
-            .iter()
-            .any(|command| matches!(command.command, Command::AttackMove { .. }))
     );
 }
 
@@ -1663,7 +1342,7 @@ fn player_facing_ground_armies_do_not_pursue_aircraft_over_unstandable_ground() 
     assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
 
     obs.tick = 6;
-    let mut legacy = exec.clone();
+
     assert!(
         exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
             .is_empty(),
@@ -1672,24 +1351,10 @@ fn player_facing_ground_armies_do_not_pursue_aircraft_over_unstandable_ground() 
     assert_eq!(exec.armies()[0].focus, None);
 
     // Salvo-priced fight strength reads the Moth's full bombing stick as
-    // a real threat, so the legacy arm no longer commits a direct pursuit
+
     // Attack: it withdraws to its own staging ground through an
     // attack-move that answers fire on the way, and never paths onto the
     // aircraft's unstandable tile.
-    assert!(matches!(
-        legacy
-            .maintain(PlayerId(0), &obs, TilePos::new(2, 2))
-            .as_slice(),
-        [oxide_sim::PlayerCommand {
-            command: Command::AttackMove { units, goal, queue: false },
-            ..
-        }] if units == &(1..=7).map(UnitId).collect::<Vec<_>>()
-            && *goal == TilePos::new(6, 5)
-    ));
-    assert_eq!(
-        legacy.armies()[0].state,
-        oxide_sim::bot::ArmyState::Withdrawing
-    );
 }
 
 #[test]
@@ -1749,190 +1414,6 @@ fn a_known_building_wall_suppresses_an_impossible_ground_push() {
 }
 
 #[test]
-fn a_loaded_skyhook_drops_beside_the_island_base() {
-    let mut obs = island_obs();
-    let mut sky = unit_obs(10, 0, UnitKind::Skyhook, 13, 8);
-    sky.cargo = 3;
-    obs.my_units = vec![sky];
-    let mut policy = UtilityPolicy::new();
-    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
-    let at = intents.iter().find_map(|i| match i {
-        Intent::Unload { transport, at } if *transport == UnitId(10) => Some(*at),
-        _ => None,
-    });
-    let at = at.expect("a settled, loaded skyhook flies the drop");
-    let base = TilePos::new(18, 8);
-    assert!(
-        at.chebyshev(base) <= 6,
-        "the drop lands beside the island base: {at:?}"
-    );
-    assert!(
-        !obs.known_rock_at(at),
-        "the drop centers on known-walkable ground: {at:?}"
-    );
-
-    let commands = oxide_sim::bot::Executive::new().apply(
-        PlayerId(0),
-        &obs,
-        &[Intent::Unload {
-            transport: UnitId(10),
-            at,
-        }],
-    );
-    assert!(matches!(
-        commands.as_slice(),
-        [oxide_sim::PlayerCommand {
-            command: Command::Unload {
-                transport,
-                at: command_at,
-                queue: false,
-            },
-            ..
-        }] if *transport == UnitId(10) && *command_at == at
-    ));
-
-    obs.my_units[0].idle = false;
-    let intents = UtilityPolicy::new().think(&Dials::overseer(), &obs, &[], &[]);
-    assert!(
-        !intents
-            .iter()
-            .any(|intent| matches!(intent, Intent::Unload { .. })),
-        "an outbound loaded transport keeps its current flight instead of churning orders: {intents:?}"
-    );
-}
-
-#[test]
-fn the_skyhook_is_bought_only_for_an_island_war() {
-    let mut obs = island_obs();
-    obs.my_buildings
-        .push(building_obs(1, 0, BuildingKind::Airworks, 5, 5));
-    obs.my_queues.push(Vec::new());
-
-    // A lifter without riders is dead capital: no squad, no purchase.
-    let mut policy = UtilityPolicy::new();
-    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
-    assert!(
-        !intents.iter().any(|i| matches!(
-            i,
-            Intent::TrainAt {
-                kind: UnitKind::Skyhook,
-                ..
-            }
-        )),
-        "the fighters come before the lifter: {intents:?}"
-    );
-
-    obs.my_units = vec![
-        unit_obs(1, 0, UnitKind::Sentinel, 3, 3),
-        unit_obs(2, 0, UnitKind::Sentinel, 4, 3),
-        unit_obs(3, 0, UnitKind::Sentinel, 5, 3),
-    ];
-    obs.scrap = UnitKind::Skyhook.stats().cost;
-    let mut policy = UtilityPolicy::new();
-    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
-    assert!(
-        !intents
-            .iter()
-            .any(|intent| matches!(intent, Intent::TrainAt { .. })),
-        "a partial ferry fund stays banked instead of leaking into a cheaper unit: {intents:?}"
-    );
-
-    obs.scrap = 400;
-    let mut policy = UtilityPolicy::new();
-    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
-    assert!(
-        intents.iter().any(|i| matches!(
-            i,
-            Intent::TrainAt { kind: UnitKind::Skyhook, building } if *building == BuildingId(1)
-        )),
-        "a severed gulf and a standing squad buy the lifter at the Airworks: {intents:?}"
-    );
-
-    // With the road open there is no island war and no lifter.
-    let mut open = obs.clone();
-    open.known_rock.clear();
-    let mut policy = UtilityPolicy::new();
-    let intents = policy.think(&Dials::overseer(), &open, &[], &[]);
-    assert!(
-        !intents.iter().any(|i| matches!(
-            i,
-            Intent::TrainAt {
-                kind: UnitKind::Skyhook,
-                ..
-            }
-        )),
-        "a walkable enemy base buys no lifter: {intents:?}"
-    );
-
-    // One lifter is the cap.
-    obs.my_units = vec![unit_obs(10, 0, UnitKind::Skyhook, 4, 4)];
-    let mut policy = UtilityPolicy::new();
-    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
-    assert!(
-        !intents.iter().any(|i| matches!(
-            i,
-            Intent::TrainAt {
-                kind: UnitKind::Skyhook,
-                ..
-            }
-        )),
-        "a live skyhook satisfies the ferry: {intents:?}"
-    );
-}
-
-#[test]
-fn lane_mines_bury_along_the_known_approach() {
-    let mut obs = obs_with_home();
-    // Full queues keep the production channel quiet so the bank stays
-    // for the construction arms under test.
-    obs.my_queues[0] = vec![UnitKind::Sentinel, UnitKind::Sentinel];
-    obs.my_buildings
-        .push(building_obs(1, 0, BuildingKind::Fabricator, 5, 2));
-    obs.my_queues.push(vec![UnitKind::Lancer, UnitKind::Lancer]);
-    obs.my_buildings
-        .push(building_obs(2, 0, BuildingKind::Airworks, 8, 2));
-    obs.my_queues
-        .push(vec![UnitKind::Buzzard, UnitKind::Buzzard]);
-    obs.my_units = (0..5)
-        .map(|i| unit_obs(i, 0, UnitKind::Harvester, 3 + i as i32, 5))
-        .collect();
-    obs.enemy_buildings = vec![building_obs(5, 1, BuildingKind::Foundry, 18, 8)];
-    let mut policy = UtilityPolicy::new();
-    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
-    let anchor = intents.iter().find_map(|i| match i {
-        Intent::Build {
-            kind: BuildingKind::ScuttleCharge,
-            anchor,
-        } => Some(*anchor),
-        _ => None,
-    });
-    let anchor = anchor.expect("a known ground road draws a buried charge");
-    let home = TilePos::new(2, 2);
-    assert!(
-        anchor.chebyshev(home) <= 2 * (5 + 7),
-        "the field sits a few tiles out from home: {anchor:?}"
-    );
-    assert!(
-        anchor.x >= home.x && anchor.y >= home.y,
-        "the charge leans toward the enemy, never behind the base: {anchor:?}"
-    );
-
-    // The 0.14 dials never mine.
-    let mut policy = UtilityPolicy::new();
-    let intents = policy.think(&Dials::full(), &obs, &[], &[]);
-    assert!(
-        !intents.iter().any(|i| matches!(
-            i,
-            Intent::Build {
-                kind: BuildingKind::ScuttleCharge,
-                ..
-            }
-        )),
-        "mining is dial-gated: {intents:?}"
-    );
-}
-
-#[test]
 fn the_army_draft_never_conscripts_the_air_wing() {
     use oxide_sim::bot::Executive;
     let mut obs = obs_base();
@@ -1988,14 +1469,6 @@ fn player_facing_muster_drafts_only_fighters_with_a_known_ground_route() {
             ..
         }] if units == &vec![UnitId(0), UnitId(1)] && *goal == staging
     ));
-
-    let mut overseer = Executive::new();
-    let _ = overseer.apply(PlayerId(0), &obs, &form);
-    assert_eq!(
-        overseer.armies()[0].members.len(),
-        4,
-        "profile-free lowering preserves the Overseer's optimistic draft"
-    );
 }
 
 #[test]
@@ -2062,7 +1535,7 @@ fn player_facing_reinforcement_skips_an_unknown_gulf_until_a_route_is_mapped() {
 }
 
 #[test]
-fn player_facing_muster_consolidates_nearby_staged_bodies() {
+fn muster_extends_a_nearby_staged_body() {
     use oxide_sim::bot::Executive;
 
     let mut obs = obs_base();
@@ -2075,14 +1548,14 @@ fn player_facing_muster_consolidates_nearby_staged_bodies() {
 
     let mut player_facing = Executive::new();
     let _ = player_facing.apply(PlayerId(0), &obs, &intents(first, 2));
-    let _ = player_facing.apply(PlayerId(0), &obs, &intents(nearby, 2));
-    assert_eq!(player_facing.armies().len(), 2, "test premise");
+    assert_eq!(player_facing.armies().len(), 1, "test premise");
 
     let commands =
-        player_facing.apply_with_reservations(PlayerId(0), &obs, &intents(first, 4), &[]);
+        player_facing.apply_with_reservations(PlayerId(0), &obs, &intents(nearby, 4), &[]);
     assert!(
-        commands.is_empty(),
-        "consolidating already enlisted members needs no sim command"
+        commands.iter().any(|command| matches!(&command.command,
+            Command::AttackMove { units, goal, .. } if units.len() == 2 && *goal == nearby)),
+        "new members must move to the requested nearby muster"
     );
     assert_eq!(player_facing.armies().len(), 1);
     assert_eq!(
@@ -2090,16 +1563,6 @@ fn player_facing_muster_consolidates_nearby_staged_bodies() {
         vec![UnitId(0), UnitId(1), UnitId(2), UnitId(3)]
     );
     assert_eq!(player_facing.armies()[0].staging, first);
-
-    let mut overseer = Executive::new();
-    let _ = overseer.apply(PlayerId(0), &obs, &intents(first, 2));
-    let _ = overseer.apply(PlayerId(0), &obs, &intents(nearby, 2));
-    let _ = overseer.apply(PlayerId(0), &obs, &intents(first, 4));
-    assert_eq!(
-        overseer.armies().len(),
-        2,
-        "profile-free lowering retains exact-rally army bookkeeping"
-    );
 }
 
 #[test]
@@ -2213,25 +1676,6 @@ fn player_facing_rear_wait_keeps_unrepaired_units_out_of_voluntary_musters() {
                     if units.contains(&UnitId(0)) && *goal == staging
             )),
         "a genuinely repaired machine must become eligible for the next voluntary muster"
-    );
-
-    let mut overseer = Executive::new();
-    obs.tick = 0;
-    obs.my_units[0].tile = TilePos::new(4, 4);
-    obs.my_units[0].hp = UnitKind::Sentinel.stats().max_hp;
-    let _ = overseer.apply(PlayerId(0), &obs, &form);
-    obs.my_units[0].hp = 1;
-    let _ = overseer.maintain(PlayerId(0), &obs, rear);
-    obs.my_units[0].tile = rear;
-    obs.tick = 10_000;
-    let _ = overseer.maintain(PlayerId(0), &obs, rear);
-    let _ = overseer.apply(PlayerId(0), &obs, &form);
-    assert!(
-        overseer
-            .armies()
-            .iter()
-            .all(|army| !army.members.contains(&UnitId(0))),
-        "profile-free maintenance keeps its historical permanent rear line"
     );
 }
 
@@ -2504,41 +1948,6 @@ fn boarding_riders_leave_the_army_before_its_next_order() {
 }
 
 #[test]
-fn profile_free_lowering_preserves_the_ferrys_distance_ranked_rider_order() {
-    use oxide_sim::bot::Executive;
-
-    let mut obs = obs_base();
-    obs.my_units = vec![
-        unit_obs(1, 0, UnitKind::Sentinel, 3, 4),
-        unit_obs(2, 0, UnitKind::Sentinel, 4, 4),
-        unit_obs(3, 0, UnitKind::Sentinel, 5, 4),
-        unit_obs(10, 0, UnitKind::Skyhook, 4, 5),
-    ];
-
-    let commands = Executive::new().apply(
-        PlayerId(0),
-        &obs,
-        &[Intent::Load {
-            transport: UnitId(10),
-            riders: vec![UnitId(3), UnitId(1), UnitId(2)],
-        }],
-    );
-
-    assert_eq!(
-        commands,
-        vec![oxide_sim::PlayerCommand {
-            player: PlayerId(0),
-            command: Command::Load {
-                units: vec![UnitId(3), UnitId(1), UnitId(2)],
-                transport: UnitId(10),
-                queue: false,
-            },
-        }],
-        "the frozen Overseer's command stream keeps utility preference order"
-    );
-}
-
-#[test]
 fn exact_loading_uses_its_reservations_without_stealing_same_think_claims() {
     use oxide_sim::bot::Executive;
 
@@ -2622,7 +2031,7 @@ fn exact_loading_uses_its_reservations_without_stealing_same_think_claims() {
 }
 
 #[test]
-fn repeated_refused_marches_restage_even_when_the_target_changes() {
+fn repeated_refused_marches_release_even_when_the_target_changes() {
     use oxide_sim::bot::{ArmyState, Executive};
 
     let mut obs = obs_base();
@@ -2650,7 +2059,7 @@ fn repeated_refused_marches_restage_even_when_the_target_changes() {
         }],
     );
     obs.tick = 8;
-    let _ = exec.maintain(PlayerId(0), &obs, TilePos::new(2, 2));
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert_eq!(exec.armies()[0].state, ArmyState::Pushing);
 
     let _ = exec.apply(
@@ -2662,13 +2071,10 @@ fn repeated_refused_marches_restage_even_when_the_target_changes() {
         }],
     );
     obs.tick = 16;
-    let _ = exec.maintain(PlayerId(0), &obs, TilePos::new(2, 2));
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
 
-    let army = &exec.armies()[0];
-    assert_eq!(army.state, ArmyState::Staging);
-    assert_eq!(army.staging, TilePos::new(3, 3));
-    assert_eq!(army.target, None);
-    assert_eq!(army.progress, None);
+    assert!(exec.armies().is_empty());
+    assert_eq!(exec.enlisted().count(), 0);
 }
 
 #[test]
@@ -2706,53 +2112,13 @@ fn a_march_that_started_but_stopped_eventually_releases_the_army() {
         unit.idle = false;
     }
     obs.tick = 1;
-    let _ = exec.maintain(PlayerId(0), &obs, TilePos::new(2, 2));
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert_eq!(exec.armies()[0].state, ArmyState::Pushing);
     obs.tick = 1_202;
-    let _ = exec.maintain(PlayerId(0), &obs, TilePos::new(2, 2));
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
 
-    let army = &exec.armies()[0];
-    assert_eq!(army.state, ArmyState::Staging);
-    assert_eq!(army.staging, TilePos::new(11, 7));
-    assert_ne!(army.staging, original_staging);
-    assert_eq!(army.target, None);
-    assert_eq!(army.progress, None);
-}
-
-#[test]
-fn an_unreachable_extractor_frame_does_not_starve_the_tech_tree() {
-    let mut obs = obs_with_home();
-    obs.scrap = 2_000;
-    obs.my_buildings
-        .push(building_obs(1, 0, BuildingKind::Fabricator, 5, 2));
-    obs.my_queues.push(Vec::new());
-    obs.my_units = (0..5)
-        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
-        .collect();
-    obs.known_frames = vec![TilePos::new(19, 8)];
-    obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(12, y)).collect();
-
-    let intents = UtilityPolicy::new().think(&Dials::overseer(), &obs, &[], &[]);
-    assert!(
-        !intents.iter().any(|intent| matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Extractor,
-                ..
-            }
-        )),
-        "the fixed frame has no known ground route: {intents:?}"
-    );
-    assert!(
-        intents.iter().any(|intent| matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Airworks,
-                ..
-            }
-        )),
-        "an impossible restoration must yield the construction think to Airworks: {intents:?}"
-    );
+    assert!(exec.armies().is_empty());
+    assert_eq!(exec.enlisted().count(), 0);
 }
 
 #[test]
@@ -2800,50 +2166,6 @@ fn an_unreachable_paid_site_does_not_starve_reachable_construction() {
 }
 
 #[test]
-fn construction_placement_respects_a_walking_founders_promised_footprint() {
-    let mut obs = obs_with_home();
-    obs.scrap = 1_000;
-    obs.my_units = (0..3)
-        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
-        .collect();
-    let dials = Dials::full();
-
-    let first = UtilityPolicy::new().think(&dials, &obs, &[], &[]);
-    let promised = first
-        .iter()
-        .find_map(|intent| match intent {
-            Intent::Build {
-                kind: BuildingKind::Fabricator,
-                anchor,
-            } => Some(*anchor),
-            _ => None,
-        })
-        .expect("the baseline commander picks a Fabricator site");
-
-    obs.my_units[0].founding = Some((BuildingKind::Fabricator, promised));
-    let second = UtilityPolicy::new().think(&dials, &obs, &[], &[]);
-    let replacement = second
-        .iter()
-        .find_map(|intent| match intent {
-            Intent::Build {
-                kind: BuildingKind::Fabricator,
-                anchor,
-            } => Some(*anchor),
-            _ => None,
-        })
-        .expect("other builders can choose a distinct site");
-    let (width, height) = BuildingKind::Fabricator.base_stats().size;
-    let overlaps = replacement.x < promised.x + width
-        && promised.x < replacement.x + width
-        && replacement.y < promised.y + height
-        && promised.y < replacement.y + height;
-    assert!(
-        !overlaps,
-        "a second foundation {replacement:?} overlaps the promised footprint {promised:?}"
-    );
-}
-
-#[test]
 fn executive_defers_a_build_claim_outside_current_sight() {
     use oxide_sim::bot::Executive;
 
@@ -2878,19 +2200,6 @@ fn executive_defers_a_build_claim_outside_current_sight() {
             defer: true,
             ..
         } if actual == anchor
-    ));
-
-    let legacy = Executive::new().apply(
-        PlayerId(0),
-        &obs,
-        &[Intent::Build {
-            kind: BuildingKind::Fabricator,
-            anchor,
-        }],
-    );
-    assert!(matches!(
-        legacy[0].command,
-        Command::Build { defer: false, .. }
     ));
 
     obs.visible.fill(true);
@@ -2948,61 +2257,6 @@ fn player_facing_builds_choose_a_reachable_worker() {
     assert!(
         commands.is_empty(),
         "a known-severed worker must not be sent"
-    );
-
-    let legacy = Executive::new().apply(PlayerId(0), &obs, &[intent]);
-    assert!(matches!(
-        legacy.as_slice(),
-        [oxide_sim::PlayerCommand {
-            command: Command::Build { units, .. },
-            ..
-        }] if units == &[UnitId(1)]
-    ));
-}
-
-#[test]
-fn expansion_capital_is_reserved_until_the_frontier_foundry_is_claimed() {
-    let mut obs = obs_with_home();
-    obs.my_buildings
-        .push(building_obs(1, 0, BuildingKind::Fabricator, 5, 2));
-    obs.my_queues.push(Vec::new());
-    obs.my_units = (0..4)
-        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
-        .chain((4..7).map(|id| unit_obs(id, 0, UnitKind::Sentinel, 3 + id as i32, 6)))
-        .collect();
-    obs.known_scrap = vec![(TilePos::new(20, 9), 500)];
-    obs.scrap = BuildingKind::Foundry
-        .base_stats()
-        .construction
-        .expect("Foundries are buildable expansions")
-        .cost
-        + 70;
-    let mut dials = Dials::full();
-    dials.deep_tech = false;
-    dials.expansion = true;
-
-    let intents = UtilityPolicy::new().think(&dials, &obs, &[], &[]);
-    assert!(
-        !intents.iter().any(|intent| matches!(
-            intent,
-            Intent::TrainAt {
-                kind: UnitKind::Sentinel,
-                ..
-            }
-        )),
-        "the unbounded military drip must not spend the expansion fund: {intents:?}"
-    );
-    let anchor = intents.iter().find_map(|intent| match intent {
-        Intent::Build {
-            kind: BuildingKind::Foundry,
-            anchor,
-        } => Some(*anchor),
-        _ => None,
-    });
-    let anchor = anchor.expect("the reserved capital claims a forward Foundry");
-    assert!(
-        anchor.chebyshev(TilePos::new(20, 9)) <= 7,
-        "the expansion belongs to the frontier, not the home ring: {anchor:?}"
     );
 }
 
@@ -3106,18 +2360,6 @@ fn a_walking_fabricator_is_reserved_and_counts_as_the_tech_rung() {
         )),
         "only the unpaid Fabricator price is reserved; its residual bank remains usable: {player:?}"
     );
-
-    let legacy = UtilityPolicy::new().think(&dials, &obs, &[], &[]);
-    assert!(
-        legacy.iter().any(|intent| matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Fabricator,
-                ..
-            }
-        )),
-        "the profile-free Overseer retains standing-building-only projection: {legacy:?}"
-    );
 }
 
 #[test]
@@ -3148,18 +2390,6 @@ fn a_walking_extractor_claims_its_fixed_frame_once() {
             } if *anchor == frame
         )),
         "a fixed frame already has one unpaid restoration claim: {player:?}"
-    );
-
-    let legacy = UtilityPolicy::new().think(&dials, &obs, &[], &[]);
-    assert!(
-        legacy.iter().any(|intent| matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Extractor,
-                anchor,
-            } if *anchor == frame
-        )),
-        "the profile-free Overseer retains its historical standing-site check: {legacy:?}"
     );
 }
 
@@ -3323,15 +2553,6 @@ fn an_underfunded_foundry_promise_escrows_every_player_facing_spend() {
         )),
         "even low-screen desperation cannot consume an unpaid Foundry claim: {intents:?}"
     );
-
-    let legacy = UtilityPolicy::new().think(&dials, &obs, &[], &[]);
-    assert!(
-        legacy.iter().any(|intent| matches!(
-            intent,
-            Intent::TrainAt { .. } | Intent::Repair { .. } | Intent::RepairUnits { .. }
-        )),
-        "the control must expose spending that only player-facing escrow suppresses: {legacy:?}"
-    );
 }
 
 #[test]
@@ -3346,20 +2567,6 @@ fn a_fresh_scout_owns_its_harvester_before_construction_lowers() {
     let mut dials = Dials::full();
     dials.deep_tech = false;
     let mut policy = UtilityPolicy::new();
-
-    let legacy = UtilityPolicy::new().think(&dials, &obs, &[], &[]);
-    let legacy_build = legacy
-        .iter()
-        .position(|intent| matches!(intent, Intent::Build { .. }))
-        .expect("the legacy policy advances its tech tree");
-    let legacy_scout = legacy
-        .iter()
-        .position(|intent| matches!(intent, Intent::Scout { .. }))
-        .expect("the legacy policy also scouts");
-    assert!(
-        legacy_build < legacy_scout,
-        "profile-free intent ordering remains frozen for the Overseer: {legacy:?}"
-    );
 
     let mut orphan = building_obs(1, 0, BuildingKind::Fabricator, 8, 2);
     orphan.built = false;
@@ -3449,7 +2656,14 @@ fn a_complete_tree_uses_the_crucible_and_airworks_for_its_heaviest_roster() {
             .map(|id| unit_obs(id, 0, UnitKind::Warden, 3 + id as i32, 5))
             .collect();
 
-        let intents = UtilityPolicy::new().think(&Dials::overseer(), &obs, &[], &[]);
+        let intents = UtilityPolicy::new().think_player_facing(
+            &Dials::balanced(),
+            &obs,
+            &[],
+            &[],
+            &[],
+            &public_map(&obs),
+        );
         assert!(intents.iter().any(|intent| matches!(
             intent,
             Intent::TrainAt { building, kind: UnitKind::Breaker }

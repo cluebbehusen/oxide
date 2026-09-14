@@ -62,9 +62,8 @@ impl MatchActivity {
 }
 
 /// Plays `scenario` for `ticks` bot-vs-bot ticks, tallying per-seat
-/// activity out of the tick reports. The stable Overseer drives every
-/// `bot`-flagged seat directly so this liveness gate does not drift
-/// with player-facing bot tuning.
+/// activity out of the tick reports. Every configured seat uses the
+/// player-facing controller through the ordinary seating path.
 ///
 /// Events name a shooter by id and the shooter may be dead by the time
 /// the report is read, so ownership is tracked in a ledger seeded from
@@ -75,7 +74,7 @@ fn play_and_tally(scenario: &Scenario, ticks: u64) -> anyhow::Result<MatchActivi
     use oxide_sim::event::Event;
 
     let mut state = scenario.build()?;
-    let mut bots = oxide_kit::bench::overseer_bots(scenario);
+    let mut bots = oxide_sim::bot::seat_bots(scenario)?;
     let mut seats = vec![SeatActivity::default(); scenario.players.len()];
     let mut unit_owner: BTreeMap<u32, usize> = state
         .units()
@@ -199,17 +198,18 @@ fn shipped_scenarios() -> Vec<PathBuf> {
 }
 
 /// A shipped map with every seat flipped to a configured bot seat, the
-/// shape every launched match declares. The sweep itself fields the
-/// Overseer per bot seat so it remains anchored to the stable QA
-/// controller rather than the player-facing bot.
+/// shape every launched match declares. All seats use Standard, Balanced,
+/// personality seed zero so the liveness baseline has one explicit profile.
 fn all_bots(path: &std::path::Path) -> Scenario {
     let mut scenario =
         Scenario::load(path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
     for player in &mut scenario.players {
         player.bot = true;
-        player
-            .bot_config
-            .get_or_insert(oxide_sim::scenario::BotConfig::default());
+        player.bot_config = Some(oxide_sim::scenario::BotConfig::scripted(
+            oxide_sim::scenario::BotDifficulty::Standard,
+            oxide_sim::scenario::BotStance::Balanced,
+            0,
+        ));
     }
     scenario
 }
@@ -225,15 +225,13 @@ fn bot_skirmish() -> Scenario {
 
 #[test]
 fn recorded_scenario_run_reproduces_from_its_replay() {
-    // Replay round-tripping needs a non-empty command log, and inert
-    // bot seats record nothing — so the Overseer drives both seats
-    // explicitly, recording exactly as the runner's step would.
+    // Exercise the runner recording path with a non-empty current-bot log.
     use chassis::replay::Replay;
     use oxide_sim::{PlayerCommand, SIM_VERSION};
 
     let scenario = bot_skirmish();
     let mut state = scenario.build().unwrap();
-    let mut bots = oxide_kit::bench::overseer_bots(&scenario);
+    let mut bots = oxide_sim::bot::seat_bots(&scenario).unwrap();
     let mut replay: Replay<Scenario, PlayerCommand> = Replay::new(SIM_VERSION, scenario);
     for _ in 0..900 {
         let mut commands = Vec::new();
@@ -395,6 +393,13 @@ fn every_shipped_scenario_stays_valid_and_live() {
     let played = pool::fan_out(&paths, |path| {
         let scenario = all_bots(path);
         let activity = play_and_tally(&scenario, liveness_horizon(&scenario))?;
+        eprintln!(
+            "{}: {}",
+            path.display(),
+            liveness_verdict(&path.display().to_string(), &activity)
+                .err()
+                .unwrap_or_else(|| "valid and live".to_string())
+        );
         Ok((path.clone(), activity))
     })
     .unwrap();
