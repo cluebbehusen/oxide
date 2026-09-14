@@ -501,6 +501,13 @@ Move and Advance retain their existing movement and firing rules. A fireable
 explicit target takes priority. Defenses retain blocked or out-of-range focus
 while firing at fallback targets; Stop clears focus.
 
+Ground-capable defenses automatically acquire visible hostile buildings when no
+eligible visible unit is in firing range with a clear shot. Building acquisition
+uses the shared apparency gate, so concealed Scuttle Charges require detection.
+Candidates rank by distance to the closest footprint point, then building id;
+weapon range, minimum range, and terrain cover still apply. Air-only defenses
+never acquire buildings.
+
 Direct ground-to-ground fire traces terrain: rocks provide cover, while
 buildings and scrap do not. Fire involving aircraft and indirect weapons ignores
 ordinary rock cover. For anonymous contacts, ground-capable direct fire uses
