@@ -1,6 +1,7 @@
 //! Independent sprite reductions and premultiplied-alpha sampling.
 use anyhow::{Context, Result};
 use macroquad::prelude::*;
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 const PAGE: usize = 2048;
 const LEVELS: [usize; 4] = [1, 2, 4, 8];
@@ -15,6 +16,7 @@ pub(crate) struct EntityLod {
     materials: Vec<Material>,
     sprites: HashMap<Source, [Region; 4]>,
     bounds: HashMap<Source, Rect>,
+    mesh: RefCell<Mesh>,
 }
 fn source_key(rect: Rect) -> Source {
     [rect.x as u32, rect.y as u32, rect.w as u32, rect.h as u32]
@@ -100,7 +102,7 @@ impl EntityLod {
         let mut packer = Packer::new();
         let mut sprites = HashMap::new();
         let mut bounds = HashMap::new();
-        for key in sources {
+        for &key in &sources {
             let page = key[1] as usize / page_height as usize;
             let local = [key[0], key[1] % page_height as u32, key[2], key[3]];
             anyhow::ensure!(
@@ -111,11 +113,18 @@ impl EntityLod {
                 key[2] as usize + 4 <= PAGE && key[3] as usize + 4 <= PAGE,
                 "sprite exceeds texture page"
             );
-            bounds.insert(key, opaque_bounds(&originals[page], local));
-            sprites.insert(
-                key,
-                LEVELS.map(|factor| packer.insert(&reduce(&originals[page], local, factor))),
+            anyhow::ensure!(
+                local[0] + local[2] <= u32::from(originals[page].width)
+                    && local[1] + local[3] <= u32::from(originals[page].height),
+                "sprite exceeds source atlas page"
             );
+            bounds.insert(key, opaque_bounds(&originals[page], local));
+        }
+        for (key, level) in packing_order(&sources) {
+            let page = key[1] as usize / page_height as usize;
+            let local = [key[0], key[1] % page_height as u32, key[2], key[3]];
+            let region = packer.insert(&reduce(&originals[page], local, LEVELS[level]));
+            sprites.entry(key).or_insert([region; 4])[level] = region;
         }
         let pages: Vec<_> = packer
             .images
@@ -132,6 +141,11 @@ impl EntityLod {
             materials,
             sprites,
             bounds,
+            mesh: RefCell::new(Mesh {
+                vertices: vec![Vertex::new(0.0, 0.0, 0.0, 0.0, 0.0, WHITE); 4],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                texture: None,
+            }),
         })
     }
     pub(crate) fn bounds(&self, source: Rect) -> Rect {
@@ -150,58 +164,108 @@ impl EntityLod {
         let (low, high, blend) = lod_mix(vec2(source.w, source.h), dest * screen_dpi_scale());
         let a = levels[low];
         let b = levels[high];
-        let material = &self.materials[b.page];
-        material.set_uniform(
-            "UvTransform",
-            [
-                b.rect.w / a.rect.w,
-                b.rect.h / a.rect.h,
-                (b.rect.x - a.rect.x * b.rect.w / a.rect.w) / PAGE as f32,
-                (b.rect.y - a.rect.y * b.rect.h / a.rect.h) / PAGE as f32,
-            ],
-        );
-        material.set_uniform("Blend", blend);
-        gl_use_material(material);
-        draw_texture_ex(
-            &self.pages[a.page],
-            position.x,
-            position.y,
-            tint,
-            DrawTextureParams {
-                source: Some(a.rect),
-                ..params.clone()
-            },
-        );
-        gl_use_default_material();
+        // Keep the compatible material through intervening ordinary 2D draws.
+        // The screen boundary restores the default material; per-sprite resets split batches.
+        gl_use_material(&self.materials[b.page]);
+        let mut mesh = self.mesh.borrow_mut();
+        mesh.vertices.copy_from_slice(&sprite_vertices(
+            position, tint, params, a.rect, b.rect, blend,
+        ));
+        mesh.texture = Some(self.pages[a.page].clone());
+        draw_mesh(&mesh);
+
         true
     }
 }
+// Sort by shelf height first so small mip levels cannot waste full-size rows.
+fn packing_order(sources: &BTreeSet<Source>) -> Vec<(Source, usize)> {
+    let mut entries: Vec<_> = sources
+        .iter()
+        .flat_map(|&key| (0..4).map(move |level| (key, level)))
+        .collect();
+    entries.sort_by_key(|&(key, level)| {
+        (
+            std::cmp::Reverse(key[3] / LEVELS[level] as u32),
+            std::cmp::Reverse(key[2] / LEVELS[level] as u32),
+            key,
+            level,
+        )
+    });
+    entries
+}
+
+fn sprite_vertices(
+    position: Vec2,
+    tint: Color,
+    params: &DrawTextureParams,
+    a: Rect,
+    b: Rect,
+    blend: f32,
+) -> [Vertex; 4] {
+    let mut origin = position;
+    let mut size = params.dest_size.unwrap();
+    if params.flip_x {
+        origin.x += size.x;
+        size.x = -size.x;
+    }
+    if params.flip_y {
+        origin.y += size.y;
+        size.y = -size.y;
+    }
+    let pivot = params.pivot.unwrap_or(origin + size * 0.5);
+    let (sin, cos) = params.rotation.sin_cos();
+    [
+        vec2(0.0, 0.0),
+        vec2(1.0, 0.0),
+        vec2(1.0, 1.0),
+        vec2(0.0, 1.0),
+    ]
+    .map(|corner| {
+        let offset = origin + corner * size - pivot;
+        let pos = pivot
+            + vec2(
+                offset.x * cos - offset.y * sin,
+                offset.x * sin + offset.y * cos,
+            );
+        let uv = (a.point() + corner * a.size()) / PAGE as f32;
+        let reduced = (b.point() + corner * b.size()) / PAGE as f32;
+        let mut vertex = Vertex::new(pos.x, pos.y, 0.0, uv.x, uv.y, tint);
+        // Macroquad reserves normal for user data; ordinary 2D draws leave it zero.
+        vertex.normal = vec4(reduced.x, reduced.y, blend, 1.0);
+        vertex
+    })
+}
+
 fn blend_material(texture: &Texture2D) -> Result<Material> {
-    use macroquad::miniquad::{
-        BlendFactor, BlendState, BlendValue, Equation, PipelineParams, UniformDesc, UniformType,
-    };
+    use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation, PipelineParams};
     let material = load_material(
         ShaderSource::Glsl {
             vertex: r#"#version 100
 attribute vec3 position;
 attribute vec2 texcoord;
 attribute vec4 color0;
+attribute vec4 normal;
 uniform mat4 Model;
 uniform mat4 Projection;
 varying highp vec2 uv;
 varying lowp vec4 color;
-void main(){ gl_Position=Projection*Model*vec4(position,1.0); uv=texcoord; color=color0/255.0; }
+varying highp vec4 sampling;
+void main(){ gl_Position=Projection*Model*vec4(position,1.0); uv=texcoord; color=color0/255.0; sampling=normal; }
 "#,
             fragment: r#"#version 100
 precision highp float;
 varying highp vec2 uv;
 varying lowp vec4 color;
+varying highp vec4 sampling;
 uniform sampler2D Texture;
 uniform sampler2D Reduced;
-uniform vec4 UvTransform;
-uniform float Blend;
 void main(){
-    vec4 pixel=mix(texture2D(Texture,uv),texture2D(Reduced,uv*UvTransform.xy+UvTransform.zw),Blend);
+    vec4 pixel=texture2D(Texture,uv);
+    if (sampling.w > 0.5) {
+        pixel=mix(pixel,texture2D(Reduced,sampling.xy),sampling.z);
+    } else {
+        pixel.rgb*=pixel.a;
+    }
     gl_FragColor=vec4(pixel.rgb*color.rgb*color.a,pixel.a*color.a);
 }
 "#,
@@ -215,10 +279,7 @@ void main(){
                 )),
                 ..Default::default()
             },
-            uniforms: vec![
-                UniformDesc::new("UvTransform", UniformType::Float4),
-                UniformDesc::new("Blend", UniformType::Float1),
-            ],
+            uniforms: vec![],
             textures: vec!["Reduced".into()],
         },
     )
@@ -308,6 +369,81 @@ fn reduce(image: &Image, source: Source, factor: usize) -> Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn production_mips_fit_seven_pages_without_discarding_levels() {
+        let manifest: HashMap<String, [f32; 4]> =
+            serde_json::from_str(include_str!("../../assets/sprites/atlas.json")).unwrap();
+        let sources = manifest
+            .iter()
+            .filter(|(name, _)| is_entity_source(name))
+            .map(|(_, row)| row.map(|v| v as u32))
+            .collect();
+        let order = packing_order(&sources);
+        assert_eq!(order.len(), sources.len() * LEVELS.len());
+        let mut packer = Packer::new();
+        for (key, level) in order {
+            let factor = LEVELS[level] as u32;
+            let region = packer.insert(&Image::gen_image_color(
+                (key[2] / factor) as u16,
+                (key[3] / factor) as u16,
+                WHITE,
+            ));
+            assert!(region.rect.right() < PAGE as f32);
+            assert!(region.rect.bottom() < PAGE as f32);
+        }
+        assert_eq!(packer.images.len(), 7);
+    }
+
+    #[test]
+    fn mip_vertex_data_preserves_flip_pivot_rotation_and_tint() {
+        let params = DrawTextureParams {
+            dest_size: Some(vec2(40.0, 20.0)),
+            flip_x: true,
+            flip_y: true,
+            pivot: Some(vec2(10.0, 20.0)),
+            rotation: std::f32::consts::FRAC_PI_2,
+            ..Default::default()
+        };
+        let a = Rect::new(128.0, 256.0, 64.0, 32.0);
+        let b = Rect::new(64.0, 512.0, 32.0, 16.0);
+        let tint = Color::new(0.3, 0.6, 0.9, 0.4);
+        let vertices = sprite_vertices(vec2(10.0, 20.0), tint, &params, a, b, 0.6);
+        for (vertex, expected) in vertices.iter().zip([
+            vec2(-10.0, 60.0),
+            vec2(-10.0, 20.0),
+            vec2(10.0, 20.0),
+            vec2(10.0, 60.0),
+        ]) {
+            assert!(vertex.position.truncate().distance(expected) < 0.0001);
+            assert_eq!(vertex.color, <[u8; 4]>::from(tint));
+            assert_eq!(vertex.normal.z, 0.6);
+            assert_eq!(vertex.normal.w, 1.0);
+        }
+        assert_eq!(vertices[0].uv, vec2(128.0, 256.0) / PAGE as f32);
+        assert_eq!(vertices[2].uv, vec2(192.0, 288.0) / PAGE as f32);
+        assert_eq!(
+            vertices[0].normal.truncate().truncate(),
+            vec2(64.0, 512.0) / PAGE as f32
+        );
+        assert_eq!(
+            vertices[2].normal.truncate().truncate(),
+            vec2(96.0, 528.0) / PAGE as f32
+        );
+    }
+
+    #[test]
+    fn mip_quad_rotates_about_the_destination_center_by_default() {
+        let params = DrawTextureParams {
+            dest_size: Some(vec2(40.0, 20.0)),
+            rotation: std::f32::consts::PI,
+            ..Default::default()
+        };
+        let source = Rect::new(0.0, 0.0, 64.0, 64.0);
+        let vertices = sprite_vertices(vec2(10.0, 20.0), WHITE, &params, source, source, 0.0);
+        assert!(vertices[0].position.truncate().distance(vec2(50.0, 40.0)) < 0.0001);
+        assert!(vertices[2].position.truncate().distance(vec2(10.0, 20.0)) < 0.0001);
+    }
+
     #[test]
     fn reduction_keeps_color_premultiplied_through_transparent_edges() {
         let image = Image {

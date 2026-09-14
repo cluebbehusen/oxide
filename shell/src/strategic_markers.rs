@@ -462,6 +462,15 @@ pub(crate) fn known_resource(game: &crate::game::Game, pos: chassis::grid::TileP
             .saturating_add(game.my_vision().remembered_wreck(pos))
     }
 }
+fn resource_marker_opacity(game: &crate::game::Game, pos: chassis::grid::TilePos) -> f32 {
+    let age_opacity = crate::render::resource_memory_opacity(game, pos);
+    age_opacity
+        * if game.all_seeing() || game.my_vision().visible(pos) {
+            1.0
+        } else {
+            0.4
+        }
+}
 pub(crate) fn draw_resources(game: &crate::game::Game) {
     let p = prefs();
     let opacity = transition(
@@ -472,7 +481,7 @@ pub(crate) fn draw_resources(game: &crate::game::Game) {
     if opacity <= 0.0 {
         return;
     }
-    let mut groups = std::collections::BTreeMap::<(i32, i32), (Vec2, u32, bool)>::new();
+    let mut groups = std::collections::BTreeMap::<(i32, i32), (Vec2, u32, f32)>::new();
     let (lo, hi) = game.camera.world_rect();
     // World-anchored cells keep summaries stable while the camera pans.
     for y in ((lo.y.floor() as i32).div_euclid(4) * 4).max(0)
@@ -488,15 +497,16 @@ pub(crate) fn draw_resources(game: &crate::game::Game) {
             let group =
                 groups
                     .entry((x.div_euclid(4), y.div_euclid(4)))
-                    .or_insert((Vec2::ZERO, 0, true));
+                    .or_insert((Vec2::ZERO, 0, 0.0));
             group.0 += vec2(x as f32 + 0.5, y as f32 + 0.5);
             group.1 += 1;
-            group.2 &= game.all_seeing() || game.my_vision().visible(pos);
+            group.2 += resource_marker_opacity(game, pos);
         }
     }
-    for (_, (sum, count, visible)) in groups {
+    for (_, (sum, count, evidence)) in groups {
         let p = game.camera.to_screen(sum / count as f32);
-        let alpha = opacity * if visible { 1.0 } else { 0.4 };
+        // Average tile evidence so an old memory cannot dim every live node in a cell.
+        let alpha = opacity * evidence / count as f32;
         let scale = prefs().scale;
         let size = if count > 1 { 4.0 } else { 2.8 } * scale;
         draw_poly(
@@ -521,6 +531,37 @@ pub(crate) fn draw_resources(game: &crate::game::Game) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resource_markers_age_with_world_memories_and_refresh_on_sight() {
+        use chassis::grid::TilePos;
+        let scenario = serde_json::from_str(include_str!("../../scenarios/skirmish.json")).unwrap();
+        let game = crate::game::Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+        let hidden = TilePos::new(30, 18);
+        assert!(!game.my_vision().visible(hidden));
+        for (age, expected) in [(0.0, 0.4), (45.0, 0.29), (90.0, 0.18), (900.0, 0.18)] {
+            game.last_seen
+                .borrow_mut()
+                .insert((hidden.x, hidden.y), game.fx_time() - age);
+            assert!((resource_marker_opacity(&game, hidden) - expected).abs() < 0.0001);
+            assert!(
+                (resource_marker_opacity(&game, hidden)
+                    - 0.4 * crate::render::resource_memory_opacity(&game, hidden))
+                .abs()
+                    < 0.0001
+            );
+        }
+        let visible = TilePos::new(8, 4);
+        assert!(game.my_vision().visible(visible));
+        game.last_seen
+            .borrow_mut()
+            .insert((visible.x, visible.y), game.fx_time() - 90.0);
+        assert_eq!(resource_marker_opacity(&game, visible), 1.0);
+        assert_eq!(
+            game.last_seen.borrow()[&(visible.x, visible.y)],
+            game.fx_time()
+        );
+    }
+
     #[test]
     fn extractor_frame_markers_share_exploration_and_claim_visibility() {
         use chassis::grid::TilePos;

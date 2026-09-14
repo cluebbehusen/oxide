@@ -576,18 +576,7 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
             // Stamp what is on show; fade what is only remembered. The
             // map stays bounded: only tiles carrying salvage enter it.
             let mem_fade = if scrap > 0 || wreck > 0 {
-                let key = (x, y);
-                if seen_now {
-                    game.last_seen.borrow_mut().insert(key, game.fx_time());
-                    1.0
-                } else {
-                    let age = {
-                        let mut seen = game.last_seen.borrow_mut();
-                        let stamp = *seen.entry(key).or_insert_with(|| game.fx_time());
-                        game.fx_time() - stamp
-                    };
-                    1.0 - super::staleness_fade(age)
-                }
+                super::resource_memory_opacity(game, pos)
             } else {
                 1.0
             };

@@ -506,7 +506,7 @@ pub(crate) fn draw_panel(
     // panels carry the human's faction, so roster cards stay right.
     let faction = panel.faction;
     let blit = |dest: Rect, source: Rect, tint: Color| {
-        sprites.draw_portrait(dest, &[(source, tint)]);
+        sprites.draw_canvas(dest, &[(source, tint)]);
     };
     // Defense art is authored as a base plus a north-facing live mount.
     // Static cards compose the same silhouette without inventing aim.
@@ -534,7 +534,9 @@ pub(crate) fn draw_panel(
         } = icon
         else {
             match icon {
-                CardIcon::Unit(kind) => blit(dest, sprites.unit(*kind, faction), tint),
+                CardIcon::Unit(kind) => {
+                    sprites.draw_portrait(dest, &[(sprites.unit(*kind, faction), tint)])
+                }
                 CardIcon::Building(kind, tier) => blit_building(dest, *kind, *tier, faction, tint),
                 CardIcon::Verb(v) => blit(dest, sprites.verb_icon(*v), tint),
                 CardIcon::Order { verb, .. } => blit(dest, sprites.verb_icon(*verb), tint),
@@ -548,28 +550,25 @@ pub(crate) fn draw_panel(
         } else {
             tint
         };
-        match subject {
-            crate::panel::OrderSubject::Unit(kind, f) => {
-                blit(dest, sprites.unit(*kind, *f), hull);
-            }
+        let mut layers = match subject {
+            crate::panel::OrderSubject::Unit(kind, f) => vec![(sprites.unit(*kind, *f), hull)],
             crate::panel::OrderSubject::Building(kind, f) => {
                 let mut layers = vec![(sprites.building(*kind, *f), hull)];
                 if !*ghost && let Some(mount) = sprites.defense_mount(*kind, 0, *f) {
                     layers.push((mount, hull));
                 }
-                sprites.draw_portrait(dest, &layers);
+                layers
             }
-        }
+        };
         if *ghost {
-            // The sparse lattice, not the dense one the world opens
-            // with: at chip size a full scaffold reads as noise over
-            // the silhouette, and the chip's meter already carries
-            // how far the site has come.
-            blit(
-                dest,
+            // Scaffold and subject share their authored canvas, including its margins.
+            layers.push((
                 sprites.scaffold(false),
                 Color::new(tint.r, tint.g, tint.b, tint.a * 0.45),
-            );
+            ));
+            sprites.draw_canvas(dest, &layers);
+        } else {
+            sprites.draw_portrait(dest, &layers);
         }
         let badge = dest.w * 0.44;
         let plate = Rect::new(

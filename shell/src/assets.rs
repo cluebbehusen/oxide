@@ -1239,14 +1239,19 @@ impl Sprites {
         let y =
             ((dest.y + dest.h * 0.5 - (bounds.y + bounds.h * 0.5) * extent) * dpi).round() / dpi;
         let extent = (extent * dpi).round() / dpi;
+        self.draw_canvas(Rect::new(x, y, extent, extent), layers);
+    }
+
+    /// Compose layers in a shared authored canvas without portrait cropping.
+    pub fn draw_canvas(&self, dest: Rect, layers: &[(Rect, Color)]) {
         for &(source, tint) in layers {
             self.draw(
-                x,
-                y,
+                dest.x,
+                dest.y,
                 tint,
                 DrawTextureParams {
                     source: Some(source),
-                    dest_size: Some(vec2(extent, extent)),
+                    dest_size: Some(macroquad::prelude::vec2(dest.w, dest.h)),
                     ..Default::default()
                 },
             );
