@@ -354,7 +354,9 @@ impl StrategicIntelligence {
             .iter()
             .filter(|building| !building.seen)
         {
-            if footprint_visible(observation, ghost.anchor, ghost.kind.base_stats().size) {
+            if !ghost.kind.is_stealthy()
+                && footprint_visible(observation, ghost.anchor, ghost.kind.base_stats().size)
+            {
                 continue;
             }
             if let Some(contact) = self
@@ -393,6 +395,12 @@ impl StrategicIntelligence {
         self.buildings.retain(|contact| {
             contact.evidence == ContactEvidence::Current
                 || !footprint_visible(observation, contact.anchor, contact.kind.base_stats().size)
+                || (contact.kind.is_stealthy()
+                    && observation.enemy_buildings.iter().any(|b| {
+                        b.player == contact.player
+                            && b.kind == contact.kind
+                            && b.anchor == contact.anchor
+                    }))
         });
         self.buildings.sort_by_key(|contact| {
             (

@@ -50,7 +50,7 @@ fn ghost_built_default() -> bool {
 }
 
 impl GhostBuilding {
-    fn footprint(&self) -> impl Iterator<Item = TilePos> + use<> {
+    pub(crate) fn footprint(&self) -> impl Iterator<Item = TilePos> + use<> {
         let (w, h) = self.kind.base_stats().size;
         let anchor = self.anchor;
         (0..h).flat_map(move |dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
@@ -101,6 +101,16 @@ pub struct Vision {
 }
 
 impl Vision {
+    pub(crate) fn forget_building(
+        &mut self,
+        owner: PlayerId,
+        kind: crate::stats::BuildingKind,
+        anchor: TilePos,
+    ) {
+        self.ghosts
+            .retain(|g| g.owner != owner || g.kind != kind || g.anchor != anchor);
+    }
+
     pub(crate) fn new(width: i32, height: i32) -> Self {
         Self {
             visible: Grid::new(width, height, false),
@@ -114,10 +124,10 @@ impl Vision {
         }
     }
 
-    /// Enemy buildings as this player last saw them. While a building's
-    /// ground is visible its record simply mirrors live state; the record
-    /// earns the name "ghost" once sight is lost and it freezes. Renderers
-    /// should draw live state on visible ground and these everywhere else.
+    /// Enemy buildings as last observed. Records freeze when sight is lost
+    /// or a completed mine becomes concealed, even on visible ground.
+    /// Draw live state only for currently observable buildings; otherwise
+    /// retain this last-seen marker without exposing current condition.
     pub fn ghosts(&self) -> &[GhostBuilding] {
         &self.ghosts
     }
@@ -836,6 +846,24 @@ fn disc_spans(radius: i32) -> &'static [i32] {
     &table[radius as usize]
 }
 
+/// Forget a building only when its removal itself was observable.
+pub(crate) fn forget_observed_building(state: &mut State, id: crate::BuildingId, detonated: bool) {
+    let Some(b) = state.building(id) else {
+        return;
+    };
+    let (owner, kind, anchor) = (b.player, b.kind, b.anchor);
+    let viewers: Vec<_> = (0..state.players.len())
+        .filter(|&index| {
+            let viewer = PlayerId(index as u8);
+            b.tiles().any(|t| state.vision(viewer).visible(t))
+                && (detonated || state.building_apparent(viewer, b))
+        })
+        .collect();
+    for index in viewers {
+        state.vision[index].forget_building(owner, kind, anchor);
+    }
+}
+
 /// Rebuilds every player's `visible` set from their live entities, then
 /// reconciles their building memory against what is now in sight.
 pub(crate) fn refresh(state: &mut State) {
@@ -884,7 +912,22 @@ pub(crate) fn refresh(state: &mut State) {
         // *gone* thus loses its record, and a record on unseen ground
         // freezes at its last sighting.
         let mut ghosts = std::mem::take(&mut view.ghosts);
-        ghosts.retain(|ghost| !ghost.footprint().any(|t| view.visible(t)));
+        ghosts.retain(|ghost| {
+            if !ghost.footprint().any(|t| view.visible(t)) {
+                return true;
+            }
+            // Ordinary sight cannot prove that a buried mine has vanished.
+            // A visible replacement from the mine's team proves its removal:
+            // that team cannot place over its own charge. Hostile scaffolds
+            // can overlap a concealed mine and do not disprove the memory.
+            ghost.kind.is_stealthy()
+                && !state.charge_detected_at(PlayerId(index as u8), ghost.anchor)
+                && !state.buildings.iter().any(|b| {
+                    b.contains(ghost.anchor)
+                        && !state.hostile(ghost.owner, b.player)
+                        && state.building_apparent(PlayerId(index as u8), b)
+                })
+        });
         for building in state.buildings.iter().filter(|b| !allied(b.player)) {
             // An undetected buried charge never enters memory: sight of
             // its tile alone is not knowledge of it (the one stealth
@@ -1259,8 +1302,8 @@ mod danger_tests {
             let vision = state.vision(viewer);
             if vision.visible(tile) {
                 return state
-                    .building_at(tile)
-                    .is_some_and(|building| !building.kind.is_stealthy());
+                    .buildings_at(tile)
+                    .any(|building| !building.kind.is_stealthy());
             }
             let team = state.player(viewer).team;
             state.buildings.iter().any(|building| {

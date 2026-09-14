@@ -1398,7 +1398,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         } else if !click_on_hud(game, p) {
             let world = game.camera.to_world(p);
             let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-            let target = game.state.building_at(tile).filter(|b| {
+            let target = game.state.buildings_at(tile).find(|b| {
                 b.player == game.human && b.built && b.kind != oxide_sim::BuildingKind::Foundry
             });
             let Some(building) = target.map(|b| b.id) else {
@@ -1625,7 +1625,7 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     let on_entity = game.state.units().iter().any(|u| {
         let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
         p.distance(world) <= unit_pick_radius(u.kind) && (u.player == game.human || sees(u.tile()))
-    }) || game.state.building_at(tile).is_some_and(|b| {
+    }) || game.state.buildings_at(tile).any(|b| {
         // Same rule as fog, for stealth: an undetected buried charge
         // must not flip a rally into a select, or taps would scan for
         // occupancy the fog view denies.

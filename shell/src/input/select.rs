@@ -135,9 +135,11 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
     // SITES are blind until built, and a blind-click selecting one
     // through fog would leak its live kind and hp through the panel.
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-    if let Some(building) = game.state.building_at(tile)
-        && selectable_building(game, building)
-    {
+    let picked = game
+        .state
+        .buildings_at(tile)
+        .find(|b| selectable_building(game, b));
+    if let Some(building) = picked {
         game.selection.units.clear();
         let current_owner = game
             .selection

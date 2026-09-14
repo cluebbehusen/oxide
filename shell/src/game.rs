@@ -520,9 +520,10 @@ impl Game {
             self.state.building(*id).is_some_and(|building| {
                 !self.state.hostile(human, building.player)
                     || all_seeing
-                    || building
+                    || (building
                         .tiles()
                         .any(|tile| self.state.vision(human).visible(tile))
+                        && self.state.building_apparent(human, building))
             })
         });
         report
