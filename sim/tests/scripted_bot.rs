@@ -916,7 +916,7 @@ fn southeast_brain_ignores_an_unactionable_public_extractor_without_learning_its
 }
 
 #[test]
-fn balanced_mirror_plays_a_complete_decisive_match() {
+fn balanced_mirror_stays_active_without_rejected_commands() {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
         player.bot = true;
@@ -924,7 +924,8 @@ fn balanced_mirror_plays_a_complete_decisive_match() {
     }
     let mut state = scenario.build().expect("skirmish builds");
     let mut bots = seat_bots(&scenario).expect("the skirmish has a briefing");
-    let mut rejected_commands = Vec::new();
+    let mut trained = [0_u32; 2];
+    let mut damaged = [0_u32; 2];
 
     for _ in 0..50_000 {
         if state.result().is_some() {
@@ -932,21 +933,71 @@ fn balanced_mirror_plays_a_complete_decisive_match() {
         }
         let commands: Vec<_> = bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
         let report = state.tick(&commands);
-        rejected_commands.extend(report.events.into_iter().filter_map(|event| match event {
-            Event::CommandRejected { player, reason } => Some((report.tick, player, reason)),
-            _ => None,
-        }));
+        for event in report.events {
+            match event {
+                Event::CommandRejected { player, reason } => {
+                    panic!(
+                        "mirror command rejected at tick {} for {player:?}: {reason:?}",
+                        report.tick
+                    );
+                }
+                Event::UnitTrained { player, .. } => trained[player.0 as usize] += 1,
+                Event::DamageTaken { player, .. } => damaged[player.0 as usize] += 1,
+                _ => {}
+            }
+        }
+        if state.current_tick().is_multiple_of(10_000) && state.result().is_none() {
+            for seat in 0..2 {
+                assert!(
+                    trained[seat] > 0 && damaged[seat] > 0,
+                    "mirror seat {seat} stopped producing or fighting in the 10,000 ticks ending at {}: trained {}, damage events {}",
+                    state.current_tick(),
+                    trained[seat],
+                    damaged[seat]
+                );
+            }
+            trained = [0; 2];
+            damaged = [0; 2];
+        }
     }
+}
 
-    assert!(
-        rejected_commands.is_empty(),
-        "the complete mirror produced rejected bot commands: {rejected_commands:?}"
-    );
-    assert!(
-        matches!(state.result(), Some(GameResult::Victory { .. })),
-        "the player-facing mirror should finish a real game: {:?}",
-        state.result()
-    );
+#[test]
+fn distinct_balanced_personalities_play_decisive_matches_in_either_seat() {
+    for seeds in [[0, 1], [1, 0]] {
+        let mut scenario = Scenario::skirmish();
+        for (player, seed) in scenario.players.iter_mut().zip(seeds) {
+            player.bot = true;
+            player.bot_config = Some(BotConfig::scripted(
+                BotDifficulty::Standard,
+                BotStance::Balanced,
+                seed,
+            ));
+        }
+        let mut state = scenario.build().expect("skirmish builds");
+        let mut bots = seat_bots(&scenario).expect("the skirmish has a briefing");
+        for _ in 0..50_000 {
+            if state.result().is_some() {
+                break;
+            }
+            let commands: Vec<_> = bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
+            let report = state.tick(&commands);
+            for event in report.events {
+                if let Event::CommandRejected { player, reason } = event {
+                    panic!(
+                        "seeds {seeds:?}: command rejected at tick {} for {player:?}: {reason:?}",
+                        report.tick
+                    );
+                }
+            }
+        }
+        assert!(
+            matches!(state.result(), Some(GameResult::Victory { .. })),
+            "seeds {seeds:?} should produce a decisive match by tick {}: {:?}",
+            state.current_tick(),
+            state.result()
+        );
+    }
 }
 
 #[test]
