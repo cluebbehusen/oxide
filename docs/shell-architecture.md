@@ -249,7 +249,10 @@ completed-tick boundaries. Recovery includes only a contiguous completed prefix;
 a prepared but unfinished tick is report evidence, never an implicit resume
 command. Discovery validates the recorded scenario and simulation version and
 starts the selected recovery paused. The original interrupted source is retired
-only after an identical replacement baseline is durable.
+only after an identical replacement baseline is durable and the previous
+session's diagnostic sidecars and provenance are copied. Reports include that
+previous evidence without recursively copying earlier recoveries. Home exports
+the interrupted session when its current backdrop has not started a match.
 
 The gameplay path uses a bounded 1 MiB queue without serialization or disk I/O.
 The worker targets a durable flush each second or 64 KiB, and publishes its

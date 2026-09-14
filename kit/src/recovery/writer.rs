@@ -347,6 +347,36 @@ fn run(
             chassis::hash::state_hash(&previous.replay) == chassis::hash::state_hash(&header.base),
             "replacement does not contain the recovered prefix"
         );
+        let provenance = serde_json::json!({
+            "session": previous.session, "build": previous.build, "ticks": tick,
+            "issue": previous.issue, "prepared_commands": previous.prepared
+        });
+        let bytes = serde_json::to_vec(&provenance)?;
+        ensure!(
+            bytes.len() <= 1024 * 1024,
+            "recovered provenance size limit"
+        );
+        chassis::fsx::write_atomic(directory.join("previous-manifest.json"), |writer| {
+            writer.write_all(&bytes)
+        })?;
+        for name in [
+            "timings.json",
+            "watchdog.json",
+            "context.json",
+            "status.json",
+        ] {
+            let file = source.join(name);
+            if let Ok(metadata) = std::fs::symlink_metadata(&file) {
+                ensure!(
+                    metadata.is_file() && metadata.len() <= 8 * 1024 * 1024,
+                    "invalid recovered diagnostic sidecar"
+                );
+                let bytes = std::fs::read(file)?;
+                chassis::fsx::write_atomic(directory.join(format!("previous-{name}")), |writer| {
+                    writer.write_all(&bytes)
+                })?;
+            }
+        }
         let marker = serde_json::json!({"by": header.session, "ticks": tick});
         chassis::fsx::write_atomic(source.join("superseded.json"), |writer| {
             serde_json::to_writer(writer, &marker).map_err(std::io::Error::other)

@@ -422,6 +422,11 @@ pub fn export(directory: &Path, destination: &Path) -> Result<()> {
             "watchdog.json",
             "context.json",
             "status.json",
+            "previous-manifest.json",
+            "previous-timings.json",
+            "previous-watchdog.json",
+            "previous-context.json",
+            "previous-status.json",
         ] {
             let source = directory.join(name);
             if let Ok(metadata) = std::fs::symlink_metadata(&source) {

@@ -389,6 +389,7 @@ fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(10));
     }
+    std::fs::write(source.join("watchdog.json"), b"[\"original stall\"]").unwrap();
     let recovered = inspect(&source).unwrap().replay;
     let replacement =
         RecoveryWriter::start_recovered(root.clone(), recovered, 1, Some(source.clone())).unwrap();
@@ -400,6 +401,17 @@ fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
     assert!(
         latest_interrupted(&root).is_none(),
         "source is retired and replacement is active"
+    );
+    assert_eq!(
+        std::fs::read(replacement.directory().join("previous-watchdog.json")).unwrap(),
+        b"[\"original stall\"]"
+    );
+    let report = root.join("export-with-history");
+    export(replacement.directory(), &report).unwrap();
+    assert!(report.join("previous-manifest.json").exists());
+    assert_eq!(
+        std::fs::read(report.join("previous-watchdog.json")).unwrap(),
+        b"[\"original stall\"]"
     );
     let next = replacement.directory().to_owned();
     drop(replacement);
