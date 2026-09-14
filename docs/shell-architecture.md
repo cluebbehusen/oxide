@@ -74,6 +74,24 @@ original presses so aliases and modifier changes preserve held actions. Keyboard
 card actions use the same availability checks as clicks. Configuration migration
 preserves explicit remaps and unbindings without displacing custom chords.
 
+Selecting multiple own production buildings of one kind exposes their shared
+roster. Each activation stages one ordinary `Train` per available factory in
+building-id order, skips full or offline factories, and spends only available
+scrap. Partial batches name the skipped reason. A command-phase projection
+includes earlier staged purchases, refunds, and other spending before accepting
+another activation.
+
+The collective production dock groups paid units by kind, including active
+heads, and shows total count, active count, and the next head's completion time.
+A ready head may still await an open exit. Narrow windows use counted sprite
+tiles with these details in the tooltip. Clicking a collective tile cancels one
+waiting unit first, choosing the back of the lowest-id factory's queue; if only
+active heads remain, it cancels the least-progressed head with building id
+breaking ties. The tooltip identifies that target, and each click resolves
+against pending commands again. Selecting one factory retains the exact ordered
+queue and its per-slot cancellation controls. Mixed building kinds retain rally
+controls and the first compatible producer's training shortcuts.
+
 Coordinates are logical throughout the input/layout pipeline; the hardware
 adapter applies DPI conversion once. Drawing publishes a shared `LayoutModel`
 whose rectangles also drive hit testing. The HUD's supported layout floor is

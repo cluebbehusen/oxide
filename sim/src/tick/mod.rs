@@ -91,6 +91,11 @@ impl CommandPhaseView<'_> {
         self.state.units()
     }
 
+    /// Projected buildings and their paid production queues, in canonical id order.
+    pub fn buildings(&self) -> &[crate::state::Building] {
+        self.state.buildings()
+    }
+
     /// One projected live unit.
     pub fn unit(&self, id: crate::ids::UnitId) -> Option<&crate::state::Unit> {
         self.state.unit(id)
@@ -820,6 +825,14 @@ mod tests {
                 projected.unit(worker).expect("worker remains").order,
                 crate::Order::Build { .. }
             ));
+            let site = projected
+                .buildings()
+                .iter()
+                .find(|b| b.kind == kind && b.anchor == anchor)
+                .expect("projected site is inspectable");
+            assert!(!site.built);
+            assert!(site.queue.is_empty());
+            assert!(state.buildings().iter().all(|b| b.id != site.id));
         });
         assert_eq!(state, before, "inspection never mutates its source");
     }

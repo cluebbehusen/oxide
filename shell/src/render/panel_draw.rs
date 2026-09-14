@@ -199,6 +199,15 @@ fn card_title_lines(title: &str, measure: impl Fn(&str) -> f32, width: f32) -> V
 /// production queue becomes a 2×4 dock in the 640×400 stress case instead
 /// of hiding paid, cancelable work behind a "+4" label.
 fn queue_grid(queue_len: usize, panel_top: f32, scale: f32) -> (Rect, [Rect; 8], usize) {
+    queue_grid_with_width(queue_len, panel_top, scale, 44.0)
+}
+
+fn queue_grid_with_width(
+    queue_len: usize,
+    panel_top: f32,
+    scale: f32,
+    width: f32,
+) -> (Rect, [Rect; 8], usize) {
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut slots = [zero; 8];
     let count = queue_len.min(slots.len());
@@ -212,25 +221,46 @@ fn queue_grid(queue_len: usize, panel_top: f32, scale: f32) -> (Rect, [Rect; 8],
     let max_rows = (((available + gap) / (size + gap)).floor() as usize).max(1);
     let columns = count.div_ceil(max_rows).max(1);
     let rows = count.div_ceil(columns);
-    let width = 16.0 * scale + columns as f32 * size + columns.saturating_sub(1) as f32 * gap;
+    let slot_width = width * scale;
+    let width = 16.0 * scale + columns as f32 * slot_width + columns.saturating_sub(1) as f32 * gap;
     let height = label_h + rows as f32 * size + rows.saturating_sub(1) as f32 * gap + 2.0 * scale;
     let dock = Rect::new(0.0, panel_top - height, width, height);
     for (index, slot) in slots.iter_mut().take(count).enumerate() {
         let row = index / columns;
         let column = index % columns;
         *slot = Rect::new(
-            8.0 * scale + column as f32 * (size + gap),
+            8.0 * scale + column as f32 * (slot_width + gap),
             dock.y + label_h + row as f32 * (size + gap),
-            size,
+            slot_width,
             size,
         );
     }
     (dock, slots, count)
 }
 
+fn collective_queue_grid(
+    count: usize,
+    top: f32,
+    scale: f32,
+    viewport_width: f32,
+) -> (Rect, [Rect; 8], usize) {
+    if viewport_width / scale < 800.0 {
+        return queue_grid_with_width(count, top, scale, 64.0);
+    }
+    let wide = queue_grid_with_width(count, top, scale, 170.0);
+    if wide.0.right() <= viewport_width {
+        wide
+    } else {
+        queue_grid_with_width(count, top, scale, 64.0)
+    }
+}
+
 fn queue_label_width(panel: &crate::panel::Panel, measure: impl Fn(&str) -> f32) -> f32 {
     use crate::panel::{CardAction, CardIcon};
 
+    if !panel.queue_groups.is_empty() {
+        return measure(&panel.queue_label);
+    }
     let ticks = panel
         .queue
         .iter()
@@ -969,7 +999,11 @@ pub(crate) fn draw_panel(
     let mut queue_count = 0;
     let mut dock = Rect::new(0.0, 0.0, 0.0, 0.0);
     if !panel.queue.is_empty() {
-        let (mut grid_dock, grid_slots, n) = queue_grid(panel.queue.len(), top, s);
+        let (mut grid_dock, grid_slots, n) = if panel.queue_groups.is_empty() {
+            queue_grid(panel.queue.len(), top, s)
+        } else {
+            collective_queue_grid(panel.queue.len(), top, s, viewport.x)
+        };
         let queue_label_width = queue_label_width(panel, |text| {
             measure_text(text, None, (13.0 * s) as u16, 1.0).width
         }) + 16.0 * s;
@@ -1024,7 +1058,9 @@ pub(crate) fn draw_panel(
             );
             // The active order or production head wears the bright border;
             // a ready-but-blocked head remains the queue's current job.
-            let active = i == 0;
+            let group = panel.queue_groups.get(i);
+            let active = group.map_or(i == 0, |g| g.active > 0);
+            let wide_group = group.is_some() && rect.w >= 150.0 * s;
             draw_rectangle_lines(
                 rect.x,
                 rect.y,
@@ -1051,9 +1087,65 @@ pub(crate) fn draw_panel(
             {
                 let isz = 34.0 * s;
                 draw_icon(
-                    Rect::new(rect.x + (rect.w - isz) * 0.5, rect.y + 5.0 * s, isz, isz),
+                    Rect::new(
+                        rect.x
+                            + if wide_group {
+                                4.0 * s
+                            } else {
+                                (rect.w - isz) * 0.5
+                            },
+                        rect.y + 5.0 * s,
+                        isz,
+                        isz,
+                    ),
                     &card.icon,
                     WHITE,
+                );
+            }
+            if let Some(group) = group.filter(|_| !wide_group) {
+                let label = format!("x{}", group.count);
+                let width = measure_text(&label, None, (12.0 * s) as u16, 1.0).width + 4.0 * s;
+                draw_rectangle(
+                    rect.right() - width - 2.0 * s,
+                    rect.y + 2.0 * s,
+                    width,
+                    14.0 * s,
+                    Color::from_rgba(20, 20, 24, 235),
+                );
+                draw_text(
+                    label,
+                    rect.right() - width,
+                    rect.y + 13.0 * s,
+                    12.0 * s,
+                    BONE,
+                );
+            }
+            if let Some(group) = group.filter(|_| wide_group) {
+                let name = match card.icon {
+                    CardIcon::Unit(kind) => crate::typography::entity_name(kind.name()),
+                    _ => card.title.clone(),
+                };
+                draw_text(
+                    format!("{name} x {}", group.count),
+                    rect.x + 42.0 * s,
+                    rect.y + 18.0 * s,
+                    13.0 * s,
+                    BONE,
+                );
+                draw_text(
+                    match group.next_ticks {
+                        Some(0) => format!("{} building | ready", group.active),
+                        Some(ticks) => format!(
+                            "{} building | {}",
+                            group.active,
+                            crate::panel::tick_time_label(ticks)
+                        ),
+                        None => "waiting".into(),
+                    },
+                    rect.x + 42.0 * s,
+                    rect.y + 34.0 * s,
+                    11.0 * s,
+                    TEXT_SECONDARY,
                 );
             }
             // A chip with a measurable job wears its meter: the
@@ -1256,6 +1348,26 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collective_queue_keeps_every_kind_visible_in_narrow_windows() {
+        for scale in [1.0, 1.5, 2.0] {
+            for (width, top) in [(640.0, 110.0), (800.0, 190.0), (1280.0, 650.0)] {
+                for count in 1..=8 {
+                    let (dock, slots, shown) =
+                        collective_queue_grid(count, top * scale, scale, width * scale);
+                    assert_eq!(shown, count);
+                    assert!(dock.right() <= width * scale);
+                    assert!(dock.y >= crate::layout::TOP_BAR_H * scale);
+                    for (i, slot) in slots.iter().take(shown).enumerate() {
+                        assert!(slot.x >= dock.x && slot.right() <= dock.right());
+                        assert!(slot.y >= dock.y && slot.bottom() <= top * scale);
+                        assert!(slots[..i].iter().all(|other| !slot.overlaps(other)));
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn production_dock_width_survives_countdowns_and_blocked_completion() {
