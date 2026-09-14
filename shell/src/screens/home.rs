@@ -57,7 +57,7 @@ impl HomeScreen {
             self.menu.items.insert(
                 0,
                 format!(
-                    "Recover interrupted match ({:02}:{:02})",
+                    "Recover match ({:02}:{:02})",
                     seconds / 60,
                     seconds % 60
                 ),

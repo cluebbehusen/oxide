@@ -42,8 +42,8 @@ cargo run -p oxide-driver -- smoke --spawn
 ## Recovery and diagnostics
 
 Ordinary play preserves a recent completed match prefix in the platform data
-folder. After an abnormal exit, Home offers **Recover interrupted match** and
-opens it paused. Ordinary Continue and named saves remain separate.
+folder. After an abnormal exit, Home offers **Recover match** and opens it
+paused. Ordinary Continue and named saves remain separate.
 
 Settings provides **Diagnostics**, **Open diagnostics folder**, and **Export
 diagnostic report**. Detailed capture defaults Off; `--diagnostics` enables it
