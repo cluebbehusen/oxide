@@ -136,30 +136,17 @@ pub fn engage(state: &mut oxide_sim::State) {
     ]);
 }
 
-/// Flags every chair as a configured scripted bot seat. Scenario
-/// benches claim the heaviest honest shape — all seats thinking — but
-/// shipped maps author a human seat (`bot: false`) that would otherwise
-/// sit idle. A bench may still pair this with [`overseer_bots`] when it
-/// needs the frozen QA anchor rather than the player-facing controller.
+/// Flags every chair as a configured Standard, Balanced, seed-zero bot.
 pub fn all_bots(scenario: &mut Scenario) {
-    for player in &mut scenario.players {
-        player.bot = true;
-        player.bot_config = Some(oxide_sim::scenario::BotConfig::default());
-    }
+    all_bots_with_config(scenario, oxide_sim::scenario::BotConfig::default());
 }
 
-/// The Overseer — the scripted QA anchor — in every `bot`-flagged
-/// chair, seeded from the scenario. Benches and probes drive this
-/// command source directly when determinism anchoring or
-/// policy-independent measurement is the point.
-pub fn overseer_bots(scenario: &Scenario) -> Vec<oxide_sim::bot::Brain> {
-    scenario
-        .players
-        .iter()
-        .enumerate()
-        .filter(|(_, player)| player.bot)
-        .map(|(seat, _)| oxide_sim::bot::Brain::overseer(PlayerId(seat as u8), scenario.seed))
-        .collect()
+/// Seats one exact player-facing profile in every chair of a measurement.
+pub fn all_bots_with_config(scenario: &mut Scenario, config: oxide_sim::scenario::BotConfig) {
+    for player in &mut scenario.players {
+        player.bot = true;
+        player.bot_config = Some(config);
+    }
 }
 
 #[cfg(test)]
@@ -188,7 +175,7 @@ mod tests {
             scenario.players.iter().filter(|p| p.bot).count(),
             "every configured bot seat gets a command source"
         );
-        let mut bots = overseer_bots(&scenario);
+        let mut bots = oxide_sim::bot::seat_bots(&scenario).unwrap();
         assert_eq!(bots.len(), scenario.players.len());
         let mut state = scenario.build().expect("skirmish builds");
         let mut issued = 0usize;
@@ -200,7 +187,10 @@ mod tests {
             issued += commands.len();
             state.tick(&commands);
         }
-        assert!(issued > 0, "the Overseer actually plays the benched seats");
+        assert!(
+            issued > 0,
+            "the current controller actually plays the benched seats"
+        );
     }
 
     /// Two identical runs at scale, hash-compared every 50 ticks — the

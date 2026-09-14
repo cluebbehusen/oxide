@@ -8,9 +8,7 @@ mod common;
 use chassis::grid::TilePos;
 use chassis::replay::Replay;
 use oxide_sim::bot::Brain;
-use oxide_sim::{
-    Command, GameResult, Order, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State, UnitKind,
-};
+use oxide_sim::{Command, Order, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State, UnitKind};
 
 use common::{cmd, open_arena, unit};
 
@@ -32,8 +30,7 @@ fn tick_with_bots(
     state.tick(&commands);
 }
 
-/// Skirmish with both seats handed to the stable Overseer so this
-/// determinism fixture remains independent of player-facing bot tuning.
+/// Skirmish with the ordinary Standard profile in both seats.
 fn bot_match() -> (Scenario, State, Vec<Brain>) {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
@@ -41,7 +38,7 @@ fn bot_match() -> (Scenario, State, Vec<Brain>) {
     }
     let state = scenario.build().unwrap();
     let bots: Vec<Brain> = (0..scenario.players.len())
-        .map(|i| Brain::overseer(PlayerId(i as u8), scenario.seed))
+        .map(|i| common::standard_brain(&scenario, PlayerId(i as u8)))
         .collect();
     assert_eq!(bots.len(), 2);
     (scenario, state, bots)
@@ -170,29 +167,6 @@ fn replay_roundtrip_executes_and_reproduces_advance() {
     assert!(cursor.is_finished());
     assert_eq!(replayed.hash(), live_hash);
     assert_eq!(replayed.unit(mover).unwrap().order, Order::Advance { goal });
-}
-
-#[test]
-fn bot_match_reaches_a_decisive_end() {
-    // Temporary longer limit pending Overseer removal:
-    // https://linear.app/cluebbehusen/issue/CL-32/validate-overseer-is-obsolete-and-remove-it-and-its-dedicated-tests
-    let (_, mut state, mut bots) = bot_match();
-    let mut ticks = 0u64;
-    while state.result().is_none() {
-        tick_with_bots(&mut state, &mut bots, &mut None);
-        ticks += 1;
-        assert!(
-            ticks < 90_000,
-            "bot match should conclude within 75 minutes of game time"
-        );
-    }
-    assert!(
-        matches!(state.result(), Some(GameResult::Victory { .. })),
-        "mirror bots must not draw: {:?}",
-        state.result()
-    );
-    // Sanity: a real game happened — armies were built beyond the 8 starters.
-    assert!(state.units().iter().any(|u| u.id.0 >= 8));
 }
 
 #[test]

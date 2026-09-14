@@ -29,6 +29,9 @@ pub enum ReturnTo {
 /// recorder, sounds, and effects are simply never fed.
 pub struct PlaybackSession {
     pub engine: oxide_kit::playback::Playback,
+    pub diagnostics: Option<oxide_kit::diagnostics::Recorder>,
+    pub recording: Option<std::sync::Arc<oxide_kit::recovery::RecoveryWriter>>,
+    diagnostics_warned: bool,
     pub game: Game,
     pub speed: f32,
     pub paused: bool,
@@ -57,6 +60,59 @@ pub struct PlaybackSession {
 }
 
 impl PlaybackSession {
+    pub(crate) fn configure_diagnostics(&mut self, enabled: bool, root: Option<&std::path::Path>) {
+        if !enabled {
+            self.diagnostics_warned = false;
+        }
+        if enabled && self.diagnostics.is_none() && !self.diagnostics_warned {
+            let result = (|| -> Result<oxide_kit::diagnostics::Recorder> {
+                if self.recording.is_none() {
+                    let root = root.context("diagnostics folder unavailable")?;
+                    self.recording = Some(std::sync::Arc::new(
+                        oxide_kit::recovery::RecoveryWriter::start_playback(
+                            root.to_owned(),
+                            self.replay.clone(),
+                            self.engine.total(),
+                        )?,
+                    ));
+                }
+                Ok(oxide_kit::diagnostics::Recorder::start(
+                    self.recording.as_ref().unwrap().clone(),
+                )?)
+            })();
+            match result {
+                Ok(recorder) => {
+                    recorder.install_panic_hook();
+                    self.diagnostics = Some(recorder);
+                }
+                Err(error) => {
+                    self.diagnostics_warned = true;
+                    self.game
+                        .toast(format!("Playback diagnostics unavailable: {error}"));
+                }
+            }
+        }
+        if let Some(recorder) = &self.diagnostics {
+            recorder.set_enabled(enabled);
+        }
+        if !self.diagnostics_warned
+            && let Some(error) = self
+                .recording
+                .as_ref()
+                .and_then(|writer| writer.status().error)
+        {
+            self.diagnostics_warned = true;
+            self.game
+                .toast(format!("Playback diagnostics stopped: {error}"));
+        }
+    }
+
+    pub(crate) fn finish_diagnostics(&self) {
+        if let Some(writer) = &self.recording {
+            crate::game::finish_recording(writer, self.engine.total());
+        }
+    }
+
     pub fn open(path: &str) -> Result<Self> {
         let replay =
             oxide_kit::load_replay(path).with_context(|| format!("loading replay {path}"))?;
@@ -75,6 +131,9 @@ impl PlaybackSession {
         game.spectate = true;
         Ok(Self {
             engine,
+            diagnostics: None,
+            recording: None,
+            diagnostics_warned: false,
             game,
             speed: 1.0,
             paused: false,
@@ -341,10 +400,9 @@ impl PlaybackSession {
         (frac * self.engine.total() as f32).round() as u64
     }
 
-    /// Applies a frame of transport input and advances the reproduction.
-    /// Returns true when the viewer should close. `viewport` is injected
-    /// like everywhere else, so tests never need a window.
-    pub fn update(
+    /// Applies transport input without advancing replay time.
+    /// Returns true when the viewer should close.
+    pub fn apply_input(
         &mut self,
         events: &[RawEvent],
         dt: f32,
@@ -474,6 +532,11 @@ impl PlaybackSession {
             self.seeking = Some(target);
             self.accum = 0.0;
         }
+        false
+    }
+
+    /// Advances replay time and presentation after input has been handled.
+    pub fn advance_frame(&mut self, dt: f32, viewport: Vec2) {
         if let Some(target) = self.seeking {
             // Budgeted: a slice per frame keeps a long first jump from
             // hitching the render thread; sim ticks run thousands per
@@ -516,7 +579,23 @@ impl PlaybackSession {
         self.game.update_wall_clock_fx(dt);
         self.game.camera.set_viewport(viewport);
         self.game.camera.update(dt);
-        false
+    }
+
+    #[cfg(test)]
+    fn update(
+        &mut self,
+        events: &[RawEvent],
+        dt: f32,
+        viewport: Vec2,
+        zoom_inverted: bool,
+        pan_speed: f32,
+        mouse: &mut Vec2,
+    ) -> bool {
+        let leave = self.apply_input(events, dt, viewport, zoom_inverted, pan_speed, mouse);
+        if !leave {
+            self.advance_frame(dt, viewport);
+        }
+        leave
     }
 }
 
@@ -663,6 +742,41 @@ mod tests {
         replay.meta.ticks = Some(60);
         let pb = PlaybackSession::from_replay(replay).expect("a spectator needs no command seat");
         assert!(pb.game.spectate, "the viewer stays fog-free");
+    }
+
+    #[test]
+    fn transport_input_defers_replay_work_until_the_frame_advance() {
+        let mut pb = session();
+        let viewport = vec2(1280.0, 800.0);
+        let mut mouse = Vec2::ZERO;
+        assert!(!pb.apply_input(
+            &[RawEvent::KeyDown { key: Key::End }],
+            1.0,
+            viewport,
+            false,
+            1.0,
+            &mut mouse,
+        ));
+        assert_eq!(pb.engine.position(), 0);
+        assert_eq!(pb.seeking, Some(60));
+        pb.advance_frame(1.0, viewport);
+        assert_eq!(pb.engine.position(), 60);
+        assert_eq!(pb.game.state.current_tick(), 60);
+
+        assert!(!pb.apply_input(
+            &[RawEvent::KeyDown { key: Key::Home }],
+            0.0,
+            viewport,
+            false,
+            1.0,
+            &mut mouse,
+        ));
+        pb.advance_frame(0.0, viewport);
+        assert_eq!(pb.engine.position(), 0);
+        assert!(!pb.apply_input(&[], 0.1, viewport, false, 1.0, &mut mouse));
+        assert_eq!(pb.engine.position(), 0);
+        pb.advance_frame(0.1, viewport);
+        assert_eq!(pb.engine.position(), 2);
     }
 
     #[test]

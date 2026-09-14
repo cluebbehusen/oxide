@@ -52,8 +52,7 @@ fn harvester_gathers_and_deposits() {
 #[test]
 fn bot_economy_progresses_against_an_idle_opponent() {
     // The exact configuration that froze pre-fix: shipped skirmish, human
-    // seat idle, Cupric bot alone (driven by the Overseer, the surviving
-    // scripted commander). Its bank plus spending must exceed its
+    // seat idle, Standard Cupric bot alone. Its bank plus spending must exceed its
     // starting stake — deposits happened — well before 12k ticks.
     let scenario = Scenario::skirmish();
     let mut state = scenario.build().unwrap();
@@ -61,7 +60,7 @@ fn bot_economy_progresses_against_an_idle_opponent() {
         scenario.players[1].bot,
         "skirmish ships with exactly one bot seat"
     );
-    let mut bot = oxide_sim::bot::Brain::overseer(PlayerId(1), scenario.seed);
+    let mut bot = standard_brain(&scenario, PlayerId(1));
 
     let mut deposited = 0u32;
     for _ in 0..12_000u64 {
@@ -864,50 +863,51 @@ fn fabricator_gates_the_advanced_roster() {
 
 #[test]
 fn bot_reaches_its_tech_and_mixes_its_army() {
-    use oxide_sim::bot::Brain;
     use oxide_sim::stats::BuildingKind;
-    // The Overseer vs an idle opponent: within 12k ticks it should have
-    // stood up a Fabricator and fielded at least one advanced unit —
-    // proof the build and composition logic actually runs, not just
-    // compiles. On the closed tree the Scuttler comes from the Foundry
-    // and the Fabricator serves Lancers and Wardens, so any of those
-    // proves the mixed army.
+    // A funded bank makes technology affordable while the bot still has to
+    // construct and use its producer through ordinary commands.
     let mut scenario = Scenario::skirmish();
     scenario.players[1].bot = true;
+    scenario.players[1].scrap = 3500;
     let mut state = scenario.build().unwrap();
-    let mut bot = Brain::overseer(PlayerId(1), scenario.seed);
+    let mut bot = standard_brain(&scenario, PlayerId(1));
+    let mut trained_advanced = false;
+    let mut completed_fabricator = false;
     for _ in 0..12_000u32 {
         if state.result().is_some() {
             break;
         }
         let commands = bot.act(&state);
-        state.tick(&commands);
+        let report = state.tick(&commands);
+        completed_fabricator |= report.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::BuildingCompleted {
+                    player: PlayerId(1),
+                    kind: BuildingKind::Fabricator,
+                    ..
+                }
+            )
+        });
+        trained_advanced |= report.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::UnitTrained {
+                    player: PlayerId(1),
+                    kind: UnitKind::Lancer | UnitKind::Warden,
+                    ..
+                }
+            )
+        });
     }
-    let me = PlayerId(1);
-    let has_fab = state
-        .buildings()
-        .iter()
-        .any(|b| b.player == me && b.kind == BuildingKind::Fabricator && b.built);
-    let advanced = state
-        .units()
-        .iter()
-        .filter(|u| {
-            u.player == me
-                && matches!(
-                    u.kind,
-                    UnitKind::Scuttler | UnitKind::Lancer | UnitKind::Warden
-                )
-        })
-        .count();
-    // The bot may have already razed the idle opponent and won; that is
-    // also a pass as long as tech came up first.
     assert!(
-        has_fab || state.result().is_some(),
-        "no fabricator and no victory after 12k ticks"
+        completed_fabricator,
+        "no completed Fabricator within 12k ticks"
     );
-    if has_fab {
-        assert!(advanced > 0, "fabricator built but nothing trained from it");
-    }
+    assert!(
+        trained_advanced,
+        "Fabricator never completed an advanced unit within 12k ticks"
+    );
 }
 
 #[test]

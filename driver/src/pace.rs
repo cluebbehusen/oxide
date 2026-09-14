@@ -17,9 +17,8 @@
 //! into a single queue — a row that answers to a single command is
 //! worth more here than the packing.
 //!
-//! Measurement only: the sweep uses the stable Overseer QA controller,
-//! not the player-facing opponent, and nothing gates on its medians.
-//! Treat the output as a geometry and decisiveness diagnostic.
+//! Measurements describe the configured current controller interacting with
+//! each map and the simulation. Nothing gates on these medians.
 //! `ScenarioMeta.duration` is player-facing metadata and needs current
 //! opponent measurements plus human play evidence.
 
@@ -91,9 +90,14 @@ pub struct PaceRow {
 /// The pace sweep's verdict over a scenario directory.
 #[derive(Debug, Clone, Serialize)]
 pub struct PaceSlate {
+    /// Exact shared controller profile for this measurement.
+    #[serde(serialize_with = "crate::sweep::serialize_bot_config")]
+    pub bot_config: oxide_sim::scenario::BotConfig,
+    /// Simulation rules used by this measurement.
+    pub sim_version: String,
     /// The scenario directory swept.
     pub dir: String,
-    /// Seeds per map (one Overseer-vs-Overseer match per seed).
+    /// Seeds per map (one configured-bot mirror match per seed).
     pub seeds: u64,
     /// Tick cap per match.
     pub max_ticks: u64,
@@ -110,7 +114,13 @@ pub struct PaceSlate {
 /// Sweeps every 1v1 scenario in `dir` and folds each into a row. Maps
 /// of any other format are skipped, not refused — the shipped directory
 /// mixes formats and the sweep reads 1v1 decisiveness.
-pub fn run_pace_sweep(dir: &str, seeds: u64, max_ticks: u64, seed_base: u64) -> Result<PaceSlate> {
+pub fn run_pace_sweep(
+    dir: &str,
+    seeds: u64,
+    max_ticks: u64,
+    seed_base: u64,
+    config: oxide_sim::scenario::BotConfig,
+) -> Result<PaceSlate> {
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .with_context(|| format!("reading {dir}"))?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -138,10 +148,12 @@ pub fn run_pace_sweep(dir: &str, seeds: u64, max_ticks: u64, seed_base: u64) -> 
     let mut per_map = Vec::with_capacity(maps.len());
     for (path, scenario) in &maps {
         eprintln!("\n{}:", scenario.name);
-        let sweep = run_sweep(path, seeds, max_ticks, seed_base)?;
+        let sweep = run_sweep(path, seeds, max_ticks, seed_base, config)?;
         per_map.push(row(path, scenario, sweep)?);
     }
     Ok(PaceSlate {
+        bot_config: config,
+        sim_version: oxide_sim::SIM_VERSION.to_string(),
         dir: dir.to_string(),
         seeds,
         max_ticks,
@@ -199,10 +211,12 @@ pub fn pace_sweep_report(
     max_ticks: u64,
     seed_base: u64,
     out: Option<&str>,
+    config: oxide_sim::scenario::BotConfig,
 ) -> Result<()> {
-    let slate = run_pace_sweep(dir, seeds, max_ticks, seed_base)?;
+    let slate = run_pace_sweep(dir, seeds, max_ticks, seed_base, config)?;
+    println!("controller: {config:?}; sim {}", oxide_sim::SIM_VERSION);
     println!(
-        "\nPACE SWEEP  ·  {}  ·  {} 1v1 maps  ·  Overseer both seats  ·  {} seeds  ·  cap {}",
+        "\nPACE SWEEP  ·  {}  ·  {} 1v1 maps  ·  current controller both seats  ·  {} seeds  ·  cap {}",
         slate.dir,
         slate.per_map.len(),
         slate.seeds,
@@ -251,7 +265,8 @@ mod tests {
     #[test]
     fn the_slate_rows_every_duel_map_and_admits_full_censoring() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios");
-        let slate = run_pace_sweep(dir, 1, 20, 3_000).unwrap();
+        let slate =
+            run_pace_sweep(dir, 1, 20, 3_000, oxide_sim::scenario::BotConfig::default()).unwrap();
         // This is a broad directory probe rather than a fixed roster
         // count, so adding or retiring maps does not make it brittle.
         assert!(slate.per_map.len() >= 5, "the 1v1 roster is present");
@@ -288,6 +303,8 @@ mod tests {
             outcome,
         };
         let sweep = SweepReport {
+            bot_config: oxide_sim::scenario::BotConfig::default(),
+            sim_version: oxide_sim::SIM_VERSION.to_string(),
             scenario: scenario.name.clone(),
             seeds: 4,
             max_ticks: 999,

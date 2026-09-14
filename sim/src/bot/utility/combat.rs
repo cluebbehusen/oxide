@@ -25,8 +25,8 @@ fn scout_standoff(from: TilePos, objective: TilePos) -> TilePos {
     )
 }
 
-fn coherent_attack_size(dials: &Dials, player_facing: bool) -> usize {
-    (dials.army_size as usize).saturating_add(usize::from(player_facing))
+fn coherent_attack_size(dials: &Dials) -> usize {
+    (dials.army_size as usize).saturating_add(usize::from(true))
 }
 
 fn ground_capable_members(army: &Army, obs: &Observation) -> usize {
@@ -554,10 +554,8 @@ impl UtilityPolicy {
             .iter()
             .filter(|building| {
                 building.kind == BuildingKind::FlakTurret
-                    // Keep the profile-free Overseer's historical threat
-                    // assessment while the maintained opponent distinguishes
-                    // an inactive construction site from a working gun.
-                    && (!context.player_facing || building.built)
+                    // An unfinished site cannot fire.
+                    && (building.built)
             })
             .map(|building| building.anchor)
             .chain(
@@ -579,6 +577,7 @@ impl UtilityPolicy {
     /// range every so often; between refreshes the scout is released
     /// back to the draft pool. A scout looks — it never parks in the
     /// enemy's aggro.
+    #[cfg(test)]
     pub(super) fn scouting(
         &mut self,
         obs: &Observation,
@@ -1046,48 +1045,37 @@ impl UtilityPolicy {
         mode: PolicyMode<'_>,
         intents: &mut Vec<Intent>,
     ) {
-        let player_facing = mode.player_facing;
-        if player_facing && self.ground_inputs.is_some() {
+        if self.ground_inputs.is_some() {
             self.mission_army(dials, obs, armies, home, mode, intents);
             return;
         }
-        let opponent_force_risk = if player_facing {
-            self.voluntary_attack_force_risk(dials, obs)
-        } else {
-            0
-        };
+        let opponent_force_risk = { self.voluntary_attack_force_risk(dials, obs) };
         let enemy_site = Self::enemy_site(obs, home);
         let staging_army = armies
             .iter()
             .filter(|army| {
                 // A player-facing staged body with a target still owns a live
                 // offensive order. New production must gather separately.
-                army.state == ArmyState::Staging && (!player_facing || army.target.is_none())
+                army.state == ArmyState::Staging && (army.target.is_none())
             })
             .min_by_key(|a| a.id);
-        let rally = self.rally_point(obs, staging_army, enemy_site, home, player_facing);
+        let rally = self.rally_point(obs, staging_army, enemy_site, home);
 
         // Defense: an intruder near any own or allied Foundry turns every
-        // army on it. The profile-free Overseer retains its historical
-        // home-and-allies base set. Fresh fighters still muster at the rally
+        // army on it. Fresh fighters still muster at the rally
         // rather than trickling into the threat one spawn at a time.
-        let protected_home = player_facing
-            && obs.my_buildings.iter().any(|building| {
-                building.kind == BuildingKind::Foundry
-                    && building.anchor == home
-                    && building.built
-                    && building.hp > 0
-            });
+        let protected_home = obs.my_buildings.iter().any(|building| {
+            building.kind == BuildingKind::Foundry
+                && building.anchor == home
+                && building.built
+                && building.hp > 0
+        });
         let bases: Vec<(TilePos, bool)> = std::iter::once((home, protected_home))
             .chain(
                 obs.my_buildings
                     .iter()
                     .filter(|b| {
-                        player_facing
-                            && b.kind == BuildingKind::Foundry
-                            && b.built
-                            && b.hp > 0
-                            && b.anchor != home
+                        b.kind == BuildingKind::Foundry && b.built && b.hp > 0 && b.anchor != home
                     })
                     .map(|b| (b.anchor, true)),
             )
@@ -1103,7 +1091,7 @@ impl UtilityPolicy {
             .enemy_units
             .iter()
             .filter(|u| is_fighter(u))
-            .filter(|u| !player_facing || obs.visible(u.tile))
+            .filter(|u| obs.visible(u.tile))
             .filter_map(|u| {
                 let (distance, base_y, base_x) = bases
                     .iter()
@@ -1121,24 +1109,19 @@ impl UtilityPolicy {
             .map(|(_, y, x, _, base_y, base_x)| (TilePos::new(x, y), TilePos::new(base_x, base_y)));
         let mut known_routes = None;
         if let Some((threat, threatened_base)) = intruder {
-            let coherent_size = coherent_attack_size(dials, player_facing);
+            let coherent_size = coherent_attack_size(dials);
             for army in armies {
                 // Maintenance has already committed a withdrawing body to its
                 // retreat this think. Re-pushing it here would emit a second
                 // queue-replacing order for the same members and erase the
-                // retreat before it can begin. The frozen Overseer keeps its
-                // historical retargeting behavior.
-                if player_facing && army.state == ArmyState::Withdrawing {
+                // retreat before it can begin.
+                if army.state == ArmyState::Withdrawing {
                     continue;
                 }
-                if player_facing
-                    && army.state == ArmyState::Staging
-                    && army.staging.chebyshev(threat) <= 2
-                {
+                if army.state == ArmyState::Staging && army.staging.chebyshev(threat) <= 2 {
                     continue;
                 }
-                let local_counterattack = player_facing
-                    && army.state == ArmyState::Staging
+                let local_counterattack = army.state == ArmyState::Staging
                     && crate::bot::executive::locally_overmatches_near(
                         obs,
                         &army.members,
@@ -1150,15 +1133,13 @@ impl UtilityPolicy {
                 // its ground through auto-acquire above; crossing the map to
                 // defend another base requires the same coherent muster as
                 // an offensive march.
-                if player_facing
-                    && army.state == ArmyState::Staging
+                if army.state == ArmyState::Staging
                     && ground_capable_members(army, obs) < coherent_size
                     && !local_counterattack
                 {
                     continue;
                 }
-                if player_facing
-                    && army.state == ArmyState::Staging
+                if army.state == ArmyState::Staging
                     && crate::bot::executive::catastrophically_outmatched_near(
                         obs,
                         &army.members,
@@ -1172,9 +1153,8 @@ impl UtilityPolicy {
                 // fresh attack-moves every think as it shifts a tile keeps
                 // interrupting members mid-swing — auto-acquire handles
                 // the last few tiles better than micromanagement does.
-                if should_march(player_facing, army, threat)
-                    && (!player_facing
-                        || self.army_reaches(obs, &mut known_routes, army, threat, None))
+                if should_march(army, threat)
+                    && (self.army_reaches(obs, &mut known_routes, army, threat, None))
                 {
                     intents.push(Intent::PushArmy {
                         army: army.id,
@@ -1182,11 +1162,7 @@ impl UtilityPolicy {
                     });
                 }
             }
-            let defensive_rally = if player_facing {
-                self.durable_rally_near(obs, threatened_base)
-            } else {
-                rally
-            };
+            let defensive_rally = { self.durable_rally_near(obs, threatened_base) };
             intents.push(Intent::FormArmy {
                 staging: defensive_rally,
                 size: u32::try_from(coherent_size).unwrap_or(u32::MAX),
@@ -1258,7 +1234,7 @@ impl UtilityPolicy {
         let gate_open = army_strength * margin_den >= enemy_strength.max(commit_floor) * margin_num;
 
         let members = staging_army.map(|a| a.members.len()).unwrap_or(0);
-        let coherent_size = coherent_attack_size(dials, player_facing);
+        let coherent_size = coherent_attack_size(dials);
         let target_size = if gate_open && members >= coherent_size {
             dials.army_size.max(members as u32)
         } else {
@@ -1277,13 +1253,10 @@ impl UtilityPolicy {
         // body still musters one reserve machine beyond its configured line;
         // otherwise a faster thinker launches the instant the bare minimum
         // appears while a slower thinker naturally gathers the next spawn.
-        // The profile-free controller retains its historical last-machine
-        // liveness push. When the enemy was never found, home's mirror is the
-        // one guess a symmetric quarry offers; the player-facing route gate
-        // still requires an explored approach.
+        // A desperation march toward home's mirror still requires an
+        // explored approach.
         if let Some(army) = staging_army
-            && (army.members.len() >= coherent_size
-                || (!player_facing && desperate && !army.members.is_empty()))
+            && (army.members.len() >= coherent_size)
             && gate_open
             && let Some(target) = enemy_site.or_else(|| {
                 (desperate && self.desperate_march).then(|| {
@@ -1293,8 +1266,8 @@ impl UtilityPolicy {
                     )
                 })
             })
-            && should_march(player_facing, army, target)
-            && (!player_facing || self.army_reaches(obs, &mut known_routes, army, target, None))
+            && should_march(army, target)
+            && (self.army_reaches(obs, &mut known_routes, army, target, None))
         {
             intents.push(Intent::PushArmy {
                 army: army.id,
@@ -1384,56 +1357,42 @@ impl UtilityPolicy {
         staging_army: Option<&Army>,
         enemy_site: Option<TilePos>,
         home: TilePos,
-        player_facing: bool,
     ) -> TilePos {
         let desired = staging_army.map(|army| army.staging).unwrap_or_else(|| {
             let toward = enemy_site.unwrap_or(TilePos::new(obs.map_width / 2, obs.map_height / 2));
-            if player_facing
-                && let Some(frontline) = enemy_site.and_then(|enemy| {
-                    let mut routes = RouteProjection::known_ground(obs);
-                    obs.my_buildings
-                        .iter()
-                        .filter(|building| {
-                            building.kind == BuildingKind::Foundry
-                                && building.built
-                                && building.hp > 0
-                                && building.anchor != home
-                        })
-                        .map(|building| {
-                            let anchor = building.anchor;
-                            let behind = TilePos::new(
-                                anchor.x + (home.x - anchor.x).signum() * 2,
-                                anchor.y + (home.y - anchor.y).signum() * 2,
-                            );
-                            let rally = self.durable_rally_near(obs, behind);
-                            (anchor.chebyshev(enemy), anchor.y, anchor.x, rally)
-                        })
-                        .filter(|(_, _, _, rally)| routes.reaches(home, *rally))
-                        .min_by_key(|(distance, y, x, _)| (*distance, *y, *x))
-                        .map(|(_, _, _, rally)| rally)
-                })
-            {
+            if let Some(frontline) = enemy_site.and_then(|enemy| {
+                let mut routes = RouteProjection::known_ground(obs);
+                obs.my_buildings
+                    .iter()
+                    .filter(|building| {
+                        building.kind == BuildingKind::Foundry
+                            && building.built
+                            && building.hp > 0
+                            && building.anchor != home
+                    })
+                    .map(|building| {
+                        let anchor = building.anchor;
+                        let behind = TilePos::new(
+                            anchor.x + (home.x - anchor.x).signum() * 2,
+                            anchor.y + (home.y - anchor.y).signum() * 2,
+                        );
+                        let rally = self.durable_rally_near(obs, behind);
+                        (anchor.chebyshev(enemy), anchor.y, anchor.x, rally)
+                    })
+                    .filter(|(_, _, _, rally)| routes.reaches(home, *rally))
+                    .min_by_key(|(distance, y, x, _)| (*distance, *y, *x))
+                    .map(|(_, _, _, rally)| rally)
+            }) {
                 return frontline;
             }
             let lean = |from: i32, to: i32| from + ((to - from) / 3).clamp(-3, 3);
             TilePos::new(lean(home.x, toward.x), lean(home.y, toward.y))
         });
-        if player_facing {
-            self.durable_rally_near(obs, desired)
-        } else if staging_army.is_some() {
-            desired
-        } else {
-            self.passable_near(obs, desired)
-        }
+        self.durable_rally_near(obs, desired)
     }
 }
 
-fn should_march(player_facing: bool, army: &Army, target: TilePos) -> bool {
-    if !player_facing {
-        return army
-            .target
-            .is_none_or(|current| current.chebyshev(target) > 4);
-    }
+fn should_march(army: &Army, target: TilePos) -> bool {
     match army.state {
         ArmyState::Staging => army.target != Some(target),
         ArmyState::Pushing => army
@@ -1444,10 +1403,6 @@ fn should_march(player_facing: bool, army: &Army, target: TilePos) -> bool {
 }
 
 fn objective_building_strength(building: &BuildingObs, mode: PolicyMode<'_>, now: u64) -> u64 {
-    if !mode.player_facing {
-        return crate::bot::executive::building_strength(building);
-    }
-
     let contact = (!building.seen)
         .then(|| {
             mode.building_contacts.and_then(|contacts| {
@@ -1773,20 +1728,9 @@ mod tests {
 
     fn player_mode(building_contacts: Option<&[BuildingContact]>) -> PolicyMode<'_> {
         PolicyMode {
-            player_facing: true,
             admit_voluntary_macro: true,
             unit_contacts: None,
             building_contacts,
-            public_map: None,
-        }
-    }
-
-    fn profile_free_mode() -> PolicyMode<'static> {
-        PolicyMode {
-            player_facing: false,
-            admit_voluntary_macro: true,
-            unit_contacts: None,
-            building_contacts: None,
             public_map: None,
         }
     }
@@ -4063,18 +4007,13 @@ mod tests {
         army.staging = frame;
         let policy = UtilityPolicy::new();
 
-        let player_rally = policy.rally_point(&obs, Some(&army), None, frame, true);
+        let player_rally = policy.rally_point(&obs, Some(&army), None, frame);
         assert!(
             player_rally.x < frame.x
                 || player_rally.x >= frame.x + 2
                 || player_rally.y < frame.y
                 || player_rally.y >= frame.y + 2,
             "a durable army rally must not be consumed by later restoration: {player_rally:?}"
-        );
-        assert_eq!(
-            policy.rally_point(&obs, Some(&army), None, frame, false),
-            frame,
-            "the frozen profile-free controller retains its exact staging behavior"
         );
     }
 
@@ -4088,14 +4027,9 @@ mod tests {
         let policy = UtilityPolicy::new();
 
         assert_eq!(
-            policy.rally_point(&connected, None, Some(enemy), home, true),
+            policy.rally_point(&connected, None, Some(enemy), home),
             TilePos::new(16, 8),
             "a new army should assemble on the homeward side of the forward base"
-        );
-        assert_eq!(
-            policy.rally_point(&connected, None, Some(enemy), home, false),
-            TilePos::new(7, 7),
-            "the frozen profile-free controller keeps its home rally"
         );
 
         let mut island = connected;
@@ -4103,7 +4037,7 @@ mod tests {
             .map(|y| TilePos::new(12, y))
             .collect();
         assert_eq!(
-            policy.rally_point(&island, None, Some(enemy), home, true),
+            policy.rally_point(&island, None, Some(enemy), home),
             TilePos::new(7, 7),
             "a ground army must not be assigned to screen an unreachable island Foundry"
         );
@@ -4282,26 +4216,6 @@ mod tests {
             "a sixth ground-capable member should release the same defense"
         );
 
-        let mut overseer = Vec::new();
-        UtilityPolicy::new().army(
-            &dials,
-            &obs,
-            std::slice::from_ref(&army),
-            home,
-            profile_free_mode(),
-            &mut overseer,
-        );
-        assert!(
-            overseer.iter().all(|intent| !matches!(
-                intent,
-                Intent::PushArmy {
-                    army: ArmyId(7),
-                    ..
-                }
-            )),
-            "the profile-free Overseer keeps its frozen base set: {overseer:?}"
-        );
-
         obs.enemy_units.reverse();
         assert_eq!(
             push_target(&defend(&obs, &coherent)),
@@ -4356,18 +4270,14 @@ mod tests {
         };
         let mut dials = Dials::full();
         dials.army_size = 5;
-        let defend = |observation: &Observation, player_facing: bool| {
+        let defend = |observation: &Observation| {
             let mut intents = Vec::new();
             UtilityPolicy::new().army(
                 &dials,
                 observation,
                 std::slice::from_ref(&army),
                 home,
-                if player_facing {
-                    player_mode(None)
-                } else {
-                    profile_free_mode()
-                },
+                player_mode(None),
                 &mut intents,
             );
             intents
@@ -4384,7 +4294,7 @@ mod tests {
         for (kind, tile, expected) in cases {
             obs.enemy_units = vec![hostile(20, kind, tile)];
             assert_eq!(
-                push_target(&defend(&obs, true)),
+                push_target(&defend(&obs)),
                 expected.then_some(tile),
                 "{kind:?} at {tile:?} produced the wrong Foundry-defense response"
             );
@@ -4424,28 +4334,22 @@ mod tests {
         obs.enemy_units = vec![hostile(20, UnitKind::Avalanche, avalanche)];
         obs.visible[usize::try_from(avalanche.y * obs.map_width + avalanche.x).unwrap()] = false;
         assert_eq!(
-            push_target(&defend(&obs, true)),
+            push_target(&defend(&obs)),
             None,
             "a hidden siege unit cannot trigger defense"
         );
         obs.visible.fill(true);
 
-        assert_eq!(
-            push_target(&defend(&obs, false)),
-            None,
-            "the profile-free Overseer must retain its frozen eight-tile trigger"
-        );
-
         obs.my_buildings[1].built = false;
         assert_eq!(
-            push_target(&defend(&obs, true)),
+            push_target(&defend(&obs)),
             None,
             "an unfinished Foundry is not a protected firing target"
         );
         obs.my_buildings[1].built = true;
         obs.my_buildings[1].hp = 0;
         assert_eq!(
-            push_target(&defend(&obs, true)),
+            push_target(&defend(&obs)),
             None,
             "a destroyed Foundry is not a protected firing target"
         );
@@ -4455,7 +4359,7 @@ mod tests {
         allied_expansion.player = PlayerId(2);
         obs.ally_buildings = vec![allied_expansion];
         assert_eq!(
-            push_target(&defend(&obs, true)),
+            push_target(&defend(&obs)),
             None,
             "allied Foundries retain the ordinary eight-tile defense contract"
         );
@@ -5255,7 +5159,7 @@ mod tests {
                     assert!(intents.iter().any(|intent| matches!(
                         intent,
                         Intent::FormArmy { size, .. }
-                            if *size as usize >= coherent_attack_size(&dials, true)
+                            if *size as usize >= coherent_attack_size(&dials)
                     )));
 
                     let reserve =
@@ -5279,26 +5183,6 @@ mod tests {
                 }
             }
         }
-
-        let (mut obs, mut army) = offensive_position(TilePos::new(31, 18));
-        obs.enemy_buildings = vec![defense(20, BuildingKind::Foundry, TilePos::new(31, 18))];
-        army.members.truncate(1);
-        let mut policy = UtilityPolicy::new();
-        policy.desperate = true;
-        policy.desperate_march = true;
-        let mut intents = Vec::new();
-        policy.army(
-            &Dials::full(),
-            &obs,
-            &[army],
-            home,
-            profile_free_mode(),
-            &mut intents,
-        );
-        assert!(
-            push_target(&intents).is_some(),
-            "the profile-free controller must retain its historical last-machine push"
-        );
     }
 
     #[test]
@@ -5307,7 +5191,7 @@ mod tests {
         let profile = BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 20_045)
             .resolve_profile();
         let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
-        let body_size = coherent_attack_size(&dials, true);
+        let body_size = coherent_attack_size(&dials);
         let (mut open, _) = offensive_position(TilePos::new(31, 18));
         open.tick = 8_000;
         open.enemy_units.clear();
@@ -5508,18 +5392,6 @@ mod tests {
     }
 
     #[test]
-    fn profile_free_strength_keeps_the_legacy_base_tier_rule() {
-        let mut turret = defense(20, BuildingKind::Turret, TilePos::new(12, 6));
-        turret.tier = 2;
-        turret.hp = 700;
-
-        assert_eq!(
-            objective_building_strength(&turret, profile_free_mode(), 20_000),
-            crate::bot::executive::building_strength(&turret)
-        );
-    }
-
-    #[test]
     fn expired_remembered_defenses_cannot_veto_a_player_facing_probe() {
         let (mut seen, mut army) = offensive_position(TilePos::new(14, 7));
         let reserve = fighter(5, TilePos::new(7, 6));
@@ -5540,10 +5412,10 @@ mod tests {
         let mut dials = Dials::full();
         dials.army_size = 4;
 
-        let mut player_facing = UtilityPolicy::new();
-        player_facing.scouted_at = hidden.tick;
+        let mut current_policy = UtilityPolicy::new();
+        current_policy.scouted_at = hidden.tick;
         let mut intents = Vec::new();
-        player_facing.army(
+        current_policy.army(
             &dials,
             &hidden,
             std::slice::from_ref(&army),
@@ -5552,19 +5424,6 @@ mod tests {
             &mut intents,
         );
         assert_eq!(push_target(&intents), Some(TilePos::new(12, 6)));
-
-        let mut profile_free = UtilityPolicy::new();
-        profile_free.scouted_at = hidden.tick;
-        intents.clear();
-        profile_free.army(
-            &dials,
-            &hidden,
-            &[army],
-            TilePos::new(2, 6),
-            profile_free_mode(),
-            &mut intents,
-        );
-        assert_eq!(push_target(&intents), None);
     }
 
     #[test]

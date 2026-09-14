@@ -1,16 +1,15 @@
-//! The decisiveness sweep: N seeds of Overseer-vs-Overseer on one 1v1
+//! The decisiveness sweep: N seeds of configured-bot mirror on one 1v1
 //! scenario. It reads whether games *end*: decided/undecided counts,
 //! seat lean, and decision-tick medians.
 //!
-//! Both seats play [`Brain::overseer`], the stable scripted QA anchor,
-//! so any lean the sweep reports is the map or the engine: the two
-//! command sources are the same commander. This instrument measures
-//! the world rather than the player-facing bot.
+//! Both seats use the same exact current-controller profile. Results measure
+//! that configured bot interacting with the simulation and map; symmetric
+//! seating does not isolate engine or map fairness.
 
 use anyhow::{Context, Result};
-use oxide_sim::bot::Brain;
+use oxide_sim::bot::seat_bots;
 use oxide_sim::scenario::Scenario;
-use oxide_sim::{GameResult, PlayerId, State};
+use oxide_sim::{GameResult, State};
 use serde::Serialize;
 
 /// How one sweep match ended.
@@ -42,6 +41,11 @@ pub struct SweepMatch {
 /// The sweep's aggregate verdict.
 #[derive(Debug, Clone, Serialize)]
 pub struct SweepReport {
+    /// Exact shared controller profile for this measurement.
+    #[serde(serialize_with = "crate::sweep::serialize_bot_config")]
+    pub bot_config: oxide_sim::scenario::BotConfig,
+    /// Simulation rules used by this measurement.
+    pub sim_version: String,
     /// Scenario name.
     pub scenario: String,
     /// Seeds swept (one match per seed).
@@ -70,6 +74,7 @@ pub fn run_sweep(
     seeds: u64,
     max_ticks: u64,
     seed_base: u64,
+    config: oxide_sim::scenario::BotConfig,
 ) -> Result<SweepReport> {
     let base = crate::runner::load_scenario(scenario)?;
     anyhow::ensure!(
@@ -83,13 +88,15 @@ pub fn run_sweep(
     // The pool returns results in job order, so the record is ordered
     // by seed without a second sort.
     let matches = crate::pool::fan_out(&jobs, |&offset| {
-        let m = play(&base, seed_base + offset, max_ticks)?;
+        let m = play(&base, seed_base + offset, max_ticks, config)?;
         eprintln!("  seed {} · {} ticks · {:?}", m.seed, m.ticks, m.outcome);
         Ok(m)
     })?;
 
     let (victories, draws, undecided, seat_wins, median_decision_tick) = tally_outcomes(&matches);
     Ok(SweepReport {
+        bot_config: config,
+        sim_version: oxide_sim::SIM_VERSION.to_string(),
         scenario: base.name,
         seeds,
         max_ticks,
@@ -138,10 +145,12 @@ pub fn sweep_report(
     max_ticks: u64,
     seed_base: u64,
     out: Option<&str>,
+    config: oxide_sim::scenario::BotConfig,
 ) -> Result<()> {
-    let report = run_sweep(scenario, seeds, max_ticks, seed_base)?;
+    let report = run_sweep(scenario, seeds, max_ticks, seed_base, config)?;
+    println!("controller: {config:?}; sim {}", oxide_sim::SIM_VERSION);
     println!(
-        "\nSEED SWEEP  ·  {}  ·  Overseer both seats  ·  {} seeds  ·  cap {}",
+        "\nSEED SWEEP  ·  {}  ·  current controller both seats  ·  {} seeds  ·  cap {}",
         report.scenario, report.seeds, report.max_ticks
     );
     println!(
@@ -166,13 +175,17 @@ pub fn sweep_report(
 }
 
 /// Plays one match: build, think, step, stop at the decision or the cap.
-fn play(base: &Scenario, seed: u64, max_ticks: u64) -> Result<SweepMatch> {
+fn play(
+    base: &Scenario,
+    seed: u64,
+    max_ticks: u64,
+    config: oxide_sim::scenario::BotConfig,
+) -> Result<SweepMatch> {
     let mut sc = base.clone();
     sc.seed = seed;
+    oxide_kit::bench::all_bots_with_config(&mut sc, config);
     let mut state: State = sc.build().context("building scenario")?;
-    let mut bots: Vec<Brain> = (0..2u8)
-        .map(|seat| Brain::overseer(PlayerId(seat), seed))
-        .collect();
+    let mut bots = seat_bots(&sc)?;
     for _ in 0..max_ticks {
         let mut commands = Vec::new();
         for bot in &mut bots {
@@ -204,6 +217,18 @@ fn play(base: &Scenario, seed: u64, max_ticks: u64) -> Result<SweepMatch> {
 /// Nearest-rank quantile over an already-sorted series.
 pub(crate) fn quantile(sorted: &[u64], num: usize, den: usize) -> Option<u64> {
     (!sorted.is_empty()).then(|| sorted[(sorted.len() * num / den).min(sorted.len() - 1)])
+}
+
+pub(crate) fn serialize_bot_config<S: serde::Serializer>(
+    config: &oxide_sim::scenario::BotConfig,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeStruct;
+    let mut record = serializer.serialize_struct("BotConfig", 3)?;
+    record.serialize_field("difficulty", &config.difficulty)?;
+    record.serialize_field("stance", &config.stance)?;
+    record.serialize_field("personality_seed", &config.personality_seed)?;
+    record.end()
 }
 
 #[cfg(test)]
@@ -245,7 +270,14 @@ mod tests {
     /// account for every job in seed order.
     #[test]
     fn sweep_accounts_for_every_job_in_seed_order() {
-        let report = run_sweep("skirmish", 2, 40, 7_000).unwrap();
+        let report = run_sweep(
+            "skirmish",
+            2,
+            40,
+            7_000,
+            oxide_sim::scenario::BotConfig::default(),
+        )
+        .unwrap();
         assert_eq!(report.matches.len(), 2);
         assert_eq!(report.victories + report.draws + report.undecided, 2);
         assert_eq!(report.matches[0].seed, 7_000);

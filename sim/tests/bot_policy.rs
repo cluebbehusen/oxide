@@ -360,8 +360,8 @@ fn identical_inputs_think_identical_intents() {
     let mut first = UtilityPolicy::new();
     let mut second = UtilityPolicy::new();
     assert_eq!(
-        first.think(&dials, &obs, &[], &[]),
-        second.think(&dials, &obs, &[], &[]),
+        first.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs)),
+        second.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs)),
         "a policy is a function of (dials, observation, executive)"
     );
 }
@@ -374,7 +374,8 @@ fn a_think_never_plans_past_the_bank() {
         let me = PlayerId(player);
         let obs = Observation::omniscient(&state, me);
         let mut policy = UtilityPolicy::new();
-        let intents = policy.think(&Dials::full(), &obs, &[], &[]);
+        let intents =
+            policy.think_player_facing(&Dials::full(), &obs, &[], &[], &[], &public_map(&obs));
         let planned: u32 = intents.iter().map(planned_cost).sum();
         assert!(
             planned <= obs.scrap,
@@ -617,7 +618,8 @@ fn a_starved_commander_liquidates_its_walls_for_one_more_wave() {
     let state = scenario.build().unwrap();
     let obs = Observation::fog_honest(&state, PlayerId(0));
     let mut policy = UtilityPolicy::new();
-    let intents = policy.think(&Dials::full(), &obs, &[], &[]);
+    let intents =
+        policy.think_player_facing(&Dials::full(), &obs, &[], &[], &[], &public_map(&obs));
     let turret = state
         .buildings()
         .iter()
@@ -1422,11 +1424,6 @@ fn player_facing_restoration_requires_a_clean_bounded_sweep_after_worker_damage(
         !restores_frame(&warned),
         "a nearby worker hit pauses both restoration and its capital claim: {warned:?}"
     );
-    let overseer = UtilityPolicy::new().think(&dials, &obs, &[], &[]);
-    assert!(
-        restores_frame(&overseer),
-        "the profile-free Overseer retains its frozen restoration policy: {overseer:?}"
-    );
 
     obs.tick = oxide_sim::bot::difficulty::strategic_admission_at_or_after(
         obs.tick + oxide_sim::stats::HARVEST_INCIDENT_MEMORY_TICKS + 1,
@@ -1672,7 +1669,7 @@ fn projected_support_and_unknown_routes_do_not_create_duplicate_foundry_claims()
 }
 
 #[test]
-fn idle_producers_do_not_originate_residual_reclaimers_and_overseer_retains_its_cap() {
+fn idle_producers_do_not_originate_residual_reclaimers() {
     let home = TilePos::new(2, 10);
     let mut obs = construction_observation(1_000);
     add_building(
@@ -1692,13 +1689,13 @@ fn idle_producers_do_not_originate_residual_reclaimers_and_overseer_retains_its_
     dials.turret_response = false;
     dials.upgrades = false;
     dials.radar = false;
-    for offset in 0..dials.reclaimer_cap {
+    for offset in 0..3 {
         add_building(
             &mut obs,
             observed_building(
                 10 + u32::try_from(offset).unwrap(),
                 BuildingKind::Reclaimer,
-                TilePos::new(12 + i32::try_from(offset * 2).unwrap(), 3),
+                TilePos::new(12 + offset * 2, 3),
                 true,
             ),
         );
@@ -1714,18 +1711,6 @@ fn idle_producers_do_not_originate_residual_reclaimers_and_overseer_retains_its_
             }
         )),
         "idle factories alone are not useful demand and the residual facade cannot admit Reclaimers"
-    );
-
-    let overseer = UtilityPolicy::new().think(&dials, &obs, &[], &[]);
-    assert!(
-        !overseer.iter().any(|intent| matches!(
-            intent,
-            Intent::Build {
-                kind: BuildingKind::Reclaimer,
-                ..
-            }
-        )),
-        "the profile-free Overseer's historical cap must remain frozen"
     );
 
     for building in &mut obs.my_buildings {

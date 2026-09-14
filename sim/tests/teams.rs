@@ -301,18 +301,10 @@ fn victory_takes_every_enemy_foundry_and_spectators_stay_muted() {
 
 #[test]
 fn a_2v2_scenario_reproduces_bit_identically() {
-    // The stable Overseer drives every bot chair so the determinism
-    // claim stays independent of player-facing bot tuning.
     let scenario = Scenario::load("../scenarios/twin-forges.json").unwrap();
     let run = || {
         let mut state = scenario.build().unwrap();
-        let mut bots: Vec<oxide_sim::bot::Brain> = scenario
-            .players
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.bot)
-            .map(|(i, _)| oxide_sim::bot::Brain::overseer(PlayerId(i as u8), scenario.seed))
-            .collect();
+        let mut bots = oxide_sim::bot::seat_bots(&scenario).unwrap();
         assert!(!bots.is_empty(), "twin-forges fields bot seats");
         for _ in 0..600 {
             let mut commands = Vec::new();

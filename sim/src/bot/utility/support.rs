@@ -1,63 +1,91 @@
-//! Mobile sustain for player-facing support identities.
-
-use std::cmp::Reverse;
+//! Focused fixtures for maintained repair proposals and assignments.
 
 use super::*;
 
 impl UtilityPolicy {
-    /// Sends idle Tenders to the most damaged ground combatants. Existing
-    /// repair orders are left alone because their welders are not idle.
-    pub(super) fn mobile_support(
-        &self,
-        dials: &Dials,
+    fn test_admit_repairs(
+        &mut self,
         obs: &Observation,
-        player_facing: bool,
-        available_scrap: u32,
+        mode: PolicyMode<'_>,
+        available: u32,
+        buildings: bool,
         intents: &mut Vec<Intent>,
     ) {
-        if !dials.adaptive_composition
-            || !dials.repair
-            || available_scrap < UnitKind::Sentinel.stats().cost
-        {
-            return;
+        let map = super::tests::public_map(obs);
+        let profile = crate::scenario::BotConfig::default().resolve_profile();
+        let resources = ResourceSnapshot::from_observation(obs);
+        let mut unavailable = self.worker_safety_reservations().to_vec();
+        for intent in intents.iter() {
+            Self::claim_non_preemptible_intent_units(intent, &mut unavailable);
         }
+        let context = EconomicInvestmentContext {
+            obs,
+            resources: &resources,
+            profile: &profile,
+            briefing: mode.public_map.unwrap_or(&map),
+            orientation: super::super::orient::Orientation::for_home(
+                obs,
+                obs.my_buildings
+                    .first()
+                    .map_or(TilePos::new(0, 0), |b| b.anchor),
+            ),
+            unavailable: &unavailable,
+            demands: &[],
+            unit_contacts: mode.unit_contacts.unwrap_or(&[]),
+            building_contacts: mode.building_contacts.unwrap_or(&[]),
+            cadence: 24,
+            protected_scrap: 0,
+            air_work: &[],
+        };
+        let snapshot = self.support_work_snapshot(context);
+        self.observe_support_work(&snapshot, obs.tick);
+        let renewed = self.renew_prepared_repairs(context, &snapshot, available, true);
+        let mut remaining = available.saturating_sub(renewed.iter().map(|p| p.debit).sum());
+        for candidate in self.prepared_repair_assignments(context, &snapshot) {
+            if matches!(candidate.key.patient, crate::Target::Building(_)) == buildings
+                && candidate.debit <= remaining
+            {
+                let debit = candidate.debit;
+                if self.commit_repair_assignment(candidate, obs, intents) {
+                    remaining -= debit;
+                }
+            }
+        }
+    }
 
-        let mut patients: Vec<&UnitObs> = obs
-            .my_units
-            .iter()
-            .filter(|unit| is_mobile_support_patient(unit))
-            .collect();
-        patients.sort_by_key(|unit| {
-            let stats = unit.kind.stats();
-            (
-                unit.hp.saturating_mul(1_000) / stats.max_hp.max(1),
-                Reverse(stats.cost),
-                unit.id,
-            )
-        });
+    pub(super) fn test_admit_building_repairs(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        mode: PolicyMode<'_>,
+        budget: &mut u32,
+        intents: &mut Vec<Intent>,
+    ) {
+        if dials.repair {
+            self.test_admit_repairs(obs, mode, *budget, true, intents);
+        }
+    }
 
-        let mut tenders: Vec<&UnitObs> = obs
-            .my_units
-            .iter()
-            .filter(|unit| unit.kind == UnitKind::Tender && unit.idle)
-            .collect();
-        tenders.sort_by_key(|unit| unit.id);
-        let mut routes = crate::bot::routing::RouteProjection::known_ground(obs);
-
-        for patient in patients.into_iter().take(dials.support_target) {
-            let Some((index, _)) = tenders
-                .iter()
-                .enumerate()
-                .filter(|(_, tender)| !player_facing || routes.unit_reaches(tender, patient.tile))
-                .min_by_key(|(_, tender)| (tender.tile.manhattan(patient.tile), tender.id))
-            else {
-                break;
-            };
-            let tender = tenders.remove(index);
-            intents.push(Intent::RepairUnits {
-                welders: vec![tender.id],
-                target: patient.id,
-            });
+    pub(super) fn test_admit_mobile_repairs(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        available: u32,
+        intents: &mut Vec<Intent>,
+    ) {
+        if dials.repair {
+            self.test_admit_repairs(
+                obs,
+                PolicyMode {
+                    admit_voluntary_macro: true,
+                    unit_contacts: None,
+                    building_contacts: None,
+                    public_map: None,
+                },
+                available,
+                false,
+                intents,
+            );
         }
     }
 }
@@ -106,13 +134,50 @@ mod tests {
     }
 
     #[test]
+    fn building_repairs_require_funding_and_do_not_reverse_active_salvage() {
+        let state = crate::Scenario::skirmish().build().unwrap();
+        let mut obs = Observation::omniscient(&state, PlayerId(0));
+        let foundry = obs
+            .my_buildings
+            .iter_mut()
+            .find(|building| building.kind == BuildingKind::Foundry)
+            .unwrap();
+        foundry.hp /= 2;
+        let target = foundry.id;
+        let admit = |obs: &Observation, budget| {
+            let mut intents = Vec::new();
+            UtilityPolicy::new().test_admit_building_repairs(
+                &Dials::full(),
+                obs,
+                PolicyMode {
+                    admit_voluntary_macro: true,
+                    unit_contacts: None,
+                    building_contacts: None,
+                    public_map: None,
+                },
+                &mut { budget },
+                &mut intents,
+            );
+            intents
+        };
+        assert!(admit(&obs, 0).is_empty());
+        assert!(matches!(admit(&obs, 1_000).as_slice(),
+            [Intent::RepairWith { building, .. }] if *building == target));
+        obs.my_units[0].salvaging = Some(target);
+        assert!(admit(&obs, 1_000).is_empty());
+        obs.my_units[0].salvaging = None;
+        assert!(matches!(admit(&obs, 1_000).as_slice(),
+            [Intent::RepairWith { building, .. }] if *building == target));
+    }
+
+    #[test]
     fn idle_tenders_pair_with_wounded_combatants_by_need_then_distance() {
         let mut dials = Dials::balanced();
         dials.adaptive_composition = true;
         dials.support_target = 2;
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(&dials, &observation(), true, 200, &mut intents);
+        UtilityPolicy::new().test_admit_mobile_repairs(&dials, &observation(), 200, &mut intents);
 
         assert_eq!(
             intents,
@@ -136,13 +201,7 @@ mod tests {
         let obs = observation();
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(
-            &dials,
-            &obs,
-            true,
-            UnitKind::Sentinel.stats().cost - 1,
-            &mut intents,
-        );
+        UtilityPolicy::new().test_admit_mobile_repairs(&dials, &obs, 0, &mut intents);
 
         assert!(intents.is_empty());
     }
@@ -159,13 +218,13 @@ mod tests {
         obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(8, y)).collect();
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(&dials, &obs, true, obs.scrap, &mut intents);
+        UtilityPolicy::new().test_admit_mobile_repairs(&dials, &obs, obs.scrap, &mut intents);
 
         assert!(intents.is_empty());
     }
 
     #[test]
-    fn player_facing_support_does_not_imagine_a_road_across_unexplored_ground() {
+    fn support_uses_authored_terrain_through_unexplored_ground() {
         let mut dials = Dials::balanced();
         dials.adaptive_composition = true;
         let mut obs = observation();
@@ -180,9 +239,15 @@ mod tests {
         }
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(&dials, &obs, true, obs.scrap, &mut intents);
+        UtilityPolicy::new().test_admit_mobile_repairs(&dials, &obs, obs.scrap, &mut intents);
 
-        assert!(intents.is_empty());
+        assert_eq!(
+            intents,
+            vec![Intent::RepairUnits {
+                welders: vec![UnitId(2)],
+                target: UnitId(10)
+            }]
+        );
     }
 
     #[test]
@@ -200,7 +265,7 @@ mod tests {
         }
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(&dials, &obs, true, obs.scrap, &mut intents);
+        UtilityPolicy::new().test_admit_mobile_repairs(&dials, &obs, obs.scrap, &mut intents);
 
         assert_eq!(
             intents,
@@ -226,30 +291,7 @@ mod tests {
             .collect();
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().mobile_support(&dials, &obs, true, obs.scrap, &mut intents);
-
-        assert_eq!(
-            intents,
-            vec![Intent::RepairUnits {
-                welders: vec![UnitId(2)],
-                target: UnitId(10),
-            }]
-        );
-    }
-
-    #[test]
-    fn profile_free_support_keeps_its_historical_route_agnostic_assignment() {
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = true;
-        let mut obs = observation();
-        obs.my_units = vec![
-            unit(2, UnitKind::Tender, TilePos::new(2, 5), 150),
-            unit(10, UnitKind::Sentinel, TilePos::new(14, 5), 20),
-        ];
-        obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(8, y)).collect();
-        let mut intents = Vec::new();
-
-        UtilityPolicy::new().mobile_support(&dials, &obs, false, obs.scrap, &mut intents);
+        UtilityPolicy::new().test_admit_mobile_repairs(&dials, &obs, obs.scrap, &mut intents);
 
         assert_eq!(
             intents,

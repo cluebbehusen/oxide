@@ -623,7 +623,25 @@ fn mouse_button(button: mq::MouseButton) -> Option<MouseButton> {
     }
 }
 
+static WINDOW_ACTIVITY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Last native minimize/restore event consumed by the input adapter.
+/// None means no such event has been observed yet.
+pub(crate) fn reported_minimized() -> Option<bool> {
+    match WINDOW_ACTIVITY.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    }
+}
+
 impl macroquad::miniquad::EventHandler for PointerStream {
+    fn window_minimized_event(&mut self) {
+        WINDOW_ACTIVITY.store(2, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn window_restored_event(&mut self) {
+        WINDOW_ACTIVITY.store(1, std::sync::atomic::Ordering::Relaxed);
+    }
     // The collector never runs a frame; it only replays input.
     fn update(&mut self) {}
     fn draw(&mut self) {}

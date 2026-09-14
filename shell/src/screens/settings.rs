@@ -29,6 +29,10 @@ pub enum Face {
 pub enum Out {
     /// Still tuning.
     Stay,
+    /// Reveal local diagnostic records in the file manager.
+    OpenDiagnostics,
+    /// Export a consistent local report in the background.
+    ExportDiagnostics,
     /// Back to wherever the screen was opened from — the coordinator
     /// holds the displaced screen and restores it wholesale.
     Leave,
@@ -165,8 +169,13 @@ fn settings_menu(config: &Config) -> Menu {
                 "Performance display: {}",
                 config.performance_display.label()
             ),
+            format!("Show strategic markers: {}", config.markers.timing_label()),
+            format!("Strategic marker size: {}", pct(config.markers.scale)),
             "Apply left-handed bindings".to_string(),
             "Controls...".to_string(),
+            format!("Diagnostics: {}", onoff(config.diagnostics)),
+            "Open diagnostics folder".to_string(),
+            "Export diagnostic report".to_string(),
             "Back".to_string(),
         ],
     )
@@ -177,8 +186,13 @@ fn settings_menu(config: &Config) -> Menu {
 /// left the cursor on Colorblind accents after two rows were inserted
 /// above (a test pins the label to this index).
 const PERFORMANCE_ROW: usize = 9;
-const PRESET_ROW: usize = 10;
-const CONTROLS_ROW: usize = 11;
+const MARKER_TIMING_ROW: usize = 10;
+const MARKER_SIZE_ROW: usize = 11;
+const PRESET_ROW: usize = 12;
+const CONTROLS_ROW: usize = 13;
+const DIAGNOSTICS_ROW: usize = 14;
+const OPEN_DIAGNOSTICS_ROW: usize = 15;
+const EXPORT_DIAGNOSTICS_ROW: usize = 16;
 
 /// Advances one settings row to its next value step. Returns false on
 /// rows that navigate instead of cycling.
@@ -214,6 +228,20 @@ fn cycle_setting(config: &mut Config, row: usize) -> bool {
             render::set_colorblind(config.colorblind);
         }
         PERFORMANCE_ROW => config.performance_display = config.performance_display.next(),
+        DIAGNOSTICS_ROW => config.diagnostics = !config.diagnostics,
+        MARKER_TIMING_ROW => {
+            config.markers.cycle_timing();
+            crate::strategic_markers::set_prefs(config.markers);
+        }
+        MARKER_SIZE_ROW => {
+            config.markers.scale = match (config.markers.scale * 100.0).round() as u32 {
+                75 => 1.0,
+                100 => 1.25,
+                125 => 1.5,
+                _ => 0.75,
+            };
+            crate::strategic_markers::set_prefs(config.markers);
+        }
         _ => return false, // preset, Controls..., and Back route in update
     }
     true
@@ -375,6 +403,10 @@ impl SettingsScreen {
                         let selected = self.menu.selected;
                         self.menu = settings_menu(config);
                         self.menu.select(selected);
+                    } else if row == OPEN_DIAGNOSTICS_ROW {
+                        update.out = Out::OpenDiagnostics;
+                    } else if row == EXPORT_DIAGNOSTICS_ROW {
+                        update.out = Out::ExportDiagnostics;
                     } else if row == CONTROLS_ROW {
                         self.goto_controls(config, 0);
                     } else {
@@ -532,6 +564,51 @@ impl SettingsScreen {
 mod tests {
     use super::*;
     use macroquad::prelude::vec2;
+
+    #[test]
+    fn marker_settings_apply_live_and_remain_touch_reachable_in_small_windows() {
+        crate::render::set_viewport(640.0, 400.0);
+        crate::render::set_user_scale(1.5);
+        let mut config = Config::default();
+        let mut live = config.bindings.clone();
+        let mut screen = SettingsScreen::open(&config);
+        screen.menu.select(MARKER_TIMING_ROW);
+        for (label, midpoint) in [("Earlier", 26.0), ("Later", 14.0), ("Standard", 20.0)] {
+            let update = drive(
+                &mut screen,
+                &mut config,
+                &mut live,
+                &press(Key::Enter),
+                false,
+            );
+            assert!(update.dirty);
+            assert!(screen.menu.items[MARKER_TIMING_ROW].ends_with(label));
+            assert_eq!(crate::strategic_markers::marker_alpha(midpoint), 0.5);
+        }
+        screen.menu.select(MARKER_SIZE_ROW);
+        for size in [1.25, 1.5, 0.75, 1.0] {
+            let rect = screen
+                .menu
+                .item_rect(MARKER_SIZE_ROW)
+                .expect("selected size row visible");
+            let (x, y) = (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+            let update = drive(
+                &mut screen,
+                &mut config,
+                &mut live,
+                &[
+                    RawEvent::TouchDown { id: 1, x, y },
+                    RawEvent::TouchUp { id: 1, x, y },
+                ],
+                false,
+            );
+            assert!(update.dirty);
+            assert_eq!(config.markers.scale, size);
+            assert_eq!(crate::strategic_markers::prefs(), config.markers);
+        }
+        crate::render::set_viewport(1280.0, 800.0);
+        crate::render::set_user_scale(1.0);
+    }
 
     fn drive(
         s: &mut SettingsScreen,
@@ -993,5 +1070,33 @@ mod tests {
         assert!(drive(&mut screen, &mut config, &mut live, &press(Key::I), false).dirty);
         assert_eq!(live.chord_at(Action::PanUp, 0), Some(Chord::bare(Key::W)));
         assert_eq!(live.chord_at(Action::PanUp, 1), Some(Chord::bare(Key::I)));
+    }
+
+    #[test]
+    fn diagnostics_is_opt_in_and_keeps_existing_settings_rows_stable() {
+        let mut config = Config::default();
+        assert!(!config.diagnostics);
+        assert_eq!(
+            settings_menu(&config).items[DIAGNOSTICS_ROW],
+            "Diagnostics: off"
+        );
+        assert!(cycle_setting(&mut config, DIAGNOSTICS_ROW));
+        assert!(config.diagnostics);
+        assert_eq!(
+            settings_menu(&config).items[DIAGNOSTICS_ROW],
+            "Diagnostics: on"
+        );
+        assert_eq!(
+            settings_menu(&config).items[OPEN_DIAGNOSTICS_ROW],
+            "Open diagnostics folder"
+        );
+        assert_eq!(
+            settings_menu(&config).items[EXPORT_DIAGNOSTICS_ROW],
+            "Export diagnostic report"
+        );
+        assert_eq!(settings_menu(&config).items[CONTROLS_ROW], "Controls...");
+        let mut old = serde_json::to_value(&config).unwrap();
+        old.as_object_mut().unwrap().remove("diagnostics");
+        assert!(!serde_json::from_value::<Config>(old).unwrap().diagnostics);
     }
 }

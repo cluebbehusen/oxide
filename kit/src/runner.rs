@@ -24,8 +24,7 @@ pub struct RunOutcome {
 pub struct TracedStep {
     /// The simulation report produced by the tick.
     pub report: oxide_sim::TickReport,
-    /// Fresh player-facing traces in bot-seat order. Empty chairs and the
-    /// frozen Overseer do not contribute rows.
+    /// Fresh player-facing traces in bot-seat order; empty chairs contribute no rows.
     pub traces: Vec<DecisionTrace>,
 }
 

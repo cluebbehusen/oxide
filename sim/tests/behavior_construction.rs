@@ -477,18 +477,16 @@ fn scouted_sites_are_remembered_as_sites() {
 
 #[test]
 fn bot_sends_a_relief_builder_to_an_orphaned_site() {
-    use oxide_sim::bot::Brain;
     use oxide_sim::stats::BuildingKind;
     // Manufacture the orphan directly: a scripted Build, then Stop the
     // builder on the spot. Hand the seat to a bot — its relief loop must
     // finish the paid-for site (a pending site once suppressed fabricator
     // logic forever instead).
-    let mut state = arena(vec![
+    let scenario = arena(vec![
         unit(1, UnitKind::Harvester, 12, 2),
         unit(1, UnitKind::Harvester, 13, 3),
-    ])
-    .build()
-    .unwrap();
+    ]);
+    let mut state = scenario.build().unwrap();
     let builder = state.units()[0].id;
     let anchor = TilePos::new(12, 1);
     state.tick(&[cmd(
@@ -515,7 +513,7 @@ fn bot_sends_a_relief_builder_to_an_orphaned_site() {
         .id;
     assert!(!state.building(site).unwrap().built);
 
-    let mut bot = Brain::overseer(PlayerId(1), 42);
+    let mut bot = standard_brain(&scenario, PlayerId(1));
     for _ in 0..3000u32 {
         let commands = bot.act(&state);
         state.tick(&commands);

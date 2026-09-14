@@ -248,31 +248,133 @@ mod tests {
     use crate::runner;
     use oxide_sim::Scenario;
 
-    /// Plays `scenario` with the Overseer driving every bot seat and
-    /// records the run — a scripted, deterministic activity fixture.
-    /// `opening` commands are injected (and recorded) on the first
-    /// tick, ahead of the bots' own.
-    fn record_overseer_match(
-        scenario: &Scenario,
-        ticks: u64,
-        opening: Vec<oxide_sim::PlayerCommand>,
-    ) -> GameReplay {
-        let mut state = scenario.build().expect("scenario builds");
-        let mut bots = crate::bench::overseer_bots(scenario);
-        let mut replay: GameReplay =
-            chassis::replay::Replay::new(oxide_sim::SIM_VERSION, scenario.clone());
-        let mut opening = Some(opening);
-        for _ in 0..ticks {
-            let mut commands = opening.take().unwrap_or_default();
-            for bot in &mut bots {
-                commands.extend(bot.act(&state));
+    fn record_activity(ticks: u64) -> GameReplay {
+        use chassis::grid::TilePos;
+        use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+        use oxide_sim::{BuildingKind, Command, Event, Faction, PlayerCommand, Target, UnitKind};
+        let mut map = vec![vec!['.'; 30]; 20];
+        map[1][1] = '1';
+        map[17][27] = '2';
+        map[3][5] = 's';
+        let scenario = Scenario {
+            name: "statistics activity".into(),
+            seed: 42,
+            map: map
+                .into_iter()
+                .map(|row| row.into_iter().collect())
+                .collect(),
+            players: [Faction::Ferrous, Faction::Cupric]
+                .into_iter()
+                .map(|faction| PlayerSpec {
+                    name: format!("{faction:?}"),
+                    faction,
+                    team: None,
+                    scrap: 2000,
+                    bot: false,
+                    bot_config: None,
+                })
+                .collect(),
+            units: vec![
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Harvester,
+                    x: 4,
+                    y: 3,
+                },
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Harvester,
+                    x: 4,
+                    y: 7,
+                },
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Sentinel,
+                    x: 12,
+                    y: 12,
+                },
+                UnitSpec {
+                    player: 1,
+                    kind: UnitKind::Harvester,
+                    x: 14,
+                    y: 12,
+                },
+            ],
+            buildings: Vec::<BuildingSpec>::new(),
+            meta: None,
+        };
+        let mut state = scenario.build().unwrap();
+        let units: Vec<_> = state.units().iter().map(|unit| unit.id).collect();
+        let foundry = state
+            .buildings()
+            .iter()
+            .find(|b| b.player == PlayerId(0))
+            .unwrap()
+            .id;
+        let opening: Vec<_> = [
+            Command::Harvest {
+                units: vec![units[0]],
+                node: TilePos::new(5, 3),
+                queue: false,
+            },
+            Command::Build {
+                units: vec![units[1]],
+                kind: BuildingKind::Turret,
+                anchor: TilePos::new(5, 7),
+                queue: false,
+                defer: false,
+            },
+            Command::Train {
+                building: foundry,
+                kind: UnitKind::Harvester,
+            },
+            Command::Attack {
+                units: vec![units[2]],
+                target: Target::Unit(units[3]).into(),
+                queue: false,
+            },
+        ]
+        .into_iter()
+        .map(|command| PlayerCommand {
+            player: PlayerId(0),
+            command,
+        })
+        .collect();
+        let mut replay = GameReplay::new(oxide_sim::SIM_VERSION, scenario);
+        let mut events = Vec::new();
+        for tick in 0..ticks {
+            let commands = if tick == 0 { opening.as_slice() } else { &[] };
+            for command in commands {
+                replay.record(tick, command.clone());
             }
-            for command in &commands {
-                replay.record(state.current_tick(), command.clone());
-            }
-            state.tick(&commands);
+            let report = state.tick(commands);
+            assert!(
+                report
+                    .events
+                    .iter()
+                    .all(|event| !matches!(event, Event::CommandRejected { .. }))
+            );
+            events.extend(report.events);
         }
-        replay.meta.ticks = Some(state.current_tick());
+        if ticks >= 600 {
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, Event::ScrapDeposited { amount, .. } if *amount > 0))
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, Event::UnitTrained { .. }))
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, Event::BuildingCompleted { .. }))
+            );
+            assert!(events.iter().any(|e| matches!(e, Event::UnitDied { .. })));
+        }
+        replay.meta.ticks = Some(ticks);
         replay
     }
 
@@ -317,13 +419,7 @@ mod tests {
 
     #[test]
     fn stats_recompute_identically_from_the_record() {
-        let mut scenario = Scenario::skirmish();
-        for p in scenario.players.iter_mut() {
-            p.bot = true;
-            p.bot_config
-                .get_or_insert(oxide_sim::scenario::BotConfig::default());
-        }
-        let replay = record_overseer_match(&scenario, 600, Vec::new());
+        let replay = record_activity(600);
         let a = compute(&replay, 100).unwrap();
         let b = compute(&replay, 100).unwrap();
         assert_eq!(a.final_tick, 600);
@@ -336,7 +432,7 @@ mod tests {
             assert_eq!(pa.units_trained, pb.units_trained);
             assert_eq!(pa.buildings_completed, pb.buildings_completed);
         }
-        // A bot match spends and fields: the series must move.
+        // The fixture must have exercised nonzero activity.
         assert!(
             a.players
                 .iter()
@@ -355,11 +451,7 @@ mod tests {
 
     #[test]
     fn live_tracking_matches_tick_by_tick_replay_statistics() {
-        let mut scenario = Scenario::skirmish();
-        for player in &mut scenario.players {
-            player.bot = true;
-        }
-        let replay = record_overseer_match(&scenario, 40, Vec::new());
+        let replay = record_activity(40);
         assert_eq!(track_replay(&replay), compute(&replay, 1).unwrap());
     }
 
@@ -380,33 +472,8 @@ mod tests {
     }
 
     #[test]
-    fn thinned_live_bot_totals_match_recomputed_event_totals() {
-        let mut scenario = Scenario::skirmish();
-        for player in &mut scenario.players {
-            player.bot = true;
-        }
-        // The Overseer harvests and trains but never constructs on this
-        // map, so one scripted Turret keeps the fixture's construction
-        // totals real.
-        let built = scenario
-            .build()
-            .expect("scenario builds")
-            .units()
-            .iter()
-            .find(|u| u.player == PlayerId(0) && u.kind == oxide_sim::UnitKind::Harvester)
-            .map(|u| u.id)
-            .expect("skirmish starts seat 0 with a harvester");
-        let opening = vec![oxide_sim::PlayerCommand {
-            player: PlayerId(0),
-            command: oxide_sim::Command::Build {
-                units: vec![built],
-                kind: oxide_sim::BuildingKind::Turret,
-                anchor: chassis::grid::TilePos::new(10, 4),
-                queue: false,
-                defer: false,
-            },
-        }];
-        let replay = record_overseer_match(&scenario, 2_000, opening);
+    fn thinned_live_totals_match_recomputed_event_totals() {
+        let replay = record_activity(2_000);
         let live = track_replay(&replay);
         let recomputed = compute(&replay, 200).unwrap();
 

@@ -130,9 +130,68 @@ impl TouchPrefs {
     }
 }
 
+/// Strategic marker transition and size in logical screen pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MarkerPrefs {
+    pub start: f32,
+    pub end: f32,
+    pub scale: f32,
+}
+
+impl Default for MarkerPrefs {
+    fn default() -> Self {
+        Self {
+            start: 24.0,
+            end: 16.0,
+            scale: 1.0,
+        }
+    }
+}
+
+impl MarkerPrefs {
+    pub fn clamped(self) -> Self {
+        let finite = |value: f32, default: f32, min: f32, max: f32| {
+            if value.is_finite() {
+                value.clamp(min, max)
+            } else {
+                default
+            }
+        };
+        let end = finite(self.end, 16.0, 8.0, 30.0);
+        Self {
+            start: finite(self.start, 24.0, end + 1.0, 40.0).max(end + 1.0),
+            end,
+            scale: finite(self.scale, 1.0, 0.75, 1.5),
+        }
+    }
+
+    pub fn timing_label(self) -> &'static str {
+        match (self.start, self.end) {
+            (24.0, 16.0) => "Standard",
+            (30.0, 22.0) => "Earlier",
+            (18.0, 10.0) => "Later",
+            _ => "Custom",
+        }
+    }
+
+    pub fn cycle_timing(&mut self) {
+        (self.start, self.end) = match (self.start, self.end) {
+            (24.0, 16.0) => (30.0, 22.0),
+            (30.0, 22.0) => (18.0, 10.0),
+            _ => (24.0, 16.0),
+        };
+    }
+}
+
 /// The whole persisted surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
+    /// Optional local detailed diagnostics; recovery recording is independent.
+    #[serde(default)]
+    pub diagnostics: bool,
+    #[serde(default)]
+    pub markers: MarkerPrefs,
     /// Optional performance HUD; older configs leave it disabled.
     #[serde(default)]
     pub performance_display: PerformanceDisplay,
@@ -173,6 +232,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            diagnostics: false,
+            markers: MarkerPrefs::default(),
             performance_display: PerformanceDisplay::Off,
             version: CONFIG_VERSION,
             bindings: BindingMap::classic(),
@@ -221,6 +282,7 @@ impl Config {
                 }
                 config.window = Self::sane_window(config.window);
                 config.touch = config.touch.clamped();
+                config.markers = config.markers.clamped();
                 config
             }
             _ => Self::default(),
@@ -244,6 +306,56 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marker_preferences_migrate_round_trip_and_clamp_without_resetting_other_settings() {
+        let dir = std::env::temp_dir().join(format!("oxide-config-markers-{}", std::process::id()));
+        let path = dir.join("config.json");
+        let mut config = Config {
+            ui_scale: 1.25,
+            ..Config::default()
+        };
+        config.save_to(&path).unwrap();
+        let mut legacy = serde_json::to_value(&config).unwrap();
+        legacy.as_object_mut().unwrap().remove("markers");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(Config::load_from(Some(path.clone())), config);
+
+        config.markers = MarkerPrefs {
+            start: 30.0,
+            end: 22.0,
+            scale: 1.5,
+        };
+        config.save_to(&path).unwrap();
+        assert_eq!(Config::load_from(Some(path.clone())), config);
+
+        config.markers = MarkerPrefs {
+            start: -100.0,
+            end: 300.0,
+            scale: -1.0,
+        };
+        config.save_to(&path).unwrap();
+        let loaded = Config::load_from(Some(path));
+        assert_eq!(
+            loaded.markers,
+            MarkerPrefs {
+                start: 31.0,
+                end: 30.0,
+                scale: 0.75
+            }
+        );
+        assert_eq!(loaded.ui_scale, 1.25);
+        assert_eq!(
+            MarkerPrefs {
+                start: f32::NAN,
+                end: f32::INFINITY,
+                scale: f32::NEG_INFINITY
+            }
+            .clamped(),
+            MarkerPrefs::default()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn a_customized_map_survives_the_round_trip() {
