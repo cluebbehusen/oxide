@@ -57,6 +57,7 @@ pub(super) fn advance_upgrades(state: &mut State, builds: &mut Vec<PendingHpGain
         let completes = advanced >= build_ticks;
         if step > 0 || completes {
             builds.push(PendingHpGain {
+                starts: false,
                 site,
                 step,
                 completes,
@@ -111,6 +112,7 @@ pub(super) fn build(
             .stats()
             .build_rate;
         let b = state.building_mut(site).expect("just seen");
+        let starts = b.progress == 0;
         let advanced = (b.progress + rate).min(build_ticks);
         let step = (ramp * advanced / build_ticks) - (ramp * b.progress / build_ticks);
         b.progress = advanced;
@@ -118,8 +120,9 @@ pub(super) fn build(
         // after damage — see PendingHpGain. The builder learns the site is
         // done next tick, through the built-site branch above.
         let completes = b.progress >= build_ticks;
-        if step > 0 || completes {
+        if starts || step > 0 || completes {
             builds.push(PendingHpGain {
+                starts,
                 site,
                 step,
                 completes,
@@ -305,6 +308,7 @@ pub(super) fn repair(
         let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
         if step > 0 {
             builds.push(PendingHpGain {
+                starts: false,
                 site: building,
                 step,
                 completes: false,

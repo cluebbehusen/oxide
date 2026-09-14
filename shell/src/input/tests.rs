@@ -5414,3 +5414,117 @@ fn radar_contact_above_a_building_ghost_wins_for_units_and_defenses() {
     assert!(matches!(game.pending.last().unwrap().command,
         Command::FocusFire { target: oxide_sim::AttackTarget::Contact(id), .. } if id == contact));
 }
+
+#[test]
+fn a_hidden_mine_does_not_change_placement_selection_or_resume_input() {
+    use oxide_sim::BuildingKind;
+    let anchor = TilePos::new(12, 4);
+    for mined in [false, true] {
+        let scenario=oxide_sim::Scenario::from_json(&serde_json::json!({
+            "name":"Mine placement","seed":17,
+            "players":[{"name":"Builder","faction":"ferrous","scrap":800,"bot":false},{"name":"Mines","faction":"cupric","scrap":0,"bot":true}],
+            "map":["########################","#1.....................#","#......................#","#......................#","#......................#","#......................#","#......................#","#...................2..#","#......................#","########################"],
+            "units":[{"player":0,"kind":"harvester","x":4,"y":4},{"player":0,"kind":"harvester","x":10,"y":2}],
+            "buildings":if mined {vec![serde_json::json!({"player":1,"kind":"scuttle_charge","x":12,"y":4})]}else{vec![]}
+        }).to_string()).unwrap();
+        let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+        let mut input = InputState::new();
+        let worker = game.state.units()[0].id;
+        game.selection.units = vec![worker];
+        assert_eq!(
+            placement_refusal(&game, BuildingKind::Barricade, anchor, false),
+            None
+        );
+        build_click(&mut game, &mut input, BuildingKind::Barricade, anchor);
+        assert_eq!(game.pending.len(), 1);
+        assert!(matches!(
+            game.pending[0].command,
+            Command::Build { defer: false, .. }
+        ));
+        let report = game.state.tick(&std::mem::take(&mut game.pending));
+        assert!(
+            !report
+                .events
+                .iter()
+                .any(|e| matches!(e, oxide_sim::Event::CommandRejected { .. }))
+        );
+        let site = game
+            .state
+            .buildings_at(anchor)
+            .find(|b| b.player == game.human)
+            .unwrap()
+            .id;
+        assert_eq!(game.state.player(game.human).scrap, 760);
+        assert_eq!(
+            placement_refusal(&game, BuildingKind::Barricade, anchor, false),
+            Some(oxide_sim::PlaceRefusal::Building)
+        );
+        input.placing = None;
+        let point = game.camera.to_screen(vec2(12.5, 4.5));
+        apply_events(&mut game, &mut input, &click(point.x, point.y));
+        assert_eq!(game.selection.buildings, vec![site]);
+        game.selection.buildings.clear();
+        game.selection.units = vec![worker];
+        apply_events(
+            &mut game,
+            &mut input,
+            &[RawEvent::MouseDown {
+                button: MouseButton::Right,
+                x: point.x,
+                y: point.y,
+            }],
+        );
+        assert!(
+            matches!(game.pending.last().unwrap().command,Command::Build{anchor:a,..} if a==anchor)
+        );
+    }
+}
+
+#[test]
+fn selecting_an_unfinished_mine_does_not_reveal_its_condition_after_concealment() {
+    use oxide_sim::BuildingKind;
+    let scenario=oxide_sim::Scenario::from_json(&serde_json::json!({
+        "name":"Mine visibility","seed":17,
+        "players":[{"name":"Observer","faction":"ferrous","scrap":800,"bot":false},{"name":"Mines","faction":"cupric","scrap":800,"bot":true}],
+        "map":["########################","#1.....................#","#......................#","#......................#","#......................#","#......................#","#......................#","#...................2..#","#......................#","########################"],
+        "units":[{"player":0,"kind":"harvester","x":10,"y":2},{"player":1,"kind":"harvester","x":13,"y":4}],
+        "buildings":[{"player":1,"kind":"fabricator","x":17,"y":2}]
+    }).to_string()).unwrap();
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+    let mut input = InputState::new();
+    game.pending.push(PlayerCommand {
+        player: oxide_sim::PlayerId(1),
+        command: Command::Build {
+            units: vec![game.state.units()[1].id],
+            kind: BuildingKind::ScuttleCharge,
+            anchor: TilePos::new(12, 4),
+            queue: false,
+            defer: false,
+        },
+    });
+    game.do_tick();
+    let mine = game
+        .state
+        .buildings_at(TilePos::new(12, 4))
+        .next()
+        .unwrap()
+        .id;
+    game.camera.center = vec2(12.5, 4.5);
+    game.camera.pan(Vec2::ZERO);
+    let point = game.camera.to_screen(vec2(12.5, 4.5));
+    apply_events(&mut game, &mut input, &click(point.x, point.y));
+    assert_eq!(game.selection.buildings, vec![mine]);
+    for _ in 0..60 {
+        game.do_tick();
+    }
+    assert!(game.state.building(mine).unwrap().built);
+    assert!(game.selection.buildings.is_empty());
+    assert!(
+        game.my_vision()
+            .ghosts()
+            .iter()
+            .any(|g| g.anchor == TilePos::new(12, 4))
+    );
+    apply_events(&mut game, &mut input, &click(point.x, point.y));
+    assert!(game.selection.buildings.is_empty());
+}

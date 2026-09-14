@@ -146,7 +146,8 @@ Phase order is game behavior. `State::tick` currently performs:
 1. Capture any newly stranded economy's finite recovery entitlement.
 2. Validate and apply this tick's commands in their recorded order.
 3. Apply recurring income, advance production queues, and spawn completed units.
-4. Decay unclaimed tier-zero construction sites on their global cadence.
+4. Cancel unstarted construction over known mines, then decay unclaimed
+   tier-zero construction sites on their global cadence.
 5. Run unit brains and building behavior, land arriving shells, and resolve
    buffered damage, construction, salvage, repair, and deferred founding.
 6. Resolve boarding and unloading after every unit has decided.
@@ -158,7 +159,8 @@ Phase order is game behavior. `State::tick` currently performs:
 11. Schedule airborne crashes, remove dead entities, and deposit eligible wreck
     salvage.
 12. Apply wreck decay on its global cadence.
-13. Rebuild team-shared visibility and reconcile fog memory.
+13. Rebuild team-shared visibility and reconcile fog memory. Newly discovered
+    mines cancel unstarted sites and deferred claims before the next command.
 14. Determine victory or draw from surviving, non-resigned teams and discard any
     remaining pending crashes when the match ends.
 
@@ -379,8 +381,28 @@ A deferred build, used to claim remembered ground, instead installs a `Found`
 program. The worker walks there, then proves the strict placement predicate with
 current sight before payment and placement. A matching paid site can be joined
 without charging twice. Hidden state cannot alter the earlier intent verdict or
-preview; the final authoritative claim may still stall if the ground is taken
-when the worker arrives.
+preview; the final authoritative claim may still stall on an ordinary occupied
+site when the worker arrives.
+
+Completed enemy Scuttle Charges remain concealed without detector coverage;
+unfinished charges are visible under ordinary sight. A witnessed charge retains
+its last-seen marker after concealment, even on visible ground, without
+revealing its current hp or completion. Detection, observed removal, or a
+visible replacement covering the mine's tile from its own team clears that
+memory. Known live or remembered charges block placement. An undiscovered charge
+allows the same immediate or deferred order as empty ground; an unstarted paid
+site can temporarily overlap it. Discovery cancels that site's active and queued
+construction commitments and refunds its full price. Deferred unpaid claims are
+removed without a charge. Unrelated queued orders survive cancellation.
+
+The first actual crew work over an undiscovered armed charge triggers its blast
+before construction hp or completion resolves. The new site is destroyed; nearby
+hostile ground units and charges take the ordinary mine damage. Ground movement
+retains its existing post-movement trigger. Construction triggers resolve in
+mine-id order after the volley; a charge destroyed by the volley or an earlier
+blast does not fire. Multiple workers cannot multiply one detonation. An
+artillery impact on an overlapping scaffold hits the scaffold directly; the
+buried charge remains vulnerable to the shell's ordinary splash damage.
 
 An unfinished tier-zero site decays on a fixed cadence only when no living own
 construction-capable worker has an active or queued commitment to build it. An

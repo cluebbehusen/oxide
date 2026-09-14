@@ -503,15 +503,15 @@ impl Observation {
                 });
             }
         }
-        // Ghost memories cover ground currently out of sight.
+        // Retained mines can be memories even on currently visible ground.
         for ghost in vision.ghosts() {
-            let visible_now = {
-                let (w, h) = ghost.kind.base_stats().size;
-                (0..h)
-                    .flat_map(|dy| (0..w).map(move |dx| ghost.anchor.offset(dx, dy)))
-                    .any(|t| vision.visible(t))
-            };
-            if !visible_now {
+            let observed = obs.enemy_buildings.iter().any(|b| {
+                b.player == ghost.owner
+                    && b.kind == ghost.kind
+                    && b.anchor == ghost.anchor
+                    && b.seen
+            });
+            if !observed {
                 obs.enemy_buildings.push(BuildingObs {
                     // Ghosts carry no live id contract; the anchor is the
                     // stable handle. Id 0 would collide with a real

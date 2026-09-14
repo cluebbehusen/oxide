@@ -331,7 +331,13 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 .flat_map(|dy| (0..w).map(move |dx| ghost.anchor.offset(dx, dy)))
                 .any(|t| game.my_vision().visible(t));
             let key = (ghost.anchor.x, ghost.anchor.y);
-            if visible {
+            let observed = visible
+                && game.state.buildings_at(ghost.anchor).any(|b| {
+                    b.player == ghost.owner
+                        && b.kind == ghost.kind
+                        && game.state.building_apparent(game.human, b)
+                });
+            if observed {
                 game.last_seen.borrow_mut().insert(key, game.fx_time());
                 continue; // the live building (or its absence) is on show
             }

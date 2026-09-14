@@ -88,7 +88,7 @@ pub enum Event {
         /// The tile it stands on now.
         at: TilePos,
     },
-    /// A buried charge went off under a hostile machine.
+    /// A buried charge went off under hostile ground movement or construction.
     ChargeDetonated {
         /// The charge that fired.
         building: BuildingId,
