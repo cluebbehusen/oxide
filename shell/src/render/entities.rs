@@ -1776,8 +1776,11 @@ fn stroke_patterned_path(
     scale: f32,
     occluders: &[(Vec2, Vec2)],
 ) {
+    let mut clipper = RangeClipper::new(points, occluders);
     visit_stroke_segments(points, stroke, scale, |a, b| {
-        draw_range_line(occluders, a, b, thickness, color);
+        clipper.visit_visible(a, b, |from, to| {
+            draw_line(from.x, from.y, to.x, to.y, thickness, color);
+        });
     });
 }
 
@@ -2058,6 +2061,8 @@ fn line_footprint_interval(a: Vec2, b: Vec2, min: Vec2, max: Vec2) -> Option<(f3
 }
 
 fn range_occluders(game: &Game) -> Vec<(Vec2, Vec2)> {
+    let margin = Vec2::splat(2.0 * ui_scale());
+    let viewport = (-margin, game.camera.viewport() + margin);
     game.state
         .buildings()
         .iter()
@@ -2069,27 +2074,54 @@ fn range_occluders(game: &Game) -> Vec<(Vec2, Vec2)> {
         })
         .map(|building| {
             let (min, max) = building_screen_bounds(game, building);
-            let margin = Vec2::splat(2.0 * ui_scale());
             (min - margin, max + margin)
         })
+        .filter(|&bounds| bounds_overlap(bounds, viewport))
         .collect()
 }
 
-fn draw_range_line(occluders: &[(Vec2, Vec2)], a: Vec2, b: Vec2, thickness: f32, color: Color) {
-    // Public ranges remain visible through fog; only visible buildings cut holes in them.
-    let mut occluded: Vec<_> = occluders
-        .iter()
-        .filter_map(|&(min, max)| line_footprint_interval(a, b, min, max))
-        .collect();
-    occluded.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut cursor: f32 = 0.0;
-    for (start, end) in occluded.into_iter().chain(std::iter::once((1.0, 1.0))) {
-        if cursor < start {
-            let from = a.lerp(b, cursor);
-            let to = a.lerp(b, start);
-            draw_line(from.x, from.y, to.x, to.y, thickness, color);
+fn bounds_overlap(a: (Vec2, Vec2), b: (Vec2, Vec2)) -> bool {
+    a.0.x <= b.1.x && a.1.x >= b.0.x && a.0.y <= b.1.y && a.1.y >= b.0.y
+}
+
+struct RangeClipper {
+    occluders: Vec<(Vec2, Vec2)>,
+    intervals: Vec<(f32, f32)>,
+}
+
+impl RangeClipper {
+    fn new(points: &[Vec2], occluders: &[(Vec2, Vec2)]) -> Self {
+        let bounds = points.iter().fold(
+            (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
+            |(min, max), &point| (min.min(point), max.max(point)),
+        );
+        let occluders: Vec<_> = occluders
+            .iter()
+            .copied()
+            .filter(|&occluder| bounds_overlap(occluder, bounds))
+            .collect();
+        let intervals = Vec::with_capacity(occluders.len());
+        Self {
+            occluders,
+            intervals,
         }
-        cursor = cursor.max(end);
+    }
+
+    fn visit_visible(&mut self, a: Vec2, b: Vec2, mut visit: impl FnMut(Vec2, Vec2)) {
+        self.intervals.clear();
+        self.intervals.extend(
+            self.occluders
+                .iter()
+                .filter_map(|&(min, max)| line_footprint_interval(a, b, min, max)),
+        );
+        self.intervals.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        let mut cursor: f32 = 0.0;
+        for &(start, end) in self.intervals.iter().chain(std::iter::once(&(1.0, 1.0))) {
+            if cursor < start {
+                visit(a.lerp(b, cursor), a.lerp(b, start));
+            }
+            cursor = cursor.max(end);
+        }
     }
 }
 
@@ -2194,7 +2226,10 @@ fn draw_economy_support_links(game: &Game, scale: f32, color: Color, occluders: 
         let extractor = building_screen_bounds(game, extractor);
         let foundry = building_screen_bounds(game, foundry);
         if let Some([a, b]) = footprint_link(extractor, foundry, 3.0 * scale) {
-            draw_range_line(occluders, a, b, 1.2 * scale, color);
+            let mut clipper = RangeClipper::new(&[a, b], occluders);
+            clipper.visit_visible(a, b, |from, to| {
+                draw_line(from.x, from.y, to.x, to.y, 1.2 * scale, color);
+            });
         }
     }
     let mut endpoints: Vec<_> = links
@@ -3005,6 +3040,102 @@ mod tests {
             footprint_link(a, (vec2(20.0, 0.0), vec2(40.0, 20.0)), 3.0),
             None
         );
+    }
+
+    #[test]
+    fn range_clipping_filters_distant_buildings_and_reuses_interval_storage() {
+        let path = circle_path(Vec2::ZERO, 160.0);
+        let mut buildings: Vec<_> = (0..1000)
+            .map(|i| {
+                let min = vec2(2000.0 + i as f32 * 40.0, 2000.0);
+                (min, min + Vec2::splat(32.0))
+            })
+            .collect();
+        for i in 0..40 {
+            let angle = std::f32::consts::TAU * i as f32 / 40.0;
+            let center = vec2(angle.cos(), angle.sin()) * 160.0;
+            buildings.push((center - Vec2::splat(10.0), center + Vec2::splat(10.0)));
+        }
+        let mut clipper = RangeClipper::new(&path, &buildings);
+        assert_eq!(clipper.occluders.len(), 40);
+        let storage = clipper.intervals.as_ptr();
+        let capacity = clipper.intervals.capacity();
+        let mut clipped = 0;
+        for pair in path.windows(2) {
+            clipper.visit_visible(pair[0], pair[1], |_, _| {});
+            clipped += usize::from(!clipper.intervals.is_empty());
+            assert_eq!(clipper.intervals.as_ptr(), storage);
+            assert_eq!(clipper.intervals.capacity(), capacity);
+        }
+        assert_eq!(clipped, 240);
+    }
+
+    #[test]
+    fn filtered_range_clipping_preserves_visible_spans_and_pattern_phase() {
+        let buildings = [
+            (vec2(-30.0, -10.0), vec2(0.0, 25.0)),
+            (vec2(-20.0, -5.0), vec2(10.0, 35.0)),
+            (vec2(-20.0, -5.0), vec2(10.0, 35.0)),
+            (vec2(25.0, -40.0), vec2(40.0, 30.0)),
+            (vec2(1000.0, 1000.0), vec2(1032.0, 1032.0)),
+        ];
+        for path in [
+            circle_path(Vec2::ZERO, 30.0),
+            rounded_footprint_path(Vec2::ZERO, vec2(20.0, 30.0), 15.0),
+            square_footprint_path(Vec2::ZERO, vec2(20.0, 30.0), 15.0).to_vec(),
+            vec![vec2(-50.0, 0.0), vec2(50.0, 0.0), vec2(-50.0, 0.0)],
+        ] {
+            for stroke in [
+                RangeStroke::Solid,
+                RangeStroke::ShortDash,
+                RangeStroke::LongDash,
+                RangeStroke::Dotted,
+                RangeStroke::DashDot,
+            ] {
+                let mut clipper = RangeClipper::new(&path, &buildings);
+                visit_stroke_segments(&path, stroke, 1.0, |a, b| {
+                    let mut intervals: Vec<_> = buildings
+                        .iter()
+                        .filter_map(|&(min, max)| line_footprint_interval(a, b, min, max))
+                        .collect();
+                    intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let mut expected = Vec::new();
+                    let mut cursor: f32 = 0.0;
+                    for (start, end) in intervals.into_iter().chain(std::iter::once((1.0, 1.0))) {
+                        if cursor < start {
+                            expected.push((a.lerp(b, cursor), a.lerp(b, start)));
+                        }
+                        cursor = cursor.max(end);
+                    }
+                    let mut actual = Vec::new();
+                    clipper.visit_visible(a, b, |a, b| actual.push((a, b)));
+                    assert_eq!(actual, expected);
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn range_occluders_exclude_offscreen_and_unseen_buildings() {
+        let mut game =
+            Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(64.0, 64.0)).unwrap();
+        let hostile = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| building.player != game.human)
+            .unwrap();
+        assert!(!hostile.tiles().any(|tile| game.my_vision().visible(tile)));
+        let (width, height) = hostile.stats().size;
+        game.camera.center = vec2(
+            hostile.anchor.x as f32 + width as f32 * 0.5,
+            hostile.anchor.y as f32 + height as f32 * 0.5,
+        );
+        assert!(range_occluders(&game).is_empty());
+        game.spectate = true;
+        assert!(!range_occluders(&game).is_empty());
+        game.camera.center = vec2(-1000.0, -1000.0);
+        assert!(range_occluders(&game).is_empty());
     }
 
     #[test]
