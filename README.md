@@ -61,35 +61,50 @@ weapons, and prerequisites.
 Most actions are available as clickable cards in the selection panel. These
 shortcuts cover the core loop:
 
-| Input                            | Action                                                                                           |
-| -------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Left click / drag                | Select a unit, building, or group.                                                               |
-| Shift + click / drag             | Add to or remove from the current selection.                                                     |
-| Right click                      | Give the contextual order: harvest scrap, attack an enemy, repair an ally, or advance to ground. |
-| Shift + right click              | Queue the contextual order.                                                                      |
-| `F`, then ground                 | Attack-move and engage along the route.                                                          |
-| `M`, then ground                 | Move without engaging.                                                                           |
-| `R`                              | Mark patrol points; press `R` again to start the loop.                                           |
-| `B`                              | Open construction; select an available worker if needed. Press again to close.                   |
-| `B`, `1`–`9` or Shift + `1`–`4`  | Choose a building from the unified construction palette.                                         |
-| `W`, then a damaged machine      | Order selected Harvesters to repair it.                                                          |
-| `V`, then an own building        | Salvage the building for a partial refund. Foundries cannot be salvaged.                         |
-| `X`                              | Stop selected units, or cancel a selected new construction site.                                 |
-| `1`–`9` with a producer selected | Train the unit in that card slot.                                                                |
-| Ctrl + `1`–`5` / `1`–`5`         | Assign or recall a control group.                                                                |
-| `N`                              | Select and center the next idle Harvester.                                                       |
-| `Space`                          | Center the camera on your Foundry.                                                               |
-| `A`                              | Jump to the last under-attack alert.                                                             |
-| `P`                              | Pause immediately.                                                                               |
-| `Esc`                            | Cancel the active action, clear selection, or open the pause menu.                               |
+| Input                                    | Action                                                                                                 |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| WASD / arrow keys                        | Pan the camera; both sets work together.                                                               |
+| Wheel / middle drag                      | Zoom / pan the camera.                                                                                 |
+| `U` with a building / transport selected | Upgrade / unload here.                                                                                 |
+| `Y` / Shift+`Y` with a producer selected | Set / clear rally.                                                                                     |
+| Left click / drag                        | Select a unit, building, or group.                                                                     |
+| Shift + click / drag                     | Add to or remove from the current selection.                                                           |
+| Right click                              | Give the contextual order: harvest scrap, attack an enemy, repair an ally, or advance to ground.       |
+| Shift + right click                      | Queue the contextual order.                                                                            |
+| `F`, then ground                         | Attack-move and engage along the route.                                                                |
+| `M`, then ground                         | Move without engaging.                                                                                 |
+| `R`                                      | Mark patrol points; press `R` again to start the loop.                                                 |
+| `B`                                      | Open construction; select an available worker if needed. Press again to return to categories or close. |
+| `B`, then Q/E/R/T, then Q/E/R/T          | Choose a construction category, then a building.                                                       |
+| `C`, then a damaged machine              | Order selected Harvesters to repair it.                                                                |
+| `V`, then an own building                | Salvage the building for a partial refund. Foundries cannot be salvaged.                               |
+| `X`                                      | Stop selected units, or cancel a selected new construction site.                                       |
+| Q/E/R/T/Z/X with a producer selected     | Train the unit in that card slot.                                                                      |
+| Ctrl + `1`–`5` / `1`–`5`                 | Assign or recall a control group.                                                                      |
+| `N`                                      | Select and center the next idle Harvester.                                                             |
+| `Space`                                  | Center the camera on your Foundry.                                                                     |
+| `Tab`                                    | Jump to the last under-attack alert.                                                                   |
+| `P`                                      | Pause immediately.                                                                                     |
+| `Esc`                                    | Cancel the active action, clear selection, or open the pause menu.                                     |
 
-Click another construction card to change buildings while placing. The build
-ghost explains why a site is invalid. A discovered Extractor frame is one 2x2
-site. A restored Extractor earns fixed remote income; a nearby completed own
-Foundry raises that income without stacking. Amber placement on remembered
-ground creates a deferred order; the builders walk there and validate the site
-only when they can see it. Upgrades rebuild themselves on a fixed timer: the
-building stays offline and vulnerable, but Harvesters keep their existing work.
+Controls offers primary and secondary bindings for every keyboard action,
+including buildings, production slots, groups, bookmarks, replay controls, and
+menu navigation. Select a row and column, then press Enter to remap it; X clears
+the selected binding. Mouse selection of either binding column works too. Escape
+cancels capture (or restores Escape when editing Back). The binding editor and
+save-name entry retain conventional editing keys so custom mappings cannot lock
+you out. Existing custom bindings are preserved when upgrading.
+
+Construction categories are Economy (Q), Production (E), Defense (R), and
+Utility (T). For example, B, R, Q chooses a Turret. Shift queues placement;
+group recall always selects the group and leaves construction. Click another
+construction card to change buildings while placing. The build ghost explains
+why a site is invalid. A discovered Extractor frame is one 2x2 site. A restored
+Extractor earns fixed remote income; a nearby completed own Foundry raises that
+income without stacking. Amber placement on remembered ground creates a deferred
+order; the builders walk there and validate the site only when they can see it.
+Upgrades rebuild themselves on a fixed timer: the building stays offline and
+vulnerable, but Harvesters keep their existing work.
 
 Rock blocks direct ground fire. Peaks block ground movement, aircraft, and all
 fire across them. Pits block ground movement, but aircraft and fire cross the

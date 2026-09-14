@@ -15,6 +15,34 @@ use crate::theme::{SURFACE_MENU, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_T
 const ITEM_HEIGHT: f32 = 44.0;
 const ITEM_WIDTH: f32 = 420.0;
 
+thread_local! {
+    static MENU_BINDINGS: std::cell::RefCell<crate::action::BindingMap> = std::cell::RefCell::new(crate::action::BindingMap::classic());
+}
+
+pub(crate) fn set_bindings(bindings: crate::action::BindingMap) {
+    MENU_BINDINGS.with(|current| *current.borrow_mut() = bindings);
+}
+
+pub(crate) fn binding_hint(template: &str) -> String {
+    use crate::action::Action;
+    MENU_BINDINGS.with(|bindings| {
+        let bindings = bindings.borrow();
+        let mut text = template.to_string();
+        for (token, action) in [
+            ("{confirm}", Action::Confirm),
+            ("{back}", Action::Back),
+            ("{up}", Action::MenuUp),
+            ("{down}", Action::MenuDown),
+            ("{left}", Action::MenuLeft),
+            ("{right}", Action::MenuRight),
+            ("{delete}", Action::DeleteSave),
+        ] {
+            text = text.replace(token, &bindings.label(action));
+        }
+        text
+    })
+}
+
 fn ui() -> f32 {
     crate::render::ui_scale()
 }
@@ -203,10 +231,15 @@ impl Menu {
         if index < first || index >= first + visible {
             return None;
         }
+        let width = if self.title == "CONTROLS" {
+            (760.0 * s).min(view_w() - 32.0 * s)
+        } else {
+            ITEM_WIDTH * s
+        };
         Some(Rect::new(
-            (view_w() - ITEM_WIDTH * s) * 0.5 + view_w() * self.shift,
+            (view_w() - width) * 0.5 + view_w() * self.shift,
             top + (index - first) as f32 * row,
-            ITEM_WIDTH * s,
+            width,
             row - 6.0 * s,
         ))
     }
@@ -255,6 +288,7 @@ impl Menu {
                     x,
                     y,
                 } => {
+                    *mouse = vec2(x, y);
                     self.pressed = self.row_at(vec2(x, y)).filter(|r| !self.is_header(*r));
                 }
                 RawEvent::MouseUp {
@@ -262,6 +296,7 @@ impl Menu {
                     x,
                     y,
                 } => {
+                    *mouse = vec2(x, y);
                     let released_on = self.row_at(vec2(x, y));
                     let armed = self.pressed.take();
                     if let (Some(a), Some(r)) = (armed, released_on)
@@ -342,6 +377,7 @@ impl Menu {
 
     /// Draws the menu (over whatever the caller already drew).
     pub fn draw(&self, subtitle: &str) {
+        let subtitle = binding_hint(subtitle);
         let s = ui();
         let title_size = 96.0 * s;
         let dims = measure_text(&self.title, None, title_size as u16, 1.0);
@@ -355,14 +391,14 @@ impl Menu {
         // The subtitle shrinks to fit — map blurbs run long, and text
         // spilling off both window edges reads as a defect, not a hook.
         let mut sub_size = 20.0 * s;
-        let mut sub_dims = measure_text(subtitle, None, sub_size as u16, 1.0);
+        let mut sub_dims = measure_text(&subtitle, None, sub_size as u16, 1.0);
         let max_width = view_w() * 0.55;
         if sub_dims.width > max_width {
             sub_size = (sub_size * max_width / sub_dims.width).max(12.0 * s);
-            sub_dims = measure_text(subtitle, None, sub_size as u16, 1.0);
+            sub_dims = measure_text(&subtitle, None, sub_size as u16, 1.0);
         }
         draw_text(
-            subtitle,
+            &subtitle,
             (view_w() - sub_dims.width) * 0.5,
             view_h() * 0.28 + 34.0 * s,
             sub_size,
@@ -396,13 +432,28 @@ impl Menu {
                 draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, TEXT_SECONDARY);
             }
             let color = if selected { TEXT_PRIMARY } else { TEXT_BODY };
-            draw_text(
-                label,
-                rect.x + 18.0 * s,
-                rect.y + rect.h * 0.68,
-                text_size,
-                color,
-            );
+            if self.title == "CONTROLS"
+                && let Some((name, keys)) = label.rsplit_once(": ")
+                && let Some((primary, secondary)) = keys.split_once(" | ")
+            {
+                for (text, x, width) in [
+                    (name, rect.x + 18.0 * s, rect.w * 0.56),
+                    (primary, rect.x + rect.w * 0.61, rect.w * 0.18),
+                    (secondary, rect.x + rect.w * 0.81, rect.w * 0.18),
+                ] {
+                    let measured = measure_text(text, None, text_size as u16, 1.0).width;
+                    let size = text_size * (width / measured.max(1.0)).min(1.0);
+                    draw_text(text, x, rect.y + rect.h * 0.68, size, color);
+                }
+            } else {
+                draw_text(
+                    label,
+                    rect.x + 18.0 * s,
+                    rect.y + rect.h * 0.68,
+                    text_size,
+                    color,
+                );
+            }
         }
         // Scroll cues when the list is windowed.
         if first > 0 {
@@ -427,10 +478,18 @@ impl Menu {
         }
 
         // ASCII on purpose: the default font has no glyphs for arrows.
-        let hint = "Up/Down select - Enter confirm - or click";
-        let hint_dims = measure_text(hint, None, (18.0 * s) as u16, 1.0);
+        let hint = MENU_BINDINGS.with(|bindings| {
+            let bindings = bindings.borrow();
+            format!(
+                "{}/{} select - {} confirm - or click",
+                bindings.label(crate::action::Action::MenuUp),
+                bindings.label(crate::action::Action::MenuDown),
+                bindings.label(crate::action::Action::Confirm)
+            )
+        });
+        let hint_dims = measure_text(&hint, None, (18.0 * s) as u16, 1.0);
         draw_text(
-            hint,
+            &hint,
             (view_w() - hint_dims.width) * 0.5,
             view_h() - 24.0 * s,
             18.0 * s,

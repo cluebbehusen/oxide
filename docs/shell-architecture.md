@@ -201,17 +201,41 @@ well as benefits, and tier-specific income and mine detection. Health shows
 maximum capacity, not the selected building's current damage. Disabled upgrade
 cards retain the same preview.
 
+Keyboard bindings have primary and secondary slots and explicit contexts. Camera
+movement accepts WASD and arrows together in live play, replay playback, and the
+final map. Number keys recall control groups even when a producer or
+construction palette is selected. Production has six faction-filtered slots.
+Unit commands, production, construction categories, individual building choices,
+replay transport, bookmarks, groups, and menu navigation are all remappable.
+Conflicts are rejected only when their contexts overlap. Releases remain paired
+to the original key press, so changing modifiers or releasing one camera alias
+cannot orphan another hold. Text entry and the binding editor retain
+conventional editing and recovery keys independently of gameplay remaps.
+
 Construction uses one 13-card catalog, grouped by economy, production, defense,
-and utility when space permits. Visual grouping preserves each building's digit
-shortcut. Hover details accompany compact icon, name, and price cards. Opening
-it replaces the selection's ordinary action cards, and choosing a building
-leaves construction visible. Armed world commands yield clicks and taps to HUD
-controls so another card can replace the placement kind directly. The minimap
-retains its existing command and camera routing. The HUD shows banked scrap and
-current recurring income; individual own income buildings show their rate
-without requiring a tooltip. Harvest deliveries and temporary recovery grants
-are separate from that rate. Building portraits use the selected tier's hull and
-weapon mount.
+and utility when space permits. Its keyboard sequence opens construction,
+selects a category, then selects a building within it. Q/E/R/T are the default
+category and within-category keys; WASD remains available. Every building stays
+visible and directly clickable, and unavailable cards retain their positions.
+Shift queues placement without selecting a different structure. A selected
+category is highlighted, with current bindings on its cards. Escape backs out
+through placement, category, and palette; group recall cancels construction and
+other targeting modes. Keyboard construction, production, upgrade, rally, and
+unload activation use the same card availability checks as clicks. Upgrades
+apply to the single selected building. Hover details accompany compact icon,
+name, and price cards. The minimap retains its command and camera routing.
+
+Old default bindings migrate to the new layout, while deliberate custom chords
+and explicit unbindings survive. New defaults never steal a custom chord;
+conflicting defaults remain unbound and can be assigned in Controls. Both slots
+persist, including an explicitly empty slot. The Controls editor groups actions
+by purpose and presents both slots together, with conflict feedback naming the
+action that already holds the chord.
+
+The HUD shows banked scrap and current recurring income; individual own income
+buildings show their rate without requiring a tooltip. Harvest deliveries and
+temporary recovery grants are separate from that rate. Building portraits use
+the selected tier's hull and weapon mount.
 
 The optional `OXIDE_REVIEW_FONT` path loads one TTF for both body and display
 text at startup. An unreadable or invalid font refuses startup; leaving it unset

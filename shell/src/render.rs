@@ -1188,7 +1188,11 @@ pub fn tutorial_dismiss_rect() -> Rect {
 /// The tutorial card: headline, lesson, live coach line, dismiss box,
 /// progress. Drawn over the world, under nothing — school outranks
 /// scenery.
-pub fn draw_tutorial(t: &crate::tutorial::Tutorial, game: &crate::game::Game) {
+pub fn draw_tutorial(
+    t: &crate::tutorial::Tutorial,
+    game: &crate::game::Game,
+    bindings: &crate::action::BindingMap,
+) {
     let Some(step) = crate::tutorial::STEPS.get(t.step) else {
         return;
     };
@@ -1211,8 +1215,26 @@ pub fn draw_tutorial(t: &crate::tutorial::Tutorial, game: &crate::game::Game) {
         SCRAP_COLOR,
     );
     for (i, line) in step.body.iter().enumerate() {
+        let line = line
+            .replace(
+                "{train}",
+                &bindings.label(crate::action::Action::TrainSlot(0)),
+            )
+            .replace(
+                "{idle}",
+                &bindings.label(crate::action::Action::CycleIdleWorker),
+            )
+            .replace(
+                "{build}",
+                &bindings.label(crate::action::Action::ToggleBuildPalette),
+            )
+            .replace(
+                "{attack}",
+                &bindings.label(crate::action::Action::AttackMove),
+            )
+            .replace("{back}", &bindings.label(crate::action::Action::Back));
         draw_text(
-            line,
+            &line,
             x + 10.0 * s,
             y + 42.0 * s + i as f32 * line_h,
             15.0 * s,

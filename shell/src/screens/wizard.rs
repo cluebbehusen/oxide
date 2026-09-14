@@ -1328,21 +1328,22 @@ impl Wizard {
 
         if !compact {
             let hint = if one_team {
-                "every seat is on one team, nobody to fight - regroup a TEAM chip - Esc back"
+                "every seat is on one team, nobody to fight - regroup a TEAM chip - {back} back"
             } else if self.setup_sel == order.len() {
-                "Enter starts the match - Esc back"
+                "{confirm} starts the match - {back} back"
             } else if self.setup_cell == 1 {
-                "Enter cycles difficulty - Left/Right move - Esc back"
+                "{confirm} cycles difficulty - {left}/{right} move - {back} back"
             } else if self.setup_cell == 2 {
-                "Enter cycles stance - Left/Right move - Esc back"
+                "{confirm} cycles stance - {left}/{right} move - {back} back"
             } else if self.setup_cell > 2 {
-                "Enter cycles the chip - Left/Right move - Esc back"
+                "{confirm} cycles the chip - {left}/{right} move - {back} back"
             } else {
-                "Enter takes this seat - Left/Right reach difficulty, stance, faction, and team - Esc back"
+                "{confirm} takes this seat - {left}/{right} reach difficulty, stance, faction, and team - {back} back"
             };
-            let hdims = measure_text(hint, None, (16.0 * ui) as u16, 1.0);
+            let hint = crate::menu::binding_hint(hint);
+            let hdims = measure_text(&hint, None, (16.0 * ui) as u16, 1.0);
             draw_text(
-                hint,
+                &hint,
                 (view.x - hdims.width) * 0.5,
                 view.y - 20.0 * ui,
                 16.0 * ui,

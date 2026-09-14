@@ -1,14 +1,19 @@
 //! Frozen inspection of the already-final live battlefield.
 
+use crate::action::{Action, ActionEvent, ActionResolver, BindingMap, Context};
 use crate::game::Game;
 use crate::{render, theme};
 use macroquad::prelude::*;
-use oxide_protocol::{Key, MouseButton, RawEvent};
+#[cfg(test)]
+use oxide_protocol::Key;
+use oxide_protocol::{MouseButton, RawEvent};
 
 /// Camera-only state for the final battlefield view.
 #[derive(Default)]
 pub struct FinalMapScreen {
-    held: [bool; 4],
+    pub bindings: BindingMap,
+    resolver: ActionResolver,
+    middle_anchor: Option<Vec2>,
     minimap_drag: bool,
 }
 
@@ -32,6 +37,10 @@ impl FinalMapScreen {
             match event {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(*x, *y);
+                    if let Some(anchor) = self.middle_anchor {
+                        game.camera.pan((anchor - *mouse) / game.camera.zoom);
+                        self.middle_anchor = Some(*mouse);
+                    }
                     if self.minimap_drag {
                         let rect = render::minimap_rect(game);
                         let clamped = vec2(
@@ -68,21 +77,36 @@ impl FinalMapScreen {
                     };
                     game.camera.zoom_at(*mouse, delta);
                 }
-                RawEvent::KeyDown { key: Key::Escape } => return true,
-                RawEvent::KeyDown { key: Key::Up } => self.held[0] = true,
-                RawEvent::KeyDown { key: Key::Down } => self.held[1] = true,
-                RawEvent::KeyDown { key: Key::Left } => self.held[2] = true,
-                RawEvent::KeyDown { key: Key::Right } => self.held[3] = true,
-                RawEvent::KeyUp { key: Key::Up } => self.held[0] = false,
-                RawEvent::KeyUp { key: Key::Down } => self.held[1] = false,
-                RawEvent::KeyUp { key: Key::Left } => self.held[2] = false,
-                RawEvent::KeyUp { key: Key::Right } => self.held[3] = false,
+                RawEvent::KeyDown { key } => {
+                    if self
+                        .resolver
+                        .key_edge_in(&self.bindings, *key, true, Context::FinalMap)
+                        == Some(ActionEvent::Pressed(Action::Back))
+                    {
+                        return true;
+                    }
+                }
+                RawEvent::KeyUp { key } => {
+                    self.resolver
+                        .key_edge_in(&self.bindings, *key, false, Context::FinalMap);
+                }
+                RawEvent::MouseDown {
+                    button: MouseButton::Middle,
+                    x,
+                    y,
+                } => self.middle_anchor = Some(vec2(*x, *y)),
+                RawEvent::MouseUp {
+                    button: MouseButton::Middle,
+                    ..
+                } => self.middle_anchor = None,
                 _ => {}
             }
         }
         let direction = vec2(
-            i32::from(self.held[3]) as f32 - i32::from(self.held[2]) as f32,
-            i32::from(self.held[1]) as f32 - i32::from(self.held[0]) as f32,
+            i32::from(self.resolver.is_held(Action::PanRight)) as f32
+                - i32::from(self.resolver.is_held(Action::PanLeft)) as f32,
+            i32::from(self.resolver.is_held(Action::PanDown)) as f32
+                - i32::from(self.resolver.is_held(Action::PanUp)) as f32,
         );
         if direction != Vec2::ZERO {
             let world_per_second = 240.0 * camera_prefs.pan_speed / game.camera.zoom;
@@ -95,11 +119,15 @@ impl FinalMapScreen {
     }
 
     /// Draws the compact camera-help strip over the battlefield.
-    pub fn draw_hud() {
+    pub fn draw_hud(&self) {
         let scale = render::ui_scale();
         let size = 17.0 * scale;
-        let line = "FINAL BATTLEFIELD  |  arrows/minimap pan  |  wheel zoom  |  Esc report";
-        let width = measure_text(line, None, size as u16, 1.0).width;
+        let line = format!(
+            "FINAL BATTLEFIELD | {} pan up / minimap / middle drag | wheel zoom | {} report",
+            self.bindings.labels(Action::PanUp),
+            self.bindings.label(Action::Back)
+        );
+        let width = measure_text(&line, None, size as u16, 1.0).width;
         let x = (screen_width() - width) * 0.5;
         let y = screen_height() - 14.0 * scale;
         draw_rectangle(
@@ -109,7 +137,7 @@ impl FinalMapScreen {
             size + 10.0 * scale,
             Color::from_rgba(15, 15, 19, 220),
         );
-        draw_text(line, x, y, size, theme::TEXT_PRIMARY);
+        draw_text(&line, x, y, size, theme::TEXT_PRIMARY);
     }
 }
 
@@ -246,5 +274,52 @@ mod tests {
             &mut game,
         );
         assert_eq!(game.camera.center, after_drag, "released keys do not pan");
+    }
+    #[test]
+    fn final_map_keeps_the_secondary_camera_hold_after_releasing_a_rebound_primary() {
+        use crate::action::Chord;
+        let mut game =
+            Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(640.0, 400.0)).unwrap();
+        game.camera.center = vec2(18.0, 10.0);
+        let mut screen = FinalMapScreen::open();
+        assert!(
+            screen
+                .bindings
+                .rebind(Action::PanRight, Chord::bare(Key::L))
+        );
+        let mut mouse = Vec2::ZERO;
+        let prefs = crate::config::CameraPrefs::default();
+        screen.update(
+            &[
+                RawEvent::KeyDown { key: Key::L },
+                RawEvent::KeyDown { key: Key::Right },
+            ],
+            0.1,
+            vec2(640.0, 400.0),
+            prefs,
+            &mut mouse,
+            &mut game,
+        );
+        let halfway = game.camera.center.x;
+        screen.update(
+            &[RawEvent::KeyUp { key: Key::L }],
+            0.1,
+            vec2(640.0, 400.0),
+            prefs,
+            &mut mouse,
+            &mut game,
+        );
+        let after = game.camera.center.x;
+        assert!(after > halfway);
+        screen.update(
+            &[RawEvent::KeyUp { key: Key::Right }],
+            0.1,
+            vec2(640.0, 400.0),
+            prefs,
+            &mut mouse,
+            &mut game,
+        );
+        assert_eq!(game.camera.center.x, after);
+        assert!(game.pending.is_empty());
     }
 }

@@ -197,6 +197,8 @@ pub enum MouseButton {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Key {
+    /// Contextual navigation shortcut.
+    Tab,
     /// Pan up.
     Up,
     /// Pan down.
@@ -205,11 +207,11 @@ pub enum Key {
     Left,
     /// Pan right.
     Right,
-    /// Train a Harvester at the selected (or first) Foundry.
+    /// Letter H.
     H,
-    /// Train a Sentinel.
+    /// Letter S.
     S,
-    /// Jump the camera to the last alert in the classic profile.
+    /// Letter A.
     A,
     /// Pause / unpause.
     P,
@@ -268,8 +270,7 @@ pub enum Key {
     F7,
     /// Camera bookmark keys.
     F8,
-    /// Unbound by default; present so remapping can reach the full
-    /// letter row (WASD panning, custom profiles).
+    /// Letter C; physical keys are interpreted by the shell binding map.
     C,
     /// See [`Key::C`].
     D,

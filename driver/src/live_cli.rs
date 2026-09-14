@@ -281,8 +281,8 @@ pub(crate) enum LiveCmd {
     },
     /// Inject a key press (and release).
     InjectKey {
-        /// A mapped key: arrows, h/s/a/p/r/b/n/x, enter, escape, space,
-        /// f1, shift, ctrl, or 1-9.
+        /// A mapped key: letters, arrows, tab, enter, escape, space,
+        /// pageup/pagedown/home/end, f1/f5-f8, shift, ctrl, or 1-9.
         key: String,
     },
     /// Inject a key press WITHOUT the release — held-key states (panning,
@@ -997,6 +997,7 @@ mod tests {
     fn every_protocol_key_is_cli_addressable() {
         fn canonical_spelling(key: Key) -> &'static str {
             match key {
+                Key::Tab => "tab",
                 Key::Up => "up",
                 Key::Down => "down",
                 Key::Left => "left",
@@ -1055,6 +1056,7 @@ mod tests {
         }
 
         for key in [
+            Key::Tab,
             Key::Up,
             Key::Down,
             Key::Left,

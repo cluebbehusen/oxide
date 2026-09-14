@@ -618,10 +618,12 @@ impl Browser {
                 TEXT_PRIMARY,
             );
         }
-        let hint = "Arrows/click select - Enter or click again plays - Esc back";
-        let dims = measure_text(hint, None, (16.0 * ui) as u16, 1.0);
+        let hint = crate::menu::binding_hint(
+            "{up}/{down} or click select - {confirm} or click again plays - {back} back",
+        );
+        let dims = measure_text(&hint, None, (16.0 * ui) as u16, 1.0);
         draw_text(
-            hint,
+            &hint,
             (view.x - dims.width) * 0.5,
             view.y - 20.0 * ui,
             16.0 * ui,

@@ -39,7 +39,7 @@ pub const STEPS: [Step; 6] = [
     Step {
         title: "Train a Harvester",
         body: &[
-            "Click your Foundry, then the Harvester card (or press H).",
+            "Click your Foundry, then the Harvester card (or press {train}).",
             "Harvesters are your economy: they haul scrap, build, and weld.",
         ],
     },
@@ -48,14 +48,14 @@ pub const STEPS: [Step; 6] = [
         body: &[
             "Select a Harvester and right-click a scrap pile.",
             "Wait for its first load to reach your Foundry.",
-            "The red IDLE count shows available Harvesters; press N to select one.",
+            "The red IDLE count shows available Harvesters; press {idle} to select one.",
         ],
     },
     Step {
         title: "Build a structure",
         body: &[
             "Select a second Harvester and leave the first one mining.",
-            "Click a structure card (or B, then a digit),",
+            "Open construction ({build}), choose a category and building,",
             "then click open ground. Red tint means you can't build there.",
             "Hold Shift to chain: keep placing, and each build queues up.",
         ],
@@ -73,13 +73,13 @@ pub const STEPS: [Step; 6] = [
         body: &[
             "Right-click ground with a combat unit selected.",
             "Units keep moving and fire at enemies already in range.",
-            "Press F for attack-move when you want them to stop and chase.",
+            "Press {attack} for attack-move when you want them to stop and chase.",
         ],
     },
     Step {
         title: "Win the match",
         body: &[
-            "Press Esc to pause, save, restart, return Home, or surrender.",
+            "Press {back} to cancel, deselect, then open the pause menu.",
             "Destroy all enemy Foundries to win.",
         ],
     },
@@ -157,7 +157,7 @@ impl Tutorial {
     fn required_spend(&self) -> Option<u32> {
         match self.step {
             0 => Some(oxide_sim::UnitKind::Harvester.stats().cost),
-            2 => crate::input::BUILD_PALETTE[0]
+            2 => oxide_sim::BuildingKind::Turret
                 .base_stats()
                 .construction
                 .map(|c| c.cost),
@@ -191,7 +191,7 @@ impl Tutorial {
             .count();
         if bank < cost && hauling == 0 {
             return Some(CoachLine::Recovery(
-                "Out of scrap: press N to grab an idle harvester, then right-click a scrap pile."
+                "Out of scrap: use the idle badge to grab a harvester, then right-click a scrap pile."
                     .to_string(),
             ));
         }
@@ -263,7 +263,7 @@ mod tests {
         match t.coach(&game).expect("the fighter lesson has a price") {
             CoachLine::Recovery(s) => {
                 assert!(
-                    s.contains("press N"),
+                    s.contains("idle badge"),
                     "offers to select an idle harvester: {s}"
                 );
             }

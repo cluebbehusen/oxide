@@ -1187,7 +1187,10 @@ fn every_build_palette_entry_costs_scrap_to_raise() {
     // must carry construction stats with a real price. A `None` (a
     // Foundry-style scenario-only kind) or a zero cost would offer a
     // ghost the sim can never accept.
-    for kind in BUILD_PALETTE {
+    for kind in crate::action::BUILD_CATEGORIES
+        .iter()
+        .flat_map(|(_, kinds)| kinds.iter())
+    {
         let cost = kind
             .base_stats()
             .construction
@@ -1201,18 +1204,20 @@ fn every_build_palette_entry_costs_scrap_to_raise() {
 fn the_build_palette_has_no_duplicate_structures() {
     // A repeated kind would burn a digit slot on a structure already
     // reachable by another digit.
-    for (i, a) in BUILD_PALETTE.iter().enumerate() {
-        for b in BUILD_PALETTE.iter().skip(i + 1) {
-            assert_ne!(a, b, "{} appears twice", a.name());
+    let kinds: Vec<_> = crate::action::BUILD_CATEGORIES
+        .iter()
+        .flat_map(|(_, kinds)| kinds.iter())
+        .collect();
+    for (i, a) in kinds.iter().enumerate() {
+        for b in kinds.iter().skip(i + 1) {
+            assert_ne!(a, b);
         }
     }
-}
-
-#[test]
-fn the_build_palette_fits_the_digit_selectors() {
+    assert_eq!(kinds.len(), 13);
     assert!(
-        BUILD_PALETTE.len() <= 13,
-        "palette overflows 1-9 and Shift+1 through Shift+4"
+        crate::action::BUILD_CATEGORIES
+            .iter()
+            .all(|(_, kinds)| kinds.len() <= 4)
     );
 }
 
@@ -4211,7 +4216,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
     use crate::tutorial::{Tutorial, tutorial_scenario};
 
     let harvester_cost = UnitKind::Harvester.stats().cost;
-    let turret_cost = BUILD_PALETTE[0]
+    let turret_cost = oxide_sim::BuildingKind::Turret
         .base_stats()
         .construction
         .expect("palette structures are constructable")
@@ -4251,11 +4256,16 @@ fn the_tutorial_survives_its_own_literal_instructions() {
     };
     let bank = |game: &Game| game.state.player(game.human).scrap;
 
-    // Lesson 1 — "or press H": the Foundry fallback trains a Harvester.
+    // Select the Foundry and use the displayed production shortcut.
     assert!(t.advance(&game.demo));
     assert_eq!(t.step, 0);
     assert!(bank(&game) >= harvester_cost, "lesson 1 must be affordable");
-    key(&mut game, &mut input, Key::H);
+    let home = game.home_foundry().unwrap().center();
+    let screen = game
+        .camera
+        .to_screen(vec2(home.x.to_num::<f32>(), home.y.to_num::<f32>()));
+    apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+    key(&mut game, &mut input, Key::Q);
     game.do_tick();
     assert!(t.advance(&game.demo));
     assert_eq!(t.step, 1, "training graduates lesson 1");
@@ -4323,12 +4333,13 @@ fn the_tutorial_survives_its_own_literal_instructions() {
         "the literal reading leaves the hauler hauling"
     );
     key(&mut game, &mut input, Key::B);
-    key(&mut game, &mut input, Key::Num1);
+    key(&mut game, &mut input, Key::R);
+    key(&mut game, &mut input, Key::Q);
     let ground = game.camera.to_screen(vec2(10.5, 4.5));
     apply_events(&mut game, &mut input, &click(ground.x, ground.y));
     assert!(
         game.pending.iter().any(
-            |c| matches!(&c.command, Command::Build { kind, .. } if *kind == BUILD_PALETTE[0])
+            |c| matches!(&c.command, Command::Build { kind, .. } if *kind == oxide_sim::BuildingKind::Turret)
         ),
         "B, digit, ground click staged the build: {:?}",
         game.pending
@@ -4351,7 +4362,12 @@ fn the_tutorial_survives_its_own_literal_instructions() {
         bank(&game),
         sentinel_cost
     );
-    key(&mut game, &mut input, Key::S); // train slot 2: the Sentinel
+    let home = game.home_foundry().unwrap().center();
+    let screen = game
+        .camera
+        .to_screen(vec2(home.x.to_num::<f32>(), home.y.to_num::<f32>()));
+    apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+    key(&mut game, &mut input, Key::E);
     game.do_tick();
     assert!(t.advance(&game.demo));
     assert_eq!(t.step, 4, "the fighter graduates the arming lesson");
@@ -5129,57 +5145,58 @@ fn an_automatic_upgrade_is_not_a_worker_target_or_a_scrappable_site() {
 
 #[test]
 fn construction_menu_shows_every_building_and_shortcuts_arm_the_visible_card() {
+    use crate::action::{BUILD_CATEGORIES, building_category};
     let mut game = headless_game();
     let mut input = InputState::new();
+    input.bindings = crate::action::BindingMap::classic();
+    let keys = [Key::Q, Key::E, Key::R, Key::T];
+    let key = |game: &mut Game, input: &mut InputState, key| {
+        apply_events(
+            game,
+            input,
+            &[RawEvent::KeyDown { key }, RawEvent::KeyUp { key }],
+        )
+    };
     dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
-    assert!(input.build_menu);
-    let panel = crate::panel::build_for_palette(&game, &input.bindings, true).unwrap();
+    let panel = crate::panel::build_for_input(&game, &input).unwrap();
     assert_eq!(panel.cards.len(), 13);
-    for card in &panel.cards {
+    for card in panel.cards {
         let crate::panel::CardAction::ArmBuild(kind) = card.action else {
-            panic!("construction card");
+            panic!("build card");
         };
-        let index = BUILD_PALETTE
+        input.close_construction();
+        key(&mut game, &mut input, Key::B);
+        let category = building_category(kind) as usize;
+        let index = BUILD_CATEGORIES[category]
+            .1
             .iter()
-            .position(|entry| *entry == kind)
+            .position(|k| *k == kind)
             .unwrap();
-        assert_eq!(
-            card.hotkey,
-            if index < 9 {
-                (index + 1).to_string()
-            } else {
-                format!("Shift+{}", index - 8)
-            }
+        key(&mut game, &mut input, keys[category]);
+        assert_eq!(input.build_category, Some(category as u8));
+        // Shift remains queue semantics, never a different building.
+        apply_events(
+            &mut game,
+            &mut input,
+            &[RawEvent::KeyDown { key: Key::Shift }],
         );
-        input.build_menu = true;
-        let key = [
-            Key::Num1,
-            Key::Num2,
-            Key::Num3,
-            Key::Num4,
-            Key::Num5,
-            Key::Num6,
-            Key::Num7,
-            Key::Num8,
-            Key::Num9,
-        ][if index < 9 { index } else { index - 9 }];
-        let mut events = Vec::new();
-        if index >= 9 {
-            events.push(RawEvent::KeyDown { key: Key::Shift });
-        }
-        events.extend([RawEvent::KeyDown { key }, RawEvent::KeyUp { key }]);
-        if index >= 9 {
-            events.push(RawEvent::KeyUp { key: Key::Shift });
-        }
-        apply_events(&mut game, &mut input, &events);
-        assert_eq!(input.placing, Some(kind), "{}", card.hotkey);
-        assert!(!input.build_menu);
+        key(&mut game, &mut input, keys[index]);
+        apply_events(
+            &mut game,
+            &mut input,
+            &[RawEvent::KeyUp { key: Key::Shift }],
+        );
+        assert_eq!(
+            input.placing,
+            card.enabled.then_some(kind),
+            "{}",
+            card.title
+        );
+        assert!(game.pending.is_empty(), "arming never spends scrap");
     }
-    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
-    assert!(!input.construction_open());
-    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
-    assert!(input.build_menu);
-    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    input.close_construction();
+    key(&mut game, &mut input, Key::B);
+    key(&mut game, &mut input, Key::B);
     assert!(!input.construction_open());
 }
 
@@ -5527,4 +5544,163 @@ fn selecting_an_unfinished_mine_does_not_reveal_its_condition_after_concealment(
     );
     apply_events(&mut game, &mut input, &click(point.x, point.y));
     assert!(game.selection.buildings.is_empty());
+}
+
+fn controls_key(game: &mut Game, input: &mut InputState, key: Key) {
+    apply_events(
+        game,
+        input,
+        &[RawEvent::KeyDown { key }, RawEvent::KeyUp { key }],
+    );
+}
+
+#[test]
+fn group_recall_from_production_or_construction_never_purchases_anything() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    input.bindings = crate::action::BindingMap::classic();
+    let worker = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human)
+        .unwrap()
+        .id;
+    game.selection.units = vec![worker];
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::KeyDown { key: Key::Ctrl }],
+    );
+    controls_key(&mut game, &mut input, Key::Num1);
+    apply_events(&mut game, &mut input, &[RawEvent::KeyUp { key: Key::Ctrl }]);
+    game.selection.units.clear();
+    game.selection.buildings = vec![game.home_foundry().unwrap().id];
+    controls_key(&mut game, &mut input, Key::Num1);
+    assert_eq!(game.selection.units, vec![worker]);
+    assert!(game.selection.buildings.is_empty());
+    assert!(game.pending.is_empty());
+    controls_key(&mut game, &mut input, Key::B);
+    controls_key(&mut game, &mut input, Key::R);
+    controls_key(&mut game, &mut input, Key::Q);
+    assert!(input.placing.is_some());
+    controls_key(&mut game, &mut input, Key::Num1);
+    assert!(!input.construction_open());
+    assert!(input.armed_mode().is_none());
+    assert!(game.pending.is_empty());
+    game.selection.units.clear();
+    controls_key(&mut game, &mut input, Key::S);
+    controls_key(&mut game, &mut input, Key::H);
+    controls_key(&mut game, &mut input, Key::Q);
+    assert!(game.pending.is_empty(), "no hidden home production aliases");
+}
+
+#[test]
+fn remapped_construction_sequence_arms_every_enabled_card_without_shift_changing_it() {
+    use crate::action::{Action, BUILD_CATEGORIES, BindingMap, Chord};
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.players[0].scrap = 10000;
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Fabricator,
+        x: 9,
+        y: 3,
+    });
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+    let mut input = InputState::new();
+    input.bindings = BindingMap::classic();
+    for (category, (_, kinds)) in BUILD_CATEGORIES.into_iter().enumerate() {
+        assert!(input.bindings.rebind(
+            Action::BuildCategory(category as u8),
+            Chord::ctrl([Key::J, Key::K, Key::L, Key::O][category])
+        ));
+        for kind in kinds {
+            let action = Action::Build(*kind);
+            let old = input.bindings.chord_for(action).unwrap();
+            assert!(input.bindings.rebind(action, Chord::ctrl(old.key)));
+            input.close_construction();
+            controls_key(&mut game, &mut input, Key::B);
+            apply_events(
+                &mut game,
+                &mut input,
+                &[
+                    RawEvent::KeyDown { key: Key::Ctrl },
+                    RawEvent::KeyDown { key: Key::Shift },
+                ],
+            );
+            controls_key(
+                &mut game,
+                &mut input,
+                [Key::J, Key::K, Key::L, Key::O][category],
+            );
+            let panel = crate::panel::build_for_input(&game, &input).unwrap();
+            let card = panel
+                .cards
+                .iter()
+                .find(|c| c.action == crate::panel::CardAction::ArmBuild(*kind))
+                .unwrap();
+            assert!(card.enabled, "{}: {:?}", card.title, card.why);
+            assert!(card.hotkey.contains("Ctrl+"));
+            controls_key(&mut game, &mut input, old.key);
+            assert_eq!(input.placing, Some(*kind));
+            apply_events(
+                &mut game,
+                &mut input,
+                &[
+                    RawEvent::KeyUp { key: Key::Ctrl },
+                    RawEvent::KeyUp { key: Key::Shift },
+                ],
+            );
+        }
+    }
+}
+
+#[test]
+fn upgrade_and_rally_shortcuts_share_the_cards_owner_and_affordability_gates() {
+    use crate::action::{BindingMap, Chord};
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.players[0].scrap = 10000;
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Turret,
+        x: 9,
+        y: 3,
+    });
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Fabricator,
+        x: 12,
+        y: 3,
+    });
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+    let mut input = InputState::new();
+    input.bindings = BindingMap::classic();
+    assert!(input.bindings.rebind(Action::Upgrade, Chord::bare(Key::I)));
+    let turret = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == oxide_sim::BuildingKind::Turret)
+        .unwrap()
+        .id;
+    game.selection.buildings = vec![turret];
+    controls_key(&mut game, &mut input, Key::I);
+    assert!(
+        matches!(game.pending.last().unwrap().command, Command::UpgradeBuilding { building } if building == turret)
+    );
+    game.pending.clear();
+    let enemy = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.player != game.human)
+        .unwrap()
+        .id;
+    game.selection.buildings = vec![enemy];
+    controls_key(&mut game, &mut input, Key::I);
+    assert!(game.pending.is_empty());
+    let foundry = game.home_foundry().unwrap().id;
+    game.selection.buildings = vec![foundry];
+    controls_key(&mut game, &mut input, Key::Y);
+    assert_eq!(input.rallying, vec![foundry]);
 }
