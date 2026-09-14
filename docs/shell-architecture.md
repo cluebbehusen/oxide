@@ -218,10 +218,37 @@ Procedural quarry boundaries and pits derive from map geometry with fog-aware
 visibility. Animation, heading, and weapon effects use the relevant simulation
 state rather than inventing movement or firing delays.
 
-`unit_lod` derives minified sprites at startup without changing authored atlas
-bytes. `strategic_markers` supplies role and allegiance cues at distant zoom.
-Both preserve visibility, entity positions, selection, and picking. Native
-presentation uses logical coordinates with DPI-aware sampling.
+`entity_lod` derives full, half, quarter, and eighth-resolution entity textures
+at startup without changing authored atlas bytes. Regions pack in descending
+size order to avoid wasting full-height rows on small mips. Independent regions
+have extruded borders; reduction, linear sampling, level blending, and
+compositing retain premultiplied alpha. Physical destination size, including DPI
+and both axes, selects levels with a fixed -0.4 detail bias. Secondary UVs and
+blend weights travel in vertex data; immutable page materials preserve batching
+without reordering translucent layers. The material also handles ordinary
+straight-alpha 2D draws and remains active until the screen boundary. Terrain
+and unrelated effects keep nearest-neighbor sampling. Panel and roster portraits
+share this bank, frame visible alpha bounds, and align to physical pixels.
+Layered portraits use union bounds to preserve the relative positions of bases
+and mounts. Construction subjects and scaffolds share the authored canvas; verb
+pictograms fill their destination without portrait cropping.
+
+`strategic_markers` supplies role and allegiance cues between 24 and 16 logical
+pixels per tile by default. Buildings retain subdued footprints beneath their
+markers; known unclaimed Extractor frames use amber brackets. Resource summaries
+use world-anchored cells and follow the transition slightly later. Each cell
+averages its tiles' visibility and the same bounded memory-age fade as world
+salvage. Marker visibility shares player exploration, known claims, apparent
+buildings, and remembered salvage with world rendering. Ghosts remain distinct
+from live observations. Entity positions, selection, picking, and simulation are
+unchanged.
+
+Settings persists marker timing (Standard 24/16, Earlier 30/22, Later 18/10) and
+size (75–150%) in `Config::markers`, applying changes immediately. Older configs
+adopt the defaults without resetting other preferences. Custom config endpoints
+are clamped to finite, ordered values. Logical marker dimensions keep
+readability consistent across display densities; sprite sampling independently
+uses physical pixels.
 
 Simulation events enqueue audio cues. The mixer applies user buses, repetition
 limits, and camera-relative attenuation. Continuous positional sounds are owned

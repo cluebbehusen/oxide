@@ -188,6 +188,22 @@ pub fn staleness_fade(age: f32) -> f32 {
     (age / 90.0).clamp(0.0, 1.0) * 0.55
 }
 
+/// Shared age of an honestly observed salvage tile in the presentation clock.
+pub(crate) fn resource_memory_opacity(
+    game: &crate::game::Game,
+    pos: chassis::grid::TilePos,
+) -> f32 {
+    let mut seen = game.last_seen.borrow_mut();
+    let now = game.fx_time();
+    if game.all_seeing() || game.my_vision().visible(pos) {
+        seen.insert((pos.x, pos.y), now);
+        1.0
+    } else {
+        let stamp = *seen.entry((pos.x, pos.y)).or_insert(now);
+        1.0 - staleness_fade(now - stamp)
+    }
+}
+
 mod chrome;
 mod destruction;
 pub(crate) mod entities;
@@ -595,7 +611,10 @@ pub(crate) fn draw_with_performance(
     draw_scorches(game, sprites);
     destruction::draw_ground_effects(game, sprites);
     draw_range_ground(game, input);
+    crate::strategic_markers::draw_resources(game);
+    crate::strategic_markers::draw_extractor_frames(game);
     draw_buildings(game, sprites);
+    crate::strategic_markers::draw_buildings(game);
     draw_units(game, sprites, alpha);
     crate::strategic_markers::draw_markers(game, alpha);
     draw_fx(game, sprites);

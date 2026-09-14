@@ -552,6 +552,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     render::set_user_scale(config.ui_scale);
     render::set_reduced_motion(config.reduced_motion);
     render::set_colorblind(config.colorblind);
+    crate::strategic_markers::set_prefs(config.markers);
     mark("config loaded");
     let sprites = assets::Sprites::load().await?;
     mark("sprites loaded");
@@ -823,6 +824,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             ctrl_at_frame_start,
             shift_at_frame_start,
         )?;
+        gl_use_default_material();
         screen = screen_frame.screen;
         let rerun = screen_frame.rerun;
         let profile_frame_active = screen_frame.profile_frame_active;

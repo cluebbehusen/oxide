@@ -257,6 +257,7 @@ fn draw_defense_mount(
     building: &oxide_sim::Building,
     action: Option<usize>,
 ) {
+    let draw = |x, y, tint, params| sprites.draw_building(x, y, tint, params, game.camera.zoom);
     let faction = game.state.player(building.player).faction;
     let screen = game
         .camera
@@ -277,7 +278,7 @@ fn draw_defense_mount(
         .aim_buildings
         .get(&building.id.0)
         .map_or(0.0, |(angle, _)| *angle);
-    sprites.draw(
+    draw(
         screen.x,
         screen.y,
         WHITE,
@@ -294,7 +295,7 @@ fn draw_defense_mount(
     };
     if let (Some(accent), Some(source)) = (seat_identity_tint(game, building.player), accent_source)
     {
-        sprites.draw(
+        draw(
             screen.x,
             screen.y,
             accent,
@@ -310,6 +311,7 @@ fn draw_defense_mount(
 
 pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
+    let draw = |x, y, tint, params| sprites.draw_building(x, y, tint, params, zoom);
     // Buildings an own crew is actively stripping (the salvage
     // read-back's fog-safe evidence).
     let salvaging: Vec<oxide_sim::BuildingId> = game
@@ -408,7 +410,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 }
             }
             for (source, color) in layers {
-                sprites.draw(
+                draw(
                     screen.x,
                     screen.y,
                     color,
@@ -481,7 +483,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             },
             |layers| layers[0],
         );
-        sprites.draw(
+        draw(
             screen.x,
             screen.y,
             WHITE,
@@ -493,7 +495,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         );
         let accent_tint = seat_identity_tint(game, building.player);
         if let Some(accent) = accent_tint {
-            sprites.draw(
+            draw(
                 screen.x,
                 screen.y,
                 accent,
@@ -515,7 +517,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             for (source, tint) in
                 std::iter::once((source, WHITE)).chain(accent_tint.map(|tint| (accent, tint)))
             {
-                sprites.draw(
+                draw(
                     screen.x,
                     screen.y,
                     tint,
