@@ -18,8 +18,7 @@ deliberately ignores. The complete scenario is embedded in a replay, so
 reconstruction does not depend on the original scenario file. Its seed
 initializes the simulation RNG. Each player-facing bot seat carries a separate
 personality seed in its configuration; `Brain::scripted` derives its profile
-from that seed, not the scenario seed. The profile-free Overseer QA constructor
-retains its documented scenario-seeded army-size jitter.
+from that seed, not the scenario seed.
 
 All outcome-relevant arithmetic uses fixed point or integers. Fixed-point vector
 scaling computes unsigned magnitudes before restoring the sign, preserving exact
@@ -37,11 +36,11 @@ Player-facing bot decision traces have the same one-way boundary. An opt-in
 `Brain::act_traced` call reports only facts already owned by the fog-honest
 coordinator while returning the same ordinary commands as `Brain::act`. The
 trace recorder is local to that call; traces are not controller memory,
-authoritative state, replay input, or replay metadata. Overseer and ticks on
-which no player-facing decision occurs produce no trace. Trace schema version 11
-reports current scrap separately from a bounded forecast based only on completed
-income sources, together with current builder and producer capacity. Proposal
-and allocation evidence records the coordinator's actual inputs and verdicts,
+authoritative state, replay input, or replay metadata. Ticks on which no
+player-facing decision occurs produce no trace. Trace schema version 11 reports
+current scrap separately from a bounded forecast based only on completed income
+sources, together with current builder and producer capacity. Proposal and
+allocation evidence records the coordinator's actual inputs and verdicts,
 including economic action and defensive proposal identities, exact building
 claims, exact repair ownership, refit income losses, and arbitrary-size layout
 conflicts, rather than reconstructing decisions after the fact. Battlefield
@@ -105,10 +104,10 @@ without a route penalty; remembered buildings alone cannot establish that
 occupation. Work observation also indexes active builders' occupied tiles once
 per decision. Fresh blocking foundations cannot displace those workers from
 their current work tiles; movement and completion release this protection
-without changing ordinary terrain routing or the frozen Overseer policy.
-Contested-harvest quarantine retains its separate complete-sweep and safe-return
-requirements. These components are reconstructed by replaying the observed
-command prefix, not serialized into authoritative `State`.
+without changing ordinary terrain routing. Contested-harvest quarantine retains
+its separate complete-sweep and safe-return requirements. These components are
+reconstructed by replaying the observed command prefix, not serialized into
+authoritative `State`.
 
 ## State construction and trust boundary
 
@@ -547,8 +546,7 @@ pre-match map and roster: a starting anchor is a reconnaissance prior rather
 than a current enemy contact, and an initial resource amount says nothing about
 later depletion. The briefing is immutable, stays separate from
 `StrategicIntelligence`, and is transformed once into the same latched seat
-orientation as the dynamic observation. The profile-free Overseer receives no
-briefing.
+orientation as the dynamic observation.
 
 Enemy buildings remain as last-seen ghosts until their footprint is observed
 again. Scrap and wreck amounts likewise freeze at the last visible value. Arrays
@@ -863,8 +861,7 @@ the procurement objective. A missing paid member releases preparation into
 bounded recovery without adopting a later birth. Bomber, ground-attack-air, and
 transport cohorts remain owned by persistent operations. Their outstanding work
 and fixed deadlines contribute economic capacity demand; they do not impose an
-unowned factory reserve. The profile-free Overseer retains its legacy production
-and construction order.
+unowned factory reserve.
 
 On connected ground, the air planner admits a force package only when current
 sight, the spendable current bank after prior reserves, completed recurring
@@ -1025,8 +1022,7 @@ footprints must preserve builder access, producer egress, and active resource
 routes. Exact builder-route prediction combines the public static terrain
 briefing with fog-honest observed dynamic blockers; public resource priors are
 not treated as live obstacles. The accepted proposal retains the scorer's exact
-site and builder through `BuildWith`. The frozen Overseer retains its legacy
-placement and sequential construction rules.
+site and builder through `BuildWith`.
 
 Voluntary defense checks a necessary current-capital bound before quoting each
 kind. It includes imported fixed claims and the maximum of the carrier floor and
@@ -1093,9 +1089,8 @@ contribute nothing because no unit can occupy them. Current contacts, remembered
 contacts, and uncleared public starting priors break otherwise equivalent sites
 toward credible hostile approaches. Sensor cases remain bounded below an
 immediate survival defense regardless of coverage, and compact maps may use a
-partial radar disc. The profile-free Overseer retains its legacy first-valid
-placement scan. Optimistic readiness bounds order candidates; exact route quotes
-stop once no remaining bound can beat the selected site's completion-time
+partial radar disc. Optimistic readiness bounds order candidates; exact route
+quotes stop once no remaining bound can beat the selected site's completion-time
 coverage.
 
 The player-facing budget counts each unique deferred construction claim until
@@ -1131,10 +1126,8 @@ protection releases its fund for that preparation before it can be reconsidered.
 A generic frontier nearer to a known enemy Foundry than to any projected own
 Foundry is not eligible, and only one unpaid Foundry claim may exist. This is
 controller discipline, not simulation escrow: automatic Repair Bay pulses
-continue to follow the ordinary bank rules. The profile-free Overseer retains
-its frozen legacy cap, policy, and lowering order. The simulation's command
-layer remains the final legality authority. `Brain::overseer` is a separate
-profile-free QA anchor.
+continue to follow the ordinary bank rules. The simulation's command layer
+remains the final legality authority.
 
 The current wire format deliberately has one maintained controller, `scripted`;
 only difficulty, stance, and personality seed are stored, not the resolved

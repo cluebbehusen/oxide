@@ -20,7 +20,6 @@
 //! [`Executive`] owns exact unit reservations and lowers the resulting
 //! [`Intent`]s to commands.
 //! [`Brain::scripted`] is the configurable player-facing opponent.
-//! [`Brain::overseer`] remains a separate QA yardstick.
 
 mod allocation;
 pub mod battlefield;
@@ -85,20 +84,6 @@ impl SeatBot {
         public_map: Arc<PublicMapBriefing>,
     ) -> Self {
         Self(Box::new(Brain::scripted(player, config, public_map)))
-    }
-
-    /// Creates a seat running the frozen Overseer QA controller.
-    pub fn overseer(player: crate::ids::PlayerId, scenario_seed: u64) -> Self {
-        Self(Box::new(Brain::overseer(player, scenario_seed)))
-    }
-
-    /// Creates the frozen QA controller with a policy identity that stays
-    /// fixed when an evaluation exchanges physical seats.
-    pub fn overseer_with_policy_seed(player: crate::ids::PlayerId, policy_seed: u64) -> Self {
-        Self(Box::new(Brain::overseer_with_policy_seed(
-            player,
-            policy_seed,
-        )))
     }
 
     /// Whether this seat is scheduled to think at this tick.
@@ -169,41 +154,6 @@ mod tests {
         let commands = seat.act(&state);
         assert!(!commands.is_empty(), "the opening think should be active");
         assert_eq!(commands, direct.act(&state));
-    }
-
-    #[test]
-    fn overseer_constructor_matches_the_direct_brain() {
-        let scenario = Scenario::skirmish();
-        let state = scenario.build().expect("the skirmish builds");
-        let player = PlayerId(1);
-        let mut seat = SeatBot::overseer(player, scenario.seed);
-        let mut direct = Brain::overseer(player, scenario.seed);
-
-        assert_eq!(seat.player(), direct.player());
-        assert_eq!(seat.0.profile(), direct.profile());
-        assert_eq!(seat.0.dials(), direct.dials());
-        let commands = seat.act(&state);
-        assert!(!commands.is_empty(), "the opening think should be active");
-        assert_eq!(commands, direct.act(&state));
-    }
-
-    #[test]
-    fn evaluation_overseer_moves_one_policy_identity_between_seats() {
-        let policy_seed = 73;
-        let left = SeatBot::overseer_with_policy_seed(PlayerId(0), policy_seed);
-        let right = SeatBot::overseer_with_policy_seed(PlayerId(1), policy_seed);
-        let legacy_left = Brain::overseer(PlayerId(0), policy_seed);
-        let legacy_right = Brain::overseer(PlayerId(1), policy_seed);
-
-        assert_eq!(left.0.dials(), right.0.dials());
-        assert_eq!(left.0.dials(), legacy_left.dials());
-        assert_ne!(
-            legacy_left.dials(),
-            legacy_right.dials(),
-            "this seed must reproduce the seat-dependent identity the evaluation constructor removes"
-        );
-        assert_eq!(left.player(), PlayerId(0));
-        assert_eq!(right.player(), PlayerId(1));
     }
 
     #[test]

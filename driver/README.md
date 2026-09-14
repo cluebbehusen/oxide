@@ -20,8 +20,8 @@ automated players use the same command path as every other player.
   stall-loop anomaly, and emits compact JSONL with candidate, scenario,
   tick-ceiling, exact-profile, and anomaly provenance. It can exchange complete
   controller configurations between seats for paired personality or difficulty
-  comparisons, or compare a player-facing profile with the frozen Overseer
-  through an evaluation-only command source. Persisted batches are staged and
+  comparisons, including crossed exact simulation seeds, personality seeds,
+  faction assignments, and geometry cells. Persisted batches are staged and
   never replace earlier evidence. Optional decision traces stream fog-honest
   controller diagnostics to a separate JSONL sidecar without entering compact
   rows or replays. A returned publication error rolls back files created by that
@@ -30,7 +30,8 @@ automated players use the same command path as every other player.
   atomically; inspect and remove that incomplete batch, then rerun it under a
   fresh candidate.
 - `audit`, `sweep`, `pace`, and `factorial`, plus the `matchup` CLI backed by
-  `oxide-kit`, measure maps, pacing, fairness, and combat behavior.
+  `oxide-kit`, measure map geometry, configured-bot pacing, seat effects, and
+  combat behavior.
 - `auto`, `smoke`, `shots`, and `profile` exercise the real shell where a
   headless run is not enough.
 
@@ -48,41 +49,40 @@ cargo run -p oxide-driver -- bot-eval skirmish --difficulty prime --paired
 cargo run -p oxide-driver -- bot-eval skirmish --difficulty prime \
   --opponent-difficulty standard --same-personality-seed --paired
 cargo run -p oxide-driver -- bot-eval skirmish \
-  --difficulty prime --stance balanced --against-overseer --paired \
+  --difficulty prime --stance balanced --opponent-difficulty standard --paired \
   --ticks 60000 --scenario-seeds 7000,7001 \
   --personality-seeds 9000,9001 --faction-cells fc,cf \
-  --geometries authored,rot180 --overseer-policy-seed 0 \
-  --candidate prime-overseer-a \
-  --out replays/prime-overseer-a.jsonl \
-  --replay-dir replays/prime-overseer-a
+  --geometries authored,rot180 \
+  --candidate prime-standard-a \
+  --out replays/prime-standard-a.jsonl \
+  --replay-dir replays/prime-standard-a
 cargo test -p oxide-driver --locked
 ```
 
-`--against-overseer` seats Overseer only inside the evaluation plan; it does not
-make the frozen QA controller available to ordinary scenarios or match setup.
-`--overseer-policy-seed` fixes Overseer's small legacy army-size jitter to one
-identity that moves unchanged between seats; it defaults to zero and is recorded
-in every row and replay description. Replay evidence requires `--out`, keeping
-the exact structured controller provenance beside every saved replay. For a
-controlled Prime-versus-Overseer block, cross `--faction-cells fc,cf` with
-`--geometries authored,rot180` and use `--paired` so controller, physical-seat,
-faction, and map-end effects can be separated. Supply independent
-`--scenario-seeds` and `--personality-seeds`: the former controls simulation
-randomness, the latter Prime's deterministic profile, and `bot-eval` evaluates
-their cross-product rather than confounding the two sources. The runner refuses
-nominal axis cells that resolve to the same executable matchup.
+Controlled comparisons cross `--faction-cells fc,cf` with
+`--geometries authored,rot180`. `--paired` exchanges complete controller
+profiles while holding the physical map and faction rosters fixed. Independent
+`--scenario-seeds` and `--personality-seeds` form a Cartesian product: the
+latter sets each cell's primary personality, with ordinary seat-seed assignment
+and `--same-personality-seed` semantics. `--runs` selects consecutive seed cells
+and cannot be combined with explicit axes. The runner refuses nominal cells that
+resolve to the same executable matchup. Replay evidence requires `--out`,
+keeping exact structured controller provenance beside every saved replay.
+
+`sweep`, `pace-sweep`, `sweep-factorial`, and `bench --scenario` accept
+`--difficulty`, `--stance`, and `--personality-seed`, defaulting to
+Standard/Balanced/zero. Every seat receives that same full profile, fixed across
+simulation seeds. Structured sweep reports and textual output identify the exact
+profile and simulation version. These results measure the configured bot
+interacting with the simulation; symmetric profiles do not isolate engine or map
+fairness. The synthetic mass-battle benchmark remains simulation-only.
 
 `--decision-trace-out` requires `--out` and an explicit candidate. It records
 only diagnostics produced by the player-facing controller at actual decision
-ticks; the frozen Overseer contributes no rows. The sidecar is captured during
-the authoritative evaluation run because reconstructing policy reasoning later
-from a replay may use different controller code. It is not replay input, and
-enabling it does not change the compact row, command stream, final hash, or
-replay payload.
-
-`--against-overseer` refuses a map whose seats share no ground route: the frozen
-Overseer has no severed-ground play, so such a cell would measure a missing
-capability rather than Prime. Compare player-facing profiles there instead.
+ticks for either seat. The sidecar is captured during the authoritative
+evaluation run because reconstructing policy reasoning later from a replay may
+use different controller code. It is not replay input, and enabling it does not
+change the compact row, command stream, final hash, or replay payload.
 
 Each `bot-eval` row reports rejected commands and stalled orders by reason. Its
 per-unit stall breakdown distinguishes one persistently blocked order from a
@@ -94,3 +94,20 @@ ceiling on an order a controller re-issues every think. The command-stream hash
 exposes different seed cells that nevertheless generated identical play. Treat
 those metrics as diagnostics; inspect the preserved replays and use human play
 and replay judgment to decide whether behavior is credible or fun.
+
+## Coverage boundaries
+
+`tests/hashes.rs` runs six small controller-free scenarios for economy,
+construction, ground combat, air transport, fog and targeting, and team victory.
+Each scenario asserts accepted commands and the expected events before comparing
+named milestone hashes. Independent execution, intermediate state round trips,
+and reconstruction of the recorded command stream are checked throughout.
+`tests/goldens/state-hashes.json` is shared by the existing cross-platform
+matrix.
+
+`tests/player_facing_hashes.rs` separately pins the current controller's state
+and command streams. The all-map integration harness seats Standard/Balanced
+bots with personality seed zero and checks activity, invariants, serialization,
+and elimination. Bot measurements describe that configured controller
+interacting with the simulation. The opening image and renderer showcase cover
+drawing without depending on an autonomous midgame.

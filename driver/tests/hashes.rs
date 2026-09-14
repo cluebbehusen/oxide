@@ -1,101 +1,14 @@
-//! Fixed state-hash fixtures: the cheap, image-free determinism tripwire.
-//!
-//! Every shipped scenario runs Overseer-vs-Overseer to two horizons and
-//! both state hashes are compared against `tests/goldens/state-hashes.json`.
-//! Any sim change that moves behavior shows up here as a one-line diff
-//! instead of golden PNG churn, and CI regenerates the file on every OS to
-//! prove the cross-platform bit-identical invariant.
-//!
-//! Two horizons because they see different eras: tick 2,000 is a cheap
-//! opening-and-economy tripwire, but Overseer-vs-Overseer matches resolve
-//! between roughly 5,600 and 36,000 ticks, so combat-phase drift (target
-//! selection, engagement radii, producer order under pressure) only moves
-//! the 6,000-tick rows. The 2,000-tick rows keep their original bare-name
-//! keys; the late rows are keyed `<map>@6000`.
-//!
-//! The fixture carries the `SIM_VERSION` it was blessed under, and the
-//! bless path refuses same-version movement mechanically. When existing
-//! rows move, inspect the drift and ask the user to choose the compatibility
-//! policy. Changing the workspace version or using `BLESS_SAME_VERSION=1`
-//! requires explicit approval from the human user; implementing a simulation
-//! change does not imply either approval.
+//! Focused rule contracts with cross-platform state hashes.
+//! Behavioral premises and results are checked before any golden can be blessed.
 
 mod support;
 
-use oxide_sim::Scenario;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use support::{Fixture, bless_gate, check_or_bless};
 
-const FIXTURE_TICKS: u64 = 2_000;
-const LATE_FIXTURE_TICKS: u64 = 6_000;
-
-fn compute_hashes() -> BTreeMap<String, String> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
-    let paths: Vec<PathBuf> = std::fs::read_dir(dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
-        .collect();
-    // Independent deterministic runs; the map keys restore a canonical
-    // order whatever the thread finish order.
-    let hashes: BTreeMap<String, String> = std::thread::scope(|scope| {
-        let handles: Vec<_> = paths
-            .iter()
-            .map(|path| {
-                scope.spawn(move || {
-                    let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-                    let scenario = Scenario::load(path)
-                        .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-                    // The fixtures pin the stable Overseer in every
-                    // seat so player-facing bot tuning cannot move this
-                    // rule-and-map tripwire accidentally.
-                    let mut state = scenario
-                        .build()
-                        .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-                    let mut bots: Vec<oxide_sim::bot::Brain> = (0..scenario.players.len())
-                        .map(|seat| {
-                            oxide_sim::bot::Brain::overseer(
-                                oxide_sim::PlayerId(seat as u8),
-                                scenario.seed,
-                            )
-                        })
-                        .collect();
-                    for _ in 0..FIXTURE_TICKS {
-                        let mut commands = Vec::new();
-                        for bot in &mut bots {
-                            commands.extend(bot.act(&state));
-                        }
-                        state.tick(&commands);
-                    }
-                    let early = oxide_protocol::hash_hex(state.hash());
-                    for _ in FIXTURE_TICKS..LATE_FIXTURE_TICKS {
-                        let mut commands = Vec::new();
-                        for bot in &mut bots {
-                            commands.extend(bot.act(&state));
-                        }
-                        state.tick(&commands);
-                    }
-                    let late = oxide_protocol::hash_hex(state.hash());
-                    [
-                        (name.clone(), early),
-                        (format!("{name}@{LATE_FIXTURE_TICKS}"), late),
-                    ]
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| h.join().expect("a fixture run panicked"))
-            .collect()
-    });
-    assert!(
-        hashes.len() >= 10,
-        "expected two rows per shipped map, found {}",
-        hashes.len()
-    );
-    hashes
-}
+#[path = "support/contracts.rs"]
+mod contracts;
 
 #[test]
 fn same_version_hash_movement_refuses_the_bless() {
@@ -147,8 +60,8 @@ fn a_different_version_or_fresh_fixture_licenses_the_bless() {
 }
 
 #[test]
-fn shipped_scenarios_match_hash_fixtures() {
-    let actual = compute_hashes();
+fn simulation_contracts_match_hash_fixtures() {
+    let actual = contracts::compute_hashes();
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/state-hashes.json");
     check_or_bless(&fixture, actual);
 }

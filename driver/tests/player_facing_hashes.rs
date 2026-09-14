@@ -1,13 +1,10 @@
 //! State-hash fixtures for the shipped player-facing controller.
 //!
-//! The Overseer fixtures deliberately pin the frozen QA controller in every
-//! seat, which leaves the configurable scripted opponent — the controller
-//! players actually meet — with no whole-behavior tripwire at all. These
-//! fixtures close that gap: representative shipped maps run with every seat
-//! driven through the shipped seating path (`oxide_sim::bot::seat_bots`,
-//! exactly as the shell and driver construct real matches) at Prime
-//! difficulty, Balanced stance, and fixed per-seat personality seeds, to a
-//! combat-phase horizon.
+//! Representative shipped maps run through `oxide_sim::bot::seat_bots`,
+//! the same seating path as the shell and driver, at Prime difficulty,
+//! Balanced stance, and fixed per-seat personality seeds to a combat horizon.
+//! These pin controller behavior independently of the controller-free rule
+//! scenarios in `state-hashes.json`.
 //!
 //! Two rows per map at the common 6,000-tick horizon: the state hash, and a
 //! running fold of the full command stream — each tick's commands folded with
@@ -19,7 +16,7 @@
 //! built.
 //!
 //! `tests/goldens/player-facing-hashes.json` obeys the same bless discipline
-//! as the Overseer golden. An intentional player-facing behavior change is
+//! as the simulation golden. An intentional player-facing behavior change is
 //! expected to move rows here while leaving `state-hashes.json` untouched.
 //! Inspect that drift and obtain explicit approval from the human user for
 //! either a version bump or a same-version bless before changing the workspace
