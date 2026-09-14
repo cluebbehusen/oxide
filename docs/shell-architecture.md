@@ -484,6 +484,25 @@ may show the static support radius without revealing whether an unseen enemy
 Foundry currently supplies the bonus. The panel and renderer both ask `State`
 for support rather than duplicating its footprint calculation.
 
+Economy coverage uses a thin muted-brass square boundary with a narrow inward
+fade on the ground beneath sprites. Active support connections stop outside the
+building footprints; small corner brackets mark the connected counterparts. The
+boundary and connections leave gaps around visible building footprints, without
+using hidden hostile buildings to cut holes in the overlay. The range edge
+remains visible through fog. Weapon, vision, radar, repair, and minimum range
+share the thin edges, restrained palette, inward ground fades, and gaps around
+visible buildings. Their distinct textures and capability icons preserve each
+meaning. Minimum range also has a faint ground wash within the exclusion zone.
+Ground and anti-air weapons share a targeting reticle and use distinct warm
+colors: orange-rust for ground attack and crimson-rose for anti-air. Anti-air
+reticles contain a small aircraft mark. Both unit and building indicators derive
+that distinction from the weapon's target domain, including upgraded buildings
+and placement previews. Panel capability icons use the same attack palette and
+reticle distinction. Selected units and building-placement previews use the same
+treatment. Fades stay inside the exact range boundary and beneath sprites;
+patterned strokes carry exact dash and gap lengths across path vertices in
+logical screen pixels.
+
 `oxide-kit` also contains a tiny-skia CPU renderer. It is a deliberately plain,
 whole-map schematic used for deterministic goldens and headless screenshots. It
 does not share the GPU renderer's atlas, camera, fog composition, HUD,
