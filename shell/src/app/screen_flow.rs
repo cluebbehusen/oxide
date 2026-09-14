@@ -134,7 +134,12 @@ pub(super) fn update_and_draw(
                             app.input.reset_session();
                             next = Some(Screen::Playing);
                         }
-                        Err(error) => app.game.toast(format!("Recovery unavailable: {error:#}")),
+                        Err(error) => {
+                            app.menu_notice = Some((
+                                format!("Recovery unavailable: {error:#}"),
+                                get_time() + 8.0,
+                            ));
+                        }
                     }
                 }
                 screens::home::Out::Continue => {
