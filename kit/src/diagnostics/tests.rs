@@ -229,3 +229,47 @@ fn watchdog_updates_when_stalled_workers_change_without_full_resumption() {
     assert_eq!(incidents()[3]["kind"], "progress resumed");
     cleanup(root, writer, recorder);
 }
+
+#[test]
+fn every_shell_screen_keeps_its_identity_in_persisted_context() {
+    let (root, writer) = recording();
+    let recorder = Recorder::start(writer.clone()).unwrap();
+    for (mode, id) in [
+        ("playing", 1),
+        ("pause", 2),
+        ("playback", 3),
+        ("home", 4),
+        ("settings", 5),
+        ("wizard", 6),
+        ("codex", 7),
+        ("replays", 8),
+        ("results", 9),
+        ("final_map", 10),
+    ] {
+        recorder.frame(FrameContext {
+            mode,
+            tick: 0,
+            units: 0,
+            buildings: 0,
+            speed: 1.0,
+            width: 1280,
+            height: 800,
+            dpi: 1.0,
+            paused: true,
+            minimized: None,
+        });
+        let context = recorder.inner.context();
+        assert_eq!(context["screen"], id);
+        assert_eq!(
+            context["screen_names"][id.to_string()],
+            if mode == "pause" { "paused" } else { mode }
+        );
+        persist(&recorder.inner, "context.json", &context);
+        let stored: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(writer.directory().join("context.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored["screen"], id);
+    }
+    cleanup(root, writer, recorder);
+}
