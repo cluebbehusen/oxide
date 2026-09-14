@@ -5,8 +5,16 @@ use std::sync::mpsc::{self, Receiver};
 #[derive(Default)]
 pub(crate) struct ReportJob {
     receiver: Option<Receiver<Result<String, String>>>,
+    playback: Option<std::sync::Arc<oxide_kit::recovery::RecoveryWriter>>,
 }
 impl ReportJob {
+    pub(crate) fn remember_playback(
+        &mut self,
+        recording: Option<&std::sync::Arc<oxide_kit::recovery::RecoveryWriter>>,
+    ) {
+        self.playback = recording.cloned();
+    }
+
     fn begin(
         &mut self,
         name: &str,
@@ -31,9 +39,11 @@ impl ReportJob {
             .clone()
             .or_else(crate::paths::recovery_dir)
             .context("diagnostics folder unavailable")?;
-        let active = (game.state.current_tick() > 0)
-            .then(|| game.recovery.clone())
-            .flatten();
+        let active = self.playback.clone().or_else(|| {
+            (game.state.current_tick() > 0)
+                .then(|| game.recovery.clone())
+                .flatten()
+        });
         self.begin("oxide-report-export", move || {
             if let Some(writer) = &active {
                 let status = writer.status();
@@ -102,6 +112,64 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn playback_report_retains_its_source_after_leaving_a_viewer_over_a_live_match() {
+        use crate::screens::playback::PlaybackSession;
+        use oxide_kit::recovery::{RecordingKind, inspect};
+        let root =
+            std::env::temp_dir().join(format!("oxide-report-playback-{}", std::process::id()));
+        let mut live = crate::game::Game::new(oxide_sim::Scenario::skirmish()).unwrap();
+        live.recovery_root = Some(root.clone());
+        live.advance_ticks(2);
+        let mut source =
+            oxide_kit::GameReplay::new(oxide_sim::SIM_VERSION, oxide_sim::Scenario::skirmish());
+        source.setup.name = "Watched replay".into();
+        source.meta.ticks = Some(100);
+        let mut playback = PlaybackSession::from_replay(source.clone()).unwrap();
+        playback.configure_diagnostics(false, Some(&root));
+        assert!(playback.recording.is_none());
+        playback.configure_diagnostics(true, Some(&root));
+        let writer = playback.recording.as_ref().unwrap().clone();
+        until(|| writer.status().ready);
+        let mut job = ReportJob::default();
+        job.remember_playback(playback.recording.as_ref());
+        playback.finish_diagnostics();
+        drop(playback);
+        assert!(writer.status().clean);
+        job.start(&live).unwrap();
+        until(|| job.poll().is_some_and(|result| result.is_ok()));
+        let report_path = std::fs::read_dir(root.join("reports"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let report = inspect(&report_path).unwrap();
+        assert_eq!(report.kind, RecordingKind::Playback);
+        assert_eq!(report.replay.setup.name, "Watched replay");
+        assert_eq!(report.replay.meta.ticks, Some(100));
+        assert_eq!(live.state.current_tick(), 2);
+        assert_eq!(live.recorder.setup.name, "Skirmish Basin");
+        job.remember_playback(None);
+        assert!(job.playback.is_none());
+        let directories = [
+            writer.directory().to_owned(),
+            live.recovery.as_ref().unwrap().directory().to_owned(),
+        ];
+        drop(writer);
+        drop(live);
+        drop(job);
+        for directory in directories {
+            until(|| {
+                std::fs::File::open(directory.join("lease"))
+                    .unwrap()
+                    .try_lock()
+                    .is_ok()
+            });
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

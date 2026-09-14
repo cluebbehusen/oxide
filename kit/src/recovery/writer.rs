@@ -69,9 +69,24 @@ impl RecoveryWriter {
     /// Retire a recovered source only after its replacement baseline is durable.
     pub fn start_recovered(
         root: PathBuf,
+        base: GameReplay,
+        tick: u64,
+        source: Option<PathBuf>,
+    ) -> Result<Self> {
+        Self::start_recording(root, base, tick, source, RecordingKind::LiveMatch)
+    }
+
+    /// Retain a watched replay for diagnostics without offering it as a resumable match.
+    pub fn start_playback(root: PathBuf, base: GameReplay, ticks: u64) -> Result<Self> {
+        Self::start_recording(root, base, ticks, None, RecordingKind::Playback)
+    }
+
+    fn start_recording(
+        root: PathBuf,
         mut base: GameReplay,
         tick: u64,
         source: Option<PathBuf>,
+        kind: RecordingKind,
     ) -> Result<Self> {
         ensure!(
             source
@@ -92,6 +107,7 @@ impl RecoveryWriter {
         base.meta.ticks = Some(tick);
         let directory = root.join(&session);
         let header = Header {
+            kind,
             session,
             build: BuildIdentity::default(),
             base,
@@ -257,7 +273,19 @@ fn run(
 ) -> Result<()> {
     let source_lease = source
         .as_ref()
-        .map(|source| read_lease(source).context("recovered source is still active"))
+        .map(|source| {
+            let claim =
+                inactive(source).context("recovered source is active or already claimed")?;
+            ensure!(
+                !source.join("superseded.json").try_exists()?,
+                "recovered source has already been superseded"
+            );
+            ensure!(
+                inspect(source)?.kind == RecordingKind::LiveMatch,
+                "playback diagnostics cannot become a recovered live match"
+            );
+            Ok::<_, anyhow::Error>(claim)
+        })
         .transpose()?;
     std::fs::create_dir_all(root)?;
     let budget = File::options()
@@ -389,6 +417,11 @@ fn run(
         match message {
             Ok(queued) => {
                 shared.pending.fetch_sub(queued.bytes, Ordering::AcqRel);
+                ensure!(
+                    header.kind == RecordingKind::LiveMatch
+                        || matches!(queued.event, Event::Clean { .. }),
+                    "playback source replay is immutable"
+                );
                 match &queued.event {
                     Event::Prepared { tick: at, commands } => {
                         ensure!(

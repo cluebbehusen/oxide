@@ -696,9 +696,19 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 app.menu_notice = Some((text, get_time() + 8.0));
             }
         }
-        app.game
-            .configure_diagnostics(app.args.diagnostics || app.config.diagnostics);
-        if let Some(recorder) = &app.game.diagnostics {
+        let enabled = app.args.diagnostics || app.config.diagnostics;
+        if let Screen::Playback(playback) = &mut screen {
+            app.game.configure_diagnostics(false);
+            playback.configure_diagnostics(enabled, app.game.recovery_root.as_deref());
+            app.report_job
+                .remember_playback(playback.recording.as_ref());
+        } else {
+            app.game.configure_diagnostics(enabled);
+            if matches!(screen, Screen::Playing) {
+                app.report_job.remember_playback(None);
+            }
+        }
+        if let Some(recorder) = visible_diagnostics(&screen, &app) {
             let (diagnostic_tick, diagnostic_units, diagnostic_buildings) =
                 visible_profile_state(&screen, &app);
             recorder.frame(oxide_kit::diagnostics::FrameContext {
@@ -718,9 +728,8 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 minimized: input::reported_minimized(),
             });
         }
-        let input_diagnostic_scope = app
-            .game
-            .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+        let input_diagnostic_scope =
+            visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Input);
         app.game.poll_recovery();
         let dt = get_frame_time();
         if let Some(rx) = &debug_rx {
@@ -738,12 +747,10 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         }
 
         drop(input_diagnostic_scope);
-        let frame_diagnostic_scope = app
-            .game
-            .diagnostic_span(oxide_kit::diagnostics::Phase::Frame);
-        let screen_diagnostic_scope = app
-            .game
-            .diagnostic_span(oxide_kit::diagnostics::Phase::Screen);
+        let frame_diagnostic_scope =
+            visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Frame);
+        let screen_diagnostic_scope =
+            visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Screen);
         // Debug requests are control-plane work between presented frames, not
         // native frame work. Start timing after draining them so Resume and
         // status polling cannot become an artificial slow frame.
@@ -767,9 +774,8 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         render::set_viewport(screen_width(), screen_height());
         app.game.camera.update(dt);
 
-        let input_diagnostic_scope = app
-            .game
-            .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+        let input_diagnostic_scope =
+            visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Input);
         let mut events = if app.args.automation {
             Vec::new()
         } else {
@@ -970,7 +976,12 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             // raises the failure dialog instead of exiting over data loss.
             app.config.save().ok();
             match autosave::save(&mut app.game) {
-                Ok(_) => std::process::exit(0),
+                Ok(_) => {
+                    if let Screen::Playback(playback) = &screen {
+                        playback.finish_diagnostics();
+                    }
+                    std::process::exit(0)
+                }
                 Err(err) => {
                     app.game.paused = true;
                     // The dialog's home-vs-match classification must
@@ -1003,9 +1014,8 @@ pub(crate) async fn run(args: Args) -> Result<()> {
 
         drop(screen_diagnostic_scope);
         drop(frame_diagnostic_scope);
-        let wait_diagnostic_scope = app
-            .game
-            .diagnostic_span(oxide_kit::diagnostics::Phase::FrameWait);
+        let wait_diagnostic_scope =
+            visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::FrameWait);
         next_frame().await;
         drop(wait_diagnostic_scope);
     }
@@ -1030,6 +1040,25 @@ fn resume(
 /// would only reject.
 fn can_surrender(game: &Game) -> bool {
     !game.state.player(game.human).resigned && game.home_foundry().is_some()
+}
+
+fn visible_diagnostics<'a>(
+    screen: &'a Screen,
+    app: &'a App,
+) -> Option<&'a oxide_kit::diagnostics::Recorder> {
+    match screen {
+        Screen::Playback(playback) => playback.diagnostics.as_ref(),
+        _ => app.game.diagnostics.as_ref(),
+    }
+}
+
+fn visible_diagnostic_span(
+    screen: &Screen,
+    app: &App,
+    phase: oxide_kit::diagnostics::Phase,
+) -> Option<oxide_kit::diagnostics::Span> {
+    visible_diagnostics(screen, app)
+        .and_then(|recorder| recorder.span(phase, visible_tick(screen, app)))
 }
 
 fn visible_tick(screen: &Screen, app: &App) -> u64 {

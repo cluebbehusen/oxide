@@ -49,8 +49,10 @@ Settings provides **Diagnostics**, **Open diagnostics folder**, and **Export
 diagnostic report**. Detailed capture defaults Off; `--diagnostics` enables it
 for one launch. Reports stay local and contain a replay plus available phase,
 frame, and suspected-stall evidence. Diagnostic capture does not require the
-debug server. `diagnostic_report` runs exports and folder operations off the
-frame thread; `kit::recovery` and `kit::diagnostics` own bounded persistence.
+debug server. After leaving a recorded playback, export retains that viewer's
+report source until live play resumes. `diagnostic_report` runs exports and
+folder operations off the frame thread; `kit::recovery` and `kit::diagnostics`
+own bounded persistence.
 
 See [the persistence contract](../docs/shell-architecture.md) for durability,
 retention, compatibility, and timing semantics. Recovery warnings mean the

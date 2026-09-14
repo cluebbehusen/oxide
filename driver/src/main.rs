@@ -494,7 +494,7 @@ fn main() -> Result<()> {
                     "running_build": oxide_kit::recovery::BuildIdentity::default(),
                     "scenario": record.replay.setup.name, "ticks": record.replay.meta.ticks,
                     "commands": record.replay.commands.len(), "prepared_commands": record.prepared.as_ref().map(Vec::len),
-                    "clean": record.clean, "issue": record.issue
+                    "clean": record.clean, "issue": record.issue, "kind": record.kind
                 }))?
             );
         }

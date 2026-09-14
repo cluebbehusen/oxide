@@ -19,6 +19,19 @@ use oxide_sim::{
 use std::collections::HashMap;
 use std::ops::Deref;
 
+pub(crate) fn finish_recording(writer: &oxide_kit::recovery::RecoveryWriter, tick: u64) {
+    writer.finish(tick);
+    // Only the existing explicit leave/save path waits. A failed or slow
+    // writer leaves an interrupted record, even if the ordinary save landed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while !writer.status().clean
+        && writer.status().error.is_none()
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 /// Seconds per sim tick.
 pub const TICK_DT: f32 = 1.0 / TICKS_PER_SECOND as f32;
 /// Ticks a single frame may run before we let rendering catch up. Sized
@@ -479,16 +492,7 @@ impl Game {
 
     pub(crate) fn finish_recovery(&self) {
         if let Some(writer) = &self.recovery {
-            writer.finish(self.state.current_tick());
-            // Only the existing explicit leave/save path waits. A failed or slow
-            // writer leaves an interrupted record, even if the ordinary save landed.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-            while !writer.status().clean
-                && writer.status().error.is_none()
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            finish_recording(writer, self.state.current_tick());
         }
     }
 

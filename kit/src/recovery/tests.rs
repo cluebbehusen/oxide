@@ -12,6 +12,7 @@ fn encoded(events: Vec<Event>) -> Vec<u8> {
     write_frame(
         &mut bytes,
         &Header {
+            kind: RecordingKind::LiveMatch,
             session: "test".into(),
             build: BuildIdentity::default(),
             base: base(),
@@ -163,6 +164,7 @@ fn empty_ticks_and_resumed_prefixes_retain_their_duration() {
     write_frame(
         &mut bytes,
         &Header {
+            kind: RecordingKind::LiveMatch,
             session: "resume".into(),
             build: BuildIdentity::default(),
             base: record.replay,
@@ -543,4 +545,139 @@ fn a_first_tick_failure_can_be_reported_without_offering_an_empty_resume() {
     assert!(inspected.replay.commands.is_empty());
     assert_eq!(inspected.prepared, Some(vec![command()]));
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn recovered_source_can_be_claimed_once_even_by_cached_callers() {
+    let root = temp();
+    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    writer.prepared(0, &[]);
+    writer.completed(1);
+    wait(&writer, |status| status.durable_tick == 1);
+    let source = writer.directory().to_owned();
+    drop(writer);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while inactive(&source).is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let replay = inspect(&source).unwrap().replay;
+    let a = RecoveryWriter::start_recovered(root.clone(), replay.clone(), 1, Some(source.clone()))
+        .unwrap();
+    let b = RecoveryWriter::start_recovered(root.clone(), replay.clone(), 1, Some(source.clone()))
+        .unwrap();
+    for writer in [&a, &b] {
+        wait(writer, |status| status.ready || status.error.is_some());
+    }
+    assert_ne!(a.status().ready, b.status().ready);
+    let (winner, loser) = if a.status().ready { (&a, &b) } else { (&b, &a) };
+    assert!(!loser.directory().exists());
+    let marker = std::fs::read(source.join("superseded.json")).unwrap();
+    let marker_json: serde_json::Value = serde_json::from_slice(&marker).unwrap();
+    assert_eq!(
+        marker_json["by"],
+        winner.directory().file_name().unwrap().to_str().unwrap()
+    );
+    let late =
+        RecoveryWriter::start_recovered(root.clone(), replay, 1, Some(source.clone())).unwrap();
+    wait(&late, |status| status.error.is_some());
+    assert!(
+        late.status()
+            .error
+            .unwrap()
+            .contains("already been superseded")
+    );
+    assert!(!late.directory().exists());
+    assert_eq!(
+        std::fs::read(source.join("superseded.json")).unwrap(),
+        marker
+    );
+    let winner_path = winner.directory().to_owned();
+    drop((a, b, late));
+    while inactive(&winner_path).is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn playback_recordings_export_the_full_source_but_never_offer_live_recovery() {
+    let root = temp();
+    let mut replay = base();
+    replay.record(0, command());
+    replay.meta.ticks = Some(20);
+    let writer = RecoveryWriter::start_playback(root.clone(), replay.clone(), 20).unwrap();
+    wait(&writer, |status| status.ready);
+    let source = writer.directory().to_owned();
+    export(&source, &root.join("report")).unwrap();
+    let report = inspect(&root.join("report")).unwrap();
+    assert_eq!(report.kind, RecordingKind::Playback);
+    assert_eq!(
+        chassis::hash::state_hash(&report.replay),
+        chassis::hash::state_hash(&replay)
+    );
+    drop(writer);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while inactive(&source).is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(latest_interrupted(&root).is_none());
+    assert_eq!(latest_diagnostic_record(&root).unwrap().directory, source);
+    let invalid =
+        RecoveryWriter::start_recovered(root.clone(), replay, 20, Some(source.clone())).unwrap();
+    wait(&invalid, |status| status.error.is_some());
+    assert!(
+        invalid
+            .status()
+            .error
+            .unwrap()
+            .contains("playback diagnostics")
+    );
+    assert!(!invalid.directory().exists());
+    assert!(!source.join("superseded.json").exists());
+    drop(invalid);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn recording_kind_defaults_for_legacy_headers_and_rejects_unknown_or_mutating_playback() {
+    let header = Header {
+        kind: RecordingKind::LiveMatch,
+        session: "legacy".into(),
+        build: BuildIdentity::default(),
+        base: base(),
+    };
+    let mut json = serde_json::to_value(&header).unwrap();
+    json.as_object_mut().unwrap().remove("kind");
+    let mut bytes = MAGIC.to_vec();
+    write_frame(&mut bytes, &json).unwrap();
+    assert_eq!(
+        inspect_reader(&mut bytes.as_slice()).unwrap().kind,
+        RecordingKind::LiveMatch
+    );
+    json["kind"] = "unknown".into();
+    let mut bytes = MAGIC.to_vec();
+    write_frame(&mut bytes, &json).unwrap();
+    assert!(inspect_reader(&mut bytes.as_slice()).is_err());
+    json["kind"] = "playback".into();
+    let mut bytes = MAGIC.to_vec();
+    write_frame(&mut bytes, &json).unwrap();
+    write_frame(
+        &mut bytes,
+        &Record {
+            session: "legacy".into(),
+            sequence: 0,
+            event: Event::Prepared {
+                tick: 0,
+                commands: vec![command()],
+            },
+        },
+    )
+    .unwrap();
+    let inspection = inspect_reader(&mut bytes.as_slice()).unwrap();
+    assert!(inspection.issue.unwrap().contains("immutable"));
+    assert!(inspection.prepared.is_none());
+    assert!(inspection.replay.commands.is_empty());
 }

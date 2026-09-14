@@ -113,7 +113,9 @@ failure or queue exhaustion stops capture with a visible warning while gameplay
 continues. Flush cadence is a target, not a guaranteed loss bound. Clean exit
 requires a durable completion marker; force quit can preserve only bytes already
 written. Recovery retires the interrupted source only after its replacement
-baseline is durable and the original diagnostic evidence has been preserved.
+baseline is durable and the original diagnostic evidence has been preserved. An
+exclusive source claim prevents concurrent or stale callers from recovering an
+already-retired record.
 
 Filesystem leases protect active writers and report readers from retention.
 Managed sessions have bounded counts and storage; active records and malformed
@@ -133,6 +135,11 @@ owns both the playback engine and a `Game` used as its render vehicle. Debug
 state and clock requests target the playback engine; camera and overlay requests
 target its render vehicle. UI, profiling, and diagnostic context describe the
 visible session. Authoritative session mutations are refused.
+
+Playback diagnostics retain the complete watched replay in a separate recording.
+Its kind identifies viewer evidence, so it can be exported after a force quit
+without appearing as a resumable live match. The hidden live game's recovery
+history remains separate.
 
 The ordinary shelf resumes unfinished records, preventing fog-free viewing from
 scouting a live match. Completed records can be watched. Developer `--watch` may

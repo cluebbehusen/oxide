@@ -46,9 +46,22 @@ impl Default for BuildIdentity {
     }
 }
 
+/// Whether a recording can resume live play or only reproduce a viewer session.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingKind {
+    /// A live match's completed command history.
+    #[default]
+    LiveMatch,
+    /// The complete source replay retained for playback diagnostics.
+    Playback,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Header {
+    #[serde(default)]
+    kind: RecordingKind,
     session: String,
     build: BuildIdentity,
     #[serde(deserialize_with = "crate::replay::deserialize_replay")]
@@ -78,6 +91,8 @@ pub(crate) enum Event {
 /// An intact replay prefix and separately labelled evidence beyond that prefix.
 #[derive(Serialize)]
 pub struct Inspection {
+    /// Whether the record belongs to live play or replay viewing.
+    pub kind: RecordingKind,
     /// Recorded build, which may differ even when SIM_VERSION matches.
     pub build: BuildIdentity,
     /// Unique recording identity.
@@ -207,6 +222,12 @@ fn inspect_report(directory: &Path) -> Result<Inspection> {
         "invalid report prepared tick"
     );
     Ok(Inspection {
+        kind: manifest
+            .get("kind")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default(),
         build: serde_json::from_value(manifest["build"].clone())?,
         session,
         replay,
@@ -245,6 +266,7 @@ fn inspect_reader(reader: &mut impl Read) -> Result<Inspection> {
         "recovery command limit"
     );
     let mut result = Inspection {
+        kind: header.kind,
         build: header.build,
         session: header.session,
         replay: header.base,
@@ -272,6 +294,11 @@ fn inspect_reader(reader: &mut impl Read) -> Result<Inspection> {
                 "session or sequence discontinuity"
             );
             ensure!(!result.clean, "record after clean close");
+            ensure!(
+                result.kind == RecordingKind::LiveMatch
+                    || matches!(record.event, Event::Clean { .. }),
+                "playback source replay is immutable"
+            );
             match &record.event {
                 Event::Prepared { tick: at, commands } => {
                     ensure!(
@@ -380,7 +407,10 @@ fn latest_record(root: &Path, require_completed_tick: bool) -> Option<Interrupte
                         .as_str()
                         .is_some_and(|by| by.starts_with("session-"))
             });
-        if !record.clean && !superseded && (!require_completed_tick || ticks > 0) {
+        if !record.clean
+            && !superseded
+            && (!require_completed_tick || (ticks > 0 && record.kind == RecordingKind::LiveMatch))
+        {
             return Some(InterruptedMatch {
                 directory,
                 ticks,
@@ -425,7 +455,7 @@ pub fn export(directory: &Path, destination: &Path) -> Result<()> {
         record.replay.save(destination.join("replay.json"))?;
         #[cfg(test)]
         tests::fault("export");
-        let manifest = serde_json::json!({ "format": 1, "complete": true, "replay_digest": chassis::hash::state_hash(&record.replay), "session": record.session, "build": record.build, "running_build": BuildIdentity::default(), "sim_version": SIM_VERSION, "ticks": record.replay.meta.ticks, "clean": record.clean, "issue": record.issue, "prepared_tick": record.prepared.as_ref().map(|_| record.replay.meta.ticks), "prepared_commands": record.prepared });
+        let manifest = serde_json::json!({ "format": 1, "complete": true, "kind": record.kind, "replay_digest": chassis::hash::state_hash(&record.replay), "session": record.session, "build": record.build, "running_build": BuildIdentity::default(), "sim_version": SIM_VERSION, "ticks": record.replay.meta.ticks, "clean": record.clean, "issue": record.issue, "prepared_tick": record.prepared.as_ref().map(|_| record.replay.meta.ticks), "prepared_commands": record.prepared });
         for name in [
             "timings.json",
             "watchdog.json",

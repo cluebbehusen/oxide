@@ -483,7 +483,7 @@ pub(super) fn update_and_draw(
             next.unwrap_or(Screen::Playing)
         }
         Screen::Playback(mut pb) => {
-            let input_scope = app.game.diagnostics.as_ref().and_then(|recorder| {
+            let input_scope = pb.diagnostics.as_ref().and_then(|recorder| {
                 recorder.span(oxide_kit::diagnostics::Phase::Input, pb.engine.position())
             });
             let leave = pb.apply_input(
@@ -496,6 +496,7 @@ pub(super) fn update_and_draw(
             );
             drop(input_scope);
             if leave {
+                pb.finish_diagnostics();
                 rerun = true;
                 match pb.return_to {
                     PlaybackReturn::Pause => Screen::Pause(PauseScreen::open(
