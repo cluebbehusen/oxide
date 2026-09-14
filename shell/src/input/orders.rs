@@ -132,28 +132,10 @@ fn known_hostile_target_at(
     None
 }
 
-/// Digits are contextual: an open build palette spends them on
-/// structures, a selected own factory spends them on production, and
-/// otherwise the first five are control groups.
+/// Group recall works independently of the selected panel.
 pub(super) fn digit_action(game: &mut Game, input: &mut InputState, slot: usize) {
-    if input.construction_open() {
-        let slot = if input.resolver.shift_held() && slot < 4 {
-            slot + 9
-        } else {
-            slot
-        };
-        if let Some(&kind) = crate::input::BUILD_PALETTE.get(slot) {
-            input.build_menu = false;
-            input.disarm_click_verbs();
-            input.placing = Some(kind);
-        }
-        return;
-    }
-    let producing = !selected_producers(game).is_empty();
-    if producing {
-        train(game, slot);
-        return;
-    }
+    input.close_construction();
+
     if slot < 5 {
         group_action(game, input, slot);
     }
@@ -404,9 +386,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
 }
 
 /// Train the Nth product from the first compatible selected producer (the
-/// seat's own roster — the other faction's variants are skipped). `H`/`S`
-/// alias the first two slots; no producer selected falls back to the home
-/// Foundry.
+/// seat's own roster — the other faction's variants are skipped).
 pub(super) fn train(game: &mut Game, slot: usize) {
     let faction = game.state.player(game.human).faction;
     let product = |building| {
@@ -425,12 +405,7 @@ pub(super) fn train(game: &mut Game, slot: usize) {
     let selected_choice = selected
         .iter()
         .find_map(|building| product(*building).map(|kind| (*building, kind)));
-    let choice = if selected.is_empty() {
-        game.home_foundry()
-            .and_then(|building| product(building.id).map(|kind| (building.id, kind)))
-    } else {
-        selected_choice
-    };
+    let choice = selected_choice;
     if let Some((building, kind)) = choice {
         game.issue(Command::Train { building, kind });
     }

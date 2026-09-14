@@ -70,6 +70,25 @@ pub(super) fn update_and_draw(
     ctrl_at_frame_start: bool,
     shift_at_frame_start: bool,
 ) -> Result<ScreenFrame> {
+    // Controls capture and text editing keep their conventional recovery keys.
+    let fixed_editor = matches!(&screen, Screen::Settings { screen, .. } if matches!(screen.face, screens::settings::Face::Controls { .. }))
+        || matches!(&screen, Screen::Pause(pause) if pause.naming());
+    crate::menu::set_bindings(if fixed_editor {
+        crate::action::BindingMap::classic()
+    } else {
+        app.input.bindings.clone()
+    });
+    if !fixed_editor
+        && !matches!(
+            &screen,
+            Screen::Playing | Screen::Playback(_) | Screen::FinalMap(_)
+        )
+    {
+        events = app
+            .input
+            .bindings
+            .menu_events(&events, ctrl_at_frame_start, shift_at_frame_start);
+    }
     let mut profile_frame_active = false;
     // Menu backdrops are presentation worlds too. Home, setup, and
     // the replay shelf animate even when `--paused` reserves the next
@@ -400,9 +419,26 @@ pub(super) fn update_and_draw(
             }
             let had_selection =
                 !app.game.selection.units.is_empty() || !app.game.selection.buildings.is_empty();
-            let escape_pressed = events
-                .iter()
-                .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+            let mut ctrl = ctrl_at_frame_start;
+            let mut shift = shift_at_frame_start;
+            let escape_pressed = events.iter().any(|event| {
+                match event {
+                    RawEvent::KeyDown { key: Key::Ctrl } => ctrl = true,
+                    RawEvent::KeyUp { key: Key::Ctrl } => ctrl = false,
+                    RawEvent::KeyDown { key: Key::Shift } => shift = true,
+                    RawEvent::KeyUp { key: Key::Shift } => shift = false,
+                    RawEvent::KeyDown { key } => {
+                        return app.input.bindings.resolve_in(
+                            *key,
+                            ctrl,
+                            shift,
+                            app.input.context(&app.game),
+                        ) == Some(crate::action::Action::Back);
+                    }
+                    _ => {}
+                }
+                false
+            });
             app.input.ui = render::ui_scale();
             app.input.now = get_time();
             app.input.camera_prefs = app.config.camera;
@@ -478,11 +514,12 @@ pub(super) fn update_and_draw(
                 Some(app.performance.view()),
             );
             if let Some(t) = &app.tutorial {
-                render::draw_tutorial(t, &app.game);
+                render::draw_tutorial(t, &app.game, &app.input.bindings);
             }
             next.unwrap_or(Screen::Playing)
         }
         Screen::Playback(mut pb) => {
+            pb.bindings.clone_from(&app.input.bindings);
             let input_scope = pb.diagnostics.as_ref().and_then(|recorder| {
                 recorder.span(oxide_kit::diagnostics::Phase::Input, pb.engine.position())
             });
@@ -519,6 +556,7 @@ pub(super) fn update_and_draw(
             }
         }
         Screen::FinalMap(mut final_map) => {
+            final_map.bindings.clone_from(&app.input.bindings);
             let input_scope = app
                 .game
                 .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
@@ -537,7 +575,7 @@ pub(super) fn update_and_draw(
                 &app.input,
                 Some(app.performance.view()),
             );
-            FinalMapScreen::draw_hud();
+            final_map.draw_hud();
             if leave {
                 app.game.spectate = false;
                 rerun = true;

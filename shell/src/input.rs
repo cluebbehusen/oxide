@@ -158,6 +158,7 @@ pub struct InputState {
     pub(crate) rallying: Vec<oxide_sim::BuildingId>,
     /// Whether the build palette is open (`B`; digits pick a structure).
     pub(crate) build_menu: bool,
+    pub(crate) build_category: Option<u8>,
     /// This frame's chrome scale (dpi x user), injected by the frame
     /// loop so hit math never queries the window.
     pub(crate) ui: f32,
@@ -346,23 +347,6 @@ fn placement_ping(kind: oxide_sim::BuildingKind, anchor: TilePos) -> Vec2 {
     )
 }
 
-/// Construction shortcuts use 1-9, then Shift+1 through Shift+4.
-pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 13] = [
-    oxide_sim::BuildingKind::Turret,
-    oxide_sim::BuildingKind::FlakTurret,
-    oxide_sim::BuildingKind::Bastion,
-    oxide_sim::BuildingKind::Array,
-    oxide_sim::BuildingKind::Reclaimer,
-    oxide_sim::BuildingKind::RepairBay,
-    oxide_sim::BuildingKind::Fabricator,
-    oxide_sim::BuildingKind::Foundry,
-    oxide_sim::BuildingKind::Airworks,
-    oxide_sim::BuildingKind::Crucible,
-    oxide_sim::BuildingKind::Extractor,
-    oxide_sim::BuildingKind::Barricade,
-    oxide_sim::BuildingKind::ScuttleCharge,
-];
-
 impl InputState {
     pub(crate) fn construction_open(&self) -> bool {
         self.build_menu || self.placing.is_some()
@@ -387,6 +371,7 @@ impl InputState {
             attacking: false,
             rallying: Vec::new(),
             build_menu: false,
+            build_category: None,
             ui: 1.0,
             now: 0.0,
             camera_prefs: crate::config::CameraPrefs::default(),
@@ -402,8 +387,46 @@ impl InputState {
     }
 
     /// Feeds a key edge through the binding map.
-    fn key_edge(&mut self, key: Key, down: bool) -> Option<ActionEvent> {
-        self.resolver.key_edge(&self.bindings, key, down)
+    fn key_edge(
+        &mut self,
+        key: Key,
+        down: bool,
+        context: crate::action::Context,
+    ) -> Option<ActionEvent> {
+        self.resolver
+            .key_edge_in(&self.bindings, key, down, context)
+    }
+
+    pub(crate) fn context(&self, game: &Game) -> crate::action::Context {
+        use crate::action::Context;
+        if self.construction_open()
+            && game.selection.units.iter().any(|id| {
+                game.state
+                    .unit(*id)
+                    .is_some_and(|u| u.player == game.human && u.kind.stats().harvest.is_some())
+            })
+        {
+            return self
+                .build_category
+                .map(Context::BuildCategory)
+                .unwrap_or(Context::Construction);
+        }
+        if !game.selection.units.is_empty() {
+            Context::Units
+        } else if !orders::selected_producers(game).is_empty() {
+            Context::Production
+        } else if !game.selection.buildings.is_empty() {
+            Context::Buildings
+        } else {
+            Context::Empty
+        }
+    }
+
+    pub(crate) fn close_construction(&mut self) {
+        self.build_menu = false;
+        self.build_category = None;
+        self.disarm_click_verbs();
+        self.patrol_route = None;
     }
 
     /// Drops everything that assumes continuity — held keys and any open
@@ -466,6 +489,7 @@ impl InputState {
         self.attacking = false;
         self.rallying.clear();
         self.build_menu = false;
+        self.build_category = None;
         self.touches.clear();
         self.last_tap = None;
         self.pinching = false;
@@ -486,7 +510,8 @@ impl InputState {
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 43] = [
+const KEY_MAP: [(Key, mq::KeyCode); 44] = [
+    (Key::Tab, mq::KeyCode::Tab),
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -1021,7 +1046,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // exception: its right-clicks are collecting the route.
                 if input.patrol_route.is_none() {
                     let cancelled_placement = input.placing.is_some();
-                    input.disarm_click_verbs();
+                    input.close_construction();
                     if cancelled_placement {
                         game.toast("placement cancelled; issuing new order");
                     }
@@ -1035,7 +1060,10 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
                     if let Some(route) = &mut input.patrol_route {
                         if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
-                            game.toast("patrol is full: R starts it");
+                            game.toast(format!(
+                                "patrol is full: {} starts it",
+                                input.bindings.label(Action::Patrol)
+                            ));
                         } else {
                             route.push(tile);
                             game.ping(vec2(world.x, world.y), PingKind::Rally);
@@ -1060,7 +1088,10 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     let world = game.camera.to_world(vec2(x, y));
                     if let Some(route) = &mut input.patrol_route {
                         if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
-                            game.toast("patrol is full: R starts it");
+                            game.toast(format!(
+                                "patrol is full: {} starts it",
+                                input.bindings.label(Action::Patrol)
+                            ));
                         } else {
                             route
                                 .push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));
@@ -1089,12 +1120,14 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 input.mmb_anchor = None;
             }
             RawEvent::KeyDown { key } => {
-                if let Some(ActionEvent::Pressed(action)) = input.key_edge(key, true) {
+                if let Some(ActionEvent::Pressed(action)) =
+                    input.key_edge(key, true, input.context(game))
+                {
                     dispatch_action(game, input, action);
                 }
             }
             RawEvent::KeyUp { key } => {
-                let _ = input.key_edge(key, false);
+                let _ = input.key_edge(key, false, input.context(game));
             }
             // Desktop shell; the mobile shell will map these.
             RawEvent::TouchDown { id, x, y } => {
@@ -1278,6 +1311,14 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     _ => {}
                 }
             }
+        }
+        if input.construction_open()
+            && !matches!(
+                input.context(game),
+                crate::action::Context::Construction | crate::action::Context::BuildCategory(_)
+            )
+        {
+            input.close_construction();
         }
     }
 }
@@ -1545,18 +1586,61 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
     false
 }
 
+pub(crate) fn activate_action_card(game: &mut Game, input: &mut InputState, action: Action) {
+    let Some(panel) = crate::panel::build_for_input(game, input) else {
+        return;
+    };
+    if let Some(card) = panel
+        .cards
+        .iter()
+        .find(|card| card.action.semantic() == Some(action))
+    {
+        if card.enabled {
+            activate_card(game, input, card.action);
+        } else if let Some(why) = &card.why {
+            game.toast(why.clone());
+        }
+    } else if let Action::TrainSlot(slot) = action {
+        // Multi-producer selections train at the first compatible producer.
+        // Resolve its actual card to share affordability and tech checks.
+        let selected = orders::selected_producers(game);
+        let original = game.selection.buildings.clone();
+        for id in selected {
+            game.selection.buildings = vec![id];
+            let card =
+                crate::panel::build_for_palette(game, &input.bindings, false).and_then(|panel| {
+                    panel
+                        .cards
+                        .into_iter()
+                        .find(|c| c.action.semantic() == Some(Action::TrainSlot(slot)))
+                });
+            if let Some(card) = card {
+                if card.enabled {
+                    orders::train(game, slot as usize);
+                } else if let Some(why) = card.why {
+                    game.toast(why);
+                }
+                break;
+            }
+        }
+        game.selection.buildings = original;
+    }
+}
+
 /// Continuous per-frame input (held-key panning).
 /// One panel card pressed — by mouse or fingertip, the same act its
 /// hotkey performs.
 fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::CardAction) {
     match action {
-        crate::panel::CardAction::Dispatch(a) => {
-            dispatch_action(game, input, a);
+        crate::panel::CardAction::Dispatch(Action::TrainSlot(slot)) => {
+            orders::train(game, slot as usize)
         }
+        crate::panel::CardAction::Dispatch(a) => dispatch_action(game, input, a),
         crate::panel::CardAction::ArmBuild(kind) => {
-            input.build_menu = false;
+            input.build_menu = true;
             input.disarm_click_verbs();
             input.placing = Some(kind);
+            input.build_category = Some(crate::action::building_category(kind));
         }
         crate::panel::CardAction::ArmRally => {
             let buildings = orders::selected_producers(game);
@@ -1565,7 +1649,10 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             }
             input.disarm_click_verbs();
             input.rallying = buildings;
-            game.toast("set rally: click the battlefield or minimap, Esc to cancel");
+            game.toast(format!(
+                "set rally: click the battlefield or minimap, {} to cancel",
+                input.bindings.label(Action::Back)
+            ));
         }
         crate::panel::CardAction::CancelQueue(building, index) => {
             game.issue(Command::CancelTrain { building, index });

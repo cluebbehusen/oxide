@@ -3,7 +3,7 @@
 //! or an injected event.
 
 use super::InputState;
-use super::orders::{digit_action, train};
+use super::orders::digit_action;
 use super::select::{cycle_idle_worker, idle_harvesters};
 use crate::action::Action;
 use crate::game::Game;
@@ -11,10 +11,38 @@ use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::Command;
 
 pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
+    if input.construction_open()
+        && matches!(
+            action,
+            Action::Run
+                | Action::AttackMove
+                | Action::Salvage
+                | Action::RepairUnit
+                | Action::Unload
+        )
+    {
+        input.close_construction();
+    }
     match action {
         // Continuous pans live in update_held; Confirm belongs to menus.
         Action::PanLeft | Action::PanRight | Action::PanUp | Action::PanDown => {}
-        Action::Confirm => {}
+        Action::Confirm
+        | Action::ReplayPause
+        | Action::ReplayBack
+        | Action::ReplayForward
+        | Action::ReplayStart
+        | Action::ReplayEnd
+        | Action::ReplaySpeed(_)
+        | Action::ReplayStats
+        | Action::MenuUp
+        | Action::MenuDown
+        | Action::MenuLeft
+        | Action::MenuRight
+        | Action::MenuPageUp
+        | Action::MenuPageDown
+        | Action::MenuHome
+        | Action::MenuEnd
+        | Action::DeleteSave => {}
         Action::Slot(n) => digit_action(game, input, (n - 1) as usize),
         Action::AssignGroup(n) => {
             // Groups 1-5, like the recall side; the classic layout never
@@ -78,14 +106,30 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 }
             }
         }
-        Action::TrainSlot(n) => train(game, n as usize),
+        Action::TrainSlot(_)
+        | Action::Upgrade
+        | Action::SetRally
+        | Action::ClearRally
+        | Action::Unload
+        | Action::Build(_) => super::activate_action_card(game, input, action),
+        Action::BuildCategory(category) => {
+            input.disarm_click_verbs();
+            input.patrol_route = None;
+            input.build_menu = true;
+            input.build_category = Some(category);
+        }
         Action::TogglePause => game.paused = !game.paused,
         Action::ToggleBuildPalette => {
             if input.construction_open() {
-                input.build_menu = false;
-                input.disarm_click_verbs();
+                if input.build_category.take().is_some() {
+                    input.disarm_click_verbs();
+                    input.build_menu = true;
+                } else {
+                    input.close_construction();
+                }
                 return;
             }
+            input.close_construction();
             let has_builder = game.selection.units.iter().any(|id| {
                 game.state
                     .unit(*id)
@@ -134,7 +178,10 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             match input.patrol_route.take() {
                 None if !game.selection.units.is_empty() => {
                     input.patrol_route = Some(Vec::new());
-                    game.toast("patrol: right-click waypoints, R to start");
+                    game.toast(format!(
+                        "patrol: right-click waypoints, {} to start",
+                        input.bindings.label(Action::Patrol)
+                    ));
                 }
                 None => {}
                 Some(route) if route.is_empty() => {
@@ -149,12 +196,18 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         Action::ToggleOverlay => game.overlay = !game.overlay,
         Action::Back => {
             // Arming something? Escape abandons that first.
-            if input.build_menu {
-                input.build_menu = false;
+            if input.placing.take().is_some() {
+                input.placing_stroke = None;
+                input.build_menu = true;
+                game.toast("placement cancelled");
                 return;
             }
-            if input.placing.take().is_some() {
-                game.toast("placement cancelled");
+            if input.build_category.take().is_some() {
+                input.build_menu = true;
+                return;
+            }
+            if input.build_menu {
+                input.close_construction();
                 return;
             }
             if input.salvaging {
@@ -214,7 +267,10 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if has_worker {
                 input.disarm_click_verbs();
                 input.salvaging = true;
-                game.toast("salvage: click an own building to strip it, Esc to cancel");
+                game.toast(format!(
+                    "salvage: click an own building to strip it, {} to cancel",
+                    input.bindings.label(Action::Back)
+                ));
             } else {
                 game.toast("no worker to salvage with");
             }
@@ -234,7 +290,10 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if has_welder {
                 input.disarm_click_verbs();
                 input.repairing = true;
-                game.toast("weld: click a damaged own unit, Esc to cancel");
+                game.toast(format!(
+                    "weld: click a damaged own unit, {} to cancel",
+                    input.bindings.label(Action::Back)
+                ));
             } else {
                 game.toast("no welder in hand");
             }
@@ -254,7 +313,10 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if has_own_unit {
                 input.disarm_click_verbs();
                 input.running = true;
-                game.toast("run: click ground to move without engaging, Esc to cancel");
+                game.toast(format!(
+                    "run: click ground to move without engaging, {} to cancel",
+                    input.bindings.label(Action::Back)
+                ));
             } else {
                 game.toast("no machines selected to run");
             }
@@ -273,7 +335,10 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if has_own_unit {
                 input.disarm_click_verbs();
                 input.attacking = true;
-                game.toast("attack-move: click ground to engage and chase, Esc to cancel");
+                game.toast(format!(
+                    "attack-move: click ground to engage and chase, {} to cancel",
+                    input.bindings.label(Action::Back)
+                ));
             } else {
                 game.toast("no machines selected to attack-move");
             }

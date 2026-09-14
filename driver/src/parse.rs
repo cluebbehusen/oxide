@@ -138,6 +138,7 @@ impl From<BuildingKindArg> for oxide_sim::BuildingKind {
 
 pub(crate) fn parse_key(s: &str) -> Result<Key> {
     Ok(match s.to_ascii_lowercase().as_str() {
+        "tab" => Key::Tab,
         "up" => Key::Up,
         "down" => Key::Down,
         "left" => Key::Left,

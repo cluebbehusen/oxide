@@ -59,37 +59,96 @@ pub struct Update {
     pub dirty: bool,
 }
 
-/// The remappable actions, in display order. Digits and structural keys
-/// (Back, Confirm, group slots) stay fixed — their meaning is
-/// positional, not preferential.
-const REMAPPABLE: [(Action, &str); 26] = [
-    (Action::StopOrScrap, "Stop / scrap site"),
-    (Action::TrainSlot(0), "Train slot 1"),
-    (Action::TrainSlot(1), "Train slot 2"),
-    (Action::TogglePause, "Pause"),
-    (Action::ToggleBuildPalette, "Build palette"),
-    (Action::Patrol, "Patrol"),
-    (Action::HomeCamera, "Center home"),
-    (Action::ToggleOverlay, "Debug overlay"),
-    (Action::PanLeft, "Pan left"),
-    (Action::PanRight, "Pan right"),
-    (Action::PanUp, "Pan up"),
-    (Action::PanDown, "Pan down"),
-    (Action::CycleIdleWorker, "Next idle harvester"),
-    (Action::JumpToLastAlert, "Jump to last alert"),
-    (Action::Salvage, "Salvage building"),
-    (Action::RepairUnit, "Weld unit"),
-    (Action::Run, "Run (move, no engaging)"),
-    (Action::AttackMove, "Attack-move"),
-    (Action::SetBookmark(0), "Set bookmark 1"),
-    (Action::RecallBookmark(0), "Recall bookmark 1"),
-    (Action::SetBookmark(1), "Set bookmark 2"),
-    (Action::RecallBookmark(1), "Recall bookmark 2"),
-    (Action::SetBookmark(2), "Set bookmark 3"),
-    (Action::RecallBookmark(2), "Recall bookmark 3"),
-    (Action::SetBookmark(3), "Set bookmark 4"),
-    (Action::RecallBookmark(3), "Recall bookmark 4"),
-];
+/// Every keyboard action is exposed, including contextual cards and navigation.
+fn control_sections() -> Vec<(&'static str, Vec<Action>)> {
+    use Action::*;
+    let mut sections = vec![
+        (
+            "Camera",
+            vec![
+                PanUp,
+                PanLeft,
+                PanDown,
+                PanRight,
+                HomeCamera,
+                CycleIdleWorker,
+                JumpToLastAlert,
+            ],
+        ),
+        (
+            "Orders",
+            vec![
+                StopOrScrap,
+                Run,
+                AttackMove,
+                Patrol,
+                Salvage,
+                RepairUnit,
+                Unload,
+            ],
+        ),
+        (
+            "Buildings",
+            vec![ToggleBuildPalette, Upgrade, SetRally, ClearRally],
+        ),
+        ("Production", (0..6).map(TrainSlot).collect()),
+        (
+            "Construction categories",
+            (0..4).map(BuildCategory).collect(),
+        ),
+    ];
+    for (name, kinds) in crate::action::BUILD_CATEGORIES {
+        sections.push((name, kinds.iter().copied().map(Build).collect()));
+    }
+    sections.extend([
+        (
+            "Control groups",
+            (1..=5).flat_map(|n| [Slot(n), AssignGroup(n)]).collect(),
+        ),
+        (
+            "Camera bookmarks",
+            (0..4)
+                .flat_map(|n| [RecallBookmark(n), SetBookmark(n)])
+                .collect(),
+        ),
+        ("Match", vec![TogglePause, ToggleOverlay]),
+        (
+            "Replay",
+            vec![
+                ReplayPause,
+                ReplayBack,
+                ReplayForward,
+                ReplayStart,
+                ReplayEnd,
+                ReplayStats,
+            ],
+        ),
+        ("Replay speeds", (0..8).map(ReplaySpeed).collect()),
+        (
+            "Menus",
+            vec![
+                Back,
+                Confirm,
+                MenuUp,
+                MenuDown,
+                MenuLeft,
+                MenuRight,
+                MenuPageUp,
+                MenuPageDown,
+                MenuHome,
+                MenuEnd,
+                DeleteSave,
+            ],
+        ),
+    ]);
+    sections
+}
+fn control_rows() -> Vec<Option<Action>> {
+    control_sections()
+        .into_iter()
+        .flat_map(|(_, actions)| std::iter::once(None).chain(actions.into_iter().map(Some)))
+        .collect()
+}
 
 fn settings_menu(config: &Config) -> Menu {
     let pct = |v: f32| format!("{}%", (v * 100.0).round());
@@ -188,21 +247,31 @@ fn cycle_setting(config: &mut Config, row: usize) -> bool {
     true
 }
 
-fn controls_menu(config: &Config) -> Menu {
-    let mut items: Vec<String> = REMAPPABLE
-        .iter()
-        .map(|(action, label)| {
-            let chord = config
-                .bindings
-                .chord_for(*action)
-                .map(BindingMap::chord_label)
-                .unwrap_or_else(|| "unbound".to_string());
-            format!("{label}: {chord}")
-        })
-        .collect();
-    items.push("Reset to defaults".to_string());
-    items.push("Back".to_string());
-    Menu::new("CONTROLS", items)
+fn controls_menu(config: &Config, selected_slot: usize) -> Menu {
+    let mut items = Vec::new();
+    let mut headers = Vec::new();
+    for (section, actions) in control_sections() {
+        headers.push(items.len());
+        items.push(section.to_uppercase());
+        for action in actions {
+            let label = |slot| {
+                let value = config
+                    .bindings
+                    .chord_at(action, slot)
+                    .map(BindingMap::chord_label)
+                    .unwrap_or_else(|| "unbound".into());
+                if slot == selected_slot {
+                    format!("[{value}]")
+                } else {
+                    value
+                }
+            };
+            items.push(format!("{}: {} | {}", action.label(), label(0), label(1)));
+        }
+    }
+    items.push("Reset all to defaults".into());
+    items.push("Back".into());
+    Menu::with_headers("CONTROLS", items, headers)
 }
 
 /// The settings screen (both faces).
@@ -213,6 +282,7 @@ pub struct SettingsScreen {
     pub menu: Menu,
     /// The screen's status line, if one is up.
     pub notice: Option<Notice>,
+    binding_slot: usize,
 }
 
 impl SettingsScreen {
@@ -223,6 +293,7 @@ impl SettingsScreen {
             face: Face::Settings,
             menu: settings_menu(config),
             notice: None,
+            binding_slot: 0,
         }
     }
 
@@ -237,19 +308,23 @@ impl SettingsScreen {
     /// The face's coaching line.
     pub fn hint(&self) -> &'static str {
         match self.face {
-            Face::Settings => "Enter cycles a value - changes stick immediately",
+            Face::Settings => "{confirm} cycles a value - changes stick immediately",
             Face::Controls { rebinding: Some(_) } => {
                 "press the new chord (modifiers held count) - Escape cancels"
             }
             Face::Controls { rebinding: None } => {
-                "Enter arms a row, then press its new chord - X unbinds"
+                if self.binding_slot == 0 {
+                    "PRIMARY selected | Left/Right chooses column | Enter remaps | X clears | Esc back"
+                } else {
+                    "SECONDARY selected | Left/Right chooses column | Enter remaps | X clears | Esc back"
+                }
             }
         }
     }
 
     fn goto_controls(&mut self, config: &Config, select: usize) {
         self.face = Face::Controls { rebinding: None };
-        self.menu = controls_menu(config);
+        self.menu = controls_menu(config, self.binding_slot);
         self.menu.select(select);
         self.notice = None;
     }
@@ -318,6 +393,7 @@ impl SettingsScreen {
                         // profile (custom rebinds included — Controls'
                         // Reset row walks back to Classic).
                         config.bindings = BindingMap::left_handed();
+                        config.unbound.clear();
                         update.dirty = true;
                         *live = config.bindings.clone();
                         self.notice = Some(Notice {
@@ -363,14 +439,21 @@ impl SettingsScreen {
                     }
                 }
                 match pressed {
-                    Some((Key::Escape, _, _)) => {
+                    Some((Key::Escape, false, false))
+                        if control_rows()[row] != Some(Action::Back) =>
+                    {
                         self.face = Face::Controls { rebinding: None };
                         self.notice = None;
                     }
                     Some((key, ctrl, shift)) => {
-                        let (target, _) = REMAPPABLE[row];
+                        let Some(target) = control_rows()[row] else {
+                            return update;
+                        };
                         let chord = Chord { key, ctrl, shift };
-                        if config.bindings.rebind(target, chord) {
+                        if config
+                            .bindings
+                            .rebind_slot(target, self.binding_slot, chord)
+                        {
                             // Bound again: the unbind tombstone lifts.
                             config.unbound.retain(|a| *a != target);
                             update.dirty = true;
@@ -379,15 +462,15 @@ impl SettingsScreen {
                         } else {
                             // Refused: name the holder, so the player
                             // knows which row to unbind first.
-                            let text = match config.bindings.holder(chord).filter(|&a| a != target)
-                            {
-                                Some(holder) => format!(
-                                    "{} is already bound to {}",
-                                    BindingMap::chord_label(chord),
-                                    holder.label()
-                                ),
-                                None => "that key already means something".to_string(),
-                            };
+                            let text =
+                                match config.bindings.conflict(target, self.binding_slot, chord) {
+                                    Some(holder) => format!(
+                                        "{} is already bound to {}",
+                                        BindingMap::chord_label(chord),
+                                        holder.label()
+                                    ),
+                                    None => "that key already means something".to_string(),
+                                };
                             self.notice = Some(Notice { text, danger: true });
                             sounds.push((SoundKind::Denied, None));
                             self.face = Face::Controls { rebinding: None };
@@ -400,19 +483,38 @@ impl SettingsScreen {
                 let x_pressed = events
                     .iter()
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::X }));
-                if escaped {
+                if let Some(key) = events.iter().find_map(|event| match event {
+                    RawEvent::KeyDown { key }
+                        if matches!(key, Key::Left | Key::Right | Key::Tab) =>
+                    {
+                        Some(*key)
+                    }
+                    _ => None,
+                }) {
+                    self.binding_slot = match key {
+                        Key::Left => 0,
+                        Key::Right => 1,
+                        _ => 1 - self.binding_slot,
+                    };
+                    let row = self.menu.selected;
+                    self.goto_controls(config, row);
+                } else if escaped {
                     self.face = Face::Settings;
                     self.menu = settings_menu(config);
                     self.menu.select(CONTROLS_ROW);
                     self.notice = None;
-                } else if x_pressed && self.menu.selected < REMAPPABLE.len() {
+                } else if x_pressed
+                    && control_rows()
+                        .get(self.menu.selected)
+                        .is_some_and(Option::is_some)
+                {
                     // X on a row unbinds it — outside capture mode, so
                     // the key is free to mean this. The tombstone
                     // records the CHOICE: without it, the next load's
                     // new-verb migration would read the missing row as
                     // an old config and restore the classic chord.
-                    let (target, _) = REMAPPABLE[self.menu.selected];
-                    config.bindings.unbind(target);
+                    let target = control_rows()[self.menu.selected].expect("action row");
+                    config.bindings.unbind_slot(target, self.binding_slot);
                     if !config.unbound.contains(&target) {
                         config.unbound.push(target);
                     }
@@ -423,11 +525,23 @@ impl SettingsScreen {
                 } else if let Some(row) = self.menu.handle(events, mouse) {
                     sounds.push((SoundKind::Click, None));
                     self.notice = None;
-                    if row < REMAPPABLE.len() {
+                    if events.iter().any(|e| {
+                        matches!(
+                            e,
+                            RawEvent::MouseDown { .. }
+                                | RawEvent::TouchDown { .. }
+                                | RawEvent::MouseUp { .. }
+                                | RawEvent::TouchUp { .. }
+                        )
+                    }) && let Some(rect) = self.menu.item_rect(row)
+                    {
+                        self.binding_slot = usize::from(mouse.x >= rect.x + rect.w * 0.8);
+                    }
+                    if control_rows().get(row).is_some_and(Option::is_some) {
                         self.face = Face::Controls {
                             rebinding: Some(row),
                         };
-                    } else if row == REMAPPABLE.len() {
+                    } else if row == control_rows().len() {
                         // Reset to defaults — tombstones included.
                         config.bindings = BindingMap::classic();
                         config.unbound.clear();
@@ -648,9 +762,15 @@ mod tests {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut s = SettingsScreen::open(&config);
-        s.goto_controls(&config, 5); // Patrol row
+        s.goto_controls(
+            &config,
+            control_rows()
+                .iter()
+                .position(|a| *a == Some(Action::Patrol))
+                .unwrap(),
+        ); // Patrol row
         drive(&mut s, &mut config, &mut live, &press(Key::Enter), true);
-        assert_eq!(s.face, Face::Controls { rebinding: Some(5) });
+        assert!(matches!(s.face, Face::Controls { rebinding: Some(_) }));
         let up = drive(&mut s, &mut config, &mut live, &press(Key::K), true);
         assert!(up.dirty);
         assert_eq!(
@@ -677,7 +797,13 @@ mod tests {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut s = SettingsScreen::open(&config);
-        s.goto_controls(&config, 5);
+        s.goto_controls(
+            &config,
+            control_rows()
+                .iter()
+                .position(|a| *a == Some(Action::Patrol))
+                .unwrap(),
+        );
         drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
         let batch = vec![
             RawEvent::KeyDown { key: Key::Ctrl },
@@ -702,13 +828,22 @@ mod tests {
         let mut live = config.bindings.clone();
         let before = config.bindings.chord_for(Action::Patrol);
         let mut s = SettingsScreen::open(&config);
-        s.goto_controls(&config, 5);
+        s.goto_controls(
+            &config,
+            control_rows()
+                .iter()
+                .position(|a| *a == Some(Action::Patrol))
+                .unwrap(),
+        );
         drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
         // M already means Run.
         let up = drive(&mut s, &mut config, &mut live, &press(Key::M), false);
         assert!(!up.dirty);
         let notice = s.notice.as_ref().expect("the refusal reports");
-        assert_eq!(notice.text, "M is already bound to Run");
+        assert_eq!(
+            notice.text,
+            "M is already bound to Run (move without engaging)"
+        );
         assert!(notice.danger);
         assert_eq!(config.bindings.chord_for(Action::Patrol), before);
         // Navigation is not an action: the notice waits to be read.
@@ -726,12 +861,18 @@ mod tests {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut s = SettingsScreen::open(&config);
-        s.goto_controls(&config, 5);
+        s.goto_controls(
+            &config,
+            control_rows()
+                .iter()
+                .position(|a| *a == Some(Action::Patrol))
+                .unwrap(),
+        );
         drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
         drive(&mut s, &mut config, &mut live, &press(Key::Num1), false);
         assert_eq!(
             s.notice.as_ref().map(|n| n.text.as_str()),
-            Some("1 is already bound to Slot 1")
+            Some("1 is already bound to Recall group 1")
         );
     }
 
@@ -740,7 +881,13 @@ mod tests {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut s = SettingsScreen::open(&config);
-        s.goto_controls(&config, 5);
+        s.goto_controls(
+            &config,
+            control_rows()
+                .iter()
+                .position(|a| *a == Some(Action::Patrol))
+                .unwrap(),
+        );
         drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
         drive(&mut s, &mut config, &mut live, &press(Key::M), false);
         assert!(s.notice.is_some());
@@ -767,11 +914,11 @@ mod tests {
         );
         assert_eq!(
             config.bindings.chord_for(Action::TrainSlot(0)),
-            Some(Chord::bare(Key::K)),
+            Some(Chord::bare(Key::O)),
             "training moved to the right hand"
         );
         assert_eq!(
-            config.bindings.chord_for(Action::PanLeft),
+            config.bindings.chord_at(Action::PanLeft, 1),
             Some(Chord::bare(Key::Left)),
             "pans stay on the arrows"
         );
@@ -779,7 +926,7 @@ mod tests {
             config.bindings.conflicts().is_empty(),
             "the preset must be conflict-free"
         );
-        assert_eq!(live.chord_for(Action::Patrol), Some(Chord::bare(Key::O)));
+        assert_eq!(live.chord_for(Action::Patrol), Some(Chord::bare(Key::Y)));
     }
 
     #[test]
@@ -787,12 +934,18 @@ mod tests {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut s = SettingsScreen::open(&config);
-        s.goto_controls(&config, 5);
+        s.goto_controls(
+            &config,
+            control_rows()
+                .iter()
+                .position(|a| *a == Some(Action::Patrol))
+                .unwrap(),
+        );
         let up = drive(&mut s, &mut config, &mut live, &press(Key::X), false);
         assert!(up.dirty);
         assert_eq!(config.bindings.chord_for(Action::Patrol), None);
         // Reset row restores everything.
-        s.menu.select(REMAPPABLE.len());
+        s.menu.select(control_rows().len());
         drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
         assert_eq!(
             config.bindings.chord_for(Action::Patrol),
@@ -836,6 +989,89 @@ mod tests {
             "the cursor comes back to the row that was activated"
         );
     }
+    #[test]
+    fn every_default_action_is_editable_and_secondary_edit_does_not_replace_primary() {
+        let mut config = Config::default();
+        let rows = control_rows();
+        for binding in config.bindings.bindings() {
+            assert!(rows.contains(&Some(binding.action)), "{:?}", binding.action);
+        }
+        let row = rows.iter().position(|a| *a == Some(Action::PanUp)).unwrap();
+        let mut live = config.bindings.clone();
+        let mut screen = SettingsScreen::open(&config);
+        screen.goto_controls(&config, row);
+        drive(
+            &mut screen,
+            &mut config,
+            &mut live,
+            &press(Key::Right),
+            false,
+        );
+        drive(
+            &mut screen,
+            &mut config,
+            &mut live,
+            &press(Key::Enter),
+            false,
+        );
+        assert!(drive(&mut screen, &mut config, &mut live, &press(Key::I), false).dirty);
+        assert_eq!(
+            config.bindings.chord_at(Action::PanUp, 0),
+            Some(Chord::bare(Key::W))
+        );
+        assert_eq!(
+            config.bindings.chord_at(Action::PanUp, 1),
+            Some(Chord::bare(Key::I))
+        );
+        drive(&mut screen, &mut config, &mut live, &press(Key::X), false);
+        assert_eq!(config.bindings.chord_at(Action::PanUp, 1), None);
+        assert_eq!(
+            config.bindings.chord_at(Action::PanUp, 0),
+            Some(Chord::bare(Key::W))
+        );
+    }
+    #[test]
+    fn clicking_the_secondary_column_selects_it_even_when_release_is_a_later_frame() {
+        use oxide_protocol::MouseButton;
+        let mut config = Config::default();
+        let mut live = config.bindings.clone();
+        let mut screen = SettingsScreen::open(&config);
+        let row = control_rows()
+            .iter()
+            .position(|a| *a == Some(Action::PanUp))
+            .unwrap();
+        screen.goto_controls(&config, row);
+        let rect = screen.menu.item_rect(row).unwrap();
+        let (x, y) = (rect.x + rect.w * 0.9, rect.y + rect.h * 0.5);
+        drive(
+            &mut screen,
+            &mut config,
+            &mut live,
+            &[RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+            }],
+            false,
+        );
+        assert!(matches!(screen.face, Face::Controls { rebinding: None }));
+        drive(
+            &mut screen,
+            &mut config,
+            &mut live,
+            &[RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+            }],
+            false,
+        );
+        assert_eq!(screen.binding_slot, 1);
+        assert!(drive(&mut screen, &mut config, &mut live, &press(Key::I), false).dirty);
+        assert_eq!(live.chord_at(Action::PanUp, 0), Some(Chord::bare(Key::W)));
+        assert_eq!(live.chord_at(Action::PanUp, 1), Some(Chord::bare(Key::I)));
+    }
+
     #[test]
     fn diagnostics_is_opt_in_and_keeps_existing_settings_rows_stable() {
         let mut config = Config::default();

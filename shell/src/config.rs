@@ -275,57 +275,10 @@ impl Config {
         };
         match serde_json::from_str::<Self>(&text) {
             Ok(mut config) if config.version == CONFIG_VERSION => {
-                // A hand-edited config with no bindings parses fine and
-                // would strip every shortcut — restore the profile
-                // rather than ship a keyboardless game. The same file
-                // can carry a syntactically valid action whose payload
-                // indexes past its array (SetBookmark(4) on a
-                // four-slot rack): out-of-range payloads reset the
-                // whole profile like any other malformed input.
-                // Payload conventions differ: TrainSlot is zero-based
-                // (roster slots 0..9), Slot and AssignGroup are the
-                // one-based digits 1..=9, bookmarks a four-slot rack.
-                // Getting this wrong once rejected the CLASSIC map's
-                // own Slot(9) and silently reset every customization
-                // on restart.
-                let payload_sane = config.bindings.bindings().iter().all(|b| match b.action {
-                    crate::action::Action::SetBookmark(i)
-                    | crate::action::Action::RecallBookmark(i) => i < 4,
-                    crate::action::Action::TrainSlot(i) => i < 9,
-                    crate::action::Action::Slot(i) | crate::action::Action::AssignGroup(i) => {
-                        (1..=9).contains(&i)
-                    }
-                    _ => true,
-                });
-                if config.bindings.bindings().is_empty() || !payload_sane {
+                config.bindings.migrate(&config.unbound);
+                if !config.bindings.valid() {
                     config.bindings = BindingMap::classic();
-                }
-                // Configs saved before the classic map stopped authoring
-                // Ctrl+6..9 carry exact chords to control groups that
-                // don't exist; the exact match outranks the bare digit
-                // and swallows palette picks with Ctrl held. Stale rows
-                // drop; the rest of the profile survives untouched.
-                for n in (crate::action::CONTROL_GROUPS as u8 + 1)..=9 {
-                    config
-                        .bindings
-                        .unbind(crate::action::Action::AssignGroup(n));
-                }
-                // A verb added after this config was saved has no row
-                // at all: adopt its classic chord so new features
-                // arrive keyboard-reachable. Refusal (the player
-                // claimed that chord for something else) leaves the
-                // verb unbound — panels still reach it by click. A row
-                // the player EXPLICITLY unbound is not a new verb:
-                // the tombstone list keeps it unbound across restarts.
-                for default in BindingMap::classic().bindings().to_vec() {
-                    let known = config
-                        .bindings
-                        .bindings()
-                        .iter()
-                        .any(|b| b.action == default.action);
-                    if !known && !config.unbound.contains(&default.action) {
-                        let _ = config.bindings.rebind(default.action, default.chord);
-                    }
+                    config.unbound.clear();
                 }
                 config.window = Self::sane_window(config.window);
                 config.touch = config.touch.clamped();
@@ -456,7 +409,10 @@ mod tests {
         // leaving the verb keyboardless, without stealing a claimed chord.
         let dir = std::env::temp_dir().join(format!("oxide-config-newverb-{}", std::process::id()));
         let path = dir.join("config.json");
-        let mut config = Config::default();
+        let mut config = Config {
+            bindings: BindingMap::legacy(),
+            ..Config::default()
+        };
         config.bindings.unbind(crate::action::Action::Salvage);
         config.save_to(&path).expect("save");
         let loaded = Config::load_from(Some(path.clone()));
@@ -467,7 +423,10 @@ mod tests {
         );
 
         // Same again, but the player owns V: the verb stays unbound.
-        let mut config = Config::default();
+        let mut config = Config {
+            bindings: BindingMap::legacy(),
+            ..Config::default()
+        };
         config.bindings.unbind(crate::action::Action::Salvage);
         assert!(config.bindings.rebind(
             crate::action::Action::Patrol,
@@ -494,7 +453,10 @@ mod tests {
         // row alone, never the user's own customizations with it.
         let dir = std::env::temp_dir().join(format!("oxide-config-stale-{}", std::process::id()));
         let path = dir.join("config.json");
-        let mut config = Config::default();
+        let mut config = Config {
+            bindings: BindingMap::legacy(),
+            ..Config::default()
+        };
         assert!(config.bindings.rebind(
             crate::action::Action::AssignGroup(7),
             crate::action::Chord::ctrl(oxide_protocol::Key::Num7)
@@ -653,5 +615,23 @@ mod tests {
         std::fs::write(&path, serde_json::to_string(&future).unwrap()).unwrap();
         assert_eq!(Config::load_from(Some(path)), Config::default());
         std::fs::remove_dir_all(&dir).ok();
+    }
+    #[test]
+    fn an_empty_secondary_slot_and_rebound_primary_survive_reload() {
+        use crate::action::{Action, Chord};
+        let dir =
+            std::env::temp_dir().join(format!("oxide-config-secondary-{}", std::process::id()));
+        let path = dir.join("config.json");
+        let mut config = Config::default();
+        config.bindings.unbind_slot(Action::PanUp, 1);
+        assert!(
+            config
+                .bindings
+                .rebind(Action::PanUp, Chord::bare(oxide_protocol::Key::I))
+        );
+        config.save_to(&path).unwrap();
+        let loaded = Config::load_from(Some(path));
+        assert_eq!(loaded.bindings, config.bindings);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

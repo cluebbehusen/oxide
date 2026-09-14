@@ -158,7 +158,7 @@ impl Shelf {
         if self.entries.is_empty() {
             "nothing recorded yet: finish a match or quit one mid-way".to_string()
         } else if self.arming == Some(self.menu.selected) {
-            "press X again to delete this record".to_string()
+            "press {delete} again to delete this record".to_string()
         } else {
             match self.rows.get(self.menu.selected) {
                 Some(RowKind::Entry(i)) => self

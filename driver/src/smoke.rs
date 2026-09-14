@@ -324,26 +324,36 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         !png_bytes.is_empty(),
         format!("{} ({} bytes)", shot.path, png_bytes.len()),
     );
-    // Content-aware orientation canary: we paused above, so the red
-    // "PAUSED" indicator must sit in the top HUD bar. An upside-down frame
-    // (a real shipped bug — GL readback is bottom-up) puts it at the
-    // bottom and fails this.
+    // The neutral PAUSED label belongs in the upper-right HUD. Count separated
+    // glyph strokes so the minimap's straight border cannot mimic the label.
     let oriented = tiny_skia::Pixmap::decode_png(&png_bytes)
         .ok()
         .is_some_and(|pixmap| {
-            // The HUD bar (holding the red PAUSED indicator) spans the top
-            // ~4% of the frame at any dpi scale; scan the top tenth.
-            let band = (pixmap.height() as usize / 10).max(32);
-            pixmap
-                .pixels()
-                .iter()
-                .take(pixmap.width() as usize * band)
-                .any(|px| px.red() > 180 && px.green() < 120 && px.blue() < 120)
+            let (width, height) = (pixmap.width() as usize, pixmap.height() as usize);
+            let text_rows = |flipped: bool| {
+                (height / 100..height * 4 / 100)
+                    .filter(|&y| {
+                        let y = if flipped { height - 1 - y } else { y };
+                        let mut previous = false;
+                        let mut strokes = 0;
+                        for x in width * 80 / 100..width * 99 / 100 {
+                            let px = pixmap.pixels()[y * width + x];
+                            let low = px.red().min(px.green()).min(px.blue());
+                            let high = px.red().max(px.green()).max(px.blue());
+                            let bright = low > 150 && high - low < 40;
+                            strokes += usize::from(bright && !previous);
+                            previous = bright;
+                        }
+                        strokes >= 3
+                    })
+                    .count()
+            };
+            text_rows(false) >= 3 && text_rows(true) < 3
         });
     checks.note(
         "screenshot is right side up (PAUSED indicator in top bar)",
         oriented,
-        "no red pause indicator found in the top 32 rows",
+        "pause-label glyphs missing from the upper-right HUD or present in its vertical reflection",
     );
 
     // The decisive check: the live session reproduces headless.
@@ -465,14 +475,20 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         RawEvent::KeyUp {
             key: oxide_protocol::Key::B,
         },
-        // B opens the build palette; the digit actually arms a Turret.
+        // B opens construction; R selects Defense, Q arms a Turret.
         // Without it the whole check would pass vacuously against an
         // unarmed cursor.
         RawEvent::KeyDown {
-            key: oxide_protocol::Key::Num1,
+            key: oxide_protocol::Key::R,
         },
         RawEvent::KeyUp {
-            key: oxide_protocol::Key::Num1,
+            key: oxide_protocol::Key::R,
+        },
+        RawEvent::KeyDown {
+            key: oxide_protocol::Key::Q,
+        },
+        RawEvent::KeyUp {
+            key: oxide_protocol::Key::Q,
         },
     ] {
         client.call(Request::InjectEvent { event })?;
