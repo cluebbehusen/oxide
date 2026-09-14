@@ -122,6 +122,7 @@ pub(in crate::bot) struct EconomicInvestmentContext<'a> {
     pub(in crate::bot) building_contacts: &'a [BuildingContact],
     pub(in crate::bot) cadence: u64,
     pub(in crate::bot) protected_scrap: u32,
+    pub(in crate::bot) obligations: &'a [crate::bot::allocation::ImportedObligation],
     pub(in crate::bot) air_work: &'a [AirCapacityDemand],
 }
 
@@ -725,14 +726,22 @@ impl UtilityPolicy {
                                 lift_support: None,
                                 allow_new_operation: true,
                                 protected_current_scrap: context.protected_scrap,
-                                protected_forecast_scrap: 0,
+                                protected_forecast_scrap:
+                                    crate::bot::allocation::forecast_reserve_through(
+                                        context.obligations,
+                                        deadline,
+                                    ),
                                 public_map: Some(context.briefing),
                                 orientation: context.orientation,
                             },
                         );
                         if let Some(benefit) =
                             crate::bot::strategy::prospective_airworks_package_value(
-                                request, candidate, delay, deadline,
+                                request,
+                                candidate,
+                                delay,
+                                deadline,
+                                context.obligations,
                             )
                             .filter(|benefit| *benefit > value.benefit)
                         {
@@ -1588,6 +1597,7 @@ mod tests {
     ) -> Vec<EconomicInvestment> {
         let resources = ResourceSnapshot::from_observation(obs);
         policy.fresh_economic_investments(EconomicInvestmentContext {
+            obligations: &[],
             obs,
             resources: &resources,
             briefing: map,
@@ -1712,6 +1722,7 @@ mod tests {
             policy.fresh_capacity_foundry_investment(
                 &dials,
                 EconomicInvestmentContext {
+                    obligations: &[],
                     obs,
                     resources: &resources,
                     profile: &profile,
@@ -2131,9 +2142,20 @@ mod tests {
         profile: &ResolvedProfile,
         work: &[AirCapacityDemand],
     ) -> Vec<EconomicInvestment> {
+        air_quotes_with_obligations(obs, map, profile, work, &[])
+    }
+
+    fn air_quotes_with_obligations(
+        obs: &Observation,
+        map: &PublicMapBriefing,
+        profile: &ResolvedProfile,
+        work: &[AirCapacityDemand],
+        obligations: &[crate::bot::allocation::ImportedObligation],
+    ) -> Vec<EconomicInvestment> {
         let resources = ResourceSnapshot::from_observation(obs);
         UtilityPolicy::new()
             .fresh_economic_investments(EconomicInvestmentContext {
+                obligations,
                 obs,
                 resources: &resources,
                 profile,
@@ -2347,6 +2369,7 @@ mod tests {
             let resources = ResourceSnapshot::from_observation(&obs);
             policy.refresh_economic_saving(
                 EconomicInvestmentContext {
+                    obligations: &[],
                     obs: &obs,
                     resources: &resources,
                     profile: &profile,
@@ -2423,6 +2446,7 @@ mod tests {
             let resources = ResourceSnapshot::from_observation(&obs);
             policy.refresh_economic_saving(
                 EconomicInvestmentContext {
+                    obligations: &[],
                     obs: &obs,
                     resources: &resources,
                     profile: &profile,
@@ -2442,5 +2466,93 @@ mod tests {
             assert!(policy.economic_retry_at > obs.tick);
             assert!(obs.my_buildings.contains(&paid));
         }
+    }
+
+    #[test]
+    fn bootstrap_airworks_respects_retained_cash_forecast_and_factory_work() {
+        use crate::bot::allocation::{
+            ClaimBundle, ForecastClaim, ImportedObligation, ObligationClass, ObligationKey,
+            ProducerJobClaim,
+        };
+        let (mut obs, map, profile) = fixture();
+        obs.scrap = 300;
+        obs.my_buildings.extend([
+            building(2, BuildingKind::Fabricator, TilePos::new(8, 5)),
+            building(3, BuildingKind::Crucible, TilePos::new(12, 5)),
+            building(4, BuildingKind::Reclaimer, TilePos::new(2, 23)),
+        ]);
+        obs.my_queues.resize(obs.my_buildings.len(), vec![]);
+        obs.my_queue_progress.resize(obs.my_buildings.len(), 0);
+        let mut target = building(90, BuildingKind::Foundry, TilePos::new(30, 12));
+        target.player = PlayerId(1);
+        obs.enemy_buildings.push(target);
+        let quotes = air_quotes(&obs, &map, &profile, &[]);
+        let quote = quotes
+            .first()
+            .expect("unclaimed completed income funds the minimum");
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let forecast = resources.forecast().income_through(quote.deadline).amount();
+        let future = ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: obs.tick,
+            key: ObligationKey::OpeningCore { sequence: 0 },
+            claims: ClaimBundle::new(
+                0,
+                vec![ForecastClaim {
+                    through: quote.deadline,
+                    amount: forecast,
+                }],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+            )
+            .unwrap(),
+        };
+        assert!(air_quotes_with_obligations(&obs, &map, &profile, &[], &[future]).is_empty());
+        let kind = UnitKind::Warden;
+        let enqueue = obs.tick + 12;
+        let job = ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: obs.tick,
+            key: ObligationKey::OpeningCore { sequence: 1 },
+            claims: ClaimBundle::new(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::fixed(
+                    BuildingId(2),
+                    kind,
+                    enqueue,
+                    enqueue,
+                    enqueue + u64::from(kind.stats().train_ticks) - 1,
+                    quote.deadline,
+                )],
+            )
+            .unwrap(),
+        };
+        let mut retained_only =
+            crate::bot::allocation::CrossDomainAllocation::new(&resources, quote.deadline, 12)
+                .unwrap();
+        retained_only.import(job.clone());
+        assert!(
+            retained_only
+                .resolve(
+                    crate::bot::allocation::AllocationPersonality::default(),
+                    None
+                )
+                .is_ok()
+        );
+        assert!(
+            air_quotes_with_obligations(&obs, &map, &profile, &[], std::slice::from_ref(&job))
+                .is_empty()
+        );
+        obs.scrap = 1200;
+        assert!(
+            !air_quotes_with_obligations(&obs, &map, &profile, &[], &[job]).is_empty(),
+            "compatible retained work must not suppress a funded campaign"
+        );
     }
 }

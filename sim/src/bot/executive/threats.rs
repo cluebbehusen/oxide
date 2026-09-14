@@ -30,6 +30,10 @@ pub(in crate::bot) fn building_threatens(
         let crosses = |tile: TilePos| {
             if !weapon.indirect && domain == Domain::Ground {
                 !obs.known_rock_at(tile)
+                    || obs
+                        .known_pits
+                        .binary_search_by_key(&(tile.y, tile.x), |p| (p.y, p.x))
+                        .is_ok()
             } else {
                 obs.known_peaks
                     .binary_search_by_key(&(tile.y, tile.x), |p| (p.y, p.x))
@@ -75,5 +79,38 @@ mod tests {
         obs.known_rock.clear();
         building.built = false;
         assert!(!building_threatens(&obs, &building, target, Domain::Ground));
+    }
+
+    #[test]
+    fn direct_fire_crosses_known_pits_but_not_rock_or_peaks() {
+        for terrain in [
+            crate::map::Terrain::Pit,
+            crate::map::Terrain::Rock,
+            crate::map::Terrain::Peak,
+        ] {
+            let blocker = TilePos::new(6, 4);
+            let mut obs = Observation::default();
+            obs.known_rock.push(blocker);
+            if terrain == crate::map::Terrain::Pit {
+                obs.known_pits.push(blocker);
+            }
+            if terrain == crate::map::Terrain::Peak {
+                obs.known_peaks.push(blocker);
+            }
+            let gun = BuildingObs {
+                id: BuildingId(1),
+                player: PlayerId(1),
+                kind: BuildingKind::Turret,
+                anchor: TilePos::new(4, 4),
+                hp: 900,
+                built: true,
+                seen: true,
+                tier: 2,
+            };
+            assert_eq!(
+                building_threatens(&obs, &gun, TilePos::new(7, 4), Domain::Ground),
+                !terrain.blocks_direct_fire()
+            );
+        }
     }
 }

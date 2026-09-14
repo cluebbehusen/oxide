@@ -433,6 +433,7 @@ struct EpisodeWatch {
     finished: bool,
     objective: Option<super::observation::BuildingObs>,
     doctrine_allowed: bool,
+    ground_contact_losses: (u32, bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -653,6 +654,16 @@ impl OutcomeJournal {
         })
     }
 
+    pub(crate) fn observe_ground_contact(&mut self, obs: &Observation, contact: bool) -> bool {
+        let lost = self.own_lost_value(obs);
+        let Some(watch) = self.watch.as_mut().filter(|watch| !watch.finished) else {
+            return false;
+        };
+        let (previous_loss, previous_contact) = watch.ground_contact_losses;
+        watch.ground_contact_losses = (lost, contact);
+        lost > previous_loss && !contact && !previous_contact
+    }
+
     pub(crate) fn context(&self) -> Option<ExperienceKey> {
         self.watch.as_ref().map(|watch| watch.report.context)
     }
@@ -716,6 +727,7 @@ impl OutcomeJournal {
                 finished: false,
                 objective: None,
                 doctrine_allowed: true,
+                ground_contact_losses: (0, false),
             });
         }
         let watch = self.watch.as_mut().expect("opened episode");

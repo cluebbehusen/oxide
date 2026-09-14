@@ -2321,7 +2321,12 @@ pub(in crate::bot) fn prospective_airworks_package_value(
     candidate: crate::bot::observation::BuildingObs,
     ready_after: Tick,
     deadline: Tick,
+    obligations: &[crate::bot::allocation::ImportedObligation],
 ) -> Option<u64> {
+    use crate::bot::allocation::{
+        AllocationCapacity, AllocationPersonality, allocate_requiring,
+        connected_investment_proposal, current_reserve_at,
+    };
     let mut prospective = request.obs.clone();
     let cost = BuildingKind::Airworks.base_stats().construction?.cost;
     prospective.scrap = prospective
@@ -2332,6 +2337,19 @@ pub(in crate::bot) fn prospective_airworks_package_value(
     prospective.my_queues.push(Vec::new());
     prospective.my_queue_progress.push(0);
     let resources = ResourceSnapshot::from_observation(&prospective);
+    // The sizing bank excludes current promises; exact allocation imports them itself.
+    let restored = request
+        .coordination
+        .protected_current_scrap
+        .min(current_reserve_at(obligations, prospective.tick));
+    prospective.scrap += restored;
+    let capacity = AllocationCapacity::from_snapshot(
+        &ResourceSnapshot::from_observation(&prospective),
+        deadline,
+        request.tuning.cadence,
+    )
+    .ok()?;
+    prospective.scrap -= restored;
     let unavailable: Vec<_> = prospective.my_units.iter().map(|unit| unit.id).collect();
     let coordination = StrategicCoordination {
         enlisted: &unavailable,
@@ -2389,6 +2407,16 @@ pub(in crate::bot) fn prospective_airworks_package_value(
                 deadline,
             )
             .ok()?;
+            let investment = connected_investment_proposal(proposal.clone()).ok()?;
+            allocate_requiring(
+                &capacity,
+                obligations.to_vec(),
+                vec![investment.clone()],
+                AllocationPersonality::default(),
+                investment.key(),
+                &[],
+            )
+            .ok()??;
             Some(
                 proposal
                     .minimum_claims()

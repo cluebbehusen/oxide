@@ -273,6 +273,26 @@ impl Executive {
                 })
             });
             let in_contact = unit_contact || static_contact || siege_contact;
+            let unexplained_loss = self
+                .ground_outcomes
+                .get_mut(&army.id)
+                .is_some_and(|journal| {
+                    if let Some(ArmyMission {
+                        purpose: ArmyPurpose::Pressure(target),
+                        ..
+                    }) = self.missions.get(&army.id)
+                        && journal.observe_objective(obs, target.observed_id(obs))
+                    {
+                        journal.finish(
+                            obs,
+                            crate::bot::experience::Outcome::Complete,
+                            crate::bot::experience::OutcomeReason::ObjectiveObservedGone,
+                            750,
+                            false,
+                        );
+                    }
+                    journal.observe_ground_contact(obs, in_contact)
+                });
 
             // Rotate the badly wounded out, but only between fights.
             // Mid-engagement a wounded machine still deals full damage,
@@ -323,10 +343,7 @@ impl Executive {
             if matches!(army.state, ArmyState::Pushing | ArmyState::Engaging)
                 && !in_contact
                 && !tiles_within(centroid, army.staging, 2)
-                && self
-                    .ground_outcomes
-                    .get(&army.id)
-                    .is_some_and(|journal| journal.own_lost_value(obs) > 0)
+                && unexplained_loss
             {
                 army.state = ArmyState::Withdrawing;
                 army.target = None;
@@ -3866,5 +3883,127 @@ mod tests {
             total_comparisons < units.len() * all_members.len() / 20,
             "one large army must not regress to roster-by-members work"
         );
+    }
+    #[test]
+    fn observed_objective_completion_survives_casualties() {
+        use crate::bot::experience::{Outcome, OutcomeReason};
+        let staging = TilePos::new(3, 10);
+        let target = TilePos::new(22, 10);
+        for lost in [false, true] {
+            let mut obs = observation(
+                24,
+                (40, 30),
+                (1..=3)
+                    .map(|id| {
+                        unit(
+                            id,
+                            PlayerId(0),
+                            UnitKind::Sentinel,
+                            TilePos::new(20, 10),
+                            200,
+                            false,
+                        )
+                    })
+                    .collect(),
+                Vec::new(),
+            );
+            obs.enemy_buildings
+                .push(building(90, PlayerId(1), BuildingKind::Foundry, target));
+            let mut body = army(
+                0,
+                vec![UnitId(1), UnitId(2), UnitId(3)],
+                ArmyState::Engaging,
+                staging,
+            );
+            body.target = Some(target);
+            let mut exec = Executive::default();
+            exec.armies.push(body);
+            let mission = ArmyMission {
+                purpose: ArmyPurpose::Pressure(ArmyObjective::from_building(
+                    &obs.enemy_buildings[0],
+                )),
+                goal: target,
+                accepted_at: obs.tick,
+                deadline: obs.tick + 1800,
+                score: 100,
+            };
+            exec.watch_ground_mission(&obs, ArmyId(0), &mission);
+            exec.missions.insert(ArmyId(0), mission);
+            exec.observe_ground_outcomes(&obs);
+            obs.tick += 12;
+            obs.enemy_buildings.clear();
+            if lost {
+                obs.my_units.remove(0);
+            }
+            assert!(objective_cleared(&obs, target));
+            let commands = exec.maintain_player_facing(obs.me, &obs, staging);
+            let report = &exec.ground_outcomes[&ArmyId(0)].pending[0];
+            assert_eq!(report.outcome, Outcome::Complete);
+            assert_eq!(report.reason, OutcomeReason::ObjectiveObservedGone);
+            assert_eq!(report.own_lost_value > 0, lost);
+            assert!(commands.is_empty());
+        }
+    }
+
+    #[test]
+    fn observed_combat_losses_do_not_become_unexplained_after_contact_ends() {
+        let staging = TilePos::new(3, 10);
+        let target = TilePos::new(32, 10);
+        let mut obs = observation(
+            24,
+            (40, 30),
+            (1..=4)
+                .map(|id| {
+                    unit(
+                        id,
+                        PlayerId(0),
+                        UnitKind::Sentinel,
+                        TilePos::new(20, 10),
+                        200,
+                        false,
+                    )
+                })
+                .collect(),
+            vec![unit(
+                90,
+                PlayerId(1),
+                UnitKind::Sentinel,
+                TilePos::new(21, 10),
+                200,
+                false,
+            )],
+        );
+        obs.enemy_buildings
+            .push(building(91, PlayerId(1), BuildingKind::Foundry, target));
+        let mut body = army(
+            0,
+            vec![UnitId(1), UnitId(2), UnitId(3), UnitId(4)],
+            ArmyState::Engaging,
+            staging,
+        );
+        body.target = Some(target);
+        let mut executive = Executive::default();
+        executive.armies.push(body);
+        let mission = ArmyMission {
+            purpose: ArmyPurpose::Pressure(ArmyObjective::from_building(&obs.enemy_buildings[0])),
+            goal: target,
+            accepted_at: obs.tick,
+            deadline: obs.tick + 1800,
+            score: 100,
+        };
+        executive.watch_ground_mission(&obs, ArmyId(0), &mission);
+        executive.missions.insert(ArmyId(0), mission);
+        obs.my_units.remove(0);
+        executive.maintain_player_facing(obs.me, &obs, staging);
+        assert_eq!(executive.armies[0].state, ArmyState::Engaging);
+        obs.tick += 12;
+        obs.enemy_units.clear();
+        executive.maintain_player_facing(obs.me, &obs, staging);
+        assert_ne!(executive.armies[0].state, ArmyState::Withdrawing);
+        assert!(executive.ground_outcomes[&ArmyId(0)].pending.is_empty());
+        obs.tick += 12;
+        obs.my_units.remove(0);
+        executive.maintain_player_facing(obs.me, &obs, staging);
+        assert_eq!(executive.armies[0].state, ArmyState::Withdrawing);
     }
 }

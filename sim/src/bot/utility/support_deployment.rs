@@ -615,6 +615,7 @@ mod tests {
         resources: &'a ResourceSnapshot,
     ) -> EconomicInvestmentContext<'a> {
         EconomicInvestmentContext {
+            obligations: &[],
             obs,
             resources,
             profile,

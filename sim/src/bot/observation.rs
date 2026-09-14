@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 /// 15 exposes exact owner-visible progress for the front of each training
 /// queue. Version 16 exposes exact own active repair targets. Version 17 adds
 /// owner-only carried identities separately from available units.
-pub const OBSERVATION_VERSION: u32 = 18;
+pub const OBSERVATION_VERSION: u32 = 19;
 
 /// An own passenger that remains alive but is unavailable for new assignments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,11 +198,15 @@ pub struct Observation {
     /// omniscient builder, remembered amounts under the fog-honest one.
     /// Sorted by (y, x).
     pub known_scrap: Vec<(TilePos, u32)>,
-    /// Impassable terrain as known (rock and peaks alike) — all of it
+    /// Impassable terrain as known (rock, peaks, and pits) — all of it
     /// omnisciently, explored tiles only fog-honestly (terrain is
     /// static, so once seen it is known forever). What placement and
     /// staging decisions steer around; sorted by (y, x).
     pub known_rock: Vec<TilePos>,
+    /// Explored pits, also in `known_rock`, which block travel but not fire.
+    /// Sorted by (y, x).
+    #[serde(default)]
+    pub known_pits: Vec<TilePos>,
     /// Derelict Extractor frame anchors on explored ground (all of
     /// them, omnisciently). Frames are map facts and never move.
     #[serde(default)]
@@ -271,6 +275,7 @@ impl Default for Observation {
             explored: Vec::new(),
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
+            known_pits: Vec::new(),
             known_frames: Vec::new(),
             known_peaks: Vec::new(),
             known_wrecks: Vec::new(),
@@ -425,6 +430,9 @@ impl Observation {
             if tile.terrain.blocks_ground() {
                 obs.known_rock.push(pos);
             }
+            if tile.terrain == crate::map::Terrain::Pit {
+                obs.known_pits.push(pos);
+            }
             if state.map().is_extractor_frame(pos) {
                 obs.known_frames.push(pos);
             }
@@ -556,6 +564,9 @@ impl Observation {
                     if tile.terrain.blocks_ground() {
                         obs.known_rock.push(pos);
                     }
+                    if tile.terrain == crate::map::Terrain::Pit {
+                        obs.known_pits.push(pos);
+                    }
                     if tile.terrain.blocks_air() {
                         obs.known_peaks.push(pos);
                     }
@@ -607,6 +618,7 @@ impl Observation {
             explored: Vec::new(),
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
+            known_pits: Vec::new(),
             known_frames: Vec::new(),
             known_peaks: Vec::new(),
             known_wrecks: Vec::new(),
@@ -1202,5 +1214,34 @@ mod tests {
             assert!(observation.has_queued_program(own_workers[1]));
             assert!(!observation.has_queued_program(hostile_worker));
         }
+    }
+
+    #[test]
+    fn pit_knowledge_is_exploration_limited_and_serialized() {
+        let mut scenario = Scenario::skirmish();
+        let mut rows = vec![vec!['.'; 40]; 24];
+        rows[4][4] = '1';
+        rows[18][34] = '2';
+        rows[4][10] = '~';
+        rows[12][20] = '~';
+        scenario.map = rows
+            .into_iter()
+            .map(|row| row.into_iter().collect())
+            .collect();
+        scenario.units.clear();
+        let state = scenario.build().unwrap();
+        let local = TilePos::new(10, 4);
+        let hidden = TilePos::new(20, 12);
+        let fog = Observation::fog_honest(&state, PlayerId(0));
+        assert_eq!(fog.known_pits, vec![local]);
+        assert!(fog.known_rock_at(local));
+        assert!(!fog.known_rock_at(hidden));
+        assert_eq!(
+            Observation::omniscient(&state, PlayerId(0)).known_pits,
+            vec![local, hidden]
+        );
+        let restored: Observation =
+            serde_json::from_str(&serde_json::to_string(&fog).unwrap()).unwrap();
+        assert_eq!(restored, fog);
     }
 }

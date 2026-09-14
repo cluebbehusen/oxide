@@ -4909,6 +4909,7 @@ mod tests {
                 provider_value: 1,
             }];
             policy.fresh_economic_investments(EconomicInvestmentContext {
+                obligations: &[],
                 obs: current,
                 resources: &resources,
                 profile: &profile,

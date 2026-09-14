@@ -168,6 +168,7 @@ impl Orientation {
             .known_rock
             .iter_mut()
             .chain(o.known_peaks.iter_mut())
+            .chain(o.known_pits.iter_mut())
             .chain(o.blips.iter_mut())
             .chain(o.salvage_incidents.iter_mut())
             .chain(o.incoming_shells.iter_mut())
@@ -179,6 +180,7 @@ impl Orientation {
         o.known_wrecks.sort_by_key(|(p, _)| (p.y, p.x));
         o.known_rock.sort_by_key(|p| (p.y, p.x));
         o.known_peaks.sort_by_key(|p| (p.y, p.x));
+        o.known_pits.sort_by_key(|p| (p.y, p.x));
         o.blips.sort_by_key(|p| (p.y, p.x));
         for track in &mut o.contact_tracks {
             track.tile = self.tile(track.tile);
@@ -426,6 +428,7 @@ mod tests {
             explored,
             known_scrap: vec![(TilePos::new(1, 0), 50), (TilePos::new(5, 0), 70)],
             known_rock: vec![TilePos::new(1, 1), TilePos::new(5, 1)],
+            known_pits: vec![TilePos::new(1, 1)],
             known_frames: vec![TilePos::new(1, 2), TilePos::new(5, 2)],
             known_peaks: vec![TilePos::new(1, 3), TilePos::new(5, 3)],
             known_wrecks: vec![(TilePos::new(2, 4), 30)],

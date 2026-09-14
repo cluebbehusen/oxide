@@ -279,6 +279,7 @@ impl UtilityPolicy {
             Self::claim_non_preemptible_intent_units(intent, &mut unavailable);
         }
         let candidates = self.fresh_repair_assignments(EconomicInvestmentContext {
+            obligations: &[],
             obs,
             resources: &resources,
             profile: &profile,
@@ -937,6 +938,7 @@ mod tests {
         resources: &'a ResourceSnapshot,
     ) -> EconomicInvestmentContext<'a> {
         EconomicInvestmentContext {
+            obligations: &[],
             obs,
             resources,
             profile,

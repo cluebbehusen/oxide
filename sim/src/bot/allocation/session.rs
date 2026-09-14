@@ -463,6 +463,7 @@ impl<'a> AllocationSession<'a> {
         let initial_claims = self.snapshot_claims();
         let resources = ResourceSnapshot::from_observation(self.context.observation);
         let observed_context = EconomicInvestmentContext {
+            obligations: &[],
             obs: self.context.observation,
             resources: &resources,
             profile: self.context.profile,
@@ -700,6 +701,7 @@ impl<'a> AllocationSession<'a> {
             if claims.opening_core.ready && self.participants.policy.economic_saving().is_none() {
                 self.participants.policy.prepare_support_deployments(
                     EconomicInvestmentContext {
+                        obligations: &[],
                         obs: self.context.observation,
                         resources: &obligations.resources,
                         profile: self.context.profile,
@@ -777,6 +779,7 @@ impl<'a> AllocationSession<'a> {
         let fresh_reconnaissance = if self.context.dials.scouting {
             self.participants.policy.prepare_reconnaissance(
                 EconomicInvestmentContext {
+                    obligations: &[],
                     obs: self.context.observation,
                     resources: &obligations.resources,
                     profile: self.context.profile,
@@ -933,6 +936,7 @@ impl<'a> AllocationSession<'a> {
             &[],
         ));
         let context = EconomicInvestmentContext {
+            obligations: &[],
             obs: self.context.observation,
             resources: &obligations.resources,
             profile: self.context.profile,
@@ -1134,6 +1138,7 @@ impl<'a> AllocationSession<'a> {
             };
             self.participants.policy.refresh_economic_saving(
                 EconomicInvestmentContext {
+                    obligations: &[],
                     obs: self.context.observation,
                     resources: &resources,
                     profile: self.context.profile,
@@ -2582,6 +2587,7 @@ impl<'a> AllocationSession<'a> {
             && self.participants.policy.economic_saving().is_none()
         {
             let economic_context = EconomicInvestmentContext {
+                obligations: &obligations.obligations,
                 obs: self.context.observation,
                 resources: &obligations.resources,
                 profile: self.context.profile,
@@ -7604,6 +7610,7 @@ mod tests {
             .expect("the fixture installs one exact saved Foundry");
         let resources = ResourceSnapshot::from_observation(&observation);
         let observed_context = EconomicInvestmentContext {
+            obligations: &[],
             obs: &observation,
             resources: &resources,
             profile: &profile,

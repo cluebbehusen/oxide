@@ -5525,6 +5525,7 @@ mod tests {
         }];
         let quote = policy
             .fresh_economic_investments(EconomicInvestmentContext {
+                obligations: &[],
                 obs: &obs,
                 resources: &resources,
                 profile: &profile,

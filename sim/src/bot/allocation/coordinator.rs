@@ -57,42 +57,21 @@ fn pin_standing_waits(
     obligations: &[ImportedObligation],
     proposals: &mut Vec<DomainInvestmentProposal>,
 ) {
-    if obligations
-        .iter()
-        .any(|obligation| !obligation.claims.producer_jobs().is_empty())
-    {
-        proposals.retain(|proposal| {
-            !matches!(proposal.payload(), super::DomainPayload::StandingForce(standing)
-            if standing.accumulation().is_some())
-        });
-    }
-    for proposal in proposals {
+    proposals.retain_mut(|proposal| {
         if !matches!(proposal.payload(), super::DomainPayload::StandingForce(standing)
             if standing.accumulation().is_some())
         {
-            continue;
+            return true;
         }
         let Ok(Some(result)) = allocate_requiring(
             capacity,
-            obligations
-                .iter()
-                .filter(|obligation| obligation.claims.producer_jobs().is_empty())
-                .cloned()
-                .collect(),
+            obligations.to_vec(),
             vec![proposal.clone()],
             AllocationPersonality::default(),
             proposal.key(),
             &[],
         ) else {
-            if let super::DomainPayload::StandingForce(standing) = proposal.payload() {
-                proposal.claims.producer_jobs = vec![ProducerJobClaim::immediate(
-                    standing.key_kind(),
-                    standing.observed_at(),
-                    standing.ready_before(),
-                    standing.eligible_producers().to_vec(),
-                )];
-            }
-            continue;
+            return false;
         };
         if let Some(job) = result
             .final_producer_schedule()
@@ -109,7 +88,8 @@ fn pin_standing_waits(
                 job.ready_before,
             )];
         }
-    }
+        true
+    });
 }
 
 /// One bounded cross-domain allocation pass before portfolio selection.
@@ -2713,6 +2693,150 @@ mod tests {
         assert_eq!(
             settlement.producer_schedule()[0].forecast_scrap,
             kind.stats().cost
+        );
+    }
+    #[test]
+    fn standing_wait_shares_forecast_with_a_retained_job_on_another_factory() {
+        let capacity_with_income = |income| {
+            AllocationCapacity::fixture(
+                ResourcePlanningProjection::fixture(ResourcePlanningFixture {
+                    current_scrap: 0,
+                    observed_at: 120,
+                    horizon: 1200,
+                    cadence: 12,
+                    forecast_income: vec![crate::bot::resources::ForecastAvailability {
+                        available_at: 240,
+                        amount: income,
+                    }],
+                    units: vec![],
+                    builders: vec![],
+                    producers: vec![
+                        (BuildingId(1), UnitKind::Buzzard),
+                        (BuildingId(2), UnitKind::Warden),
+                    ]
+                    .into_iter()
+                    .map(|(id, kind)| {
+                        ProducerPlanningProjection::fixture(
+                            id,
+                            120,
+                            12,
+                            120,
+                            vec![120; crate::stats::QUEUE_CAP],
+                            vec![kind],
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+                })
+                .unwrap(),
+            )
+        };
+        let capacity = capacity_with_income(1000);
+        let retained = imported_obligation(
+            ObligationClass::PersistentPlan,
+            120,
+            ObligationKey::OpeningCore { sequence: 0 },
+            ClaimBundle::new(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::fixed(
+                    BuildingId(1),
+                    UnitKind::Buzzard,
+                    240,
+                    240,
+                    240 + u64::from(UnitKind::Buzzard.stats().train_ticks) - 1,
+                    1200,
+                )],
+            )
+            .unwrap(),
+        );
+        let standing = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: 120,
+            ready_before: 1200,
+            kind: UnitKind::Warden,
+            reason: StandingForceReason::SiegePressure,
+            specialty: Specialty::Siege,
+            personality_emphasis: 100,
+            case: ProposalCase::from(connected_case()),
+            eligible_producers: vec![BuildingId(2)],
+        })
+        .with_accumulation(240, 0);
+        let mut proposals = standing_force_investment_proposals(vec![standing.clone()]).unwrap();
+        let admitted = allocate_requiring(
+            &capacity,
+            vec![retained.clone()],
+            proposals.clone(),
+            AllocationPersonality::default(),
+            proposals[0].key(),
+            &[],
+        )
+        .unwrap();
+        assert!(
+            admitted.is_some(),
+            "the exact shared allocator can fund and schedule both jobs"
+        );
+        pin_standing_waits(&capacity, std::slice::from_ref(&retained), &mut proposals);
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(
+            proposals[0].claims.producer_jobs()[0].committed_producer(),
+            Some(BuildingId(2))
+        );
+        let mut unfunded = standing_force_investment_proposals(vec![standing.clone()]).unwrap();
+        pin_standing_waits(
+            &capacity_with_income(UnitKind::Buzzard.stats().cost),
+            &[retained],
+            &mut unfunded,
+        );
+        assert!(unfunded.is_empty());
+
+        let training = u64::from(UnitKind::Warden.stats().train_ticks);
+        let occupied = imported_obligation(
+            ObligationClass::PersistentPlan,
+            120,
+            ObligationKey::OpeningCore { sequence: 1 },
+            ClaimBundle::new(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::fixed(
+                    BuildingId(2),
+                    UnitKind::Warden,
+                    240,
+                    240,
+                    240 + training - 1,
+                    1200,
+                )],
+            )
+            .unwrap(),
+        );
+        let mut later = standing_force_investment_proposals(vec![standing]).unwrap();
+        pin_standing_waits(&capacity, std::slice::from_ref(&occupied), &mut later);
+        assert_eq!(
+            later.len(),
+            1,
+            "a compatible later slot on the same factory remains eligible"
+        );
+        let urgent = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: 120,
+            ready_before: 120 + training,
+            kind: UnitKind::Warden,
+            reason: StandingForceReason::SiegePressure,
+            specialty: Specialty::Siege,
+            personality_emphasis: 100,
+            case: ProposalCase::from(connected_case()),
+            eligible_producers: vec![BuildingId(2)],
+        })
+        .with_accumulation(240, 0);
+        let mut blocked = standing_force_investment_proposals(vec![urgent]).unwrap();
+        pin_standing_waits(&capacity, &[occupied], &mut blocked);
+        assert!(
+            blocked.is_empty(),
+            "a retained job cannot be displaced to meet an incompatible deadline"
         );
     }
 }

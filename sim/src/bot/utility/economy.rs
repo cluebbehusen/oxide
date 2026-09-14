@@ -2257,6 +2257,7 @@ mod tests {
         .resolve_profile();
         let mut policy = UtilityPolicy::new();
         let quote = policy.fresh_economic_investments(EconomicInvestmentContext {
+            obligations: &[],
             obs: &obs, resources: &resources, profile: &profile, briefing: &public_map,
             orientation: crate::bot::orient::Orientation::for_home(&obs, home),
             unavailable: &[], demands: &[], unit_contacts: &[], building_contacts: &[],

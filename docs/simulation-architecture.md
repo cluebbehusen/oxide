@@ -53,19 +53,20 @@ express historical preferences.
 
 Playable army contact includes observed completed defenses with compatible
 weapon range and known fire geometry. Local strength counts nearby participants
-and the defenses actually covering them. An army that loses members without
-identifying a local fight returns with ordinary movement and records an
-inconclusive casualty episode, without inventing a hidden attacker. Withdrawal
-from static fire also uses ordinary movement to avoid reacquiring the position.
-Pressure admission counts known gun coverage along a projected approach as well
-as defenders near the objective. Against a building, an escorted siege body
-seeks a reachable position inside its guns' range and its screen's sight. It
-prefers positions outside known defensive fire; if the defender matches its
-range, an already-admitted assault accepts exposure instead of waiting forever
-for range superiority. Its faster screen advances at most three route steps
-ahead of the rearmost gun, then waits for it before approaching the shared
-firing position. Artillery with a visible target in range remains engaged rather
-than being discarded as a stalled march.
+and the defenses actually covering them. An army returns after a newly observed
+casualty if neither the previous nor current observation showed contact. It
+records an inconclusive episode without inventing a hidden attacker. Visible
+objective completion takes precedence; earlier combat casualties do not trigger
+a later return. Withdrawal from static fire also uses ordinary movement to avoid
+reacquiring the position. Pressure admission counts known gun coverage along a
+projected approach as well as defenders near the objective. Against a building,
+an escorted siege body seeks a reachable position inside its guns' range and its
+screen's sight. It prefers positions outside known defensive fire; if the
+defender matches its range, an already-admitted assault accepts exposure instead
+of waiting forever for range superiority. Its faster screen advances at most
+three route steps ahead of the rearmost gun, then waits for it before
+approaching the shared firing position. Artillery with a visible target in range
+remains engaged rather than being discarded as a stalled march.
 
 Player-facing maintenance advances tactical armies first. The decision then
 observes battlefield evidence and work outcomes once, including on the early
@@ -571,7 +572,8 @@ memory, computed once per team and cloned to later seats.
 The bot `Observation` copies both masks in canonical row-major order. Policies
 therefore distinguish current sight from remembered terrain without consulting
 authoritative state; seat orientation transforms both masks with the rest of the
-observed world. Observation schema 18 exposes continuous contact tracks and each
+observed world. Observation schema 19 distinguishes explored pits from
+fire-blocking rock and peaks. It also exposes continuous contact tracks and each
 own carried unit's identity, kind, health, and carrier separately from available
 units. This is presence evidence, not permission to assign or command a
 passenger. Allied and enemy manifests remain opaque.
@@ -794,14 +796,15 @@ immediate fallback. The search can start below the fallback's price and uses the
 bounded strategic preparation window instead of requiring repayment within one
 cheap production cycle. Acceptance retains the exact producer, purchase tick,
 completion, deadline, and originating need. Subsequent allocation imports that
-schedule before fresh spending. Nearby motion of the same ground threat
-preserves the purchase, provided the producer can still serve it; it cannot
-transfer the claim to a different kind of need or a distant front. Loss of the
-producer, income, useful need, or opening core releases unpaid work. Immediate
-threats can preempt it. Enemy fortifications motivate deliberate siege
-preparation without making every siege purchase an emergency. Economic saving
-preserves its capital claims while allowing compatible military alternatives to
-compete.
+schedule before fresh spending. Fresh future purchases are scheduled against all
+retained claims, including compatible work on other factories. Nearby motion of
+the same ground threat preserves the purchase, provided the producer can still
+serve it; it cannot transfer the claim to a different kind of need or a distant
+front. Loss of the producer, income, useful need, or opening core releases
+unpaid work. Immediate threats can preempt it. Enemy fortifications motivate
+deliberate siege preparation without making every siege purchase an emergency.
+Economic saving preserves its capital claims while allowing compatible military
+alternatives to compete.
 
 Portfolio ranking compares sorted complete urgency, confidence, consequence,
 impact-time, and safety cases before rewarding additional compatible work.
@@ -850,16 +853,17 @@ proposed first Airworks may also derive a complete connected scout, suppression,
 and strike minimum against current targets. The hypothetical factory exists only
 inside this pure sizing calculation: its construction capital and delay are
 removed before the ordinary package and route checks run, and existing live
-units are excluded from speculative ownership. This supported investment value
-cannot justify duplicate Airworks, issue a production command, or admit an
-operation before its real prerequisites exist. Recurring-income investments are
-capped by unfunded useful work; completed income alone supplies spendable
-forecasts. Self-refits own exact building ids and withhold their offline source
-income separately from purchase capital. The residual technology scalar and the
-operational Airworks capital tax are absent. Accepted unpaid economic plans keep
-their original identity and deadline through saving and deferred travel, release
-unsafe or expired unpaid founders, and leave paid foundations and refits to
-ordinary simulation rules.
+units are excluded from speculative ownership. The complete minimum must fit
+alongside retained capital promises and producer jobs in shared allocation. This
+supported investment value cannot justify duplicate Airworks, issue a production
+command, or admit an operation before its real prerequisites exist.
+Recurring-income investments are capped by unfunded useful work; completed
+income alone supplies spendable forecasts. Self-refits own exact building ids
+and withhold their offline source income separately from purchase capital. The
+residual technology scalar and the operational Airworks capital tax are absent.
+Accepted unpaid economic plans keep their original identity and deadline through
+saving and deferred travel, release unsafe or expired unpaid founders, and leave
+paid foundations and refits to ordinary simulation rules.
 
 Before the difficulty floor is projected, the player-facing policy pauses new
 voluntary construction and upgrades, discretionary production, mobile support,

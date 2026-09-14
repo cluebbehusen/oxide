@@ -3,17 +3,17 @@
   "hashes": {
     "gatework-array": "0xa8e06ae4f0253d6a",
     "gatework-array#commands": "0xcfe8aba914e64da0",
-    "skirmish": "0xc58b49985639dbed",
-    "skirmish#commands": "0x2e49a90bc7474331",
-    "skyhook-anchorage": "0xf09b511f1e984fe1",
-    "skyhook-anchorage#commands": "0x053a415355e669a7",
-    "skyhook-anchorage@9000": "0xb86d6cfc8b29fea7",
-    "skyhook-anchorage@9000#commands": "0xbc41e1c7c639a2b6",
+    "skirmish": "0x48db626cbe5f0c3e",
+    "skirmish#commands": "0x87d57de0f5012bac",
+    "skyhook-anchorage": "0xb82d76ba176e246d",
+    "skyhook-anchorage#commands": "0x6d3c2eb324a3b5cd",
+    "skyhook-anchorage@9000": "0x5849cab65fb22bc5",
+    "skyhook-anchorage@9000#commands": "0x702f109313f72d2e",
     "terminal-basin": "0xf3c6ea48a5f54abe",
     "terminal-basin#commands": "0x31e5a55350202536",
-    "three-shifts": "0x8a781b2ba4ab9d01",
-    "three-shifts#commands": "0x8881c994887769b4",
-    "twin-forges": "0x50253664d211d15e",
-    "twin-forges#commands": "0xd861ffed29281e4c"
+    "three-shifts": "0xf67db53dcab36148",
+    "three-shifts#commands": "0x3a24b96d82dd064a",
+    "twin-forges": "0x4971f69c7b78a921",
+    "twin-forges#commands": "0xf898b1f9b822a64d"
   }
 }
