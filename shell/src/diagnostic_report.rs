@@ -46,7 +46,8 @@ impl ReportJob {
                 .as_ref()
                 .map(|writer| writer.directory().to_owned())
                 .or_else(|| {
-                    oxide_kit::recovery::latest_interrupted(&root).map(|record| record.directory)
+                    oxide_kit::recovery::latest_diagnostic_record(&root)
+                        .map(|record| record.directory)
                 })
                 .context("no recorded match is available")?;
             let reports = root.join("reports");

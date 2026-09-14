@@ -319,7 +319,7 @@ fn inspect_reader(reader: &mut impl Read) -> Result<Inspection> {
     Ok(result)
 }
 
-/// An inactive recording eligible for an explicit recovery prompt.
+/// An inactive interrupted recording and its completed duration.
 pub struct InterruptedMatch {
     /// Recording directory.
     pub directory: PathBuf,
@@ -351,6 +351,15 @@ pub(crate) fn inactive(directory: &Path) -> Option<File> {
 
 /// Find the newest inactive compatible interrupted record without resuming it.
 pub fn latest_interrupted(root: &Path) -> Option<InterruptedMatch> {
+    latest_record(root, true)
+}
+
+/// Find diagnostic evidence even when the first simulation tick never completed.
+pub fn latest_diagnostic_record(root: &Path) -> Option<InterruptedMatch> {
+    latest_record(root, false)
+}
+
+fn latest_record(root: &Path, require_completed_tick: bool) -> Option<InterruptedMatch> {
     let mut directories = session_directories(root);
     directories.sort();
     for directory in directories.into_iter().rev() {
@@ -371,7 +380,7 @@ pub fn latest_interrupted(root: &Path) -> Option<InterruptedMatch> {
                         .as_str()
                         .is_some_and(|by| by.starts_with("session-"))
             });
-        if !record.clean && !superseded && ticks > 0 {
+        if !record.clean && !superseded && (!require_completed_tick || ticks > 0) {
             return Some(InterruptedMatch {
                 directory,
                 ticks,

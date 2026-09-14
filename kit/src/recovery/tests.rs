@@ -519,3 +519,28 @@ fn report_verification_rejects_a_changed_replay() {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn a_first_tick_failure_can_be_reported_without_offering_an_empty_resume() {
+    let root = temp();
+    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    wait(&writer, |status| status.ready);
+    writer.prepared(0, &[command()]);
+    let directory = writer.directory().to_owned();
+    drop(writer);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while read_lease(&directory).is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(latest_interrupted(&root).is_none());
+    let source = latest_diagnostic_record(&root).unwrap();
+    assert_eq!(source.ticks, 0);
+    let report = root.join("report");
+    export(&source.directory, &report).unwrap();
+    let inspected = inspect(&report).unwrap();
+    assert_eq!(inspected.replay.meta.ticks, Some(0));
+    assert!(inspected.replay.commands.is_empty());
+    assert_eq!(inspected.prepared, Some(vec![command()]));
+    std::fs::remove_dir_all(root).unwrap();
+}
