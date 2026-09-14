@@ -3,11 +3,14 @@
 //! (pause, seek, speed, camera). Update is windowless — the whole
 //! transport drives headless in tests.
 
+use crate::action::{Action, ActionEvent, ActionResolver, BindingMap, Context as InputContext};
 use crate::game::{self, Game, GameReplay};
 use crate::render;
 use anyhow::{Context, Result};
 use macroquad::prelude::*;
-use oxide_protocol::{Key, MouseButton, RawEvent};
+#[cfg(test)]
+use oxide_protocol::Key;
+use oxide_protocol::{MouseButton, RawEvent};
 use oxide_sim::SIM_VERSION;
 
 /// Where closing a playback viewer returns.
@@ -33,7 +36,9 @@ pub struct PlaybackSession {
     pub speed: f32,
     pub paused: bool,
     pub accum: f32,
-    pub held: [bool; 4],
+    pub bindings: BindingMap,
+    resolver: ActionResolver,
+    middle_anchor: Option<Vec2>,
     /// A held minimap press steers the camera, like live play.
     pub minimap_drag: bool,
     /// Explicit return destination. A tick-count heuristic resurrected
@@ -133,7 +138,9 @@ impl PlaybackSession {
             speed: 1.0,
             paused: false,
             accum: 0.0,
-            held: [false; 4],
+            bindings: BindingMap::classic(),
+            resolver: ActionResolver::default(),
+            middle_anchor: None,
             minimap_drag: false,
             return_to: ReturnTo::Home,
             seeking: None,
@@ -240,11 +247,16 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
         return;
     }
     let full = format!(
-        "PLAYBACK  {} / {}  |  {}x{}  |  Space pause | PgUp/PgDn seek | Home/End | 1-8 speed | S stats | Esc leave",
+        "PLAYBACK {} / {} | {}x{} | {} pause | {}/{} seek | {} stats | {} leave",
         pb.engine.position(),
         pb.engine.total(),
         pb.speed,
-        if pb.paused { "  |  PAUSED" } else { "" },
+        if pb.paused { " PAUSED" } else { "" },
+        pb.bindings.label(Action::ReplayPause),
+        pb.bindings.label(Action::ReplayBack),
+        pb.bindings.label(Action::ReplayForward),
+        pb.bindings.label(Action::ReplayStats),
+        pb.bindings.label(Action::Back),
     );
     // A 640px window cannot seat the controls hint; the transport
     // numbers alone must never run off both edges.
@@ -405,6 +417,12 @@ impl PlaybackSession {
             match e {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(*x, *y);
+                    if let Some(anchor) = self.middle_anchor {
+                        self.game
+                            .camera
+                            .pan((anchor - *mouse) / self.game.camera.zoom);
+                        self.middle_anchor = Some(*mouse);
+                    }
                     if self.scrubbing {
                         let bar = scrub_rect(&self.game, viewport);
                         seek_to = Some(self.tick_at(bar, mouse.x));
@@ -451,37 +469,41 @@ impl PlaybackSession {
                     let delta = if zoom_inverted { -*delta } else { *delta };
                     self.game.camera.zoom_at(*mouse, delta);
                 }
-                RawEvent::KeyDown { key } => match key {
-                    Key::Escape => leave = true,
-                    Key::Space => self.paused = !self.paused,
-                    Key::PageUp => {
-                        seek_to = Some(self.engine.position().saturating_sub(500));
+                RawEvent::KeyDown { key } => {
+                    if let Some(ActionEvent::Pressed(action)) = self.resolver.key_edge_in(
+                        &self.bindings,
+                        *key,
+                        true,
+                        InputContext::Playback,
+                    ) {
+                        match action {
+                            Action::Back => leave = true,
+                            Action::ReplayPause => self.paused = !self.paused,
+                            Action::ReplayBack => {
+                                seek_to = Some(self.engine.position().saturating_sub(500))
+                            }
+                            Action::ReplayForward => seek_to = Some(self.engine.position() + 500),
+                            Action::ReplayStart => seek_to = Some(0),
+                            Action::ReplayEnd => seek_to = Some(self.engine.total()),
+                            Action::ReplaySpeed(n) => self.speed = 0.5 * 2_f32.powi(i32::from(n)),
+                            Action::ReplayStats => self.toggle_stats(),
+                            _ => {}
+                        }
                     }
-                    Key::PageDown => seek_to = Some(self.engine.position() + 500),
-                    Key::Home => seek_to = Some(0),
-                    Key::End => seek_to = Some(self.engine.total()),
-                    Key::Num1 => self.speed = 0.5,
-                    Key::Num2 => self.speed = 1.0,
-                    Key::Num3 => self.speed = 2.0,
-                    Key::Num4 => self.speed = 4.0,
-                    Key::Num5 => self.speed = 8.0,
-                    Key::Num6 => self.speed = 16.0,
-                    Key::Num7 => self.speed = 32.0,
-                    Key::Num8 => self.speed = 64.0,
-                    Key::S => self.toggle_stats(),
-                    Key::Up => self.held[0] = true,
-                    Key::Down => self.held[1] = true,
-                    Key::Left => self.held[2] = true,
-                    Key::Right => self.held[3] = true,
-                    _ => {}
-                },
-                RawEvent::KeyUp { key } => match key {
-                    Key::Up => self.held[0] = false,
-                    Key::Down => self.held[1] = false,
-                    Key::Left => self.held[2] = false,
-                    Key::Right => self.held[3] = false,
-                    _ => {}
-                },
+                }
+                RawEvent::KeyUp { key } => {
+                    self.resolver
+                        .key_edge_in(&self.bindings, *key, false, InputContext::Playback);
+                }
+                RawEvent::MouseDown {
+                    button: MouseButton::Middle,
+                    x,
+                    y,
+                } => self.middle_anchor = Some(vec2(*x, *y)),
+                RawEvent::MouseUp {
+                    button: MouseButton::Middle,
+                    ..
+                } => self.middle_anchor = None,
                 _ => {}
             }
         }
@@ -489,16 +511,16 @@ impl PlaybackSession {
             return true;
         }
         let mut dir = vec2(0.0, 0.0);
-        if self.held[0] {
+        if self.resolver.is_held(Action::PanUp) {
             dir.y -= 1.0;
         }
-        if self.held[1] {
+        if self.resolver.is_held(Action::PanDown) {
             dir.y += 1.0;
         }
-        if self.held[2] {
+        if self.resolver.is_held(Action::PanLeft) {
             dir.x -= 1.0;
         }
-        if self.held[3] {
+        if self.resolver.is_held(Action::PanRight) {
             dir.x += 1.0;
         }
         if dir != vec2(0.0, 0.0) {
@@ -1078,16 +1100,65 @@ mod tests {
         assert!(!pb.show_stats);
         assert!(pb.stats.is_none());
 
-        key(&mut pb, Key::S);
+        key(&mut pb, Key::Tab);
         assert!(pb.show_stats);
         let final_tick = pb.stats.as_ref().expect("statistics computed").final_tick;
         assert_eq!(final_tick, pb.engine.total());
 
-        key(&mut pb, Key::S);
+        key(&mut pb, Key::Tab);
         assert!(!pb.show_stats);
         assert_eq!(
             pb.stats.as_ref().map(|stats| stats.final_tick),
             Some(final_tick)
         );
+    }
+    #[test]
+    fn playback_uses_rebound_camera_and_transport_keys_without_advancing_the_record() {
+        use crate::action::Chord;
+        let mut pb = session();
+        pb.paused = true;
+        pb.game.camera.zoom_at(vec2(640.0, 400.0), 4.0);
+        pb.game.camera.update(1.0);
+        assert!(pb.bindings.rebind(Action::PanRight, Chord::bare(Key::L)));
+        assert!(pb.bindings.rebind(Action::ReplayStats, Chord::bare(Key::O)));
+        let mut mouse = vec2(640.0, 400.0);
+        let tick = pb.engine.position();
+        let before = pb.game.camera.center.x;
+        pb.update(
+            &[
+                RawEvent::KeyDown { key: Key::L },
+                RawEvent::KeyDown { key: Key::Right },
+            ],
+            0.1,
+            vec2(1280.0, 800.0),
+            false,
+            1.0,
+            &mut mouse,
+        );
+        let halfway = pb.game.camera.center.x;
+        pb.update(
+            &[RawEvent::KeyUp { key: Key::L }],
+            0.1,
+            vec2(1280.0, 800.0),
+            false,
+            1.0,
+            &mut mouse,
+        );
+        let after = pb.game.camera.center.x;
+        assert!(before < halfway && halfway < after);
+        pb.update(
+            &[RawEvent::KeyUp { key: Key::Right }],
+            0.1,
+            vec2(1280.0, 800.0),
+            false,
+            1.0,
+            &mut mouse,
+        );
+        assert_eq!(pb.game.camera.center.x, after);
+        assert_eq!(pb.engine.position(), tick);
+        key(&mut pb, Key::Tab);
+        assert!(!pb.show_stats);
+        key(&mut pb, Key::O);
+        assert!(pb.show_stats);
     }
 }

@@ -157,10 +157,10 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
                 RecordKind::Save => "a saved game",
                 _ => "a live session",
             };
-            format!("{what} | Enter loads | X twice deletes")
+            format!("{what} | {{confirm}} loads | {{delete}} twice deletes")
         } else {
             format!(
-                "{} seats | sim v{} | Enter watches | X twice deletes",
+                "{} seats | sim v{} | {{confirm}} watches | {{delete}} twice deletes",
                 replay.setup.players.len(),
                 replay.meta.sim_version
             )

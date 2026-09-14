@@ -312,8 +312,7 @@ pub(crate) fn draw_hud(
         );
     }
 
-    *game.panel_model.borrow_mut() =
-        crate::panel::build_for_palette(game, &input.bindings, input.construction_open());
+    *game.panel_model.borrow_mut() = crate::panel::build_for_input(game, input);
     let panel = game.panel_model.borrow();
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut roster_slots = [(zero, crate::panel::CardAction::None); 8];
@@ -454,10 +453,10 @@ pub(crate) fn draw_result_overlay(game: &Game) {
         PANEL,
     );
     draw_text(text, x, y, size, DANGER);
-    let sub = "your team fights on | Esc for options";
-    let sub_dims = measure_text(sub, None, (18.0 * s) as u16, 1.0);
+    let sub = crate::menu::binding_hint("your team fights on | {back} for options");
+    let sub_dims = measure_text(&sub, None, (18.0 * s) as u16, 1.0);
     draw_text(
-        sub,
+        &sub,
         (screen_width() - sub_dims.width) * 0.5,
         y + 28.0 * s,
         18.0 * s,

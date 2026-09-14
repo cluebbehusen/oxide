@@ -330,3 +330,109 @@ fn a_modifier_held_on_another_screen_still_captures_its_chord() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "spawns a real window; run explicitly in the phase battery"]
+fn controls_persist_secondary_bindings_and_keep_camera_keys_live_in_construction() -> Result<()> {
+    use oxide_protocol::Reply;
+    let (mut guard, mut client) = spawn(4159)?;
+    activate_labeled(&mut client, "settings")?;
+    activate_labeled(&mut client, "controls")?;
+    press_key(&mut client, Key::Right)?;
+    activate_labeled(&mut client, "pan up:")?;
+    press_key(&mut client, Key::I)?;
+    let rows = ui(&mut client)?.items;
+    assert!(
+        rows.iter().any(|row| row.contains("Pan up: W | [I]")),
+        "{rows:?}"
+    );
+    let capture = |client: &mut Client, name: &str| -> Result<()> {
+        if let Ok(dir) = std::env::var("OXIDE_CONTROL_QA_DIR") {
+            std::fs::create_dir_all(&dir)?;
+            client.call(Request::Screenshot {
+                path: Some(PathBuf::from(dir).join(name).to_string_lossy().into_owned()),
+            })?;
+        }
+        Ok(())
+    };
+    capture(&mut client, "controls.png")?;
+    drop(client);
+    drop(guard.shell.take());
+    let (shell, reconnected) = spawn_shell(&SpawnOptions {
+        port: 4159,
+        paused: true,
+        home: Some(guard.home.clone()),
+    })?;
+    guard.shell = Some(shell);
+    client = reconnected;
+    activate_labeled(&mut client, "settings")?;
+    activate_labeled(&mut client, "controls")?;
+    assert!(
+        ui(&mut client)?
+            .items
+            .iter()
+            .any(|row| row.contains("Pan up: [W] | I"))
+    );
+    for (faction, name) in [
+        (oxide_sim::Faction::Ferrous, "construction-ferrous.png"),
+        (oxide_sim::Faction::Cupric, "construction-cupric.png"),
+    ] {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.players[0].faction = faction;
+        scenario.players[0].scrap = 10000;
+        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: oxide_sim::BuildingKind::Fabricator,
+            x: 9,
+            y: 3,
+        });
+        let path = guard.home.join("controls-scenario.json");
+        std::fs::write(&path, serde_json::to_vec(&scenario)?)?;
+        client.call(Request::LoadScenario {
+            path: path.to_string_lossy().into_owned(),
+        })?;
+        client.call(Request::Pause)?;
+        press_key(&mut client, Key::B)?;
+        capture(&mut client, name)?;
+        press_key(&mut client, Key::R)?;
+        press_key(&mut client, Key::Q)?;
+        capture(&mut client, &format!("active-{name}"))?;
+        client.call(Request::InjectEvent {
+            event: RawEvent::MouseMove { x: 640.0, y: 400.0 },
+        })?;
+        client.call(Request::InjectEvent {
+            event: RawEvent::Wheel { delta: 4.0 },
+        })?;
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let camera = |client: &mut Client| -> Result<[f64; 2]> {
+            let Reply::Camera(camera) = client.call(Request::QueryCamera)? else {
+                bail!("camera reply");
+            };
+            Ok(camera.center)
+        };
+        let before = camera(&mut client)?;
+        for key in [Key::W, Key::I] {
+            client.call(Request::InjectEvent {
+                event: RawEvent::KeyDown { key },
+            })?;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        client.call(Request::InjectEvent {
+            event: RawEvent::KeyUp { key: Key::W },
+        })?;
+        let halfway = camera(&mut client)?;
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        client.call(Request::InjectEvent {
+            event: RawEvent::KeyUp { key: Key::I },
+        })?;
+        let after = camera(&mut client)?;
+        assert!(
+            halfway[1] < before[1] && after[1] < halfway[1],
+            "{before:?} -> {halfway:?} -> {after:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let stopped = camera(&mut client)?;
+        assert_eq!(after, stopped);
+    }
+    Ok(())
+}

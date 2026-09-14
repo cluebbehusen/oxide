@@ -109,6 +109,20 @@ pub enum CardAction {
     None,
 }
 
+impl CardAction {
+    pub(crate) fn semantic(self) -> Option<Action> {
+        match self {
+            Self::Dispatch(action) => Some(action),
+            Self::ArmBuild(kind) => Some(Action::Build(kind)),
+            Self::ArmRally => Some(Action::SetRally),
+            Self::ClearRally => Some(Action::ClearRally),
+            Self::Upgrade(_) => Some(Action::Upgrade),
+            Self::UnloadHere(_) => Some(Action::Unload),
+            _ => None,
+        }
+    }
+}
+
 /// One button (or display chip) on the panel.
 pub struct Card {
     /// Face of the card.
@@ -681,10 +695,7 @@ fn subject_detail(game: &Game, order: &Order, progress: Option<f32>) -> Option<S
 }
 
 fn chord(bindings: &BindingMap, action: Action) -> String {
-    bindings
-        .chord_for(action)
-        .map(BindingMap::chord_label)
-        .unwrap_or_default()
+    bindings.labels(action)
 }
 
 /// Builds the selection panel against the live construction-menu state.
@@ -695,6 +706,28 @@ pub fn build_for_palette(
 ) -> Option<Panel> {
     let mut panel = build_panel(game, bindings, build_menu_open)?;
     panel.info = info::selection_info(game, &panel);
+    Some(panel)
+}
+
+pub(crate) fn build_for_input(game: &Game, input: &crate::input::InputState) -> Option<Panel> {
+    let mut panel = build_for_palette(game, &input.bindings, input.construction_open())?;
+    for card in &mut panel.cards {
+        if let CardAction::ArmBuild(kind) = card.action {
+            let category = crate::action::building_category(kind);
+            let key = input.bindings.labels(Action::Build(kind));
+            card.hotkey = if input.build_category == Some(category) {
+                key
+            } else if input.build_category.is_some() {
+                String::new()
+            } else {
+                format!(
+                    "{} > {}",
+                    input.bindings.label(Action::BuildCategory(category)),
+                    key
+                )
+            };
+        }
+    }
     Some(panel)
 }
 
@@ -750,7 +783,7 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                     "Set rallies".into()
                 },
                 cost: None,
-                hotkey: String::new(),
+                hotkey: chord(bindings, Action::SetRally),
                 action: CardAction::ArmRally,
                 enabled: true,
                 why: None,
@@ -765,7 +798,7 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                     icon: CardIcon::Verb(VerbIcon::Rally),
                     title: "Clear rallies".into(),
                     cost: None,
-                    hotkey: String::new(),
+                    hotkey: chord(bindings, Action::ClearRally),
                     action: CardAction::ClearRally,
                     enabled: true,
                     why: None,
@@ -902,7 +935,7 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 icon: CardIcon::Building(building.kind, building.tier),
                 title: format!("Upgrade: {next}"),
                 cost: Some(upgrade.cost),
-                hotkey: String::new(),
+                hotkey: chord(bindings, Action::Upgrade),
                 action: CardAction::Upgrade(building.id),
                 enabled,
                 why,
@@ -923,7 +956,7 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                     "Set rally".into()
                 },
                 cost: None,
-                hotkey: String::new(),
+                hotkey: chord(bindings, Action::SetRally),
                 action: CardAction::ArmRally,
                 enabled: true,
                 why: None,
@@ -938,7 +971,7 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                     icon: CardIcon::Verb(VerbIcon::Rally),
                     title: "Clear rally".into(),
                     cost: None,
-                    hotkey: String::new(),
+                    hotkey: chord(bindings, Action::ClearRally),
                     action: CardAction::ClearRally,
                     enabled: true,
                     why: None,
@@ -982,7 +1015,7 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 icon: CardIcon::Unit(kind),
                 title: entity_name(kind.name()),
                 cost: Some(cost),
-                hotkey: format!("{}", i + 1),
+                hotkey: chord(bindings, Action::TrainSlot(i as u8)),
                 action: CardAction::Dispatch(Action::TrainSlot(i as u8)),
                 enabled,
                 why,
@@ -1208,7 +1241,7 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
             icon: CardIcon::Verb(VerbIcon::Move),
             title: "Unload here".into(),
             cost: None,
-            hotkey: String::new(),
+            hotkey: chord(bindings, Action::Unload),
             action: CardAction::UnloadHere(first.id),
             enabled: loaded,
             why: (!loaded).then(|| "the sling is empty".to_string()),
@@ -1226,7 +1259,10 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
             panel.cards.clear();
             panel.roster.clear();
             panel.title = "CONSTRUCTION".into();
-            panel.summary = "Choose a building\nEsc to return".into();
+            panel.summary = format!(
+                "Choose a building\n{} to return",
+                bindings.label(Action::Back)
+            );
             panel.portrait = CardIcon::Verb(VerbIcon::Build);
         } else {
             panel.cards.push(Card {
@@ -1241,9 +1277,9 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 progress: None,
             });
         }
-        for (i, kind) in [4, 10, 6, 7, 8, 9, 0, 1, 2, 11, 3, 5, 12]
-            .into_iter()
-            .map(|slot| (slot, crate::input::BUILD_PALETTE[slot]))
+        for kind in crate::action::BUILD_CATEGORIES
+            .iter()
+            .flat_map(|(_, kinds)| kinds.iter().copied())
             .filter(|_| build_menu_open)
         {
             let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
@@ -1271,11 +1307,13 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 icon: CardIcon::Building(kind, 0),
                 title: entity_name(kind.name()),
                 cost: Some(cost),
-                hotkey: if i < 9 {
-                    (i + 1).to_string()
-                } else {
-                    format!("Shift+{}", i - 8)
-                },
+                hotkey: format!(
+                    "{} > {}",
+                    bindings.label(Action::BuildCategory(crate::action::building_category(
+                        kind
+                    ))),
+                    bindings.label(Action::Build(kind))
+                ),
                 action: CardAction::ArmBuild(kind),
                 enabled,
                 why,
@@ -1621,7 +1659,7 @@ mod tests {
         assert_eq!(panel.cards.len(), 5, "four units plus the rally affordance");
         assert_eq!(panel.cards[0].title, "Set rally");
         assert_eq!(panel.cards[0].action, CardAction::ArmRally);
-        assert_eq!(panel.cards[1].hotkey, "1");
+        assert_eq!(panel.cards[1].hotkey, "Q");
         assert_eq!(panel.cards[1].cost, Some(50));
         assert_eq!(unit_train_time_label(UnitKind::Harvester), "5s");
         assert_eq!(unit_train_time_label(UnitKind::Sentinel), "7.5s");

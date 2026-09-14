@@ -68,6 +68,12 @@ staged commands. Cross-frame gestures, held keys, touch state, control groups,
 and bindings belong to the input layer. The debug protocol's `SendCommand`
 stages an already-semantic command and does not exercise UI mapping.
 
+`action::BindingMap` owns contextual primary and secondary bindings shared by
+input dispatch, UI hints, and settings. `ActionResolver` pairs releases with the
+original presses so aliases and modifier changes preserve held actions. Keyboard
+card actions use the same availability checks as clicks. Configuration migration
+preserves explicit remaps and unbindings without displacing custom chords.
+
 Coordinates are logical throughout the input/layout pipeline; the hardware
 adapter applies DPI conversion once. Drawing publishes a shared `LayoutModel`
 whose rectangles also drive hit testing. The HUD's supported layout floor is

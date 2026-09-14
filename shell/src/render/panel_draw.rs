@@ -351,14 +351,34 @@ fn draw_catalog(
         crate::typography::draw("BUILD", 12.0 * s, band.y + 20.0 * s, 15.0 * s, TEXT_PRIMARY);
     }
     if grouped {
-        for (index, label) in [
+        for (category, (index, label)) in [
             (0, "ECONOMY"),
             (2, "PRODUCTION"),
             (6, "DEFENSE"),
             (10, "UTILITY"),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let label = if input.build_category == Some(category as u8) {
+                format!("{label} *")
+            } else {
+                let key = input
+                    .bindings
+                    .label(crate::action::Action::BuildCategory(category as u8));
+                if input.build_category.is_some() {
+                    format!(
+                        "{label} [{} > {key}]",
+                        input
+                            .bindings
+                            .label(crate::action::Action::ToggleBuildPalette)
+                    )
+                } else {
+                    format!("{label} [{key}]")
+                }
+            };
             crate::typography::draw(
-                label,
+                &label,
                 slots[index].x + 5.0 * s,
                 band.y + 20.0 * s,
                 11.0 * s,
