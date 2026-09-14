@@ -121,12 +121,12 @@ pending checks as pending; do not wait for or repeatedly fetch their status.
 Do not weaken a gate to pass it. Fix the implementation or discuss why the
 contract is wrong.
 
-The combined coverage gate skips the exhaustive shipped-map soak and the
+The combined coverage gate skips the representative-map soak and the
 long-horizon deterministic behavior oracles because LLVM instrumentation turns
 those already-required normal tests into tens of minutes while adding almost no
-line coverage. `cargo test --workspace --locked` still runs them on every CI
-platform; the coverage job measures the rest of the unit and integration
-surface.
+line coverage. `cargo test --workspace --locked` runs those tests on every CI
+platform; the exhaustive all-map soak is opt-in. The coverage job measures the
+rest of the unit and integration surface.
 
 Repeated builds, tests, and coverage runs accumulate incremental, profile, and
 instrumented artifacts under `target/`; this can consume tens of gigabytes over
