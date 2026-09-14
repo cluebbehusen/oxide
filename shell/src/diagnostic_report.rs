@@ -35,6 +35,13 @@ impl ReportJob {
             .then(|| game.recovery.clone())
             .flatten();
         self.begin("oxide-report-export", move || {
+            if let Some(writer) = &active {
+                let status = writer.status();
+                ensure!(
+                    status.ready || status.error.is_some(),
+                    "recording is still starting; try exporting again shortly"
+                );
+            }
             let source = active
                 .as_ref()
                 .map(|writer| writer.directory().to_owned())

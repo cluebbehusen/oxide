@@ -17,7 +17,7 @@ const SESSION_RESERVATION: u64 = 96 * 1024 * 1024;
 /// Nonblocking recording health; durable progress can lag live progress.
 #[derive(Debug, Clone, Serialize)]
 pub struct WriterStatus {
-    /// Baseline has been durably published.
+    /// Baseline and any previous-session evidence have been durably published.
     pub ready: bool,
     /// Last completed tick acknowledged after fsync.
     pub durable_tick: u64,
@@ -383,6 +383,7 @@ fn run(
         })?;
     }
     drop(source_lease);
+    shared.ready.store(true, Ordering::Release);
     loop {
         let message = receiver.recv_timeout(Duration::from_millis(250));
         match message {
@@ -507,7 +508,6 @@ fn flush(
         *total += buffer.len() as u64;
         buffer.clear();
         shared.durable.store(tick, Ordering::Release);
-        shared.ready.store(true, Ordering::Release);
         Ok(())
     })();
     budget.unlock()?;

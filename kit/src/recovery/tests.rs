@@ -394,10 +394,10 @@ fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
     let replacement =
         RecoveryWriter::start_recovered(root.clone(), recovered, 1, Some(source.clone())).unwrap();
     wait(&replacement, |status| status.ready);
-    while !source.join("superseded.json").exists() {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    assert!(
+        source.join("superseded.json").exists(),
+        "ready includes previous evidence and source retirement"
+    );
     assert!(
         latest_interrupted(&root).is_none(),
         "source is retired and replacement is active"
