@@ -31,6 +31,7 @@ mod experience;
 pub mod intelligence;
 pub mod lift;
 pub mod observation;
+pub mod observer;
 pub mod orient;
 pub mod profile;
 pub mod raid;
@@ -95,6 +96,15 @@ impl SeatBot {
     /// Commands for this tick.
     pub fn act(&mut self, state: &crate::state::State) -> Vec<crate::command::PlayerCommand> {
         self.0.act(state)
+    }
+
+    /// Commands through the normal controller with optional observational phase callbacks.
+    pub fn act_observed(
+        &mut self,
+        state: &crate::State,
+        observer: &dyn observer::PhaseObserver,
+    ) -> Vec<crate::PlayerCommand> {
+        self.0.act_observed(state, observer)
     }
 
     /// Commands plus an opt-in player-facing decision trace for this tick.

@@ -14,6 +14,9 @@ automated players use the same command path as every other player.
 - Re-exported `runner`, `render`, `playback`, and `stats` come from `oxide-kit`
   and keep headless execution shared with the shell.
 - `client` speaks the debug protocol; `session` serves it windowlessly.
+- `recovery-inspect <session-directory> [--export <new-report-directory>]`
+  verifies an interrupted journal and exports its completed replay prefix plus
+  available diagnostic sidecars without needing a responsive shell.
 - `replay_inspect` and `replay_summary` provide exact snapshots and compact
   match narratives.
 - `bot_eval` runs the player-facing controller to a decision, tick ceiling, or

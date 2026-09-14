@@ -26,6 +26,7 @@ use super::intelligence::StrategicIntelligence;
 use super::lift::LiftAdmission;
 use super::lift::{LiftAirSupport, LiftPlanner};
 use super::observation::Observation;
+use super::observer::{BotPhase, PhaseObserver, PhaseScope};
 use super::orient::Orientation;
 use super::profile::ResolvedProfile;
 use super::raid::{RaidPlanner, RaidPlanningContext};
@@ -163,7 +164,7 @@ impl Brain {
 
     /// Commands for this tick (usually none — brains think on a cadence).
     pub fn act(&mut self, state: &State) -> Vec<PlayerCommand> {
-        self.act_inner(state, None)
+        self.act_inner(state, None, None)
     }
 
     /// Commands plus an observational trace for a player-facing decision tick.
@@ -173,26 +174,38 @@ impl Brain {
     /// or replay state.
     pub fn act_traced(&mut self, state: &State) -> TracedBotAct {
         let mut recorder = Some(DecisionTraceRecorder::default());
-        let commands = self.act_inner(state, recorder.as_mut());
+        let commands = self.act_inner(state, recorder.as_mut(), None);
         TracedBotAct {
             commands,
             trace: recorder.and_then(DecisionTraceRecorder::finish),
         }
     }
 
+    pub(super) fn act_observed(
+        &mut self,
+        state: &State,
+        observer: &dyn PhaseObserver,
+    ) -> Vec<PlayerCommand> {
+        self.act_inner(state, None, Some(observer))
+    }
+
     fn act_inner(
         &mut self,
         state: &State,
         mut recorder: Option<&mut DecisionTraceRecorder>,
+        observer: Option<&dyn PhaseObserver>,
     ) -> Vec<PlayerCommand> {
         if !self.decision_due(state) {
             return Vec::new();
         }
+        let observation_scope = PhaseScope::new(observer, BotPhase::Observation);
         let obs = if self.dials.fog_honest {
             Observation::fog_honest(state, self.player)
         } else {
             Observation::omniscient(state, self.player)
         };
+        drop(observation_scope);
+        let maintenance_scope = PhaseScope::new(observer, BotPhase::Maintenance);
         if state.player(self.player).resigned
             || !obs
                 .my_buildings
@@ -352,6 +365,8 @@ impl Brain {
         // The policy thinks in seat-oriented space (see [`Orientation`]):
         // the same logic runs for both seats, so its compass-flavored
         // tie-breaks cannot systematically favor either one.
+        drop(maintenance_scope);
+        let strategy_scope = PhaseScope::new(observer, BotPhase::Strategy);
         let enlisted: Vec<_> = self.exec.enlisted().collect();
         let mind = &mut self.mind;
         let PlayerFacingMind {
@@ -560,6 +575,7 @@ impl Brain {
                 .as_deref_mut()
                 .map(|recorder| &mut recorder.trace_mut().allocation),
         )
+        .with_observer(observer)
         .run();
         let AllocationSessionOutcome {
             opening_core,
@@ -892,6 +908,8 @@ impl Brain {
             };
         }
         let intents = orientation.emit(intents);
+        drop(strategy_scope);
+        let _executive_scope = PhaseScope::new(observer, BotPhase::Executive);
         let lowered = self.exec.apply_with_builder_lease(
             self.player,
             &obs,

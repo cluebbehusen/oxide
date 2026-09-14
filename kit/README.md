@@ -16,6 +16,9 @@ while reusable game-independent primitives stay in `chassis`.
   Batch workers that already run matches concurrently use `serially` to avoid
   adding bot threads to a saturated workload.
 
+- `recovery` keeps a bounded incremental command journal, distinguishes prepared
+  commands from completed ticks, and exports verified replay prefixes with build
+  provenance. Its worker handles disk durability without blocking the caller.
 - `load_replay` owns bounded Oxide replay loading and version-scoped setup
   compatibility.
 - `runner` executes scenarios and replays headlessly through the same
@@ -36,3 +39,8 @@ cargo test -p oxide-kit --locked
 cargo test -p oxide-driver --test golden --locked
 cargo clippy -p oxide-kit --all-targets --locked -- -D warnings
 ```
+
+`diagnostics` optionally observes coarse shell operations and bot phases through
+the existing parallel executor. It retains bounded timing history and runs an
+independent atomic-progress watchdog. Diagnostic output is observational;
+recovery's prepared/completed journal alone determines the playable prefix.

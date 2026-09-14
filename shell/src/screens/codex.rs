@@ -274,25 +274,16 @@ impl CodexScreen {
                 plate,
                 plate,
             );
-            let blit = |source: Rect| {
-                sprites.draw(
-                    dest.x,
-                    dest.y,
-                    WHITE,
-                    DrawTextureParams {
-                        dest_size: Some(vec2(dest.w, dest.h)),
-                        source: Some(source),
-                        ..Default::default()
-                    },
-                );
-            };
             match entry {
-                Entry::Unit(kind) => blit(sprites.unit(kind, *faction)),
+                Entry::Unit(kind) => {
+                    sprites.draw_portrait(dest, &[(sprites.unit(kind, *faction), WHITE)])
+                }
                 Entry::Building(kind) => {
-                    blit(sprites.building(kind, *faction));
+                    let mut layers = vec![(sprites.building(kind, *faction), WHITE)];
                     if let Some(mount) = sprites.defense_mount(kind, 0, *faction) {
-                        blit(mount);
+                        layers.push((mount, WHITE));
                     }
+                    sprites.draw_portrait(dest, &layers);
                 }
             }
         }

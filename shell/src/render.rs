@@ -188,6 +188,22 @@ pub fn staleness_fade(age: f32) -> f32 {
     (age / 90.0).clamp(0.0, 1.0) * 0.55
 }
 
+/// Shared age of an honestly observed salvage tile in the presentation clock.
+pub(crate) fn resource_memory_opacity(
+    game: &crate::game::Game,
+    pos: chassis::grid::TilePos,
+) -> f32 {
+    let mut seen = game.last_seen.borrow_mut();
+    let now = game.fx_time();
+    if game.all_seeing() || game.my_vision().visible(pos) {
+        seen.insert((pos.x, pos.y), now);
+        1.0
+    } else {
+        let stamp = *seen.entry((pos.x, pos.y)).or_insert(now);
+        1.0 - staleness_fade(now - stamp)
+    }
+}
+
 mod chrome;
 mod destruction;
 pub(crate) mod entities;
@@ -232,8 +248,8 @@ const PANEL: Color = crate::theme::SURFACE_PANEL;
 fn capability_icon_color(icon: crate::panel::CapabilityIcon) -> Color {
     use crate::panel::CapabilityIcon;
     match icon {
-        CapabilityIcon::Weapon => Color::new(0.85, 0.32, 0.29, 0.86),
-        CapabilityIcon::AirWeapon => Color::new(0.38, 0.70, 0.95, 0.90),
+        CapabilityIcon::Weapon => Color::new(0.85, 0.46, 0.36, 0.86),
+        CapabilityIcon::AirWeapon => Color::new(0.90, 0.36, 0.50, 0.90),
         CapabilityIcon::DeadZone => Color::new(1.0, 0.68, 0.18, 0.92),
         CapabilityIcon::Vision => Color::new(0.63, 0.77, 0.94, 0.86),
         CapabilityIcon::Radar => Color::new(0.22, 0.76, 0.72, 0.90),
@@ -261,18 +277,28 @@ fn draw_capability_icon(
         );
     }
     match icon {
-        CapabilityIcon::Weapon | CapabilityIcon::DeadZone => {
-            draw_circle_lines(center.x, center.y, radius * 0.58, stroke, color);
+        CapabilityIcon::Weapon | CapabilityIcon::AirWeapon | CapabilityIcon::DeadZone => {
+            let reticle_radius = if icon == CapabilityIcon::AirWeapon {
+                0.76
+            } else {
+                0.58
+            };
+            let tick_inner = if icon == CapabilityIcon::AirWeapon {
+                0.84
+            } else {
+                0.38
+            };
+            draw_circle_lines(center.x, center.y, radius * reticle_radius, stroke, color);
             draw_line(
                 center.x - radius,
                 center.y,
-                center.x - radius * 0.38,
+                center.x - radius * tick_inner,
                 center.y,
                 stroke,
                 color,
             );
             draw_line(
-                center.x + radius * 0.38,
+                center.x + radius * tick_inner,
                 center.y,
                 center.x + radius,
                 center.y,
@@ -283,18 +309,61 @@ fn draw_capability_icon(
                 center.x,
                 center.y - radius,
                 center.x,
-                center.y - radius * 0.38,
+                center.y - radius * tick_inner,
                 stroke,
                 color,
             );
             draw_line(
                 center.x,
-                center.y + radius * 0.38,
+                center.y + radius * tick_inner,
                 center.x,
                 center.y + radius,
                 stroke,
                 color,
             );
+            if icon == CapabilityIcon::AirWeapon {
+                let aircraft = radius * 0.40;
+                draw_line(
+                    center.x,
+                    center.y - aircraft,
+                    center.x,
+                    center.y + aircraft * 0.82,
+                    stroke,
+                    color,
+                );
+                draw_line(
+                    center.x,
+                    center.y - aircraft * 0.18,
+                    center.x - aircraft,
+                    center.y + aircraft * 0.34,
+                    stroke,
+                    color,
+                );
+                draw_line(
+                    center.x,
+                    center.y - aircraft * 0.18,
+                    center.x + aircraft,
+                    center.y + aircraft * 0.34,
+                    stroke,
+                    color,
+                );
+                draw_line(
+                    center.x,
+                    center.y + aircraft * 0.48,
+                    center.x - aircraft * 0.48,
+                    center.y + aircraft * 0.82,
+                    stroke,
+                    color,
+                );
+                draw_line(
+                    center.x,
+                    center.y + aircraft * 0.48,
+                    center.x + aircraft * 0.48,
+                    center.y + aircraft * 0.82,
+                    stroke,
+                    color,
+                );
+            }
             if icon == CapabilityIcon::DeadZone {
                 draw_line(
                     center.x - radius * 0.78,
@@ -305,59 +374,6 @@ fn draw_capability_icon(
                     color,
                 );
             }
-        }
-        CapabilityIcon::AirWeapon => {
-            // A top-down aircraft inside four targeting brackets. The
-            // aircraft names the domain; the brackets make this an attack
-            // reach mark rather than a place the selected unit can fly.
-            let corner = radius * 0.34;
-            for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                let x = center.x + sx * radius;
-                let y = center.y + sy * radius;
-                draw_line(x, y, x - sx * corner, y, stroke, color);
-                draw_line(x, y, x, y - sy * corner, stroke, color);
-            }
-            let aircraft = radius * 0.66;
-            draw_line(
-                center.x,
-                center.y - aircraft,
-                center.x,
-                center.y + aircraft * 0.82,
-                stroke,
-                color,
-            );
-            draw_line(
-                center.x,
-                center.y - aircraft * 0.18,
-                center.x - aircraft,
-                center.y + aircraft * 0.34,
-                stroke,
-                color,
-            );
-            draw_line(
-                center.x,
-                center.y - aircraft * 0.18,
-                center.x + aircraft,
-                center.y + aircraft * 0.34,
-                stroke,
-                color,
-            );
-            draw_line(
-                center.x,
-                center.y + aircraft * 0.48,
-                center.x - aircraft * 0.48,
-                center.y + aircraft * 0.82,
-                stroke,
-                color,
-            );
-            draw_line(
-                center.x,
-                center.y + aircraft * 0.48,
-                center.x + aircraft * 0.48,
-                center.y + aircraft * 0.82,
-                stroke,
-                color,
-            );
         }
         CapabilityIcon::Vision => {
             let left = vec2(center.x - radius, center.y);
@@ -594,7 +610,11 @@ pub(crate) fn draw_with_performance(
     environment::draw_boundary(game, sprites.quarry_dressing(0).is_some());
     draw_scorches(game, sprites);
     destruction::draw_ground_effects(game, sprites);
+    draw_range_ground(game, input);
+    crate::strategic_markers::draw_resources(game);
+    crate::strategic_markers::draw_extractor_frames(game);
     draw_buildings(game, sprites);
+    crate::strategic_markers::draw_buildings(game);
     draw_units(game, sprites, alpha);
     crate::strategic_markers::draw_markers(game, alpha);
     draw_fx(game, sprites);
@@ -1459,12 +1479,14 @@ mod tests {
     }
 
     #[test]
-    fn ground_and_air_weapon_marks_do_not_depend_on_one_hue() {
+    fn ground_and_air_weapon_marks_have_distinct_warm_colors() {
         let ground = super::capability_icon_color(crate::panel::CapabilityIcon::Weapon);
         let air = super::capability_icon_color(crate::panel::CapabilityIcon::AirWeapon);
 
         assert!(ground.r > ground.b, "ground range stays warm");
-        assert!(air.b > air.r, "air range stays cool");
+        assert!(air.r > air.b, "air attack stays in the weapon color family");
+        assert!(ground.g > ground.b, "ground attack stays orange-rust");
+        assert!(air.b > air.g, "air attack stays crimson-rose");
         assert_ne!(ground, air);
     }
 
