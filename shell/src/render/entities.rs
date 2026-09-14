@@ -1660,6 +1660,7 @@ pub(crate) fn draw_blips(game: &Game) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BuildingRangeKind {
     Weapon,
+    AirWeapon,
     DeadZone,
     Vision,
     Radar,
@@ -1707,37 +1708,28 @@ enum RangeStroke {
     LongDash,
     Dotted,
     DashDot,
-    TwinDot,
 }
 
 impl RangeStroke {
-    fn visible(self, distance: f32, scale: f32) -> bool {
-        let scale = scale.max(0.25);
+    fn pattern(self) -> &'static [f32] {
         match self {
-            Self::Solid => true,
-            Self::ShortDash => (distance / scale).rem_euclid(12.0) < 6.0,
-            Self::LongDash => (distance / scale).rem_euclid(20.0) < 12.0,
-            Self::Dotted => (distance / scale).rem_euclid(9.0) < 2.5,
-            Self::DashDot => {
-                let phase = (distance / scale).rem_euclid(26.0);
-                phase < 11.0 || (16.0..19.0).contains(&phase)
-            }
-            Self::TwinDot => {
-                let phase = (distance / scale).rem_euclid(18.0);
-                phase < 2.5 || (7.0..9.5).contains(&phase)
-            }
+            Self::Solid => &[],
+            Self::ShortDash => &[6.0, 6.0],
+            Self::LongDash => &[12.0, 8.0],
+            Self::Dotted => &[2.5, 6.5],
+            Self::DashDot => &[11.0, 5.0, 3.0, 7.0],
         }
     }
 }
 
 fn range_stroke(kind: BuildingRangeKind) -> RangeStroke {
     match kind {
-        BuildingRangeKind::Weapon => RangeStroke::Solid,
+        BuildingRangeKind::Weapon | BuildingRangeKind::AirWeapon => RangeStroke::Solid,
         BuildingRangeKind::DeadZone => RangeStroke::ShortDash,
         BuildingRangeKind::Vision => RangeStroke::LongDash,
         BuildingRangeKind::Radar => RangeStroke::Dotted,
         BuildingRangeKind::Repair => RangeStroke::DashDot,
-        BuildingRangeKind::EconomySupport => RangeStroke::TwinDot,
+        BuildingRangeKind::EconomySupport => RangeStroke::Solid,
     }
 }
 
@@ -1745,6 +1737,7 @@ fn range_icon(kind: BuildingRangeKind) -> crate::panel::CapabilityIcon {
     use crate::panel::CapabilityIcon;
     match kind {
         BuildingRangeKind::Weapon => CapabilityIcon::Weapon,
+        BuildingRangeKind::AirWeapon => CapabilityIcon::AirWeapon,
         BuildingRangeKind::DeadZone => CapabilityIcon::DeadZone,
         BuildingRangeKind::Vision => CapabilityIcon::Vision,
         BuildingRangeKind::Radar => CapabilityIcon::Radar,
@@ -1753,8 +1746,15 @@ fn range_icon(kind: BuildingRangeKind) -> crate::panel::CapabilityIcon {
     }
 }
 
+fn weapon_range_kind(weapon: &oxide_sim::stats::WeaponStats) -> BuildingRangeKind {
+    match crate::panel::weapon_capability_icon(weapon) {
+        crate::panel::CapabilityIcon::AirWeapon => BuildingRangeKind::AirWeapon,
+        _ => BuildingRangeKind::Weapon,
+    }
+}
+
 fn dead_zone_fill(color: Color) -> Color {
-    Color::new(color.r, color.g, color.b, 0.055)
+    Color::new(color.r, color.g, color.b, 0.035)
 }
 
 fn range_subject(
@@ -1774,27 +1774,52 @@ fn stroke_patterned_path(
     thickness: f32,
     color: Color,
     scale: f32,
+    occluders: &[(Vec2, Vec2)],
 ) {
-    let mut traveled = 0.0;
-    let sample = (3.0 * scale).max(1.5);
+    let mut clipper = RangeClipper::new(points, occluders);
+    visit_stroke_segments(points, stroke, scale, |a, b| {
+        clipper.visit_visible(a, b, |from, to| {
+            draw_line(from.x, from.y, to.x, to.y, thickness, color);
+        });
+    });
+}
+
+fn visit_stroke_segments(
+    points: &[Vec2],
+    stroke: RangeStroke,
+    scale: f32,
+    mut visit: impl FnMut(Vec2, Vec2),
+) {
+    let pattern = stroke.pattern();
+    let scale = scale.max(0.25);
+    let mut index = 0;
+    let mut remaining = pattern
+        .first()
+        .map_or(f32::INFINITY, |length| length * scale);
     for pair in points.windows(2) {
         let delta = pair[1] - pair[0];
         let length = delta.length();
         if length <= f32::EPSILON {
             continue;
         }
-        let steps = (length / sample).ceil().max(1.0) as usize;
-        for step in 0..steps {
-            let a_t = step as f32 / steps as f32;
-            let b_t = (step + 1) as f32 / steps as f32;
-            let midpoint = traveled + length * (a_t + b_t) * 0.5;
-            if stroke.visible(midpoint, scale) {
-                let a = pair[0] + delta * a_t;
-                let b = pair[0] + delta * b_t;
-                draw_line(a.x, a.y, b.x, b.y, thickness, color);
+        let direction = delta / length;
+        let mut offset = 0.0;
+        while offset < length {
+            let end = (offset + remaining).min(length);
+            if index % 2 == 0 && end > offset {
+                visit(pair[0] + direction * offset, pair[0] + direction * end);
+            }
+            remaining = if end == offset {
+                0.0
+            } else {
+                remaining - (end - offset)
+            };
+            offset = end;
+            if remaining <= f32::EPSILON && !pattern.is_empty() {
+                index = (index + 1) % pattern.len();
+                remaining = pattern[index] * scale;
             }
         }
-        traveled += length;
     }
 }
 
@@ -1871,7 +1896,7 @@ fn visit_building_ranges(
     let center = anchor + size * 0.5;
     if let Some(weapon) = stats.weapons.first() {
         visit(BuildingRange {
-            kind: BuildingRangeKind::Weapon,
+            kind: weapon_range_kind(weapon),
             shape: BuildingRangeShape::Circle {
                 center,
                 radius: weapon.range.to_num::<f32>(),
@@ -1983,221 +2008,455 @@ fn selected_economy_support_links(game: &Game) -> Vec<EconomySupportLink> {
     }
 }
 
-fn building_center(building: &oxide_sim::Building) -> Vec2 {
+const ECONOMY_SUPPORT_COLOR: Color = Color::new(0.72, 0.63, 0.46, 0.58);
+
+fn building_screen_bounds(game: &Game, building: &oxide_sim::Building) -> (Vec2, Vec2) {
     let (width, height) = building.stats().size;
-    vec2(
-        building.anchor.x as f32 + width as f32 * 0.5,
-        building.anchor.y as f32 + height as f32 * 0.5,
+    let min = game
+        .camera
+        .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
+    (
+        min,
+        min + vec2(width as f32, height as f32) * game.camera.zoom,
     )
 }
 
-fn draw_economy_support_links(game: &Game, scale: f32, color: Color) {
-    for link in selected_economy_support_links(game) {
+fn footprint_link(a: (Vec2, Vec2), b: (Vec2, Vec2), padding: f32) -> Option<[Vec2; 2]> {
+    let a_center = (a.0 + a.1) * 0.5;
+    let b_center = (b.0 + b.1) * 0.5;
+    let delta = b_center - a_center;
+    let distance = delta.length();
+    if distance <= f32::EPSILON {
+        return None;
+    }
+    let direction = delta / distance;
+    let exit = |bounds: (Vec2, Vec2)| {
+        let half = (bounds.1 - bounds.0) * 0.5 + Vec2::splat(padding);
+        (half.x / direction.x.abs()).min(half.y / direction.y.abs())
+    };
+    let a_exit = exit(a);
+    let b_exit = exit(b);
+    (a_exit + b_exit < distance)
+        .then_some([a_center + direction * a_exit, b_center - direction * b_exit])
+}
+
+fn line_footprint_interval(a: Vec2, b: Vec2, min: Vec2, max: Vec2) -> Option<(f32, f32)> {
+    let delta = b - a;
+    let mut enter: f32 = 0.0;
+    let mut exit: f32 = 1.0;
+    for (origin, direction, lo, hi) in [(a.x, delta.x, min.x, max.x), (a.y, delta.y, min.y, max.y)]
+    {
+        if direction.abs() <= f32::EPSILON {
+            if origin < lo || origin > hi {
+                return None;
+            }
+        } else {
+            let first = (lo - origin) / direction;
+            let last = (hi - origin) / direction;
+            enter = enter.max(first.min(last));
+            exit = exit.min(first.max(last));
+        }
+    }
+    (enter < exit).then_some((enter, exit))
+}
+
+fn range_occluders(game: &Game) -> Vec<(Vec2, Vec2)> {
+    let margin = Vec2::splat(2.0 * ui_scale());
+    let viewport = (-margin, game.camera.viewport() + margin);
+    game.state
+        .buildings()
+        .iter()
+        .filter(|building| {
+            building.player == game.human
+                || game.all_seeing()
+                || (building.tiles().any(|tile| game.my_vision().visible(tile))
+                    && game.state.building_apparent(game.human, building))
+        })
+        .map(|building| {
+            let (min, max) = building_screen_bounds(game, building);
+            (min - margin, max + margin)
+        })
+        .filter(|&bounds| bounds_overlap(bounds, viewport))
+        .collect()
+}
+
+fn bounds_overlap(a: (Vec2, Vec2), b: (Vec2, Vec2)) -> bool {
+    a.0.x <= b.1.x && a.1.x >= b.0.x && a.0.y <= b.1.y && a.1.y >= b.0.y
+}
+
+struct RangeClipper {
+    occluders: Vec<(Vec2, Vec2)>,
+    intervals: Vec<(f32, f32)>,
+}
+
+impl RangeClipper {
+    fn new(points: &[Vec2], occluders: &[(Vec2, Vec2)]) -> Self {
+        let bounds = points.iter().fold(
+            (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
+            |(min, max), &point| (min.min(point), max.max(point)),
+        );
+        let occluders: Vec<_> = occluders
+            .iter()
+            .copied()
+            .filter(|&occluder| bounds_overlap(occluder, bounds))
+            .collect();
+        let intervals = Vec::with_capacity(occluders.len());
+        Self {
+            occluders,
+            intervals,
+        }
+    }
+
+    fn visit_visible(&mut self, a: Vec2, b: Vec2, mut visit: impl FnMut(Vec2, Vec2)) {
+        self.intervals.clear();
+        self.intervals.extend(
+            self.occluders
+                .iter()
+                .filter_map(|&(min, max)| line_footprint_interval(a, b, min, max)),
+        );
+        self.intervals.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        let mut cursor: f32 = 0.0;
+        for &(start, end) in self.intervals.iter().chain(std::iter::once(&(1.0, 1.0))) {
+            if cursor < start {
+                visit(a.lerp(b, cursor), a.lerp(b, start));
+            }
+            cursor = cursor.max(end);
+        }
+    }
+}
+
+fn draw_support_brackets(min: Vec2, max: Vec2, scale: f32, color: Color) {
+    let reach = (6.0 * scale).min((max - min).min_element() * 0.25);
+    for (corner, direction) in [
+        (min, vec2(1.0, 1.0)),
+        (vec2(max.x, min.y), vec2(-1.0, 1.0)),
+        (max, vec2(-1.0, -1.0)),
+        (vec2(min.x, max.y), vec2(1.0, -1.0)),
+    ] {
+        draw_line(
+            corner.x,
+            corner.y,
+            corner.x + direction.x * reach,
+            corner.y,
+            scale,
+            color,
+        );
+        draw_line(
+            corner.x,
+            corner.y,
+            corner.x,
+            corner.y + direction.y * reach,
+            scale,
+            color,
+        );
+    }
+}
+
+fn visit_active_building_ranges(
+    game: &Game,
+    input: &InputState,
+    mut visit: impl FnMut(BuildingRange),
+) {
+    if let Some(oxide_sim::Target::Building(id)) =
+        range_subject(&game.selection.units, &game.selection.buildings)
+        && let Some(building) = game.state.building(id)
+    {
+        visit_building_ranges(
+            vec2(building.anchor.x as f32, building.anchor.y as f32),
+            building.kind,
+            building.tier,
+            &mut visit,
+        );
+    }
+    if let Some(kind) = input.placing {
+        let world = game.camera.to_world(input.mouse);
+        let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+        let anchor = crate::input::placement_anchor(game, kind, clicked);
+        visit_building_ranges(vec2(anchor.x as f32, anchor.y as f32), kind, 0, visit);
+    }
+}
+
+fn draw_economy_ground(game: &Game, shape: BuildingRangeShape) {
+    let scale = ui_scale();
+    if let BuildingRangeShape::FootprintSquare { min, max, radius } = shape {
+        let min = game.camera.to_screen(min - Vec2::splat(radius));
+        let max = game.camera.to_screen(max + Vec2::splat(radius));
+        let depth = (10.0 * scale).min((max - min).min_element() * 0.25);
+        let steps = depth.ceil() as usize;
+        for step in 0..steps {
+            let inset = step as f32 * depth / steps as f32;
+            let thickness = depth / steps as f32;
+            let lo = min + Vec2::splat(inset);
+            let hi = max - Vec2::splat(inset);
+            let color = Color::new(
+                ECONOMY_SUPPORT_COLOR.r,
+                ECONOMY_SUPPORT_COLOR.g,
+                ECONOMY_SUPPORT_COLOR.b,
+                0.12 * (1.0 - inset / depth).powi(2),
+            );
+            draw_rectangle(lo.x, lo.y, hi.x - lo.x, thickness, color);
+            draw_rectangle(lo.x, hi.y - thickness, hi.x - lo.x, thickness, color);
+            draw_rectangle(
+                lo.x,
+                lo.y + thickness,
+                thickness,
+                hi.y - lo.y - 2.0 * thickness,
+                color,
+            );
+            draw_rectangle(
+                hi.x - thickness,
+                lo.y + thickness,
+                thickness,
+                hi.y - lo.y - 2.0 * thickness,
+                color,
+            );
+        }
+    }
+}
+
+fn draw_economy_support_links(game: &Game, scale: f32, color: Color, occluders: &[(Vec2, Vec2)]) {
+    let links = selected_economy_support_links(game);
+    for link in &links {
         let Some(extractor) = game.state.building(link.extractor) else {
             continue;
         };
         let Some(foundry) = game.state.building(link.foundry) else {
             continue;
         };
-        let extractor = game.camera.to_screen(building_center(extractor));
-        let foundry = game.camera.to_screen(building_center(foundry));
-        let path = [extractor, foundry];
-        draw_line(
-            extractor.x,
-            extractor.y,
-            foundry.x,
-            foundry.y,
-            4.8 * scale,
-            Color::new(0.04, 0.04, 0.05, 0.72),
-        );
-        stroke_patterned_path(&path, RangeStroke::TwinDot, 2.4 * scale, color, scale);
-        for endpoint in path {
-            draw_circle(endpoint.x, endpoint.y, 3.0 * scale, color);
-            draw_circle_lines(endpoint.x, endpoint.y, 5.0 * scale, 1.4 * scale, color);
+        let extractor = building_screen_bounds(game, extractor);
+        let foundry = building_screen_bounds(game, foundry);
+        if let Some([a, b]) = footprint_link(extractor, foundry, 3.0 * scale) {
+            let mut clipper = RangeClipper::new(&[a, b], occluders);
+            clipper.visit_visible(a, b, |from, to| {
+                draw_line(from.x, from.y, to.x, to.y, 1.2 * scale, color);
+            });
+        }
+    }
+    let mut endpoints: Vec<_> = links
+        .iter()
+        .flat_map(|link| [link.extractor, link.foundry])
+        .collect();
+    endpoints.sort_unstable();
+    endpoints.dedup();
+    for id in endpoints {
+        if game.selection.buildings.contains(&id) {
+            continue;
+        }
+        if let Some(building) = game.state.building(id) {
+            let (min, max) = building_screen_bounds(game, building);
+            let padding = Vec2::splat(3.0 * scale);
+            draw_support_brackets(min - padding, max + padding, scale, color);
         }
     }
 }
 
-pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
-    let s = ui_scale();
-    let ring = |world: Vec2,
-                radius: f32,
-                stroke: RangeStroke,
-                icon: crate::panel::CapabilityIcon,
-                color: Color,
-                thickness: f32| {
-        if radius <= 0.0 {
-            return;
-        }
-        let center = game.camera.to_screen(world);
-        let screen_radius = radius * game.camera.zoom;
-        if stroke == RangeStroke::Solid {
-            draw_circle_lines(center.x, center.y, screen_radius, thickness * s, color);
-        } else {
-            stroke_patterned_path(
-                &circle_path(center, screen_radius),
-                stroke,
-                thickness * s,
-                color,
-                s,
-            );
-        }
-        let glyph = center + vec2(screen_radius * 0.707, -screen_radius * 0.707);
-        draw_capability_icon(glyph, 5.6 * s, icon, color, true);
-    };
-    let footprint_offset = |min: Vec2,
-                            max: Vec2,
-                            radius: f32,
-                            stroke: RangeStroke,
-                            icon: crate::panel::CapabilityIcon,
-                            color: Color| {
-        if radius <= 0.0 {
-            return;
-        }
-        let min = game.camera.to_screen(min);
-        let max = game.camera.to_screen(max);
-        let radius = radius * game.camera.zoom;
-        stroke_patterned_path(
-            &rounded_footprint_path(min, max, radius),
-            stroke,
-            1.7 * s,
-            color,
-            s,
-        );
-        draw_capability_icon(
-            vec2(max.x + radius * 0.707, min.y - radius * 0.707),
-            5.6 * s,
-            icon,
-            color,
-            true,
-        );
-    };
-    let weapon_color = Color::new(0.85, 0.32, 0.29, 0.55);
-    let dead_zone_color = Color::new(1.0, 0.68, 0.18, 0.78);
-    let air_weapon_color = Color::new(0.38, 0.70, 0.95, 0.52);
-    let vision_color = Color::new(0.63, 0.77, 0.94, 0.42);
-    let radar_color = Color::new(0.22, 0.76, 0.72, 0.52);
-    let repair_color = Color::new(0.38, 0.82, 0.45, 0.55);
-    let economy_support_color = Color::new(0.95, 0.72, 0.24, 0.72);
+#[derive(Clone, Copy)]
+struct RangeIndicator {
+    range: BuildingRange,
+    icon: crate::panel::CapabilityIcon,
+    color: Color,
+}
 
-    draw_economy_support_links(game, s, economy_support_color);
+fn range_color(kind: BuildingRangeKind) -> Color {
+    match kind {
+        BuildingRangeKind::Weapon => Color::new(0.76, 0.46, 0.39, 0.58),
+        BuildingRangeKind::AirWeapon => Color::new(0.84, 0.39, 0.53, 0.62),
+        BuildingRangeKind::DeadZone => Color::new(0.78, 0.63, 0.40, 0.64),
+        BuildingRangeKind::Vision => Color::new(0.60, 0.66, 0.73, 0.48),
+        BuildingRangeKind::Radar => Color::new(0.43, 0.67, 0.63, 0.58),
+        BuildingRangeKind::Repair => Color::new(0.55, 0.69, 0.49, 0.58),
+        BuildingRangeKind::EconomySupport => ECONOMY_SUPPORT_COLOR,
+    }
+}
 
-    let unit_rings = |world: Vec2, stats: &oxide_sim::stats::UnitStats| {
+fn visit_active_ranges(game: &Game, input: &InputState, mut visit: impl FnMut(RangeIndicator)) {
+    visit_active_building_ranges(game, input, |range| {
+        visit(RangeIndicator {
+            range,
+            icon: range_icon(range.kind),
+            color: range_color(range.kind),
+        });
+    });
+    if let Some(oxide_sim::Target::Unit(id)) =
+        range_subject(&game.selection.units, &game.selection.buildings)
+        && let Some(unit) = game.state.unit(id)
+        && unit.player == game.human
+    {
+        let center = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+        let stats = unit.kind.stats();
         for weapon in stats.weapons {
-            let icon = crate::panel::weapon_capability_icon(weapon);
-            let color = if icon == crate::panel::CapabilityIcon::AirWeapon {
-                air_weapon_color
-            } else {
-                weapon_color
-            };
-            ring(
-                world,
-                weapon.range.to_num::<f32>(),
-                RangeStroke::Solid,
-                icon,
-                color,
-                1.7,
-            );
+            let kind = weapon_range_kind(weapon);
+            visit(RangeIndicator {
+                range: BuildingRange {
+                    kind,
+                    shape: BuildingRangeShape::Circle {
+                        center,
+                        radius: weapon.range.to_num::<f32>(),
+                    },
+                },
+                icon: range_icon(kind),
+                color: range_color(kind),
+            });
         }
-        // Guns past their own eyes need a spotter: show the gap.
         if stats
             .weapons
             .iter()
-            .any(|w| w.range.to_num::<f32>() > stats.vision as f32)
+            .any(|weapon| weapon.range.to_num::<f32>() > stats.vision as f32)
         {
-            ring(
-                world,
-                stats.vision as f32,
-                RangeStroke::LongDash,
-                crate::panel::CapabilityIcon::Vision,
-                vision_color,
-                1.7,
-            );
+            let kind = BuildingRangeKind::Vision;
+            visit(RangeIndicator {
+                range: BuildingRange {
+                    kind,
+                    shape: BuildingRangeShape::Circle {
+                        center,
+                        radius: stats.vision as f32,
+                    },
+                },
+                icon: range_icon(kind),
+                color: range_color(kind),
+            });
         }
-    };
-    let building_rings = |anchor: Vec2, kind: oxide_sim::BuildingKind, tier: u8| {
-        visit_building_ranges(anchor, kind, tier, |range| {
-            let color = match range.kind {
-                BuildingRangeKind::Weapon => weapon_color,
-                BuildingRangeKind::DeadZone => dead_zone_color,
-                BuildingRangeKind::Vision => vision_color,
-                BuildingRangeKind::Radar => radar_color,
-                BuildingRangeKind::Repair => repair_color,
-                BuildingRangeKind::EconomySupport => economy_support_color,
-            };
-            let stroke = range_stroke(range.kind);
-            let icon = range_icon(range.kind);
-            match range.shape {
-                BuildingRangeShape::Circle { center, radius } => {
-                    if range.kind == BuildingRangeKind::DeadZone {
-                        let center = game.camera.to_screen(center);
-                        draw_circle(
-                            center.x,
-                            center.y,
-                            radius * game.camera.zoom,
-                            dead_zone_fill(dead_zone_color),
-                        );
-                    }
-                    let thickness = if range.kind == BuildingRangeKind::DeadZone {
-                        2.2
-                    } else {
-                        1.7
-                    };
-                    ring(center, radius, stroke, icon, color, thickness);
-                }
-                BuildingRangeShape::FootprintOffset { min, max, radius } => {
-                    footprint_offset(min, max, radius, stroke, icon, color);
-                }
-                BuildingRangeShape::FootprintSquare { min, max, radius } => {
-                    let min = game.camera.to_screen(min);
-                    let max = game.camera.to_screen(max);
-                    let radius = radius * game.camera.zoom;
-                    stroke_patterned_path(
-                        &square_footprint_path(min, max, radius),
-                        stroke,
-                        1.9 * s,
-                        color,
-                        s,
-                    );
-                    draw_capability_icon(
-                        vec2(max.x + radius, min.y - radius),
-                        5.6 * s,
-                        icon,
-                        color,
-                        true,
-                    );
-                }
-            }
-        });
-    };
+    }
+}
 
-    match range_subject(&game.selection.units, &game.selection.buildings) {
-        Some(oxide_sim::Target::Unit(id)) => {
-            if let Some(unit) = game.state.unit(id)
-                && unit.player == game.human
-            {
-                let world = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
-                unit_rings(world, unit.kind.stats());
+fn screen_range_shape(game: &Game, shape: BuildingRangeShape) -> BuildingRangeShape {
+    match shape {
+        BuildingRangeShape::Circle { center, radius } => BuildingRangeShape::Circle {
+            center: game.camera.to_screen(center),
+            radius: radius * game.camera.zoom,
+        },
+        BuildingRangeShape::FootprintOffset { min, max, radius } => {
+            BuildingRangeShape::FootprintOffset {
+                min: game.camera.to_screen(min),
+                max: game.camera.to_screen(max),
+                radius: radius * game.camera.zoom,
             }
         }
-        Some(oxide_sim::Target::Building(id)) => {
-            if let Some(building) = game.state.building(id) {
-                building_rings(
-                    vec2(building.anchor.x as f32, building.anchor.y as f32),
-                    building.kind,
-                    building.tier,
-                );
+        BuildingRangeShape::FootprintSquare { min, max, radius } => {
+            BuildingRangeShape::FootprintSquare {
+                min: game.camera.to_screen(min),
+                max: game.camera.to_screen(max),
+                radius: radius * game.camera.zoom,
             }
         }
-        None => {}
     }
-    // The armed placement ghost carries its rings to the cursor.
-    if let Some(kind) = input.placing {
-        let world = game.camera.to_world(input.mouse);
-        let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-        let anchor = crate::input::placement_anchor(game, kind, clicked);
-        building_rings(vec2(anchor.x as f32, anchor.y as f32), kind, 0);
+}
+
+fn range_path(shape: BuildingRangeShape, inset: f32) -> Vec<Vec2> {
+    match shape {
+        BuildingRangeShape::Circle { center, radius } => {
+            let mut path = circle_path(center, radius);
+            let factor = (radius - inset).max(0.0) / radius.max(f32::EPSILON);
+            for point in &mut path {
+                *point = center + (*point - center) * factor;
+            }
+            path
+        }
+        BuildingRangeShape::FootprintOffset { min, max, radius } => {
+            rounded_footprint_path(min, max, (radius - inset).max(0.0))
+        }
+        BuildingRangeShape::FootprintSquare { min, max, radius } => {
+            square_footprint_path(min, max, radius - inset).to_vec()
+        }
     }
+}
+
+fn range_fade_mesh(shape: BuildingRangeShape, width: f32, color: Color) -> Mesh {
+    let radius = match shape {
+        BuildingRangeShape::Circle { radius, .. }
+        | BuildingRangeShape::FootprintOffset { radius, .. }
+        | BuildingRangeShape::FootprintSquare { radius, .. } => radius,
+    };
+    let width = width.min(radius * 0.5).max(0.0);
+    let mut mesh = Mesh {
+        vertices: Vec::new(),
+        indices: Vec::new(),
+        texture: None,
+    };
+    for (inset, alpha) in [(0.0, 0.12), (width * 0.5, 0.03), (width, 0.0)] {
+        for point in range_path(shape, inset) {
+            mesh.vertices.push(Vertex::new(
+                point.x,
+                point.y,
+                0.0,
+                0.0,
+                0.0,
+                Color::new(color.r, color.g, color.b, alpha),
+            ));
+        }
+    }
+    let count = mesh.vertices.len() / 3;
+    for band in 0..2 {
+        for point in 0..count - 1 {
+            let a = (band * count + point) as u16;
+            let b = a + count as u16;
+            mesh.indices
+                .extend_from_slice(&[a, a + 1, b + 1, a, b + 1, b]);
+        }
+    }
+    mesh
+}
+
+pub(crate) fn draw_range_ground(game: &Game, input: &InputState) {
+    visit_active_ranges(game, input, |indicator| {
+        if indicator.range.kind == BuildingRangeKind::EconomySupport {
+            draw_economy_ground(game, indicator.range.shape);
+            return;
+        }
+        let shape = screen_range_shape(game, indicator.range.shape);
+        if indicator.range.kind == BuildingRangeKind::DeadZone
+            && let BuildingRangeShape::Circle { center, radius } = shape
+        {
+            draw_circle(center.x, center.y, radius, dead_zone_fill(indicator.color));
+        }
+        draw_mesh(&range_fade_mesh(shape, 10.0 * ui_scale(), indicator.color));
+    });
+}
+
+pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
+    if range_subject(&game.selection.units, &game.selection.buildings).is_none()
+        && input.placing.is_none()
+    {
+        return;
+    }
+    let scale = ui_scale();
+    let occluders = range_occluders(game);
+    draw_economy_support_links(game, scale, ECONOMY_SUPPORT_COLOR, &occluders);
+    visit_active_ranges(game, input, |indicator| {
+        let shape = screen_range_shape(game, indicator.range.shape);
+        let path = range_path(shape, 0.0);
+        stroke_patterned_path(
+            &path,
+            range_stroke(indicator.range.kind),
+            scale,
+            indicator.color,
+            scale,
+            &occluders,
+        );
+        let glyph = match shape {
+            BuildingRangeShape::Circle { center, radius } => {
+                center + vec2(radius * 0.707, -radius * 0.707)
+            }
+            BuildingRangeShape::FootprintOffset { min, max, radius } => {
+                vec2(max.x + radius * 0.707, min.y - radius * 0.707)
+            }
+            BuildingRangeShape::FootprintSquare { min, max, radius } => {
+                vec2(max.x + radius, min.y - radius)
+            }
+        };
+        let icon_radius = if indicator.icon == crate::panel::CapabilityIcon::AirWeapon {
+            7.0
+        } else {
+            5.6
+        };
+        draw_capability_icon(
+            glyph,
+            icon_radius * scale,
+            indicator.icon,
+            indicator.color,
+            true,
+        );
+    });
 }
 
 pub(crate) fn draw_pings(game: &Game) {
@@ -2574,7 +2833,7 @@ mod tests {
     }
 
     #[test]
-    fn every_range_meaning_has_its_own_line_texture() {
+    fn curved_ranges_have_distinct_textures_and_all_ranges_have_distinct_icons() {
         let kinds = [
             BuildingRangeKind::Weapon,
             BuildingRangeKind::DeadZone,
@@ -2583,31 +2842,17 @@ mod tests {
             BuildingRangeKind::Repair,
             BuildingRangeKind::EconomySupport,
         ];
-        let strokes = kinds.map(range_stroke);
+        let strokes: Vec<_> = kinds
+            .iter()
+            .copied()
+            .filter(|kind| *kind != BuildingRangeKind::EconomySupport)
+            .map(range_stroke)
+            .collect();
         for (index, stroke) in strokes.iter().enumerate() {
             assert!(
                 strokes[..index].iter().all(|other| other != stroke),
                 "{stroke:?} was reused for two range meanings"
             );
-        }
-
-        for stroke in [
-            RangeStroke::ShortDash,
-            RangeStroke::LongDash,
-            RangeStroke::Dotted,
-            RangeStroke::DashDot,
-            RangeStroke::TwinDot,
-        ] {
-            for scale in [0.75, 1.0, 2.0] {
-                let samples: Vec<bool> = (0..240)
-                    .map(|sample| stroke.visible(sample as f32 * scale * 0.5, scale))
-                    .collect();
-                assert!(samples.iter().any(|visible| *visible));
-                assert!(
-                    samples.iter().any(|visible| !*visible),
-                    "{stroke:?} became solid at {scale}x"
-                );
-            }
         }
 
         let icons = kinds.map(range_icon);
@@ -2617,6 +2862,306 @@ mod tests {
                 "{icon:?} was reused for two range meanings"
             );
         }
+    }
+
+    #[test]
+    fn anti_air_buildings_use_the_weapon_domain_at_every_tier_and_in_placement() {
+        let kind = oxide_sim::BuildingKind::FlakTurret;
+        for (tier, stats) in kind.tiers().iter().enumerate() {
+            let mut ranges = Vec::new();
+            visit_building_ranges(vec2(10.0, 10.0), kind, tier as u8, |range| {
+                ranges.push(range)
+            });
+            let weapon = ranges
+                .iter()
+                .find(|range| range.kind == BuildingRangeKind::AirWeapon)
+                .expect("Flak Turret and Burst Flak both expose anti-air reach");
+            assert_eq!(
+                range_icon(weapon.kind),
+                crate::panel::CapabilityIcon::AirWeapon
+            );
+            assert_ne!(
+                range_color(weapon.kind),
+                range_color(BuildingRangeKind::Weapon)
+            );
+            assert_eq!(range_stroke(weapon.kind), RangeStroke::Solid);
+            assert!(
+                matches!(weapon.shape, BuildingRangeShape::Circle { radius, .. } if radius == stats.weapons[0].range.to_num::<f32>())
+            );
+        }
+        let game = economy_support_game();
+        let mut input = InputState::new();
+        input.placing = Some(kind);
+        let mut indicators = Vec::new();
+        visit_active_ranges(&game, &input, |indicator| indicators.push(indicator));
+        assert!(
+            indicators
+                .iter()
+                .any(|indicator| indicator.icon == crate::panel::CapabilityIcon::AirWeapon)
+        );
+        assert!(
+            !indicators
+                .iter()
+                .any(|indicator| indicator.icon == crate::panel::CapabilityIcon::Weapon)
+        );
+    }
+
+    #[test]
+    fn flakhound_and_sentinel_use_consistent_colors_and_marks_for_each_target_domain() {
+        let scenario: oxide_sim::Scenario = serde_json::from_value(serde_json::json!({
+            "name": "Weapon indicator fixture", "seed": 1,
+            "map": ["....................", "....................", "..1.................",
+                "....................", "....................", "....................",
+                "....................", "....................", "....................",
+                "....................", "....................", "...................."],
+            "players": [{"name": "You", "faction": "ferrous", "scrap": 0, "bot": false}],
+            "units": [{"player": 0, "kind": "flakhound", "x": 5, "y": 7},
+                {"player": 0, "kind": "sentinel", "x": 9, "y": 7}]
+        }))
+        .unwrap();
+        let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+        for kind in [
+            oxide_sim::UnitKind::Flakhound,
+            oxide_sim::UnitKind::Sentinel,
+        ] {
+            let id = game
+                .state
+                .units()
+                .iter()
+                .find(|unit| unit.kind == kind)
+                .unwrap()
+                .id;
+            game.selection.units = vec![id];
+            let mut indicators = Vec::new();
+            visit_active_ranges(&game, &InputState::new(), |indicator| {
+                indicators.push(indicator)
+            });
+            let weapons: Vec<_> = indicators
+                .iter()
+                .filter(|indicator| {
+                    matches!(
+                        indicator.range.kind,
+                        BuildingRangeKind::Weapon | BuildingRangeKind::AirWeapon
+                    )
+                })
+                .collect();
+            assert!(
+                weapons
+                    .iter()
+                    .all(|indicator| indicator.color == range_color(indicator.range.kind))
+            );
+            assert!(
+                weapons
+                    .iter()
+                    .any(|indicator| indicator.icon == crate::panel::CapabilityIcon::AirWeapon)
+            );
+            if kind == oxide_sim::UnitKind::Sentinel {
+                assert!(
+                    weapons
+                        .iter()
+                        .any(|indicator| indicator.icon == crate::panel::CapabilityIcon::Weapon)
+                );
+                assert_eq!(weapons.len(), 2);
+                assert_ne!(weapons[0].color, weapons[1].color);
+            } else {
+                assert_eq!(weapons.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn dots_keep_exact_spacing_across_path_vertices_and_ui_scales() {
+        for scale in [0.75, 1.0, 2.0] {
+            for vertices in [vec![0.0, 30.0], vec![0.0, 1.0, 7.0, 7.0, 19.0, 30.0]] {
+                let path: Vec<_> = vertices.into_iter().map(|x| vec2(x * scale, 0.0)).collect();
+                let mut spans: Vec<(f32, f32)> = Vec::new();
+                visit_stroke_segments(&path, RangeStroke::Dotted, scale, |a, b| {
+                    if let Some(last) = spans.last_mut()
+                        && (last.1 - a.x).abs() < 0.0001
+                    {
+                        last.1 = b.x;
+                    } else {
+                        spans.push((a.x, b.x));
+                    }
+                });
+                let expected = [(0.0, 2.5), (9.0, 11.5), (18.0, 20.5), (27.0, 29.5)];
+                assert_eq!(spans.len(), expected.len());
+                for ((a, b), (start, end)) in spans.into_iter().zip(expected) {
+                    assert!((a - start * scale).abs() < 0.0001);
+                    assert!((b - end * scale).abs() < 0.0001);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn range_fades_preserve_the_exact_outer_edge_and_stay_inside_small_ranges() {
+        for radius in [2.0, 32.0, 640.0] {
+            let shape = BuildingRangeShape::Circle {
+                center: vec2(10.0, 20.0),
+                radius,
+            };
+            let mesh = range_fade_mesh(shape, 10.0, WHITE);
+            let count = mesh.vertices.len() / 3;
+            assert_eq!(count, range_path(shape, 0.0).len());
+            for (index, vertex) in mesh.vertices.iter().enumerate() {
+                let distance = (vertex.position.truncate() - vec2(10.0, 20.0)).length();
+                assert!(distance <= radius + 0.001);
+                assert!(distance >= radius * 0.5 - 0.001);
+                if index < count {
+                    assert!((distance - radius).abs() < 0.001);
+                }
+                if index >= count * 2 {
+                    assert_eq!(vertex.color[3], 0);
+                }
+            }
+            assert!(
+                mesh.indices
+                    .iter()
+                    .all(|index| (*index as usize) < mesh.vertices.len())
+            );
+        }
+    }
+
+    #[test]
+    fn connection_stops_outside_both_footprints() {
+        let a = (vec2(0.0, 0.0), vec2(20.0, 20.0));
+        let b = (vec2(40.0, 0.0), vec2(60.0, 20.0));
+        assert_eq!(
+            footprint_link(a, b, 3.0),
+            Some([vec2(23.0, 10.0), vec2(37.0, 10.0)])
+        );
+        let diagonal = (vec2(40.0, 40.0), vec2(60.0, 60.0));
+        let [start, end] = footprint_link(a, diagonal, 3.0).unwrap();
+        assert!((start - vec2(23.0, 23.0)).length() < 0.0001);
+        assert!((end - vec2(37.0, 37.0)).length() < 0.0001);
+        assert_eq!(footprint_link(a, a, 3.0), None);
+        assert_eq!(
+            footprint_link(a, (vec2(20.0, 0.0), vec2(40.0, 20.0)), 3.0),
+            None
+        );
+    }
+
+    #[test]
+    fn range_clipping_filters_distant_buildings_and_reuses_interval_storage() {
+        let path = circle_path(Vec2::ZERO, 160.0);
+        let mut buildings: Vec<_> = (0..1000)
+            .map(|i| {
+                let min = vec2(2000.0 + i as f32 * 40.0, 2000.0);
+                (min, min + Vec2::splat(32.0))
+            })
+            .collect();
+        for i in 0..40 {
+            let angle = std::f32::consts::TAU * i as f32 / 40.0;
+            let center = vec2(angle.cos(), angle.sin()) * 160.0;
+            buildings.push((center - Vec2::splat(10.0), center + Vec2::splat(10.0)));
+        }
+        let mut clipper = RangeClipper::new(&path, &buildings);
+        assert_eq!(clipper.occluders.len(), 40);
+        let storage = clipper.intervals.as_ptr();
+        let capacity = clipper.intervals.capacity();
+        let mut clipped = 0;
+        for pair in path.windows(2) {
+            clipper.visit_visible(pair[0], pair[1], |_, _| {});
+            clipped += usize::from(!clipper.intervals.is_empty());
+            assert_eq!(clipper.intervals.as_ptr(), storage);
+            assert_eq!(clipper.intervals.capacity(), capacity);
+        }
+        assert_eq!(clipped, 240);
+    }
+
+    #[test]
+    fn filtered_range_clipping_preserves_visible_spans_and_pattern_phase() {
+        let buildings = [
+            (vec2(-30.0, -10.0), vec2(0.0, 25.0)),
+            (vec2(-20.0, -5.0), vec2(10.0, 35.0)),
+            (vec2(-20.0, -5.0), vec2(10.0, 35.0)),
+            (vec2(25.0, -40.0), vec2(40.0, 30.0)),
+            (vec2(1000.0, 1000.0), vec2(1032.0, 1032.0)),
+        ];
+        for path in [
+            circle_path(Vec2::ZERO, 30.0),
+            rounded_footprint_path(Vec2::ZERO, vec2(20.0, 30.0), 15.0),
+            square_footprint_path(Vec2::ZERO, vec2(20.0, 30.0), 15.0).to_vec(),
+            vec![vec2(-50.0, 0.0), vec2(50.0, 0.0), vec2(-50.0, 0.0)],
+        ] {
+            for stroke in [
+                RangeStroke::Solid,
+                RangeStroke::ShortDash,
+                RangeStroke::LongDash,
+                RangeStroke::Dotted,
+                RangeStroke::DashDot,
+            ] {
+                let mut clipper = RangeClipper::new(&path, &buildings);
+                visit_stroke_segments(&path, stroke, 1.0, |a, b| {
+                    let mut intervals: Vec<_> = buildings
+                        .iter()
+                        .filter_map(|&(min, max)| line_footprint_interval(a, b, min, max))
+                        .collect();
+                    intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let mut expected = Vec::new();
+                    let mut cursor: f32 = 0.0;
+                    for (start, end) in intervals.into_iter().chain(std::iter::once((1.0, 1.0))) {
+                        if cursor < start {
+                            expected.push((a.lerp(b, cursor), a.lerp(b, start)));
+                        }
+                        cursor = cursor.max(end);
+                    }
+                    let mut actual = Vec::new();
+                    clipper.visit_visible(a, b, |a, b| actual.push((a, b)));
+                    assert_eq!(actual, expected);
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn range_occluders_exclude_offscreen_and_unseen_buildings() {
+        let mut game =
+            Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(64.0, 64.0)).unwrap();
+        let hostile = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| building.player != game.human)
+            .unwrap();
+        assert!(!hostile.tiles().any(|tile| game.my_vision().visible(tile)));
+        let (width, height) = hostile.stats().size;
+        game.camera.center = vec2(
+            hostile.anchor.x as f32 + width as f32 * 0.5,
+            hostile.anchor.y as f32 + height as f32 * 0.5,
+        );
+        assert!(range_occluders(&game).is_empty());
+        game.spectate = true;
+        assert!(!range_occluders(&game).is_empty());
+        game.camera.center = vec2(-1000.0, -1000.0);
+        assert!(range_occluders(&game).is_empty());
+    }
+
+    #[test]
+    fn support_line_occlusion_handles_crossings_misses_and_reversed_edges() {
+        let min = vec2(4.0, 4.0);
+        let max = vec2(6.0, 6.0);
+        assert_eq!(
+            line_footprint_interval(vec2(0.0, 5.0), vec2(10.0, 5.0), min, max),
+            Some((0.4, 0.6))
+        );
+        assert_eq!(
+            line_footprint_interval(vec2(10.0, 5.0), vec2(0.0, 5.0), min, max),
+            Some((0.4, 0.6))
+        );
+        assert_eq!(
+            line_footprint_interval(Vec2::ZERO, vec2(10.0, 0.0), min, max),
+            None
+        );
+        assert_eq!(
+            line_footprint_interval(Vec2::ZERO, vec2(3.0, 3.0), min, max),
+            None
+        );
+        assert_eq!(
+            line_footprint_interval(vec2(5.0, 5.0), vec2(5.0, 10.0), min, max),
+            Some((0.0, 0.2))
+        );
     }
 
     #[test]
