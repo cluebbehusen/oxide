@@ -56,11 +56,7 @@ impl HomeScreen {
             let seconds = record.ticks / oxide_sim::TICKS_PER_SECOND as u64;
             self.menu.items.insert(
                 0,
-                format!(
-                    "Recover match ({:02}:{:02})",
-                    seconds / 60,
-                    seconds % 60
-                ),
+                format!("Recover match ({:02}:{:02})", seconds / 60, seconds % 60),
             );
         }
         self
