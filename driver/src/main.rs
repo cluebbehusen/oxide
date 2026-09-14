@@ -21,6 +21,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Verify an interrupted recording and optionally export a local report.
+    RecoveryInspect {
+        /// Session directory beneath Oxide's recovery directory.
+        directory: PathBuf,
+        /// New report directory; existing destinations are refused.
+        #[arg(long)]
+        export: Option<PathBuf>,
+    },
     /// Run a scenario headless at full speed.
     Run {
         /// Scenario path, or "skirmish" for the built-in map.
@@ -474,6 +482,23 @@ fn ensure_distinct<T: PartialEq>(values: &[T], label: &str) -> Result<()> {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
+        Cmd::RecoveryInspect { directory, export } => {
+            let record = oxide_kit::recovery::inspect(&directory)?;
+            if let Some(destination) = export {
+                oxide_kit::recovery::export(&directory, &destination)?;
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "session": record.session, "build": record.build,
+                    "running_build": oxide_kit::recovery::BuildIdentity::default(),
+                    "scenario": record.replay.setup.name, "ticks": record.replay.meta.ticks,
+                    "commands": record.replay.commands.len(), "prepared_commands": record.prepared.as_ref().map(Vec::len),
+                    "clean": record.clean, "issue": record.issue, "kind": record.kind
+                }))?
+            );
+        }
+
         Cmd::Run {
             scenario,
             ticks,

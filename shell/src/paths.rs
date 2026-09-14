@@ -48,6 +48,11 @@ pub fn autosave_dir() -> Option<PathBuf> {
     data_dir().map(|d| d.join("autosaves"))
 }
 
+/// Incremental recoveries and optional local diagnostic sidecars.
+pub fn recovery_dir() -> Option<PathBuf> {
+    data_dir().map(|directory| directory.join("recovery"))
+}
+
 /// Explicit, player-initiated saves. Autosave rotation never touches
 /// this directory — a save the player asked for is deleted only by
 /// the player.

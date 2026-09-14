@@ -83,9 +83,11 @@ impl SaveError {
 /// `match-` — the shelf lists both, so a completed game is always
 /// watchable afterward.
 pub fn save(game: &mut Game) -> Result<SaveOutcome, SaveError> {
+    let _scope = game.diagnostic_span(oxide_kit::diagnostics::Phase::Save);
     // The nothing-to-do gates come before directory resolution so a
     // cold quit on a machine with no data dir stays a quiet success.
     if game.state.current_tick() == 0 {
+        game.finish_recovery();
         return Ok(SaveOutcome::NothingToSave);
     }
     // A session saves once: Main Menu already wrote this match, and the
@@ -110,6 +112,7 @@ fn write_record_with(
     save_replay: impl FnOnce(&GameReplay, &Path) -> Result<(), chassis::replay::ReplayError>,
 ) -> Result<SaveOutcome, SaveError> {
     if game.state.current_tick() == 0 {
+        game.finish_recovery();
         return Ok(SaveOutcome::NothingToSave);
     }
     if game.autosave_done {
@@ -136,6 +139,7 @@ fn write_record_with(
     let path = free_path(dir, prefix, tick, game.scenario.seed)?
         .publish(|path| save_replay(&game.recorder, path))
         .map_err(|(path, source)| SaveError::Write { path, source })?;
+    game.finish_recovery();
     game.autosave_done = true;
     rotate(dir);
     Ok(SaveOutcome::Wrote(path))
@@ -149,6 +153,7 @@ fn write_record_with(
 /// quit-autosave must not inherit the name) and never marks the session
 /// saved: explicit saves and quit autosaves are independent records.
 pub fn save_named(game: &Game, name: &str) -> Result<PathBuf, SaveError> {
+    let _scope = game.diagnostic_span(oxide_kit::diagnostics::Phase::Save);
     let dir = crate::paths::saves_dir().ok_or(SaveError::NoDataDir)?;
     write_named(game, name, &dir, now_unix())
 }
@@ -426,6 +431,57 @@ mod tests {
             "removing the newest falls back to the older compatible record"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_tick_zero_clean_exit_finishes_existing_recovery_without_writing_a_save() {
+        use oxide_kit::recovery::{RecoveryWriter, inspect, latest_diagnostic_record};
+        let root = scratch("zero-recovery");
+        let baseline = GameReplay::new(oxide_sim::SIM_VERSION, oxide_sim::Scenario::skirmish());
+        let old = RecoveryWriter::start(root.clone(), baseline, 0).unwrap();
+        old.prepared(0, &[]);
+        old.completed(1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while old.status().durable_tick != 1 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let old_path = old.directory().to_owned();
+        drop(old);
+        while std::fs::File::open(old_path.join("lease"))
+            .unwrap()
+            .try_lock()
+            .is_err()
+        {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for public_path in [true, false] {
+            let mut game = Game::new(oxide_sim::Scenario::skirmish()).unwrap();
+            game.recovery_root = Some(root.clone());
+            game.configure_diagnostics(true);
+            let directory = game.recovery.as_ref().unwrap().directory().to_owned();
+            let outcome = if public_path {
+                save(&mut game)
+            } else {
+                write_record(&mut game, &root.join("saves"))
+            };
+            assert!(matches!(outcome, Ok(SaveOutcome::NothingToSave)));
+            assert!(inspect(&directory).unwrap().clean);
+            drop(game);
+            assert_eq!(latest_diagnostic_record(&root).unwrap().directory, old_path);
+        }
+        assert!(!root.join("saves").exists());
+        for entry in std::fs::read_dir(&root).unwrap().flatten() {
+            let lease = entry.path().join("lease");
+            if lease.exists() {
+                while std::fs::File::open(&lease).unwrap().try_lock().is_err() {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
