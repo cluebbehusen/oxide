@@ -1281,7 +1281,7 @@ mod tests {
     fn blind_bulwark_scene(victim: UnitKind) -> Game {
         let mut scenario = oxide_sim::Scenario::skirmish();
         let mut rows = vec![vec!['.'; 40]; 30];
-        rows[1][1] = '1';
+        rows[27][1] = '1';
         rows[27][37] = '2';
         scenario.map = rows
             .into_iter()
@@ -1319,6 +1319,25 @@ mod tests {
         }
         let state: oxide_sim::State = serde_json::from_value(wire).unwrap();
         state.validate_invariants().unwrap();
+        let turret = state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == BuildingKind::Turret)
+            .unwrap();
+        let range = turret.stats().weapons[0].range;
+        assert!(
+            state
+                .buildings()
+                .iter()
+                .filter(|building| state.hostile(turret.player, building.player))
+                .all(|building| {
+                    turret
+                        .center()
+                        .dist_sq(building.closest_point_to(turret.center()))
+                        > range * range
+                }),
+            "visible buildings must not preempt the blind-fire fixture's radar target"
+        );
         game.replace_state_after_jump(&state);
         assert!(
             state
