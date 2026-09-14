@@ -39,3 +39,8 @@ cargo test -p oxide-kit --locked
 cargo test -p oxide-driver --test golden --locked
 cargo clippy -p oxide-kit --all-targets --locked -- -D warnings
 ```
+
+`diagnostics` optionally observes coarse shell operations and bot phases through
+the existing parallel executor. It retains bounded timing history and runs an
+independent atomic-progress watchdog. Diagnostic output is observational;
+recovery's prepared/completed journal alone determines the playable prefix.

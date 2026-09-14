@@ -51,6 +51,7 @@ impl Default for BuildIdentity {
 pub(crate) struct Header {
     session: String,
     build: BuildIdentity,
+    #[serde(deserialize_with = "crate::replay::deserialize_replay")]
     base: GameReplay,
 }
 #[derive(Serialize, Deserialize)]
@@ -105,6 +106,25 @@ impl Write for BoundedBuffer {
     }
 }
 
+pub(crate) fn pretty_size(value: &impl Serialize) -> Result<usize> {
+    struct Count(usize);
+    impl Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            if self.0 as u64 > MAX_BYTES {
+                return Err(std::io::Error::other("replay size limit"));
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer_pretty(&mut count, value)?;
+    Ok(count.0)
+}
+
 pub(crate) fn write_frame(file: &mut impl Write, value: &impl Serialize) -> Result<usize> {
     let mut bounded = BoundedBuffer(Vec::new());
     serde_json::to_writer(&mut bounded, value)?;
@@ -146,6 +166,9 @@ fn read_frame(reader: &mut impl Read) -> Result<Option<Vec<u8>>> {
 
 /// Verify a recording without a running game. Only its intact completed prefix is playable.
 pub fn inspect(directory: &Path) -> Result<Inspection> {
+    if !directory.join("recovery.bin").exists() {
+        return inspect_report(directory);
+    }
     let file = File::open(directory.join("recovery.bin"))?;
     ensure!(
         file.metadata()?.len() <= MAX_BYTES,
@@ -153,6 +176,48 @@ pub fn inspect(directory: &Path) -> Result<Inspection> {
     );
     inspect_reader(&mut std::io::BufReader::new(file))
 }
+fn inspect_report(directory: &Path) -> Result<Inspection> {
+    let path = directory.join("manifest.json");
+    ensure!(
+        std::fs::metadata(&path)?.len() <= MAX_BYTES,
+        "report manifest too large"
+    );
+    let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    ensure!(
+        manifest["format"] == 1 && manifest["complete"] == true,
+        "incomplete or unsupported report"
+    );
+    let replay = crate::load_replay(directory.join("replay.json"))?;
+    ensure!(
+        manifest["replay_digest"].as_u64() == Some(chassis::hash::state_hash(&replay)),
+        "report replay digest mismatch"
+    );
+    let session = manifest["session"]
+        .as_str()
+        .context("missing report session")?
+        .to_owned();
+    ensure!(
+        !session.is_empty() && session.len() <= 128,
+        "invalid report session"
+    );
+    let prepared: Option<Vec<PlayerCommand>> =
+        serde_json::from_value(manifest["prepared_commands"].clone())?;
+    ensure!(
+        prepared.is_none() || manifest["prepared_tick"].as_u64() == replay.meta.ticks,
+        "invalid report prepared tick"
+    );
+    Ok(Inspection {
+        build: serde_json::from_value(manifest["build"].clone())?,
+        session,
+        replay,
+        prepared,
+        issue: serde_json::from_value(manifest["issue"].clone())?,
+        clean: manifest["clean"]
+            .as_bool()
+            .context("missing report close state")?,
+    })
+}
+
 fn inspect_reader(reader: &mut impl Read) -> Result<Inspection> {
     let mut magic = [0; 8];
     reader.read_exact(&mut magic)?;
@@ -264,6 +329,16 @@ pub struct InterruptedMatch {
     pub scenario: String,
 }
 
+pub(crate) fn read_lease(directory: &Path) -> Option<File> {
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .open(directory.join("lease"))
+        .ok()?;
+    file.try_lock_shared().ok()?;
+    Some(file)
+}
+
 pub(crate) fn inactive(directory: &Path) -> Option<File> {
     let file = File::options()
         .read(true)
@@ -279,14 +354,24 @@ pub fn latest_interrupted(root: &Path) -> Option<InterruptedMatch> {
     let mut directories = session_directories(root);
     directories.sort();
     for directory in directories.into_iter().rev() {
-        let Some(_lease) = inactive(&directory) else {
+        let Some(_lease) = read_lease(&directory) else {
             continue;
         };
         let Ok(record) = inspect(&directory) else {
             continue;
         };
         let ticks = record.replay.meta.ticks.unwrap_or(0);
-        if !record.clean && ticks > 0 {
+        let superseded = std::fs::read(directory.join("superseded.json"))
+            .ok()
+            .filter(|bytes| bytes.len() <= 1024)
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_some_and(|marker| {
+                marker["ticks"].as_u64() == Some(ticks)
+                    && marker["by"]
+                        .as_str()
+                        .is_some_and(|by| by.starts_with("session-"))
+            });
+        if !record.clean && !superseded && ticks > 0 {
             return Some(InterruptedMatch {
                 directory,
                 ticks,
@@ -314,14 +399,24 @@ pub(crate) fn session_directories(root: &Path) -> Vec<PathBuf> {
 /// Existing destinations are refused; named saves and source records are never replaced.
 pub fn export(directory: &Path, destination: &Path) -> Result<()> {
     ensure!(!destination.exists(), "report destination already exists");
+    let readers = if directory.join("recovery.bin").exists() {
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .open(directory.join("readers"))?;
+        file.try_lock_shared()
+            .context("recording is being retired")?;
+        Some(file)
+    } else {
+        None
+    };
     let record = inspect(directory)?;
     std::fs::create_dir(destination)?;
     let result = (|| -> Result<()> {
         record.replay.save(destination.join("replay.json"))?;
-        let manifest = serde_json::json!({ "format": 1, "session": record.session, "build": record.build, "running_build": BuildIdentity::default(), "sim_version": SIM_VERSION, "ticks": record.replay.meta.ticks, "clean": record.clean, "issue": record.issue, "prepared_tick": record.prepared.as_ref().map(|_| record.replay.meta.ticks), "prepared_commands": record.prepared });
-        chassis::fsx::write_atomic(destination.join("manifest.json"), |writer| {
-            serde_json::to_writer_pretty(writer, &manifest).map_err(std::io::Error::other)
-        })?;
+        #[cfg(test)]
+        tests::fault("export");
+        let manifest = serde_json::json!({ "format": 1, "complete": true, "replay_digest": chassis::hash::state_hash(&record.replay), "session": record.session, "build": record.build, "running_build": BuildIdentity::default(), "sim_version": SIM_VERSION, "ticks": record.replay.meta.ticks, "clean": record.clean, "issue": record.issue, "prepared_tick": record.prepared.as_ref().map(|_| record.replay.meta.ticks), "prepared_commands": record.prepared });
         for name in [
             "timings.json",
             "watchdog.json",
@@ -340,6 +435,9 @@ pub fn export(directory: &Path, destination: &Path) -> Result<()> {
                 })?;
             }
         }
+        chassis::fsx::write_atomic(destination.join("manifest.json"), |writer| {
+            serde_json::to_writer_pretty(writer, &manifest).map_err(std::io::Error::other)
+        })?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -347,5 +445,6 @@ pub fn export(directory: &Path, destination: &Path) -> Result<()> {
         let _ = std::fs::remove_dir_all(destination);
         bail!("report export failed: {error:#}");
     }
+    drop(readers);
     Ok(())
 }

@@ -12,10 +12,13 @@ use std::{
 
 const QUEUE_BYTES: usize = 1024 * 1024;
 const FLUSH_BYTES: usize = 64 * 1024;
+const SESSION_RESERVATION: u64 = 96 * 1024 * 1024;
 
 /// Nonblocking recording health; durable progress can lag live progress.
 #[derive(Debug, Clone, Serialize)]
 pub struct WriterStatus {
+    /// Baseline has been durably published.
+    pub ready: bool,
     /// Last completed tick acknowledged after fsync.
     pub durable_tick: u64,
     /// Pending command memory reservation.
@@ -27,6 +30,7 @@ pub struct WriterStatus {
 }
 #[derive(Default)]
 struct Shared {
+    ready: AtomicBool,
     durable: AtomicU64,
     pending: AtomicUsize,
     stopped: AtomicBool,
@@ -58,7 +62,23 @@ pub struct RecoveryWriter {
 impl RecoveryWriter {
     /// Start a fresh recording from an already resolved replay prefix.
     /// Directory initialization and baseline serialization run on the worker.
-    pub fn start(root: PathBuf, mut base: GameReplay, tick: u64) -> Result<Self> {
+    pub fn start(root: PathBuf, base: GameReplay, tick: u64) -> Result<Self> {
+        Self::start_recovered(root, base, tick, None)
+    }
+
+    /// Retire a recovered source only after its replacement baseline is durable.
+    pub fn start_recovered(
+        root: PathBuf,
+        mut base: GameReplay,
+        tick: u64,
+        source: Option<PathBuf>,
+    ) -> Result<Self> {
+        ensure!(
+            source
+                .as_ref()
+                .is_none_or(|source| source.parent() == Some(root.as_path())),
+            "recovered source is outside the recording root"
+        );
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let session = format!(
             "session-{:020}-{}-{}",
@@ -91,6 +111,7 @@ impl RecoveryWriter {
                     receiver,
                     &worker_shared,
                     &mut lease,
+                    source,
                 ) {
                     worker_shared.fail(format!("{error:#}"));
                 }
@@ -186,6 +207,7 @@ impl RecoveryWriter {
 }
 fn snapshot(shared: &Shared) -> WriterStatus {
     WriterStatus {
+        ready: shared.ready.load(Ordering::Acquire),
         durable_tick: shared.durable.load(Ordering::Acquire),
         pending_bytes: shared.pending.load(Ordering::Acquire),
         clean: shared.clean.load(Ordering::Acquire),
@@ -220,8 +242,8 @@ fn command_bytes(command: &Command) -> usize {
         | Command::Unload { .. } => (0, 0),
     };
     1024usize
-        .saturating_add(ids.saturating_mul(16))
-        .saturating_add(points.saturating_mul(64))
+        .saturating_add(ids.saturating_mul(32))
+        .saturating_add(points.saturating_mul(128))
 }
 
 fn run(
@@ -231,7 +253,12 @@ fn run(
     receiver: mpsc::Receiver<Queued>,
     shared: &Shared,
     lease_guard: &mut Option<File>,
+    source: Option<PathBuf>,
 ) -> Result<()> {
+    let source_lease = source
+        .as_ref()
+        .map(|source| read_lease(source).context("recovered source is still active"))
+        .transpose()?;
     std::fs::create_dir_all(root)?;
     let budget = File::options()
         .read(true)
@@ -241,8 +268,21 @@ fn run(
         .open(root.join("budget.lock"))?;
     budget.lock()?;
     prune(root);
+    let sessions = session_directories(root);
     ensure!(
-        managed_size(root) < MANAGED_BYTES.saturating_sub(1024 * 1024),
+        sessions.len() < 5,
+        "recovery session limit: existing records are protected"
+    );
+    ensure!(
+        sessions
+            .iter()
+            .filter(|directory| inspect(directory).is_ok_and(|record| !record.clean))
+            .count()
+            < 3,
+        "interrupted recovery limit: existing records are protected"
+    );
+    ensure!(
+        managed_size(root).saturating_add(SESSION_RESERVATION) <= MANAGED_BYTES,
         "recovery storage budget exhausted"
     );
     std::fs::create_dir(directory)?;
@@ -252,6 +292,11 @@ fn run(
         .create_new(true)
         .open(directory.join("lease"))?;
     lease.lock()?;
+    File::options()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(directory.join("readers"))?;
     *lease_guard = Some(lease);
     budget.unlock()?;
     header.base.validate(Some(SIM_VERSION))?;
@@ -280,6 +325,11 @@ fn run(
     let mut tick = header.base.meta.ticks.unwrap_or(0);
     let mut prepared = false;
     let mut count = header.base.commands.len();
+    let mut replay_bytes = super::pretty_size(&header.base)?.saturating_add(256);
+    ensure!(
+        replay_bytes <= MAX_BYTES as usize,
+        "recovery replay size limit"
+    );
     let mut sequence = 0;
     let mut last_flush = Instant::now();
     flush(
@@ -291,6 +341,18 @@ fn run(
         tick,
         shared,
     )?;
+    if let Some(source) = source {
+        let previous = inspect(&source)?;
+        ensure!(
+            chassis::hash::state_hash(&previous.replay) == chassis::hash::state_hash(&header.base),
+            "replacement does not contain the recovered prefix"
+        );
+        let marker = serde_json::json!({"by": header.session, "ticks": tick});
+        chassis::fsx::write_atomic(source.join("superseded.json"), |writer| {
+            serde_json::to_writer(writer, &marker).map_err(std::io::Error::other)
+        })?;
+    }
+    drop(source_lease);
     loop {
         let message = receiver.recv_timeout(Duration::from_millis(250));
         match message {
@@ -303,6 +365,13 @@ fn run(
                             "invalid recovery preparation"
                         );
                         count = count.saturating_add(commands.len());
+                        replay_bytes = commands.iter().fold(replay_bytes, |bytes, command| {
+                            bytes.saturating_add(command_bytes(&command.command))
+                        });
+                        ensure!(
+                            replay_bytes <= MAX_BYTES as usize,
+                            "recovery replay size limit"
+                        );
                         ensure!(
                             count <= chassis::replay::MAX_REPLAY_COMMANDS,
                             "recovery command limit"
@@ -329,6 +398,8 @@ fn run(
                 )?;
                 sequence += 1;
                 if clean {
+                    #[cfg(test)]
+                    super::tests::fault("clean");
                     flush(
                         root,
                         &budget,
@@ -339,6 +410,7 @@ fn run(
                         shared,
                     )?;
                     shared.clean.store(true, Ordering::Release);
+                    while receiver.recv().is_ok() {}
                     break;
                 }
             }
@@ -392,10 +464,12 @@ fn flush(
     budget.lock()?;
     let result = (|| -> Result<()> {
         ensure!(
-            managed_size(root).saturating_add(buffer.len() as u64) <= MANAGED_BYTES,
+            managed_size(root) <= MANAGED_BYTES,
             "managed recording storage limit"
         );
         file.write_all(buffer)?;
+        #[cfg(test)]
+        super::tests::fault("journal-write");
         file.flush()?;
         file.get_ref().sync_all()?;
         #[cfg(unix)]
@@ -403,6 +477,7 @@ fn flush(
         *total += buffer.len() as u64;
         buffer.clear();
         shared.durable.store(tick, Ordering::Release);
+        shared.ready.store(true, Ordering::Release);
         Ok(())
     })();
     budget.unlock()?;
@@ -411,27 +486,63 @@ fn flush(
 fn managed_size(root: &Path) -> u64 {
     session_directories(root)
         .iter()
-        .flat_map(|directory| std::fs::read_dir(directory).into_iter().flatten())
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.metadata().ok())
-        .filter(|metadata| metadata.is_file())
-        .map(|metadata| metadata.len())
+        .map(|directory| {
+            let size = std::fs::read_dir(directory)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .filter_map(|entry| entry.metadata().ok())
+                .filter(|metadata| metadata.is_file())
+                .map(|metadata| metadata.len())
+                .sum::<u64>();
+            if read_lease(directory).is_none() {
+                size.max(SESSION_RESERVATION)
+            } else {
+                size
+            }
+        })
         .sum()
 }
 fn prune(root: &Path) {
     let mut directories = session_directories(root);
-    directories.sort();
+    directories.sort_by_key(|directory| {
+        (
+            !inspect(directory).is_ok_and(|record| record.clean),
+            directory.clone(),
+        )
+    });
     let mut remaining = directories.len();
+    let mut interrupted = directories
+        .iter()
+        .filter(|directory| inspect(directory).is_ok_and(|record| !record.clean))
+        .count();
     for directory in directories {
-        if remaining < 3 && managed_size(root) < MANAGED_BYTES.saturating_sub(MAX_BYTES) {
+        if remaining < 5
+            && interrupted < 3
+            && managed_size(root).saturating_add(SESSION_RESERVATION) <= MANAGED_BYTES
+        {
             break;
         }
         let Some(_lease) = inactive(&directory) else {
             continue;
         };
-        // Only our valid recordings are retention candidates.
-        if inspect(&directory).is_ok() && std::fs::remove_dir_all(&directory).is_ok() {
+        let Ok(readers) = File::options()
+            .read(true)
+            .write(true)
+            .open(directory.join("readers"))
+        else {
+            continue;
+        };
+        if readers.try_lock().is_err() {
+            continue;
+        }
+        if let Ok(record) = inspect(&directory)
+            && std::fs::remove_dir_all(&directory).is_ok()
+        {
             remaining -= 1;
+            if !record.clean {
+                interrupted = interrupted.saturating_sub(1);
+            }
         }
     }
 }

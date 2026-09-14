@@ -230,6 +230,7 @@ fn worker_flushes_exact_prefix_and_excludes_active_recordings() {
     let report = root.join("export");
     export(&directory, &report).unwrap();
     assert!(crate::load_replay(report.join("replay.json")).is_ok());
+    assert_eq!(inspect(&report).unwrap().replay.meta.ticks, Some(20));
     assert!(export(&directory, &report).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -275,5 +276,234 @@ fn oversized_command_batch_stops_capture_without_partial_submission() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(inspect(&directory).unwrap().replay.meta.ticks, Some(0));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+static ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(super) fn fault(phase: &str) {
+    if ARMED.load(std::sync::atomic::Ordering::Acquire)
+        && std::env::var("OXIDE_RECOVERY_TEST_PHASE").is_ok_and(|value| value == phase)
+    {
+        std::fs::write(
+            std::env::var_os("OXIDE_RECOVERY_TEST_READY").unwrap(),
+            b"ready",
+        )
+        .unwrap();
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+}
+#[test]
+#[ignore = "subprocess fixture; invoked by forced_termination_retains_a_valid_prefix"]
+fn interrupted_child() {
+    let root = PathBuf::from(std::env::var_os("OXIDE_RECOVERY_TEST_ROOT").unwrap());
+    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    for tick in 0..10 {
+        writer.prepared(tick, &[]);
+        writer.completed(tick + 1);
+    }
+    wait(&writer, |status| status.durable_tick == 10);
+    let phase = std::env::var("OXIDE_RECOVERY_TEST_PHASE").unwrap();
+    ARMED.store(true, std::sync::atomic::Ordering::Release);
+    match phase.as_str() {
+        "export" => {
+            let _ = export(writer.directory(), &root.join("report"));
+        }
+        "clean" => writer.finish(10),
+        "prepared" => {
+            writer.prepared(10, &[command()]);
+            fault("prepared");
+        }
+        "journal-write" => {
+            writer.prepared(10, &[command()]);
+            writer.completed(11);
+        }
+        _ => panic!("unknown fixture phase"),
+    }
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+#[test]
+fn forced_termination_retains_a_valid_prefix() {
+    for phase in ["prepared", "journal-write", "clean", "export"] {
+        let root = temp();
+        let ready = root.join("ready");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "recovery::tests::interrupted_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("OXIDE_RECOVERY_TEST_ROOT", &root)
+            .env("OXIDE_RECOVERY_TEST_READY", &ready)
+            .env("OXIDE_RECOVERY_TEST_PHASE", phase)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("child did not reach {phase}");
+            }
+            assert!(child.try_wait().unwrap().is_none());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let recovered = latest_interrupted(&root).unwrap();
+        assert_eq!(recovered.ticks, 10, "{phase}");
+        assert!(
+            inspect(&recovered.directory)
+                .unwrap()
+                .replay
+                .commands
+                .is_empty()
+        );
+        if phase == "export" {
+            assert!(
+                inspect(&root.join("report")).is_err(),
+                "interrupted export cannot appear complete"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
+    let root = temp();
+    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    writer.prepared(0, &[]);
+    writer.completed(1);
+    wait(&writer, |status| status.durable_tick == 1);
+    let source = writer.directory().to_owned();
+    drop(writer);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while read_lease(&source).is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let recovered = inspect(&source).unwrap().replay;
+    let replacement =
+        RecoveryWriter::start_recovered(root.clone(), recovered, 1, Some(source.clone())).unwrap();
+    wait(&replacement, |status| status.ready);
+    while !source.join("superseded.json").exists() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        latest_interrupted(&root).is_none(),
+        "source is retired and replacement is active"
+    );
+    let next = replacement.directory().to_owned();
+    drop(replacement);
+    while read_lease(&next).is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(latest_interrupted(&root).unwrap().directory, next);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn queued_commands_stop_explicitly_when_storage_cannot_drain() {
+    let root = temp();
+    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    wait(&writer, |status| status.ready);
+    let lock = std::fs::File::open(root.join("budget.lock")).unwrap();
+    lock.lock().unwrap();
+    for tick in 0..10_000 {
+        writer.prepared(tick, &[command()]);
+        writer.completed(tick + 1);
+        if writer.status().error.is_some() {
+            break;
+        }
+    }
+    assert!(writer.status().error.is_some());
+    assert!(writer.status().pending_bytes <= 1024 * 1024);
+    lock.unlock().unwrap();
+    let directory = writer.directory().to_owned();
+    drop(writer);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while read_lease(&directory).is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let record = inspect(&directory).unwrap();
+    assert_eq!(
+        record.replay.commands.len() as u64,
+        record.replay.meta.ticks.unwrap()
+    );
+    record.replay.validate(Some(SIM_VERSION)).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn retention_preserves_export_readers_and_explicit_reports() {
+    let root = temp();
+    let mut protected = None;
+    let mut protected_directory = PathBuf::new();
+    let report = root.join("reports/keep");
+    std::fs::create_dir_all(&report).unwrap();
+    std::fs::write(report.join("sentinel"), b"keep").unwrap();
+    for index in 0..7 {
+        let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+        wait(&writer, |status| status.ready);
+        writer.finish(0);
+        wait(&writer, |status| status.clean);
+        let directory = writer.directory().to_owned();
+        drop(writer);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while read_lease(&directory).is_none() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if index == 0 {
+            let reader = std::fs::File::open(directory.join("readers")).unwrap();
+            reader.lock_shared().unwrap();
+            protected = Some(reader);
+            protected_directory = directory;
+        }
+    }
+    assert!(protected_directory.join("recovery.bin").exists());
+    assert!(session_directories(&root).len() <= 5);
+    assert_eq!(std::fs::read(report.join("sentinel")).unwrap(), b"keep");
+    drop(protected);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn report_verification_rejects_a_changed_replay() {
+    let root = temp();
+    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    writer.prepared(0, &[]);
+    writer.completed(1);
+    wait(&writer, |status| status.durable_tick == 1);
+    let report = root.join("reports/export");
+    std::fs::create_dir_all(report.parent().unwrap()).unwrap();
+    export(writer.directory(), &report).unwrap();
+    let mut replay = inspect(&report).unwrap().replay;
+    replay.meta.ticks = Some(2);
+    replay.save(report.join("replay.json")).unwrap();
+    assert!(
+        inspect(&report)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("digest")
+    );
+    let directory = writer.directory().to_owned();
+    drop(writer);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while read_lease(&directory).is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
     std::fs::remove_dir_all(root).unwrap();
 }

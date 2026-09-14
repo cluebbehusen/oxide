@@ -167,6 +167,24 @@ enum LegacyTeamRole {
     Siege,
 }
 
+pub(crate) fn deserialize_replay<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<GameReplay, D::Error> {
+    let ReplayWire {
+        meta,
+        setup,
+        commands,
+    } = ReplayWire::deserialize(decoder)?;
+    let setup = setup
+        .into_current(&meta.sim_version)
+        .map_err(serde::de::Error::custom)?;
+    Ok(Replay {
+        meta,
+        setup,
+        commands,
+    })
+}
+
 /// Loads an Oxide replay from disk.
 ///
 /// Current-version setup data uses the same strict [`Scenario`] schema as an
