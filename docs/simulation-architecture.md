@@ -1033,13 +1033,13 @@ The target's currently visible, actually splash-vulnerable ground units and
 buried charges create a separate optional bombing opportunity; ordinary
 buildings remain direct-strike value rather than fictional splash victims, and
 operational mobile anti-air already priced as mandatory suppression is not
-counted again as optional bombing collateral. After every family reaches the
-minimum, a width-eight beam ranks capped total useful capability first and uses
-personality to weight how otherwise competitive marginal capability is divided
-between air, siege, direct strike, and attack-run bombing. Personality never
-gates a provider or family. One beam slot preserves the cheapest alternative;
-existing useful providers remain eligible at minimum strength, and every
-extension revalidates its canonical funding order. For otherwise identical
+counted again as optional bombing collateral. Minimum composition and marginal
+growth each retain a width-eight beam. It ranks capped useful capability first
+and uses personality to weight how otherwise competitive marginal capability is
+divided between air, siege, direct strike, and attack-run bombing. Personality
+never gates a provider or family. One beam slot preserves the cheapest
+alternative; existing useful providers remain eligible at minimum strength, and
+every extension revalidates its canonical funding order. For otherwise identical
 evidence, more current scrap, more available preparation time at derivation, or
 additional completed usable production capability cannot revoke admission or
 reduce capped total useful capability.

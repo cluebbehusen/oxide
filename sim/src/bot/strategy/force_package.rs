@@ -940,15 +940,15 @@ fn derive_package_options<const MINIMUM_ONLY: bool>(
     }
 
     let template = builder;
-    let minimum_candidates =
+    let mut minimum_candidates =
         minimum_package_candidates(profile, template.clone(), minimum_capability);
     if minimum_candidates.is_empty() {
-        return Err(diagnose_minimum_rejection(
+        minimum_candidates.push(construct_minimum(
             template,
             observation,
             resources,
             minimum_capability,
-        ));
+        )?);
     }
     let builders = if MINIMUM_ONLY {
         let mut candidates = minimum_candidates;
@@ -1029,6 +1029,20 @@ fn minimum_package_candidates<'a>(
                 }
             }
             candidates = unique_search_states(next);
+            candidates.sort_by_key(|candidate| {
+                Reverse(package_candidate_score(profile, minimum, 0, candidate))
+            });
+            if candidates.len() > COMPOSITION_BEAM_WIDTH {
+                let economical = candidates
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, candidate)| candidate.committed_scrap)
+                    .map(|(index, _)| index)
+                    .unwrap();
+                let economical = candidates.remove(economical);
+                candidates.truncate(COMPOSITION_BEAM_WIDTH - 1);
+                candidates.push(economical);
+            }
             if candidates.is_empty() {
                 return candidates;
             }
@@ -1037,12 +1051,12 @@ fn minimum_package_candidates<'a>(
     candidates
 }
 
-fn diagnose_minimum_rejection(
-    mut builder: PackageBuilder<'_>,
+fn construct_minimum<'a>(
+    mut builder: PackageBuilder<'a>,
     observation: &Observation,
     resources: &ResourceSnapshot,
     minimum: NormalizedCapability,
-) -> ForcePackageRejection {
+) -> Result<PackageBuilder<'a>, ForcePackageRejection> {
     for family in ForceFamily::ALL {
         while builder.capability_for(family) < minimum.for_family(family) {
             if builder.add_preserved(family, ProviderPriority::Minimum) {
@@ -1054,14 +1068,14 @@ fn diagnose_minimum_rejection(
                 builder.production_access,
                 family,
             ) {
-                return ForcePackageRejection::MissingCompletedProviderCapability { family };
+                return Err(ForcePackageRejection::MissingCompletedProviderCapability { family });
             }
             if let Err(failure) = builder.add_first_new_provider(
                 family,
                 ProviderPriority::Minimum,
                 &preservation_order(family, builder.faction),
             ) {
-                return match failure {
+                return Err(match failure {
                     AddProviderFailure::InsufficientResources {
                         required_scrap,
                         available_scrap,
@@ -1078,11 +1092,11 @@ fn diagnose_minimum_rejection(
                             deadline: builder.deadline,
                         }
                     }
-                };
+                });
             }
         }
     }
-    unreachable!("an exhaustive minimum search cannot fail when the diagnostic path succeeds")
+    Ok(builder)
 }
 
 const COMPOSITION_BEAM_WIDTH: usize = 8;
