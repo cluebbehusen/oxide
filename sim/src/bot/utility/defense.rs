@@ -3163,28 +3163,13 @@ fn supported_assets_for_candidate(
         .enumerate()
         .filter_map(|(index, asset)| {
             let goals = asset.shape.approach_tiles(ground, DefenseDomain::Ground);
-            if !doorsteps.iter().any(|start| {
-                goals
-                    .iter()
-                    .any(|goal| start.chebyshev(*goal) <= DEFENSE_RADIUS)
-            }) {
-                return None;
-            }
-            if !goals.iter().any(|goal| {
-                tile_index(ground.obs.map_width, ground.obs.map_height, *goal)
-                    .is_some_and(|goal| locally_reachable[goal])
-            }) {
-                return None;
-            }
-            shortest_path_between(
-                ground,
-                &doorsteps,
-                &goals,
-                Some(candidate),
-                DefenseDomain::Ground,
-            )
-            .filter(|(_, _, path)| path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
-            .map(|_| index)
+            goals
+                .iter()
+                .any(|goal| {
+                    tile_index(ground.obs.map_width, ground.obs.map_height, *goal)
+                        .is_some_and(|goal| locally_reachable[goal])
+                })
+                .then_some(index)
         })
         .collect()
 }
@@ -3256,12 +3241,7 @@ fn cached_operationally_supported_approaches(
     )
 }
 
-/// Cheap exact-negative preflight for the local support-radius query.
-///
-/// The ranked path remains authoritative below. This flood only avoids asking
-/// whole-map A* to prove that no route of at most `maximum_steps` can exist;
-/// whenever it answers yes, the original canonical path and length check still
-/// decide the result.
+/// Support is local walking reach, independent of global shortest-path ties.
 fn tiles_reachable_within_steps(
     ground: &GroundKnowledge<'_>,
     starts: &[TilePos],
@@ -4922,6 +4902,44 @@ mod tests {
             !policy.combined_build_layout_is_safe(&obs, &map, &[(BuildingKind::Turret, exit)],),
             "a deferred producer must retain the doorstep it will need once its site exists"
         );
+    }
+
+    #[test]
+    fn local_support_uses_one_bounded_flood_for_all_assets() {
+        let scenario = scenario_with(|tile| if tile.x == 18 && tile.y > 0 { '^' } else { '.' });
+        let briefing = PublicMapBriefing::from_scenario(&scenario).unwrap();
+        let obs = observation(PlayerId(0), LEFT_HOME);
+        let ground = GroundKnowledge::new(&obs, &briefing, &[]);
+        let assets = [
+            TilePos::new(13, 10),
+            TilePos::new(20, 10),
+            TilePos::new(30, 10),
+        ]
+        .into_iter()
+        .map(|tile| DefendedAsset {
+            value: 1,
+            shape: AssetShape::Scrap {
+                tiles: vec![tile],
+                work_tiles: vec![tile],
+            },
+            access: None,
+        })
+        .collect::<Vec<_>>();
+        let candidate = DefenseProfile::for_kind(BuildingKind::Turret)
+            .unwrap()
+            .footprint(TilePos::new(16, 10));
+        let (supported, work) = crate::bot::navigation::work::measure(|| {
+            supported_assets_for_candidate(&ground, &assets, candidate)
+        });
+        assert_eq!(
+            supported,
+            BTreeSet::from([0]),
+            "nearby assets behind a long detour and distant assets are unsupported"
+        );
+        assert_eq!(work.searches, 1);
+        assert_eq!(work.paths, 0);
+        assert_eq!(work.fields, 0);
+        assert!(work.expanded <= 20 * 20, "{work:?}");
     }
 
     #[test]
