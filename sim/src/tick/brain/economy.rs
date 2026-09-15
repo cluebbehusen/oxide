@@ -1392,6 +1392,7 @@ pub(in crate::tick) fn return_cargo_destination(
 ) -> Option<BuildingId> {
     let drop_offs = drop_offs_by_distance(state, id);
     for avoid_danger in [true, false] {
+        let mut scan = DropOffScan::default();
         if let Some(foundry_id) = drop_offs.iter().copied().find(|foundry_id| {
             if requested.is_some_and(|requested| requested != *foundry_id) {
                 return false;
@@ -1408,7 +1409,7 @@ pub(in crate::tick) fn return_cargo_destination(
                     foundry.anchor,
                     foundry.stats().size,
                     avoid_danger,
-                    None,
+                    Some(&mut scan),
                 )
                 .is_some()
         }) {
@@ -1563,6 +1564,105 @@ mod harvest_zone_tests {
     use crate::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
     use crate::stats::BuildingKind;
     use crate::{Faction, PlayerId, Scenario, UnitKind};
+
+    #[test]
+    fn return_cargo_reuses_exhausted_floods_per_worker_and_safety_pass() {
+        let mut rows = vec![vec!['.'; 32]; 20];
+        for (y, row) in rows.iter_mut().enumerate() {
+            for (x, tile) in row.iter_mut().enumerate() {
+                if y == 0 || y == 19 || x == 0 || x == 31 || x == 15 {
+                    *tile = '#';
+                }
+            }
+        }
+        rows[2][18] = '1';
+        rows[16][28] = '2';
+        let scenario = serde_json::json!({
+            "name": "sealed-worker-drop-offs", "seed": 25,
+            "map": rows.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
+            "players": [
+                {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "units": [
+                {"player": 0, "kind": "harvester", "x": 4, "y": 5},
+                {"player": 0, "kind": "excavator", "x": 6, "y": 5},
+                {"player": 0, "kind": "harvester", "x": 18, "y": 8}
+            ],
+            "buildings": [
+                {"player": 0, "kind": "foundry", "x": 23, "y": 2},
+                {"player": 0, "kind": "foundry", "x": 18, "y": 11},
+                {"player": 0, "kind": "foundry", "x": 23, "y": 11}
+            ]
+        });
+        let state = Scenario::from_json(&scenario.to_string())
+            .unwrap()
+            .build()
+            .unwrap();
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        for worker in &state.units[..2] {
+            let before = danger.route_search_count();
+            assert_eq!(
+                return_cargo_destination(&state, &danger, worker.id, None),
+                None
+            );
+            assert_eq!(danger.route_search_count() - before, 2);
+        }
+        assert!(return_cargo_destination(&state, &danger, state.units[2].id, None).is_some());
+    }
+
+    #[test]
+    fn return_cargo_resets_reachability_before_ignoring_danger() {
+        let scenario = serde_json::json!({
+            "name": "danger-blocked-return", "seed": 25,
+            "map": [
+                "##########################",
+                "#1....................2..#",
+                "#........................#",
+                "#........................#",
+                "#........................#",
+                "#........................#",
+                "##########################"
+            ],
+            "players": [
+                {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "units": [
+                {"player": 0, "kind": "harvester", "x": 16, "y": 3},
+                {"player": 1, "kind": "scuttler", "x": 12, "y": 3}
+            ]
+        });
+        let state = Scenario::from_json(&scenario.to_string())
+            .unwrap()
+            .build()
+            .unwrap();
+        let worker = state.units[0].id;
+        let foundry = state
+            .buildings
+            .iter()
+            .find(|b| b.player == PlayerId(0))
+            .unwrap();
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        assert!(
+            known_rect_route(
+                &state,
+                &danger,
+                worker,
+                foundry.anchor,
+                foundry.stats().size,
+                true,
+                None
+            )
+            .is_none()
+        );
+        let before = danger.route_search_count();
+        assert_eq!(
+            return_cargo_destination(&state, &danger, worker, None),
+            Some(foundry.id)
+        );
+        assert_eq!(danger.route_search_count() - before, 2);
+    }
 
     #[test]
     fn the_zone_radius_covers_the_widest_connected_shipped_deposit() {
