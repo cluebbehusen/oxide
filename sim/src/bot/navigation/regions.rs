@@ -29,6 +29,31 @@ pub(in crate::bot) struct StaticRegions {
 }
 
 impl StaticRegions {
+    pub(in crate::bot) fn clusters(
+        &self,
+        points: impl IntoIterator<Item = TilePos>,
+    ) -> Vec<Vec<TilePos>> {
+        let mut clusters = BTreeMap::<usize, Vec<TilePos>>::new();
+        for point in points {
+            let Some(region) = self
+                .index(point)
+                .map(|index| self.labels[index])
+                .filter(|&region| region != ABSENT)
+            else {
+                continue;
+            };
+            clusters.entry(region).or_default().push(point);
+        }
+        clusters
+            .into_values()
+            .map(|mut points| {
+                points.sort_unstable_by_key(|point| (point.y, point.x));
+                points.dedup();
+                points
+            })
+            .collect()
+    }
+
     pub(in crate::bot) fn build(map: &PublicMapBriefing) -> Self {
         let width = map.map_width();
         let height = map.map_height();

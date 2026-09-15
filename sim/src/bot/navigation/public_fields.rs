@@ -71,7 +71,9 @@ impl BlockedGroundLayout {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DangerAwareDistanceGeneration {
     blocked: BlockedGroundLayout,
+    #[cfg(test)]
     fields: BTreeMap<TilePos, Arc<PublicGroundDistances>>,
+    source_sets: BTreeMap<Vec<TilePos>, Arc<PublicGroundDistances>>,
 }
 
 /// Bounded routing memoization for the expansion planner.
@@ -117,6 +119,7 @@ impl PublicRoutes {
         self.start_fields.clear();
     }
 
+    #[cfg(test)]
     pub(in crate::bot) fn danger_aware_fields(
         &mut self,
         public_map: &PublicMapBriefing,
@@ -136,7 +139,9 @@ impl PublicRoutes {
             super::work::record(|work| work.generations += 1);
             self.danger_aware = Some(DangerAwareDistanceGeneration {
                 blocked,
+                #[cfg(test)]
                 fields: BTreeMap::new(),
+                source_sets: BTreeMap::new(),
             });
         }
         let generation = self
@@ -170,6 +175,50 @@ impl PublicRoutes {
                     .map(|field| (source, Arc::clone(field)))
             })
             .collect()
+    }
+
+    pub(in crate::bot) fn danger_aware_source_set(
+        &mut self,
+        public_map: &PublicMapBriefing,
+        blocked: &BlockedGroundLayout,
+        sources: impl IntoIterator<Item = TilePos>,
+    ) -> Arc<PublicGroundDistances> {
+        self.prepare_map(public_map);
+        if self
+            .danger_aware
+            .as_ref()
+            .is_none_or(|generation| generation.blocked != *blocked)
+        {
+            self.danger_aware = Some(DangerAwareDistanceGeneration {
+                blocked: blocked.clone(),
+                #[cfg(test)]
+                fields: BTreeMap::new(),
+                source_sets: BTreeMap::new(),
+            });
+            #[cfg(test)]
+            super::work::record(|work| work.generations += 1);
+        }
+        let generation = self.danger_aware.as_mut().unwrap();
+        let mut sources = sources.into_iter().collect::<Vec<_>>();
+        sources.sort_unstable_by_key(|tile| (tile.y, tile.x));
+        sources.dedup();
+        if let Some(field) = generation.source_sets.get(&sources) {
+            return Arc::clone(field);
+        }
+        if generation.source_sets.len() >= 9 {
+            generation.source_sets.pop_first();
+        }
+        let field = Arc::new(PublicGroundDistances::from_sources_avoiding(
+            public_map,
+            sources.iter().copied(),
+            |tile| blocked.contains(tile),
+        ));
+        #[cfg(test)]
+        {
+            self.builds.danger_aware += 1;
+        }
+        generation.source_sets.insert(sources, Arc::clone(&field));
+        field
     }
 
     pub(in crate::bot) fn threat_fields(
@@ -229,9 +278,9 @@ impl PublicRoutes {
     #[cfg(test)]
     pub(in crate::bot) fn retained_field_counts(&self) -> (usize, usize, usize) {
         (
-            self.danger_aware
-                .as_ref()
-                .map_or(0, |generation| generation.fields.len()),
+            self.danger_aware.as_ref().map_or(0, |generation| {
+                generation.fields.len() + generation.source_sets.len()
+            }),
             self.threat_fields.len(),
             self.start_fields.len(),
         )
@@ -378,6 +427,7 @@ impl PublicGroundDistances {
     /// Visits reachable, fully in-bounds footprint anchors in row-major order.
     /// The index includes unreachable anchors, allowing callers to accumulate
     /// several fields into the same dense candidate array.
+    #[cfg(test)]
     pub(in crate::bot) fn visit_footprint_distances(
         &self,
         size: (i32, i32),
@@ -616,6 +666,77 @@ mod tests {
         let reference = reference_ground_distances(&public_map, sources, &blocked);
 
         assert_eq!(actual, reference);
+    }
+
+    #[test]
+    fn reverse_footprint_fields_match_forward_node_queries_with_danger_and_walls() {
+        let map = briefing(
+            18,
+            13,
+            (0..13).filter(|y| *y != 7).map(|y| TilePos::new(8, y)),
+            Vec::new(),
+        );
+        let blocked = BlockedGroundLayout::from_predicate(&map, |tile| {
+            matches!((tile.x, tile.y), (4, 3) | (4, 4) | (5, 4))
+        });
+        let anchors = [TilePos::new(1, 1), TilePos::new(13, 9)];
+        let mut cache = PublicRoutes::default();
+        let reverse = cache.danger_aware_source_set(
+            &map,
+            &blocked,
+            anchors.into_iter().flat_map(foundry_footprint_tiles),
+        );
+        for y in 0..13 {
+            for x in 0..18 {
+                let node = TilePos::new(x, y);
+                let forward = reference_ground_distances(&map, [node], &blocked);
+                let expected = anchors
+                    .iter()
+                    .filter_map(|&anchor| {
+                        forward.footprint_distance(anchor, BuildingKind::Foundry.base_stats().size)
+                    })
+                    .min();
+                assert_eq!(
+                    reverse.footprint_distance(node, (1, 1)),
+                    expected,
+                    "{node:?}"
+                );
+            }
+        }
+        let repeated = cache.danger_aware_source_set(
+            &map,
+            &blocked,
+            anchors.into_iter().rev().flat_map(foundry_footprint_tiles),
+        );
+        assert!(Arc::ptr_eq(&reverse, &repeated));
+        let changed = BlockedGroundLayout::from_predicate(&map, |_| true);
+        assert_eq!(
+            cache
+                .danger_aware_source_set(
+                    &map,
+                    &changed,
+                    anchors.into_iter().flat_map(foundry_footprint_tiles)
+                )
+                .footprint_distance(anchors[0], (1, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn footprint_source_set_retention_has_a_fixed_entry_bound() {
+        let map = briefing(18, 13, [], Vec::new());
+        let blocked = BlockedGroundLayout::from_predicate(&map, |_| false);
+        let mut cache = PublicRoutes::default();
+        for x in 0..18 {
+            let source = TilePos::new(x, 6);
+            assert_eq!(
+                cache
+                    .danger_aware_source_set(&map, &blocked, [source])
+                    .footprint_distance(source, (1, 1)),
+                Some(0)
+            );
+            assert!(cache.retained_field_counts().0 <= 9);
+        }
     }
 
     #[test]

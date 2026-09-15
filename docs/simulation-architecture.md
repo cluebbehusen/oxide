@@ -1292,13 +1292,14 @@ coverage.
 The player-facing budget observes provisional scaffolds as paid construction
 with an exact site id. Their prices have already left the bank, so retained
 worker obligations do not reserve that money again. Player-facing Foundry
-expansion has no count ceiling. It ranks every exact legal site by bounded
-post-construction payback from newly supported owned Extractors, Foundry drip
-attached to an external objective, and shorter hauling for currently visible
-scrap. Hauling value uses public-ground route distance while avoiding observed
-dynamic danger rather than geometric distance. Public unbuilt Extractor frames
-remain scouting priors rather than live capital value. Greed and genuinely
-uncommitted scrap extend the forecast without changing capability.
+expansion has no count ceiling. It groups known resources by public terrain
+region, ranks potential sites using approximate travel, and prices a bounded
+shortlist exactly. The strongest regional candidate remains in consideration
+while remaining regions rotate. Payback includes supported owned Extractors,
+Foundry drip attached to an external objective, and shorter visible-scrap hauls.
+Reverse fields from shortlisted Foundry footprints preserve exact haul costs
+while avoiding observed danger. Public unbuilt frames remain scouting priors.
+Greed and uncommitted scrap extend the forecast without changing capability.
 
 Expansion saving and construction share one exact claim: a legal footprint and a
 specific worker with a known safe route and work area. Admission preserves the

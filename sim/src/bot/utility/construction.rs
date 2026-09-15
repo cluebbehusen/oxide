@@ -1,5 +1,7 @@
 //! Construction, repair, upgrade, and salvage decisions.
 
+mod foundry_planning;
+
 use super::*;
 use crate::Tick;
 use crate::bot::navigation::commands::{BuildCommandTarget, BuildRouteProjection};
@@ -1266,6 +1268,7 @@ impl UtilityPolicy {
         )
     }
 
+    #[cfg(test)]
     fn player_facing_foundry_opportunities(
         &self,
         obs: &Observation,
@@ -1389,7 +1392,7 @@ impl UtilityPolicy {
         let danger =
             self.harvest_danger_projection(obs, context.unit_contacts, context.building_contacts);
         let opportunities =
-            self.player_facing_foundry_opportunities(obs, context, public_map, economy, &danger);
+            self.regional_foundry_opportunities(obs, context, public_map, economy, &danger, None);
         if opportunities.is_empty() {
             return Vec::new();
         }
@@ -1455,12 +1458,13 @@ impl UtilityPolicy {
             context.claim.building_contacts,
         );
         let mut opportunities = opportunities.unwrap_or_else(|| {
-            self.player_facing_foundry_opportunities(
+            self.regional_foundry_opportunities(
                 obs,
                 context.claim,
                 context.public_map,
                 economy,
                 &danger,
+                context.required_anchor,
             )
         });
         if let Some(required_anchor) = context.required_anchor {
@@ -4090,6 +4094,57 @@ mod tests {
                     UtilityPolicy::foundry_supports_extractor(candidate.anchor, extractor)
                 })
         }));
+    }
+
+    #[test]
+    fn shortlisted_foundry_quotes_match_exact_all_anchor_logistics_prices() {
+        let mut obs = developed_expansion_observation();
+        obs.known_scrap = vec![
+            (TilePos::new(32, 12), 800),
+            (TilePos::new(34, 16), 600),
+            (TilePos::new(48, 24), 400),
+        ];
+        let map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+        let policy = UtilityPolicy::new();
+        let (foundries, _) = UtilityPolicy::projected_foundries(&obs);
+        let builders = policy.construction_builders(&obs, &[], &[]);
+        let claim = FoundryClaimContext {
+            home: HOME,
+            projected_foundries: &foundries,
+            builders: &builders,
+            support_extractors: false,
+            ordinary_frontiers: true,
+            unit_contacts: None,
+            building_contacts: None,
+        };
+        let economy = expansion_economy(&expansion_dials(), &obs, obs.scrap, Reserve::Ordinary);
+        let danger = policy.harvest_danger_projection(&obs, None, None);
+        let selected =
+            policy.regional_foundry_opportunities(&obs, claim, &map, economy, &danger, None);
+        assert!(!selected.is_empty());
+        assert!(selected.len() <= 8);
+        assert!(
+            policy
+                .expansion_routing_cache
+                .borrow()
+                .build_count()
+                .danger_aware
+                <= 9
+        );
+        let reference =
+            policy.player_facing_foundry_opportunities(&obs, claim, &map, economy, &danger);
+        for quote in selected {
+            assert_eq!(
+                reference.iter().find(|other| other.anchor == quote.anchor),
+                Some(&quote)
+            );
+        }
     }
 
     #[test]

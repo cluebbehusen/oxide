@@ -199,7 +199,7 @@ impl FoundryOpportunity {
         )
     }
 
-    fn quote_summary(
+    pub(super) fn quote_summary(
         anchor: TilePos,
         newly_supported_completed_extractors: u32,
         scrap: ScrapSummary,
