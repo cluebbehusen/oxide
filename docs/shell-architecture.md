@@ -109,6 +109,12 @@ loads, and building income remain private. Placement and support previews use
 authoritative queries rather than duplicating game rules. Unknown concealed
 mines cannot alter player-visible picking or placement feedback.
 
+Foundry–Extractor support links mark unselected endpoints with corner brackets.
+Marked buildings sharing corners combine their strokes into T junctions along
+rows and columns and + junctions inside a block. Exposed corners retain their L
+brackets; diagonal-only contacts keep separate inset Ls. Junction membership
+comes only from the displayed support links, never from unrelated neighbors.
+
 ## Persistence and replay
 
 A save is a replay: starting scenario, tick-stamped commands, simulation

@@ -214,6 +214,7 @@ mod panel_draw;
 mod panel_layout;
 mod performance;
 mod pits;
+mod support_brackets;
 mod world;
 use chrome::*;
 use entities::*;
