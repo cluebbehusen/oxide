@@ -2268,6 +2268,8 @@ impl From<ClaimOwner> for ClaimOwnerTrace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ProposalDispositionTrace {
+    /// A feasible incumbent was retained before this alternative was refined.
+    NotRefined,
     /// Allocation did not run because its input set was invalid.
     NotEvaluated,
     /// The exact proposal won selection.
@@ -2297,6 +2299,7 @@ impl From<ProposalDisposition> for ProposalDispositionTrace {
     fn from(value: ProposalDisposition) -> Self {
         match value {
             ProposalDisposition::Accepted => Self::Accepted,
+            ProposalDisposition::Rejected(ProposalRejection::NotRefined) => Self::NotRefined,
             ProposalDisposition::Rejected(ProposalRejection::Infeasible(conflict)) => {
                 Self::Infeasible {
                     conflict: conflict.into(),

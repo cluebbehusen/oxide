@@ -20,6 +20,7 @@ use chassis::grid::TilePos;
 
 mod adapters;
 mod coordinator;
+mod portfolio_search;
 mod production_bounds;
 mod production_search;
 mod session;
@@ -1421,6 +1422,8 @@ pub(crate) enum AllocationError {
 /// Why one well-formed fresh proposal was not selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProposalRejection {
+    /// Refinement stopped with a feasible incumbent before comparing this alternative.
+    NotRefined,
     /// The proposal cannot fit even without the competing fresh domain.
     Infeasible(AllocationConflict),
     /// The chosen portfolio owns a resource this proposal also requires.
@@ -1747,18 +1750,14 @@ fn allocate_with_required<Payload>(
     if required.is_some() && required_index.is_none() {
         return Ok(None);
     }
-    let mut best: Option<(Vec<usize>, PortfolioRank, ClaimState)> = None;
-    let mut best_with_proposal = vec![None; proposals.len()];
-    for_each_portfolio(&proposals, |selected| {
-        if required_index.is_some_and(|required| !selected.contains(&required)) {
-            return;
-        }
-        if portfolio_layout_conflict(selected, &proposals, incompatible_layouts).is_some() {
-            return;
+    let evaluate = |selected: &[usize]| {
+        if required_index.is_some_and(|required| !selected.contains(&required))
+            || portfolio_layout_conflict(selected, &proposals, incompatible_layouts).is_some()
+        {
+            return None;
         }
         let mut state = mandatory.clone();
         state.voluntary_scrap_guard = portfolio_voluntary_scrap_guard(selected, &proposals);
-        let mut feasible = true;
         for (index, funding_priority) in proposal_funding_order(
             selected,
             &proposals,
@@ -1766,39 +1765,53 @@ fn allocate_with_required<Payload>(
             capacity.resources.observed_at(),
         ) {
             let proposal = &proposals[index];
-            if state
+            state
                 .try_apply_with_priority(
                     capacity,
                     ClaimOwner::Proposal(proposal.key()),
                     proposal.claims(),
                     funding_priority,
                 )
-                .is_err()
-            {
-                feasible = false;
-                break;
-            }
+                .ok()?;
         }
-        if !feasible {
-            return;
-        }
-        let rank = portfolio_rank(selected, &proposals, personality);
-        for &index in selected {
-            let candidate = &mut best_with_proposal[index];
-            if candidate
-                .as_ref()
-                .is_none_or(|current| rank.cmp(current).is_gt())
-            {
-                *candidate = Some(rank.clone());
-            }
-        }
-        if best
-            .as_ref()
-            .is_none_or(|(_, current, _)| rank.cmp(current).is_gt())
+        Some((
+            selected.to_vec(),
+            portfolio_rank(selected, &proposals, personality),
+            state,
+        ))
+    };
+
+    let mut selected = required_index.into_iter().collect::<Vec<_>>();
+    let mut best = evaluate(&selected);
+    let mut ordered = (0..proposals.len()).collect::<Vec<_>>();
+    ordered.sort_by_cached_key(|&index| Reverse(portfolio_rank(&[index], &proposals, personality)));
+    for index in ordered {
+        if selected
+            .iter()
+            .any(|&selected| proposals[selected].key().domain() == proposals[index].key().domain())
         {
-            best = Some((selected.to_vec(), rank, state));
+            continue;
         }
-    });
+        let mut candidate = selected.clone();
+        candidate.push(index);
+        candidate.sort_unstable();
+        if let Some(feasible) = evaluate(&candidate) {
+            selected = candidate;
+            best = Some(feasible);
+        }
+    }
+    let mut search = portfolio_search::Continuation::new(&proposals, personality, required_index);
+    let mut budget = super::planning::WorkBudget::new(64);
+    while let super::planning::Progress::Ready(candidate) =
+        search.advance(&proposals, personality, &mut budget)
+    {
+        if let Some(feasible) = evaluate(&candidate) {
+            if best.as_ref().is_none_or(|(_, rank, _)| feasible.1 > *rank) {
+                best = Some(feasible);
+            }
+            break;
+        }
+    }
 
     let Some((selected_indices, selected_rank, selected_state)) = best else {
         return Ok(None);
@@ -1817,11 +1830,8 @@ fn allocate_with_required<Payload>(
                 ProposalDisposition::Accepted
             } else if let Some(conflict) = &individual_conflicts[index] {
                 ProposalDisposition::Rejected(ProposalRejection::Infeasible(conflict.clone()))
-            } else if selected_indices
-                .iter()
-                .any(|&selected| proposals[selected].key().domain() == proposal.key().domain())
-            {
-                let retained = selected_indices
+            } else {
+                let alternative = selected_indices
                     .iter()
                     .copied()
                     .filter(|&selected| {
@@ -1829,82 +1839,41 @@ fn allocate_with_required<Payload>(
                     })
                     .chain(core::iter::once(index))
                     .collect::<Vec<_>>();
-                if let Some(conflict) =
-                    portfolio_layout_conflict(&retained, &proposals, incompatible_layouts)
-                {
-                    ProposalDisposition::Rejected(ProposalRejection::ConflictsWithSelected {
-                        selected: selected_keys.clone(),
-                        conflict,
-                    })
+                if let Some(conflict) = portfolio_conflict(
+                    capacity,
+                    &mandatory,
+                    &alternative,
+                    &proposals,
+                    personality,
+                    incompatible_layouts,
+                ) {
+                    let individual_rank = portfolio_rank(&[index], &proposals, personality);
+                    if selected_indices.iter().any(|&selected| {
+                        proposals[selected].key().domain() == proposal.key().domain()
+                    }) && !matches!(conflict, AllocationConflict::IncompatibleLayout { .. })
+                        && required_index.is_none_or(|required| required == index)
+                        && selected_rank > individual_rank
+                    {
+                        ProposalDisposition::Rejected(ProposalRejection::Outranked {
+                            selected: selected_keys.clone(),
+                            basis: outranking_basis(&selected_rank, &individual_rank).unwrap(),
+                        })
+                    } else {
+                        ProposalDisposition::Rejected(ProposalRejection::ConflictsWithSelected {
+                            selected: selected_keys.clone(),
+                            conflict,
+                        })
+                    }
                 } else {
-                    match best_with_proposal[index].as_ref() {
-                        Some(rejected_rank) => {
-                            let basis = outranking_basis(&selected_rank, rejected_rank)
-                                .expect("an unselected domain alternative has a weaker rank");
+                    let alternative_rank = portfolio_rank(&alternative, &proposals, personality);
+                    match outranking_basis(&selected_rank, &alternative_rank) {
+                        Some(basis) if selected_rank > alternative_rank => {
                             ProposalDisposition::Rejected(ProposalRejection::Outranked {
                                 selected: selected_keys.clone(),
                                 basis,
                             })
                         }
-                        None => {
-                            let conflict = portfolio_conflict(
-                                capacity,
-                                &mandatory,
-                                &retained,
-                                &proposals,
-                                personality,
-                                incompatible_layouts,
-                            )
-                            .expect("a constrained alternative without a portfolio must conflict");
-                            ProposalDisposition::Rejected(
-                                ProposalRejection::ConflictsWithSelected {
-                                    selected: selected_keys.clone(),
-                                    conflict,
-                                },
-                            )
-                        }
-                    }
-                }
-            } else {
-                let mut combined = selected_state.clone();
-                let mut combined_indices = selected_indices.clone();
-                combined_indices.push(index);
-                combined.voluntary_scrap_guard =
-                    portfolio_voluntary_scrap_guard(&combined_indices, &proposals);
-                let combined_result =
-                    portfolio_layout_conflict(&combined_indices, &proposals, incompatible_layouts)
-                        .map_or_else(
-                            || {
-                                combined.try_apply_with_priority(
-                                    capacity,
-                                    ClaimOwner::Proposal(proposal.key()),
-                                    proposal.claims(),
-                                    proposal_funding_priority(
-                                        proposal,
-                                        u8::MAX,
-                                        capacity.resources.observed_at(),
-                                    ),
-                                )
-                            },
-                            Err,
-                        );
-                match combined_result {
-                    Ok(_) => {
-                        let rejected_rank = best_with_proposal[index]
-                            .as_ref()
-                            .expect("an individually feasible proposal has a portfolio");
-                        let basis = outranking_basis(&selected_rank, rejected_rank)
-                            .expect("an outranked proposal has a strictly weaker rank");
-                        ProposalDisposition::Rejected(ProposalRejection::Outranked {
-                            selected: selected_keys.clone(),
-                            basis,
-                        })
-                    }
-                    Err(conflict) => {
-                        ProposalDisposition::Rejected(ProposalRejection::ConflictsWithSelected {
-                            selected: selected_keys.clone(),
-                            conflict,
-                        })
+                        _ => ProposalDisposition::Rejected(ProposalRejection::NotRefined),
                     }
                 }
             };
@@ -2042,6 +2011,7 @@ fn schedule_satisfies_voluntary_scrap_guard(
 /// Visits every exact portfolio while structurally enforcing zero or one
 /// proposal from each domain. Streaming the Cartesian choices avoids both a
 /// numeric proposal limit and a bit-mask width limit.
+#[cfg(test)]
 fn for_each_portfolio<Payload>(
     proposals: &[InvestmentProposal<Payload>],
     mut visit: impl FnMut(&[usize]),
@@ -4173,6 +4143,55 @@ mod tests {
         )
     }
 
+    #[test]
+    fn sliced_best_first_portfolios_match_the_exhaustive_ranked_oracle() {
+        use crate::bot::planning::{Progress, WorkBudget};
+        for count in 1..=8 {
+            let mut proposals = (0..count)
+                .map(|index| foundry(index, (index as u32 + 1) * 10, vec![], ordinary_case()))
+                .chain([offense(50, vec![], ordinary_case())])
+                .collect::<Vec<_>>();
+            proposals.sort_by_key(InvestmentProposal::key);
+            let personality = AllocationPersonality::default();
+            for required in [None, Some(0)] {
+                let mut expected = Vec::new();
+                for_each_portfolio(&proposals, |selected| {
+                    if required.is_none_or(|required| selected.contains(&required)) {
+                        expected.push(selected.to_vec());
+                    }
+                });
+                expected.sort_by_cached_key(|selected| {
+                    Reverse(portfolio_rank(selected, &proposals, personality))
+                });
+                let mut search =
+                    portfolio_search::Continuation::new(&proposals, personality, required);
+                let mut actual = Vec::new();
+                loop {
+                    let checkpoint = search.clone();
+                    let mut empty = WorkBudget::new(0);
+                    if search.advance(&proposals, personality, &mut empty)
+                        == Progress::ProvenInfeasible
+                    {
+                        break;
+                    }
+                    assert_eq!(
+                        search, checkpoint,
+                        "deferral must preserve the next candidate"
+                    );
+                    let mut slice = WorkBudget::new(1);
+                    let Progress::Ready(candidate) =
+                        search.advance(&proposals, personality, &mut slice)
+                    else {
+                        panic!("one charged refinement exposes one candidate");
+                    };
+                    assert_eq!(slice.spent(), 1);
+                    actual.push(candidate);
+                }
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
     fn deferrable_foundry(
         x: i32,
         amount: u32,
@@ -4848,6 +4867,7 @@ mod tests {
                     ..
                 }) => Some(conflict),
                 ProposalDisposition::Accepted
+                | ProposalDisposition::Rejected(ProposalRejection::NotRefined)
                 | ProposalDisposition::Rejected(ProposalRejection::Infeasible(_))
                 | ProposalDisposition::Rejected(ProposalRejection::Outranked { .. }) => None,
             }),

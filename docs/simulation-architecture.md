@@ -749,14 +749,16 @@ raid, and admitted island-air planners into explicit legacy claims. The current
 proposal set contains at most one safe, command-legal Foundry expansion, one
 connected offense package, a best-first group of mutually exclusive exact
 defensive alternatives, mutually exclusive economic actions, and a best-first
-group of mutually exclusive standing-force alternatives. The allocator
-exhaustively evaluates every zero-or-one choice from each domain against current
-and deadline-scoped forecast scrap, builders, sites, units, producer FIFO
-timing, and incompatible construction footprints. This Cartesian search has
-neither a proposal-count cutoff nor a machine-word mask limit. Named urgency,
-confidence, value, time-to-impact, and safety bands decide first; personality
-resolves only a genuine semantic tie and never removes a domain or defensive
-role from consideration.
+group of mutually exclusive standing-force alternatives. The allocator seeds a
+feasible portfolio in global proposal-rank order, then examines up to 64
+best-first zero-or-one domain combinations. Every accepted combination must fit
+current and deadline-scoped forecast scrap, builders, sites, units, producer
+FIFO timing, and incompatible construction footprints. Exhausted refinement
+retains the feasible seed; an unexamined better alternative is traced as
+`NotRefined`, not as an infeasibility proof. Named urgency, confidence, value,
+time-to-impact, and safety bands decide first; personality resolves only a
+genuine semantic tie and never removes a domain or defensive role from
+consideration.
 
 Fixed jobs on one factory follow their retained enqueue and execution times;
 funding priority does not reorder that lane. Production preflight rejects
