@@ -86,8 +86,8 @@ pub enum Command {
         kind: UnitKind,
     },
     /// Start a construction site and send harvesters to stand it up.
-    /// The full price is paid on placement; cancelling salvages
-    /// `cost x hp / max_hp`.
+    /// The full price is paid on placement. Cancellation refunds it in full
+    /// before work starts, then returns `cost x hp / max_hp` afterward.
     Build {
         /// Candidate builders. Every accepted harvester joins the crew,
         /// fresh placement and resume alike (builders stack); on a
@@ -104,19 +104,13 @@ pub enum Command {
         /// defers only the walk-and-work leg.
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
-        /// Claim on arrival instead of now: validate against the
-        /// issuer's *knowledge* ([`crate::State::place_intent_refusal`])
-        /// and hand the crew [`crate::state::Order::Found`] — nothing
-        /// placed, nothing charged, no route demanded until the founder
-        /// stands beside ground it can see (an honest stall later, like
-        /// a Move into fog). The shell arms this for explored-but-unseen
-        /// ground when any footprint tile is outside current sight.
-        /// Command sources that do not support deferred placement leave
-        /// this false.
+        /// Pay for a provisional scaffold using only the issuer's knowledge.
+        /// It occupies no ground until full footprint visibility confirms the
+        /// site. Discovery of a blocker cancels it with a full refund.
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         defer: bool,
     },
-    /// Scrap an own unfinished site for a partial refund.
+    /// Scrap an own unfinished site: full refund before work, health-scaled afterward.
     Cancel {
         /// The site to abandon.
         building: BuildingId,
@@ -212,11 +206,8 @@ pub enum Command {
         /// Owned completed armed buildings.
         buildings: Vec<BuildingId>,
     },
-    /// Cancel one logical deferred construction site. Every own Harvester
-    /// carrying that exact [`crate::state::Order::Found`] promise drops it,
-    /// because a multi-builder command gives the whole crew one copy of the
-    /// same unpaid intent. Paid sites use [`Command::Cancel`] and its refund
-    /// rules instead.
+    /// Cancel an unstarted construction site by kind and anchor, clearing
+    /// every crew commitment and refunding the full price once.
     CancelFound {
         /// The promised structure.
         kind: crate::stats::BuildingKind,

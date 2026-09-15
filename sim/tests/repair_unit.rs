@@ -745,15 +745,25 @@ fn a_patient_evicted_from_freshly_claimed_ground_rides_no_heal() {
 }
 
 #[test]
-fn a_patient_committing_its_deferred_found_rides_no_heal() {
+fn a_stationary_builder_at_a_revealed_scaffold_is_weldable() {
     for tick in [0, 1] {
         let scenario = arena(vec![
             unit(0, UnitKind::Harvester, 4, 5), // welder
             unit(0, UnitKind::Harvester, 5, 5), // arrived founder and patient
         ]);
-        let state = scenario.build().unwrap();
+        let mut state = scenario.build().unwrap();
         let (welder, patient) = (state.units()[0].id, state.units()[1].id);
         let anchor = TilePos::new(6, 5);
+        state.tick(&[cmd(
+            0,
+            Command::Build {
+                units: vec![patient],
+                kind: BuildingKind::Turret,
+                anchor,
+                queue: false,
+                defer: true,
+            },
+        )]);
         let mut json = serde_json::to_value(state).unwrap();
         json["tick"] = serde_json::json!(tick);
         json["units"][0]["order"] = serde_json::json!({"order": "repair_unit", "unit": patient});
@@ -777,10 +787,10 @@ fn a_patient_committing_its_deferred_found_rides_no_heal() {
         );
         assert_eq!(
             state.unit(patient).unwrap().hp,
-            before_hp,
-            "the founder became newly weldable before its claim resolved at tick {tick}"
+            before_hp + 1,
+            "the revealed scaffold leaves its adjacent builder stationary at tick {tick}"
         );
-        assert!(!report.events.iter().any(|event| matches!(
+        assert!(report.events.iter().any(|event| matches!(
             event,
             Event::UnitRepaired {
                 unit,

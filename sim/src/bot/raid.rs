@@ -739,6 +739,7 @@ mod tests {
         built: bool,
     ) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: PlayerId(player),
             kind,

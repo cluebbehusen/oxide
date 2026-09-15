@@ -2190,6 +2190,7 @@ mod tests {
         anchor: TilePos,
     ) -> crate::bot::observation::BuildingObs {
         crate::bot::observation::BuildingObs {
+            provisional: false,
             id: crate::ids::BuildingId(id),
             player: crate::ids::PlayerId(player),
             kind,

@@ -176,7 +176,7 @@ fn discovering_a_mine_cancels_travelling_and_queued_crews_with_a_full_refund() {
                 break;
             }
         }
-        assert_eq!(refunded, if defer { 0 } else { 40 });
+        assert_eq!(refunded, 40);
         assert_eq!(state.player(PlayerId(0)).scrap, bank);
         assert_eq!(
             state.unit(worker).unwrap().order,
@@ -377,7 +377,7 @@ fn manual_cancellation_of_a_hidden_mine_overlap_preserves_the_mine() {
         report
             .events
             .iter()
-            .any(|e| matches!(e, Event::BuildCancelled { refund: 8, .. }))
+            .any(|e| matches!(e, Event::BuildCancelled { refund: 40, .. }))
     );
     assert!(state.passable(SITE));
     assert_eq!(state.buildings_at(SITE).count(), 1);
@@ -540,7 +540,7 @@ fn discovery_removes_every_queued_crew_commitment_without_reclaiming_the_site() 
                 assert!(!matches!(e, Event::ChargeDetonated { .. }));
             }
         }
-        assert_eq!(refunds, if defer { 0 } else { 40 });
+        assert_eq!(refunds, 40);
         for (id, order) in crew.into_iter().zip(original_orders) {
             let u = state.unit(id).unwrap();
             assert!(u.queue.is_empty());
@@ -627,7 +627,26 @@ fn artillery_hits_the_scaffold_above_a_concealed_mine() {
         let mut state = scenario.build().unwrap();
         let worker = state.units()[0].id;
         let gun = state.units()[2].id;
-        build(&mut state, false);
+        state.tick(&[
+            cmd(
+                0,
+                Command::Move {
+                    units: vec![worker],
+                    goal: TilePos::new(3, 21),
+                    queue: false,
+                },
+            ),
+            cmd(
+                0,
+                Command::Build {
+                    units: vec![worker],
+                    kind: BuildingKind::Barricade,
+                    anchor: SITE,
+                    queue: true,
+                    defer: false,
+                },
+            ),
+        ]);
         let site = state
             .buildings()
             .iter()
@@ -641,22 +660,14 @@ fn artillery_hits_the_scaffold_above_a_concealed_mine() {
                 .filter(|b| b.kind.is_stealthy())
                 .all(|b| !state.building_apparent(PlayerId(2), b))
         );
-        let report = state.tick(&[
-            cmd(
-                0,
-                Command::Stop {
-                    units: vec![worker],
-                },
-            ),
-            cmd(
-                2,
-                Command::Attack {
-                    units: vec![gun],
-                    target: oxide_sim::Target::Building(site).into(),
-                    queue: false,
-                },
-            ),
-        ]);
+        let report = state.tick(&[cmd(
+            2,
+            Command::Attack {
+                units: vec![gun],
+                target: oxide_sim::Target::Building(site).into(),
+                queue: false,
+            },
+        )]);
         assert!(
             !report
                 .events

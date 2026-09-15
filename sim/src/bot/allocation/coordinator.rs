@@ -1487,6 +1487,7 @@ mod tests {
         obs.tick = 120;
         obs.scrap = 100;
         obs.my_buildings.push(crate::bot::observation::BuildingObs {
+            provisional: false,
             id: BuildingId(9),
             player: PlayerId(0),
             kind: BuildingKind::Foundry,
@@ -1547,6 +1548,7 @@ mod tests {
             .cost
             .saturating_add(UnitKind::Kestrel.stats().cost);
         obs.my_buildings.push(crate::bot::observation::BuildingObs {
+            provisional: false,
             id: BuildingId(9),
             player: PlayerId(0),
             kind: BuildingKind::Airworks,
@@ -1671,6 +1673,7 @@ mod tests {
         obs.my_units = vec![harvester(3)];
         obs.my_units[0].founding = Some((BuildingKind::Foundry, TilePos::new(8, 9)));
         obs.my_buildings.push(crate::bot::observation::BuildingObs {
+            provisional: false,
             id: BuildingId(20),
             player: PlayerId(0),
             kind: BuildingKind::Reclaimer,
@@ -1719,6 +1722,7 @@ mod tests {
         obs.my_units = vec![harvester(3)];
         obs.my_units[0].founding = Some((BuildingKind::Foundry, TilePos::new(8, 9)));
         obs.my_buildings.push(crate::bot::observation::BuildingObs {
+            provisional: false,
             id: BuildingId(9),
             player: PlayerId(0),
             kind: BuildingKind::Foundry,
@@ -1730,6 +1734,7 @@ mod tests {
         });
         for id in 20..70 {
             obs.my_buildings.push(crate::bot::observation::BuildingObs {
+                provisional: false,
                 id: BuildingId(id),
                 player: PlayerId(0),
                 kind: BuildingKind::Reclaimer,

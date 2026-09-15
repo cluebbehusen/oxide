@@ -364,6 +364,49 @@ mod tests {
     }
 
     #[test]
+    fn provisional_foundry_does_not_keep_production_or_the_home_target_alive() {
+        let mut game = factories(500);
+        let home = game.home_foundry().unwrap().clone();
+        let worker = game
+            .state
+            .units()
+            .iter()
+            .find(|u| u.player == game.human && u.kind.stats().harvest.is_some())
+            .unwrap()
+            .id;
+        let mut snapshot = serde_json::to_value(&*game.state).unwrap();
+        snapshot["buildings"].as_array_mut().unwrap().retain(|b| {
+            b["player"] != serde_json::json!(game.human) || b["id"] == serde_json::json!(home.id)
+        });
+        let site = snapshot["buildings"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|b| b["id"] == serde_json::json!(home.id))
+            .unwrap();
+        site["provisional"] = true.into();
+        site["built"] = false.into();
+        site["hp"] = (home.stats().max_hp / 5).into();
+        let unit = snapshot["units"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|u| u["id"] == serde_json::json!(worker))
+            .unwrap();
+        unit["order"] = serde_json::to_value(oxide_sim::Order::Found {
+            kind: home.kind,
+            anchor: home.anchor,
+        })
+        .unwrap();
+        *game.state = serde_json::from_value(snapshot).unwrap();
+        game.state.validate_invariants().unwrap();
+        assert!(game.state.result().is_none());
+        assert!(!game.state.player(game.human).resigned);
+        assert!(game.home_foundry().is_none());
+        assert!(!Production::inspect(&game).accepts);
+    }
+
+    #[test]
     fn grouped_production_spends_once_per_factory_in_id_order_and_projects_pending_commands() {
         let mut game = factories(150);
         let ids = game.selection.buildings.clone();

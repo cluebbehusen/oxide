@@ -1552,6 +1552,7 @@ mod tests {
 
     fn own_foundry(id: u32, anchor: TilePos) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: PlayerId(0),
             kind: BuildingKind::Foundry,
@@ -1565,6 +1566,7 @@ mod tests {
 
     fn defense(id: u32, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: PlayerId(1),
             kind,
@@ -2114,6 +2116,7 @@ mod tests {
             ArmyMission {
                 purpose: ArmyPurpose::Pressure(
                     crate::bot::executive::ArmyObjective::from_building(&BuildingObs {
+                        provisional: false,
                         id: BuildingId(u32::MAX),
                         seen: false,
                         ..objective.clone()
@@ -2854,6 +2857,7 @@ mod tests {
         obs.my_buildings = vec![
             own_foundry(10, home),
             BuildingObs {
+                provisional: false,
                 id: BuildingId(11),
                 player: PlayerId(0),
                 kind: BuildingKind::Airworks,
@@ -4734,6 +4738,7 @@ mod tests {
         obs.visible.fill(false);
         obs.enemy_units.clear();
         obs.enemy_buildings = vec![BuildingObs {
+            provisional: false,
             id: BuildingId(u32::MAX),
             player: PlayerId(1),
             kind: BuildingKind::Foundry,
@@ -4953,6 +4958,7 @@ mod tests {
         hidden.visible.fill(false);
         hidden.enemy_units.clear();
         hidden.enemy_buildings = vec![BuildingObs {
+            provisional: false,
             id: BuildingId(u32::MAX),
             player: PlayerId(1),
             kind: BuildingKind::Foundry,

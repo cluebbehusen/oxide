@@ -96,7 +96,7 @@ pub enum CardAction {
     CancelProduction(UnitKind),
     /// Cancel an unfinished site shown by a Harvester's Build order.
     CancelSite(BuildingId),
-    /// Cancel one unpaid logical site across its assigned Harvester crew.
+    /// Cancel one unstarted paid site across its assigned Harvester crew.
     CancelFound(BuildingKind, chassis::grid::TilePos),
     /// Clear the selected producers' rally points.
     ClearRally,
@@ -602,7 +602,7 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
         Order::Found { .. } => (
             VerbIcon::Build,
             "Found",
-            "Moving to the build site. Scrap is charged when construction begins.",
+            "Moving to a paid scaffold; its ground will be checked when visible.",
         ),
         Order::RepairUnit { .. } => (
             VerbIcon::Repair,
@@ -733,8 +733,16 @@ pub fn build_for_palette(
 
 pub(crate) fn build_for_input(game: &Game, input: &crate::input::InputState) -> Option<Panel> {
     let mut panel = build_for_palette(game, &input.bindings, input.construction_open())?;
+    let construction_scrap = input
+        .construction_open()
+        .then(|| crate::input::available_construction_scrap(game, input));
     for card in &mut panel.cards {
         if let CardAction::ArmBuild(kind) = card.action {
+            if game.state.prerequisites_met(game.human, kind) {
+                let cost = kind.base_stats().construction.map_or(0, |stats| stats.cost);
+                card.enabled = construction_scrap.unwrap_or(0) >= cost;
+                card.why = (!card.enabled).then(|| format!("needs {cost} scrap"));
+            }
             let category = crate::action::building_category(kind);
             let key = input.bindings.labels(Action::Build(kind));
             card.hotkey = if input.build_category == Some(category) {
@@ -911,7 +919,14 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 action: CardAction::Dispatch(Action::StopOrScrap),
                 enabled: true,
                 why: None,
-                desc: vec!["Abandon the site for a partial refund.".into()],
+                desc: vec![
+                    if building.progress == 0 {
+                        "Abandon the unstarted site for a full refund."
+                    } else {
+                        "Abandon the site for a partial refund."
+                    }
+                    .into(),
+                ],
                 progress: None,
             });
             return Some(panel);

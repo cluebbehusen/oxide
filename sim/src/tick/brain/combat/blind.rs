@@ -108,6 +108,7 @@ fn buffer_blind(
             .filter(|b| {
                 weapon.targets.ground
                     && b.hp > 0
+                    && !b.provisional
                     && state.hostile(player, b.player)
                     && b.closest_point_to(aim).dist_sq(aim) <= Fx::lit("0.0001")
             })
@@ -147,6 +148,7 @@ fn buffer_blind(
         }
         for b in state.buildings().iter().filter(|b| {
             b.hp > 0
+                && !b.provisional
                 && state.hostile(player, b.player)
                 && weapon.targets.ground
                 && b.kind.is_stealthy()

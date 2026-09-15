@@ -483,7 +483,7 @@ impl GroundSalvageDanger {
         for building in state
             .buildings
             .iter()
-            .filter(|building| !building.kind.is_stealthy())
+            .filter(|building| !building.kind.is_stealthy() && !building.provisional)
         {
             if state.player(building.player).team == viewer_team {
                 stamp_blocked_rect(
@@ -1314,11 +1314,12 @@ mod danger_tests {
             if vision.visible(tile) {
                 return state
                     .buildings_at(tile)
-                    .any(|building| !building.kind.is_stealthy());
+                    .any(|building| !building.kind.is_stealthy() && !building.provisional);
             }
             let team = state.player(viewer).team;
             state.buildings.iter().any(|building| {
                 !building.kind.is_stealthy()
+                    && !building.provisional
                     && state.player(building.player).team == team
                     && building.contains(tile)
             }) || vision

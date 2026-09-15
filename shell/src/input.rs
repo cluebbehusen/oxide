@@ -215,15 +215,31 @@ fn replaced_build_units(game: &Game, queue: bool) -> &[UnitId] {
     if queue { &[] } else { &game.selection.units }
 }
 
+pub(crate) fn available_construction_scrap(game: &Game, input: &InputState) -> u32 {
+    let replaced = replaced_build_units(game, input.resolver.shift_held());
+    if game.pending.is_empty() {
+        return game
+            .state
+            .player(game.human)
+            .scrap
+            .saturating_add(game.state.construction_refund(game.human, replaced));
+    }
+    game.state.inspect_command_phase(&game.pending, |view| {
+        view.scrap(game.human)
+            .unwrap_or(0)
+            .saturating_add(view.construction_refund(game.human, replaced))
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PendingBuildFunds {
     scrap: u32,
-    reserved: u32,
+    refund: u32,
 }
 
 impl PendingBuildFunds {
     fn available(self) -> u32 {
-        self.scrap.saturating_sub(self.reserved)
+        self.scrap.saturating_add(self.refund)
     }
 }
 
@@ -235,9 +251,8 @@ struct PendingBuildProjection {
 
 /// Projects the exact command phase once for every placement surface:
 /// ground, bank, and the founder's program all read the same accepted batch.
-/// Future prices are held only for deferred claims still surviving after
-/// replacement; immediate sites and other paid commands already moved the
-/// projected bank.
+/// Every accepted site is already paid. Replacement can spend the full refund
+/// from unstarted sites whose last worker commitment it removes.
 fn pending_build_projection(
     game: &Game,
     kind: oxide_sim::BuildingKind,
@@ -267,24 +282,7 @@ fn pending_build_projection_for(
         } else {
             Some(oxide_sim::PlaceRefusal::NotConstructible)
         };
-        let mut claims = Vec::new();
-        for unit in state.units().iter().filter(|unit| {
-            unit.player == game.human
-                && !(unit.kind.stats().harvest.is_some() && replaced.contains(&unit.id))
-        }) {
-            for order in std::iter::once(&unit.order).chain(unit.queue.iter()) {
-                if let oxide_sim::Order::Found { kind, anchor } = order
-                    && !state.has_own_unfinished_site(game.human, *kind, *anchor)
-                    && !claims.contains(&(*kind, *anchor))
-                {
-                    claims.push((*kind, *anchor));
-                }
-            }
-        }
-        let reserved = claims
-            .iter()
-            .filter_map(|(kind, _)| kind.base_stats().construction.map(|stats| stats.cost))
-            .fold(0_u32, u32::saturating_add);
+        let refund = state.construction_refund(game.human, replaced);
         let crew: Vec<_> = state
             .units()
             .iter()
@@ -310,7 +308,7 @@ fn pending_build_projection_for(
                 scrap: state
                     .scrap(game.human)
                     .expect("the live human seat remains in the projection"),
-                reserved,
+                refund,
             },
             queue_has_room,
         }

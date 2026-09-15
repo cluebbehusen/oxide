@@ -724,6 +724,7 @@ mod tests {
 
     fn building(kind: BuildingKind, built: bool) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(1),
             player: PlayerId(0),
             kind,

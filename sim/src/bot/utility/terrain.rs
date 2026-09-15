@@ -963,6 +963,7 @@ mod tests {
     fn add_building(obs: &mut Observation, kind: BuildingKind, anchor: TilePos) {
         let id = BuildingId(obs.my_buildings.len() as u32);
         obs.my_buildings.push(BuildingObs {
+            provisional: false,
             id,
             player: PlayerId(0),
             kind,
@@ -1496,6 +1497,7 @@ mod tests {
         obs.known_rock.push(TilePos::new(1, 1));
         obs.known_scrap.push((TilePos::new(2, 2), 10));
         obs.enemy_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(100),
             player: PlayerId(1),
             kind: BuildingKind::Turret,
@@ -1653,6 +1655,7 @@ mod tests {
 
         let mut with_building = obs.clone();
         with_building.enemy_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(100),
             player: PlayerId(1),
             kind: BuildingKind::Turret,

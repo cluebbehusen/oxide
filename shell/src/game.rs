@@ -973,10 +973,9 @@ impl Game {
 
     /// The human's first Foundry (hotkey target, camera home).
     pub fn home_foundry(&self) -> Option<&Building> {
-        self.state
-            .buildings()
-            .iter()
-            .find(|b| b.player == self.human && b.kind == oxide_sim::BuildingKind::Foundry)
+        self.state.buildings().iter().find(|b| {
+            b.player == self.human && !b.provisional && b.kind == oxide_sim::BuildingKind::Foundry
+        })
     }
 
     /// Current state fingerprint, protocol-formatted.

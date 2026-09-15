@@ -1149,6 +1149,7 @@ fn infrastructure_benefit(
 ) -> u64 {
     let obs = context.obs;
     let candidate = BuildingObs {
+        provisional: false,
         id: BuildingId(u32::MAX),
         player: obs.me,
         kind,
@@ -1359,6 +1360,7 @@ mod tests {
 
     fn building(id: u32, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: PlayerId(0),
             kind,

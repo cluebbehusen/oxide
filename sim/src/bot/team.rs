@@ -949,6 +949,7 @@ mod tests {
 
     fn building(id: u32, player: PlayerId, anchor: TilePos) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player,
             kind: BuildingKind::Foundry,

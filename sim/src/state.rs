@@ -159,12 +159,9 @@ pub enum Order {
         /// The building coming down.
         building: crate::ids::BuildingId,
     },
-    /// Walk to remembered ground and claim it on arrival: the deferred
-    /// half of a fog-legal build ([`crate::Command::Build`] with
-    /// `defer`). Nothing is placed or paid until the founder stands
-    /// beside the footprint and re-proves the *strict* placement
-    /// predicate on ground it now sees — taken ground stalls the
-    /// program instead of leaking what fog hid.
+    /// Approach the paid provisional scaffold at this kind and anchor.
+    /// Visibility activates its physical footprint and converts every crew
+    /// commitment to `Build` without another payment.
     Found {
         /// What to construct on arrival.
         kind: crate::stats::BuildingKind,
@@ -463,13 +460,17 @@ pub struct Building {
     /// not erase it or suppress ordinary fallback acquisition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<crate::AttackTarget>,
-    /// Whether construction has finished. Sites (`false`) block ground and
+    /// Whether construction has finished. Verified sites block ground and
     /// take damage but don't see, fight, or produce.
     #[serde(
         default = "default_true",
         skip_serializing_if = "core::clone::Clone::clone"
     )]
     pub built: bool,
+    /// Paid blueprint awaiting full footprint visibility. It has no physical
+    /// occupancy and cannot take damage or receive construction work.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub provisional: bool,
     /// Position on the kind's upgrade ladder (zero = base). An accepted
     /// [`crate::Command::UpgradeBuilding`] advances it immediately while
     /// setting `built` false; every stats read follows the committed tier
@@ -1163,6 +1164,26 @@ impl State {
                 return Err(E::TierBeyondLadder(b.id));
             }
             let stats = b.stats();
+            if b.provisional
+                && (b.built
+                    || b.tier != 0
+                    || b.progress != 0
+                    || b.hp != stats.max_hp / 5
+                    || stats.construction.is_none()
+                    || !b.queue.is_empty()
+                    || b.rally.is_some()
+                    || b.focus.is_some()
+                    || b.cooldown != 0
+                    || b.salvage_drained != 0
+                    || b.salvage_credited != 0
+                    || b.salvaged
+                    || !self
+                        .units
+                        .iter()
+                        .any(|unit| crate::tick::construction::committed(unit, b)))
+            {
+                return Err(E::InvalidProvisionalSite(b.id));
+            }
             if b.hp == 0 || b.hp > stats.max_hp {
                 return Err(E::BuildingHpOutOfRange(b.id));
             }
@@ -1581,7 +1602,7 @@ impl State {
     /// Stealthy kinds never mark: a buried charge blocks nothing.
     pub(crate) fn stamp_building_occupancy(&mut self, building_index: usize, present: bool) {
         let b = &self.buildings[building_index];
-        if b.kind.is_stealthy() {
+        if b.kind.is_stealthy() || b.provisional {
             return;
         }
         let (anchor, kind) = (b.anchor, b.kind);
@@ -1645,6 +1666,9 @@ impl State {
     /// Every fog-honest surface — ghosts, targeting, views, rendering —
     /// must consult this before showing a hostile building.
     pub fn building_apparent(&self, viewer: PlayerId, building: &Building) -> bool {
+        if building.provisional {
+            return !self.hostile(viewer, building.player);
+        }
         if !building.kind.is_stealthy() || !building.built || !self.hostile(viewer, building.player)
         {
             return true;
@@ -1744,6 +1768,7 @@ impl State {
             rally: None,
             focus: None,
             built: true,
+            provisional: false,
             tier: 0,
             cooldown: 0,
             salvage_drained: 0,
@@ -2161,6 +2186,9 @@ pub enum StateIntegrityError {
     /// Buildings are not strictly sorted by id.
     #[error("buildings not strictly sorted by id")]
     UnsortedBuildings,
+    /// A provisional scaffold carries physical building state.
+    #[error("building {0} has invalid provisional state")]
+    InvalidProvisionalSite(BuildingId),
     /// The unit id counter sits behind a live unit.
     #[error("unit id counter behind a live unit")]
     StaleUnitCounter,

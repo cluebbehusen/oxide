@@ -367,6 +367,7 @@ mod tests {
 
     fn building(id: u32, player: u8, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: PlayerId(player),
             kind,

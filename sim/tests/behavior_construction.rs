@@ -1309,8 +1309,8 @@ fn a_queued_build_claim_protects_the_site_until_its_worker_arrives() {
 }
 
 #[test]
-fn replacing_the_only_builders_program_releases_a_queued_site_to_decay() {
-    use oxide_sim::stats::{BuildingKind, SITE_DECAY_PERIOD};
+fn replacing_the_only_builders_program_refunds_a_queued_site() {
+    use oxide_sim::stats::BuildingKind;
 
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 3, 2)])
         .build()
@@ -1342,7 +1342,14 @@ fn replacing_the_only_builders_program_releases_a_queued_site_to_decay() {
         .find(|building| building.kind == BuildingKind::FlakTurret)
         .expect("queued site exists")
         .id;
-    let initial_hp = state.building(queued).unwrap().hp;
+    let bank = state.player(PlayerId(0)).scrap;
+    let cost = state
+        .building(queued)
+        .unwrap()
+        .stats()
+        .construction
+        .unwrap()
+        .cost;
 
     state.tick(&[cmd(
         0,
@@ -1362,14 +1369,8 @@ fn replacing_the_only_builders_program_releases_a_queued_site_to_decay() {
         "replacement semantics clear the queued claim"
     );
 
-    for _ in 0..SITE_DECAY_PERIOD * 2 {
-        state.tick(&[]);
-    }
-
-    assert!(
-        state.building(queued).unwrap().hp < initial_hp,
-        "once its last build claim disappears, an unattended site decays normally"
-    );
+    assert!(state.building(queued).is_none());
+    assert!(state.player(PlayerId(0)).scrap >= bank + cost);
 }
 
 #[test]
@@ -1968,10 +1969,6 @@ fn a_fresh_placement_commits_the_whole_crew() {
     );
 }
 
-/// The deferred mode end-to-end: a claim on remembered ground charges
-/// nothing and places nothing at accept, hands the founder
-/// [`Order::Found`], and founds — site, payment, Build order — only
-/// when the founder stands beside ground it can see again.
 /// Foundry drip credits a single-Foundry seat has earned by `state`'s
 /// current tick — exact-bank assertions add this so passive income and
 /// spend accounting stay separately verifiable.
@@ -2029,14 +2026,14 @@ fn a_deferred_build_founds_on_arrival() {
             defer: true,
         },
     )]);
-    assert_eq!(
-        state.player(PlayerId(0)).scrap,
-        scrap_before,
-        "nothing charged at accept"
-    );
+    let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
+    assert_eq!(state.player(PlayerId(0)).scrap, scrap_before - cost);
     assert!(
-        state.buildings().iter().all(|b| b.anchor != spot),
-        "nothing placed at accept"
+        state
+            .buildings()
+            .iter()
+            .any(|b| b.anchor == spot && b.provisional),
+        "acceptance creates a nonphysical paid scaffold"
     );
     assert_eq!(
         state.unit(builder).unwrap().order,
@@ -2047,7 +2044,9 @@ fn a_deferred_build_founds_on_arrival() {
     );
 
     run_until(&mut state, 600, |s, _| {
-        s.buildings().iter().any(|b| b.anchor == spot)
+        s.buildings()
+            .iter()
+            .any(|b| b.anchor == spot && !b.provisional)
     });
     let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
     assert_eq!(
@@ -2266,13 +2265,16 @@ fn cancelling_a_deferred_site_drops_the_whole_builder_crew() {
             .iter()
             .any(|event| matches!(event, Event::CommandRejected { .. }))
     );
-    assert!(crew.iter().all(|id| matches!(
-        state.unit(*id).unwrap().order,
-        Order::Found {
-            kind: BuildingKind::Turret,
-            anchor: found_anchor,
-        } if found_anchor == anchor
-    )));
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .unwrap()
+        .id;
+    assert!(
+        crew.iter()
+            .all(|id| state.unit(*id).unwrap().order == Order::Build { site })
+    );
 
     let cancelled = state.tick(&[cmd(
         0,
@@ -2345,6 +2347,18 @@ fn repeated_pending_cancellation_cannot_retarget_the_next_site() {
             },
         ),
     ]);
+    let first_id = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == first)
+        .unwrap()
+        .id;
+    let second_id = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == second)
+        .unwrap()
+        .id;
     assert_eq!(
         state
             .unit(builder)
@@ -2354,14 +2368,8 @@ fn repeated_pending_cancellation_cannot_retarget_the_next_site() {
             .copied()
             .collect::<Vec<_>>(),
         vec![
-            Order::Found {
-                kind: BuildingKind::Turret,
-                anchor: first,
-            },
-            Order::Found {
-                kind: BuildingKind::Turret,
-                anchor: second,
-            },
+            Order::Build { site: first_id },
+            Order::Build { site: second_id },
         ]
     );
 
@@ -2404,10 +2412,7 @@ fn repeated_pending_cancellation_cannot_retarget_the_next_site() {
             .iter()
             .copied()
             .collect::<Vec<_>>(),
-        vec![Order::Found {
-            kind: BuildingKind::Turret,
-            anchor: second,
-        }]
+        vec![Order::Build { site: second_id }]
     );
 }
 
@@ -2466,7 +2471,7 @@ fn cancelling_a_paid_queued_site_removes_only_its_build_leg() {
     )]);
     let second_site = state.building(second).unwrap();
     let stats = second_site.kind.base_stats();
-    let expected_refund = stats.construction.unwrap().cost * second_site.hp / stats.max_hp;
+    let expected_refund = stats.construction.unwrap().cost;
     let scrap_before = state.player(PlayerId(0)).scrap;
 
     state.tick(&[cmd(0, Command::Cancel { building: second })]);
@@ -2522,17 +2527,18 @@ fn reissuing_a_deferred_build_ignores_the_selected_founders_claim() {
             .iter()
             .any(|event| matches!(event, Event::CommandRejected { .. }))
     );
+    let bank = state.player(PlayerId(0)).scrap;
     let queued = state.tick(&[cmd(0, deferred(true))]);
-    assert!(queued.events.iter().any(|event| matches!(
-        event,
-        Event::CommandRejected {
-            reason: RejectReason::BadSite,
-            ..
-        }
-    )));
     assert!(
-        state.unit(builder).unwrap().queue.is_empty(),
-        "a queued reissue preserves the current claim instead of duplicating it"
+        !queued
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::CommandRejected { .. }))
+    );
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        bank,
+        "joining the paid site never charges twice"
     );
 
     let second = state.tick(&[cmd(0, deferred(false))]);
@@ -2692,12 +2698,10 @@ fn a_deferred_build_respects_an_unselected_founders_claim() {
     );
 }
 
-/// Ground honestly taken while the founder walked: the arrival re-check
-/// discovers the blocker with the founder's own eyes, drops the program
-/// with the fog-safe stall, and never charges a coin.
+/// A hidden blocker is discovered through sight, then the paid blueprint is
+/// cancelled and refunded without disturbing the enemy building.
 #[test]
-fn a_deferred_claim_on_taken_ground_stalls_without_spending() {
-    use oxide_sim::event::StallReason;
+fn a_deferred_claim_on_taken_ground_is_refunded_when_revealed() {
     use oxide_sim::stats::BuildingKind;
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 12, 2),
@@ -2749,21 +2753,24 @@ fn a_deferred_claim_on_taken_ground_stalls_without_spending() {
         "memory knows nothing of the rival's site, so the intent stands"
     );
     let events = run_until(&mut state, 600, |_, events| {
-        events
-            .iter()
-            .any(|e| matches!(e, Event::OrderStalled { .. }))
+        events.iter().any(|e| {
+            matches!(
+                e,
+                Event::BuildCancelled {
+                    player: PlayerId(0),
+                    ..
+                }
+            )
+        })
     });
-    assert!(
-        events.iter().any(|e| matches!(
-            e,
-            Event::OrderStalled {
-                unit,
-                reason: StallReason::GroundTaken,
-                ..
-            } if *unit == founder
-        )),
-        "the arrival re-check names the taken ground"
-    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::BuildCancelled {
+            player: PlayerId(0),
+            refund: 100,
+            ..
+        }
+    )));
     assert_eq!(
         state.player(PlayerId(0)).scrap,
         scrap_before + drip_credits(&state),
@@ -2785,7 +2792,7 @@ fn a_deferred_claim_on_taken_ground_stalls_without_spending() {
     );
 }
 
-/// Stop is the cancel: with nothing placed and nothing paid at accept,
+/// Stop releases the paid provisional site before construction starts,
 /// abandoning a pending found needs no refund machinery at all.
 #[test]
 fn a_stopped_pending_found_spends_nothing() {
@@ -2828,7 +2835,7 @@ fn a_stopped_pending_found_spends_nothing() {
     assert_eq!(
         state.player(PlayerId(0)).scrap,
         scrap_before + drip_credits(&state),
-        "no charge ever landed (only the passive drip accrued)"
+        "the upfront charge was refunded (only the passive drip accrued)"
     );
     assert!(
         state.buildings().iter().all(|b| b.anchor != spot),
@@ -3156,12 +3163,9 @@ fn a_late_crewmate_finds_its_building_finished_and_calls_it_done() {
     );
 }
 
-/// A bank that ran dry before arrival stalls the founder with the
-/// existing own-state reason — affordability is judged when the ground
-/// is claimed, not when the intent is spoken.
+/// Once a scaffold is paid, another purchase cannot consume its funding.
 #[test]
-fn a_broke_founder_stalls_on_arrival() {
-    use oxide_sim::event::StallReason;
+fn a_paid_founder_cannot_lose_its_funding_to_training() {
     use oxide_sim::stats::BuildingKind;
     let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 12, 2)]);
     let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
@@ -3196,29 +3200,27 @@ fn a_broke_founder_stalls_on_arrival() {
         .find(|b| b.player == PlayerId(0))
         .unwrap()
         .id;
-    state.tick(&[cmd(
+    let training = state.tick(&[cmd(
         0,
         Command::Train {
             building: foundry,
             kind: UnitKind::Harvester,
         },
     )]);
-    assert!(state.player(PlayerId(0)).scrap < cost);
-    let events = run_until(&mut state, 600, |_, events| {
-        events
-            .iter()
-            .any(|e| matches!(e, Event::OrderStalled { .. }))
+    assert!(training.events.iter().any(|e| matches!(
+        e,
+        Event::CommandRejected {
+            reason: RejectReason::NotEnoughScrap,
+            ..
+        }
+    )));
+    run_until(&mut state, 1000, |s, _| {
+        s.buildings().iter().any(|b| b.anchor == spot && b.built)
     });
     assert!(
-        events.iter().any(|e| matches!(
-            e,
-            Event::OrderStalled {
-                unit,
-                reason: StallReason::InsufficientScrap,
-                ..
-            } if *unit == builder
-        )),
-        "the broke founder stalls with the existing reason"
+        state
+            .buildings()
+            .iter()
+            .any(|b| b.anchor == spot && b.built)
     );
-    assert!(state.buildings().iter().all(|b| b.anchor != spot));
 }
