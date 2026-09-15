@@ -87,6 +87,7 @@ pub(in crate::bot) struct PublicRoutes {
     public_map: Option<PublicMapBriefing>,
     danger_aware: Option<DangerAwareDistanceGeneration>,
     threat_fields: BTreeMap<TilePos, Arc<PublicGroundDistances>>,
+    footprint_fields: BTreeMap<TilePos, Arc<PublicGroundDistances>>,
     start_fields: BTreeMap<TilePos, Arc<PublicGroundDistances>>,
     #[cfg(test)]
     builds: PublicRouteBuilds,
@@ -116,6 +117,7 @@ impl PublicRoutes {
         self.public_map = Some(public_map.clone());
         self.danger_aware = None;
         self.threat_fields.clear();
+        self.footprint_fields.clear();
         self.start_fields.clear();
     }
 
@@ -247,6 +249,32 @@ impl PublicRoutes {
         self.threat_fields.clone()
     }
 
+    pub(in crate::bot) fn foundry_fields(
+        &mut self,
+        public_map: &PublicMapBriefing,
+        anchors: impl IntoIterator<Item = TilePos>,
+    ) -> BTreeMap<TilePos, Arc<PublicGroundDistances>> {
+        self.prepare_map(public_map);
+        let mut anchors = anchors.into_iter().collect::<Vec<_>>();
+        anchors.sort_unstable();
+        anchors.dedup();
+        self.footprint_fields
+            .retain(|anchor, _| anchors.binary_search(anchor).is_ok());
+        for anchor in anchors {
+            self.footprint_fields.entry(anchor).or_insert_with(|| {
+                #[cfg(test)]
+                {
+                    self.builds.threats += 1;
+                }
+                Arc::new(PublicGroundDistances::from_sources(
+                    public_map,
+                    foundry_footprint_tiles(anchor),
+                ))
+            });
+        }
+        self.footprint_fields.clone()
+    }
+
     pub(in crate::bot) fn start_fields(
         &mut self,
         public_map: &PublicMapBriefing,
@@ -281,7 +309,7 @@ impl PublicRoutes {
             self.danger_aware.as_ref().map_or(0, |generation| {
                 generation.fields.len() + generation.source_sets.len()
             }),
-            self.threat_fields.len(),
+            self.threat_fields.len() + self.footprint_fields.len(),
             self.start_fields.len(),
         )
     }

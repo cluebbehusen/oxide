@@ -750,6 +750,41 @@ fn defended_foundries(existing: &[DefendedFoundry], candidate: TilePos) -> Vec<D
         .collect()
 }
 
+enum ThreatRouting {
+    Forward(Vec<RoutedGroundThreat>),
+    Reverse {
+        threats: Vec<KnownGroundThreat>,
+        foundries: BTreeMap<TilePos, Arc<PublicGroundDistances>>,
+    },
+}
+
+impl ThreatRouting {
+    fn routes(&self, foundries: &[DefendedFoundry]) -> Vec<GroundThreat> {
+        match self {
+            Self::Forward(threats) => routed_ground_threats(threats, foundries),
+            Self::Reverse {
+                threats,
+                foundries: fields,
+            } => threats
+                .iter()
+                .map(|threat| GroundThreat {
+                    evidence: threat.evidence,
+                    routes: foundries
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(foundry, defended)| {
+                            fields
+                                .get(&defended.anchor)?
+                                .footprint_distance(threat.tile, (1, 1))
+                                .map(|distance| ThreatRoute { foundry, distance })
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
 struct RoutedGroundThreat {
     evidence: GroundThreatEvidence,
     distances: Arc<PublicGroundDistances>,
@@ -906,7 +941,7 @@ fn assigned_covering_defenses(
 
 struct ExpansionSecurityWorld {
     existing_foundries: Vec<DefendedFoundry>,
-    threats: Vec<RoutedGroundThreat>,
+    threats: ThreatRouting,
     hostile_start_distances: Vec<Arc<PublicGroundDistances>>,
     network_core: GroundStrength,
     available_mobile_strength: GroundStrength,
@@ -914,7 +949,11 @@ struct ExpansionSecurityWorld {
 }
 
 impl ExpansionSecurityWorld {
-    fn observe(context: &ExpansionAssessmentContext<'_>, routing_cache: &mut PublicRoutes) -> Self {
+    fn observe(
+        context: &ExpansionAssessmentContext<'_>,
+        routing_cache: &mut PublicRoutes,
+        candidates: &[TilePos],
+    ) -> Self {
         let sentinel_strength = GroundStrength(full_ground_strength(UnitKind::Sentinel));
         let network_core = GroundStrength(
             sentinel_strength
@@ -929,9 +968,33 @@ impl ExpansionSecurityWorld {
         )
         .projected_strength;
         let known = known_ground_threats(context.obs, context.unit_contacts);
+        let existing_foundries = existing_foundries(context.obs);
+        let mut anchors = existing_foundries
+            .iter()
+            .map(|foundry| foundry.anchor)
+            .chain(candidates.iter().copied())
+            .collect::<Vec<_>>();
+        anchors.sort_unstable();
+        anchors.dedup();
+        let sources = known
+            .values()
+            .map(|threat| threat.tile)
+            .collect::<std::collections::BTreeSet<_>>();
+        let threats = if anchors.len() < sources.len() {
+            ThreatRouting::Reverse {
+                threats: known.values().copied().collect(),
+                foundries: routing_cache.foundry_fields(context.public_map, anchors),
+            }
+        } else {
+            ThreatRouting::Forward(ground_threat_distance_fields(
+                context.public_map,
+                &known,
+                routing_cache,
+            ))
+        };
         Self {
-            existing_foundries: existing_foundries(context.obs),
-            threats: ground_threat_distance_fields(context.public_map, &known, routing_cache),
+            existing_foundries,
+            threats,
             hostile_start_distances: hostile_start_distance_fields(
                 context.public_map,
                 context.uncleared_hostile_starts,
@@ -953,7 +1016,7 @@ fn security_for_anchor(
     world: &ExpansionSecurityWorld,
 ) -> (ExpansionSecurity, u32, u64) {
     let foundries = defended_foundries(&world.existing_foundries, anchor);
-    let threats = routed_ground_threats(&world.threats, &foundries);
+    let threats = world.threats.routes(&foundries);
     let forward_toward_uncleared_reachable_enemy_start =
         candidate_advances_toward_uncleared_start(&world.hostile_start_distances, &foundries);
     let mut input = ExpansionSecurityInput {
@@ -1004,7 +1067,14 @@ pub(super) fn quote_foundry_expansions_cached(
     context: &ExpansionAssessmentContext<'_>,
     routing_cache: &mut PublicRoutes,
 ) -> Vec<FoundryExpansionQuote> {
-    let world = ExpansionSecurityWorld::observe(context, routing_cache);
+    let world = ExpansionSecurityWorld::observe(
+        context,
+        routing_cache,
+        &opportunities
+            .iter()
+            .map(|opportunity| opportunity.anchor)
+            .collect::<Vec<_>>(),
+    );
     let mut quotes = opportunities
         .into_iter()
         .filter_map(|opportunity| {
@@ -1040,7 +1110,7 @@ pub(super) fn assess_retained_foundry(
     context: &ExpansionAssessmentContext<'_>,
     routing_cache: &mut PublicRoutes,
 ) -> FoundryExpansionAssessment {
-    let world = ExpansionSecurityWorld::observe(context, routing_cache);
+    let world = ExpansionSecurityWorld::observe(context, routing_cache, &[opportunity.anchor]);
     let (security, missing_security_scrap, preparation_target_strength) =
         security_for_anchor(opportunity.anchor, context, &world);
     let disposition = expansion_disposition(
@@ -1664,6 +1734,61 @@ mod tests {
             seen: true,
             tier: 0,
         }
+    }
+
+    #[test]
+    fn reverse_foundry_threat_fields_preserve_routes_and_evidence() {
+        let map = briefing(
+            20,
+            12,
+            (0..12).filter(|y| *y != 6).map(|y| TilePos::new(8, y)),
+            Vec::new(),
+        );
+        let known = (0..10)
+            .map(|index| {
+                (
+                    UnitId(index),
+                    KnownGroundThreat {
+                        tile: TilePos::new(index as i32 + 3, 4),
+                        evidence: if index % 2 == 0 {
+                            GroundThreatEvidence::Current(GroundStrength(100 + u64::from(index)))
+                        } else {
+                            GroundThreatEvidence::Remembered {
+                                strength: GroundStrength(200),
+                                confidence_per_mille: 500,
+                            }
+                        },
+                        source_rank: (true, 0, 0, 0),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let foundries = vec![
+            DefendedFoundry {
+                anchor: TilePos::new(1, 1),
+                role: FoundryRole::Existing,
+            },
+            DefendedFoundry {
+                anchor: TilePos::new(14, 6),
+                role: FoundryRole::Candidate,
+            },
+        ];
+        let mut cache = PublicRoutes::default();
+        let forward = ground_threat_distance_fields(&map, &known, &mut cache);
+        let before = cache.build_count().threats;
+        let reverse = ThreatRouting::Reverse {
+            threats: known.values().copied().collect(),
+            foundries: cache.foundry_fields(&map, foundries.iter().map(|foundry| foundry.anchor)),
+        };
+        assert_eq!(
+            reverse.routes(&foundries),
+            routed_ground_threats(&forward, &foundries)
+        );
+        assert_eq!(cache.build_count().threats - before, 2);
+        let again =
+            cache.foundry_fields(&map, foundries.iter().rev().map(|foundry| foundry.anchor));
+        assert_eq!(again.len(), 2);
+        assert_eq!(cache.build_count().threats - before, 2);
     }
 
     fn unit(
