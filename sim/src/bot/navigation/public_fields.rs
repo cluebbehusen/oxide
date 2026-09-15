@@ -3,10 +3,7 @@
 use crate::bot::PublicMapBriefing;
 use crate::stats::BuildingKind;
 use chassis::grid::TilePos;
-use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::bot) struct PublicGroundDistances {
@@ -343,91 +340,19 @@ impl PublicGroundDistances {
                     .and_then(|height| width.checked_mul(height))
             })
             .unwrap_or(0);
-        let mut distances = vec![u32::MAX; cells];
-        const MAX_STEP_COST: usize = 14;
-        let mut frontier = (0..=MAX_STEP_COST)
-            .map(|_| VecDeque::new())
-            .collect::<Vec<VecDeque<(u32, TilePos)>>>();
-        let mut queued = 0usize;
-        for source in sources {
-            if !Self::ground_open(public_map, source) || blocked(source) {
-                continue;
-            }
-            let Some(index) = Self::index_for(width, height, source) else {
-                continue;
-            };
-            if distances[index] == 0 {
-                continue;
-            }
-            distances[index] = 0;
-            frontier[0].push_back((0, source));
-            queued += 1;
-        }
-
-        let mut current_distance = 0u32;
-        while queued > 0 {
-            let bucket_index = usize::try_from(
-                current_distance % u32::try_from(MAX_STEP_COST + 1).expect("small bucket count"),
-            )
-            .expect("bucket index fits usize");
-            let Some(&(distance, current)) = frontier[bucket_index].front() else {
-                current_distance = current_distance.saturating_add(1);
-                continue;
-            };
-            if distance > current_distance {
-                current_distance = current_distance.saturating_add(1);
-                continue;
-            }
-            frontier[bucket_index].pop_front();
-            queued -= 1;
-            let Some(current_index) = Self::index_for(width, height, current) else {
-                continue;
-            };
-            if distances[current_index] != distance {
-                continue;
-            }
-            #[cfg(test)]
-            super::work::record(|work| {
-                work.expanded += 1;
-            });
-            for (dx, dy, step) in [
-                (-1, 0, 10),
-                (1, 0, 10),
-                (0, -1, 10),
-                (0, 1, 10),
-                (-1, -1, 14),
-                (1, -1, 14),
-                (-1, 1, 14),
-                (1, 1, 14),
-            ] {
-                let next = current.offset(dx, dy);
-                if !Self::ground_open(public_map, next)
-                    || blocked(next)
-                    || (dx != 0
-                        && dy != 0
-                        && (!Self::ground_open(public_map, current.offset(dx, 0))
-                            || blocked(current.offset(dx, 0))
-                            || !Self::ground_open(public_map, current.offset(0, dy))
-                            || blocked(current.offset(0, dy))))
-                {
-                    continue;
-                }
-                let Some(next_index) = Self::index_for(width, height, next) else {
-                    continue;
-                };
-                let next_distance = distance.saturating_add(step);
-                if next_distance < distances[next_index] {
-                    distances[next_index] = next_distance;
-                    let bucket = usize::try_from(
-                        next_distance
-                            % u32::try_from(MAX_STEP_COST + 1).expect("small bucket count"),
-                    )
-                    .expect("bucket index fits usize");
-                    frontier[bucket].push_back((next_distance, next));
-                    queued += 1;
-                }
-            }
-        }
+        let open = (0..cells)
+            .map(|index| {
+                let tile = TilePos::new(
+                    (index % width as usize) as i32,
+                    (index / width as usize) as i32,
+                );
+                Self::ground_open(public_map, tile) && !blocked(tile)
+            })
+            .collect();
+        let mut work = super::distance_work::DistanceWork::new(width, height, open, sources);
+        let result = work.advance(&mut crate::bot::planning::WorkBudget::new(usize::MAX));
+        debug_assert_eq!(result, crate::bot::planning::Progress::Ready(()));
+        let distances = work.into_distances();
 
         Self {
             width,

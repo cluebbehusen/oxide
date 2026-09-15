@@ -1245,7 +1245,10 @@ The immutable public briefing lazily shares a terrain index with connected
 components inside 16-by-16 regions and deterministic boundary links. Regional
 distances rank strategic targets; they do not certify live reachability, route
 safety, command timing, or placement legality. Orientation and terrain changes
-invalidate the index independently of dynamic navigation caches.
+invalidate the index independently of dynamic navigation caches. Public distance
+fields materialize passability once and use an owned traversal that can yield
+after a deterministic number of queue entries. Unfinished fields cannot be read
+as reachability evidence; synchronous callers currently request completion.
 
 Exact Build-route checks index observed and public ground passability once per
 defensive grounding and reuse A* storage across builders and candidate sites.
