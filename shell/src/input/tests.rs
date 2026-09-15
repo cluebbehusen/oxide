@@ -5706,6 +5706,64 @@ fn upgrade_and_rally_shortcuts_share_the_cards_owner_and_affordability_gates() {
 }
 
 #[test]
+fn remapped_clear_rally_is_disabled_until_a_selected_producer_has_a_rally() {
+    use crate::action::Chord;
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Fabricator,
+        x: 9,
+        y: 3,
+    });
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+    game.selection.buildings = game
+        .state
+        .buildings()
+        .iter()
+        .filter(|b| b.player == game.human)
+        .map(|b| b.id)
+        .collect();
+    let producers = game.selection.buildings.clone();
+    let mut input = InputState::new();
+    assert!(
+        input
+            .bindings
+            .rebind(Action::ClearRally, Chord::bare(Key::I))
+    );
+    controls_key(&mut game, &mut input, Key::I);
+    assert!(game.pending.is_empty());
+
+    game.state.tick(&[PlayerCommand {
+        player: game.human,
+        command: Command::SetRally {
+            building: producers[0],
+            rally: Some(TilePos::new(14, 9)),
+        },
+    }]);
+    controls_key(&mut game, &mut input, Key::I);
+    let expected: Vec<_> = producers
+        .iter()
+        .map(|id| PlayerCommand {
+            player: game.human,
+            command: Command::SetRally {
+                building: *id,
+                rally: None,
+            },
+        })
+        .collect();
+    assert_eq!(*game.pending, expected);
+    let commands = std::mem::take(&mut game.pending);
+    game.state.tick(&commands);
+    controls_key(&mut game, &mut input, Key::I);
+    assert!(game.pending.is_empty());
+    assert!(
+        producers
+            .iter()
+            .all(|id| game.state.building(*id).unwrap().rally.is_none())
+    );
+}
+
+#[test]
 fn grouped_production_clicks_and_shortcuts_stage_the_same_batch() {
     let mut scenario = oxide_sim::Scenario::skirmish();
     scenario.players[0].scrap = 125;

@@ -27,6 +27,10 @@ fn card_metrics(viewport: Vec2, scale: f32) -> (f32, f32, f32, f32) {
     (left * scale, width * scale, height * scale, 6.0 * scale)
 }
 
+fn rally_group_width(card_width: f32, scale: f32) -> f32 {
+    card_width.max((2.0 * crate::layout::MIN_TOUCH_TARGET + 6.0) * scale)
+}
+
 fn panel_packing_at_right(
     viewport: Vec2,
     scale: f32,
@@ -36,8 +40,14 @@ fn panel_packing_at_right(
     hides_minimap: bool,
 ) -> PanelPacking {
     let (cards_x, card_w, card_h, gap) = card_metrics(viewport, scale);
-    let available = (right - cards_x - (CARD_LEFT_INSET + CARD_RIGHT_INSET) * scale).max(card_w);
-    let per_row = (((available + gap) / (card_w + gap)).floor() as usize).max(1);
+    let first_width = if rally_count > 0 {
+        rally_group_width(card_w, scale)
+    } else {
+        card_w
+    };
+    let available =
+        (right - cards_x - (CARD_LEFT_INSET + CARD_RIGHT_INSET) * scale).max(first_width);
+    let per_row = 1 + ((available - first_width) / (card_w + gap)).floor() as usize;
     let cards_h = if cards_shown == 0 {
         0.0
     } else {
@@ -94,13 +104,16 @@ fn action_panel_rect(packing: PanelPacking, left: f32, right: f32, has_cards: bo
 
 fn grouped_card_slot(index: usize, rally_count: usize, per_row: usize) -> (usize, usize, bool) {
     let per_row = per_row.max(1);
-    if rally_count == 0 || per_row == 1 {
+    if rally_count == 0 {
         return (index / per_row, index % per_row, false);
     }
     if index < rally_count {
-        return (index, 0, false);
+        return (0, 0, false);
     }
     let production_index = index - rally_count;
+    if per_row == 1 {
+        return (1 + production_index, 0, false);
+    }
     let production_columns = per_row - 1;
     (
         production_index / production_columns,
@@ -110,10 +123,12 @@ fn grouped_card_slot(index: usize, rally_count: usize, per_row: usize) -> (usize
 }
 
 fn grouped_card_rows(shown: usize, rally_count: usize, per_row: usize) -> usize {
-    if rally_count == 0 || per_row <= 1 {
+    if rally_count == 0 {
         shown.div_ceil(per_row.max(1)).max(1)
+    } else if per_row <= 1 {
+        1 + shown - rally_count
     } else {
-        rally_count.max((shown - rally_count).div_ceil(per_row - 1))
+        (shown - rally_count).div_ceil(per_row - 1).max(1)
     }
 }
 
@@ -157,19 +172,33 @@ fn command_card_geometry(
         shown,
         rally_count,
         packing.per_row,
-        packing.available,
+        packing.available - (rally_group_width(width, scale) - width),
         width,
         gap,
     );
     let slots: Vec<Rect> = (0..shown)
         .map(|index| {
             let (row, column, after_rally) = grouped_card_slot(index, rally_count, packing.per_row);
+            let group_width = rally_group_width(width, scale);
+            let rally_width = ((group_width - gap * rally_count.saturating_sub(1) as f32)
+                / rally_count.max(1) as f32)
+                .max(crate::layout::MIN_TOUCH_TARGET * scale);
+            let rally = index < rally_count;
             Rect::new(
                 left + CARD_LEFT_INSET * scale
                     + column as f32 * (width + gap)
-                    + if after_rally { section_gap } else { 0.0 },
+                    + if after_rally {
+                        section_gap + group_width - width
+                    } else {
+                        0.0
+                    }
+                    + if rally {
+                        index as f32 * (rally_width + gap)
+                    } else {
+                        0.0
+                    },
                 packing.top + 10.0 * scale + row as f32 * (height + 4.0 * scale),
-                width,
+                if rally { rally_width } else { width },
                 height,
             )
         })
@@ -184,6 +213,49 @@ fn command_card_geometry(
             + CARD_RIGHT_INSET * scale
     };
     (slots, band_width.min(packing.right))
+}
+
+fn draw_rally_control(card: &crate::panel::Card, rect: Rect, scale: f32) {
+    let label = match card.action {
+        crate::panel::CardAction::ClearRally => "Clear",
+        _ if card.title.starts_with("Reset") => "Reset",
+        _ => "Set",
+    };
+    let color = if card.enabled {
+        TEXT_PRIMARY
+    } else {
+        TEXT_DISABLED
+    };
+    for (text, size, baseline, tint) in [
+        (label, 14.0, rect.y + rect.h * 0.5 - scale, color),
+        (
+            card.hotkey.as_str(),
+            11.0,
+            rect.y + rect.h * 0.5 + 15.0 * scale,
+            if card.enabled {
+                TEXT_SECONDARY
+            } else {
+                TEXT_DISABLED
+            },
+        ),
+    ] {
+        let available = rect.w - 6.0 * scale;
+        let mut font_size = size * scale;
+        let mut measured = measure_text(text, None, font_size as u16, 1.0);
+        while measured.width > available && font_size > 8.0 * scale {
+            font_size -= 0.5 * scale;
+            measured = measure_text(text, None, font_size as u16, 1.0);
+        }
+        if measured.width <= available {
+            draw_text(
+                text,
+                rect.x + (rect.w - measured.width) * 0.5,
+                baseline,
+                font_size,
+                tint,
+            );
+        }
+    }
 }
 
 fn card_title_lines(title: &str, measure: impl Fn(&str) -> f32, width: f32) -> Vec<String> {
@@ -848,8 +920,8 @@ pub(crate) fn draw_panel(
     let mut card_count = 0;
     for (card, rect) in panel.cards.iter().zip(card_rects) {
         let hovered = rect.contains(input.mouse);
-        let selected =
-            matches!(card.action, CardAction::ArmBuild(kind) if input.placing == Some(kind));
+        let selected = matches!(card.action, CardAction::ArmBuild(kind) if input.placing == Some(kind))
+            || (card.action == CardAction::ArmRally && !input.rallying.is_empty());
         let bg = if selected {
             Color::from_rgba(61, 47, 31, 255)
         } else if hovered && card.enabled {
@@ -873,6 +945,19 @@ pub(crate) fn draw_panel(
         } else {
             Color::new(1.0, 1.0, 1.0, 0.35)
         };
+        if matches!(card.action, CardAction::ArmRally | CardAction::ClearRally) {
+            draw_rally_control(card, rect, s);
+            cards[card_count] = (
+                rect,
+                if card.enabled {
+                    card.action
+                } else {
+                    CardAction::None
+                },
+            );
+            card_count += 1;
+            continue;
+        }
         let horizontal = rect.w >= 100.0 * s;
         let icon_size = 24.0 * s;
         draw_icon(
@@ -1562,7 +1647,7 @@ mod tests {
                                     let rally_count = rally_card_count(&panel.cards);
                                     if rally_count > 0 {
                                         assert!(
-                                            slots[..rally_count].iter().all(|r| r.x == slots[0].x)
+                                            slots[..rally_count].iter().all(|r| r.y == slots[0].y)
                                         );
                                         let production_x = slots[rally_count].x;
                                         assert!(
@@ -1643,13 +1728,111 @@ mod tests {
     }
 
     #[test]
+    fn rally_changes_preserve_single_and_grouped_production_geometry() {
+        use crate::action::BindingMap;
+        use oxide_sim::{BuildingKind, Command, Faction, PlayerCommand, Scenario};
+
+        for faction in [Faction::Ferrous, Faction::Cupric] {
+            for kind in BuildingKind::ALL
+                .into_iter()
+                .filter(|kind| !kind.base_stats().produces.is_empty())
+            {
+                let mut scenario = Scenario::skirmish();
+                scenario.players[0].faction = faction;
+                for x in [9, 14] {
+                    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+                        player: 0,
+                        kind,
+                        x,
+                        y: 3,
+                    });
+                }
+                let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+                let producers: Vec<_> = game
+                    .state
+                    .buildings()
+                    .iter()
+                    .filter(|b| b.player == game.human && b.kind == kind)
+                    .map(|b| b.id)
+                    .collect();
+                for selection in [
+                    vec![producers[0]],
+                    producers.clone(),
+                    game.state
+                        .buildings()
+                        .iter()
+                        .filter(|b| b.player == game.human)
+                        .map(|b| b.id)
+                        .collect(),
+                ] {
+                    game.selection.buildings = selection.clone();
+                    let geometry = |game: &Game| {
+                        let panel =
+                            crate::panel::build_for_palette(game, &BindingMap::classic(), false)
+                                .unwrap();
+                        assert_eq!(rally_card_count(&panel.cards), 2);
+                        let mut result = Vec::new();
+                        for viewport in [
+                            vec2(640.0, 400.0),
+                            vec2(800.0, 600.0),
+                            vec2(1280.0, 800.0),
+                            vec2(1920.0, 1080.0),
+                        ] {
+                            for preference in [0.75, 1.0, 1.25, 1.5] {
+                                let scale = effective_ui_scale(preference, viewport);
+                                let minimap = minimap_rect_scaled(40, 24, viewport, scale);
+                                let packing =
+                                    panel_packing(viewport, minimap, scale, panel.cards.len(), 2);
+                                let (slots, right) =
+                                    command_card_geometry(viewport, scale, packing, &panel.cards);
+                                assert_eq!(slots[0].y, slots[1].y);
+                                assert!(slots[1].x >= slots[0].right());
+                                if viewport == vec2(1920.0, 1080.0) && preference == 1.0 {
+                                    assert_eq!(packing.band_h, 72.0);
+                                }
+                                result.push((packing, slots, right));
+                            }
+                        }
+                        result
+                    };
+                    let baseline = geometry(&game);
+                    // Partial and shared rallies exercise both grouped panel states.
+                    for ids in [vec![selection[0]], selection.clone()] {
+                        for rally in [Some(chassis::grid::TilePos::new(20, 10)), None] {
+                            let commands: Vec<_> = ids
+                                .iter()
+                                .map(|id| PlayerCommand {
+                                    player: game.human,
+                                    command: Command::SetRally {
+                                        building: *id,
+                                        rally,
+                                    },
+                                })
+                                .collect();
+                            game.state.tick(&commands);
+                            assert_eq!(geometry(&game), baseline);
+                            let panel = crate::panel::build_for_palette(
+                                &game,
+                                &BindingMap::classic(),
+                                false,
+                            )
+                            .unwrap();
+                            assert_eq!(panel.cards[1].enabled, rally.is_some());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn production_wraps_in_its_own_columns_beside_rally_controls() {
         assert_eq!(grouped_card_rows(7, 1, 6), 2);
         assert_eq!(grouped_card_slot(1, 1, 6), (0, 1, true));
         assert_eq!(grouped_card_slot(6, 1, 6), (1, 1, true));
         assert_eq!(grouped_card_rows(8, 2, 6), 2);
         assert_eq!(grouped_card_slot(0, 2, 6), (0, 0, false));
-        assert_eq!(grouped_card_slot(1, 2, 6), (1, 0, false));
+        assert_eq!(grouped_card_slot(1, 2, 6), (0, 0, false));
         assert_eq!(grouped_card_slot(2, 2, 6), (0, 1, true));
         assert_eq!(grouped_card_slot(7, 2, 6), (1, 1, true));
         assert_eq!(grouped_card_gap(7, 2, 5, 400.0, 66.0, 6.0), 10.0);
@@ -1657,8 +1840,8 @@ mod tests {
 
         assert_eq!(grouped_card_rows(7, 0, 5), 2);
         assert_eq!(grouped_card_slot(5, 0, 5), (1, 0, false));
-        assert_eq!(grouped_card_rows(7, 2, 1), 7);
-        assert_eq!(grouped_card_slot(2, 2, 1), (2, 0, false));
+        assert_eq!(grouped_card_rows(7, 2, 1), 6);
+        assert_eq!(grouped_card_slot(2, 2, 1), (1, 0, false));
     }
 
     #[test]
