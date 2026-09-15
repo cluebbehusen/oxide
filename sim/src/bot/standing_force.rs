@@ -2241,6 +2241,7 @@ mod tests {
         non_ground_terrain: Vec<(TilePos, Terrain)>,
     ) -> PublicMapBriefing {
         PublicMapBriefing {
+            regions: Default::default(),
             map_width: obs.map_width,
             map_height: obs.map_height,
             starting_foundries: Vec::new(),

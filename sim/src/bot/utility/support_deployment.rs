@@ -593,6 +593,7 @@ mod tests {
             unit(201, 1, UnitKind::Sentinel, TilePos::new(33, 25)),
         ];
         let map = PublicMapBriefing {
+            regions: Default::default(),
             map_width: 48,
             map_height: 32,
             starting_foundries: vec![],

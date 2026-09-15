@@ -902,30 +902,32 @@ Additional throughput is capped by current unprotected capital and completed
 income after the candidate and its missing prerequisites are paid. Capacity
 confidence and urgency come from the demand contributing its marginal return; an
 already-covered current need cannot strengthen a speculative capacity case. A
-proposed first Airworks may also derive a complete connected scout, suppression,
-and strike minimum against current targets. The hypothetical factory exists only
-inside this pure sizing calculation: its construction capital and delay are
-removed before the ordinary package and route checks run, and existing live
-units are excluded from speculative ownership. Retained obligations must fit the
-post-construction capacity before campaign and route derivation begins. The
-complete minimum must fit alongside retained capital promises and producer jobs
-in shared allocation. This supported investment value cannot justify duplicate
-Airworks, issue a production command, or admit an operation before its real
-prerequisites exist. Recurring-income investments are capped by unfunded useful
-work; completed income alone supplies spendable forecasts. Self-refits own exact
-building ids and withhold their offline source income separately from purchase
-capital. The residual technology scalar and the operational Airworks capital tax
-are absent. Economic purchases keep a fixed funding deadline separate from their
-return horizon. Shared allocation rebalances their current and forecast capital
-alongside fixed producer payments; a missed funding deadline releases the unpaid
-plan for reconsideration. Issuing a build pays for its site immediately,
-including travel through fog; paid foundations and refits follow ordinary
-simulation rules. Extractor development compares explored, safe frame groups
-around a common Foundry site by their total return after restoration, support,
-travel, and build costs. The existing expansion security check must admit the
-shared support site. Only the next restoration owns capital and a builder; later
-steps are re-evaluated as construction completes, and their projected income
-never becomes spendable forecast credit.
+proposed first Airworks tries current targets by value and regional distance
+until it finds a complete connected scout, suppression, and strike minimum. This
+witness excludes optional force growth and target-cluster expansion. The
+hypothetical factory exists only inside this pure sizing calculation: its
+construction capital and delay are removed before the ordinary package and route
+checks run, and existing live units are excluded from speculative ownership.
+Retained obligations must fit the post-construction capacity before campaign and
+route derivation begins. The complete minimum must fit alongside retained
+capital promises and producer jobs in shared allocation. This supported
+investment value cannot justify duplicate Airworks, issue a production command,
+or admit an operation before its real prerequisites exist. Recurring-income
+investments are capped by unfunded useful work; completed income alone supplies
+spendable forecasts. Self-refits own exact building ids and withhold their
+offline source income separately from purchase capital. The residual technology
+scalar and the operational Airworks capital tax are absent. Economic purchases
+keep a fixed funding deadline separate from their return horizon. Shared
+allocation rebalances their current and forecast capital alongside fixed
+producer payments; a missed funding deadline releases the unpaid plan for
+reconsideration. Issuing a build pays for its site immediately, including travel
+through fog; paid foundations and refits follow ordinary simulation rules.
+Extractor development compares explored, safe frame groups around a common
+Foundry site by their total return after restoration, support, travel, and build
+costs. The existing expansion security check must admit the shared support site.
+Only the next restoration owns capital and a builder; later steps are
+re-evaluated as construction completes, and their projected income never becomes
+spendable forecast credit.
 
 Before the difficulty floor is projected, the player-facing policy pauses new
 voluntary construction and upgrades, discretionary production, mobile support,
@@ -1016,13 +1018,15 @@ buried charges create a separate optional bombing opportunity; ordinary
 buildings remain direct-strike value rather than fictional splash victims, and
 operational mobile anti-air already priced as mandatory suppression is not
 counted again as optional bombing collateral. After every family reaches the
-minimum, selection maximizes capped total useful capability first and uses
+minimum, a width-eight beam ranks capped total useful capability first and uses
 personality to weight how otherwise competitive marginal capability is divided
 between air, siege, direct strike, and attack-run bombing. Personality never
-gates a provider or family. For otherwise identical evidence, more current
-scrap, more available preparation time at derivation, or additional completed
-usable production capability cannot revoke admission or reduce capped total
-useful capability.
+gates a provider or family. One beam slot preserves the cheapest alternative;
+existing useful providers remain eligible at minimum strength, and every
+extension revalidates its canonical funding order. For otherwise identical
+evidence, more current scrap, more available preparation time at derivation, or
+additional completed usable production capability cannot revoke admission or
+reduce capped total useful capability.
 
 Current connected targets are ranked canonically and tried in order until one
 admits a complete package. A route-feasible optional member of its bounded
@@ -1228,6 +1232,12 @@ footholds consume scalar costs, while coverage, mobile standoff, and retreat
 retain canonical paths. Costs distinguish exact and bounded success from
 disconnection and search limits. Detour limits still precede local-support
 filtering; construction and layout checks retain their existing route contracts.
+
+The immutable public briefing lazily shares a terrain index with connected
+components inside 16-by-16 regions and deterministic boundary links. Regional
+distances rank strategic targets; they do not certify live reachability, route
+safety, command timing, or placement legality. Orientation and terrain changes
+invalidate the index independently of dynamic navigation caches.
 
 Exact Build-route checks index observed and public ground passability once per
 defensive grounding and reuse A* storage across builders and candidate sites.

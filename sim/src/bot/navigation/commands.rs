@@ -1783,6 +1783,7 @@ mod tests {
     ) -> PublicMapBriefing {
         non_ground_terrain.sort_unstable_by_key(|(tile, _)| (tile.y, tile.x));
         PublicMapBriefing {
+            regions: Default::default(),
             map_width: obs.map_width,
             map_height: obs.map_height,
             starting_foundries: Vec::new(),

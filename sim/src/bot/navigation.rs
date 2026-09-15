@@ -7,6 +7,7 @@ pub(super) mod egress;
 pub(super) mod flood;
 pub(super) mod paths;
 pub(super) mod public_fields;
+pub(super) mod regions;
 pub(super) mod search;
 pub(super) mod service;
 

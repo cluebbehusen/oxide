@@ -20,12 +20,37 @@ pub struct StartingFoundry {
     pub anchor: TilePos,
 }
 
+#[derive(Clone, Default)]
+pub(super) struct RegionCache(std::sync::Arc<std::sync::OnceLock<RegionGeneration>>);
+
+struct RegionGeneration {
+    width: i32,
+    height: i32,
+    terrain: Vec<(TilePos, Terrain)>,
+    regions: std::sync::Arc<super::navigation::regions::StaticRegions>,
+}
+
+impl core::fmt::Debug for RegionCache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RegionCache").finish_non_exhaustive()
+    }
+}
+
+// Derived memoization does not change the identity of public map knowledge.
+impl PartialEq for RegionCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+impl Eq for RegionCache {}
+
 /// Canonical pre-match map knowledge shared by player-facing bots.
 ///
 /// Dynamic facts never enter this type. In particular, `initial_scrap` is not
 /// a live amount and `starting_foundries` is not a list of current targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicMapBriefing {
+    pub(super) regions: RegionCache,
     pub(super) map_width: i32,
     pub(super) map_height: i32,
     pub(super) starting_foundries: Vec<StartingFoundry>,
@@ -58,6 +83,7 @@ impl PublicMapBriefing {
             }
         }
         Self {
+            regions: RegionCache::default(),
             map_width: map.width(),
             map_height: map.height(),
             starting_foundries: anchors
@@ -68,6 +94,23 @@ impl PublicMapBriefing {
             non_ground_terrain,
             extractor_frames: map.extractor_frames().to_vec(),
             initial_scrap,
+        }
+    }
+
+    pub(super) fn regions(&self) -> std::sync::Arc<super::navigation::regions::StaticRegions> {
+        let cached = self.regions.0.get_or_init(|| RegionGeneration {
+            width: self.map_width,
+            height: self.map_height,
+            terrain: self.non_ground_terrain.clone(),
+            regions: std::sync::Arc::new(super::navigation::regions::StaticRegions::build(self)),
+        });
+        if cached.width == self.map_width
+            && cached.height == self.map_height
+            && cached.terrain == self.non_ground_terrain
+        {
+            std::sync::Arc::clone(&cached.regions)
+        } else {
+            std::sync::Arc::new(super::navigation::regions::StaticRegions::build(self))
         }
     }
 

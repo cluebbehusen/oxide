@@ -5450,6 +5450,7 @@ mod tests {
 
     fn briefing() -> PublicMapBriefing {
         PublicMapBriefing {
+            regions: Default::default(),
             map_width: 20,
             map_height: 20,
             starting_foundries: Vec::new(),
@@ -5672,6 +5673,7 @@ mod tests {
     ) -> (AllocationTrace, AllocationSessionOutcome) {
         const HOME: TilePos = TilePos::new(5, 15);
         let public_map = PublicMapBriefing {
+            regions: Default::default(),
             map_width: observation.map_width,
             map_height: observation.map_height,
             starting_foundries: Vec::new(),
@@ -5894,6 +5896,7 @@ mod tests {
 
     fn connected_briefing(observation: &Observation) -> PublicMapBriefing {
         PublicMapBriefing {
+            regions: Default::default(),
             map_width: observation.map_width,
             map_height: observation.map_height,
             starting_foundries: Vec::new(),
@@ -7176,6 +7179,7 @@ mod tests {
         observation.visible.fill(false);
         observation.explored.fill(false);
         let briefing = PublicMapBriefing {
+            regions: Default::default(),
             map_width: observation.map_width,
             map_height: observation.map_height,
             starting_foundries: vec![crate::bot::StartingFoundry {

@@ -1073,6 +1073,7 @@ mod tests {
             ],
         );
         let map = super::super::PublicMapBriefing {
+            regions: Default::default(),
             map_width: obs.map_width,
             map_height: obs.map_height,
             starting_foundries: vec![],

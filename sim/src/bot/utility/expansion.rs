@@ -1636,6 +1636,7 @@ mod tests {
             .collect::<Vec<_>>();
         non_ground_terrain.sort_unstable_by_key(|(tile, _)| (tile.y, tile.x));
         PublicMapBriefing {
+            regions: Default::default(),
             map_width: width,
             map_height: height,
             starting_foundries: starts,

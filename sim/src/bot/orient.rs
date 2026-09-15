@@ -204,6 +204,7 @@ impl Orientation {
             return briefing.clone();
         }
         let mut oriented = briefing.clone();
+        oriented.regions = Default::default();
         let foundry_size = BuildingKind::Foundry.base_stats().size;
         for start in &mut oriented.starting_foundries {
             start.anchor = self.anchor(start.anchor, foundry_size);

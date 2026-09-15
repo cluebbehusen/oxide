@@ -4896,6 +4896,7 @@ mod tests {
             obs.my_queues.push(Vec::new());
         }
         let map = PublicMapBriefing {
+            regions: Default::default(),
             map_width: obs.map_width,
             map_height: obs.map_height,
             starting_foundries: Vec::new(),

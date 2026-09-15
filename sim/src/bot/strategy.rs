@@ -103,6 +103,7 @@ struct ClusterAirDefense {
 
 #[derive(Debug, Clone, Copy)]
 struct ConnectedPlanningContext<'a> {
+    minimum_only: bool,
     suppression_routes: Option<&'a SuppressionRoutes<'a>>,
     orientation: Orientation,
     public_map: Option<&'a PublicMapBriefing>,
@@ -575,6 +576,9 @@ fn derive_connected_package_options(
         route,
         context,
     )?;
+    if context.minimum_only {
+        return Ok(packages);
+    }
     for anchor in &context.resources.targets.growth_order {
         let mut proposed_anchors = selected.target_anchors.clone();
         proposed_anchors.push(*anchor);
@@ -617,7 +621,12 @@ fn derive_connected_package_options_for_targets(
             .amount(),
     );
     let cluster = selected_current_target_cluster(intel, target, &targets.target_anchors);
-    let mut packages = derive_connected_force_package_options_for_cluster(
+    let derive = if context.minimum_only {
+        force_package::derive_connected_minimum_for_cluster
+    } else {
+        derive_connected_force_package_options_for_cluster
+    };
+    let mut packages = derive(
         profile,
         obs,
         intel,
@@ -2248,6 +2257,7 @@ impl<'a> FreshConnectedProposalRequest<'a> {
 
 #[derive(Clone, Copy)]
 struct FreshConnectedDerivationContext<'a> {
+    minimum_only: bool,
     suppression_routes: Option<&'a SuppressionRoutes<'a>>,
     unavailable_paid: &'a [(BuildingId, UnitKind, usize)],
     profile: &'a ResolvedProfile,
@@ -2396,6 +2406,7 @@ pub(in crate::bot) fn prospective_airworks_package_value(
         coordination.orientation,
     );
     let context = FreshConnectedDerivationContext {
+        minimum_only: true,
         suppression_routes: Some(&suppression_routes),
         unavailable_paid: &[],
         profile: request.profile,
@@ -2412,64 +2423,79 @@ pub(in crate::bot) fn prospective_airworks_package_value(
     if deadline <= prospective.tick {
         return None;
     }
-    request
+    let mut targets: Vec<_> = request
         .intel
         .buildings()
         .iter()
         .filter(|target| {
             target.evidence == ContactEvidence::Current && target.built && target.hp > 0
         })
-        .filter_map(|target| {
-            #[cfg(test)]
-            AIRWORKS_PACKAGE_DERIVATIONS.with(|count| count.set(count.get() + 1));
-            let route = ConnectedRouteContext {
-                suppression_routes: Some(&suppression_routes),
-                unavailable_paid: &[],
-                intel: request.intel,
-                home: request.home,
-                target: target.anchor,
-                public_map: coordination.public_map,
-                orientation: coordination.orientation,
-            };
-            let initial = ConnectedProductionResources::from_snapshot_after_current_reserve(
-                &prospective,
-                target,
-                &unavailable,
-                route,
-                &resources,
-                0,
-            );
-            let proposal = derive_connected_proposal_with_resources(
-                context,
-                target,
-                ConnectedProposalOrigin::Idle {
-                    air: None,
-                    standby: AirStandby::default(),
-                },
-                initial,
-                deadline,
-            )
-            .ok()?;
-            let investment = connected_investment_proposal(proposal.clone()).ok()?;
-            allocate_requiring(
-                &capacity,
-                obligations.to_vec(),
-                vec![investment.clone()],
-                AllocationPersonality::default(),
-                investment.key(),
-                &[],
-            )
-            .ok()??;
-            Some(
-                proposal
-                    .minimum_claims()
-                    .provider_jobs()
-                    .iter()
-                    .map(|job| u64::from(job.kind().stats().cost))
-                    .sum(),
-            )
-        })
-        .max()
+        .collect();
+    let distances = coordination
+        .public_map
+        .map(|map| map.regions().distances(request.home));
+    targets.sort_by_key(|target| {
+        (
+            std::cmp::Reverse(u64::from(target.hp) * u64::from(building_value(target.kind))),
+            distances
+                .as_ref()
+                .and_then(|distances| distances.estimate(target.anchor))
+                .unwrap_or(u32::MAX),
+            target.anchor.y,
+            target.anchor.x,
+            target.id,
+        )
+    });
+    targets.into_iter().find_map(|target| {
+        #[cfg(test)]
+        AIRWORKS_PACKAGE_DERIVATIONS.with(|count| count.set(count.get() + 1));
+        let route = ConnectedRouteContext {
+            suppression_routes: Some(&suppression_routes),
+            unavailable_paid: &[],
+            intel: request.intel,
+            home: request.home,
+            target: target.anchor,
+            public_map: coordination.public_map,
+            orientation: coordination.orientation,
+        };
+        let initial = ConnectedProductionResources::from_snapshot_after_current_reserve(
+            &prospective,
+            target,
+            &unavailable,
+            route,
+            &resources,
+            0,
+        );
+        let proposal = derive_connected_proposal_with_resources(
+            context,
+            target,
+            ConnectedProposalOrigin::Idle {
+                air: None,
+                standby: AirStandby::default(),
+            },
+            initial,
+            deadline,
+        )
+        .ok()?;
+        let investment = connected_investment_proposal(proposal.clone()).ok()?;
+        allocate_requiring(
+            &capacity,
+            obligations.to_vec(),
+            vec![investment.clone()],
+            AllocationPersonality::default(),
+            investment.key(),
+            &[],
+        )
+        .ok()??;
+        Some(
+            proposal
+                .minimum_claims()
+                .provider_jobs()
+                .iter()
+                .map(|job| u64::from(job.kind().stats().cost))
+                .sum(),
+        )
+    })
 }
 
 fn derive_fresh_connected_proposal(
@@ -2514,6 +2540,7 @@ fn derive_connected_proposal_with_resources(
     preparation_deadline: Tick,
 ) -> Result<FreshConnectedProposal, ConnectedPlanRejection> {
     let FreshConnectedDerivationContext {
+        minimum_only,
         suppression_routes,
         unavailable_paid,
         profile,
@@ -2550,6 +2577,7 @@ fn derive_connected_proposal_with_resources(
         target,
         unavailable,
         ConnectedPlanningContext {
+            minimum_only,
             suppression_routes,
             orientation: coordination.orientation,
             public_map: coordination.public_map,
@@ -2881,6 +2909,7 @@ impl StrategicPlanner {
             let unavailable = excluding_owned(coordination.enlisted, &owned);
             return derive_fresh_connected_proposal(
                 FreshConnectedDerivationContext {
+                    minimum_only: false,
                     suppression_routes: None,
                     unavailable_paid,
                     profile,
@@ -2956,6 +2985,7 @@ impl StrategicPlanner {
         for target in current {
             match derive_fresh_connected_proposal(
                 FreshConnectedDerivationContext {
+                    minimum_only: false,
                     suppression_routes: None,
                     unavailable_paid,
                     profile,
@@ -3057,6 +3087,7 @@ impl StrategicPlanner {
         };
         let mut proposal = derive_connected_proposal_with_resources(
             FreshConnectedDerivationContext {
+                minimum_only: false,
                 suppression_routes: None,
                 unavailable_paid,
                 profile,
@@ -8203,6 +8234,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                minimum_only: false,
                 suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: None,
@@ -8257,6 +8289,7 @@ mod tests {
         let mut non_ground_terrain: Vec<_> = terrain.into_iter().collect();
         non_ground_terrain.sort_unstable_by_key(|(tile, _)| (tile.y, tile.x));
         PublicMapBriefing {
+            regions: Default::default(),
             map_width: observation.map_width,
             map_height: observation.map_height,
             starting_foundries: Vec::new(),
@@ -10546,6 +10579,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                minimum_only: false,
                 suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: None,
@@ -12136,6 +12170,7 @@ mod tests {
                 orientation: test_orientation(),
             },
             ConnectedPlanningContext {
+                minimum_only: false,
                 suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: None,
@@ -13782,6 +13817,7 @@ mod tests {
             &target,
             &[],
             ConnectedPlanningContext {
+                minimum_only: false,
                 suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: None,
@@ -14018,6 +14054,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                minimum_only: false,
                 suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: Some(&peak_map),
@@ -14304,6 +14341,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                minimum_only: false,
                 suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: Some(&public_map),
@@ -14334,6 +14372,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                minimum_only: false,
                 suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: Some(&public_map),
@@ -14430,6 +14469,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                minimum_only: false,
                 suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: Some(&public_map),

@@ -1717,6 +1717,7 @@ mod tests {
             },
         ];
         let map = PublicMapBriefing {
+            regions: Default::default(),
             map_width: 40,
             map_height: 30,
             starting_foundries: vec![

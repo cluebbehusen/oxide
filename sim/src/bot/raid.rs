@@ -943,6 +943,7 @@ mod tests {
         ));
         obs.my_queues.push(vec![UnitKind::Scuttler; paid]);
         let map = crate::bot::PublicMapBriefing {
+            regions: Default::default(),
             map_width: obs.map_width,
             map_height: obs.map_height,
             starting_foundries: vec![],
