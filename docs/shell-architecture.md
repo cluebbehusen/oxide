@@ -231,7 +231,7 @@ clocks.
 
 Destruction and projectile caches retain the pre-removal identity, pose, and
 visibility needed to present an event after its entity has gone. Cosmetic
-effects cannot reveal unseen events. Authoritative crash trajectories and impact
+visuals cannot reveal unseen events. Authoritative crash trajectories and impact
 timing remain simulation-owned; rendering observes them without adding damage
 rules.
 
@@ -275,11 +275,19 @@ readability consistent across display densities; sprite sampling independently
 uses physical pixels.
 
 Simulation events enqueue audio cues. The mixer applies user buses, repetition
-limits, and camera-relative attenuation. Continuous positional sounds are owned
-and stopped individually; pause and screen transitions release them, and resumed
-presentation can reconstruct them. Soundtrack state controls music beds and
-crossfades. Audio never feeds a simulation decision. Production sprite and sound
-bytes remain owned by their generators and approval workflows.
+limits, and camera-relative attenuation. Missile, artillery, bomb, mine and
+Sapper detonations, building destruction, and aircraft ground impacts are
+audible through fog regardless of ownership. Their distance gain is full inside
+the camera viewport and fades linearly to silence 24 tiles beyond its nearest
+edge, with the same range at every zoom. Zoom weighting still reduces heavy
+sounds to 72% at the widest view. Same-kind events coalesce to the loudest
+emitter; inaudible events consume no voices and do not raise combat music.
+Visuals, target knowledge, launch warnings, and missile motors retain their
+sight rules. Continuous positional sounds are owned and stopped individually;
+pause and screen transitions release them, and resumed presentation can
+reconstruct them. Soundtrack state controls music beds and crossfades. Audio
+never feeds a simulation decision. Production sprite and sound bytes remain
+owned by their generators and approval workflows.
 
 The tiny-skia renderer in `oxide-kit` produces whole-map CPU schematics. It does
 not share the native atlas, camera, HUD, animation, or visual polish. Screenshot

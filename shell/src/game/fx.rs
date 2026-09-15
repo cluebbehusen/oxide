@@ -163,7 +163,7 @@ pub enum SoundKind {
     Laser,
     /// A unit died somewhere you can see.
     UnitDeath,
-    /// A building fell (yours are always audible).
+    /// A building fell or a heavy airframe hit the ground.
     BuildingBoom,
     /// Your harvester delivered.
     Deposit,
@@ -225,6 +225,15 @@ pub enum SoundKind {
     DemolitionBoom,
     /// A works coming back online one rung higher.
     UpgradeDone,
+}
+
+impl SoundKind {
+    pub(crate) fn is_explosion(self) -> bool {
+        matches!(
+            self,
+            Self::Artillery | Self::RocketImpact | Self::DemolitionBoom | Self::BuildingBoom
+        )
+    }
 }
 
 /// What an order-acknowledgment ping means (decides its color).
@@ -681,9 +690,9 @@ impl Game {
         self.scorches.retain(|(_, age)| *age < 20.0);
     }
 
-    /// Turns a tick's events into flashes and queued clips. Sight rules
-    /// mirror rendering: positional sounds only play for ground the local
-    /// player can see (own losses and own milestones are always audible).
+    /// Turns a tick's events into flashes and queued clips. Explosions can be
+    /// heard through fog; the camera mixer bounds their audible distance.
+    /// Visual effects retain their independent sight rules.
     pub(super) fn spawn_fx(&mut self, events: &[Event]) {
         let sees = |game: &Self, pos: chassis::fx::Vec2Fx| {
             game.my_vision()
@@ -751,8 +760,10 @@ impl Game {
                         .get(*weapon)
                         .and_then(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
-                    if heard {
-                        let at = if sees(self, *attacker_pos) {
+                    if heard || sound.is_explosion() {
+                        let at = if sound.is_explosion() {
+                            *target_pos
+                        } else if sees(self, *attacker_pos) {
                             *attacker_pos
                         } else {
                             *target_pos
@@ -940,12 +951,11 @@ impl Game {
                             .visible_crash_contacts
                             .contains(&crash.unit);
                     self.restore_crash_effect(*crash, witnessed);
-                    if witnessed
-                        && self
-                            .state
-                            .map()
-                            .tile(chassis::grid::TilePos::containing(crash.impact))
-                            .is_some_and(|tile| tile.terrain != oxide_sim::map::Terrain::Pit)
+                    if self
+                        .state
+                        .map()
+                        .tile(chassis::grid::TilePos::containing(crash.impact))
+                        .is_some_and(|tile| tile.terrain != oxide_sim::map::Terrain::Pit)
                     {
                         self.sounds_pending
                             .push((SoundKind::BuildingBoom, Some(world_vec(crash.impact))));
@@ -959,10 +969,8 @@ impl Game {
                     if *player == self.human {
                         self.raise_alert(world_vec(*pos));
                     }
-                    if *player == self.human || sees(self, *pos) {
-                        self.sounds_pending
-                            .push((SoundKind::BuildingBoom, Some(world_vec(*pos))));
-                    }
+                    self.sounds_pending
+                        .push((SoundKind::BuildingBoom, Some(world_vec(*pos))));
                     let body = self
                         .fx_previous
                         .buildings
@@ -1143,10 +1151,8 @@ impl Game {
                     if own_hurt {
                         self.raise_alert(world);
                     }
-                    if sees(self, *at) {
-                        self.sounds_pending
-                            .push((impact_sound, Some(world_vec(*at))));
-                    }
+                    self.sounds_pending
+                        .push((impact_sound, Some(world_vec(*at))));
                     let payload = self
                         .fx_previous
                         .shells
@@ -1601,13 +1607,9 @@ mod tests {
             game.present_ticks(1);
             assert!(!game.my_vision().visible(tile));
             assert_eq!(game.state.unit(UnitId(1)).is_none(), witnessed);
-            assert_eq!(
-                game.sounds_pending
-                    .iter()
-                    .any(|(sound, pos)| *sound == SoundKind::BuildingBoom
-                        && *pos == Some(world_vec(at))),
-                witnessed
-            );
+            assert!(game.sounds_pending.iter().any(|(sound, pos)| *sound
+                == SoundKind::BuildingBoom
+                && *pos == Some(world_vec(at))));
             assert_eq!(game.fx.iter().any(|effect| matches!(effect.kind,
                 EffectKind::Falling { crash: Some(saved), impact_witnessed: true, .. } if saved.unit == crash.unit
             )), witnessed);
@@ -1745,6 +1747,141 @@ mod tests {
             }
         }
         panic!("the adjacent Scuttler must destroy the damaged Bastion");
+    }
+
+    #[test]
+    fn projectile_impacts_sound_on_visible_and_hidden_ground_for_either_owner() {
+        use oxide_sim::{PlayerId, ProjectileKind};
+        for kind in [
+            ProjectileKind::Shell,
+            ProjectileKind::Missile,
+            ProjectileKind::Bomb,
+        ] {
+            for player in [PlayerId(0), PlayerId(1)] {
+                for visible in [true, false] {
+                    let mut scenario = oxide_sim::Scenario::skirmish();
+                    for seat in &mut scenario.players {
+                        seat.bot_config = None;
+                        seat.faction = oxide_sim::Faction::Ferrous;
+                    }
+                    scenario.units.push(oxide_sim::scenario::UnitSpec {
+                        player: player.0,
+                        kind: match kind {
+                            ProjectileKind::Shell => UnitKind::Bombard,
+                            ProjectileKind::Missile => UnitKind::Avalanche,
+                            ProjectileKind::Bomb => UnitKind::Condor,
+                        },
+                        x: if player.0 == 0 { 8 } else { 28 },
+                        y: 16,
+                    });
+                    let mut game = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
+                    let tile = if visible {
+                        chassis::grid::TilePos::new(5, 5)
+                    } else {
+                        chassis::grid::TilePos::new(30, 20)
+                    };
+                    assert_eq!(game.my_vision().visible(tile), visible);
+                    let at = tile.center();
+                    let shooter = game
+                        .state
+                        .units()
+                        .iter()
+                        .rev()
+                        .find(|unit| unit.player == player)
+                        .unwrap();
+                    let shell = oxide_sim::state::Shell {
+                        kind,
+                        player,
+                        shooter: Target::Unit(shooter.id),
+                        launch: shooter.pos,
+                        impact: at,
+                        arrival: 0,
+                        damage: 1,
+                        targets: oxide_sim::stats::DomainMask::GROUND,
+                        splash: None,
+                    };
+                    let mut wire = serde_json::to_value(&*game.state).unwrap();
+                    wire["shells"] = serde_json::json!([shell]);
+                    game.replace_state_after_jump(&serde_json::from_value(wire).unwrap());
+                    let mut reference = (*game.state).clone();
+                    let report = reference.tick(&[]);
+                    assert!(report.events.iter().any(|event| matches!(event, Event::ShellLanded { at: impact, .. } if *impact == at)));
+                    game.present_ticks(1);
+                    let sound = if kind == ProjectileKind::Missile {
+                        SoundKind::RocketImpact
+                    } else {
+                        SoundKind::Artillery
+                    };
+                    assert!(
+                        game.sounds_pending.contains(&(sound, Some(world_vec(at)))),
+                        "{kind:?}, {player:?}, visible={visible}"
+                    );
+                    assert_eq!(game.state.hash(), reference.hash());
+                    assert_eq!(game.my_vision().visible(tile), visible);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_demolition_and_building_loss_sound_without_revealing_identity() {
+        let mut game =
+            Game::with_viewport(oxide_sim::Scenario::skirmish(), Vec2::new(1280.0, 800.0)).unwrap();
+        let at = chassis::grid::TilePos::new(30, 20).center();
+        let player = oxide_sim::PlayerId(1);
+        assert!(
+            !game
+                .my_vision()
+                .visible(chassis::grid::TilePos::containing(at))
+        );
+        let hash = game.state.hash();
+        for event in [
+            Event::ChargeDetonated {
+                building: BuildingId(999),
+                player,
+                at,
+            },
+            Event::AttackHit {
+                attacker: UnitId(999),
+                attacker_kind: UnitKind::Sapper,
+                weapon: 0,
+                target: None,
+                attacker_pos: at,
+                target_pos: at,
+            },
+            Event::BuildingDestroyed {
+                building: BuildingId(999),
+                player,
+                pos: at,
+            },
+        ] {
+            game.sounds_pending.clear();
+            game.spawn_fx(&[event]);
+            assert_eq!(game.sounds_pending.len(), 1);
+            assert!(game.sounds_pending[0].0.is_explosion());
+            assert_eq!(game.sounds_pending[0].1, Some(world_vec(at)));
+            assert_eq!(game.state.hash(), hash);
+            assert!(game.toasts.is_empty());
+            assert!(
+                !game
+                    .fx
+                    .iter()
+                    .any(|effect| matches!(effect.kind, EffectKind::Collapse { .. }))
+            );
+        }
+        game.sounds_pending.clear();
+        game.spawn_fx(&[Event::AttackHit {
+            attacker: UnitId(999),
+            attacker_kind: UnitKind::Sentinel,
+            weapon: 0,
+            target: None,
+            attacker_pos: at,
+            target_pos: at,
+        }]);
+        assert!(
+            game.sounds_pending.is_empty(),
+            "ordinary hidden firing remains silent"
+        );
     }
 
     #[test]
