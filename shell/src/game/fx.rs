@@ -969,8 +969,13 @@ impl Game {
                     if *player == self.human {
                         self.raise_alert(world_vec(*pos));
                     }
-                    self.sounds_pending
-                        .push((SoundKind::BuildingBoom, Some(world_vec(*pos))));
+                    let detonated = events.iter().any(|event| {
+                        matches!(event, Event::ChargeDetonated { building: charge, .. } if charge == building)
+                    });
+                    if !detonated {
+                        self.sounds_pending
+                            .push((SoundKind::BuildingBoom, Some(world_vec(*pos))));
+                    }
                     let body = self
                         .fx_previous
                         .buildings
@@ -1819,6 +1824,86 @@ mod tests {
                     assert_eq!(game.state.hash(), reference.hash());
                     assert_eq!(game.my_vision().visible(tile), visible);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn charge_detonation_plays_one_blast_and_preserves_other_building_losses() {
+        for viewer in [0, 1, 2] {
+            for collateral_charge in [false, true] {
+                let mut map = vec![".".repeat(80); 40];
+                for (x, y, mark) in [(3, 3, "1"), (60, 3, "2"), (65, 30, "3")] {
+                    map[y].replace_range(x..x + 1, mark);
+                }
+                let mut buildings = vec![serde_json::json!({
+                    "player": 1, "kind": "scuttle_charge", "x": 30, "y": 20
+                })];
+                if collateral_charge {
+                    buildings.push(serde_json::json!({
+                        "player": 2, "kind": "scuttle_charge", "x": 31, "y": 20
+                    }));
+                }
+                let scenario = serde_json::from_value(serde_json::json!({
+                    "name": "Charge explosion audio", "seed": 37, "map": map,
+                    "players": [
+                        {"name": "Observer", "faction": "ferrous", "bot": false},
+                        {"name": "Mine", "faction": "cupric", "bot": true},
+                        {"name": "Trigger", "faction": "ferrous", "bot": true}
+                    ],
+                    "units": [{"player": 2, "kind": "warden", "x": 30, "y": 20}],
+                    "buildings": buildings
+                }))
+                .unwrap();
+                let mut game = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
+                game.human = oxide_sim::PlayerId(viewer);
+                let tile = chassis::grid::TilePos::new(30, 20);
+                if viewer == 0 {
+                    assert!(!game.my_vision().visible(tile));
+                }
+                let report = game.do_tick();
+                let detonated: Vec<_> = report
+                    .events
+                    .iter()
+                    .filter_map(|event| match event {
+                        Event::ChargeDetonated { building, .. } => Some(*building),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(detonated.len(), 1);
+                assert!(report.events.iter().any(|event| matches!(
+                    event, Event::BuildingDestroyed { building, .. } if *building == detonated[0]
+                )));
+                let other_losses = report.events.iter().filter(|event| matches!(
+                    event, Event::BuildingDestroyed { building, .. } if *building != detonated[0]
+                )).count();
+                assert_eq!(other_losses, usize::from(collateral_charge));
+                let explosion_cues: Vec<_> = game
+                    .sounds_pending
+                    .iter()
+                    .copied()
+                    .filter(|(kind, _)| kind.is_explosion())
+                    .collect();
+                let mut expected =
+                    vec![(SoundKind::DemolitionBoom, Some(world_vec(tile.center())))];
+                if collateral_charge {
+                    expected.push((
+                        SoundKind::BuildingBoom,
+                        Some(world_vec(tile.offset(1, 0).center())),
+                    ));
+                }
+                assert_eq!(
+                    explosion_cues, expected,
+                    "viewer={viewer}, collateral={collateral_charge}"
+                );
+                let mixed = crate::audio_mix::frame_mix(
+                    explosion_cues,
+                    world_vec(tile.center()),
+                    Vec2::new(20.0, 12.5),
+                    32.0,
+                );
+                assert_eq!(mixed.len(), expected.len());
+                assert!(mixed.iter().all(|sound| sound.gain == 1.0));
             }
         }
     }

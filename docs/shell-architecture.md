@@ -281,13 +281,14 @@ audible through fog regardless of ownership. Their distance gain is full inside
 the camera viewport and fades linearly to silence 24 tiles beyond its nearest
 edge, with the same range at every zoom. Zoom weighting still reduces heavy
 sounds to 72% at the widest view. Same-kind events coalesce to the loudest
-emitter; inaudible events consume no voices and do not raise combat music.
-Visuals, target knowledge, launch warnings, and missile motors retain their
-sight rules. Continuous positional sounds are owned and stopped individually;
-pause and screen transitions release them, and resumed presentation can
-reconstruct them. Soundtrack state controls music beds and crossfades. Audio
-never feeds a simulation decision. Production sprite and sound bytes remain
-owned by their generators and approval workflows.
+emitter; inaudible events consume no voices and do not raise combat music. A
+detonated charge uses only its demolition cue; other buildings destroyed in the
+same tick retain their destruction cues. Visuals, target knowledge, launch
+warnings, and missile motors retain their sight rules. Continuous positional
+sounds are owned and stopped individually; pause and screen transitions release
+them, and resumed presentation can reconstruct them. Soundtrack state controls
+music beds and crossfades. Audio never feeds a simulation decision. Production
+sprite and sound bytes remain owned by their generators and approval workflows.
 
 The tiny-skia renderer in `oxide-kit` produces whole-map CPU schematics. It does
 not share the native atlas, camera, HUD, animation, or visual polish. Screenshot
