@@ -10,6 +10,7 @@ pub(super) mod flood;
 pub(super) mod paths;
 pub(super) mod public_fields;
 pub(super) mod regions;
+mod safety;
 pub(super) mod search;
 pub(super) mod service;
 

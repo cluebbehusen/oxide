@@ -1263,7 +1263,12 @@ filtering; construction and layout checks retain their existing route contracts.
 Local defensive support uses one bounded eight-step flood for every asset around
 a candidate, rather than a shortest-route query per asset. Future-producer exit
 checks request connectivity only; maps above the canonical expansion cap retain
-the capped search contract.
+the capped search contract. Repeated command-safety queries accumulate work by
+endpoint. Once that work exceeds the map area, they share a field proving
+whether all shortest routes avoid danger. Ambiguous routes still use canonical
+A*, and maps above its expansion cap bypass the proof. Each immutable route
+projection retains at most sixteen safety fields, independently of the directed
+route-answer cache.
 
 Match setup prepares and shares a public terrain index for each seat
 orientation, with connected components inside 16-by-16 regions and deterministic

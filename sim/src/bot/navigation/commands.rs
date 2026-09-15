@@ -23,6 +23,7 @@ pub(in crate::bot) struct RouteProjection<'a> {
     domain: Domain,
     safe_costs: std::cell::RefCell<SafeRouteCosts>,
     safe_paths: std::cell::RefCell<BTreeMap<(TilePos, TilePos), bool>>,
+    safety: std::cell::RefCell<super::safety::SafetyQueries>,
     require_explored: bool,
     blocked_ground_rect: Option<(TilePos, (i32, i32))>,
     blocked_tiles: Vec<bool>,
@@ -86,6 +87,7 @@ impl<'a> RouteProjection<'a> {
             domain,
             safe_costs: Default::default(),
             safe_paths: Default::default(),
+            safety: Default::default(),
             require_explored: false,
             blocked_ground_rect: None,
             blocked_tiles: vec![false; cells],
@@ -222,8 +224,9 @@ impl<'a> RouteProjection<'a> {
     /// Whether the canonical route chosen by an ordinary movement command
     /// stays outside every projected blocked tile. Callers first prove safe
     /// connectivity and a clear direct danger corridor. A map with no blocked
-    /// tiles needs no search; otherwise reproduce the simulation's A* path
-    /// because even unobstructed terrain can have several equally short routes.
+    /// tiles needs no search. Repeated endpoints can share a proof that every
+    /// shortest route is safe; ambiguous ties still reproduce the simulation's
+    /// A* path, because unobstructed terrain can have equally short routes.
     pub(in crate::bot) fn command_path_avoids_blocked(&self, from: TilePos, to: TilePos) -> bool {
         if !self.has_blocked_tiles {
             return true;
@@ -231,6 +234,17 @@ impl<'a> RouteProjection<'a> {
         let key = (from, to);
         if let Some(safe) = self.safe_paths.borrow().get(&key) {
             return *safe;
+        }
+        if let Some(safe) = self.safety.borrow_mut().prove(
+            (self.obs.map_width, self.obs.map_height),
+            from,
+            to,
+            |tile| {
+                self.domain_open_memo(tile) && (!self.require_explored || self.obs.explored(tile))
+            },
+            |tile| self.open(tile),
+        ) {
+            return safe;
         }
         let safe = self.uncached_command_path_avoids_blocked(from, to);
         let mut retained = self.safe_paths.borrow_mut();
@@ -250,7 +264,8 @@ impl<'a> RouteProjection<'a> {
             self.command_orientation
                 .map_or(tile, |orientation| orientation.tile(tile))
         };
-        crate::bot::navigation::search::canonical_path(
+        let mut search = crate::bot::navigation::search::Search::default();
+        let path = search.path(
             self.obs.map_width,
             self.obs.map_height,
             transform(from),
@@ -259,8 +274,11 @@ impl<'a> RouteProjection<'a> {
                 let tile = transform(tile);
                 self.domain_open_memo(tile) && (!self.require_explored || self.obs.explored(tile))
             },
-        )
-        .is_some_and(|path| path.into_iter().all(|tile| self.open(transform(tile))))
+        );
+        self.safety
+            .borrow_mut()
+            .record(from, to, search.last_expansions() as usize);
+        path.is_some_and(|path| path.into_iter().all(|tile| self.open(transform(tile))))
     }
 
     /// Exact ordinary-command travel cost, optionally escaping an initial danger
@@ -1792,6 +1810,29 @@ mod tests {
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         }
+    }
+
+    #[test]
+    fn many_work_routes_share_one_safety_proof_without_changing_command_choices() {
+        let obs = observation();
+        let goal = TilePos::new(0, 0);
+        let routes = RouteProjection::ground_avoiding(&obs, |tile| tile == TilePos::new(11, 7));
+        let (_, work) = crate::bot::navigation::work::measure(|| {
+            for y in 0..6 {
+                for x in 2..12 {
+                    let from = TilePos::new(x, y);
+                    assert!(routes.command_path_avoids_blocked(from, goal));
+                    assert!(routes.command_path_avoids_blocked(goal, from));
+                }
+            }
+        });
+        assert_eq!(work.fields, 1, "{work:?}");
+        assert!(
+            work.paths < 30,
+            "120 route checks must share their endpoint proof: {work:?}"
+        );
+        let changed = RouteProjection::ground_avoiding(&obs, |tile| tile.x == 5);
+        assert!(!changed.command_path_avoids_blocked(TilePos::new(9, 3), goal));
     }
 
     #[test]
