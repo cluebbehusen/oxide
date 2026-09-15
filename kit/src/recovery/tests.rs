@@ -58,6 +58,19 @@ fn wait(writer: &RecoveryWriter, test: impl Fn(&WriterStatus) -> bool) {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+fn drop_and_wait(writer: RecoveryWriter) {
+    let directory = writer.directory().to_owned();
+    drop(writer);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !directory.join("status.json").exists() || inactive(&directory).is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "recovery worker did not finish shutdown: {}",
+            directory.display()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 #[test]
 fn every_truncated_tail_keeps_only_completed_commands() {
     let bytes = encoded(vec![
@@ -246,7 +259,8 @@ fn clean_close_requires_success_and_storage_failure_does_not_block() {
     wait(&writer, |s| s.clean);
     assert!(inspect(writer.directory()).unwrap().clean);
     assert!(latest_interrupted(&root).is_none());
-    drop(writer);
+    assert!(inactive(writer.directory()).is_none());
+    drop_and_wait(writer);
     let bad = root.join("file");
     std::fs::write(&bad, b"not a directory").unwrap();
     let writer = RecoveryWriter::start(bad, base(), 0).unwrap();
@@ -271,12 +285,7 @@ fn oversized_command_batch_stops_capture_without_partial_submission() {
     assert_eq!(writer.status().pending_bytes, 0);
     writer.completed(1);
     let directory = writer.directory().to_owned();
-    drop(writer);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !directory.join("status.json").exists() {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    drop_and_wait(writer);
     assert_eq!(inspect(&directory).unwrap().replay.meta.ticks, Some(0));
     std::fs::remove_dir_all(root).unwrap();
 }
