@@ -6,7 +6,7 @@
 //! the best compatible portfolio without asking a domain to plan twice.
 
 use core::cmp::{Ordering, Reverse};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::resources::{
     PlanningProjectionError, ProducerLaneReservationError, ProducerLaneReservations,
@@ -1761,6 +1761,12 @@ fn allocate_with_required<Payload>(
     if required.is_some() && required_index.is_none() {
         return Ok(None);
     }
+    let mut refinements: BTreeMap<Vec<usize>, Result<(), AllocationConflict>> =
+        individual_conflicts
+            .iter()
+            .enumerate()
+            .map(|(index, conflict)| (vec![index], conflict.clone().map_or(Ok(()), Err)))
+            .collect();
     let mut evaluate = |selected: &[usize]| {
         if required_index.is_some_and(|required| !selected.contains(&required))
             || portfolio_layout_conflict(selected, &proposals, &incompatible_layouts).is_some()
@@ -1776,16 +1782,23 @@ fn allocate_with_required<Payload>(
             capacity.resources.observed_at(),
         ) {
             let proposal = &proposals[index];
-            state
-                .stage(
-                    capacity,
-                    ClaimOwner::Proposal(proposal.key()),
-                    proposal.claims(),
-                    funding_priority,
-                )
-                .ok()?;
+            if let Err(conflict) = state.stage(
+                capacity,
+                ClaimOwner::Proposal(proposal.key()),
+                proposal.claims(),
+                funding_priority,
+            ) {
+                refinements.insert(selected.to_vec(), Err(conflict));
+                return None;
+            }
         }
-        let resolved = state.resolve(capacity).ok()?;
+        let resolved = match state.resolve(capacity) {
+            Ok(resolved) => resolved,
+            Err(conflict) => {
+                refinements.insert(selected.to_vec(), Err(conflict));
+                return None;
+            }
+        };
         let keys = selected
             .iter()
             .map(|&index| proposals[index].key())
@@ -1794,6 +1807,7 @@ fn allocate_with_required<Payload>(
             incompatible_layouts.push(conflict);
             return None;
         }
+        refinements.insert(selected.to_vec(), Ok(()));
         Some((
             selected.to_vec(),
             portfolio_rank(selected, &proposals, personality),
@@ -1855,7 +1869,7 @@ fn allocate_with_required<Payload>(
             } else if let Some(conflict) = &individual_conflicts[index] {
                 ProposalDisposition::Rejected(ProposalRejection::Infeasible(conflict.clone()))
             } else {
-                let alternative = selected_indices
+                let mut alternative = selected_indices
                     .iter()
                     .copied()
                     .filter(|&selected| {
@@ -1863,14 +1877,18 @@ fn allocate_with_required<Payload>(
                     })
                     .chain(core::iter::once(index))
                     .collect::<Vec<_>>();
-                if let Some(conflict) = portfolio_conflict(
+                alternative.sort_unstable();
+                let refined = refinements.get(&alternative);
+                if let Some(conflict) = portfolio_claim_conflict(
                     capacity,
                     &mandatory,
                     &alternative,
                     &proposals,
                     personality,
                     &incompatible_layouts,
-                ) {
+                )
+                .or_else(|| refined.and_then(|result| result.as_ref().err().cloned()))
+                {
                     let individual_rank = portfolio_rank(&[index], &proposals, personality);
                     if selected_indices.iter().any(|&selected| {
                         proposals[selected].key().domain() == proposal.key().domain()
@@ -1888,7 +1906,7 @@ fn allocate_with_required<Payload>(
                             conflict,
                         })
                     }
-                } else {
+                } else if refined.is_some_and(Result::is_ok) {
                     let alternative_rank = portfolio_rank(&alternative, &proposals, personality);
                     match outranking_basis(&selected_rank, &alternative_rank) {
                         Some(basis) if selected_rank > alternative_rank => {
@@ -1899,6 +1917,8 @@ fn allocate_with_required<Payload>(
                         }
                         _ => ProposalDisposition::Rejected(ProposalRejection::NotRefined),
                     }
+                } else {
+                    ProposalDisposition::Rejected(ProposalRejection::NotRefined)
                 }
             };
             ProposalDecision {
@@ -1934,7 +1954,8 @@ fn allocate_with_required<Payload>(
     }))
 }
 
-fn portfolio_conflict<Payload>(
+/// Necessary claim checks for explanations; absence of a conflict is not a schedule proof.
+fn portfolio_claim_conflict<Payload>(
     capacity: &AllocationCapacity,
     mandatory: &ClaimState,
     selected: &[usize],
@@ -1963,7 +1984,7 @@ fn portfolio_conflict<Payload>(
             return Some(conflict);
         }
     }
-    state.resolve(capacity).err()
+    state.validate_production_bounds(capacity).err()
 }
 
 fn portfolio_layout_conflict<Payload>(
@@ -3016,6 +3037,8 @@ impl ProductionPortfolioSearch<'_> {
         schedule: &mut Vec<ScheduledProducerJob>,
         capital_assignments: &mut Vec<CapitalFundingAssignment>,
     ) -> bool {
+        #[cfg(test)]
+        production_search::SEARCH_CALLS.set(production_search::SEARCH_CALLS.get() + 1);
         let mut continuation = production_search::Continuation::new(producers, remaining, schedule);
         loop {
             let mut budget = super::planning::WorkBudget::new(256);
@@ -4783,6 +4806,52 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.accepted.len(), 3);
+    }
+
+    #[test]
+    fn counterfactual_claim_checks_do_not_search_or_claim_schedule_feasibility() {
+        let producer = BuildingId(1);
+        let kind = UnitKind::Sentinel;
+        let deadline = Tick::from(kind.stats().train_ticks) + 1;
+        let basis = capacity(
+            10_000,
+            deadline,
+            vec![],
+            vec![producer_fixture(producer, 0, vec![kind])],
+        );
+        let proposal = with_jobs(
+            offense(0, vec![], ordinary_case()),
+            vec![
+                ProducerJobClaim::immediate(kind, 0, deadline, vec![producer]),
+                ProducerJobClaim::immediate(kind, 0, deadline, vec![producer]),
+            ],
+        );
+        let calls = production_search::SEARCH_CALLS.get();
+        assert_eq!(
+            portfolio_claim_conflict(
+                &basis,
+                &ClaimState::default(),
+                &[0],
+                std::slice::from_ref(&proposal),
+                AllocationPersonality::default(),
+                &[]
+            ),
+            None
+        );
+        assert_eq!(production_search::SEARCH_CALLS.get(), calls);
+        let mut state = ClaimState::default();
+        state
+            .stage(
+                &basis,
+                ClaimOwner::Proposal(proposal.key()),
+                proposal.claims(),
+                proposal_funding_priority(&proposal, 0, 0),
+            )
+            .unwrap();
+        assert!(
+            state.resolve(&basis).is_err(),
+            "individual deadlines fit, but this lane cannot complete both jobs in time"
+        );
     }
 
     #[test]

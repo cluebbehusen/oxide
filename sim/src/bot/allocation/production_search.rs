@@ -4,6 +4,11 @@ use super::*;
 use crate::bot::planning::{Progress, WorkBudget};
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static SEARCH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) struct Solution {
     pub producers: Vec<ProducerPlanningProjection>,
     pub schedule: Vec<ScheduledProducerJob>,
