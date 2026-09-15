@@ -128,6 +128,13 @@ pub fn seat_bots(
     scenario: &crate::Scenario,
 ) -> Result<Vec<SeatBot>, crate::scenario::ScenarioError> {
     let public_map = Arc::new(PublicMapBriefing::from_scenario(scenario)?);
+    if scenario
+        .players
+        .iter()
+        .any(|player| player.bot && player.bot_config.is_some())
+    {
+        public_map.prepare_navigation();
+    }
     Ok(scenario
         .players
         .iter()

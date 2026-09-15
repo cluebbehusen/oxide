@@ -36,11 +36,15 @@ impl Orientation {
     /// on a `width` × `height` map: flip whichever axes put home in the
     /// southeast, so the policy always reasons from the northwest.
     pub fn for_home(obs: &Observation, home: TilePos) -> Self {
+        Self::for_map(obs.map_width, obs.map_height, home)
+    }
+
+    pub(super) fn for_map(width: i32, height: i32, home: TilePos) -> Self {
         Self {
-            flip_x: 2 * home.x >= obs.map_width,
-            flip_y: 2 * home.y >= obs.map_height,
-            width: obs.map_width,
-            height: obs.map_height,
+            flip_x: 2 * home.x >= width,
+            flip_y: 2 * home.y >= height,
+            width,
+            height,
         }
     }
 
@@ -204,7 +208,7 @@ impl Orientation {
             return briefing.clone();
         }
         let mut oriented = briefing.clone();
-        oriented.regions = Default::default();
+        oriented.regions = briefing.regions.oriented(self.flip_x, self.flip_y);
         let foundry_size = BuildingKind::Foundry.base_stats().size;
         for start in &mut oriented.starting_foundries {
             start.anchor = self.anchor(start.anchor, foundry_size);
