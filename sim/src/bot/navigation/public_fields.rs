@@ -349,7 +349,8 @@ impl PublicGroundDistances {
                 Self::ground_open(public_map, tile) && !blocked(tile)
             })
             .collect();
-        let mut work = super::distance_work::DistanceWork::new(width, height, open, sources);
+        let mut work =
+            super::distance_work::DistanceWork::new(width.max(0), height.max(0), open, sources);
         let result = work.advance(&mut crate::bot::planning::WorkBudget::new(usize::MAX));
         debug_assert_eq!(result, crate::bot::planning::Progress::Ready(()));
         let distances = work.into_distances();
@@ -619,6 +620,30 @@ mod tests {
         let reference = reference_ground_distances(&public_map, sources, &blocked);
 
         assert_eq!(actual, reference);
+    }
+
+    #[test]
+    fn distance_expansion_never_requeries_the_passability_predicate() {
+        let map = briefing(32, 24, [], Vec::new());
+        let mut calls = 0;
+        let field =
+            PublicGroundDistances::from_sources_avoiding(&map, [TilePos::new(0, 0)], |tile| {
+                calls += 1;
+                tile.x == 16 && tile.y != 20
+            });
+        assert_eq!(calls, 32 * 24);
+        assert!(
+            field
+                .footprint_distance(TilePos::new(31, 0), (1, 1))
+                .is_some()
+        );
+        for (width, height) in [(0, 10), (10, 0), (-1, 10)] {
+            let empty = PublicGroundDistances::from_sources(
+                &briefing(width, height, [], Vec::new()),
+                [TilePos::new(0, 0)],
+            );
+            assert_eq!(empty.footprint_distance(TilePos::new(0, 0), (1, 1)), None);
+        }
     }
 
     #[test]
