@@ -19,6 +19,9 @@ crate-level rustdoc.
   and result report.
 - `game` owns one live session, its recorder, bots, and presentation state.
 - `input` and `action` form the single hardware and injected-input funnel.
+- `production` shares selected-factory purchases and collective queue
+  cancellation across panel cards and shortcuts, including commands awaiting the
+  next tick.
 - `render`, `panel`, and `layout` draw the world, expose owner-safe selection
   feedback, and share hit-test geometry.
 - `entity_lod` derives filtered entity textures for world rendering and UI

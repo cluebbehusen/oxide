@@ -21,6 +21,7 @@ mod panel;
 mod paths;
 mod performance;
 mod presentation_animation;
+mod production;
 mod render;
 mod rocket_audio;
 mod saves;

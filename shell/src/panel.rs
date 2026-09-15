@@ -92,6 +92,8 @@ pub enum CardAction {
     ArmRally,
     /// Remove a queued unit from a producer (full refund).
     CancelQueue(BuildingId, u8),
+    /// Cancel one selected factory product, preferring waiting work.
+    CancelProduction(UnitKind),
     /// Cancel an unfinished site shown by a Harvester's Build order.
     CancelSite(BuildingId),
     /// Cancel one unpaid logical site across its assigned Harvester crew.
@@ -188,6 +190,8 @@ pub struct Panel {
     pub cards: Vec<Card>,
     /// Queue thumbnails (production or orders).
     pub queue: Vec<Card>,
+    /// Counts for a collective production dock; empty for individual queues.
+    pub queue_groups: Vec<crate::production::QueueGroup>,
     /// What the queue strip is labeled — for order docks, WHOSE
     /// program it shows ("orders - Harvester"), because the dock draws
     /// one unit's story while breadcrumbs draw many.
@@ -372,7 +376,7 @@ pub fn building_weapon_lines(kind: BuildingKind, tier: u8) -> Vec<String> {
         .collect()
 }
 
-fn tick_time_label(ticks: u32) -> String {
+pub(crate) fn tick_time_label(ticks: u32) -> String {
     let per_second = oxide_sim::TICKS_PER_SECOND;
     let tenths = ticks.saturating_mul(10).div_ceil(per_second);
     let whole = tenths / 10;
@@ -732,7 +736,6 @@ pub(crate) fn build_for_input(game: &Game, input: &crate::input::InputState) -> 
 }
 
 fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Option<Panel> {
-    let faction = game.state.player(game.human).faction;
     let selected_buildings: Vec<_> = game
         .selection
         .buildings
@@ -759,6 +762,7 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
             roster: Vec::new(),
             cards: Vec::new(),
             queue: Vec::new(),
+            queue_groups: Vec::new(),
             queue_label: "queue".to_string(),
         };
         if owner != game.human {
@@ -807,6 +811,18 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 });
             }
         }
+        let production = crate::production::Production::inspect(game);
+        if selected_buildings.iter().all(|b| b.player == game.human) && production.homogeneous() {
+            panel.title = format!(
+                "{} x {}",
+                entity_name(first.kind.name()),
+                selected_buildings.len()
+            );
+            panel.summary = "One unit per available factory".into();
+            panel.cards.extend(production.cards(bindings));
+            (panel.queue, panel.queue_groups) = production.collective_queue();
+            panel.queue_label = "combined production".into();
+        }
         return Some(panel);
     }
     if let Some(id) = game.selection.buildings.first().copied() {
@@ -826,6 +842,7 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
             roster: Vec::new(),
             cards: Vec::new(),
             queue: Vec::new(),
+            queue_groups: Vec::new(),
             queue_label: production_queue_label(&building.queue, building.progress)
                 .unwrap_or_else(|| "queue".to_string()),
         };
@@ -946,7 +963,6 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 progress: None,
             });
         }
-        let queue_full = building.queue.len() >= oxide_sim::stats::QUEUE_CAP;
         if !stats.produces.is_empty() {
             panel.cards.push(Card {
                 icon: CardIcon::Verb(VerbIcon::Rally),
@@ -980,49 +996,9 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 });
             }
         }
-        for (i, &kind) in stats
-            .produces
-            .iter()
-            .filter(|k| k.faction().is_none_or(|f| f == faction))
-            .enumerate()
-        {
-            let cost = kind.stats().cost;
-            // The tech gate the sim enforces at training time: an
-            // enabled card whose click answers MissingPrerequisite is
-            // a lie the disabled reason should have told instead.
-            let missing_tech = kind.stats().requires.iter().find(|req| {
-                !game
-                    .state
-                    .buildings()
-                    .iter()
-                    .any(|b| b.player == game.human && b.kind == **req && b.built)
-            });
-            let (enabled, why) = if queue_full {
-                (false, Some("queue is full".to_string()))
-            } else if let Some(req) = missing_tech {
-                (
-                    false,
-                    Some(format!("needs a standing {}", entity_name(req.name()))),
-                )
-            } else if scrap < cost {
-                (false, Some(format!("needs {cost} scrap")))
-            } else {
-                (true, None)
-            };
-            let mut desc = vec![unit_flavor(kind).to_string(), unit_stat_line(kind)];
-            desc.extend(weapon_lines(kind));
-            panel.cards.push(Card {
-                icon: CardIcon::Unit(kind),
-                title: entity_name(kind.name()),
-                cost: Some(cost),
-                hotkey: chord(bindings, Action::TrainSlot(i as u8)),
-                action: CardAction::Dispatch(Action::TrainSlot(i as u8)),
-                enabled,
-                why,
-                desc,
-                progress: None,
-            });
-        }
+        panel
+            .cards
+            .extend(crate::production::Production::inspect(game).cards(bindings));
         for (i, &kind) in building.queue.iter().enumerate() {
             // Only the head is being worked; the rest are prepaid ghosts.
             let progress = (i == 0).then(|| {
@@ -1088,6 +1064,7 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
         roster: Vec::new(),
         cards: Vec::new(),
         queue: Vec::new(),
+        queue_groups: Vec::new(),
         queue_label: if units.len() == 1 {
             "orders".to_string()
         } else {

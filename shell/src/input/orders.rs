@@ -385,28 +385,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     game.ping(world, PingKind::Move);
 }
 
-/// Train the Nth product from the first compatible selected producer (the
-/// seat's own roster — the other faction's variants are skipped).
+/// Train the selected production slot through the shared pending-command view.
 pub(super) fn train(game: &mut Game, slot: usize) {
-    let faction = game.state.player(game.human).faction;
-    let product = |building| {
-        game.state.building(building).and_then(|building| {
-            building
-                .kind
-                .base_stats()
-                .produces
-                .iter()
-                .filter(|k| k.faction().is_none_or(|f| f == faction))
-                .nth(slot)
-                .copied()
-        })
-    };
-    let selected = selected_producers(game);
-    let selected_choice = selected
-        .iter()
-        .find_map(|building| product(*building).map(|kind| (*building, kind)));
-    let choice = selected_choice;
-    if let Some((building, kind)) = choice {
-        game.issue(Command::Train { building, kind });
-    }
+    crate::production::train(game, slot);
 }
