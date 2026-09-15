@@ -927,7 +927,7 @@ fn balanced_mirror_stays_active_without_rejected_commands() {
     let mut trained = [0_u32; 2];
     let mut damaged = [0_u32; 2];
 
-    for _ in 0..50_000 {
+    for _ in 0..60_000 {
         if state.result().is_some() {
             break;
         }

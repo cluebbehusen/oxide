@@ -711,6 +711,7 @@ impl UtilityPolicy {
                             anchor,
                             hp: kind.base_stats().max_hp,
                             built: true,
+                            provisional: false,
                             tier: 0,
                             seen: true,
                         };
@@ -1269,6 +1270,7 @@ fn infrastructure_benefit(
             kind.base_stats().construction.map_or(0, |stats| stats.cost),
         ));
     let candidate = BuildingObs {
+        provisional: false,
         id: BuildingId(u32::MAX),
         player: obs.me,
         kind,
@@ -1518,6 +1520,7 @@ mod tests {
 
     fn building(id: u32, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: PlayerId(0),
             kind,

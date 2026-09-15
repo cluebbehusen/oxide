@@ -610,6 +610,7 @@ mod tests {
         obs.blips.clear();
         let anchor = TilePos::new(15, 0);
         obs.enemy_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(u32::MAX),
             player: PlayerId(1),
             kind: BuildingKind::Turret,

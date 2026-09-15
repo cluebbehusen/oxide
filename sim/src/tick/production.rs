@@ -271,7 +271,9 @@ pub(super) fn decay_abandoned_sites(state: &mut State) {
     let decays: Vec<crate::ids::BuildingId> = state
         .buildings
         .iter()
-        .filter(|building| !building.built && building.hp > 0 && building.tier == 0)
+        .filter(|building| {
+            !building.built && !building.provisional && building.hp > 0 && building.tier == 0
+        })
         .filter(|building| {
             !state.units.iter().any(|unit| {
                 unit.player == building.player

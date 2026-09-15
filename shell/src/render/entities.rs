@@ -43,37 +43,31 @@ pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &Input
     );
 }
 
-/// Every deferred claim the human's crews are walking out to, drawn as
-/// a faint amber footprint on its promised ground — the promise made
-/// visible, deduplicated per (kind, anchor) across the crew.
+/// Paid provisional scaffolds remain faint amber footprints until their
+/// ground has been verified.
 pub(crate) fn draw_pending_founds(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
     let faction = game.state.player(game.human).faction;
-    let mut drawn: Vec<(oxide_sim::BuildingKind, TilePos)> = Vec::new();
-    for unit in game.state.units().iter().filter(|u| u.player == game.human) {
-        for order in std::iter::once(&unit.order).chain(unit.queue.iter()) {
-            let oxide_sim::Order::Found { kind, anchor } = order else {
-                continue;
-            };
-            if drawn.contains(&(*kind, *anchor)) {
-                continue;
-            }
-            drawn.push((*kind, *anchor));
-            let (w, h) = kind.base_stats().size;
-            let screen = game
-                .camera
-                .to_screen(vec2(anchor.x as f32, anchor.y as f32));
-            sprites.draw(
-                screen.x,
-                screen.y,
-                Color::new(1.0, 0.85, 0.45, 0.3),
-                DrawTextureParams {
-                    dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
-                    source: Some(sprites.construction(*kind, faction, 0, 0)),
-                    ..Default::default()
-                },
-            );
-        }
+    for site in game
+        .state
+        .buildings()
+        .iter()
+        .filter(|b| b.player == game.human && b.provisional)
+    {
+        let (w, h) = site.stats().size;
+        let screen = game
+            .camera
+            .to_screen(vec2(site.anchor.x as f32, site.anchor.y as f32));
+        sprites.draw(
+            screen.x,
+            screen.y,
+            Color::new(1.0, 0.85, 0.45, 0.3),
+            DrawTextureParams {
+                dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
+                source: Some(sprites.construction(site.kind, faction, 0, 0)),
+                ..Default::default()
+            },
+        );
     }
 }
 
@@ -100,7 +94,9 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
         // ground.
         oxide_sim::Order::Attack { .. } => Color::new(0.85, 0.32, 0.29, 0.55),
         oxide_sim::Order::AttackMove { .. } => Color::new(0.88, 0.55, 0.26, 0.55),
-        oxide_sim::Order::Harvest { .. } => Color::new(0.85, 0.64, 0.25, 0.55),
+        oxide_sim::Order::ReturnCargo { .. } | oxide_sim::Order::Harvest { .. } => {
+            Color::new(0.85, 0.64, 0.25, 0.55)
+        }
         oxide_sim::Order::Build { .. }
         | oxide_sim::Order::Repair { .. }
         | oxide_sim::Order::Salvage { .. }
@@ -117,6 +113,7 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
             | oxide_sim::Order::Advance { goal }
             | oxide_sim::Order::AttackMove { goal } => *goal,
             oxide_sim::Order::Harvest { node, .. } => *node,
+            oxide_sim::Order::ReturnCargo { foundry, .. } => game.state.building(*foundry)?.anchor,
             oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
             oxide_sim::Order::Found { anchor, .. } => *anchor,
             oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
@@ -427,7 +424,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
     // plus bars and site dressing — off-camera works cost nothing.
     let (view_lo, view_hi) = game.camera.world_rect();
     const BUILDING_CULL_MARGIN: f32 = 4.5;
-    for building in game.state.buildings() {
+    for building in game.state.buildings().iter().filter(|b| !b.provisional) {
         if building.player != game.human
             && !game.all_seeing()
             && (!building.tiles().any(|t| game.my_vision().visible(t))
@@ -2127,33 +2124,6 @@ impl RangeClipper {
     }
 }
 
-fn draw_support_brackets(min: Vec2, max: Vec2, scale: f32, color: Color) {
-    let reach = (6.0 * scale).min((max - min).min_element() * 0.25);
-    for (corner, direction) in [
-        (min, vec2(1.0, 1.0)),
-        (vec2(max.x, min.y), vec2(-1.0, 1.0)),
-        (max, vec2(-1.0, -1.0)),
-        (vec2(min.x, max.y), vec2(1.0, -1.0)),
-    ] {
-        draw_line(
-            corner.x,
-            corner.y,
-            corner.x + direction.x * reach,
-            corner.y,
-            scale,
-            color,
-        );
-        draw_line(
-            corner.x,
-            corner.y,
-            corner.x,
-            corner.y + direction.y * reach,
-            scale,
-            color,
-        );
-    }
-}
-
 fn visit_active_building_ranges(
     game: &Game,
     input: &InputState,
@@ -2240,14 +2210,17 @@ fn draw_economy_support_links(game: &Game, scale: f32, color: Color, occluders: 
         .collect();
     endpoints.sort_unstable();
     endpoints.dedup();
-    for id in endpoints {
-        if game.selection.buildings.contains(&id) {
-            continue;
-        }
-        if let Some(building) = game.state.building(id) {
-            let (min, max) = building_screen_bounds(game, building);
-            let padding = Vec2::splat(3.0 * scale);
-            draw_support_brackets(min - padding, max + padding, scale, color);
+    let footprints = endpoints
+        .into_iter()
+        .filter(|id| !game.selection.buildings.contains(id))
+        .filter_map(|id| game.state.building(id))
+        .map(|building| (building.anchor, building.stats().size));
+    for bracket in support_brackets::junctions(footprints, game.camera.zoom, scale) {
+        let origin = game
+            .camera
+            .to_screen(vec2(bracket.corner.x as f32, bracket.corner.y as f32));
+        for [from, to] in bracket.segments(origin) {
+            draw_line(from.x, from.y, to.x, to.y, scale, color);
         }
     }
 }

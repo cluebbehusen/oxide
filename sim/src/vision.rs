@@ -434,6 +434,8 @@ pub(crate) struct GroundSalvageDanger {
     /// served uncached exactly as before.
     lanes: Vec<Cell<u8>>,
     path_scratch: RefCell<AstarScratch>,
+    #[cfg(test)]
+    route_searches: Cell<usize>,
 }
 
 impl GroundSalvageDanger {
@@ -481,7 +483,7 @@ impl GroundSalvageDanger {
         for building in state
             .buildings
             .iter()
-            .filter(|building| !building.kind.is_stealthy())
+            .filter(|building| !building.kind.is_stealthy() && !building.provisional)
         {
             if state.player(building.player).team == viewer_team {
                 stamp_blocked_rect(
@@ -552,6 +554,8 @@ impl GroundSalvageDanger {
             building_blocks,
             lanes,
             path_scratch: RefCell::new(AstarScratch::default()),
+            #[cfg(test)]
+            route_searches: Cell::new(0),
         }
     }
 
@@ -641,6 +645,8 @@ impl GroundSalvageDanger {
         goal: TilePos,
         passable: impl FnMut(TilePos) -> bool,
     ) -> Option<Vec<TilePos>> {
+        #[cfg(test)]
+        self.route_searches.set(self.route_searches.get() + 1);
         chassis::path::astar_with_scratch(
             self.width,
             self.height,
@@ -650,6 +656,11 @@ impl GroundSalvageDanger {
             crate::stats::PATH_EXPANSION_CAP,
             &mut self.path_scratch.borrow_mut(),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn route_search_count(&self) -> usize {
+        self.route_searches.get()
     }
 
     /// Reachability of alternate goals proved by the most recent exhausted
@@ -1303,11 +1314,12 @@ mod danger_tests {
             if vision.visible(tile) {
                 return state
                     .buildings_at(tile)
-                    .any(|building| !building.kind.is_stealthy());
+                    .any(|building| !building.kind.is_stealthy() && !building.provisional);
             }
             let team = state.player(viewer).team;
             state.buildings.iter().any(|building| {
                 !building.kind.is_stealthy()
+                    && !building.provisional
                     && state.player(building.player).team == team
                     && building.contains(tile)
             }) || vision

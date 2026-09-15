@@ -64,24 +64,29 @@ an ordinary command source rather than a separate ruleset.
   ordinary rules. Context contributions retain their individual ages, failed
   approaches retain frozen objective sites through fog, and Array ranking uses
   exact builder readiness. Observation schema 19 includes explored pits,
-  continuous contact tracks and owner-only carried identities and health
-  separately from available units. Decision trace schema 12 separates raw
-  evidence from adjusted return, mission ownership, and bounded experience. All
-  seven domains compete in shared allocation, and forecast income never funds a
-  command. Current-threat emergency defense remains exact survival work with
-  precedence over voluntary proposals, and admitted island-air work advances
-  through the same transaction. Accepted domain payloads keep their exact
-  choices; compatible work may proceed together, while unmigrated planners and
-  utility use only the residual capacity. Connected air-and-siege operations
-  derive opportunity-scaled reconnaissance, suppression, direct strike, and
-  current-visible non-suppression bombing value, then freeze exact members at
-  commitment. Their route and queue preflight covers the complete admitted
-  target cluster, whose canonical anchors are exposed in optional decision
-  traces without entering controller state. See
-  [Bot Strategy](../docs/bot-strategy.md) for the policy direction and
-  [Simulation Architecture](../docs/simulation-architecture.md) for the current
-  implementation contracts.
+  provisional footprints, paid deferred sites, continuous contact tracks and
+  owner-only carried identities and health separately from available units.
+  Decision trace schema 12 separates raw evidence from adjusted return, mission
+  ownership, and bounded experience. All seven domains compete in shared
+  allocation, and forecast income never funds a command. Current-threat
+  emergency defense remains exact survival work with precedence over voluntary
+  proposals, and admitted island-air work advances through the same transaction.
+  Accepted domain payloads keep their exact choices; compatible work may proceed
+  together, while unmigrated planners and utility use only the residual
+  capacity. Connected air-and-siege operations derive opportunity-scaled
+  reconnaissance, suppression, direct strike, and current-visible
+  non-suppression bombing value, then freeze exact members at commitment. Their
+  route and queue preflight covers the complete admitted target cluster, whose
+  canonical anchors are exposed in optional decision traces without entering
+  controller state. See [Bot Strategy](../docs/bot-strategy.md) for the policy
+  direction and [Simulation Architecture](../docs/simulation-architecture.md)
+  for the current implementation contracts.
 - `vision` provides visibility and explored-world state.
+
+Queued construction pays for one site immediately. Fogged footprints remain
+provisional, nonblocking scaffolds until full visibility verifies the ground.
+Invalid sites and sites abandoned by their last worker before work starts refund
+in full; activation keeps the same site identity and never charges again.
 
 Repair and salvage share one damage-first building-work resolver and remain
 mutually exclusive. Completed Repair Bays automatically heal nearby owned units

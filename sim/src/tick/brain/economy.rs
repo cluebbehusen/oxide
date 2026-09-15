@@ -100,7 +100,7 @@ pub(super) fn build(
         .expect("sites only exist for buildable kinds")
         .build_ticks;
     let tile = state.unit(id).expect("caller checked").tile();
-    if tile_adjacent_to_rect(tile, anchor, size) {
+    if !b.provisional && tile_adjacent_to_rect(tile, anchor, size) {
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
         // An Excavator's crew-tick counts double: same ramp, half the
@@ -120,6 +120,14 @@ pub(super) fn build(
         // after damage — see PendingHpGain. The builder learns the site is
         // done next tick, through the built-site branch above.
         let completes = b.progress >= build_ticks;
+        if starts {
+            // Before the first work, a full-refund cancellation must preserve salvage.
+            for dy in 0..size.1 {
+                for dx in 0..size.0 {
+                    state.map.clear_wreck(anchor.offset(dx, dy));
+                }
+            }
+        }
         if starts || step > 0 || completes {
             builds.push(PendingHpGain {
                 starts,
@@ -146,74 +154,39 @@ pub(super) fn build(
     }
 }
 
-/// Walk out to a deferred claim ([`Order::Found`]) and, once standing
-/// beside — or inside — the promised footprint, buffer the founding for
-/// id-ordered resolution after the volley. Adjacency is what makes the
-/// arrival re-check honest: a harvester's sight covers every buildable
-/// footprint from its doorstep, so the strict predicate reads only
-/// ground the founder now sees. A crewmate arriving after the claim
-/// stood simply joins the site. No route stalls exactly like every
-/// other walk-to-work order.
+/// Approach a paid provisional scaffold without claiming hidden ground.
 pub(super) fn found(
     state: &mut State,
     id: UnitId,
     kind: crate::stats::BuildingKind,
     anchor: TilePos,
     events: &mut Vec<Event>,
-    founds: &mut Vec<super::PendingFounding>,
+    builds: &mut Vec<PendingHpGain>,
 ) {
-    let me = state.unit(id).expect("caller checked").player;
-    // The claim already stands (a crewmate founded on an earlier tick,
-    // or the player resumed the same corner): join the crew.
-    let ours = state
+    let player = state.unit(id).expect("caller checked").player;
+    let site = state
         .buildings
         .iter()
-        .find(|b| {
-            b.anchor == anchor
-                && b.kind == kind
-                && b.player == me
-                && !b.built
-                && b.tier == 0
-                && b.hp > 0
-        })
-        .map(|b| b.id);
-    if let Some(site) = ours {
-        let unit = state.unit_mut(id).expect("caller checked");
-        unit.order = Order::Build { site };
-        unit.path = None;
-        unit.progress = 0;
+        .find(|b| b.player == player && b.kind == kind && b.anchor == anchor && b.hp > 0)
+        .map(|b| (b.id, b.provisional));
+    let Some((site, provisional)) = site else {
+        state.unit_mut(id).expect("caller checked").advance_queue();
+        return;
+    };
+    if !provisional {
+        state.unit_mut(id).expect("caller checked").order = Order::Build { site };
+        build(state, id, site, events, builds);
         return;
     }
-    // The crew already FINISHED it: a late crewmate's founding is done,
-    // not stalled — falling through would read its own standing
-    // building as taken ground.
-    let done = state
-        .buildings
-        .iter()
-        .any(|b| b.anchor == anchor && b.kind == kind && b.player == me && b.built);
-    if done {
-        let unit = state.unit_mut(id).expect("caller checked");
-        unit.progress = 0;
-        unit.advance_queue();
-        return;
-    }
-    let size = kind.base_stats().size;
     let tile = state.unit(id).expect("caller checked").tile();
-    let inside = tile.x >= anchor.x
-        && tile.x < anchor.x + size.0
-        && tile.y >= anchor.y
-        && tile.y < anchor.y + size.1;
-    if inside || tile_adjacent_to_rect(tile, anchor, size) {
-        founds.push(super::PendingFounding {
-            unit: id,
-            player: me,
-            kind,
-            anchor,
-        });
+    let size = kind.base_stats().size;
+    if state.building(site).expect("found site").contains(tile)
+        || tile_adjacent_to_rect(tile, anchor, size)
+    {
         state.unit_mut(id).expect("caller checked").path = None;
     } else if !approach_rect(state, id, anchor, size) {
         let unit = state.unit_mut(id).expect("caller checked");
-        let (player, pos) = (unit.player, unit.pos);
+        let pos = unit.pos;
         unit.clear_program();
         events.push(Event::OrderStalled {
             unit: id,
@@ -1377,6 +1350,106 @@ fn extract(
     }
 }
 
+fn deposit_cargo(state: &mut State, id: UnitId, events: &mut Vec<Event>) {
+    let unit = state.unit(id).expect("caller checked");
+    let (me, carrying) = (unit.player, unit.carrying);
+    let unit = state.unit_mut(id).expect("caller checked");
+    unit.carrying = 0;
+    unit.progress = 0;
+    unit.path = None;
+    // Saturating: a hostile scenario can start a bank near u32::MAX.
+    // The event reports what was actually credited, not what was
+    // carried — at the ceiling those differ.
+    let seat = state.player_mut(me);
+    let credited = seat.scrap.saturating_add(carrying) - seat.scrap;
+    seat.scrap += credited;
+    if credited > 0 {
+        seat.recovery_allowance = 0;
+        seat.recovery_target = 0;
+        seat.recovery_ready = true;
+    }
+    events.push(Event::ScrapDeposited {
+        player: me,
+        amount: credited,
+    });
+}
+
+pub(in crate::tick) fn return_cargo_destination(
+    state: &State,
+    danger: &GroundSalvageDanger,
+    id: UnitId,
+    requested: Option<BuildingId>,
+) -> Option<BuildingId> {
+    let drop_offs = drop_offs_by_distance(state, id);
+    for avoid_danger in [true, false] {
+        let mut scan = DropOffScan::default();
+        if let Some(foundry_id) = drop_offs.iter().copied().find(|foundry_id| {
+            if requested.is_some_and(|requested| requested != *foundry_id) {
+                return false;
+            }
+            let foundry = state.building(*foundry_id).expect("live drop-off");
+            state
+                .unit(id)
+                .expect("validated worker")
+                .in_harvest_reach(foundry.anchor, foundry.stats().size)
+                || known_rect_route(
+                    state,
+                    danger,
+                    id,
+                    foundry.anchor,
+                    foundry.stats().size,
+                    avoid_danger,
+                    Some(&mut scan),
+                )
+                .is_some()
+        }) {
+            return Some(foundry_id);
+        }
+    }
+    None
+}
+
+pub(super) fn return_cargo(
+    state: &mut State,
+    danger: &GroundSalvageDanger,
+    id: UnitId,
+    foundry: BuildingId,
+    repair: bool,
+    events: &mut Vec<Event>,
+) {
+    let unit = state.unit(id).expect("caller checked");
+    if let Some(building) = state.building(foundry).filter(|building| {
+        building.player == unit.player
+            && building.hp > 0
+            && building.built
+            && building.kind.is_drop_off()
+    }) {
+        if unit.in_harvest_reach(building.anchor, building.stats().size) {
+            let needs_repair = repair && building.hp < building.stats().max_hp;
+            deposit_cargo(state, id, events);
+            let unit = state.unit_mut(id).expect("caller checked");
+            if needs_repair {
+                unit.order = Order::Repair { building: foundry };
+            } else {
+                unit.advance_queue();
+            }
+            return;
+        }
+        if try_drop_offs(state, danger, id, &[foundry], events) {
+            return;
+        }
+    }
+    let unit = state.unit_mut(id).expect("caller checked");
+    let (player, pos) = (unit.player, unit.pos);
+    unit.advance_queue();
+    events.push(Event::OrderStalled {
+        unit: id,
+        player,
+        pos,
+        reason: StallReason::NoRoute,
+    });
+}
+
 /// Haul the load to a reachable own Foundry and deposit when adjacent.
 /// A retiring contract advances its queued program only after that safe
 /// arrival; a live contract keeps its anchored zone and returns next tick.
@@ -1388,7 +1461,6 @@ fn deliver(
     retiring: bool,
 ) {
     let unit = state.unit(id).expect("caller checked");
-    let (me, carrying) = (unit.player, unit.carrying);
     let drop_offs = drop_offs_by_distance(state, id);
     let at_drop_off = drop_offs.iter().any(|foundry_id| {
         state
@@ -1396,25 +1468,7 @@ fn deliver(
             .is_some_and(|foundry| unit.in_harvest_reach(foundry.anchor, foundry.stats().size))
     });
     if at_drop_off {
-        let unit = state.unit_mut(id).expect("caller checked");
-        unit.carrying = 0;
-        unit.progress = 0;
-        unit.path = None;
-        // Saturating: a hostile scenario can start a bank near u32::MAX.
-        // The event reports what was actually credited, not what was
-        // carried — at the ceiling those differ.
-        let seat = state.player_mut(me);
-        let credited = seat.scrap.saturating_add(carrying) - seat.scrap;
-        seat.scrap += credited;
-        if credited > 0 {
-            seat.recovery_allowance = 0;
-            seat.recovery_target = 0;
-            seat.recovery_ready = true;
-        }
-        events.push(Event::ScrapDeposited {
-            player: me,
-            amount: credited,
-        });
+        deposit_cargo(state, id, events);
         if retiring {
             state.unit_mut(id).expect("caller checked").advance_queue();
         }
@@ -1500,6 +1554,105 @@ mod harvest_zone_tests {
     use crate::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
     use crate::stats::BuildingKind;
     use crate::{Faction, PlayerId, Scenario, UnitKind};
+
+    #[test]
+    fn return_cargo_reuses_exhausted_floods_per_worker_and_safety_pass() {
+        let mut rows = vec![vec!['.'; 32]; 20];
+        for (y, row) in rows.iter_mut().enumerate() {
+            for (x, tile) in row.iter_mut().enumerate() {
+                if y == 0 || y == 19 || x == 0 || x == 31 || x == 15 {
+                    *tile = '#';
+                }
+            }
+        }
+        rows[2][18] = '1';
+        rows[16][28] = '2';
+        let scenario = serde_json::json!({
+            "name": "sealed-worker-drop-offs", "seed": 25,
+            "map": rows.into_iter().map(|row| row.into_iter().collect::<String>()).collect::<Vec<_>>(),
+            "players": [
+                {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "units": [
+                {"player": 0, "kind": "harvester", "x": 4, "y": 5},
+                {"player": 0, "kind": "excavator", "x": 6, "y": 5},
+                {"player": 0, "kind": "harvester", "x": 18, "y": 8}
+            ],
+            "buildings": [
+                {"player": 0, "kind": "foundry", "x": 23, "y": 2},
+                {"player": 0, "kind": "foundry", "x": 18, "y": 11},
+                {"player": 0, "kind": "foundry", "x": 23, "y": 11}
+            ]
+        });
+        let state = Scenario::from_json(&scenario.to_string())
+            .unwrap()
+            .build()
+            .unwrap();
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        for worker in &state.units[..2] {
+            let before = danger.route_search_count();
+            assert_eq!(
+                return_cargo_destination(&state, &danger, worker.id, None),
+                None
+            );
+            assert_eq!(danger.route_search_count() - before, 2);
+        }
+        assert!(return_cargo_destination(&state, &danger, state.units[2].id, None).is_some());
+    }
+
+    #[test]
+    fn return_cargo_resets_reachability_before_ignoring_danger() {
+        let scenario = serde_json::json!({
+            "name": "danger-blocked-return", "seed": 25,
+            "map": [
+                "##########################",
+                "#1....................2..#",
+                "#........................#",
+                "#........................#",
+                "#........................#",
+                "#........................#",
+                "##########################"
+            ],
+            "players": [
+                {"name": "F", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "C", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "units": [
+                {"player": 0, "kind": "harvester", "x": 16, "y": 3},
+                {"player": 1, "kind": "scuttler", "x": 12, "y": 3}
+            ]
+        });
+        let state = Scenario::from_json(&scenario.to_string())
+            .unwrap()
+            .build()
+            .unwrap();
+        let worker = state.units[0].id;
+        let foundry = state
+            .buildings
+            .iter()
+            .find(|b| b.player == PlayerId(0))
+            .unwrap();
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        assert!(
+            known_rect_route(
+                &state,
+                &danger,
+                worker,
+                foundry.anchor,
+                foundry.stats().size,
+                true,
+                None
+            )
+            .is_none()
+        );
+        let before = danger.route_search_count();
+        assert_eq!(
+            return_cargo_destination(&state, &danger, worker, None),
+            Some(foundry.id)
+        );
+        assert_eq!(danger.route_search_count() - before, 2);
+    }
 
     #[test]
     fn mirrored_workers_replace_depleted_sources_in_their_local_frame() {

@@ -377,10 +377,12 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::InvalidAirMotion(_) => 71,
         E::InvalidAircraftCrash(_) => 72,
         E::InvalidContactTracking(_) => 73,
+        E::InvalidProvisionalSite(_) => 74,
+        E::InvalidReturnCargo(_) => 75,
     }
 }
 
-const ROWS: usize = 74;
+const ROWS: usize = 76;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -467,6 +469,8 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::InvalidAirMotion(UnitId(0)),
         E::InvalidAircraftCrash(0),
         E::InvalidContactTracking(PlayerId(0)),
+        E::InvalidProvisionalSite(BuildingId(0)),
+        E::InvalidReturnCargo(UnitId(0)),
     ]
 }
 
@@ -736,6 +740,21 @@ fn every_checklist_row_refuses_its_forgery() {
             "unit u0 names a coordinate outside the envelope",
         ),
         (
+            "cargo delivery to a foreign Foundry",
+            |d| {
+                let foreign = d["buildings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|b| b["player"] == json!(1) && b["kind"] == json!("foundry"))
+                    .unwrap()["id"]
+                    .clone();
+                d["units"][0]["order"] =
+                    json!({"order": "return_cargo", "foundry": foreign, "repair": false});
+            },
+            "unit u0 has an invalid cargo delivery",
+        ),
+        (
             "a harvest source outside its anchored work zone",
             |d| {
                 d["units"][0]["order"]["node"] = json!({"x": 15, "y": 8});
@@ -749,6 +768,11 @@ fn every_checklist_row_refuses_its_forgery() {
                     json!({"order": "attack", "target": {"kind": "unit", "id": 9_999}});
             },
             "unit u0 is ordered against an id the run never minted",
+        ),
+        (
+            "a completed building marked provisional",
+            |d| d["buildings"][0]["provisional"] = json!(true),
+            "building b0 has invalid provisional state",
         ),
         (
             "a building owned off the table",

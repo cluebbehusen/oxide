@@ -20,11 +20,21 @@ impl State {
         kind: BuildingKind,
         anchor: TilePos,
     ) -> Option<PlaceRefusal> {
-        if kind.base_stats().construction.is_none() {
-            return Some(PlaceRefusal::NotConstructible);
-        }
         if !self.prerequisites_met(player, kind) {
             return Some(PlaceRefusal::Prerequisite);
+        }
+        self.place_refusal_except(player, kind, anchor, None)
+    }
+
+    pub(crate) fn place_refusal_except(
+        &self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+        ignored: Option<crate::BuildingId>,
+    ) -> Option<PlaceRefusal> {
+        if kind.base_stats().construction.is_none() {
+            return Some(PlaceRefusal::NotConstructible);
         }
         let (w, h) = kind.base_stats().size;
         // Sight answers before the authored-frame rules. Otherwise the
@@ -60,7 +70,7 @@ impl State {
                 if !self.map.terrain_passable(t) {
                     return Some(PlaceRefusal::Terrain);
                 }
-                if self.known_building_at(player, t) {
+                if self.known_building_at_except(player, t, ignored) {
                     return Some(PlaceRefusal::Building);
                 }
             }
@@ -83,9 +93,14 @@ impl State {
         hostile_in_footprint.then_some(PlaceRefusal::Unit)
     }
 
-    fn known_building_at(&self, player: PlayerId, tile: TilePos) -> bool {
+    fn known_building_at_except(
+        &self,
+        player: PlayerId,
+        tile: TilePos,
+        ignored: Option<crate::BuildingId>,
+    ) -> bool {
         self.buildings_at(tile)
-            .any(|b| self.building_apparent(player, b))
+            .any(|b| Some(b.id) != ignored && self.building_apparent(player, b))
             || self
                 .vision(player)
                 .ghosts()
@@ -210,6 +225,7 @@ impl State {
         anchor: TilePos,
         units: &[UnitId],
     ) -> Option<PlaceRefusal> {
+        let released = crate::tick::construction::replaced_sites(self, player, units);
         if kind.base_stats().construction.is_none() {
             return Some(PlaceRefusal::NotConstructible);
         }
@@ -257,7 +273,11 @@ impl State {
                     if !self.map.terrain_passable(t) {
                         return Some(PlaceRefusal::Terrain);
                     }
-                    if self.known_building_at(player, t) {
+                    if self
+                        .buildings_at(t)
+                        .any(|b| !released.contains(&b.id) && self.building_apparent(player, b))
+                        || self.known_charge_at(player, t)
+                    {
                         return Some(PlaceRefusal::Building);
                     }
                     continue;
@@ -275,6 +295,7 @@ impl State {
                     .any(|g| covers(g.anchor, g.kind.base_stats().size, t));
                 let allied_building = self.buildings.iter().any(|b| {
                     self.players[b.player.0 as usize].team == my_team
+                        && !released.contains(&b.id)
                         && covers(b.anchor, b.stats().size, t)
                 });
                 if ghosted || allied_building {

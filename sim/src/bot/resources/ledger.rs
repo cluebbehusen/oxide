@@ -719,6 +719,7 @@ mod tests {
 
     fn building(id: u32, kind: BuildingKind, anchor: TilePos, built: bool) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: ME,
             kind,
@@ -827,7 +828,7 @@ mod tests {
         };
         let mut state = scenario.build().expect("forecast parity scenario builds");
         if !support_built {
-            state
+            let site = state
                 .buildings
                 .iter_mut()
                 .find(|building| {
@@ -835,8 +836,9 @@ mod tests {
                         && building.kind == BuildingKind::Foundry
                         && building.anchor == support_anchor
                 })
-                .expect("the own support candidate stands")
-                .built = false;
+                .expect("the own support candidate stands");
+            site.built = false;
+            site.progress = 1;
         }
         state.tick = crate::stats::FOUNDRY_DRIP_START_TICK - 2;
         state

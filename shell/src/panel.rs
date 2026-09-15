@@ -96,7 +96,7 @@ pub enum CardAction {
     CancelProduction(UnitKind),
     /// Cancel an unfinished site shown by a Harvester's Build order.
     CancelSite(BuildingId),
-    /// Cancel one unpaid logical site across its assigned Harvester crew.
+    /// Cancel one unstarted paid site across its assigned Harvester crew.
     CancelFound(BuildingKind, chassis::grid::TilePos),
     /// Clear the selected producers' rally points.
     ClearRally,
@@ -490,6 +490,15 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
         },
         // A weld patient is own by construction — no fog gate needed,
         // and its meter is the wound closing.
+        Order::ReturnCargo { foundry, .. } => {
+            let building = game.state.building(*foundry)?;
+            Some((
+                OrderSubject::Building(building.kind, faction_of(building.player)),
+                entity_name(building.kind.name()),
+                false,
+                None,
+            ))
+        }
         Order::RepairUnit { unit } => {
             let u = game.state.unit(*unit)?;
             let frac = (u.hp as f32 / u.kind.stats().max_hp.max(1) as f32).clamp(0.0, 1.0);
@@ -530,6 +539,15 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
             VerbIcon::Move,
             "Run",
             "Running without firing or engaging enemies.",
+        ),
+        Order::ReturnCargo { repair, .. } => (
+            VerbIcon::Harvest,
+            "Return cargo",
+            if *repair {
+                "Delivering scrap, then repairing the Foundry."
+            } else {
+                "Delivering scrap, then waiting at the Foundry."
+            },
         ),
         Order::Harvest { .. } => (
             VerbIcon::Harvest,
@@ -584,7 +602,7 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
         Order::Found { .. } => (
             VerbIcon::Build,
             "Found",
-            "Moving to the build site. Scrap is charged when construction begins.",
+            "Moving to a paid scaffold; its ground will be checked when visible.",
         ),
         Order::RepairUnit { .. } => (
             VerbIcon::Repair,
@@ -715,8 +733,16 @@ pub fn build_for_palette(
 
 pub(crate) fn build_for_input(game: &Game, input: &crate::input::InputState) -> Option<Panel> {
     let mut panel = build_for_palette(game, &input.bindings, input.construction_open())?;
+    let construction_scrap = input
+        .construction_open()
+        .then(|| crate::input::available_construction_scrap(game, input));
     for card in &mut panel.cards {
         if let CardAction::ArmBuild(kind) = card.action {
+            if game.state.prerequisites_met(game.human, kind) {
+                let cost = kind.base_stats().construction.map_or(0, |stats| stats.cost);
+                card.enabled = construction_scrap.unwrap_or(0) >= cost;
+                card.why = (!card.enabled).then(|| format!("needs {cost} scrap"));
+            }
             let category = crate::action::building_category(kind);
             let key = input.bindings.labels(Action::Build(kind));
             card.hotkey = if input.build_category == Some(category) {
@@ -797,19 +823,17 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 )],
                 progress: None,
             });
-            if any_rally {
-                panel.cards.push(Card {
-                    icon: CardIcon::Verb(VerbIcon::Rally),
-                    title: "Clear rallies".into(),
-                    cost: None,
-                    hotkey: chord(bindings, Action::ClearRally),
-                    action: CardAction::ClearRally,
-                    enabled: true,
-                    why: None,
-                    desc: vec!["Return new units to their producer doors.".into()],
-                    progress: None,
-                });
-            }
+            panel.cards.push(Card {
+                icon: CardIcon::Verb(VerbIcon::Rally),
+                title: "Clear rallies".into(),
+                cost: None,
+                hotkey: chord(bindings, Action::ClearRally),
+                action: CardAction::ClearRally,
+                enabled: any_rally,
+                why: (!any_rally).then(|| "No rally points set.".into()),
+                desc: vec!["Return new units to their producer doors.".into()],
+                progress: None,
+            });
         }
         let production = crate::production::Production::inspect(game);
         if selected_buildings.iter().all(|b| b.player == game.human) && production.homogeneous() {
@@ -895,7 +919,14 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 action: CardAction::Dispatch(Action::StopOrScrap),
                 enabled: true,
                 why: None,
-                desc: vec!["Abandon the site for a partial refund.".into()],
+                desc: vec![
+                    if building.progress == 0 {
+                        "Abandon the unstarted site for a full refund."
+                    } else {
+                        "Abandon the site for a partial refund."
+                    }
+                    .into(),
+                ],
                 progress: None,
             });
             return Some(panel);
@@ -982,19 +1013,20 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 ],
                 progress: None,
             });
-            if building.rally.is_some() {
-                panel.cards.push(Card {
-                    icon: CardIcon::Verb(VerbIcon::Rally),
-                    title: "Clear rally".into(),
-                    cost: None,
-                    hotkey: chord(bindings, Action::ClearRally),
-                    action: CardAction::ClearRally,
-                    enabled: true,
-                    why: None,
-                    desc: vec!["New units will remain near the producer.".into()],
-                    progress: None,
-                });
-            }
+            panel.cards.push(Card {
+                icon: CardIcon::Verb(VerbIcon::Rally),
+                title: "Clear rally".into(),
+                cost: None,
+                hotkey: chord(bindings, Action::ClearRally),
+                action: CardAction::ClearRally,
+                enabled: building.rally.is_some(),
+                why: building
+                    .rally
+                    .is_none()
+                    .then(|| "No rally point set.".into()),
+                desc: vec!["New units will remain near the producer.".into()],
+                progress: None,
+            });
         }
         panel
             .cards
@@ -1189,6 +1221,22 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 "Select a completed friendly building to dismantle".into(),
                 "for a partial refund. Foundries cannot be salvaged.".into(),
             ],
+            progress: None,
+        });
+    }
+    if has_builder {
+        let loaded = units
+            .iter()
+            .any(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0);
+        panel.cards.push(Card {
+            icon: CardIcon::Verb(VerbIcon::Harvest),
+            title: "Return cargo".into(),
+            cost: None,
+            hotkey: chord(bindings, Action::ReturnCargo),
+            action: CardAction::Dispatch(Action::ReturnCargo),
+            enabled: loaded,
+            why: (!loaded).then(|| "No scrap carried.".into()),
+            desc: vec!["Cancel current and queued work, deliver scrap to the nearest reachable Foundry, then stay there.".into()],
             progress: None,
         });
     }
@@ -1633,24 +1681,24 @@ mod tests {
         game.selection.buildings = vec![foundry];
         let panel = build_for_palette(&game, &BindingMap::classic(), false).expect("panel");
         assert_eq!(panel.title, "Foundry");
-        assert_eq!(panel.cards.len(), 5, "four units plus the rally affordance");
+        assert_eq!(panel.cards.len(), 6, "four units plus two rally controls");
         assert_eq!(panel.cards[0].title, "Set rally");
         assert_eq!(panel.cards[0].action, CardAction::ArmRally);
-        assert_eq!(panel.cards[1].hotkey, "Q");
-        assert_eq!(panel.cards[1].cost, Some(50));
+        assert_eq!(panel.cards[2].hotkey, "Q");
+        assert_eq!(panel.cards[2].cost, Some(50));
         assert_eq!(unit_train_time_label(UnitKind::Harvester), "5s");
         assert_eq!(unit_train_time_label(UnitKind::Sentinel), "7.5s");
-        assert!(panel.cards[1].enabled, "150 scrap affords a harvester");
+        assert!(panel.cards[2].enabled, "150 scrap affords a harvester");
         assert_eq!(
-            panel.cards[1].action,
+            panel.cards[2].action,
             CardAction::Dispatch(Action::TrainSlot(0)),
             "the card IS its hotkey"
         );
         assert!(panel.queue.is_empty(), "nothing queued yet");
         // The harvester's card carries no weapon line; the sentinel's
         // carries both of its guns.
-        assert!(!panel.cards[1].desc.iter().any(|l| l.contains("dmg")));
-        assert!(panel.cards[2].desc.iter().any(|l| l.contains("dmg")));
+        assert!(!panel.cards[2].desc.iter().any(|l| l.contains("dmg")));
+        assert!(panel.cards[3].desc.iter().any(|l| l.contains("dmg")));
 
         game.state.tick(&[PlayerCommand {
             player: game.human,
@@ -1679,7 +1727,12 @@ mod tests {
                 .iter()
                 .any(|card| { card.title == "Set rally" && card.action == CardAction::ArmRally })
         );
-        assert!(!panel.cards.iter().any(|card| card.title == "Clear rally"));
+        assert!(
+            panel
+                .cards
+                .iter()
+                .any(|card| card.title == "Clear rally" && !card.enabled)
+        );
 
         game.state.tick(&[PlayerCommand {
             player: game.human,
@@ -1695,11 +1748,9 @@ mod tests {
                 .iter()
                 .any(|card| { card.title == "Reset rally" && card.action == CardAction::ArmRally })
         );
-        assert!(
-            panel.cards.iter().any(|card| {
-                card.title == "Clear rally" && card.action == CardAction::ClearRally
-            })
-        );
+        assert!(panel.cards.iter().any(|card| {
+            card.title == "Clear rally" && card.action == CardAction::ClearRally && card.enabled
+        }));
     }
 
     #[test]
@@ -1723,7 +1774,7 @@ mod tests {
         let panel =
             build_for_palette(&game, &BindingMap::classic(), false).expect("multi-building panel");
         assert_eq!(panel.title, "2 BUILDINGS");
-        assert_eq!(panel.cards.len(), 1);
+        assert_eq!(panel.cards.len(), 2);
         assert_eq!(panel.cards[0].title, "Set rallies");
         assert_eq!(panel.cards[0].action, CardAction::ArmRally);
     }
@@ -1847,7 +1898,7 @@ mod tests {
         }
         // 500 - 3x50 = 350: still rich, cards enabled, ghosts armed.
         let panel = build_for_palette(&game, &BindingMap::classic(), false).expect("panel");
-        assert!(panel.cards[1].enabled);
+        assert!(panel.cards[2].enabled);
         assert_eq!(panel.queue.len(), 3);
         assert_eq!(panel.queue[1].action, CardAction::CancelQueue(foundry, 1));
         // Fill to the sim's cap: every production card refuses.

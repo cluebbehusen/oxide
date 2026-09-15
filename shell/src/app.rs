@@ -908,8 +908,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 * app.config.volumes.effects
                 * Mixer::base_volume(SoundKind::RocketMotor),
         );
-        let combat_impulse = queued.iter().any(|(kind, _)| raises_combat_music(*kind));
-        for event in crate::audio_mix::frame_mix(queued, cam_center, cam_half_extents, cam_zoom) {
+        let mixed = crate::audio_mix::frame_mix(queued, cam_center, cam_half_extents, cam_zoom);
+        let combat_impulse = mixed.iter().any(|event| raises_combat_music(event.kind));
+        for event in mixed {
             app.mixer
                 .play(&app.sounds, event.kind, &app.config.volumes, event.gain);
         }

@@ -1235,6 +1235,7 @@ mod tests {
                 hp: 40,
             }],
             enemy_buildings: vec![super::super::observation::BuildingObs {
+                provisional: false,
                 id: BuildingId(5),
                 player: PlayerId(1),
                 kind: BuildingKind::Foundry,
@@ -1312,6 +1313,7 @@ mod tests {
                 hp: 40,
             }],
             enemy_buildings: vec![super::super::observation::BuildingObs {
+                provisional: false,
                 id: BuildingId(5),
                 player: PlayerId(1),
                 kind: BuildingKind::Foundry,
@@ -1354,6 +1356,7 @@ mod tests {
             map_height: 20,
             visible: vec![true; 400],
             enemy_buildings: vec![BuildingObs {
+                provisional: false,
                 id: BuildingId(1),
                 player: PlayerId(1),
                 kind: BuildingKind::Foundry,

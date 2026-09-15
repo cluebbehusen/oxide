@@ -161,6 +161,9 @@ pub struct BuildingView {
         skip_serializing_if = "core::clone::Clone::clone"
     )]
     pub built: bool,
+    /// Paid blueprint whose footprint is not yet verified.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub provisional: bool,
     /// Construction or training progress ticks.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub progress: u32,
@@ -517,6 +520,7 @@ fn building_view(b: &Building) -> BuildingView {
         rally: b.rally.map(|r| [r.x, r.y]),
         focus: b.focus,
         built: b.built,
+        provisional: b.provisional,
         progress: b.progress,
         tier: b.tier,
     }
@@ -911,6 +915,7 @@ mod tests {
             rally: None,
             focus: Some(target.into()),
             built: true,
+            provisional: false,
             tier: 0,
             cooldown: 0,
             salvage_drained: 0,

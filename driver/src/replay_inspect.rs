@@ -378,6 +378,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Attack { .. } => "attack",
         Command::AttackMove { .. } => "attack_move",
         Command::Harvest { .. } => "harvest",
+        Command::ReturnCargo { .. } => "return_cargo",
         Command::Patrol { .. } => "patrol",
         Command::Stop { .. } => "stop",
         Command::Train { .. } => "train",

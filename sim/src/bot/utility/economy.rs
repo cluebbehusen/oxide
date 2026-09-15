@@ -1136,6 +1136,7 @@ mod tests {
             map_height: 10,
             my_units: vec![harvester],
             my_buildings: vec![BuildingObs {
+                provisional: false,
                 id: BuildingId(0),
                 player: PlayerId(0),
                 kind: BuildingKind::Foundry,
@@ -1297,6 +1298,7 @@ mod tests {
         };
         let ghost_anchor = TilePos::new(27, 16);
         obs.enemy_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(u32::MAX),
             player: PlayerId(1),
             kind: BuildingKind::Turret,
@@ -1348,6 +1350,7 @@ mod tests {
         built: bool,
     ) {
         obs.my_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: PlayerId(0),
             kind,
@@ -1387,6 +1390,7 @@ mod tests {
         seen: bool,
     ) {
         obs.enemy_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: PlayerId(1),
             kind,
@@ -1971,6 +1975,7 @@ mod tests {
         obs.tick = 2_000;
         obs.scrap = scout_cost;
         obs.enemy_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(u32::MAX),
             player: PlayerId(1),
             kind: BuildingKind::Foundry,
@@ -5074,6 +5079,7 @@ mod tests {
         let mut obs = observation();
         let anchor = node.offset(7, 0);
         obs.enemy_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(9),
             player: PlayerId(1),
             kind: BuildingKind::Turret,
@@ -5644,6 +5650,7 @@ mod tests {
         obs.tick = 100;
         obs.known_wrecks = vec![(node, 45)];
         obs.enemy_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(9),
             player: PlayerId(1),
             kind: BuildingKind::Turret,

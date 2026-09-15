@@ -869,7 +869,9 @@ fn a_right_click_on_ground_stages_an_advance() {
 
 #[test]
 fn a_context_order_cancels_placement_and_every_deferred_build_ghost() {
-    let mut game = headless_game();
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.players[0].scrap = 300;
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
     let mut input = InputState::new();
     let builder = game
         .state
@@ -4540,9 +4542,9 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     ));
 
     let queued = pending_build_projection(&game, kind, replacement, true).funds;
-    assert_eq!(queued.scrap, scrap);
+    assert_eq!(queued.scrap, scrap - cost);
     assert_eq!(
-        queued.reserved, cost,
+        queued.refund, 0,
         "Shift preserves the pending claim and its reservation"
     );
     assert_eq!(
@@ -4551,9 +4553,9 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
         "Shift preserves the overlapping pending footprint"
     );
     let replacing = pending_build_projection(&game, kind, replacement, false).funds;
-    assert_eq!(replacing.scrap, scrap);
+    assert_eq!(replacing.scrap, scrap - cost);
     assert_eq!(
-        replacing.reserved, 0,
+        replacing.refund, cost,
         "a plain click replaces the pending claim before it can charge"
     );
     assert_eq!(
@@ -4581,8 +4583,8 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     );
     assert_eq!(
         game.state.player(game.human).scrap,
-        scrap,
-        "the founder is still walking, so neither deferred command charged"
+        scrap - cost,
+        "replacement refunds the first site and pays for the second"
     );
     assert!(matches!(
         game.state.unit(builder).expect("builder survives").order,
@@ -4641,7 +4643,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
 }
 
 #[test]
-fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
+fn pending_projection_refunds_unstarted_sites_on_replacement_or_stop() {
     let mut game = drag_arena(500);
     let builder = game.state.units()[0].id;
     let kind = oxide_sim::BuildingKind::Turret;
@@ -4668,11 +4670,11 @@ fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
         500 - cost,
         "an immediate site charges before its builder is reprogrammed"
     );
-    assert_eq!(committed.reserved, 0);
+    assert_eq!(committed.refund, cost);
     assert_eq!(
         placement_refusal(&game, kind, anchor, false),
-        Some(oxide_sim::PlaceRefusal::Building),
-        "an immediate site's ground stays committed after replacement"
+        None,
+        "replacement releases an unstarted site"
     );
 
     game.pending.clear();
@@ -4689,8 +4691,8 @@ fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
     assert_eq!(
         pending_build_projection(&game, kind, anchor, true).funds,
         PendingBuildFunds {
-            scrap: 500,
-            reserved: cost,
+            scrap: 500 - cost,
+            refund: 0,
         }
     );
     assert_eq!(
@@ -4707,8 +4709,8 @@ fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
     assert_eq!(
         pending_build_projection(&game, kind, anchor, true).funds,
         PendingBuildFunds {
-            scrap: 500,
-            reserved: cost,
+            scrap: 500 - cost,
+            refund: 0,
         },
         "a rejected pending command cannot release the claim"
     );
@@ -4728,7 +4730,7 @@ fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
         pending_build_projection(&game, kind, anchor, true).funds,
         PendingBuildFunds {
             scrap: 500,
-            reserved: 0,
+            refund: 0,
         },
         "Stop clears the deferred promise before it can charge"
     );
@@ -4790,10 +4792,7 @@ fn a_paid_site_does_not_reserve_its_surviving_deferred_claim_again() {
                     anchor: claimed,
                 } if ordered == kind && claimed == anchor
             ));
-            assert!(
-                projected.has_own_unfinished_site(game.human, kind, anchor),
-                "the later immediate command paid for the deferred claim's site"
-            );
+            assert_eq!(projected.scrap(game.human), Some(scrap - cost));
         });
 
     game.selection.units = vec![workers[1]];
@@ -4802,7 +4801,7 @@ fn a_paid_site_does_not_reserve_its_surviving_deferred_claim_again() {
         projection.funds,
         PendingBuildFunds {
             scrap: scrap - cost,
-            reserved: 0,
+            refund: 0,
         },
         "the projected bank is charged once and the free join reserves nothing"
     );
@@ -4950,19 +4949,48 @@ fn a_plain_placement_replaces_the_selected_claim_while_shift_preserves_it() {
             .iter()
             .any(|event| matches!(event, oxide_sim::Event::CommandRejected { .. }))
     );
-    assert!(matches!(
+    let site = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == old_spot)
+        .unwrap();
+    assert!(!site.built);
+    assert_eq!(site.progress, 0);
+    assert_eq!(
         game.state.unit(builder).unwrap().order,
-        oxide_sim::Order::Found {
-            kind: claimed_kind,
-            anchor,
-        } if claimed_kind == kind && anchor == old_spot
-    ));
-    assert!(
-        game.state.buildings().iter().all(|b| b.anchor != old_spot),
-        "the founder is still walking, so only its claim occupies the ground"
+        oxide_sim::Order::Build { site: site.id }
     );
 
     game.selection.units = vec![builder];
+    input.build_menu = true;
+    let affordable = |game: &Game, input: &InputState| {
+        crate::panel::build_for_input(game, input)
+            .unwrap()
+            .cards
+            .iter()
+            .find(|card| card.action == crate::panel::CardAction::ArmBuild(kind))
+            .unwrap()
+            .enabled
+    };
+    assert!(
+        affordable(&game, &input),
+        "replacement cards can use the unstarted site's refund"
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::KeyDown { key: Key::Shift }],
+    );
+    assert!(
+        !affordable(&game, &input),
+        "queued construction cannot spend a retained site's refund"
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::KeyUp { key: Key::Shift }],
+    );
     input.placing = Some(kind);
     game.camera.center = vec2(new_spot.x as f32 + 0.5, new_spot.y as f32 + 0.5);
     game.camera.pan(Vec2::ZERO);
@@ -5474,7 +5502,7 @@ fn a_hidden_mine_does_not_change_placement_selection_or_resume_input() {
         assert_eq!(game.state.player(game.human).scrap, 760);
         assert_eq!(
             placement_refusal(&game, BuildingKind::Barricade, anchor, false),
-            Some(oxide_sim::PlaceRefusal::Building)
+            None
         );
         input.placing = None;
         let point = game.camera.to_screen(vec2(12.5, 4.5));
@@ -5706,6 +5734,64 @@ fn upgrade_and_rally_shortcuts_share_the_cards_owner_and_affordability_gates() {
 }
 
 #[test]
+fn remapped_clear_rally_is_disabled_until_a_selected_producer_has_a_rally() {
+    use crate::action::Chord;
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Fabricator,
+        x: 9,
+        y: 3,
+    });
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+    game.selection.buildings = game
+        .state
+        .buildings()
+        .iter()
+        .filter(|b| b.player == game.human)
+        .map(|b| b.id)
+        .collect();
+    let producers = game.selection.buildings.clone();
+    let mut input = InputState::new();
+    assert!(
+        input
+            .bindings
+            .rebind(Action::ClearRally, Chord::bare(Key::I))
+    );
+    controls_key(&mut game, &mut input, Key::I);
+    assert!(game.pending.is_empty());
+
+    game.state.tick(&[PlayerCommand {
+        player: game.human,
+        command: Command::SetRally {
+            building: producers[0],
+            rally: Some(TilePos::new(14, 9)),
+        },
+    }]);
+    controls_key(&mut game, &mut input, Key::I);
+    let expected: Vec<_> = producers
+        .iter()
+        .map(|id| PlayerCommand {
+            player: game.human,
+            command: Command::SetRally {
+                building: *id,
+                rally: None,
+            },
+        })
+        .collect();
+    assert_eq!(*game.pending, expected);
+    let commands = std::mem::take(&mut game.pending);
+    game.state.tick(&commands);
+    controls_key(&mut game, &mut input, Key::I);
+    assert!(game.pending.is_empty());
+    assert!(
+        producers
+            .iter()
+            .all(|id| game.state.building(*id).unwrap().rally.is_none())
+    );
+}
+
+#[test]
 fn grouped_production_clicks_and_shortcuts_stage_the_same_batch() {
     let mut scenario = oxide_sim::Scenario::skirmish();
     scenario.players[0].scrap = 125;
@@ -5762,4 +5848,228 @@ fn grouped_production_clicks_and_shortcuts_stage_the_same_batch() {
     mouse_game.do_tick();
     key_game.do_tick();
     assert_eq!(mouse_game.state.hash(), key_game.state.hash());
+}
+
+#[test]
+fn return_cargo_card_and_shortcut_replace_work_for_both_workers() {
+    for kind in [UnitKind::Harvester, UnitKind::Excavator] {
+        for via_card in [false, true] {
+            let mut game = headless_game();
+            let worker = game
+                .state
+                .units()
+                .iter()
+                .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+                .unwrap()
+                .id;
+            let mut data = serde_json::to_value(&*game.state).unwrap();
+            let row = data["units"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|u| u["id"] == serde_json::json!(worker))
+                .unwrap();
+            row["kind"] = serde_json::json!(kind);
+            row["carrying"] = serde_json::json!(4);
+            *game.state = serde_json::from_value(data).unwrap();
+            game.selection.units = vec![worker];
+            let mut input = InputState::new();
+            input.bindings = crate::action::BindingMap::classic();
+            let panel = crate::panel::build_for_palette(&game, &input.bindings, false).unwrap();
+            let card = panel
+                .cards
+                .iter()
+                .find(|card| card.action.semantic() == Some(Action::ReturnCargo))
+                .unwrap();
+            assert!(card.enabled);
+            if via_card {
+                activate_card(&mut game, &mut input, card.action);
+            } else {
+                apply_events(&mut game, &mut input, &[RawEvent::KeyDown { key: Key::U }]);
+            }
+            assert!(game.pending.iter().any(|pc| matches!(&pc.command, Command::ReturnCargo { units, foundry: None, repair: false } if units == &[worker])));
+            let pending = std::mem::take(&mut game.pending);
+            let report = game.state.tick(&pending);
+            assert!(
+                !report
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, oxide_sim::Event::CommandRejected { .. }))
+            );
+        }
+    }
+}
+
+#[test]
+fn return_cargo_foundry_click_keeps_empty_welders_and_loaded_workers() {
+    for damaged in [false, true] {
+        let mut game = headless_game();
+        let workers: Vec<_> = game
+            .state
+            .units()
+            .iter()
+            .filter(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+            .map(|u| u.id)
+            .collect();
+        assert!(workers.len() >= 2);
+        let foundry = game
+            .state
+            .buildings()
+            .iter()
+            .find(|b| b.player == game.human && b.kind.is_drop_off())
+            .unwrap()
+            .id;
+        let mut data = serde_json::to_value(&*game.state).unwrap();
+        let loaded = data["units"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|u| u["id"] == serde_json::json!(workers[0]))
+            .unwrap();
+        loaded["carrying"] = serde_json::json!(4);
+        if damaged {
+            let building = data["buildings"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|b| b["id"] == serde_json::json!(foundry))
+                .unwrap();
+            building["hp"] = serde_json::json!(building["hp"].as_u64().unwrap() - 10);
+        }
+        *game.state = serde_json::from_value(data).unwrap();
+        game.selection.units = workers.clone();
+        let b = game.state.building(foundry).unwrap();
+        let screen = game
+            .camera
+            .to_screen(vec2(b.anchor.x as f32 + 0.5, b.anchor.y as f32 + 0.5));
+        let mut input = InputState::new();
+        apply_events(
+            &mut game,
+            &mut input,
+            &[RawEvent::MouseDown {
+                button: MouseButton::Right,
+                x: screen.x,
+                y: screen.y,
+            }],
+        );
+        assert!(game.pending.iter().any(|pc| matches!(&pc.command, Command::ReturnCargo { units, foundry: Some(f), repair } if units == &[workers[0]] && *f == foundry && *repair == damaged)));
+        if damaged {
+            assert!(game.pending.iter().any(|pc| matches!(&pc.command, Command::Repair { units, building, queue: false } if *building == foundry && !units.contains(&workers[0]) && units.contains(&workers[1]))));
+        }
+    }
+}
+
+#[test]
+fn return_cargo_empty_selection_disables_the_card_and_shortcut() {
+    let mut game = headless_game();
+    let worker = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .unwrap()
+        .id;
+    game.selection.units = vec![worker];
+    let mut input = InputState::new();
+    input.bindings = crate::action::BindingMap::classic();
+    let panel = crate::panel::build_for_palette(&game, &input.bindings, false).unwrap();
+    assert!(
+        !panel
+            .cards
+            .iter()
+            .find(|card| card.action.semantic() == Some(Action::ReturnCargo))
+            .unwrap()
+            .enabled
+    );
+    apply_events(&mut game, &mut input, &[RawEvent::KeyDown { key: Key::U }]);
+    assert!(game.pending.is_empty());
+}
+
+#[test]
+fn shared_cargo_shortcut_unloads_a_transport() {
+    let mut game = skyhook_interaction_game();
+    let transport = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Skyhook)
+        .unwrap()
+        .id;
+    let passenger = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.kind == UnitKind::Sentinel)
+        .unwrap()
+        .id;
+    game.issue(Command::Load {
+        units: vec![passenger],
+        transport,
+        queue: false,
+    });
+    for _ in 0..180 {
+        game.do_tick();
+    }
+    assert_eq!(game.state.unit(transport).unwrap().cargo.len(), 1);
+    game.selection.units = vec![transport];
+    let mut input = InputState::new();
+    input.bindings = crate::action::BindingMap::classic();
+    controls_key(&mut game, &mut input, Key::U);
+    assert!(
+        matches!(game.pending.as_slice(), [PlayerCommand { command: Command::Unload { transport: id, queue: false, .. }, .. }] if *id == transport)
+    );
+    for _ in 0..180 {
+        game.do_tick();
+    }
+    assert!(game.state.unit(transport).unwrap().cargo.is_empty());
+    assert!(game.state.unit(passenger).is_some());
+}
+
+#[test]
+fn mixed_workers_use_the_cargo_shortcut_and_keep_other_unit_bindings() {
+    let mut game = headless_game();
+    let worker = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .unwrap()
+        .id;
+    let mut data = serde_json::to_value(&*game.state).unwrap();
+    let row = data["units"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|u| u["id"] == serde_json::json!(worker))
+        .unwrap();
+    row["carrying"] = serde_json::json!(4);
+    *game.state = serde_json::from_value(data).unwrap();
+    game.selection.units = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.human)
+        .map(|u| u.id)
+        .collect();
+    assert!(game.selection.units.len() > 1);
+    let mut input = InputState::new();
+    input.bindings = crate::action::BindingMap::classic();
+    input.build_menu = true;
+    controls_key(&mut game, &mut input, Key::U);
+    assert!(!input.construction_open());
+    assert!(matches!(
+        game.pending.as_slice(),
+        [PlayerCommand {
+            command: Command::ReturnCargo { .. },
+            ..
+        }]
+    ));
+    game.pending.clear();
+    controls_key(&mut game, &mut input, Key::M);
+    assert!(input.running);
+    controls_key(&mut game, &mut input, Key::X);
+    assert!(matches!(
+        game.pending.last().unwrap().command,
+        Command::Stop { .. }
+    ));
 }

@@ -68,6 +68,7 @@ mod tests {
             anchor: TilePos::new(4, 4),
             hp: 900,
             built: true,
+            provisional: false,
             seen: true,
             tier: 2,
         };
@@ -104,6 +105,7 @@ mod tests {
                 anchor: TilePos::new(4, 4),
                 hp: 900,
                 built: true,
+                provisional: false,
                 seen: true,
                 tier: 2,
             };

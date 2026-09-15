@@ -1495,6 +1495,7 @@ mod tests {
             rally: None,
             focus: None,
             built: false,
+            provisional: false,
             tier: 0,
             cooldown: 0,
             salvage_drained: 0,

@@ -65,7 +65,7 @@ impl<'a> RouteProjection<'a> {
                 .iter()
                 .chain(&obs.ally_buildings)
                 .chain(&obs.enemy_buildings)
-                .filter(|building| !building.kind.is_stealthy())
+                .filter(|building| !building.provisional && !building.kind.is_stealthy())
             {
                 let (width, height) = building.kind.base_stats().size;
                 for dy in 0..height {
@@ -1384,7 +1384,7 @@ fn known_peak(obs: &Observation, tile: TilePos) -> bool {
 
 fn known_building_covers(obs: &Observation, tile: TilePos) -> bool {
     let covers = |building: &BuildingObs| {
-        if building.kind.is_stealthy() {
+        if building.provisional || building.kind.is_stealthy() {
             return false;
         }
         let (width, height) = building.kind.base_stats().size;
@@ -1418,6 +1418,38 @@ mod tests {
             visible: vec![false; 12 * 8],
             explored: vec![false; 12 * 8],
             ..Observation::default()
+        }
+    }
+
+    #[test]
+    fn provisional_own_and_allied_sites_leave_a_ground_corridor_open() {
+        for allied in [false, true] {
+            for provisional in [false, true] {
+                let mut obs = observation();
+                obs.known_rock = (0..obs.map_height)
+                    .filter(|y| *y != 3)
+                    .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
+                    .collect();
+                let tile = TilePos::new(5, 3);
+                let mut site = building(3, u8::from(allied), BuildingKind::Turret, tile, true);
+                site.built = false;
+                site.provisional = provisional;
+                if allied {
+                    obs.ally_buildings.push(site);
+                } else {
+                    obs.my_buildings.push(site);
+                }
+                assert_eq!(ground_open(&obs, tile), provisional);
+                let mut routes = RouteProjection::new(&obs, Domain::Ground);
+                assert_eq!(
+                    routes.reaches(TilePos::new(2, 3), TilePos::new(9, 3)),
+                    provisional
+                );
+                assert_eq!(
+                    routes.ground_command_reaches(TilePos::new(2, 3), TilePos::new(9, 3)),
+                    provisional
+                );
+            }
         }
     }
 
@@ -1611,6 +1643,7 @@ mod tests {
         seen: bool,
     ) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: crate::ids::BuildingId(id),
             player: PlayerId(player),
             kind,

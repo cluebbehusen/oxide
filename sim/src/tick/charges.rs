@@ -40,7 +40,7 @@ pub(super) fn cancel_discovered(state: &mut State, events: &mut Vec<Event>) -> b
         }
     }
     for (player, kind, anchor) in claims {
-        let _ = super::commands::apply_cancel_found(state, player, kind, anchor);
+        let _ = super::commands::apply_cancel_found(state, player, kind, anchor, events);
     }
     removed
 }
@@ -128,6 +128,7 @@ fn detonate(state: &mut State, slot: usize, events: &mut Vec<Event>) {
     }
     for other in &mut state.buildings {
         if other.hp > 0
+            && !other.provisional
             && other.kind.is_stealthy()
             && state.players[owner.0 as usize].team != state.players[other.player.0 as usize].team
             && other.center().dist_sq(center) <= blast_sq

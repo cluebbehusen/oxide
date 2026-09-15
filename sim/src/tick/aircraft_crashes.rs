@@ -85,7 +85,8 @@ pub(super) fn land(state: &mut State, events: &mut Vec<Event>) {
             }
         }
         for building in &mut state.buildings {
-            if state.players[usize::from(building.player.0)].team != team
+            if !building.provisional
+                && state.players[usize::from(building.player.0)].team != team
                 && building
                     .closest_point_to(crash.impact)
                     .dist_sq(crash.impact)

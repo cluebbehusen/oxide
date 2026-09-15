@@ -3216,6 +3216,7 @@ mod tests {
         let mut cleared = policy;
         cleared.cleared_hostile_starts.push(PlayerId(1));
         obs.enemy_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(20),
             player: PlayerId(1),
             kind: BuildingKind::Foundry,
@@ -4119,6 +4120,7 @@ mod tests {
 
     fn standing_building(id: u32, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: PlayerId(0),
             kind,
@@ -5804,6 +5806,7 @@ mod tests {
         let anchor = TilePos::new(9, 4);
         let mut obs = obs_with(vec![harvester(0, None)]);
         obs.my_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(7),
             player: PlayerId(0),
             kind: BuildingKind::Foundry,
@@ -5868,6 +5871,7 @@ mod tests {
         let mut obs = obs_with(Vec::new());
         let anchor = TilePos::new(9, 4);
         obs.my_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(7),
             player: PlayerId(0),
             kind: BuildingKind::Turret,
@@ -6522,6 +6526,7 @@ mod tests {
             harvester(4, Some((BuildingKind::Fabricator, TilePos::new(18, 4)))),
         ]);
         obs.my_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(7),
             player: PlayerId(0),
             kind: BuildingKind::Foundry,

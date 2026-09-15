@@ -127,6 +127,7 @@ mod tests {
                     site,
                 );
                 let occupant = BuildingObs {
+                    provisional: false,
                     id: BuildingId(8),
                     player: PlayerId(owner),
                     kind: BuildingKind::RepairBay,
@@ -169,6 +170,7 @@ mod tests {
             policy.observe_work_experience(&obs);
             policy.record_exact_build_attempt(&obs, &[UnitId(1)], BuildingKind::Fabricator, site);
             obs.enemy_buildings.push(BuildingObs {
+                provisional: false,
                 id: BuildingId(8),
                 player: PlayerId(2),
                 kind: BuildingKind::RepairBay,
@@ -197,6 +199,7 @@ mod tests {
         policy.record_exact_build_attempt(&obs, &[UnitId(1)], BuildingKind::Fabricator, site);
         obs.tick = 124;
         obs.my_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(8),
             player: obs.me,
             kind: BuildingKind::Fabricator,

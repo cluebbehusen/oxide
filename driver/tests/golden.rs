@@ -124,10 +124,6 @@ const SHOWCASE_TICKS: u64 = 540;
 /// harvesters ringing a tile would hide the very thing they mined.
 const CREW_STEPS_OFF: u64 = SHOWCASE_TICKS - 30;
 
-/// The buried-charge site is founded just before the picture: at a
-/// fifth of 20 hp it survives only a couple of abandonment-decay beats.
-const CHARGE_FOUNDS: u64 = SHOWCASE_TICKS - 12;
-
 /// Collects unit specs while handing back the id each one will get:
 /// `Scenario::build` spawns them in list order, so the index *is* the id.
 #[derive(Default)]
@@ -402,13 +398,10 @@ fn walk(player: u8, units: Vec<UnitId>, x: i32, y: i32) -> PlayerCommand {
     }
 }
 
-/// The tick the construction yard founds its seven scaffolds. Late
-/// enough that abandonment decay (one hp per SITE_DECAY_PERIOD) cannot
-/// finish off even the frailest site before the picture is taken.
-const YARD_FOUNDS: u64 = SHOWCASE_TICKS - 200;
+/// Queue the showcase's unfinished sites on the final tick so every site
+/// retains its worker commitment without completing before the picture.
+const YARD_FOUNDS: u64 = SHOWCASE_TICKS - 1;
 
-/// Seven sites, founded and then abandoned: the builder's order is
-/// replaced each time, but the ground is claimed on placement.
 fn yard_orders(cast: &Cast) -> Vec<PlayerCommand> {
     [
         (BuildingKind::Turret, 34, 24),
@@ -426,29 +419,31 @@ fn yard_orders(cast: &Cast) -> Vec<PlayerCommand> {
             units: vec![cast.builder],
             kind,
             anchor: TilePos::new(x, y),
-            queue: false,
+            queue: true,
             defer: false,
         },
     })
     .collect()
 }
 
-/// The western field kit, founded by a crew harvester and then
-/// abandoned with the same shrug as the eastern yard.
+/// The western field kit shares one worker's paid construction queue.
 fn field_kit_orders(cast: &Cast) -> Vec<PlayerCommand> {
-    [(BuildingKind::Barricade, 2, 10)]
-        .into_iter()
-        .map(|(kind, x, y)| PlayerCommand {
-            player: PlayerId(0),
-            command: Command::Build {
-                units: vec![cast.crew[2]],
-                kind,
-                anchor: TilePos::new(x, y),
-                queue: false,
-                defer: false,
-            },
-        })
-        .collect()
+    [
+        (BuildingKind::Barricade, 2, 10),
+        (BuildingKind::ScuttleCharge, 6, 10),
+    ]
+    .into_iter()
+    .map(|(kind, x, y)| PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Build {
+            units: vec![cast.crew[2]],
+            kind,
+            anchor: TilePos::new(x, y),
+            queue: true,
+            defer: false,
+        },
+    })
+    .collect()
 }
 
 /// The opening orders: dig, found, and pair every machine off against one
@@ -591,46 +586,13 @@ fn showcase_state() -> State {
     for tick in 0..SHOWCASE_TICKS {
         let mut commands = match tick {
             0 => opening_orders(&cast),
-            // The construction yard founds late and is then abandoned:
-            // orphaned scaffolds decay now, and the frailest (the Array,
-            // a fifth of 250 hp) must still be standing at the picture.
             t if t == YARD_FOUNDS => {
                 let mut commands = yard_orders(&cast);
                 commands.extend(field_kit_orders(&cast));
                 commands
             }
-            t if t == YARD_FOUNDS + 1 => vec![
-                PlayerCommand {
-                    player: PlayerId(1),
-                    command: Command::Stop {
-                        units: vec![cast.builder],
-                    },
-                },
-                PlayerCommand {
-                    player: PlayerId(0),
-                    command: Command::Stop {
-                        units: vec![cast.crew[2]],
-                    },
-                },
-            ],
             t if t == FIGHT_TICKS => disengage(&cast),
             t if t == CREW_STEPS_OFF => vec![walk(0, cast.crew.clone(), 2, 6)],
-            t if t == CHARGE_FOUNDS => vec![PlayerCommand {
-                player: PlayerId(0),
-                command: Command::Build {
-                    units: vec![cast.crew[2]],
-                    kind: BuildingKind::ScuttleCharge,
-                    anchor: TilePos::new(6, 10),
-                    queue: false,
-                    defer: false,
-                },
-            }],
-            t if t == CHARGE_FOUNDS + 1 => vec![PlayerCommand {
-                player: PlayerId(0),
-                command: Command::Stop {
-                    units: vec![cast.crew[2]],
-                },
-            }],
             _ => Vec::new(),
         };
         if !avalanches_withdrew

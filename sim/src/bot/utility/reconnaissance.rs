@@ -2165,6 +2165,7 @@ mod tests {
         obs.my_units.clear();
         let factory = BuildingId(10);
         obs.my_buildings.push(BuildingObs {
+            provisional: false,
             id: factory,
             player: obs.me,
             kind: BuildingKind::Airworks,
@@ -2306,6 +2307,7 @@ mod tests {
         obs.tick = crate::stats::FOUNDRY_DRIP_START_TICK;
         obs.scrap = UnitKind::Kestrel.stats().cost - 5;
         obs.my_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(10),
             player: obs.me,
             kind: BuildingKind::Airworks,

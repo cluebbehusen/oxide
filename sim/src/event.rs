@@ -246,14 +246,14 @@ pub enum Event {
         /// What it is.
         kind: crate::stats::BuildingKind,
     },
-    /// An unfinished site was scrapped; the owner salvaged part of the
-    /// price back.
+    /// An unfinished site was cancelled and its owner received a refund.
     BuildCancelled {
         /// The removed site.
         building: crate::ids::BuildingId,
         /// Its owner.
         player: crate::ids::PlayerId,
-        /// Scrap returned (cost x hp / max_hp at cancel time).
+        /// Scrap returned: full cost before the first construction tick,
+        /// otherwise cost x hp / max_hp at cancel time.
         refund: u32,
     },
     /// A command was dropped instead of applied.

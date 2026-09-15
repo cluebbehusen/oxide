@@ -34,6 +34,8 @@ use serde::{Deserialize, Serialize};
 /// 15 exposes exact owner-visible progress for the front of each training
 /// queue. Version 16 exposes exact own active repair targets. Version 17 adds
 /// owner-only carried identities separately from available units.
+/// Version 19 marks provisional building footprints and reports paid deferred
+/// construction through `UnitObs::site` instead of `UnitObs::founding`.
 pub const OBSERVATION_VERSION: u32 = 19;
 
 /// An own passenger that remains alive but is unavailable for new assignments.
@@ -76,18 +78,15 @@ pub struct UnitObs {
     /// Sling room its riders occupy (own transports; zero otherwise).
     #[serde(default)]
     pub cargo: u8,
-    /// The construction site this unit is building, if any (own units
-    /// only; always `None` for enemy observations).
+    /// The paid construction site this unit is approaching or building,
+    /// including provisional scaffolds (own units only).
     pub site: Option<BuildingId>,
     /// The building this unit is stripping, if any (own units only —
     /// the repair channel reads it to keep the two verbs off one
     /// target; enemy work orders stay opaque).
     pub salvaging: Option<BuildingId>,
-    /// The deferred claim this unit is walking out to, if any (own
-    /// units only): the promised kind and footprint anchor of a live
-    /// [`Order::Found`]. A walking founder is spoken for — the site
-    /// audit waits on it and the labor choosers keep off it — and no
-    /// site exists to carry an id until the claim lands.
+    /// A deferred intent without an associated paid site (own units only).
+    /// Paid provisional construction is reported through `site`.
     pub founding: Option<(BuildingKind, TilePos)>,
     /// Whether the current program is voluntary building or unit repair (own
     /// units only; always false for allies and enemies).
@@ -119,6 +118,8 @@ impl UnitObs {
 /// distinguishes live sight from a ghost.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildingObs {
+    /// A paid plan whose ground is not yet verified; it has no physical occupancy.
+    pub provisional: bool,
     /// Building id.
     pub id: BuildingId,
     /// Owner.
@@ -376,7 +377,7 @@ impl Observation {
                 continue;
             }
             if u.player == me {
-                obs.my_units.push(own_unit(u));
+                obs.my_units.push(own_unit(state, u));
                 obs.observe_own_cargo(u);
                 if let Some(target) = own_repair_target(&u.order) {
                     obs.my_repair_targets.push((u.id, target));
@@ -398,6 +399,7 @@ impl Observation {
                     .push(if b.queue.is_empty() { 0 } else { b.progress });
             } else if !state.hostile(me, b.player) {
                 obs.ally_buildings.push(BuildingObs {
+                    provisional: b.provisional,
                     id: b.id,
                     player: b.player,
                     kind: b.kind,
@@ -409,6 +411,7 @@ impl Observation {
                 });
             } else {
                 obs.enemy_buildings.push(BuildingObs {
+                    provisional: b.provisional,
                     id: b.id,
                     player: b.player,
                     kind: b.kind,
@@ -465,7 +468,7 @@ impl Observation {
                 continue;
             }
             if u.player == me {
-                obs.my_units.push(own_unit(u));
+                obs.my_units.push(own_unit(state, u));
                 obs.observe_own_cargo(u);
                 if let Some(target) = own_repair_target(&u.order) {
                     obs.my_repair_targets.push((u.id, target));
@@ -489,6 +492,7 @@ impl Observation {
                     .push(if b.queue.is_empty() { 0 } else { b.progress });
             } else if !state.hostile(me, b.player) {
                 obs.ally_buildings.push(BuildingObs {
+                    provisional: b.provisional,
                     id: b.id,
                     player: b.player,
                     kind: b.kind,
@@ -500,6 +504,7 @@ impl Observation {
                 });
             } else if b.tiles().any(|t| vision.visible(t)) && state.building_apparent(me, b) {
                 obs.enemy_buildings.push(BuildingObs {
+                    provisional: b.provisional,
                     id: b.id,
                     player: b.player,
                     kind: b.kind,
@@ -525,6 +530,7 @@ impl Observation {
                     // stable handle. Id 0 would collide with a real
                     // building, so use the sentinel ceiling.
                     id: BuildingId(u32::MAX),
+                    provisional: false,
                     player: ghost.owner,
                     kind: ghost.kind,
                     anchor: ghost.anchor,
@@ -660,7 +666,16 @@ fn own_repair_target(order: &Order) -> Option<Target> {
     }
 }
 
-fn own_unit(u: &crate::state::Unit) -> UnitObs {
+fn own_unit(state: &State, u: &crate::state::Unit) -> UnitObs {
+    let site = match u.order {
+        Order::Build { site } => Some(site),
+        Order::Found { kind, anchor } => state
+            .buildings()
+            .iter()
+            .find(|b| b.player == u.player && b.kind == kind && b.anchor == anchor && !b.built)
+            .map(|b| b.id),
+        _ => None,
+    };
     UnitObs {
         id: u.id,
         player: u.player,
@@ -674,16 +689,13 @@ fn own_unit(u: &crate::state::Unit) -> UnitObs {
             _ => None,
         },
         cargo: u.cargo.iter().map(|r| r.kind.stats().transport_size).sum(),
-        site: match u.order {
-            Order::Build { site } => Some(site),
-            _ => None,
-        },
+        site,
         salvaging: match u.order {
             Order::Salvage { building } => Some(building),
             _ => None,
         },
         founding: match u.order {
-            Order::Found { kind, anchor } => Some((kind, anchor)),
+            Order::Found { kind, anchor } if site.is_none() => Some((kind, anchor)),
             _ => None,
         },
         repairing: matches!(u.order, Order::Repair { .. } | Order::RepairUnit { .. }),
@@ -712,6 +724,7 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
 
 fn own_building(b: &crate::state::Building) -> BuildingObs {
     BuildingObs {
+        provisional: b.provisional,
         id: b.id,
         player: b.player,
         kind: b.kind,
@@ -730,6 +743,59 @@ mod tests {
     use crate::scenario::{Scenario, UnitSpec};
     use crate::stats::UnitKind;
     use chassis::grid::TilePos;
+
+    #[test]
+    fn paid_provisional_sites_are_marked_for_their_team_and_hidden_from_enemies() {
+        for allied in [false, true] {
+            let mut scenario = Scenario::skirmish();
+            if allied {
+                for player in &mut scenario.players {
+                    player.team = Some(0);
+                }
+                let mut opponent = scenario.players[1].clone();
+                opponent.team = Some(1);
+                scenario.players.push(opponent);
+                scenario.map[1].replace_range(1..2, "3");
+            }
+            let mut state = scenario.build().unwrap();
+            let worker = state
+                .units
+                .iter()
+                .find(|u| u.player == PlayerId(0) && u.kind.stats().harvest.is_some())
+                .unwrap()
+                .id;
+            let anchor = state.unit(worker).unwrap().tile();
+            let kind = BuildingKind::Turret;
+            let site = state.place_site(PlayerId(0), kind, anchor);
+            state.building_mut(site).unwrap().provisional = true;
+            state.unit_mut(worker).unwrap().order = Order::Found { kind, anchor };
+            state.rebuild_building_occupancy();
+            let own = Observation::fog_honest(&state, PlayerId(0));
+            assert_eq!(own.version, 19);
+            assert!(
+                own.my_buildings
+                    .iter()
+                    .find(|b| b.id == site)
+                    .unwrap()
+                    .provisional
+            );
+            let observed_worker = own.my_units.iter().find(|u| u.id == worker).unwrap();
+            assert_eq!(observed_worker.site, Some(site));
+            assert_eq!(observed_worker.founding, None);
+            let roundtrip: Observation =
+                serde_json::from_value(serde_json::to_value(&own).unwrap()).unwrap();
+            assert_eq!(roundtrip, own);
+            let other = Observation::fog_honest(&state, PlayerId(1));
+            assert!(!other.enemy_buildings.iter().any(|b| b.id == site));
+            assert_eq!(
+                other
+                    .ally_buildings
+                    .iter()
+                    .any(|b| b.id == site && b.provisional),
+                allied
+            );
+        }
+    }
 
     fn transport_scenario() -> Scenario {
         let mut scenario = Scenario::skirmish();
