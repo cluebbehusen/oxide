@@ -7,7 +7,7 @@ pub(super) fn approaches(
     origins: &[ThreatOrigin],
     assets: &[DefendedAsset],
     domain: DefenseDomain,
-) -> Vec<Approach> {
+) -> crate::bot::planning::Progress<Vec<Approach>> {
     let regions = ground.briefing.regions();
     let mut result = Vec::new();
     for (asset, defended) in assets.iter().enumerate() {
@@ -59,25 +59,36 @@ pub(super) fn approaches(
             });
             sources
         }));
+        let field = std::cell::OnceCell::new();
         let mut selected = Vec::new();
         for sources in individual {
             if let Some(approach) = sources.into_iter().find_map(|source| {
-                approach_path(ground, source, &defended.shape, &goals, None, domain).map(
-                    |(goal, path)| Approach {
-                        asset,
-                        source,
-                        goal,
-                        baseline_cost: path_cost(&path),
-                        path,
-                        disrupted: false,
-                    },
+                approach_path(
+                    ground,
+                    source,
+                    &defended.shape,
+                    &goals,
+                    None,
+                    domain,
+                    Some(&field),
                 )
+                .map(|(goal, path)| Approach {
+                    asset,
+                    source,
+                    goal,
+                    baseline_cost: path_cost(&path),
+                    path,
+                    disrupted: false,
+                })
             }) {
                 selected.push(approach);
             }
         }
+        if matches!(field.get(), Some(crate::bot::planning::Progress::Deferred)) {
+            return crate::bot::planning::Progress::Deferred;
+        }
         selected.sort_by_key(|approach| approach.source);
         result.extend(selected);
     }
-    result
+    crate::bot::planning::Progress::Ready(result)
 }

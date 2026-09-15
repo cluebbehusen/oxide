@@ -1238,14 +1238,16 @@ cell count; tracking retains at most 256 endpoints. Large endpoint sets can
 prepare one origin field sooner when the measured first search projects more
 work than the field across the batch. Cache hits contribute no search work.
 Existing fields reject endpoint pairs whose cost exceeds a route already found;
-adding a blocking footprint cannot improve that bound. For long paths, exact
-fields for the current footprint also prune A* branches that cannot belong to a
-shortest route. Queue ordering remains unchanged to preserve the complete
-route-choice key and mobile firing positions. This pruning is disabled when the
-map exceeds the expansion cap or the start is blocked, preserving capped
-searches and escape from blocked origins. A* still constructs every uncached
-selected path. Investment scores, threat evidence, asset values, and budgets are
-recomputed from the current observation rather than retained with passability.
+newly prepared bounds also reorder the remaining endpoint pairs before path
+construction. Adding a blocking footprint cannot improve that bound. For long
+paths, exact fields for the current footprint also prune A* branches that cannot
+belong to a shortest route. Queue ordering remains unchanged to preserve the
+complete route-choice key and mobile firing positions. This pruning is disabled
+when the map exceeds the expansion cap or the start is blocked, preserving
+capped searches and escape from blocked origins. A* still constructs every
+uncached selected path. Investment scores, threat evidence, asset values, and
+budgets are recomputed from the current observation rather than retained with
+passability.
 
 `bot::navigation` owns all bot path, cost, connectivity, and distance-field
 searches, including their scratch storage, cache invalidation, and retention.
@@ -1266,18 +1268,26 @@ live reachability, route safety, command timing, or placement legality.
 Orientation and terrain changes invalidate the index independently of dynamic
 navigation caches. Public distance fields materialize passability once and use
 an owned traversal that can yield after a deterministic number of queue entries.
-Fresh Foundry logistics uses a controller-owned allowance shared across its
-field requests. Passability preparation and traversal both consume work; an
-unfinished field resumes on later decisions and never means unreachable. At most
-four jobs survive, with exact terrain and danger invalidation and a 120-tick
-unfinished lifetime. Allocation rollback preserves work already done and spent
-allowance, including Foundry and defensive-site cursors. Weapon and Array
-refinement share this controller allowance and each retain their four-new-site
-limit; incumbent validation is separate. Diagnostics report consumed work, new
-site checks, and pending and retained fields. These counters do not cover
-synchronous planner preparation or mandatory validation. Saved Foundry
-validation remains immediate; other synchronous field consumers still request
-completion.
+Fresh Foundry logistics and voluntary coverage share a controller-owned work
+allowance. Passability preparation and traversal consume work; unfinished fields
+resume on later decisions and never mean unreachable. Foundry retains four jobs.
+Ground and air coverage each retain at most sixteen pending jobs and 32 MiB of
+completed field payloads. Exact terrain and blocking changes invalidate affected
+work; unfinished jobs expire after 120 ticks. Pending Foundry, ground, and air
+work divide half of each decision's allowance, leaving half for current
+requests. Allocation rollback preserves this work and the Foundry and
+defensive-site cursors. Weapon and Array refinement share the allowance and
+retain their four-new-site limit; incumbent validation is separate. Diagnostic
+counters cover these services, not synchronous planner preparation or mandatory
+validation. Saved Foundry validation remains immediate.
+
+Voluntary coverage uses one reverse field per asset's destination set to serve
+all threat origins. Its representative routes have exact shortest costs and
+legal edges, but need not share the command router's tied-path shape. A deferred
+field stops the evidence ladder; it cannot turn a current threat into a weaker
+public-prior case. Direct attacks, minimum-range retreat, and firing standoff
+retain their weapon rules. Emergency response, Build commands, and candidate
+construction safety retain their original exact route checks.
 
 Exact Build-route checks index observed and public ground passability once per
 defensive grounding and reuse A* storage across builders and candidate sites.

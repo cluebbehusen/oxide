@@ -2,6 +2,51 @@ use super::*;
 use crate::bot::navigation::octile as octile_cost;
 use crate::stats::PATH_EXPANSION_CAP;
 
+#[test]
+fn endpoint_batches_use_refined_distances_before_building_more_paths() {
+    let grid = TestGrid::new(64, 32, |tile| {
+        if tile.x == 20 && tile.y < 31 {
+            '#'
+        } else {
+            '.'
+        }
+    });
+    let cache = RefCell::new(PathQueries::default());
+    let view = grid.borrowed(&cache, false);
+    let board = view.board(CacheClass::Ground);
+    let start = TilePos::new(2, 2);
+    let goals = (2..30)
+        .step_by(2)
+        .map(|y| TilePos::new(22, y))
+        .collect::<Vec<_>>();
+    let expected = goals
+        .iter()
+        .filter_map(|&goal| {
+            let mut path =
+                Search::default().path(64, 32, start, goal, |tile| board.grid.open(tile, None))?;
+            path.insert(0, start);
+            Some((start, goal, path))
+        })
+        .min_by_key(|(_, goal, path)| (path_cost(path), path.len(), goal.y, goal.x, path.clone()));
+    let (actual, work) = crate::bot::navigation::work::measure(|| {
+        shortest_path_between(board, &[start], &goals, None)
+    });
+    assert_eq!(actual, expected);
+    assert!(
+        work.paths <= 3,
+        "the field must prevent successively rebuilding every more distant doorstep: {work:?}"
+    );
+    assert_eq!(
+        shortest_path_between(board, &[start], &goals, None),
+        expected
+    );
+    let mut candidate = CandidatePaths::new(board, None);
+    assert_eq!(
+        candidate.shortest(&[start], &goals, &mut EndpointRoutes::new()),
+        expected
+    );
+}
+
 struct TestGrid {
     width: i32,
     height: i32,

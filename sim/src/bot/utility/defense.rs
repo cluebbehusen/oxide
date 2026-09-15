@@ -651,13 +651,17 @@ impl<'a> DefenseThinkContext<'a> {
             DefenseDomain::Air => &mut self.air_projection,
         };
         if slot.is_none() {
-            *slot = Some(strategic_lane_projection(
-                self.obs,
-                self.unit_contacts,
-                self.building_contacts,
-                &self.grounding,
-                domain,
-            ));
+            if let crate::bot::planning::Progress::Ready(projection) =
+                prepare_strategic_lane_projection(
+                    self.obs,
+                    self.unit_contacts,
+                    self.building_contacts,
+                    &self.grounding,
+                    domain,
+                )
+            {
+                *slot = Some(projection);
+            }
             #[cfg(test)]
             {
                 self.projection_builds[match domain {
@@ -1111,6 +1115,8 @@ struct GroundKnowledge<'a> {
     ground_blocked: Vec<bool>,
     routing: Option<&'a std::cell::RefCell<DefenseRoutingCache>>,
     local_routing: std::cell::RefCell<DefenseRoutingCache>,
+    planning: Option<&'a crate::bot::planning::PlanningWork>,
+    local_planning: crate::bot::planning::PlanningWork,
     hypothetical: bool,
     scrap: BTreeMap<TilePos, u32>,
 }
@@ -1118,8 +1124,13 @@ struct GroundKnowledge<'a> {
 impl<'a> GroundKnowledge<'a> {
     fn retained(mut self, policy: &'a UtilityPolicy, hypothetical: bool) -> Self {
         self.routing = Some(&policy.defense_routing_cache);
+        self.planning = Some(&policy.planning);
         self.hypothetical = hypothetical;
         self
+    }
+
+    fn planning(&self) -> &crate::bot::planning::PlanningWork {
+        self.planning.unwrap_or(&self.local_planning)
     }
 
     fn routing(&self) -> &std::cell::RefCell<DefenseRoutingCache> {
@@ -1209,6 +1220,8 @@ impl<'a> GroundKnowledge<'a> {
             ground_blocked,
             routing: None,
             local_routing: Default::default(),
+            planning: None,
+            local_planning: Default::default(),
             hypothetical: false,
             scrap,
         }
@@ -1943,10 +1956,30 @@ fn strategic_lane_projection<'a>(
     grounding: &DefenseGrounding<'a>,
     domain: DefenseDomain,
 ) -> Option<StrategicLaneProjection<'a>> {
-    if grounding.assets.is_empty() {
-        return None;
+    match prepare_strategic_lane_projection(
+        obs,
+        unit_contacts,
+        building_contacts,
+        grounding,
+        domain,
+    ) {
+        crate::bot::planning::Progress::Ready(projection) => projection,
+        crate::bot::planning::Progress::Deferred
+        | crate::bot::planning::Progress::ProvenInfeasible => None,
     }
-    let (origins, approaches, evidence) = threat_origin_tiers(
+}
+
+fn prepare_strategic_lane_projection<'a>(
+    obs: &'a Observation,
+    unit_contacts: &[UnitContact],
+    building_contacts: &[BuildingContact],
+    grounding: &DefenseGrounding<'a>,
+    domain: DefenseDomain,
+) -> crate::bot::planning::Progress<Option<StrategicLaneProjection<'a>>> {
+    if grounding.assets.is_empty() {
+        return crate::bot::planning::Progress::Ready(None);
+    }
+    for (tier, origins) in threat_origin_tiers(
         obs,
         unit_contacts,
         building_contacts,
@@ -1956,8 +1989,15 @@ fn strategic_lane_projection<'a>(
     .into_iter()
     .enumerate()
     .filter(|(_, origins)| !origins.is_empty())
-    .find_map(|(tier, origins)| {
-        let approaches = fronts::approaches(&grounding.ground, &origins, &grounding.assets, domain);
+    {
+        let approaches =
+            match fronts::approaches(&grounding.ground, &origins, &grounding.assets, domain) {
+                crate::bot::planning::Progress::Ready(approaches) => approaches,
+                crate::bot::planning::Progress::Deferred => {
+                    return crate::bot::planning::Progress::Deferred;
+                }
+                crate::bot::planning::Progress::ProvenInfeasible => continue,
+            };
         let evidence = match tier {
             0 => DefenseOpportunityEvidence::CurrentArmed,
             1 if origins.iter().any(|origin| {
@@ -1971,15 +2011,18 @@ fn strategic_lane_projection<'a>(
             3 => DefenseOpportunityEvidence::PublicPrior,
             _ => unreachable!("the strategic evidence ladder has four tiers"),
         };
-        (!approaches.is_empty()).then_some((origins, approaches, evidence))
-    })?;
-    Some(StrategicLaneProjection {
-        origins,
-        approaches,
-        evidence,
-        existing: existing_defenses(obs, domain),
-        planned: planned_defenses(obs, domain),
-    })
+        if approaches.is_empty() {
+            continue;
+        }
+        return crate::bot::planning::Progress::Ready(Some(StrategicLaneProjection {
+            origins,
+            approaches,
+            evidence,
+            existing: existing_defenses(obs, domain),
+            planned: planned_defenses(obs, domain),
+        }));
+    }
+    crate::bot::planning::Progress::Ready(None)
 }
 
 fn emergency_lane_projection<'a>(
@@ -2712,16 +2755,23 @@ fn approaches(
         .flat_map(|(asset, defended)| {
             let goals = defended.shape.approach_tiles(ground, domain);
             origins.iter().filter_map(move |source| {
-                approach_path(ground, *source, &defended.shape, &goals, candidate, domain).map(
-                    |(goal, path)| Approach {
-                        asset,
-                        source: *source,
-                        goal,
-                        baseline_cost: path_cost(&path),
-                        path,
-                        disrupted: false,
-                    },
+                approach_path(
+                    ground,
+                    *source,
+                    &defended.shape,
+                    &goals,
+                    candidate,
+                    domain,
+                    None,
                 )
+                .map(|(goal, path)| Approach {
+                    asset,
+                    source: *source,
+                    goal,
+                    baseline_cost: path_cost(&path),
+                    path,
+                    disrupted: false,
+                })
             })
         })
         .collect()
@@ -2734,6 +2784,13 @@ fn approach_path(
     goals: &[TilePos],
     candidate: Option<PlacementFootprint>,
     domain: DefenseDomain,
+    field: Option<
+        &std::cell::OnceCell<
+            crate::bot::planning::Progress<
+                std::sync::Arc<crate::bot::navigation::approaches::ApproachField>,
+            >,
+        >,
+    >,
 ) -> Option<(TilePos, Vec<TilePos>)> {
     if let ThreatCapability::StaticDefense { kind, tier } = source.capability {
         return static_defense_attack(kind, tier, source.anchor, asset, ground.briefing, goals)
@@ -2768,14 +2825,24 @@ fn approach_path(
         }
     }
 
-    shortest_path_between(
-        ground,
-        &source.approach_tiles(ground, domain),
-        goals,
-        candidate,
-        domain,
-    )
-    .map(|(_, goal, path)| {
+    let starts = source.approach_tiles(ground, domain);
+    let route = match field {
+        Some(field) => match field.get_or_init(|| {
+            ground.planning().approach_field(
+                ground.obs.tick,
+                routing_cache::board(ground, domain).grid,
+                domain == DefenseDomain::Air,
+                goals,
+            )
+        }) {
+            crate::bot::planning::Progress::Ready(field) => field.path(&starts),
+            crate::bot::planning::Progress::Deferred
+            | crate::bot::planning::Progress::ProvenInfeasible => None,
+        },
+        None => shortest_path_between(ground, &starts, goals, candidate, domain)
+            .map(|(_, goal, path)| (goal, path)),
+    };
+    route.map(|(goal, path)| {
         let path = mobile_ground_standoff(source, asset, ground.briefing, goal, path, domain);
         (goal, path)
     })
@@ -2930,6 +2997,7 @@ fn approaches_with_candidate_inner(
                 &goals,
                 Some(candidate),
                 domain,
+                None,
             ),
         }?;
         let detour = path_cost(&path).saturating_sub(approach.baseline_cost);
@@ -6805,7 +6873,11 @@ mod tests {
         let assets = defended_assets(&policy, &obs, &ground);
         let origins = &threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[0];
         let reference = approaches(&ground, origins, &assets, None, DefenseDomain::Ground);
-        let selected = fronts::approaches(&ground, origins, &assets, DefenseDomain::Ground);
+        let crate::bot::planning::Progress::Ready(selected) =
+            fronts::approaches(&ground, origins, &assets, DefenseDomain::Ground)
+        else {
+            panic!("the small front fixture must finish in one decision");
+        };
         assert!(!selected.is_empty());
         assert!(selected.len() < reference.len());
         assert!(
@@ -6824,6 +6896,53 @@ mod tests {
                 "a representative must retain an exact reachable approach"
             );
         }
+    }
+
+    #[test]
+    fn deferred_current_threat_coverage_does_not_fall_back_to_public_priors() {
+        use crate::bot::planning::{PlanningWork, Progress};
+        let map = briefing();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        obs.enemy_units = vec![unit(
+            20,
+            PlayerId(1),
+            UnitKind::Sentinel,
+            TilePos::new(WIDTH - 5, HEIGHT / 2),
+        )];
+        let mut policy = UtilityPolicy::new();
+        policy.planning = PlanningWork::with_allowance(300);
+        let started = obs.tick;
+        let mut context = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
+        context.ensure_projection(DefenseDomain::Ground);
+        assert!(
+            context.ground_projection.is_none(),
+            "unfinished current evidence is not an empty completed projection"
+        );
+        assert_eq!(policy.planning.stats().pending_approach_fields, 1);
+        drop(context);
+        for tick in (started + 12..started + 120).step_by(12) {
+            obs.tick = tick;
+            let grounding = DefenseGrounding::new(&policy, &obs, &map);
+            match prepare_strategic_lane_projection(
+                &obs,
+                &[],
+                &[],
+                &grounding,
+                DefenseDomain::Ground,
+            ) {
+                Progress::Ready(Some(projection)) => {
+                    assert_eq!(
+                        projection.evidence,
+                        DefenseOpportunityEvidence::CurrentArmed
+                    );
+                    assert!(!projection.approaches.is_empty());
+                    return;
+                }
+                Progress::Deferred => assert!(policy.planning.spent() <= 300),
+                _ => panic!("a visible connected threat cannot become a no-threat verdict"),
+            }
+        }
+        panic!("coverage must finish without restarting its field at each decision");
     }
 
     #[test]

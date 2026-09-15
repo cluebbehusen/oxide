@@ -2,6 +2,7 @@
 //!
 //! Costs do not certify a command's snapped goal, safety, or canonical path.
 
+pub(super) mod approaches;
 pub(super) mod commands;
 pub(super) mod distance_work;
 pub(super) mod egress;
@@ -60,6 +61,13 @@ pub(super) struct KnownGrid<'a> {
 }
 
 impl<'a> KnownGrid<'a> {
+    pub(in crate::bot) fn dimensions(self) -> (i32, i32) {
+        (self.width, self.height)
+    }
+    pub(in crate::bot) fn blocked(self) -> &'a [bool] {
+        self.blocked
+    }
+
     pub fn new(width: i32, height: i32, blocked: &'a [bool]) -> Option<Self> {
         let area = usize::try_from(width)
             .ok()?

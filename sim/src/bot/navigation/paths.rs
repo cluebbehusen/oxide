@@ -4,7 +4,8 @@ use super::{BlockedRect, KnownGrid, octile, search::Search};
 use chassis::grid::TilePos;
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque},
     mem::size_of,
 };
 
@@ -443,39 +444,65 @@ pub(in crate::bot) fn path_cost(path: &[TilePos]) -> u32 {
         })
         .sum()
 }
+type EndpointPriority = (u32, i32, i32, i32, i32);
+
+struct EndpointQueue(BinaryHeap<Reverse<EndpointPriority>>);
+
+impl EndpointQueue {
+    fn new(board: PathBoard<'_>, starts: &[TilePos], goals: &[TilePos]) -> Self {
+        Self(
+            starts
+                .iter()
+                .flat_map(|start| {
+                    goals.iter().map(move |goal| {
+                        Reverse((
+                            board.pruning_bound(*start, *goal),
+                            start.y,
+                            start.x,
+                            goal.y,
+                            goal.x,
+                        ))
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    fn next(&mut self, board: PathBoard<'_>, best_cost: Option<u32>) -> Option<(TilePos, TilePos)> {
+        while let Some(Reverse((bound, sy, sx, gy, gx))) = self.0.pop() {
+            if bound == u32::MAX || best_cost.is_some_and(|best| bound > best) {
+                return None;
+            }
+            let start = TilePos::new(sx, sy);
+            let goal = TilePos::new(gx, gy);
+            let refined = board.pruning_bound(start, goal);
+            if refined > bound {
+                // A field prepared by an earlier pair can reorder the rest of
+                // the batch without constructing their more expensive paths.
+                self.0.push(Reverse((refined, sy, sx, gy, gx)));
+            } else {
+                return Some((start, goal));
+            }
+        }
+        None
+    }
+}
+
 pub(in crate::bot) fn shortest_path_between(
     board: PathBoard<'_>,
     starts: &[TilePos],
     goals: &[TilePos],
     candidate: Option<BlockedRect>,
 ) -> Option<(TilePos, TilePos, Vec<TilePos>)> {
-    let mut pairs: Vec<_> = starts
-        .iter()
-        .flat_map(|start| goals.iter().map(move |goal| (*start, *goal)))
-        .collect();
-    pairs.sort_unstable_by_key(|(start, goal)| {
-        (octile(*start, *goal), start.y, start.x, goal.y, goal.x)
-    });
+    let mut pairs = EndpointQueue::new(board, starts, goals);
 
     let mut best: Option<(TilePos, TilePos, Vec<TilePos>)> = None;
     let mut proven_unreachable = BTreeSet::new();
     let mut scratch = Search::default();
-    for (start, goal) in pairs {
+    while let Some((start, goal)) =
+        pairs.next(board, best.as_ref().map(|(_, _, path)| path_cost(path)))
+    {
         if proven_unreachable.contains(&(start, goal)) {
-            continue;
-        }
-        if best
-            .as_ref()
-            .is_some_and(|(_, _, path)| octile(start, goal) > path_cost(path))
-        {
-            // Every remaining pair has a strictly worse obstacle-free lower
-            // bound, so none can replace the complete route-choice key.
-            break;
-        }
-        if best
-            .as_ref()
-            .is_some_and(|(_, _, path)| board.pruning_bound(start, goal) > path_cost(path))
-        {
             continue;
         }
         let result = board.path(start, goal, candidate, &mut scratch);
@@ -538,32 +565,15 @@ fn shortest_path_between_cached(
 ) -> Option<(TilePos, TilePos, Vec<TilePos>)> {
     let board = routes.board;
     let candidate = routes.overlay;
-    let mut pairs: Vec<_> = starts
-        .iter()
-        .flat_map(|start| goals.iter().map(move |goal| (*start, *goal)))
-        .collect();
-    pairs.sort_unstable_by_key(|(start, goal)| {
-        (octile(*start, *goal), start.y, start.x, goal.y, goal.x)
-    });
+    let mut pairs = EndpointQueue::new(board, starts, goals);
 
     let mut best: Option<(TilePos, TilePos, Vec<TilePos>)> = None;
     let mut scratch = Search::default();
     let mut proven_unreachable = BTreeSet::new();
-    for (start, goal) in pairs {
+    while let Some((start, goal)) =
+        pairs.next(board, best.as_ref().map(|(_, _, path)| path_cost(path)))
+    {
         if proven_unreachable.contains(&(start, goal)) {
-            continue;
-        }
-        if best
-            .as_ref()
-            .is_some_and(|(_, _, path)| octile(start, goal) > path_cost(path))
-        {
-            break;
-        }
-
-        if best
-            .as_ref()
-            .is_some_and(|(_, _, path)| board.pruning_bound(start, goal) > path_cost(path))
-        {
             continue;
         }
         let key = (board.class, start, goal);

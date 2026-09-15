@@ -1,5 +1,6 @@
 //! Deterministic work allowances shared by nested planning services.
 
+mod approaches;
 mod fields;
 pub(super) mod sites;
 
@@ -13,6 +14,7 @@ pub(in crate::bot) struct PlanningWork {
     allowance: usize,
     budget: RefCell<WorkBudget>,
     fields: RefCell<fields::FieldPreparation>,
+    approaches: RefCell<[approaches::ApproachPreparation; 2]>,
     sites: RefCell<sites::SiteWork>,
     foundry: RefCell<RankedRotation>,
     site_checks: Cell<usize>,
@@ -25,6 +27,7 @@ impl Default for PlanningWork {
             allowance: DECISION_WORK,
             budget: RefCell::new(WorkBudget::new(DECISION_WORK)),
             fields: RefCell::default(),
+            approaches: RefCell::default(),
             sites: RefCell::default(),
             foundry: RefCell::default(),
             site_checks: Cell::new(0),
@@ -52,11 +55,35 @@ impl PlanningWork {
             self.tick.set(Some(tick));
             *self.budget.borrow_mut() = WorkBudget::new(self.allowance);
             self.site_checks.set(0);
-            self.budget
-                .borrow_mut()
-                .run_slice(self.allowance / 2, |budget| {
-                    self.fields.borrow_mut().resume_pending(tick, budget);
-                });
+            let fields_pending = self.fields.borrow().counts().0 > 0;
+            let approach_pending = self
+                .approaches
+                .borrow()
+                .each_ref()
+                .map(|domain| domain.counts().0 > 0);
+            let active = usize::from(fields_pending)
+                + approach_pending
+                    .into_iter()
+                    .filter(|pending| *pending)
+                    .count();
+            if let Some(share) = (self.allowance / 2).checked_div(active) {
+                let mut budget = self.budget.borrow_mut();
+                if fields_pending {
+                    budget.run_slice(share, |slice| {
+                        self.fields.borrow_mut().resume_pending(tick, slice)
+                    });
+                }
+                for (domain, pending) in self
+                    .approaches
+                    .borrow_mut()
+                    .iter_mut()
+                    .zip(approach_pending)
+                {
+                    if pending {
+                        budget.run_slice(share, |slice| domain.resume_pending(tick, slice));
+                    }
+                }
+            }
         }
     }
 
@@ -104,13 +131,39 @@ impl PlanningWork {
 
     pub(in crate::bot) fn stats(&self) -> super::observer::PlanningWorkStats {
         let (pending_fields, retained_fields) = self.fields.borrow().counts();
+        let (pending_approach_fields, retained_approach_fields) = self
+            .approaches
+            .borrow()
+            .iter()
+            .map(approaches::ApproachPreparation::counts)
+            .fold((0, 0), |(pending, retained), (p, r)| {
+                (pending + p, retained + r)
+            });
         super::observer::PlanningWorkStats {
             allowance: self.allowance,
             spent: self.budget.borrow().spent(),
             new_site_checks: self.site_checks.get(),
             pending_fields,
             retained_fields,
+            pending_approach_fields,
+            retained_approach_fields,
         }
+    }
+
+    pub(in crate::bot) fn approach_field(
+        &self,
+        tick: u64,
+        grid: super::navigation::KnownGrid<'_>,
+        air: bool,
+        goals: &[chassis::grid::TilePos],
+    ) -> Progress<std::sync::Arc<super::navigation::approaches::ApproachField>> {
+        self.begin(tick);
+        self.approaches.borrow_mut()[usize::from(air)].advance(
+            tick,
+            grid,
+            goals,
+            &mut self.budget.borrow_mut(),
+        )
     }
 
     pub(in crate::bot) fn field(

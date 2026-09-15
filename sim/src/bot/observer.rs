@@ -48,6 +48,10 @@ pub struct PlanningWorkStats {
     pub pending_fields: usize,
     /// Completed and unfinished fields retained by this controller.
     pub retained_fields: usize,
+    /// Coverage fields still being prepared across ground and air.
+    pub pending_approach_fields: usize,
+    /// Completed and unfinished coverage fields retained by this controller.
+    pub retained_approach_fields: usize,
 }
 
 /// Observational notifications. Implementations must not block or affect game inputs.
