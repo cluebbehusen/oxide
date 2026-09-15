@@ -927,19 +927,23 @@ investment value cannot justify duplicate Airworks, issue a production command,
 or admit an operation before its real prerequisites exist. Recurring-income
 investments are capped by unfunded useful work; completed income alone supplies
 spendable forecasts. Self-refits own exact building ids and withhold their
-offline source income separately from purchase capital. The residual technology
-scalar and the operational Airworks capital tax are absent. Economic purchases
-keep a fixed funding deadline separate from their return horizon. Shared
-allocation rebalances their current and forecast capital alongside fixed
-producer payments; a missed funding deadline releases the unpaid plan for
-reconsideration. Issuing a build pays for its site immediately, including travel
-through fog; paid foundations and refits follow ordinary simulation rules.
-Extractor development compares explored, safe frame groups around a common
-Foundry site by their total return after restoration, support, travel, and build
-costs. The existing expansion security check must admit the shared support site.
-Only the next restoration owns capital and a builder; later steps are
-re-evaluated as construction completes, and their projected income never becomes
-spendable forecast credit.
+offline source income separately from purchase capital. Defensive refit
+valuation estimates protection at nearby asset approaches, using actual weapon
+coverage, redundancy, health, and offline time. Public terrain connectivity
+filters ground-threat priors; nearby current attackers prevent refitting. This
+estimate does not reconstruct remote army routes or credit distant choke-point
+protection. The residual technology scalar and the operational Airworks capital
+tax are absent. Economic purchases keep a fixed funding deadline separate from
+their return horizon. Shared allocation rebalances their current and forecast
+capital alongside fixed producer payments; a missed funding deadline releases
+the unpaid plan for reconsideration. Issuing a build pays for its site
+immediately, including travel through fog; paid foundations and refits follow
+ordinary simulation rules. Extractor development compares explored, safe frame
+groups around a common Foundry site by their total return after restoration,
+support, travel, and build costs. The existing expansion security check must
+admit the shared support site. Only the next restoration owns capital and a
+builder; later steps are re-evaluated as construction completes, and their
+projected income never becomes spendable forecast credit.
 
 Before the difficulty floor is projected, the player-facing policy pauses new
 voluntary construction and upgrades, discretionary production, mobile support,

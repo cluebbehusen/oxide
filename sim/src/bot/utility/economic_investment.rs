@@ -843,17 +843,20 @@ impl UtilityPolicy {
             }
             let funding_delay = funding_delay(&context, upgrade.cost, deadline);
             let refit_delay = funding_delay.saturating_add(u64::from(upgrade.build_ticks));
-            let benefit = if building.kind == BuildingKind::Reclaimer {
-                RecurringReturn {
-                    horizon: horizon.saturating_sub(funding_delay),
-                    ready_after: u64::from(upgrade.build_ticks),
-                    old_period: Some(crate::stats::RECLAIMER_PERIOD),
-                    new_period: crate::stats::REFINERY_PERIOD,
-                    unmet_demand: unmet_income,
-                }
-                .marginal()
+            let (benefit, defense_evidence) = if building.kind == BuildingKind::Reclaimer {
+                (
+                    RecurringReturn {
+                        horizon: horizon.saturating_sub(funding_delay),
+                        ready_after: u64::from(upgrade.build_ticks),
+                        old_period: Some(crate::stats::RECLAIMER_PERIOD),
+                        new_period: crate::stats::REFINERY_PERIOD,
+                        unmet_demand: unmet_income,
+                    }
+                    .marginal(),
+                    None,
+                )
             } else {
-                geometry
+                let (benefit, evidence) = geometry
                     .get_or_insert_with(|| {
                         DefenseThinkContext::new_oriented(
                             self,
@@ -864,7 +867,8 @@ impl UtilityPolicy {
                             context.orientation,
                         )
                     })
-                    .upgrade_value(building, horizon.saturating_sub(funding_delay))
+                    .upgrade_quote(building, horizon.saturating_sub(funding_delay));
+                (benefit, Some(evidence))
             };
             if benefit < u64::from(upgrade.cost) {
                 continue;
@@ -880,12 +884,8 @@ impl UtilityPolicy {
                     urgency => urgency,
                 };
             }
-            if building.kind != BuildingKind::Reclaimer {
+            if let Some(evidence) = defense_evidence {
                 use super::defense::DefenseOpportunityEvidence;
-                let evidence = geometry
-                    .as_mut()
-                    .expect("defense valuation prepares geometry")
-                    .upgrade_evidence(building.kind);
                 case.confidence = match evidence {
                     DefenseOpportunityEvidence::CurrentArmed
                     | DefenseOpportunityEvidence::CurrentFoothold => Confidence::Current,

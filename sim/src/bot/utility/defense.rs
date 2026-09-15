@@ -7,6 +7,7 @@ pub(super) mod progressive;
 mod pruning;
 mod routes;
 mod routing_cache;
+mod upgrades;
 
 pub(super) use routing_cache::DefenseRoutingCache;
 
@@ -532,123 +533,12 @@ impl<'a> DefenseThinkContext<'a> {
         self.building_contacts
     }
 
-    pub(super) fn upgrade_evidence(&mut self, kind: BuildingKind) -> DefenseOpportunityEvidence {
-        let Some(profile) = DefenseProfile::for_kind(kind) else {
-            return DefenseOpportunityEvidence::PublicPrior;
-        };
-        self.ensure_projection(profile.domain);
-        let projection = match profile.domain {
-            DefenseDomain::Ground => self.ground_projection.as_ref().and_then(Option::as_ref),
-            DefenseDomain::Air => self.air_projection.as_ref().and_then(Option::as_ref),
-        };
-        projection.map_or(DefenseOpportunityEvidence::PublicPrior, |projection| {
-            projection.evidence
-        })
-    }
-
-    pub(super) fn upgrade_value(&mut self, building: &BuildingObs, horizon: u64) -> u64 {
-        let Some(upgrade) = building.kind.upgrade_from(building.tier) else {
-            return 0;
-        };
-        if building.kind == BuildingKind::Array {
-            return self.array_upgrade_value(building, horizon, u64::from(upgrade.build_ticks));
-        }
-        let Some(profile) = DefenseProfile::for_kind(building.kind) else {
-            return 0;
-        };
-        self.ensure_projection(profile.domain);
-        let projection = match profile.domain {
-            DefenseDomain::Ground => self.ground_projection.as_ref().and_then(Option::as_ref),
-            DefenseDomain::Air => self.air_projection.as_ref().and_then(Option::as_ref),
-        };
-        let Some(projection) = projection else {
-            return 0;
-        };
-        let mut upgraded = building.clone();
-        upgraded.tier += 1;
-        let dps = |building: &BuildingObs| {
-            building
-                .kind
-                .tier_stats(building.tier)
-                .weapons
-                .iter()
-                .filter(|weapon| weapon_targets_domain(weapon, profile.domain))
-                .map(|weapon| {
-                    u64::from(weapon.damage)
-                        .saturating_mul(u64::from(weapon.salvo))
-                        .saturating_mul(100)
-                        / u64::from(weapon.cooldown_ticks.max(1))
-                })
-                .fold(0, u64::saturating_add)
-        };
-        let old_dps = dps(building);
-        let new_dps = dps(&upgraded);
-        if new_dps == 0 {
-            return 0;
-        }
-        let active_ticks = horizon.saturating_sub(u64::from(upgrade.build_ticks));
-        let mut value = 0u64;
-        for (index, asset) in self.grounding.assets.iter().enumerate() {
-            let mut marginal = 0;
-            for approach in projection
-                .approaches
-                .iter()
-                .filter(|approach| approach.asset == index)
-            {
-                let currently_covered = approach.path.iter().any(|tile| {
-                    building_covers(self.obs, self.briefing, building, *tile, profile.domain)
-                });
-                // The self-refit cannot retreat or be cancelled. Do not remove
-                // a needed firing position while a current attacker is near it.
-                if currently_covered
-                    && projection.evidence == DefenseOpportunityEvidence::CurrentArmed
-                    && approach.path.len() <= DEFENSE_RADIUS as usize
-                {
-                    return 0;
-                }
-                for &tile in &approach.path {
-                    if !building_covers(self.obs, self.briefing, &upgraded, tile, profile.domain) {
-                        continue;
-                    }
-                    let before =
-                        if building_covers(self.obs, self.briefing, building, tile, profile.domain)
-                        {
-                            old_dps
-                        } else {
-                            0
-                        };
-                    let gain = new_dps
-                        .saturating_mul(active_ticks)
-                        .saturating_sub(before.saturating_mul(horizon));
-                    let redundancy = projection
-                        .existing
-                        .iter()
-                        .filter(|other| {
-                            other.id != building.id
-                                && building_covers(
-                                    self.obs,
-                                    self.briefing,
-                                    other,
-                                    tile,
-                                    profile.domain,
-                                )
-                        })
-                        .count() as u64;
-                    let covered_value = u64::from(asset.value)
-                        .saturating_mul(u64::from(UnitKind::Sentinel.stats().cost));
-                    marginal = marginal.max(
-                        covered_value.saturating_mul(gain)
-                            / new_dps
-                                .saturating_mul(horizon)
-                                .saturating_mul(redundancy.saturating_add(1))
-                                .max(1),
-                    );
-                }
-            }
-            value = value.saturating_add(marginal);
-        }
-        value.saturating_mul(u64::from(building.hp))
-            / u64::from(building.kind.tier_stats(building.tier).max_hp.max(1))
+    pub(super) fn upgrade_quote(
+        &self,
+        building: &BuildingObs,
+        horizon: u64,
+    ) -> (u64, DefenseOpportunityEvidence) {
+        upgrades::quote(self, building, horizon)
     }
 
     fn array_upgrade_value(&self, building: &BuildingObs, horizon: u64, offline: u64) -> u64 {
@@ -4005,6 +3895,65 @@ mod tests {
 
     fn briefing() -> PublicMapBriefing {
         PublicMapBriefing::from_scenario(&scenario_with(|_| '.')).expect("briefing fixture")
+    }
+
+    #[test]
+    fn defensive_refit_values_local_protection_without_searching_army_routes() {
+        let map = briefing();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        let turret = building(30, obs.me, BuildingKind::Turret, LEFT_HOME.offset(4, 0));
+        obs.my_buildings.push(turret.clone());
+        let policy = UtilityPolicy::new();
+        let context = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
+        let ((benefit, evidence), work) =
+            crate::bot::navigation::work::measure(|| context.upgrade_quote(&turret, 6_000));
+        assert!(benefit >= u64::from(turret.kind.upgrade_from(0).unwrap().cost));
+        assert_eq!(evidence, DefenseOpportunityEvidence::PublicPrior);
+        assert_eq!(work.searches, 0);
+        assert_eq!(work.fields, 0);
+        assert_eq!(work.paths, 0);
+        assert_eq!(context.upgrade_quote(&turret, 1).0, 0);
+
+        let mut damaged = turret.clone();
+        damaged.hp /= 2;
+        assert!(context.upgrade_quote(&damaged, 6_000).0 < benefit);
+        let remote = building(31, obs.me, BuildingKind::Turret, TilePos::new(20, 0));
+        assert_eq!(context.upgrade_quote(&remote, 6_000).0, 0);
+
+        obs.enemy_units.push(unit(
+            90,
+            PlayerId(1),
+            UnitKind::Sentinel,
+            turret.anchor.offset(3, 0),
+        ));
+        let context = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
+        assert_eq!(
+            context.upgrade_quote(&turret, 6_000),
+            (0, DefenseOpportunityEvidence::CurrentArmed)
+        );
+    }
+
+    #[test]
+    fn defensive_refit_does_not_value_ground_threats_across_sealed_terrain() {
+        let map =
+            PublicMapBriefing::from_scenario(&scenario_with(
+                |tile| {
+                    if tile.x == 20 { '^' } else { '.' }
+                },
+            ))
+            .unwrap();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        let turret = building(30, obs.me, BuildingKind::Turret, LEFT_HOME.offset(4, 0));
+        obs.my_buildings.push(turret.clone());
+        obs.enemy_units.push(unit(
+            90,
+            PlayerId(1),
+            UnitKind::Sentinel,
+            TilePos::new(30, 10),
+        ));
+        let policy = UtilityPolicy::new();
+        let context = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
+        assert_eq!(context.upgrade_quote(&turret, 6_000).0, 0);
     }
 
     fn barricade_lane(tile: TilePos) -> char {
