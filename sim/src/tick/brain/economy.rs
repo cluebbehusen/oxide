@@ -1360,6 +1360,105 @@ fn extract(
     }
 }
 
+fn deposit_cargo(state: &mut State, id: UnitId, events: &mut Vec<Event>) {
+    let unit = state.unit(id).expect("caller checked");
+    let (me, carrying) = (unit.player, unit.carrying);
+    let unit = state.unit_mut(id).expect("caller checked");
+    unit.carrying = 0;
+    unit.progress = 0;
+    unit.path = None;
+    // Saturating: a hostile scenario can start a bank near u32::MAX.
+    // The event reports what was actually credited, not what was
+    // carried — at the ceiling those differ.
+    let seat = state.player_mut(me);
+    let credited = seat.scrap.saturating_add(carrying) - seat.scrap;
+    seat.scrap += credited;
+    if credited > 0 {
+        seat.recovery_allowance = 0;
+        seat.recovery_target = 0;
+        seat.recovery_ready = true;
+    }
+    events.push(Event::ScrapDeposited {
+        player: me,
+        amount: credited,
+    });
+}
+
+pub(in crate::tick) fn return_cargo_destination(
+    state: &State,
+    danger: &GroundSalvageDanger,
+    id: UnitId,
+    requested: Option<BuildingId>,
+) -> Option<BuildingId> {
+    let drop_offs = drop_offs_by_distance(state, id);
+    for avoid_danger in [true, false] {
+        if let Some(foundry_id) = drop_offs.iter().copied().find(|foundry_id| {
+            if requested.is_some_and(|requested| requested != *foundry_id) {
+                return false;
+            }
+            let foundry = state.building(*foundry_id).expect("live drop-off");
+            state
+                .unit(id)
+                .expect("validated worker")
+                .in_harvest_reach(foundry.anchor, foundry.stats().size)
+                || known_rect_route(
+                    state,
+                    danger,
+                    id,
+                    foundry.anchor,
+                    foundry.stats().size,
+                    avoid_danger,
+                    None,
+                )
+                .is_some()
+        }) {
+            return Some(foundry_id);
+        }
+    }
+    None
+}
+
+pub(super) fn return_cargo(
+    state: &mut State,
+    danger: &GroundSalvageDanger,
+    id: UnitId,
+    foundry: BuildingId,
+    repair: bool,
+    events: &mut Vec<Event>,
+) {
+    let unit = state.unit(id).expect("caller checked");
+    if let Some(building) = state.building(foundry).filter(|building| {
+        building.player == unit.player
+            && building.hp > 0
+            && building.built
+            && building.kind.is_drop_off()
+    }) {
+        if unit.in_harvest_reach(building.anchor, building.stats().size) {
+            let needs_repair = repair && building.hp < building.stats().max_hp;
+            deposit_cargo(state, id, events);
+            let unit = state.unit_mut(id).expect("caller checked");
+            if needs_repair {
+                unit.order = Order::Repair { building: foundry };
+            } else {
+                unit.advance_queue();
+            }
+            return;
+        }
+        if try_drop_offs(state, danger, id, &[foundry], events) {
+            return;
+        }
+    }
+    let unit = state.unit_mut(id).expect("caller checked");
+    let (player, pos) = (unit.player, unit.pos);
+    unit.advance_queue();
+    events.push(Event::OrderStalled {
+        unit: id,
+        player,
+        pos,
+        reason: StallReason::NoRoute,
+    });
+}
+
 /// Haul the load to a reachable own Foundry and deposit when adjacent.
 /// A retiring contract advances its queued program only after that safe
 /// arrival; a live contract keeps its anchored zone and returns next tick.
@@ -1371,7 +1470,6 @@ fn deliver(
     retiring: bool,
 ) {
     let unit = state.unit(id).expect("caller checked");
-    let (me, carrying) = (unit.player, unit.carrying);
     let drop_offs = drop_offs_by_distance(state, id);
     let at_drop_off = drop_offs.iter().any(|foundry_id| {
         state
@@ -1379,25 +1477,7 @@ fn deliver(
             .is_some_and(|foundry| unit.in_harvest_reach(foundry.anchor, foundry.stats().size))
     });
     if at_drop_off {
-        let unit = state.unit_mut(id).expect("caller checked");
-        unit.carrying = 0;
-        unit.progress = 0;
-        unit.path = None;
-        // Saturating: a hostile scenario can start a bank near u32::MAX.
-        // The event reports what was actually credited, not what was
-        // carried — at the ceiling those differ.
-        let seat = state.player_mut(me);
-        let credited = seat.scrap.saturating_add(carrying) - seat.scrap;
-        seat.scrap += credited;
-        if credited > 0 {
-            seat.recovery_allowance = 0;
-            seat.recovery_target = 0;
-            seat.recovery_ready = true;
-        }
-        events.push(Event::ScrapDeposited {
-            player: me,
-            amount: credited,
-        });
+        deposit_cargo(state, id, events);
         if retiring {
             state.unit_mut(id).expect("caller checked").advance_queue();
         }

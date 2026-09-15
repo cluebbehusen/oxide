@@ -5763,3 +5763,227 @@ fn grouped_production_clicks_and_shortcuts_stage_the_same_batch() {
     key_game.do_tick();
     assert_eq!(mouse_game.state.hash(), key_game.state.hash());
 }
+
+#[test]
+fn return_cargo_card_and_shortcut_replace_work_for_both_workers() {
+    for kind in [UnitKind::Harvester, UnitKind::Excavator] {
+        for via_card in [false, true] {
+            let mut game = headless_game();
+            let worker = game
+                .state
+                .units()
+                .iter()
+                .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+                .unwrap()
+                .id;
+            let mut data = serde_json::to_value(&*game.state).unwrap();
+            let row = data["units"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|u| u["id"] == serde_json::json!(worker))
+                .unwrap();
+            row["kind"] = serde_json::json!(kind);
+            row["carrying"] = serde_json::json!(4);
+            *game.state = serde_json::from_value(data).unwrap();
+            game.selection.units = vec![worker];
+            let mut input = InputState::new();
+            input.bindings = crate::action::BindingMap::classic();
+            let panel = crate::panel::build_for_palette(&game, &input.bindings, false).unwrap();
+            let card = panel
+                .cards
+                .iter()
+                .find(|card| card.action.semantic() == Some(Action::ReturnCargo))
+                .unwrap();
+            assert!(card.enabled);
+            if via_card {
+                activate_card(&mut game, &mut input, card.action);
+            } else {
+                apply_events(&mut game, &mut input, &[RawEvent::KeyDown { key: Key::U }]);
+            }
+            assert!(game.pending.iter().any(|pc| matches!(&pc.command, Command::ReturnCargo { units, foundry: None, repair: false } if units == &[worker])));
+            let pending = std::mem::take(&mut game.pending);
+            let report = game.state.tick(&pending);
+            assert!(
+                !report
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, oxide_sim::Event::CommandRejected { .. }))
+            );
+        }
+    }
+}
+
+#[test]
+fn return_cargo_foundry_click_keeps_empty_welders_and_loaded_workers() {
+    for damaged in [false, true] {
+        let mut game = headless_game();
+        let workers: Vec<_> = game
+            .state
+            .units()
+            .iter()
+            .filter(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+            .map(|u| u.id)
+            .collect();
+        assert!(workers.len() >= 2);
+        let foundry = game
+            .state
+            .buildings()
+            .iter()
+            .find(|b| b.player == game.human && b.kind.is_drop_off())
+            .unwrap()
+            .id;
+        let mut data = serde_json::to_value(&*game.state).unwrap();
+        let loaded = data["units"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|u| u["id"] == serde_json::json!(workers[0]))
+            .unwrap();
+        loaded["carrying"] = serde_json::json!(4);
+        if damaged {
+            let building = data["buildings"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|b| b["id"] == serde_json::json!(foundry))
+                .unwrap();
+            building["hp"] = serde_json::json!(building["hp"].as_u64().unwrap() - 10);
+        }
+        *game.state = serde_json::from_value(data).unwrap();
+        game.selection.units = workers.clone();
+        let b = game.state.building(foundry).unwrap();
+        let screen = game
+            .camera
+            .to_screen(vec2(b.anchor.x as f32 + 0.5, b.anchor.y as f32 + 0.5));
+        let mut input = InputState::new();
+        apply_events(
+            &mut game,
+            &mut input,
+            &[RawEvent::MouseDown {
+                button: MouseButton::Right,
+                x: screen.x,
+                y: screen.y,
+            }],
+        );
+        assert!(game.pending.iter().any(|pc| matches!(&pc.command, Command::ReturnCargo { units, foundry: Some(f), repair } if units == &[workers[0]] && *f == foundry && *repair == damaged)));
+        if damaged {
+            assert!(game.pending.iter().any(|pc| matches!(&pc.command, Command::Repair { units, building, queue: false } if *building == foundry && !units.contains(&workers[0]) && units.contains(&workers[1]))));
+        }
+    }
+}
+
+#[test]
+fn return_cargo_empty_selection_disables_the_card_and_shortcut() {
+    let mut game = headless_game();
+    let worker = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .unwrap()
+        .id;
+    game.selection.units = vec![worker];
+    let mut input = InputState::new();
+    input.bindings = crate::action::BindingMap::classic();
+    let panel = crate::panel::build_for_palette(&game, &input.bindings, false).unwrap();
+    assert!(
+        !panel
+            .cards
+            .iter()
+            .find(|card| card.action.semantic() == Some(Action::ReturnCargo))
+            .unwrap()
+            .enabled
+    );
+    apply_events(&mut game, &mut input, &[RawEvent::KeyDown { key: Key::U }]);
+    assert!(game.pending.is_empty());
+}
+
+#[test]
+fn shared_cargo_shortcut_unloads_a_transport() {
+    let mut game = skyhook_interaction_game();
+    let transport = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Skyhook)
+        .unwrap()
+        .id;
+    let passenger = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.kind == UnitKind::Sentinel)
+        .unwrap()
+        .id;
+    game.issue(Command::Load {
+        units: vec![passenger],
+        transport,
+        queue: false,
+    });
+    for _ in 0..180 {
+        game.do_tick();
+    }
+    assert_eq!(game.state.unit(transport).unwrap().cargo.len(), 1);
+    game.selection.units = vec![transport];
+    let mut input = InputState::new();
+    input.bindings = crate::action::BindingMap::classic();
+    controls_key(&mut game, &mut input, Key::U);
+    assert!(
+        matches!(game.pending.as_slice(), [PlayerCommand { command: Command::Unload { transport: id, queue: false, .. }, .. }] if *id == transport)
+    );
+    for _ in 0..180 {
+        game.do_tick();
+    }
+    assert!(game.state.unit(transport).unwrap().cargo.is_empty());
+    assert!(game.state.unit(passenger).is_some());
+}
+
+#[test]
+fn mixed_workers_use_the_cargo_shortcut_and_keep_other_unit_bindings() {
+    let mut game = headless_game();
+    let worker = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .unwrap()
+        .id;
+    let mut data = serde_json::to_value(&*game.state).unwrap();
+    let row = data["units"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|u| u["id"] == serde_json::json!(worker))
+        .unwrap();
+    row["carrying"] = serde_json::json!(4);
+    *game.state = serde_json::from_value(data).unwrap();
+    game.selection.units = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.human)
+        .map(|u| u.id)
+        .collect();
+    assert!(game.selection.units.len() > 1);
+    let mut input = InputState::new();
+    input.bindings = crate::action::BindingMap::classic();
+    input.build_menu = true;
+    controls_key(&mut game, &mut input, Key::U);
+    assert!(!input.construction_open());
+    assert!(matches!(
+        game.pending.as_slice(),
+        [PlayerCommand {
+            command: Command::ReturnCargo { .. },
+            ..
+        }]
+    ));
+    game.pending.clear();
+    controls_key(&mut game, &mut input, Key::M);
+    assert!(input.running);
+    controls_key(&mut game, &mut input, Key::X);
+    assert!(matches!(
+        game.pending.last().unwrap().command,
+        Command::Stop { .. }
+    ));
+}

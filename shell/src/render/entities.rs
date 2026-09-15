@@ -100,7 +100,9 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
         // ground.
         oxide_sim::Order::Attack { .. } => Color::new(0.85, 0.32, 0.29, 0.55),
         oxide_sim::Order::AttackMove { .. } => Color::new(0.88, 0.55, 0.26, 0.55),
-        oxide_sim::Order::Harvest { .. } => Color::new(0.85, 0.64, 0.25, 0.55),
+        oxide_sim::Order::ReturnCargo { .. } | oxide_sim::Order::Harvest { .. } => {
+            Color::new(0.85, 0.64, 0.25, 0.55)
+        }
         oxide_sim::Order::Build { .. }
         | oxide_sim::Order::Repair { .. }
         | oxide_sim::Order::Salvage { .. }
@@ -117,6 +119,7 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
             | oxide_sim::Order::Advance { goal }
             | oxide_sim::Order::AttackMove { goal } => *goal,
             oxide_sim::Order::Harvest { node, .. } => *node,
+            oxide_sim::Order::ReturnCargo { foundry, .. } => game.state.building(*foundry)?.anchor,
             oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
             oxide_sim::Order::Found { anchor, .. } => *anchor,
             oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {

@@ -59,6 +59,11 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             Command::Harvest { units, node, queue } => {
                 apply_harvest(state, pc.player, &canonical_units(units), *node, *queue)
             }
+            Command::ReturnCargo {
+                units,
+                foundry,
+                repair,
+            } => apply_return_cargo(state, pc.player, &canonical_units(units), *foundry, *repair),
             Command::Patrol { units, waypoints } => {
                 apply_patrol(state, pc.player, &canonical_units(units), waypoints)
             }
@@ -1003,6 +1008,61 @@ pub(super) fn clear_site_orders(
             remove_active_order(unit);
         }
     }
+}
+
+fn apply_return_cargo(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    foundry: Option<BuildingId>,
+    repair: bool,
+) -> Result<(), RejectReason> {
+    if repair && foundry.is_none() {
+        return Err(RejectReason::InvalidTarget);
+    }
+    if let Some(id) = foundry {
+        let building = state.building(id).ok_or(RejectReason::NotYourBuilding)?;
+        if building.player != player {
+            return Err(RejectReason::NotYourBuilding);
+        }
+        if !building.built || building.hp == 0 || !building.kind.is_drop_off() {
+            return Err(RejectReason::InvalidTarget);
+        }
+    }
+    let workers: Vec<_> = units
+        .iter()
+        .copied()
+        .filter(|id| {
+            state.unit(*id).is_some_and(|unit| {
+                unit.player == player
+                    && unit.hp > 0
+                    && unit.kind.stats().harvest.is_some()
+                    && unit.carrying > 0
+            })
+        })
+        .collect();
+    if workers.is_empty() {
+        return Err(RejectReason::NoValidUnits);
+    }
+    let danger = crate::vision::GroundSalvageDanger::capture(state, player);
+    let deliveries: Vec<_> = workers
+        .into_iter()
+        .filter_map(|id| {
+            super::brain::return_cargo_destination(state, &danger, id, foundry)
+                .map(|destination| (id, destination))
+        })
+        .collect();
+    if deliveries.is_empty() {
+        return Err(RejectReason::UnreachableGoal);
+    }
+    for (id, foundry) in deliveries {
+        assign(
+            state.unit_mut(id).expect("validated worker"),
+            Order::ReturnCargo { foundry, repair },
+            false,
+        );
+    }
+    Ok(())
 }
 
 /// Welding is for standing, wounded, own buildings; sites are resumed

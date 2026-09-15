@@ -358,6 +358,19 @@ Scrap nodes block ground until exhausted. Harvesters work a bounded zone, carry
 a finite load, and deposit at a Foundry. Gathering and unloading require the
 worker's center to be within 0.75 tiles of the footprint edge, including
 diagonal doorsteps; merely entering a neighboring tile does not start work.
+
+`ReturnCargo` replaces loaded workers' active and queued work with a delivery.
+The command selects an owned, living, completed Foundry before replacing each
+worker's program. Automatic selection tries safe, team-known routes in squared
+center-distance order, with building-id ties. If only dangerous routes exist, it
+selects the nearest reachable destination and waits for safe passage. Delivery
+uses the ordinary danger-aware routes, physical unloading reach, bank credit,
+and recovery accounting. An explicit Foundry remains the destination; its
+destruction or loss of access stalls the order without losing the load. A failed
+request preserves the prior program. Delivery ends idle unless the player has
+since queued new work. A Foundry-click delivery may continue into ordinary paid
+repair; a patient healed in transit still receives its cargo.
+
 Destroyed eligible entities leave decaying wreck salvage; wrecks do not block
 movement. Recurring economy runs in the production phase: Reclaimers and
 Refineries pay on their cadences, restored Extractors provide fixed remote

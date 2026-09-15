@@ -109,6 +109,17 @@ loads, and building income remain private. Placement and support previews use
 authoritative queries rather than duplicating game rules. Unknown concealed
 mines cannot alter player-visible picking or placement feedback.
 
+Loaded Harvesters and Excavators expose a Return Cargo card and shortcut (`U` by
+default). Worker selections use Return Cargo, a single selected transport uses
+Unload, and selected buildings retain Upgrade on the same key. Mixed unit
+selections containing workers use Return Cargo. The action replaces current and
+queued work, deposits at a reachable owned Foundry, and leaves the worker there.
+A right-click on a completed owned Foundry sends loaded workers to that specific
+building; a damaged Foundry also receives repair after delivery. Empty welders
+retain the existing repair click, and unfinished sites retain construction.
+Cargo returns replace work even when Shift is held; they never resume an
+interrupted harvest job.
+
 ## Persistence and replay
 
 A save is a replay: starting scenario, tick-stamped commands, simulation
