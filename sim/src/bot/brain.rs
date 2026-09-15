@@ -1143,6 +1143,7 @@ fn queue_replacing_non_harvest_units(command: &Command) -> Option<&[UnitId]> {
             queue: false,
             ..
         }
+        | Command::ReturnCargo { units, .. }
         | Command::Patrol { units, .. }
         | Command::Stop { units } => Some(units),
         Command::Move { queue: true, .. }

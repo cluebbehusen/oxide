@@ -434,6 +434,8 @@ pub(crate) struct GroundSalvageDanger {
     /// served uncached exactly as before.
     lanes: Vec<Cell<u8>>,
     path_scratch: RefCell<AstarScratch>,
+    #[cfg(test)]
+    route_searches: Cell<usize>,
 }
 
 impl GroundSalvageDanger {
@@ -552,6 +554,8 @@ impl GroundSalvageDanger {
             building_blocks,
             lanes,
             path_scratch: RefCell::new(AstarScratch::default()),
+            #[cfg(test)]
+            route_searches: Cell::new(0),
         }
     }
 
@@ -641,6 +645,8 @@ impl GroundSalvageDanger {
         goal: TilePos,
         passable: impl FnMut(TilePos) -> bool,
     ) -> Option<Vec<TilePos>> {
+        #[cfg(test)]
+        self.route_searches.set(self.route_searches.get() + 1);
         chassis::path::astar_with_scratch(
             self.width,
             self.height,
@@ -650,6 +656,11 @@ impl GroundSalvageDanger {
             crate::stats::PATH_EXPANSION_CAP,
             &mut self.path_scratch.borrow_mut(),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn route_search_count(&self) -> usize {
+        self.route_searches.get()
     }
 
     /// Reachability of alternate goals proved by the most recent exhausted

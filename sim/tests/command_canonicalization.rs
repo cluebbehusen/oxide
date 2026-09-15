@@ -41,14 +41,15 @@ fn command_tag(command: &Command) -> usize {
         Command::Load { .. } => 19,
         Command::Unload { .. } => 20,
         Command::ClearFocus { .. } => 21,
+        Command::ReturnCargo { .. } => 22,
     }
 }
 
-const COMMAND_VARIANTS: usize = 22;
+const COMMAND_VARIANTS: usize = 23;
 
 /// The verbs that carry a unit list — every one of them owes this file a
 /// duplicate-id row.
-const UNIT_BEARING_TAGS: [usize; 12] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 14, 15, 19];
+const UNIT_BEARING_TAGS: [usize; 13] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 14, 15, 19, 22];
 
 /// The verbs that address a building alone, with no list to canonicalize.
 const BUILDING_ONLY_TAGS: [usize; 5] = [6, 10, 11, 12, 18];
@@ -148,6 +149,9 @@ fn stage() -> Stage {
     .build()
     .unwrap();
 
+    let mut data = serde_json::to_value(&state).unwrap();
+    data["units"][1]["carrying"] = serde_json::json!(3);
+    state = serde_json::from_value(data).unwrap();
     let guard = state.units()[0].id;
     let worker = state.units()[1].id;
     let enemy = Target::Unit(state.units()[2].id);
@@ -232,6 +236,15 @@ fn families(stage: &Stage) -> Vec<Family> {
         ..
     } = *stage;
     vec![
+        Family {
+            name: "return-cargo",
+            actor: worker,
+            make: Box::new(move |units, _| Command::ReturnCargo {
+                units,
+                foundry: None,
+                repair: false,
+            }),
+        },
         Family {
             name: "move",
             actor: guard,
@@ -409,7 +422,7 @@ fn a_tripled_append_takes_one_queue_slot() {
         // flag; every other verb parks exactly one leg.
         let expected = match family.name {
             "patrol" => 1, // the second waypoint, waiting its turn
-            "stop" => 0,
+            "stop" | "return-cargo" => 0,
             _ => before + 1,
         };
         assert_eq!(

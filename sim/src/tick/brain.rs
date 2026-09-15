@@ -193,6 +193,14 @@ pub(super) fn run(
                     walk(state, id, goal, events);
                 }
             }
+            Order::ReturnCargo { foundry, repair } => {
+                let player = state.unit(id).expect("caller checked").player;
+                let team = state.player(player).team as usize;
+                let danger = harvest_danger_by_team[team].get_or_insert_with(|| {
+                    crate::vision::GroundSalvageDanger::capture(state, player)
+                });
+                economy::return_cargo(state, danger, id, foundry, repair, events);
+            }
             Order::Harvest {
                 node,
                 anchor,
@@ -262,6 +270,7 @@ pub(super) fn run(
 
 mod combat;
 mod economy;
+pub(super) use economy::return_cargo_destination;
 mod locomotion;
 pub(super) mod logistics;
 

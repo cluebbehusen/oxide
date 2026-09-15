@@ -263,6 +263,42 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                 return;
             }
             // Welders alone cannot lay construction: fall through.
+        } else if building.kind.is_drop_off()
+            && units.iter().any(|id| {
+                game.state
+                    .unit(*id)
+                    .is_some_and(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
+            })
+        {
+            let foundry = building.id;
+            let repair = building.hp < building.stats().max_hp;
+            let (loaded, others): (Vec<_>, Vec<_>) = units.into_iter().partition(|id| {
+                game.state
+                    .unit(*id)
+                    .is_some_and(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
+            });
+            let welders: Vec<_> = others
+                .into_iter()
+                .filter(|id| {
+                    game.state
+                        .unit(*id)
+                        .is_some_and(|unit| unit.kind.stats().welder)
+                })
+                .collect();
+            game.issue(Command::ReturnCargo {
+                units: loaded,
+                foundry: Some(foundry),
+                repair,
+            });
+            if repair && !welders.is_empty() {
+                game.issue(Command::Repair {
+                    units: welders,
+                    building: foundry,
+                    queue,
+                });
+            }
+            game.ping(world, PingKind::Harvest);
+            return;
         } else if building.hp < building.stats().max_hp && has_welder {
             game.issue(Command::Repair {
                 units,

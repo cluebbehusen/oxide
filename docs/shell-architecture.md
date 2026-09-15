@@ -92,6 +92,13 @@ against pending commands again. Selecting one factory retains the exact ordered
 queue and its per-slot cancellation controls. Mixed building kinds retain rally
 controls and the first compatible producer's training shortcuts.
 
+Production panels reserve a fixed-width rally group with one shared flag beside
+adjacent Set/Reset and Clear buttons. Clear stays visible but disabled until a
+selected producer has a rally. Rally changes preserve the action band's height
+and production-card positions. Narrow layouts widen the group to preserve
+minimum touch targets; production wraps in the remaining columns. Card
+rectangles and panel bounds share the same separator and inset calculations.
+
 Coordinates are logical throughout the input/layout pipeline; the hardware
 adapter applies DPI conversion once. Drawing publishes a shared `LayoutModel`
 whose rectangles also drive hit testing. The HUD's supported layout floor is
@@ -108,6 +115,17 @@ Static capabilities may be shown for foreign selections; current enemy orders,
 loads, and building income remain private. Placement and support previews use
 authoritative queries rather than duplicating game rules. Unknown concealed
 mines cannot alter player-visible picking or placement feedback.
+
+Loaded Harvesters and Excavators expose a Return Cargo card and shortcut (`U` by
+default). Worker selections use Return Cargo, a single selected transport uses
+Unload, and selected buildings retain Upgrade on the same key. Mixed unit
+selections containing workers use Return Cargo. The action replaces current and
+queued work, deposits at a reachable owned Foundry, and leaves the worker there.
+A right-click on a completed owned Foundry sends loaded workers to that specific
+building; a damaged Foundry also receives repair after delivery. Empty welders
+retain the existing repair click, and unfinished sites retain construction.
+Cargo returns replace work even when Shift is held; they never resume an
+interrupted harvest job.
 
 ## Persistence and replay
 
@@ -231,7 +249,7 @@ clocks.
 
 Destruction and projectile caches retain the pre-removal identity, pose, and
 visibility needed to present an event after its entity has gone. Cosmetic
-effects cannot reveal unseen events. Authoritative crash trajectories and impact
+visuals cannot reveal unseen events. Authoritative crash trajectories and impact
 timing remain simulation-owned; rendering observes them without adding damage
 rules.
 
@@ -275,11 +293,20 @@ readability consistent across display densities; sprite sampling independently
 uses physical pixels.
 
 Simulation events enqueue audio cues. The mixer applies user buses, repetition
-limits, and camera-relative attenuation. Continuous positional sounds are owned
-and stopped individually; pause and screen transitions release them, and resumed
-presentation can reconstruct them. Soundtrack state controls music beds and
-crossfades. Audio never feeds a simulation decision. Production sprite and sound
-bytes remain owned by their generators and approval workflows.
+limits, and camera-relative attenuation. Missile, artillery, bomb, mine and
+Sapper detonations, building destruction, and aircraft ground impacts are
+audible through fog regardless of ownership. Their distance gain is full inside
+the camera viewport and fades linearly to silence 24 tiles beyond its nearest
+edge, with the same range at every zoom. Zoom weighting still reduces heavy
+sounds to 72% at the widest view. Same-kind events coalesce to the loudest
+emitter; inaudible events consume no voices and do not raise combat music. A
+detonated charge uses only its demolition cue; other buildings destroyed in the
+same tick retain their destruction cues. Visuals, target knowledge, launch
+warnings, and missile motors retain their sight rules. Continuous positional
+sounds are owned and stopped individually; pause and screen transitions release
+them, and resumed presentation can reconstruct them. Soundtrack state controls
+music beds and crossfades. Audio never feeds a simulation decision. Production
+sprite and sound bytes remain owned by their generators and approval workflows.
 
 The tiny-skia renderer in `oxide-kit` produces whole-map CPU schematics. It does
 not share the native atlas, camera, HUD, animation, or visual polish. Screenshot

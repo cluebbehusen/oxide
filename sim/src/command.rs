@@ -246,6 +246,17 @@ pub enum Command {
         /// Append to order queues instead of replacing.
         queue: bool,
     },
+    /// Replace workers' active and queued work with a cargo delivery, then idle.
+    ReturnCargo {
+        /// Loaded owned workers; other units are skipped.
+        units: Vec<UnitId>,
+        /// A specific own completed Foundry, or the nearest reachable one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        foundry: Option<BuildingId>,
+        /// After delivery, repair the specified Foundry if it is still damaged.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        repair: bool,
+    },
 }
 
 /// A command attributed to its issuing player. Ownership checks are made

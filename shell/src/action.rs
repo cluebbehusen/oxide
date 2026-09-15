@@ -11,6 +11,7 @@ pub const CONTROL_GROUPS: usize = 5;
 pub enum Context {
     Empty,
     Units,
+    Workers,
     Buildings,
     Production,
     Construction,
@@ -25,6 +26,7 @@ impl Context {
         match self {
             Self::Empty => 1,
             Self::Units => 2,
+            Self::Workers => 4096,
             Self::Buildings => 4,
             Self::Production => 8,
             Self::Construction => 16,
@@ -35,7 +37,8 @@ impl Context {
         }
     }
 }
-const LIVE: u16 = 511;
+const UNITS: u16 = 2 | 4096;
+const LIVE: u16 = 511 | 4096;
 const WORLD: u16 = LIVE | 512 | 1024;
 
 /// Categories and card order are shared by rendering and keyboard dispatch.
@@ -126,6 +129,7 @@ pub enum Action {
     MenuHome,
     MenuEnd,
     DeleteSave,
+    ReturnCargo,
 }
 impl Action {
     pub fn label(self) -> String {
@@ -159,6 +163,7 @@ impl Action {
             Self::SetRally => "Set rally".into(),
             Self::ClearRally => "Clear rally".into(),
             Self::Unload => "Unload here".into(),
+            Self::ReturnCargo => "Return cargo".into(),
             Self::ReplayPause => "Pause replay".into(),
             Self::ReplayBack => "Seek back 25 seconds".into(),
             Self::ReplayForward => "Seek forward 25 seconds".into(),
@@ -183,11 +188,11 @@ impl Action {
             Self::Back => WORLD | 2048,
             Self::TrainSlot(_) | Self::SetRally | Self::ClearRally => 8,
             Self::Upgrade => 4 | 8,
-            Self::StopOrScrap => 2 | 4,
-            Self::Patrol => 2,
-            Self::Salvage | Self::Run | Self::AttackMove | Self::RepairUnit | Self::Unload => {
-                2 | 496
-            }
+            Self::StopOrScrap => UNITS | 4,
+            Self::Patrol => UNITS,
+            Self::Salvage | Self::Run | Self::AttackMove | Self::RepairUnit => UNITS | 496,
+            Self::Unload => 2,
+            Self::ReturnCargo => 4096 | 496,
             Self::BuildCategory(_) => 16,
             Self::Build(kind) => Context::BuildCategory(building_category(kind)).bit(),
             Self::ReplayPause
@@ -437,7 +442,7 @@ impl BindingMap {
         let mut map = Self {
             bindings: Vec::new(),
             secondary: Vec::new(),
-            revision: 1,
+            revision: 3,
         };
         let defaults = [
             (PanUp, Key::W),
@@ -461,6 +466,7 @@ impl BindingMap {
             (Upgrade, Key::U),
             (SetRally, Key::Y),
             (Unload, Key::U),
+            (ReturnCargo, Key::U),
             (ReplayPause, Key::Space),
             (ReplayBack, Key::PageUp),
             (ReplayForward, Key::PageDown),
@@ -739,7 +745,7 @@ impl BindingMap {
         let mut seen = Self {
             bindings: Vec::new(),
             secondary: Vec::new(),
-            revision: 1,
+            revision: 3,
         };
         for (slot, rows) in [(0, &self.bindings), (1, &self.secondary)] {
             for b in rows {
@@ -755,7 +761,39 @@ impl BindingMap {
     }
     /// Upgrade old defaults while keeping deliberate remaps and unbound actions.
     pub fn migrate(&mut self, unbound: &[Action]) {
-        if self.revision != 0 {
+        if self.revision >= 3 {
+            return;
+        }
+        if self.revision == 2 {
+            for (mut previous, old_key) in
+                [(Self::classic(), Key::O), (Self::left_handed(), Key::Q)]
+            {
+                previous.rebind(Action::ReturnCargo, Chord::bare(old_key));
+                previous.revision = 2;
+                if *self == previous && !unbound.contains(&Action::ReturnCargo) {
+                    let key = if old_key == Key::O { Key::U } else { Key::E };
+                    self.rebind(Action::ReturnCargo, Chord::bare(key));
+                    break;
+                }
+            }
+            self.revision = 3;
+            return;
+        }
+        if self.revision == 1 {
+            if !unbound.contains(&Action::ReturnCargo)
+                && self.chord_for(Action::ReturnCargo).is_none()
+            {
+                for chord in self
+                    .chord_for(Action::Unload)
+                    .into_iter()
+                    .chain([Chord::bare(Key::U), Chord::bare(Key::E)])
+                {
+                    if self.rebind(Action::ReturnCargo, chord) {
+                        break;
+                    }
+                }
+            }
+            self.revision = 3;
             return;
         }
         let legacy = Self::legacy();
@@ -775,7 +813,7 @@ impl BindingMap {
         let mut migrated = Self {
             bindings: Vec::new(),
             secondary: Vec::new(),
-            revision: 1,
+            revision: 3,
         };
         for b in custom {
             let _ = migrated.rebind(b.action, b.chord);
@@ -1154,5 +1192,137 @@ mod tests {
                 RawEvent::Text { ch: 'q' }
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod cargo_binding_tests {
+    use super::*;
+
+    #[test]
+    fn cargo_shortcuts_share_keys_only_in_distinct_selection_contexts() {
+        for (mut map, key) in [
+            (BindingMap::classic(), Key::U),
+            (BindingMap::left_handed(), Key::E),
+        ] {
+            for (context, action) in [
+                (Context::Workers, Action::ReturnCargo),
+                (Context::Construction, Action::ReturnCargo),
+                (Context::Units, Action::Unload),
+                (Context::Buildings, Action::Upgrade),
+                (Context::Production, Action::Upgrade),
+            ] {
+                assert_eq!(map.resolve_in(key, false, false, context), Some(action));
+            }
+            assert!(map.valid());
+            assert!(map.conflicts().is_empty());
+            assert!(!map.rebind(Action::Run, Chord::bare(key)));
+            assert!(map.rebind(Action::ReturnCargo, Chord::ctrl(Key::O)));
+            assert_eq!(map.chord_for(Action::Unload), Some(Chord::bare(key)));
+        }
+    }
+
+    #[test]
+    fn shared_cargo_key_migrates_previous_presets_but_keeps_custom_bindings() {
+        for (mut map, old_key, new_key) in [
+            (BindingMap::classic(), Key::O, Key::U),
+            (BindingMap::left_handed(), Key::Q, Key::E),
+        ] {
+            assert!(map.rebind(Action::ReturnCargo, Chord::bare(old_key)));
+            map.revision = 2;
+            let mut custom = map.clone();
+            assert!(custom.rebind(Action::ReturnCargo, Chord::ctrl(Key::O)));
+            custom.migrate(&[]);
+            assert_eq!(
+                custom.chord_for(Action::ReturnCargo),
+                Some(Chord::ctrl(Key::O))
+            );
+            let mut unbound = map.clone();
+            unbound.unbind(Action::ReturnCargo);
+            unbound.migrate(&[Action::ReturnCargo]);
+            assert_eq!(unbound.chord_for(Action::ReturnCargo), None);
+            map.migrate(&[]);
+            assert_eq!(
+                map.chord_for(Action::ReturnCargo),
+                Some(Chord::bare(new_key))
+            );
+            assert!(map.valid());
+        }
+    }
+
+    #[test]
+    fn return_cargo_migration_supports_customized_profiles() {
+        for (base, expected) in [
+            (BindingMap::classic(), Key::U),
+            (BindingMap::left_handed(), Key::E),
+        ] {
+            for unload in [None, Some(Chord::ctrl(Key::P))] {
+                let mut map = base.clone();
+                map.unbind(Action::ReturnCargo);
+                map.revision = 1;
+                assert!(map.rebind(Action::TogglePause, Chord::ctrl(Key::O)));
+                if let Some(chord) = unload {
+                    assert!(map.rebind(Action::Unload, chord));
+                }
+                let pause = map.chord_for(Action::TogglePause);
+                let mut unbound = map.clone();
+                unbound.migrate(&[Action::ReturnCargo]);
+                assert_eq!(unbound.chord_for(Action::ReturnCargo), None);
+                map.migrate(&[]);
+                let expected = unload.unwrap_or(Chord::bare(expected));
+                assert_eq!(map.chord_for(Action::ReturnCargo), Some(expected));
+                assert_eq!(map.chord_for(Action::Unload), Some(expected));
+                assert_eq!(map.chord_for(Action::TogglePause), pause);
+                assert!(map.valid());
+            }
+        }
+    }
+
+    #[test]
+    fn return_cargo_migration_falls_back_when_unload_conflicts_or_is_unbound() {
+        for unload_unbound in [false, true] {
+            let mut map = BindingMap::left_handed();
+            map.unbind(Action::ReturnCargo);
+            map.revision = 1;
+            if unload_unbound {
+                map.unbind(Action::Unload);
+            } else {
+                assert!(map.rebind(Action::Unload, Chord::bare(Key::U)));
+            }
+            let unload = map.chord_for(Action::Unload);
+            let construction = map.chord_for(Action::BuildCategory(1));
+            map.migrate(&[]);
+            assert_eq!(
+                map.chord_for(Action::ReturnCargo),
+                Some(Chord::bare(Key::E))
+            );
+            assert_eq!(map.chord_for(Action::Unload), unload);
+            assert_eq!(map.chord_for(Action::BuildCategory(1)), construction);
+            assert!(map.valid());
+        }
+    }
+
+    #[test]
+    fn return_cargo_migration_keeps_custom_keys_and_unbindings() {
+        for mut map in [BindingMap::classic(), BindingMap::left_handed()] {
+            let chord = map.chord_for(Action::ReturnCargo).unwrap();
+            map.unbind(Action::ReturnCargo);
+            map.revision = 1;
+            let mut unbound = map.clone();
+            unbound.migrate(&[Action::ReturnCargo]);
+            assert_eq!(unbound.chord_for(Action::ReturnCargo), None);
+            map.migrate(&[]);
+            assert_eq!(map.chord_for(Action::ReturnCargo), Some(chord));
+            assert!(map.valid());
+        }
+        let mut map = BindingMap::classic();
+        map.unbind(Action::ReturnCargo);
+        map.revision = 1;
+        map.unbind(Action::Unload);
+        map.unbind(Action::Upgrade);
+        assert!(map.rebind(Action::Run, Chord::bare(Key::U)));
+        map.migrate(&[]);
+        assert_eq!(map.chord_for(Action::Run), Some(Chord::bare(Key::U)));
+        assert_eq!(map.chord_for(Action::ReturnCargo), None);
     }
 }

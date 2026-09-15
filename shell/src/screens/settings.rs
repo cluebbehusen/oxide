@@ -84,6 +84,7 @@ fn control_sections() -> Vec<(&'static str, Vec<Action>)> {
                 Patrol,
                 Salvage,
                 RepairUnit,
+                ReturnCargo,
                 Unload,
             ],
         ),

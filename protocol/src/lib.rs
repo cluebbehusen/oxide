@@ -470,7 +470,8 @@ fn reject_unknown_command_value_fields(
         Command::Unload { .. } => {
             reject_unknown_object_fields(wire.get("at"), "command.at", &["x", "y"])
         }
-        Command::Stop { .. }
+        Command::ReturnCargo { .. }
+        | Command::Stop { .. }
         | Command::Train { .. }
         | Command::Cancel { .. }
         | Command::Repair { .. }
@@ -530,6 +531,11 @@ fn command_wire_fields(command: &Command) -> &'static [&'static str] {
             units: _,
             waypoints: _,
         } => &["type", "units", "waypoints"],
+        Command::ReturnCargo {
+            units: _,
+            foundry: _,
+            repair: _,
+        } => &["type", "units", "foundry", "repair"],
         Command::Stop { units: _ } => &["type", "units"],
         Command::Train {
             building: _,
@@ -805,10 +811,11 @@ mod tests {
             Command::Load { .. } => 19,
             Command::Unload { .. } => 20,
             Command::ClearFocus { .. } => 21,
+            Command::ReturnCargo { .. } => 22,
         }
     }
 
-    const COMMAND_VARIANTS: usize = 22;
+    const COMMAND_VARIANTS: usize = 23;
 
     #[test]
     fn an_omitted_screenshot_path_survives_the_roundtrip() {
@@ -942,6 +949,11 @@ mod tests {
         use chassis::grid::TilePos;
         use oxide_sim::{BuildingId, BuildingKind, Target, UnitKind};
         let commands = vec![
+            Command::ReturnCargo {
+                units: vec![UnitId(4)],
+                foundry: Some(BuildingId(0)),
+                repair: true,
+            },
             Command::Move {
                 units: vec![UnitId(1)],
                 goal: TilePos::new(3, 4),

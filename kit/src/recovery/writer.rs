@@ -237,6 +237,7 @@ fn command_bytes(command: &Command) -> usize {
         | Command::Attack { units, .. }
         | Command::AttackMove { units, .. }
         | Command::Harvest { units, .. }
+        | Command::ReturnCargo { units, .. }
         | Command::Stop { units }
         | Command::Build { units, .. }
         | Command::Repair { units, .. }

@@ -409,7 +409,13 @@ impl InputState {
                 .map(Context::BuildCategory)
                 .unwrap_or(Context::Construction);
         }
-        if !game.selection.units.is_empty() {
+        if game.selection.units.iter().any(|id| {
+            game.state
+                .unit(*id)
+                .is_some_and(|unit| unit.kind.stats().harvest.is_some())
+        }) {
+            Context::Workers
+        } else if !game.selection.units.is_empty() {
             Context::Units
         } else if !orders::selected_producers(game).is_empty() {
             Context::Production
