@@ -1601,29 +1601,7 @@ pub(crate) fn activate_action_card(game: &mut Game, input: &mut InputState, acti
             game.toast(why.clone());
         }
     } else if let Action::TrainSlot(slot) = action {
-        // Multi-producer selections train at the first compatible producer.
-        // Resolve its actual card to share affordability and tech checks.
-        let selected = orders::selected_producers(game);
-        let original = game.selection.buildings.clone();
-        for id in selected {
-            game.selection.buildings = vec![id];
-            let card =
-                crate::panel::build_for_palette(game, &input.bindings, false).and_then(|panel| {
-                    panel
-                        .cards
-                        .into_iter()
-                        .find(|c| c.action.semantic() == Some(Action::TrainSlot(slot)))
-                });
-            if let Some(card) = card {
-                if card.enabled {
-                    orders::train(game, slot as usize);
-                } else if let Some(why) = card.why {
-                    game.toast(why);
-                }
-                break;
-            }
-        }
-        game.selection.buildings = original;
+        orders::train(game, slot as usize);
     }
 }
 
@@ -1653,6 +1631,9 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
                 "set rally: click the battlefield or minimap, {} to cancel",
                 input.bindings.label(Action::Back)
             ));
+        }
+        crate::panel::CardAction::CancelProduction(kind) => {
+            crate::production::cancel_one(game, kind)
         }
         crate::panel::CardAction::CancelQueue(building, index) => {
             game.issue(Command::CancelTrain { building, index });

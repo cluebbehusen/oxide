@@ -5704,3 +5704,62 @@ fn upgrade_and_rally_shortcuts_share_the_cards_owner_and_affordability_gates() {
     controls_key(&mut game, &mut input, Key::Y);
     assert_eq!(input.rallying, vec![foundry]);
 }
+
+#[test]
+fn grouped_production_clicks_and_shortcuts_stage_the_same_batch() {
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.players[0].scrap = 125;
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Foundry,
+        x: 9,
+        y: 3,
+    });
+    let make_game = || {
+        let mut game = Game::with_viewport(scenario.clone(), vec2(1280.0, 800.0)).unwrap();
+        game.selection.buildings = game
+            .state
+            .buildings()
+            .iter()
+            .filter(|b| b.player == game.human)
+            .map(|b| b.id)
+            .collect();
+        game
+    };
+    let mut mouse_game = make_game();
+    let mut key_game = make_game();
+    let mut mouse_input = InputState::new();
+    let mut key_input = InputState::new();
+    mouse_input.bindings = BindingMap::classic();
+    key_input.bindings = BindingMap::classic();
+    let card = crate::panel::build_for_input(&mouse_game, &mouse_input)
+        .unwrap()
+        .cards
+        .into_iter()
+        .find(|c| c.action == crate::panel::CardAction::Dispatch(Action::TrainSlot(0)))
+        .unwrap();
+    let mut layout = mouse_game.layout.get();
+    layout.cards[0] = (mq::Rect::new(240.0, 720.0, 100.0, 48.0), card.action);
+    layout.card_count = 1;
+    mouse_game.layout.set(layout);
+    for _ in 0..2 {
+        apply_events(&mut mouse_game, &mut mouse_input, &click(260.0, 740.0));
+        apply_events(
+            &mut key_game,
+            &mut key_input,
+            &[
+                RawEvent::KeyDown { key: Key::Q },
+                RawEvent::KeyUp { key: Key::Q },
+            ],
+        );
+    }
+    assert_eq!(
+        mouse_game.pending.len(),
+        2,
+        "two factories share 100 of the 125 scrap"
+    );
+    assert_eq!(*mouse_game.pending, *key_game.pending);
+    mouse_game.do_tick();
+    key_game.do_tick();
+    assert_eq!(mouse_game.state.hash(), key_game.state.hash());
+}

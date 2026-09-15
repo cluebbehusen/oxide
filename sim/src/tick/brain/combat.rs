@@ -436,8 +436,8 @@ fn buffer_shot(
 
 /// Built turrets pick their own fights: nearest enemy unit in range with a
 /// clear line (buildings can't chase, so out-of-line targets are simply
-/// ignored until they move). A Bastion with no eligible unit can shell a
-/// currently visible hostile building. Stateless — target choice re-evaluates
+/// ignored until they move). Ground-capable defenses with no eligible unit
+/// fall back to currently apparent hostile buildings. Stateless — target choice re-evaluates
 /// every shot, in building-id order.
 pub(super) fn turret_fire(
     state: &mut State,
@@ -508,14 +508,16 @@ pub(super) fn turret_fire(
             .flatten();
         let building_victim = (focused_victim.is_none()
             && unit_victim.is_none()
-            && kind == crate::stats::BuildingKind::Bastion
             && atk.targets.covers(Domain::Ground))
         .then(|| {
             state
                 .buildings
                 .iter()
-                .filter(|target| target.hp > 0 && state.hostile(me, target.player))
-                .filter(|target| target.tiles().any(|tile| state.can_see(me, tile)))
+                .filter(|target| {
+                    state
+                        .visible_hostile_target_domain(me, Target::Building(target.id))
+                        .is_some()
+                })
                 .map(|target| {
                     let aim = target.closest_point_to(center);
                     (center.dist_sq(aim), target.id, aim)
