@@ -342,8 +342,8 @@ fn forced_termination_retains_a_valid_prefix() {
             .env("OXIDE_RECOVERY_TEST_ROOT", &root)
             .env("OXIDE_RECOVERY_TEST_READY", &ready)
             .env("OXIDE_RECOVERY_TEST_PHASE", phase)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .spawn()
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -353,7 +353,9 @@ fn forced_termination_retains_a_valid_prefix() {
                 let _ = child.wait();
                 panic!("child did not reach {phase}");
             }
-            assert!(child.try_wait().unwrap().is_none());
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("child exited before reaching {phase}: {status}");
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
         child.kill().unwrap();
