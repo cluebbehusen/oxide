@@ -7,6 +7,7 @@ const WIDE_ZOOM: f32 = 8.0;
 const DETAIL_ZOOM: f32 = 32.0;
 const WIDE_POSITIONAL_VOICES: usize = 5;
 const CLOSE_POSITIONAL_VOICES: usize = 12;
+const EXPLOSION_FALLOFF_TILES: f32 = 24.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FrameSound {
@@ -75,12 +76,14 @@ fn zoom_gain(kind: SoundKind, zoom: f32) -> f32 {
     }
 }
 
-fn distance_gain(world: Vec2, center: Vec2, half_extents: Vec2) -> f32 {
+fn distance_gain(kind: SoundKind, world: Vec2, center: Vec2, half_extents: Vec2) -> f32 {
     let half_extents = Vec2::new(half_extents.x.max(1.0), half_extents.y.max(1.0));
     let delta = (world - center).abs() - half_extents;
     let outside = Vec2::new(delta.x.max(0.0), delta.y.max(0.0));
     let distance = outside.length();
-    if distance == 0.0 {
+    if kind.is_explosion() {
+        (1.0 - distance / EXPLOSION_FALLOFF_TILES).clamp(0.0, 1.0)
+    } else if distance == 0.0 {
         1.0
     } else {
         (1.0 - distance / (2.0 * half_extents.length())).clamp(0.25, 1.0)
@@ -111,10 +114,14 @@ pub(crate) fn frame_mix(
         let gain = if protected {
             1.0
         } else if let Some(world) = world {
-            distance_gain(world, center, half_extents) * zoom_gain(kind, zoom)
+            distance_gain(kind, world, center, half_extents) * zoom_gain(kind, zoom)
         } else {
             1.0
         };
+
+        if gain <= 0.0 {
+            continue;
+        }
 
         if let Some(existing) = mixed.iter_mut().find(|event| event.kind == kind) {
             if gain > existing.gain {
@@ -163,6 +170,100 @@ pub(crate) fn frame_mix(
 mod tests {
     use super::*;
     use macroquad::prelude::vec2;
+
+    #[test]
+    fn explosions_fade_to_silence_beyond_each_camera_edge_at_every_zoom() {
+        for kind in [
+            SoundKind::Artillery,
+            SoundKind::RocketImpact,
+            SoundKind::DemolitionBoom,
+            SoundKind::BuildingBoom,
+        ] {
+            for (zoom, extents) in [
+                (WIDE_ZOOM, vec2(40.0, 25.0)),
+                (DETAIL_ZOOM, vec2(10.0, 6.0)),
+                (DETAIL_ZOOM, vec2(6.0, 10.0)),
+            ] {
+                let center = vec2(80.0, 50.0);
+                for axis in [Vec2::X, -Vec2::X, Vec2::Y, -Vec2::Y] {
+                    let edge = center + axis * extents;
+                    for (distance, expected) in [(0.0, 1.0), (12.0, 0.5), (24.0, 0.0), (200.0, 0.0)]
+                    {
+                        let mixed = frame_mix(
+                            [(kind, Some(edge + axis * distance))],
+                            center,
+                            extents,
+                            zoom,
+                        );
+                        if expected == 0.0 {
+                            assert!(mixed.is_empty(), "{kind:?} at {distance}");
+                        } else {
+                            assert_eq!(mixed.len(), 1);
+                            assert!(
+                                (mixed[0].gain - expected * zoom_gain(kind, zoom)).abs() < 1e-6
+                            );
+                        }
+                    }
+                }
+                let diagonal = extents + vec2(18.0, 18.0);
+                assert!(
+                    frame_mix([(kind, Some(center + diagonal))], center, extents, zoom).is_empty()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_explosions_keep_nearest_and_distant_blasts_consume_no_voices() {
+        let mut queued = vec![(SoundKind::RocketImpact, Some(vec2(22.0, 0.0))); 100];
+        queued.push((SoundKind::RocketImpact, Some(Vec2::ZERO)));
+        for kind in [
+            SoundKind::Artillery,
+            SoundKind::DemolitionBoom,
+            SoundKind::BuildingBoom,
+        ] {
+            queued.push((kind, Some(vec2(1000.0, 0.0))));
+        }
+        for kind in [
+            SoundKind::Laser,
+            SoundKind::ScuttlerFire,
+            SoundKind::SentinelFire,
+            SoundKind::StingerFire,
+        ] {
+            queued.push((kind, Some(Vec2::ZERO)));
+        }
+        queued.push((SoundKind::Alert, None));
+        let mixed = frame_mix(queued, Vec2::ZERO, vec2(10.0, 6.0), WIDE_ZOOM);
+        assert_eq!(mixed.len(), 6);
+        assert_eq!(
+            mixed
+                .iter()
+                .filter(|sound| sound.kind == SoundKind::RocketImpact)
+                .count(),
+            1
+        );
+        assert_eq!(
+            mixed
+                .iter()
+                .find(|sound| sound.kind == SoundKind::RocketImpact)
+                .unwrap()
+                .gain,
+            0.72
+        );
+        assert_eq!(
+            mixed
+                .iter()
+                .find(|sound| sound.kind == SoundKind::Alert)
+                .unwrap()
+                .gain,
+            1.0
+        );
+        assert!(
+            !mixed
+                .iter()
+                .any(|sound| sound.kind == SoundKind::BuildingBoom)
+        );
+    }
 
     #[test]
     fn close_camera_exposes_more_minor_detail_than_wide_camera() {
@@ -278,10 +379,22 @@ mod tests {
     #[test]
     fn portrait_view_uses_both_camera_extents() {
         assert_eq!(
-            distance_gain(vec2(0.0, 30.0), Vec2::ZERO, vec2(10.0, 40.0)),
+            distance_gain(
+                SoundKind::Laser,
+                vec2(0.0, 30.0),
+                Vec2::ZERO,
+                vec2(10.0, 40.0)
+            ),
             1.0
         );
-        assert!(distance_gain(vec2(30.0, 0.0), Vec2::ZERO, vec2(10.0, 40.0)) < 1.0);
+        assert!(
+            distance_gain(
+                SoundKind::Laser,
+                vec2(30.0, 0.0),
+                Vec2::ZERO,
+                vec2(10.0, 40.0)
+            ) < 1.0
+        );
     }
 
     #[test]
