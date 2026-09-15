@@ -6,9 +6,9 @@
 
 use super::difficulty::{DifficultyTuning, strategic_admission_tick};
 use super::executive::Intent;
+use super::navigation::commands::{RouteProjection, first_reachable_group};
 use super::observation::{Observation, UnitObs};
 use super::profile::ResolvedProfile;
-use super::routing::{RouteProjection, first_reachable_group};
 use super::strategy::StrategicDecision;
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::scenario::BotStance;
@@ -1007,7 +1007,7 @@ mod tests {
             while !obs.my_queues[0].is_empty() {
                 obs.tick += 24;
                 let orientation = crate::bot::orient::Orientation::for_home(&obs, HOME);
-                let origin = crate::bot::routing::production_spawn_doorstep(
+                let origin = crate::bot::navigation::commands::production_spawn_doorstep(
                     &obs,
                     &obs.my_buildings[0],
                     Some(&map),

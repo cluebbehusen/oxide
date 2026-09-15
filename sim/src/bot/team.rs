@@ -7,9 +7,9 @@
 
 use super::difficulty::{DifficultyTuning, strategic_admission_tick};
 use super::executive::Intent;
+use super::navigation::commands::RouteProjection;
 use super::observation::{BuildingObs, Observation, UnitObs};
 use super::profile::ResolvedProfile;
-use super::routing::RouteProjection;
 use super::strategy::StrategicDecision;
 use super::utility::combat_core_status;
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};

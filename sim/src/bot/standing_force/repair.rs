@@ -46,7 +46,7 @@ struct Worker {
 fn apply_worker(
     worker: Worker,
     patients: &mut [RepairWork],
-    routing: &mut ServiceRouting<'_>,
+    routing: &mut ServiceRoutes<'_>,
 ) -> u64 {
     let mut remaining = HORIZON.saturating_sub(worker.ready);
     let mut origin = worker.tile;
@@ -80,7 +80,7 @@ pub(crate) fn remaining_work(
     obs: &Observation,
     context: StandingForceContext<'_>,
     resources: &ResourceSnapshot,
-    routing: &mut ServiceRouting<'_>,
+    routing: &mut ServiceRoutes<'_>,
 ) -> Vec<RepairWork> {
     let fallback;
     let source = if let Some(work) = context.repair_work {
@@ -226,7 +226,7 @@ pub(super) fn unmet_work(
     obs: &Observation,
     context: StandingForceContext<'_>,
     resources: &ResourceSnapshot,
-    routing: &mut ServiceRouting<'_>,
+    routing: &mut ServiceRoutes<'_>,
 ) -> Vec<RepairDemand> {
     let patients = remaining_work(obs, context, resources, routing);
     if patients.iter().all(|patient| patient.missing_hp == 0) {

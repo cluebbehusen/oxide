@@ -3,9 +3,9 @@
 use super::*;
 use crate::bot::PublicMapBriefing;
 use crate::bot::allocation::{ClaimOwner, PaidQueueClaim, ProposalKey, ScheduledProducerJob};
+use crate::bot::navigation::commands::production_spawn_doorstep;
 use crate::bot::orient::Orientation;
 use crate::bot::resources::{ProducerEgress, ResourceSnapshot};
-use crate::bot::routing::production_spawn_doorstep;
 use std::collections::{BTreeMap, BTreeSet};
 
 const PREPARATION_HORIZON: Tick = 1_800;

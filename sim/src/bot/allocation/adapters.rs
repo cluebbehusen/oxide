@@ -156,13 +156,7 @@ pub(crate) fn economic_investment_proposal(
 pub(crate) fn economic_investment_claims(
     proposal: &EconomicInvestment,
 ) -> Result<ClaimBundle, ClaimBundleError> {
-    let forecast = (proposal.current_capital < proposal.cost)
-        .then_some(ForecastClaim {
-            through: proposal.deadline,
-            amount: proposal.cost.saturating_sub(proposal.current_capital),
-        })
-        .into_iter()
-        .collect();
+    let immediate = proposal.fund_by <= proposal.observed_at;
     let claims = match proposal.key {
         EconomicInvestmentKey::Train { kind, producer, .. } => ClaimBundle::new(
             0,
@@ -178,8 +172,8 @@ pub(crate) fn economic_investment_claims(
             )],
         )?,
         EconomicInvestmentKey::Build { kind, anchor } => ClaimBundle::new(
-            proposal.current_capital,
-            forecast,
+            if immediate { proposal.cost } else { 0 },
+            Vec::new(),
             proposal.builder.into_iter().collect(),
             Vec::new(),
             vec![
@@ -189,8 +183,8 @@ pub(crate) fn economic_investment_claims(
             Vec::new(),
         )?,
         EconomicInvestmentKey::Upgrade { building, .. } => ClaimBundle::new(
-            proposal.current_capital,
-            forecast,
+            if immediate { proposal.cost } else { 0 },
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -199,7 +193,14 @@ pub(crate) fn economic_investment_claims(
         .with_building(building)
         .with_foregone_income(proposal.foregone_income.clone())?,
     };
-    Ok(claims)
+    if !immediate && !matches!(proposal.key, EconomicInvestmentKey::Train { .. }) {
+        claims.with_deferrable_capital(DeferrableCapitalClaim {
+            through: proposal.fund_by,
+            amount: proposal.cost,
+        })
+    } else {
+        Ok(claims)
+    }
 }
 
 impl AllocationPersonality {
@@ -778,7 +779,10 @@ impl DomainAllocationResult {
                     debug_assert!(payloads.defense.is_none());
                     payloads.defense = Some(payload);
                 }
-                (ProposalKey::Economy(_), DomainPayload::Economy(payload)) => {
+                (ProposalKey::Economy(_), DomainPayload::Economy(mut payload)) => {
+                    if !matches!(payload.key, EconomicInvestmentKey::Train { .. }) {
+                        payload.current_capital = claims.current_scrap();
+                    }
                     debug_assert!(payloads.economy.is_none());
                     payloads.economy = Some(payload);
                 }

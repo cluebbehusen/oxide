@@ -407,9 +407,9 @@ impl Battlefield {
                 if !projection
                     .get_or_insert_with(|| {
                         public_map.map_or_else(
-                            || super::routing::RouteProjection::new(obs, domain),
+                            || super::navigation::commands::RouteProjection::new(obs, domain),
                             |map| {
-                                super::routing::RouteProjection::with_public_terrain(
+                                super::navigation::commands::RouteProjection::with_public_terrain(
                                     obs, domain, map,
                                 )
                             },

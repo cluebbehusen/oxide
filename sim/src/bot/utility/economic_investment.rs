@@ -9,9 +9,10 @@ use crate::bot::allocation::{
     Confidence, ExecutionSafety, ProposalCase, StrategicValue, TimeToImpact, Urgency,
 };
 use crate::bot::intelligence::StrategicIntelligence;
+use crate::bot::navigation::service::ServiceRoutes;
 use crate::bot::orient::Orientation;
 use crate::bot::resources::ProducerEgress;
-use crate::bot::standing_force::{CapabilityDemand, ServiceRouting};
+use crate::bot::standing_force::CapabilityDemand;
 use serde::Serialize;
 
 /// Canonical identity of an economic action, also exposed in decision traces.
@@ -75,10 +76,12 @@ pub(in crate::bot) struct EconomicInvestment {
     pub(in crate::bot) key: EconomicInvestmentKey,
     pub(in crate::bot) builder: Option<UnitId>,
     pub(in crate::bot) cost: u32,
+    pub(in crate::bot) valuation_cost: u32,
     pub(in crate::bot) current_capital: u32,
     pub(in crate::bot) observed_at: u64,
     pub(in crate::bot) ready_at: u64,
     pub(in crate::bot) deadline: u64,
+    pub(in crate::bot) fund_by: u64,
     pub(in crate::bot) case: ProposalCase,
     pub(in crate::bot) benefit: u64,
     pub(in crate::bot) personality: u8,
@@ -185,7 +188,7 @@ impl UtilityPolicy {
             obs,
             resources: context.resources,
             demands: context.demands,
-            routes: ServiceRouting::new(obs, Some(context.briefing), Some(context.orientation)),
+            routes: ServiceRoutes::new(obs, Some(context.briefing), Some(context.orientation)),
             briefing: context.briefing,
             orientation: context.orientation,
             air_work: &[],
@@ -233,12 +236,6 @@ impl UtilityPolicy {
         self.economic_foundation.as_ref()
     }
 
-    pub(in crate::bot) fn bind_economic_saving_current(&mut self, available: u32) {
-        if let Some(saving) = self.economic_saving.as_mut() {
-            saving.current_capital = available.min(saving.cost);
-        }
-    }
-
     pub(in crate::bot) fn commit_economic_investment(
         &mut self,
         proposal: EconomicInvestment,
@@ -248,6 +245,8 @@ impl UtilityPolicy {
         if matches!(proposal.key, EconomicInvestmentKey::Train { .. }) {
             return;
         }
+        let mut proposal = proposal;
+        proposal.current_capital = current_funding.min(proposal.cost);
         if current_funding >= proposal.cost {
             intents.push(proposal.intent());
             if proposal.build().is_some() {
@@ -324,7 +323,7 @@ impl UtilityPolicy {
             return;
         }
         let now = context.obs.tick;
-        if !core_ready || now >= saving.deadline {
+        if !core_ready || now >= saving.deadline || now > saving.fund_by {
             self.economic_saving = None;
             self.economic_retry_at = now.saturating_add(600);
             return;
@@ -419,10 +418,12 @@ impl UtilityPolicy {
                         },
                         builder: None,
                         cost: kind.stats().cost,
+                        valuation_cost: kind.stats().cost,
                         current_capital: kind.stats().cost,
                         observed_at: obs.tick,
                         ready_at: timing.no_block_latest_ready_tick,
                         deadline,
+                        fund_by: obs.tick,
                         case: ProposalCase {
                             urgency: Urgency::Developmental,
                             ..economic_case(benefit, kind.stats().cost, ready_after)
@@ -476,10 +477,12 @@ impl UtilityPolicy {
                             },
                             builder: None,
                             cost: kind.stats().cost,
+                            valuation_cost: kind.stats().cost,
                             current_capital: kind.stats().cost,
                             observed_at: obs.tick,
                             ready_at: timing.no_block_latest_ready_tick,
                             deadline,
+                            fund_by: obs.tick,
                             case: economic_case(benefit, kind.stats().cost, ready_after),
                             benefit,
                             personality: context.profile.traits.greed,
@@ -531,7 +534,7 @@ impl UtilityPolicy {
             obs,
             resources: context.resources,
             demands: context.demands,
-            routes: ServiceRouting::new(obs, Some(context.briefing), Some(context.orientation)),
+            routes: ServiceRoutes::new(obs, Some(context.briefing), Some(context.orientation)),
             briefing: context.briefing,
             orientation: context.orientation,
             air_work: context.air_work,
@@ -787,6 +790,7 @@ impl UtilityPolicy {
                 key: EconomicInvestmentKey::Build { kind, anchor },
                 builder: Some(builder),
                 cost: stats.cost,
+                valuation_cost: stats.cost,
                 current_capital: obs
                     .scrap
                     .saturating_sub(context.protected_scrap)
@@ -794,6 +798,18 @@ impl UtilityPolicy {
                 observed_at: obs.tick,
                 ready_at: obs.tick.saturating_add(delay),
                 deadline,
+                fund_by: retained.map_or_else(
+                    || {
+                        if funding_delay == 0 {
+                            obs.tick
+                        } else {
+                            obs.tick
+                                .saturating_add(funding_delay)
+                                .saturating_add(context.cadence.max(1))
+                        }
+                    },
+                    |saving| saving.fund_by,
+                ),
                 case,
                 benefit,
                 personality: context.profile.traits.greed,
@@ -887,6 +903,7 @@ impl UtilityPolicy {
                 },
                 builder: None,
                 cost: upgrade.cost,
+                valuation_cost: upgrade.cost,
                 observed_at: obs.tick,
                 current_capital: obs
                     .scrap
@@ -894,6 +911,18 @@ impl UtilityPolicy {
                     .min(upgrade.cost),
                 ready_at: obs.tick.saturating_add(refit_delay),
                 deadline,
+                fund_by: retained.map_or_else(
+                    || {
+                        if funding_delay == 0 {
+                            obs.tick
+                        } else {
+                            obs.tick
+                                .saturating_add(funding_delay)
+                                .saturating_add(context.cadence.max(1))
+                        }
+                    },
+                    |saving| saving.fund_by,
+                ),
                 case,
                 benefit,
                 personality: context.profile.traits.greed,
@@ -906,10 +935,14 @@ impl UtilityPolicy {
                 ),
             });
         }
+        if retained.is_none() {
+            self.value_extractor_developments(context, &mut proposals);
+        }
         proposals.sort_unstable_by_key(|proposal| {
             (
                 std::cmp::Reverse(
-                    proposal.benefit.saturating_mul(1_000) / u64::from(proposal.cost.max(1)),
+                    proposal.benefit.saturating_mul(1_000)
+                        / u64::from(proposal.valuation_cost.max(1)),
                 ),
                 proposal.key,
             )
@@ -920,28 +953,82 @@ impl UtilityPolicy {
     }
 }
 
-fn funding_delay(context: &EconomicInvestmentContext<'_>, cost: u32, deadline: u64) -> u64 {
-    let missing = cost.saturating_sub(context.obs.scrap.saturating_sub(context.protected_scrap));
-    if missing == 0 {
-        return 0;
+pub(super) fn funding_delay(
+    context: &EconomicInvestmentContext<'_>,
+    cost: u32,
+    deadline: u64,
+) -> u64 {
+    let now = context.obs.tick;
+    let mut protected = 0u32;
+    let mut payments = Vec::new();
+    for obligation in context.obligations {
+        let claims = &obligation.claims;
+        protected = protected.saturating_add(claims.current_scrap());
+        payments.extend(
+            claims
+                .forecast_scrap()
+                .iter()
+                .chain(claims.foregone_income())
+                .map(|claim| (claim.through, claim.amount)),
+        );
+        if let Some(claim) = claims.deferrable_capital() {
+            payments.push((claim.through, claim.amount));
+        }
+        for job in claims.producer_jobs() {
+            let through = job
+                .fixed_timing()
+                .map_or(job.enqueue_not_before(), |(_, enqueued, _, _)| enqueued);
+            if through <= now {
+                protected = protected.saturating_add(job.kind().stats().cost);
+            } else {
+                payments.push((through, job.kind().stats().cost));
+            }
+        }
     }
-    let mut low = context.obs.tick;
+    payments.sort_unstable();
+    let bank = u64::from(
+        context
+            .obs
+            .scrap
+            .saturating_sub(context.protected_scrap.max(protected)),
+    );
+    let available = |through: u64| {
+        bank.saturating_add(u64::from(
+            context
+                .resources
+                .forecast()
+                .income_through(through.saturating_sub(1))
+                .amount(),
+        ))
+    };
+    // The purchase must also leave every later retained payment fundable.
+    // Exact lanes, forecast-only claims, and all other resources are still adjudicated together.
+    let feasible = |through| {
+        let mut required = u64::from(cost);
+        for &(payment_at, amount) in &payments {
+            required = required.saturating_add(u64::from(amount));
+            if payment_at >= through && required > available(payment_at) {
+                return false;
+            }
+        }
+        let due = payments
+            .iter()
+            .take_while(|(at, _)| *at <= through)
+            .map(|(_, amount)| u64::from(*amount))
+            .fold(u64::from(cost), u64::saturating_add);
+        due <= available(through)
+    };
+    let mut low = now;
     let mut high = deadline;
     while low < high {
         let mid = low + (high - low) / 2;
-        if context
-            .resources
-            .forecast()
-            .income_through(mid.saturating_sub(1))
-            .amount()
-            >= missing
-        {
+        if feasible(mid) {
             high = mid;
         } else {
             low = mid + 1;
         }
     }
-    low.saturating_sub(context.obs.tick)
+    low.saturating_sub(now)
 }
 
 fn foregone_income(
@@ -983,7 +1070,7 @@ fn foregone_income(
     claims
 }
 
-fn economic_case(benefit: u64, cost: u32, delay: u64) -> ProposalCase {
+pub(super) fn economic_case(benefit: u64, cost: u32, delay: u64) -> ProposalCase {
     ProposalCase {
         urgency: Urgency::Timely,
         confidence: Confidence::Current,
@@ -1182,7 +1269,7 @@ struct InfrastructureContext<'a> {
     obs: &'a Observation,
     resources: &'a ResourceSnapshot,
     demands: &'a [CapabilityDemand],
-    routes: ServiceRouting<'a>,
+    routes: ServiceRoutes<'a>,
     briefing: &'a PublicMapBriefing,
     orientation: Orientation,
     air_work: &'a [AirCapacityDemand],
@@ -1291,7 +1378,7 @@ fn infrastructure_benefit(
         .iter()
         .filter_map(|demand| {
             let spawn = if demand.kind.stats().domain == Domain::Air {
-                Some(crate::bot::standing_force::air_production_spawn_tile(
+                Some(crate::bot::navigation::commands::air_production_spawn_tile(
                     &candidate,
                     Some(context.orientation),
                 ))
@@ -1372,7 +1459,7 @@ fn infrastructure_benefit(
                         ..candidate.clone()
                     };
                     let spawn = if demand.kind.stats().domain == Domain::Air {
-                        Some(crate::bot::standing_force::air_production_spawn_tile(
+                        Some(crate::bot::navigation::commands::air_production_spawn_tile(
                             &pending,
                             Some(context.orientation),
                         ))
@@ -1436,7 +1523,7 @@ fn infrastructure_benefit(
     }
     let construction_delay = u64::from(kind.base_stats().construction.unwrap().build_ticks);
     let mut lane = |building: &BuildingObs, ready_after| {
-        let origin = crate::bot::standing_force::air_production_spawn_tile(
+        let origin = crate::bot::navigation::commands::air_production_spawn_tile(
             building,
             Some(context.orientation),
         );
@@ -2133,10 +2220,345 @@ mod tests {
         let mut intents = Vec::new();
         policy.commit_economic_investment(quote.clone(), quote.cost - 1, &mut intents);
         assert!(intents.is_empty());
-        assert_eq!(policy.economic_saving(), Some(&quote));
+        assert_eq!(
+            policy.economic_saving(),
+            Some(&EconomicInvestment {
+                current_capital: quote.cost - 1,
+                ..quote.clone()
+            })
+        );
         policy.commit_economic_investment(quote.clone(), quote.cost, &mut intents);
         assert_eq!(intents, vec![quote.intent()]);
         assert!(policy.economic_saving().is_none());
+    }
+
+    #[test]
+    fn economic_funding_matures_despite_repeated_unit_requests() {
+        use crate::bot::allocation::*;
+        let (mut obs, map, profile) = fixture();
+        obs.scrap = 40;
+        for id in 2..6 {
+            obs.my_buildings.push(building(
+                id,
+                BuildingKind::Reclaimer,
+                TilePos::new(3 + (id as i32 - 2) * 5, 3),
+            ));
+            obs.my_queues.push(vec![]);
+            obs.my_queue_progress.push(0);
+        }
+        let initial = ResourceSnapshot::from_observation(&obs);
+        let demands = [demand(UnitKind::Warden, 100)];
+        let mut policy = UtilityPolicy::new();
+        let quote = quotes(&policy, &obs, &map, &profile, &demands)
+            .into_iter()
+            .find(|quote| {
+                matches!(
+                    quote.key,
+                    EconomicInvestmentKey::Build {
+                        kind: BuildingKind::Fabricator,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        assert!(quote.fund_by < quote.deadline / 2);
+        let owner = ClaimOwner::Obligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: quote.observed_at,
+            key: ObligationKey::SavedEconomy(quote.key),
+        };
+        policy.commit_economic_investment(quote.clone(), obs.scrap, &mut vec![]);
+        let mut purchased = false;
+        let mut spent = 0;
+        for tick in (obs.tick..=quote.fund_by + 12).step_by(12) {
+            obs.tick = tick;
+            obs.scrap = 40
+                + initial
+                    .forecast()
+                    .income_through(tick.saturating_sub(1))
+                    .amount()
+                - spent;
+            let resources = ResourceSnapshot::from_observation(&obs);
+            policy.refresh_economic_saving(
+                EconomicInvestmentContext {
+                    obs: &obs,
+                    resources: &resources,
+                    profile: &profile,
+                    briefing: &map,
+                    orientation: Orientation::for_home(&obs, TilePos::new(3, 12)),
+                    unavailable: &[],
+                    demands: &demands,
+                    unit_contacts: &[],
+                    building_contacts: &[],
+                    cadence: 12,
+                    protected_scrap: 0,
+                    obligations: &[],
+                    air_work: &[],
+                },
+                true,
+            );
+            let saved = policy
+                .economic_saving()
+                .expect("the original funding window remains viable")
+                .clone();
+            assert_eq!(
+                (saved.fund_by, saved.deadline),
+                (quote.fund_by, quote.deadline)
+            );
+            let mut allocation =
+                CrossDomainAllocation::new(&resources, quote.deadline, 12).unwrap();
+            allocation.import(ImportedObligation {
+                class: ObligationClass::PersistentPlan,
+                accepted_at: quote.observed_at,
+                key: ObligationKey::SavedEconomy(quote.key),
+                claims: economic_investment_claims(&saved).unwrap(),
+            });
+            let mut production = quote.clone();
+            production.key = EconomicInvestmentKey::Train {
+                kind: UnitKind::Sentinel,
+                producer: BuildingId(1),
+                service: TilePos::new(30, 12),
+            };
+            production.observed_at = tick;
+            production.ready_at = tick + u64::from(UnitKind::Sentinel.stats().train_ticks);
+            production.cost = UnitKind::Sentinel.stats().cost;
+            allocation.offer(economic_investment_proposal(production).unwrap());
+            let settlement = allocation
+                .resolve(AllocationPersonality::default(), None)
+                .unwrap();
+            let current = settlement.capital_assignment(owner).unwrap().current_scrap;
+            let mut intents = vec![];
+            policy.commit_economic_investment(saved, current, &mut intents);
+            if !intents.is_empty() {
+                assert_eq!(intents, vec![quote.intent()]);
+                assert!(obs.scrap >= quote.cost);
+                purchased = true;
+                break;
+            }
+            spent += settlement
+                .producer_schedule()
+                .iter()
+                .filter(|job| job.enqueued_at == tick)
+                .map(|job| job.kind.stats().cost)
+                .sum::<u32>();
+        }
+        assert!(
+            purchased,
+            "ordinary production cannot continually defer the accepted purchase"
+        );
+    }
+
+    #[test]
+    fn extractor_cluster_prices_shared_support_before_the_first_restore() {
+        let (mut obs, mut map, profile) = fixture();
+        obs.my_buildings
+            .push(building(2, BuildingKind::Fabricator, TilePos::new(3, 3)));
+        obs.my_queues.push(vec![]);
+        obs.my_queue_progress.push(0);
+        let cluster = [
+            TilePos::new(26, 3),
+            TilePos::new(28, 3),
+            TilePos::new(30, 3),
+        ];
+        obs.known_frames = cluster.to_vec();
+        obs.known_frames.push(TilePos::new(8, 26));
+        map.extractor_frames = obs.known_frames.clone();
+        let policy = UtilityPolicy::new();
+        let mut geometry = DefenseThinkContext::new_oriented(
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+            Orientation::for_home(&obs, TilePos::new(3, 12)),
+        );
+        let mut projected_worker = obs.my_units[0].clone();
+        let initial_distance = geometry
+            .builder_travel_cost(&projected_worker, BuildingKind::Extractor, cluster[0])
+            .unwrap();
+        projected_worker.tile = cluster[0].offset(-1, 0);
+        let local_distance = geometry
+            .builder_travel_cost(&projected_worker, BuildingKind::Extractor, cluster[0])
+            .unwrap();
+        assert!(
+            local_distance < initial_distance,
+            "later construction steps must use the builder's projected location"
+        );
+        drop(geometry);
+        for id in 10..30 {
+            let mut unit = worker(id, TilePos::new(18, 12));
+            unit.kind = UnitKind::Sentinel;
+            unit.hp = unit.kind.stats().max_hp;
+            obs.my_units.push(unit);
+        }
+        let candidates = quotes(&UtilityPolicy::new(), &obs, &map, &profile, &[]);
+        let first = candidates
+            .iter()
+            .find(|quote| quote.build().is_some())
+            .unwrap();
+        assert!(
+            matches!(first.key, EconomicInvestmentKey::Build { kind: BuildingKind::Extractor, anchor } if cluster.contains(&anchor)),
+            "{candidates:#?}"
+        );
+        assert!(
+            first.valuation_cost
+                >= 3 * first.cost
+                    + BuildingKind::Foundry
+                        .base_stats()
+                        .construction
+                        .unwrap()
+                        .cost,
+            "the cluster must include every restoration and its shared Foundry: {first:#?}"
+        );
+        assert_eq!(
+            first.cost,
+            BuildingKind::Extractor
+                .base_stats()
+                .construction
+                .unwrap()
+                .cost
+        );
+        let cluster_value = first.benefit;
+        for frame in cluster.iter().skip(1) {
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    obs.explored[((frame.y + dy) * obs.map_width + frame.x + dx) as usize] = false;
+                }
+            }
+        }
+        let hidden = quotes(&UtilityPolicy::new(), &obs, &map, &profile, &[]);
+        assert!(
+            hidden
+                .iter()
+                .all(|quote| quote.valuation_cost == quote.cost)
+        );
+        assert!(hidden.iter().all(|quote| quote.benefit < cluster_value));
+        obs.explored.fill(true);
+        for id in 40..43 {
+            let next = quotes(&UtilityPolicy::new(), &obs, &map, &profile, &[])
+                .into_iter()
+                .find(|quote| quote.build().is_some())
+                .unwrap();
+            let (kind, anchor, _) = next.build().unwrap();
+            assert_eq!(kind, BuildingKind::Extractor);
+            assert!(
+                cluster.contains(&anchor),
+                "the cluster must remain useful as its earlier steps complete: {next:#?}"
+            );
+            obs.my_buildings.push(building(id, kind, anchor));
+            obs.my_queues.push(vec![]);
+            obs.my_queue_progress.push(0);
+        }
+        let policy = UtilityPolicy::new();
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let dials = Dials::scripted(&profile, DifficultyTuning::for_level(profile.difficulty));
+        let support = policy
+            .fresh_foundry_investment(
+                &dials,
+                &obs,
+                &resources,
+                construction::FreshFoundryProposalContext {
+                    home: TilePos::new(3, 12),
+                    available_builders: &[UnitId(1)],
+                    combat_core_exclusions: &[],
+                    unit_contacts: &[],
+                    building_contacts: &[],
+                    public_map: &map,
+                    same_think_intents: &[],
+                    current_scrap: obs.scrap,
+                    protected_reserve: 0,
+                },
+            )
+            .expect("completed cluster must justify shared support");
+        let construction::FreshFoundryInvestment::Ready(support) = support else {
+            panic!("the cluster has enough protection");
+        };
+        assert!(
+            cluster
+                .iter()
+                .all(|frame| UtilityPolicy::foundry_supports_extractor(support.anchor(), *frame))
+        );
+    }
+
+    #[test]
+    fn economic_purchase_prices_existing_fixed_payments_before_choosing_its_deadline() {
+        use crate::bot::allocation::*;
+        let (mut obs, map, profile) = fixture();
+        obs.scrap = 40;
+        obs.my_buildings
+            .push(building(2, BuildingKind::Reclaimer, TilePos::new(3, 3)));
+        obs.my_queues.push(vec![]);
+        obs.my_queue_progress.push(0);
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let enqueue = obs.tick + 1_500;
+        let ready = enqueue + u64::from(UnitKind::Sentinel.stats().train_ticks) - 1;
+        let job = ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: obs.tick - 12,
+            key: ObligationKey::OpeningCore { sequence: 1 },
+            claims: ClaimBundle::new(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::fixed(
+                    BuildingId(1),
+                    UnitKind::Sentinel,
+                    enqueue,
+                    enqueue,
+                    ready,
+                    ready + 1,
+                )],
+            )
+            .unwrap(),
+        };
+        let mut context = EconomicInvestmentContext {
+            obs: &obs,
+            resources: &resources,
+            profile: &profile,
+            briefing: &map,
+            orientation: Orientation::for_home(&obs, TilePos::new(3, 12)),
+            unavailable: &[],
+            demands: &[],
+            unit_contacts: &[],
+            building_contacts: &[],
+            cadence: 12,
+            protected_scrap: 0,
+            obligations: &[],
+            air_work: &[],
+        };
+        let cost = 120;
+        let deadline = obs.tick + 5_000;
+        let unclaimed = funding_delay(&context, cost, deadline);
+        context.obligations = std::slice::from_ref(&job);
+        let funded = funding_delay(&context, cost, deadline);
+        assert!(
+            funded > unclaimed,
+            "the old unit payment must delay, rather than lose to, the new purchase"
+        );
+        let mut allocation = CrossDomainAllocation::new(&resources, deadline, 12).unwrap();
+        allocation.import(job);
+        allocation.import(ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: obs.tick,
+            key: ObligationKey::OpeningCore { sequence: 2 },
+            claims: ClaimBundle::new(0, vec![], vec![], vec![], vec![], vec![])
+                .unwrap()
+                .with_deferrable_capital(DeferrableCapitalClaim {
+                    through: obs.tick + funded + 12,
+                    amount: cost,
+                })
+                .unwrap(),
+        });
+        let settlement = allocation
+            .resolve(AllocationPersonality::default(), None)
+            .unwrap();
+        let retained = &settlement.producer_schedule()[0];
+        assert_eq!(
+            (retained.enqueued_at, retained.starts_at, retained.ready_at),
+            (enqueue, enqueue, ready)
+        );
     }
 
     fn air_quotes(
@@ -2424,7 +2846,7 @@ mod tests {
 
     #[test]
     fn core_loss_and_deadline_expiry_release_only_the_unpaid_economic_plan() {
-        for expired in [false, true] {
+        for (expired, missed_funding) in [(false, false), (true, false), (false, true)] {
             let (mut obs, map, profile) = fixture();
             let demands = [demand(UnitKind::Warden, 100)];
             let mut policy = UtilityPolicy::new();
@@ -2443,6 +2865,8 @@ mod tests {
             policy.commit_economic_investment(quote.clone(), 0, &mut Vec::new());
             if expired {
                 obs.tick = quote.deadline;
+            } else if missed_funding {
+                obs.tick = quote.fund_by + 1;
             }
             let paid = building(7, BuildingKind::Reclaimer, TilePos::new(21, 3));
             obs.my_buildings.push(paid.clone());
@@ -2463,7 +2887,7 @@ mod tests {
                     protected_scrap: 0,
                     air_work: &[],
                 },
-                expired,
+                expired || missed_funding,
             );
             assert!(policy.economic_saving().is_none());
             assert!(policy.economic_retry_at > obs.tick);
@@ -2548,14 +2972,21 @@ mod tests {
                 )
                 .is_ok()
         );
+        let derivations = crate::bot::strategy::airworks_package_derivations();
         assert!(
             air_quotes_with_obligations(&obs, &map, &profile, &[], std::slice::from_ref(&job))
                 .is_empty()
+        );
+        assert_eq!(
+            crate::bot::strategy::airworks_package_derivations(),
+            derivations,
+            "an Airworks that would break a fixed payment must be rejected before campaign derivation"
         );
         obs.scrap = 1200;
         assert!(
             !air_quotes_with_obligations(&obs, &map, &profile, &[], &[job]).is_empty(),
             "compatible retained work must not suppress a funded campaign"
         );
+        assert!(crate::bot::strategy::airworks_package_derivations() > derivations);
     }
 }

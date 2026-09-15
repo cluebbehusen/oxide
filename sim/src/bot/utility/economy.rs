@@ -49,7 +49,7 @@ impl UtilityPolicy {
         let danger = (has_eligible_worker)
             .then(|| self.harvest_danger_projection(obs, unit_contacts, building_contacts));
         let mut routes = danger.as_ref().map(|danger| {
-            crate::bot::routing::RouteProjection::ground_avoiding(obs, |tile| {
+            crate::bot::navigation::commands::RouteProjection::ground_avoiding(obs, |tile| {
                 self.harvest_location_contested(tile) || danger.contains(tile)
             })
         });
@@ -105,7 +105,7 @@ impl UtilityPolicy {
     fn harvester_reaches_drop_off(
         obs: &Observation,
         harvester: &UnitObs,
-        routes: &mut crate::bot::routing::RouteProjection<'_>,
+        routes: &mut crate::bot::navigation::commands::RouteProjection<'_>,
     ) -> bool {
         obs.my_buildings
             .iter()
@@ -134,7 +134,7 @@ impl UtilityPolicy {
         obs: &Observation,
         harvester: &UnitObs,
         source: TilePos,
-        routes: &mut crate::bot::routing::RouteProjection<'_>,
+        routes: &mut crate::bot::navigation::commands::RouteProjection<'_>,
     ) -> bool {
         if !obs.known_scrap_at(source) {
             return routes.direct_line_avoids_blocked(harvester.tile, source)
@@ -159,7 +159,7 @@ impl UtilityPolicy {
     fn harvest_work_tile_reaches_drop_off(
         obs: &Observation,
         work_tile: TilePos,
-        routes: &mut crate::bot::routing::RouteProjection<'_>,
+        routes: &mut crate::bot::navigation::commands::RouteProjection<'_>,
     ) -> bool {
         obs.my_buildings
             .iter()
@@ -1052,7 +1052,7 @@ impl UtilityPolicy {
             return true;
         }
 
-        let mut routes = crate::bot::routing::RouteProjection::known_ground(obs);
+        let mut routes = crate::bot::navigation::commands::RouteProjection::known_ground(obs);
         if obs
             .enemy_buildings
             .iter()
@@ -1087,7 +1087,7 @@ impl UtilityPolicy {
     }
 
     fn ground_reaches_building(
-        routes: &mut crate::bot::routing::RouteProjection<'_>,
+        routes: &mut crate::bot::navigation::commands::RouteProjection<'_>,
         home: TilePos,
         building: &BuildingObs,
     ) -> bool {
@@ -1174,15 +1174,16 @@ mod tests {
             })
             .min()
             .map(|(_, y, x)| TilePos::new(x, y));
-        let mut routes = crate::bot::routing::RouteProjection::ground_avoiding(obs, |tile| {
-            policy.harvest_location_contested(tile)
-                || UtilityPolicy::source_has_known_danger(
-                    obs,
-                    tile,
-                    Some(unit_contacts),
-                    Some(building_contacts),
-                )
-        });
+        let mut routes =
+            crate::bot::navigation::commands::RouteProjection::ground_avoiding(obs, |tile| {
+                policy.harvest_location_contested(tile)
+                    || UtilityPolicy::source_has_known_danger(
+                        obs,
+                        tile,
+                        Some(unit_contacts),
+                        Some(building_contacts),
+                    )
+            });
         let mut intents = Vec::new();
         for unit in obs.my_units.iter().filter(|unit| {
             unit.kind.stats().harvest.is_some()

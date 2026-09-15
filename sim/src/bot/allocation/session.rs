@@ -577,22 +577,6 @@ impl<'a> AllocationSession<'a> {
         }
         let mut air_lift = self.prepare_air_commitments(&claims, &mut obligations);
         if let Some(saving) = self.participants.policy.economic_saving() {
-            let available = residual_current_after_obligations(
-                &obligations.resources,
-                &obligations.obligations,
-                obligation_horizon(&obligations.obligations, saving.deadline),
-                self.context.dials.cadence,
-            )
-            .unwrap_or(0)
-            .saturating_sub(air_lift.voluntary_scrap_guard);
-            self.participants
-                .policy
-                .bind_economic_saving_current(available);
-            let saving = self
-                .participants
-                .policy
-                .economic_saving()
-                .expect("funding retains the exact plan");
             retain_first_coordinator_failure(
                 &mut obligations.coordinator_failure,
                 AllocationCoordinatorStageTrace::ObligationCollection,
@@ -3579,7 +3563,14 @@ impl<'a> AllocationSession<'a> {
         }
 
         if let Some(saved) = self.participants.policy.economic_saving().cloned() {
-            let current = saved.current_capital;
+            let current = settlement
+                .capital_assignment(ClaimOwner::Obligation {
+                    class: ObligationClass::PersistentPlan,
+                    accepted_at: saved.observed_at,
+                    key: ObligationKey::SavedEconomy(saved.key),
+                })
+                .expect("retained economic capital is allocated")
+                .current_scrap;
             self.participants.policy.commit_economic_investment(
                 saved,
                 current,

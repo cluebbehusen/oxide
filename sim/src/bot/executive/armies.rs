@@ -681,6 +681,26 @@ impl Executive {
         }
         self.armies.retain(|a| !a.members.is_empty());
         self.observe_ground_outcomes(obs);
+        for army in &self.armies {
+            if army.state == ArmyState::Withdrawing
+                && let Some(mission) = self.missions.get_mut(&army.id)
+                && !matches!(mission.purpose, ArmyPurpose::Recover)
+            {
+                // Record the failed approach before replacing its responsibility.
+                *mission = ArmyMission {
+                    purpose: ArmyPurpose::Recover,
+                    goal: army.staging,
+                    accepted_at: obs.tick,
+                    deadline: obs.tick.saturating_add(1800),
+                    score: 0,
+                };
+            } else if army.state == ArmyState::Staging
+                && let Some(mission) = self.missions.get_mut(&army.id)
+                && mission.purpose == ArmyPurpose::Recover
+            {
+                mission.goal = army.staging;
+            }
+        }
         out
     }
 
@@ -900,7 +920,8 @@ fn march_with_roster<'a>(
     {
         let (dx, dy) = (army.staging.x - target.x, army.staging.y - target.y);
         let distance = dx.abs().max(dy.abs());
-        let mut routes = crate::bot::routing::RouteProjection::new(obs, Domain::Ground);
+        let mut routes =
+            crate::bot::navigation::commands::RouteProjection::new(obs, Domain::Ground);
         let sight = escorts
             .iter()
             .filter_map(|id| roster.get(*id))
@@ -1554,7 +1575,21 @@ mod tests {
         let mut executive = Executive::default();
         let mut body = army(0, vec![UnitId(1), UnitId(2)], ArmyState::Pushing, staging);
         body.target = Some(TilePos::new(32, 10));
+        let mission = ArmyMission {
+            purpose: ArmyPurpose::Pressure(ArmyObjective {
+                id: None,
+                player: PlayerId(1),
+                kind: BuildingKind::Foundry,
+                anchor: TilePos::new(32, 10),
+            }),
+            goal: TilePos::new(32, 10),
+            accepted_at: obs.tick,
+            deadline: obs.tick + 3600,
+            score: 100,
+        };
         executive.armies.push(body);
+        executive.missions.insert(ArmyId(0), mission.clone());
+        executive.watch_ground_mission(&obs, ArmyId(0), &mission);
         executive.maintain_player_facing(PlayerId(0), &obs, staging);
         assert_eq!(executive.armies[0].state, ArmyState::Engaging);
         obs.tick += 12;
@@ -1567,8 +1602,33 @@ mod tests {
         obs.enemy_buildings[0].seen = false;
         assert_eq!(local_fight_strength(&obs, &members), (0, 0));
         obs.enemy_buildings[0].seen = true;
+        let kind = obs.enemy_buildings[0].kind;
         obs.enemy_buildings[0].kind = BuildingKind::FlakTurret;
         assert_eq!(local_fight_strength(&obs, &members), (0, 0));
+        obs.enemy_buildings[0].kind = kind;
+
+        let recovery = executive.missions[&ArmyId(0)].clone();
+        assert_eq!(recovery.purpose, ArmyPurpose::Recover);
+        assert_eq!(recovery.goal, staging);
+        assert_eq!(executive.ground_outcomes[&ArmyId(0)].pending.len(), 1);
+        assert_eq!(
+            executive.ground_outcomes[&ArmyId(0)].pending[0].reason,
+            crate::bot::experience::OutcomeReason::UnsafeApproach
+        );
+        obs.tick += 12;
+        executive.maintain_player_facing(PlayerId(0), &obs, staging);
+        assert_eq!(executive.missions[&ArmyId(0)], recovery);
+        for unit in &mut obs.my_units {
+            unit.tile = staging;
+            unit.idle = true;
+        }
+        obs.enemy_buildings.clear();
+        obs.tick += 12;
+        executive.maintain_player_facing(PlayerId(0), &obs, staging);
+        assert_eq!(executive.armies[0].state, ArmyState::Staging);
+        assert_eq!(executive.armies[0].target, None);
+        assert_eq!(executive.missions[&ArmyId(0)], recovery);
+        assert_eq!(executive.ground_outcomes[&ArmyId(0)].pending.len(), 1);
     }
 
     #[test]
@@ -2455,6 +2515,16 @@ mod tests {
             ground_outcomes: Default::default(),
             mission_decisions: Default::default(),
         };
+        withdrawing.missions.insert(
+            ArmyId(1),
+            ArmyMission {
+                purpose: ArmyPurpose::Recover,
+                goal: TilePos::new(2, 2),
+                accepted_at: 0,
+                deadline: tick + 600,
+                score: 0,
+            },
+        );
         assert!(
             withdrawing
                 .maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
@@ -2464,6 +2534,8 @@ mod tests {
         assert_eq!(withdrawing.armies[0].state, ArmyState::Staging);
         assert_eq!(withdrawing.armies[0].staging, TilePos::new(10, 10));
         assert_eq!(withdrawing.armies[0].progress, None);
+        assert_eq!(withdrawing.missions[&ArmyId(1)].goal, TilePos::new(10, 10));
+        assert_eq!(withdrawing.missions[&ArmyId(1)].deadline, tick + 600);
         assert_eq!(
             withdrawing.armies[0].target, None,
             "the withdrawal threat tile must not survive into Staging as an objective"

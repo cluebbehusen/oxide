@@ -71,8 +71,8 @@ immutable PublicMapBriefing + fog-honest Observation
   new team operation. Fresh lift, tactical raid execution, and unmigrated
   utility work consume the resulting residual.
 - `sim/src/bot/strategy.rs` owns air operations, `sim/src/bot/lift.rs` owns
-  severed-ground transport operations, and `sim/src/bot/routing.rs` owns their
-  fog-honest route projection and exact command-subset checks.
+  severed-ground transport operations, and `sim/src/bot/navigation/commands.rs`
+  owns their fog-honest route projection and exact command-subset checks.
 - `UtilityPolicy` fills work not claimed by those operations, while `Executive`
   owns exact-unit bookkeeping and lowers every intent to commands.
 - `seat_bots` constructs controllers requested by scenario `BotConfig`.

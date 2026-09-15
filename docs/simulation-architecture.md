@@ -85,8 +85,11 @@ before modifying either body. Staging splits retain coherent groups and home
 strength. Engaged or withdrawing bodies are not split. Ordinary movement handles
 recovery so tactical reacquisition cannot restart an abandoned chase; observed
 return explicitly reopens reserve reinforcement. Tactical emergency withdrawal
-has precedence over a mission directive. Lowering receipts expose actual
-acceptance and refusal boundaries independently of command counts.
+has precedence over a mission directive and replaces the abandoned mission with
+recovery after recording its outcome. An accepted defense assignment dispatches
+its exact body even when proximity has already marked it engaged. Lowering
+receipts expose actual acceptance and refusal boundaries independently of
+command counts.
 
 Pressure objectives bind the observed owner, kind, and complete footprint, plus
 a live id only when current sight supplied one. Remembered placeholders are not
@@ -347,7 +350,9 @@ A path is advisory rather than a reservation. Every ground step rechecks its
 next waypoint because construction can claim ground after the path was made; an
 invalid path is dropped and behavior may route again on the next tick. When a
 site appears under a pathless ground body, the eviction pre-pass gives it a real
-escape path while preserving its order and work progress.
+escape path while preserving its order and work progress. Its scan frame
+reverses under a map half-turn, with body heading breaking an exact map-center
+tie.
 
 If a newly accepted foundation leaves a body without an escape route, make-way
 relocates it to a passable perimeter tile. That ring is ordered in the founder's
@@ -761,7 +766,20 @@ may start on the following tick. Extra forecast income and alternative
 assignments for other jobs cannot resolve that overlap. Each tentative schedule
 also preserves the payment deadlines and earliest possible execution of every
 remaining fixed job. A flexible append that already makes a fixed job impossible
-is rejected before searching its successors.
+is rejected before searching its successors. Flexible jobs also carry optimistic
+payment deadlines tightened by mandatory same-owner FIFO work. Before exploring
+a partial schedule, the allocator checks that its remaining jobs can still start
+and receive funding. This preserves canonical schedule order while pruning
+impossible timing combinations. Capacity bounds count whole jobs in the free
+windows before and after fixed reservations; a job cannot borrow time across a
+reserved production interval. These deadlines and window constraints are
+prepared once per scheduling attempt and reused during search.
+
+Connected campaign assessment shares artillery firing geometry and exact command
+reachability across candidate rosters and target groups within one immutable
+observation. Excluded live providers do not repeat route checks. The batch
+retains positive and negative answers within a bounded cache; reaching the cache
+limit only disables further retention, not evaluation.
 
 Defense derivation skips expensive placement for roles whose real current cost
 cannot fit after imported fixed capital. This prefilter leaves viable quotes
@@ -888,17 +906,26 @@ proposed first Airworks may also derive a complete connected scout, suppression,
 and strike minimum against current targets. The hypothetical factory exists only
 inside this pure sizing calculation: its construction capital and delay are
 removed before the ordinary package and route checks run, and existing live
-units are excluded from speculative ownership. The complete minimum must fit
-alongside retained capital promises and producer jobs in shared allocation. This
-supported investment value cannot justify duplicate Airworks, issue a production
-command, or admit an operation before its real prerequisites exist.
-Recurring-income investments are capped by unfunded useful work; completed
-income alone supplies spendable forecasts. Self-refits own exact building ids
-and withhold their offline source income separately from purchase capital. The
-residual technology scalar and the operational Airworks capital tax are absent.
-Accepted economic plans keep their original identity and deadline while saving.
-Issuing a build pays for its site immediately, including travel through fog.
-Paid foundations and refits follow ordinary simulation rules.
+units are excluded from speculative ownership. Retained obligations must fit the
+post-construction capacity before campaign and route derivation begins. The
+complete minimum must fit alongside retained capital promises and producer jobs
+in shared allocation. This supported investment value cannot justify duplicate
+Airworks, issue a production command, or admit an operation before its real
+prerequisites exist. Recurring-income investments are capped by unfunded useful
+work; completed income alone supplies spendable forecasts. Self-refits own exact
+building ids and withhold their offline source income separately from purchase
+capital. The residual technology scalar and the operational Airworks capital tax
+are absent. Economic purchases keep a fixed funding deadline separate from their
+return horizon. Shared allocation rebalances their current and forecast capital
+alongside fixed producer payments; a missed funding deadline releases the unpaid
+plan for reconsideration. Issuing a build pays for its site immediately,
+including travel through fog; paid foundations and refits follow ordinary
+simulation rules. Extractor development compares explored, safe frame groups
+around a common Foundry site by their total return after restoration, support,
+travel, and build costs. The existing expansion security check must admit the
+shared support site. Only the next restoration owns capital and a builder; later
+steps are re-evaluated as construction completes, and their projected income
+never becomes spendable forecast credit.
 
 Before the difficulty floor is projected, the player-facing policy pauses new
 voluntary construction and upgrades, discretionary production, mobile support,
@@ -1171,29 +1198,51 @@ footprint in their key; air routes ignore ground-only footprints. Normal ground,
 hypothetical combined-build layouts, and air surfaces have independent bounded
 retention: one normal generation has an 8 MiB budget, two hypothetical
 generations have 1 MiB each, and air has 8 MiB. After the blocking grid,
-endpoint paths and reverse distance fields each own half the payload budget;
-eviction in one class cannot discard the other class. These bound accounted
-retained payload and entry allowances, not process RSS. Cache eviction or an
-oversized entry falls back to search. Successful hits clear old
-exhausted-component evidence, while failures are not stored as bare unreachable
-results.
+endpoint paths own half the payload budget; normal and candidate reverse
+distance fields each own a quarter. Eviction in one class cannot discard
+another. These bound accounted retained payload and entry allowances, not
+process RSS. Cache eviction or an oversized entry falls back to search.
+Successful hits clear old exhausted-component evidence, while failures are not
+stored as bare unreachable results.
 
 Lazy reverse distance fields use the same open-tile graph, 10/14 movement costs,
-and diagonal corner rules. They only reject endpoint pairs whose no-candidate
-cost exceeds a route already found. Adding a blocking footprint cannot improve
-that lower bound; equal-cost pairs remain eligible for the full route-choice
-key. A blocked start retains the octile bound because A* permits leaving a tile
-it could not enter. A* still constructs every uncached selected path. Investment
-scores, threat evidence, asset values, and budgets are recomputed from the
-current observation rather than retained with passability.
+and diagonal corner rules. Normal fields reject endpoint pairs whose cost
+exceeds a route already found; adding a blocking footprint cannot improve that
+bound. For long paths, exact fields for the current footprint also prune A*
+branches that cannot belong to a shortest route. Queue ordering remains
+unchanged to preserve the complete route-choice key and mobile firing positions.
+This pruning is disabled when the map exceeds the expansion cap or the start is
+blocked, preserving capped searches and escape from blocked origins. A* still
+constructs every uncached selected path. Investment scores, threat evidence,
+asset values, and budgets are recomputed from the current observation rather
+than retained with passability.
+
+`bot::navigation` owns all bot path, cost, connectivity, and distance-field
+searches, including their scratch storage, cache invalidation, and retention.
+Command projection preserves orientation, goal spreading, and Build doorstep
+selection. Service connectivity, safe travel costs, work-distance queries, and
+producer-exit certificates retain answers within their navigation contexts.
+Planners supply player knowledge, safety predicates, and candidate preferences;
+investment scores and service eligibility remain planner-owned. Barricade
+footholds consume scalar costs, while coverage, mobile standoff, and retreat
+retain canonical paths. Costs distinguish exact and bounded success from
+disconnection and search limits. Detour limits still precede local-support
+filtering; construction and layout checks retain their existing route contracts.
 
 Exact Build-route checks index observed and public ground passability once per
 defensive grounding and reuse A* storage across builders and candidate sites.
-Proposed footprints, extra blockers, danger checks, and authoritative doorstep
-ranking remain query-local, so cached terrain cannot change the selected route.
-Travel-cost and safety checks share only their most recent exact route; danger
-is checked again on every use, and a changed builder, target, or orientation
-requires a new route.
+Lazy component labels reject builder/site pairs with no connected base doorstep
+before searching candidate routes. Candidate footprints and additional blockers
+can only remove connections, so this rejection preserves exact paths, doorstep
+preference, and bounded-search behavior for eligible pairs. Proposed footprints,
+extra blockers, danger checks, and authoritative doorstep ranking remain
+query-local, so cached terrain cannot change the selected route. Travel-cost and
+safety checks share only their most recent exact route; danger is checked again
+on every use, and a changed builder, target, or orientation requires a new
+route.
+
+Test-only navigation work counters enforce structural regression bounds across
+consumers without using wall-clock timing or affecting controller state.
 
 The pre-core emergency path is deliberately narrower than voluntary allocation.
 It uses only a current visible armed ground threat for a Turret or a current
@@ -1274,19 +1323,19 @@ version check. Serialization emits only the current shape.
 This table names the first source and focused suites to inspect. It is a routing
 map rather than an exhaustive test inventory.
 
-| Contract                                           | Primary source                                                                                                                                                                                | Focused evidence                                                                                                                    |
-| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Scenario build and authored map                    | `sim/src/scenario.rs`, `sim/src/map.rs`                                                                                                                                                       | inline module tests, `sim/tests/pits.rs`, `sim/tests/extractors.rs`                                                                 |
-| State, hashing, validation, and teams              | `sim/src/state.rs`, `chassis/src/hash.rs`                                                                                                                                                     | `sim/tests/state_integrity.rs`, `sim/tests/determinism.rs`, `sim/tests/teams.rs`                                                    |
-| Placement, deferred founding, and upgrades         | `sim/src/state/placement.rs`, `sim/src/tick/commands.rs`, `sim/src/tick/brain.rs`, `sim/src/tick/brain/economy.rs`                                                                            | `sim/tests/behavior_construction.rs`, `sim/tests/extractors.rs`, `sim/tests/upgrades.rs`, `sim/tests/foundries.rs`                  |
-| Tick scheduling, production, cleanup, and charges  | `sim/src/tick/mod.rs`, `sim/src/tick/production.rs`                                                                                                                                           | `sim/tests/behavior_rules.rs`, `sim/tests/behavior_economy.rs`, `sim/tests/field_kit.rs`                                            |
-| Command vocabulary and set semantics               | `sim/src/command.rs`, `sim/src/tick/commands.rs`                                                                                                                                              | `sim/tests/command_canonicalization.rs`, `sim/tests/fuzz.rs`                                                                        |
-| Unit programs, routing, movement, and collision    | `sim/src/tick/brain.rs`, `sim/src/tick/brain/locomotion.rs`, `sim/src/tick/movement.rs`, `chassis/src/path.rs`                                                                                | `sim/tests/behavior_movement.rs`, `sim/tests/movement_lab.rs`, `sim/tests/peaks.rs`, `sim/tests/pits.rs`                            |
-| Boarding and unloading                             | `sim/src/tick/brain/logistics.rs`                                                                                                                                                             | `sim/tests/transports.rs`                                                                                                           |
-| Harvesting, income, salvage, and repair            | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs`                                                                                                                                 | `sim/tests/harvest_zones.rs`, `sim/tests/salvage.rs`, `sim/tests/repair_unit.rs`, `sim/tests/repair_bay.rs`, `sim/tests/smelter.rs` |
-| Weapons and simultaneous resolution                | `sim/src/stats.rs`, `sim/src/tick/brain/combat.rs`                                                                                                                                            | `sim/tests/behavior_combat.rs`, `sim/tests/combat_edges.rs`, `sim/tests/shells.rs`, `sim/tests/peaks.rs`                            |
-| Fog, memory, radar, and stealth                    | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                                                                       | `sim/tests/bot_brain.rs`, `sim/tests/bastion_acquisition.rs`, `sim/tests/field_kit.rs`                                              |
-| Bot knowledge, profiles, and fair difficulty       | `sim/src/bot/briefing.rs`, `sim/src/bot/observation.rs`, `sim/src/bot/intelligence.rs`, `sim/src/bot/orient.rs`, `sim/src/bot/profile.rs`, `sim/src/bot/difficulty.rs`                        | inline module tests, `sim/tests/bot_brain.rs`                                                                                       |
-| Bot resource evidence and planning commitments     | `sim/src/bot/resources.rs`, `sim/src/bot/resources/ledger.rs`, `sim/src/bot/resources/production.rs`, `sim/src/bot/utility.rs`, `sim/src/bot/executive/lowering.rs`                           | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
-| Bot cross-domain investment allocation             | `sim/src/bot/resources/planning.rs`, `sim/src/bot/allocation.rs`, `sim/src/bot/allocation/`                                                                                                   | inline allocation, adapter, coordinator, session, and Brain tests                                                                   |
-| Bot playbooks, routing, reservations, and lowering | `sim/src/bot/strategy.rs`, `sim/src/bot/strategy/force_package.rs`, `sim/src/bot/lift.rs`, `sim/src/bot/raid.rs`, `sim/src/bot/team.rs`, `sim/src/bot/routing.rs`, `sim/src/bot/executive.rs` | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
+| Contract                                           | Primary source                                                                                                                                                                                            | Focused evidence                                                                                                                    |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Scenario build and authored map                    | `sim/src/scenario.rs`, `sim/src/map.rs`                                                                                                                                                                   | inline module tests, `sim/tests/pits.rs`, `sim/tests/extractors.rs`                                                                 |
+| State, hashing, validation, and teams              | `sim/src/state.rs`, `chassis/src/hash.rs`                                                                                                                                                                 | `sim/tests/state_integrity.rs`, `sim/tests/determinism.rs`, `sim/tests/teams.rs`                                                    |
+| Placement, deferred founding, and upgrades         | `sim/src/state/placement.rs`, `sim/src/tick/commands.rs`, `sim/src/tick/brain.rs`, `sim/src/tick/brain/economy.rs`                                                                                        | `sim/tests/behavior_construction.rs`, `sim/tests/extractors.rs`, `sim/tests/upgrades.rs`, `sim/tests/foundries.rs`                  |
+| Tick scheduling, production, cleanup, and charges  | `sim/src/tick/mod.rs`, `sim/src/tick/production.rs`                                                                                                                                                       | `sim/tests/behavior_rules.rs`, `sim/tests/behavior_economy.rs`, `sim/tests/field_kit.rs`                                            |
+| Command vocabulary and set semantics               | `sim/src/command.rs`, `sim/src/tick/commands.rs`                                                                                                                                                          | `sim/tests/command_canonicalization.rs`, `sim/tests/fuzz.rs`                                                                        |
+| Unit programs, routing, movement, and collision    | `sim/src/tick/brain.rs`, `sim/src/tick/brain/locomotion.rs`, `sim/src/tick/movement.rs`, `chassis/src/path.rs`                                                                                            | `sim/tests/behavior_movement.rs`, `sim/tests/movement_lab.rs`, `sim/tests/peaks.rs`, `sim/tests/pits.rs`                            |
+| Boarding and unloading                             | `sim/src/tick/brain/logistics.rs`                                                                                                                                                                         | `sim/tests/transports.rs`                                                                                                           |
+| Harvesting, income, salvage, and repair            | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs`                                                                                                                                             | `sim/tests/harvest_zones.rs`, `sim/tests/salvage.rs`, `sim/tests/repair_unit.rs`, `sim/tests/repair_bay.rs`, `sim/tests/smelter.rs` |
+| Weapons and simultaneous resolution                | `sim/src/stats.rs`, `sim/src/tick/brain/combat.rs`                                                                                                                                                        | `sim/tests/behavior_combat.rs`, `sim/tests/combat_edges.rs`, `sim/tests/shells.rs`, `sim/tests/peaks.rs`                            |
+| Fog, memory, radar, and stealth                    | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                                                                                   | `sim/tests/bot_brain.rs`, `sim/tests/bastion_acquisition.rs`, `sim/tests/field_kit.rs`                                              |
+| Bot knowledge, profiles, and fair difficulty       | `sim/src/bot/briefing.rs`, `sim/src/bot/observation.rs`, `sim/src/bot/intelligence.rs`, `sim/src/bot/orient.rs`, `sim/src/bot/profile.rs`, `sim/src/bot/difficulty.rs`                                    | inline module tests, `sim/tests/bot_brain.rs`                                                                                       |
+| Bot resource evidence and planning commitments     | `sim/src/bot/resources.rs`, `sim/src/bot/resources/ledger.rs`, `sim/src/bot/resources/production.rs`, `sim/src/bot/utility.rs`, `sim/src/bot/executive/lowering.rs`                                       | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
+| Bot cross-domain investment allocation             | `sim/src/bot/resources/planning.rs`, `sim/src/bot/allocation.rs`, `sim/src/bot/allocation/`                                                                                                               | inline allocation, adapter, coordinator, session, and Brain tests                                                                   |
+| Bot playbooks, routing, reservations, and lowering | `sim/src/bot/strategy.rs`, `sim/src/bot/strategy/force_package.rs`, `sim/src/bot/lift.rs`, `sim/src/bot/raid.rs`, `sim/src/bot/team.rs`, `sim/src/bot/navigation/commands.rs`, `sim/src/bot/executive.rs` | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |

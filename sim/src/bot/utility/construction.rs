@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::Tick;
+use crate::bot::navigation::commands::{BuildCommandTarget, BuildRouteProjection};
 
 /// Exact fresh emergency construction selected before shared allocation.
 ///
@@ -1179,7 +1180,7 @@ impl UtilityPolicy {
     fn safe_foundry_builder(
         &self,
         obs: &Observation,
-        public_map: &PublicMapBriefing,
+        routes: &BuildRouteProjection<'_>,
         anchor: TilePos,
         builders: &[&UnitObs],
         danger: &danger::HarvestDangerProjection,
@@ -1201,13 +1202,14 @@ impl UtilityPolicy {
         candidates
             .into_iter()
             .find(|builder| {
-                crate::bot::routing::build_command_path_avoids_with_public_terrain(
-                    obs,
-                    public_map,
+                routes.avoids(
                     builder,
-                    anchor,
-                    size,
-                    defer,
+                    BuildCommandTarget {
+                        anchor,
+                        size,
+                        defer,
+                    },
+                    None,
                     |tile| {
                         !obs.explored(tile)
                             || self.harvest_location_contested(tile)
@@ -1239,7 +1241,7 @@ impl UtilityPolicy {
     fn legal_foundry_builder_prepared(
         &self,
         obs: &Observation,
-        public_map: &PublicMapBriefing,
+        routes: &BuildRouteProjection<'_>,
         anchor: TilePos,
         builders: &[&UnitObs],
         danger: &danger::HarvestDangerProjection,
@@ -1247,7 +1249,7 @@ impl UtilityPolicy {
         if !self.placement_valid_prepared(obs, BuildingKind::Foundry, anchor) {
             return None;
         }
-        self.safe_foundry_builder(obs, public_map, anchor, builders, danger)
+        self.safe_foundry_builder(obs, routes, anchor, builders, danger)
     }
 
     /// Values every in-bounds anchor that would support a completed Extractor
@@ -1257,10 +1259,11 @@ impl UtilityPolicy {
         &self,
         public_map: &PublicMapBriefing,
         danger: &danger::HarvestDangerProjection,
-    ) -> expansion::BlockedGroundLayout {
-        expansion::BlockedGroundLayout::from_predicate(public_map, |position| {
-            self.harvest_location_contested(position) || danger.contains(position)
-        })
+    ) -> crate::bot::navigation::public_fields::BlockedGroundLayout {
+        crate::bot::navigation::public_fields::BlockedGroundLayout::from_predicate(
+            public_map,
+            |position| self.harvest_location_contested(position) || danger.contains(position),
+        )
     }
 
     fn player_facing_foundry_opportunities(
@@ -1332,32 +1335,36 @@ impl UtilityPolicy {
 
         let max_x = public_map.map_width().saturating_sub(foundry_size.0);
         let max_y = public_map.map_height().saturating_sub(foundry_size.1);
-        let opportunities = (0..=max_y)
+        let anchors = (0..=max_y)
             .flat_map(|y| (0..=max_x).map(move |x| TilePos::new(x, y)))
-            .filter_map(|anchor| {
+            .collect::<Vec<_>>();
+        let mut scrap_by_anchor = vec![expansion::ScrapSummary::default(); anchors.len()];
+        for (_, amount, old_distance, distances) in visible_scrap {
+            distances.visit_footprint_distances(foundry_size, |index, new_distance| {
+                if new_distance < old_distance {
+                    scrap_by_anchor[index].include(expansion::ScrapLogistics {
+                        amount,
+                        old_distance,
+                        new_distance,
+                    });
+                }
+            });
+        }
+        let opportunities = anchors
+            .into_iter()
+            .zip(scrap_by_anchor)
+            .filter_map(|(anchor, scrap)| {
                 let newly_supported_completed_extractors = unsupported_extractors
                     .iter()
                     .filter(|extractor| Self::foundry_supports_extractor(anchor, **extractor))
                     .count()
                     .try_into()
                     .unwrap_or(u32::MAX);
-                let current_visible_scrap =
-                    visible_scrap
-                        .iter()
-                        .filter_map(|(_tile, amount, old_distance, distances)| {
-                            let new_distance =
-                                distances.footprint_distance(anchor, foundry_size)?;
-                            (new_distance < *old_distance).then_some(expansion::ScrapLogistics {
-                                amount: *amount,
-                                old_distance: *old_distance,
-                                new_distance,
-                            })
-                        });
-                expansion::FoundryOpportunity::admitted_objectives(
+                expansion::FoundryOpportunity::admitted_summary(
                     anchor,
                     newly_supported_completed_extractors,
                     ordinary_frontiers,
-                    current_visible_scrap,
+                    scrap,
                     economy,
                 )
             })
@@ -1387,12 +1394,13 @@ impl UtilityPolicy {
             return Vec::new();
         }
         self.prepare_ground_producer_egress(obs);
+        let routes = BuildRouteProjection::new(obs, Some(public_map));
         opportunities
             .into_iter()
             .filter_map(|opportunity| {
                 self.legal_foundry_builder_prepared(
                     obs,
-                    public_map,
+                    &routes,
                     opportunity.anchor,
                     context.builders,
                     &danger,
@@ -1479,10 +1487,11 @@ impl UtilityPolicy {
             return None;
         }
         self.prepare_ground_producer_egress(obs);
+        let routes = BuildRouteProjection::new(obs, Some(context.public_map));
         quotes.into_iter().find_map(|quote| {
             self.legal_foundry_builder_prepared(
                 obs,
-                context.public_map,
+                &routes,
                 quote.anchor(),
                 context.claim.builders,
                 &danger,
@@ -1682,7 +1691,7 @@ impl UtilityPolicy {
         self.prepare_ground_producer_egress(obs);
         if self.legal_foundry_builder_prepared(
             obs,
-            context.public_map,
+            &BuildRouteProjection::new(obs, Some(context.public_map)),
             saving.plan.anchor,
             &builders,
             &danger,
@@ -1843,7 +1852,8 @@ impl UtilityPolicy {
             return Some(Intent::CancelSite { building: site.id });
         }
 
-        let mut routes = crate::bot::routing::RouteProjection::new(obs, Domain::Ground);
+        let mut routes =
+            crate::bot::navigation::commands::RouteProjection::new(obs, Domain::Ground);
         obs.my_buildings
             .iter()
             .filter(|building| {
@@ -2673,7 +2683,7 @@ mod tests {
             assert!(
                 obs.my_units[0].tile.manhattan(anchor) < obs.my_units[1].tile.manhattan(anchor)
             );
-            assert!(crate::bot::routing::build_command_path_avoids(
+            assert!(crate::bot::navigation::commands::build_command_path_avoids(
                 &obs,
                 &obs.my_units[0],
                 anchor,
@@ -2682,7 +2692,7 @@ mod tests {
                 |_| false,
             ));
             assert!(
-                !crate::bot::routing::build_command_path_avoids_with_public_terrain(
+                !crate::bot::navigation::commands::build_command_path_avoids_with_public_terrain(
                     &obs,
                     &briefing,
                     &obs.my_units[0],
@@ -2693,7 +2703,7 @@ mod tests {
                 )
             );
             assert!(
-                crate::bot::routing::build_command_path_avoids_with_public_terrain(
+                crate::bot::navigation::commands::build_command_path_avoids_with_public_terrain(
                     &obs,
                     &briefing,
                     &obs.my_units[1],
@@ -4201,7 +4211,13 @@ mod tests {
         );
         assert!(policy.placement_valid_prepared(&obs, BuildingKind::Foundry, top));
         assert_eq!(
-            policy.legal_foundry_builder_prepared(&obs, &public_map, top, &builders, &danger),
+            policy.legal_foundry_builder_prepared(
+                &obs,
+                &BuildRouteProjection::new(&obs, Some(&public_map)),
+                top,
+                &builders,
+                &danger
+            ),
             None,
             "the top quote is legal but unreachable across the public Peak wall"
         );
@@ -4212,7 +4228,7 @@ mod tests {
                 policy
                     .legal_foundry_builder_prepared(
                         &obs,
-                        &public_map,
+                        &BuildRouteProjection::new(&obs, Some(&public_map)),
                         quote.anchor(),
                         &builders,
                         &danger,
@@ -4232,9 +4248,15 @@ mod tests {
             voluntary_scrap_guard: Reserve::Ordinary,
             required_anchor: None,
         };
-        let first = policy
-            .player_facing_foundry_assessment(&dials, &obs, context, &[])
-            .expect("assessment falls through to the reachable quote");
+        let (first, work) = crate::bot::navigation::work::measure(|| {
+            policy
+                .player_facing_foundry_assessment(&dials, &obs, context, &[])
+                .expect("assessment falls through to the reachable quote")
+        });
+        assert!(
+            work.components <= 3,
+            "one observed-ground flood and two public-ground components must serve every candidate: {work:?}"
+        );
         let second = policy
             .player_facing_foundry_assessment(&dials, &obs, context, &[])
             .expect("repeat assessment remains viable");

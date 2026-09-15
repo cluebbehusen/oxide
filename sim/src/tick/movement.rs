@@ -142,9 +142,8 @@ fn passed_intermediate_waypoint(pos: Vec2Fx, waypoint: TilePos, next: TilePos, r
 }
 
 /// The nearest walkable escape from a body's own (possibly blocked)
-/// tile: candidates ring-scan outward in (chebyshev, y, x) order — the
-/// deterministic order every ring scan uses — and the first one that
-/// routes wins (A* consults `passable` for every tile except the start,
+/// tile: candidates ring-scan outward in a half-turn-equivariant frame, and the
+/// first one that routes wins (A* consults `passable` for every tile except the start,
 /// so a body paths out of ground it could not enter). Bounded: any real
 /// escape begins on an adjacent open tile, so the reach only pads for
 /// corner-cut geometry.
@@ -152,14 +151,25 @@ pub(super) fn escape_route(
     state: &State,
     kind: crate::stats::UnitKind,
     from: TilePos,
+    heading: u8,
 ) -> Option<PathFollow> {
+    let reflected = TilePos::new(
+        state.map.width() - 1 - from.x,
+        state.map.height() - 1 - from.y,
+    );
+    let reverse = match (from.y, from.x).cmp(&(reflected.y, reflected.x)) {
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Equal => heading < 128,
+    };
+    let direction = if reverse { -1 } else { 1 };
     for r in 1..=crate::stats::EVICT_SCAN_RADIUS {
         for dy in -r..=r {
             for dx in -r..=r {
                 if dx.abs().max(dy.abs()) != r {
                     continue;
                 }
-                let goal = from.offset(dx, dy);
+                let goal = from.offset(dx * direction, dy * direction);
                 if !state.passable(goal) {
                     continue;
                 }
@@ -192,7 +202,7 @@ pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Op
     {
         return None;
     }
-    escape_route(state, unit.kind, unit.tile())
+    escape_route(state, unit.kind, unit.tile(), unit.heading)
 }
 
 /// Phase-5 pre-pass: a pathless ground body standing on a building
@@ -910,6 +920,36 @@ mod tests {
     use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
     use crate::state::Faction;
     use crate::stats::UnitKind;
+
+    #[test]
+    fn footprint_escape_routes_rotate_with_the_body() {
+        let state = Scenario::skirmish().build().unwrap();
+        let mirror = |tile: TilePos| {
+            TilePos::new(
+                state.map.width() - 1 - tile.x,
+                state.map.height() - 1 - tile.y,
+            )
+        };
+        for from in [
+            TilePos::new(4, 4),
+            TilePos::new(5, 4),
+            TilePos::new(4, 5),
+            TilePos::new(5, 5),
+        ] {
+            assert!(!state.passable(from));
+            assert!(!state.passable(mirror(from)));
+            for heading in 0..128 {
+                let a = escape_route(&state, UnitKind::Harvester, from, heading).unwrap();
+                let b =
+                    escape_route(&state, UnitKind::Harvester, mirror(from), heading + 128).unwrap();
+                assert_eq!(b.goal, mirror(a.goal));
+                assert_eq!(
+                    b.waypoints,
+                    a.waypoints.into_iter().map(mirror).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
 
     #[test]
     fn mirrored_collision_pushes_agree_at_rock_faces_and_corners() {

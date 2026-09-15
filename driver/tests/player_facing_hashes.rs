@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use support::check_or_bless;
 
 const DEFAULT_FIXTURE_TICKS: u64 = 6_000;
-const SKYHOOK_EXTENDED_TICKS: u64 = 9_000;
+const SKYHOOK_EXTENDED_TICKS: u64 = 10_000;
 
 /// Representative repertoire spread: a 1v1, small and large team maps, the
 /// transport-island economy, and the two largest shipped bot loads.

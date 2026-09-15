@@ -30,9 +30,13 @@ impl<'a> Bounds<'a> {
         origins: &[ThreatOrigin],
         mut evaluate: impl FnMut(TilePos) -> Option<(Candidate, UnitId)>,
     ) -> Option<(Candidate, UnitId)> {
+        let batch = (profile.kind != BuildingKind::Barricade)
+            .then(|| coverage::Batch::new(context, profile));
         let mut candidates: Vec<_> = anchors
             .into_iter()
-            .map(|anchor| self.candidate(context, profile, anchor, origins))
+            .map(|anchor| {
+                self.candidate_with_batch(context, profile, anchor, origins, batch.as_ref())
+            })
             .collect();
         candidates.sort_by_key(|candidate| candidate.key(profile));
         let mut selected: Option<(Candidate, UnitId)> = None;
@@ -51,12 +55,26 @@ impl<'a> Bounds<'a> {
         selected
     }
 
+    #[cfg(test)]
     pub(super) fn candidate(
         &self,
         context: &CoverageContext<'_>,
         profile: DefenseProfile,
         anchor: TilePos,
         origins: &[ThreatOrigin],
+    ) -> Candidate {
+        let batch = (profile.kind != BuildingKind::Barricade)
+            .then(|| coverage::Batch::new(context, profile));
+        self.candidate_with_batch(context, profile, anchor, origins, batch.as_ref())
+    }
+
+    fn candidate_with_batch(
+        &self,
+        context: &CoverageContext<'_>,
+        profile: DefenseProfile,
+        anchor: TilePos,
+        origins: &[ThreatOrigin],
+        batch: Option<&coverage::Batch<'_>>,
     ) -> Candidate {
         let placement = profile.footprint(anchor);
         let doorsteps = building_doorsteps(self.ground, anchor, placement.size);
@@ -77,20 +95,19 @@ impl<'a> Bounds<'a> {
                 uncertain[approach.asset] = true;
             }
         }
-        let unchanged: Vec<_> = self
-            .approaches
-            .iter()
-            .filter(|a| possible[a.asset] && !uncertain[a.asset])
-            .cloned()
-            .collect();
-        let mut coverage = score_coverage(
-            &CoverageContext {
-                approaches: &unchanged,
-                ..*context
-            },
-            profile,
-            anchor,
-        );
+        let mut coverage = if let Some(batch) = batch {
+            batch.score(anchor, |asset| possible[asset] && !uncertain[asset])
+        } else {
+            barricade::coverage(
+                context.assets,
+                context.planned,
+                anchor,
+                self.approaches
+                    .iter()
+                    .filter(|a| possible[a.asset] && !uncertain[a.asset])
+                    .map(barricade::ApproachCost::from),
+            )
+        };
         // Removing unsupported assets can remove any penalty. Rerouted assets
         // may attain every positive component, up to its scoring saturation.
         coverage.planned_overlap = 0;

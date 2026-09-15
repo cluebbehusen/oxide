@@ -34,9 +34,13 @@ impl UtilityPolicy {
             .min_by_key(|unit| unit.id)?;
         let destination = *self.ground_attack_goals(obs, goal, 1)?.first()?;
         let routes = mode.public_map.map_or_else(
-            || crate::bot::routing::RouteProjection::known_ground(obs),
+            || crate::bot::navigation::commands::RouteProjection::known_ground(obs),
             |map| {
-                crate::bot::routing::RouteProjection::with_public_terrain(obs, Domain::Ground, map)
+                crate::bot::navigation::commands::RouteProjection::with_public_terrain(
+                    obs,
+                    Domain::Ground,
+                    map,
+                )
             },
         );
         let path = routes.command_route(leader.tile, destination)?;

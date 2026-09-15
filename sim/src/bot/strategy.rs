@@ -14,6 +14,7 @@ use super::intelligence::{
     AirDefenseAssessment, AirDefenseEvidence, AirDefenseSource, BuildingContact, ContactEvidence,
     StrategicIntelligence,
 };
+use super::navigation::commands::{self as routing, RouteProjection, production_spawn_doorstep};
 use super::observation::{Observation, UnitObs};
 use super::orient::Orientation;
 use super::profile::{ResolvedProfile, Specialty};
@@ -23,7 +24,6 @@ use super::resources::{
     paid_queued_ready_occurrences_with_access, plan_production_with_access,
     production_demands_fit_horizon_with_access,
 };
-use super::routing::{self, RouteProjection, production_spawn_doorstep};
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::scenario::BotStance;
 use crate::stats::{BuildingKind, Domain, QUEUE_CAP, Role, UnitKind, WeaponStats};
@@ -31,9 +31,11 @@ use chassis::Tick;
 use chassis::fx::{Fx, HALF, Vec2Fx};
 use chassis::grid::TilePos;
 use core::cmp::Reverse;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 pub(super) mod force_package;
+mod suppression_routes;
+use suppression_routes::SuppressionRoutes;
 
 use force_package::{
     ConnectedForcePackage, ConnectedForcePackageOptions, ConnectedTargetEvidence, ForceFamily,
@@ -51,6 +53,16 @@ const CONNECTED_OPERATION_MINIMUM_COMBAT_ROSTER: usize = 12;
 /// A connected operation may use only completed production that can finish its
 /// whole requested package inside this immutable preparation window.
 const CONNECTED_PREPARATION_HORIZON: Tick = 2_400;
+
+#[cfg(test)]
+thread_local! {
+    static AIRWORKS_PACKAGE_DERIVATIONS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(in crate::bot) fn airworks_package_derivations() -> usize {
+    AIRWORKS_PACKAGE_DERIVATIONS.with(core::cell::Cell::get)
+}
 
 /// Shared preparation horizon used by connected proposal derivation and the
 /// coordinator's joint resource projection.
@@ -91,6 +103,7 @@ struct ClusterAirDefense {
 
 #[derive(Debug, Clone, Copy)]
 struct ConnectedPlanningContext<'a> {
+    suppression_routes: Option<&'a SuppressionRoutes<'a>>,
     orientation: Orientation,
     public_map: Option<&'a PublicMapBriefing>,
     resources: &'a ConnectedProductionResources,
@@ -101,6 +114,7 @@ struct ConnectedPlanningContext<'a> {
 
 #[derive(Debug, Clone, Copy)]
 struct ConnectedRouteContext<'a> {
+    suppression_routes: Option<&'a SuppressionRoutes<'a>>,
     unavailable_paid: &'a [(BuildingId, UnitKind, usize)],
     intel: &'a StrategicIntelligence,
     home: TilePos,
@@ -543,6 +557,7 @@ fn derive_connected_package_options(
         return Err(ConnectedPlanRejection::DisconnectedGroundRoute);
     }
     let route = ConnectedRouteContext {
+        suppression_routes: context.suppression_routes,
         unavailable_paid: &[],
         intel,
         home,
@@ -619,19 +634,27 @@ fn derive_connected_package_options_for_targets(
         protected_current_scrap: context.protected_current_scrap,
         protected_forecast_scrap,
     })?;
-    let package_has_routes = |package: &ConnectedForcePackage| {
-        connected_artillery_group_has_staging(
-            obs,
-            route,
-            &package.suppression,
-            context.preferred_artillery,
-            &unavailable,
-        ) && connected_suppression_roster_has_firing_assignments(
-            obs,
-            route,
-            &package.suppression,
-            &targets.suppression_targets,
-        )
+    let mut suppression_routes = BTreeMap::new();
+    let mut package_has_routes = |package: &ConnectedForcePackage| {
+        let roster: Vec<_> = package
+            .suppression
+            .iter()
+            .map(|demand| (demand.kind, demand.count))
+            .collect();
+        *suppression_routes.entry(roster).or_insert_with(|| {
+            connected_artillery_group_has_staging(
+                obs,
+                route,
+                &package.suppression,
+                context.preferred_artillery,
+                &unavailable,
+            ) && connected_suppression_roster_has_firing_assignments(
+                obs,
+                route,
+                &package.suppression,
+                &targets.suppression_targets,
+            )
+        })
     };
     if !package_has_routes(&packages.minimum) {
         return Err(ConnectedPlanRejection::UnreachableGroupStaging {
@@ -2225,6 +2248,7 @@ impl<'a> FreshConnectedProposalRequest<'a> {
 
 #[derive(Clone, Copy)]
 struct FreshConnectedDerivationContext<'a> {
+    suppression_routes: Option<&'a SuppressionRoutes<'a>>,
     unavailable_paid: &'a [(BuildingId, UnitKind, usize)],
     profile: &'a ResolvedProfile,
     tuning: DifficultyTuning,
@@ -2325,7 +2349,7 @@ pub(in crate::bot) fn prospective_airworks_package_value(
 ) -> Option<u64> {
     use crate::bot::allocation::{
         AllocationCapacity, AllocationPersonality, allocate_requiring,
-        connected_investment_proposal, current_reserve_at,
+        allocate_with_incompatible_layouts, connected_investment_proposal, current_reserve_at,
     };
     let mut prospective = request.obs.clone();
     let cost = BuildingKind::Airworks.base_stats().construction?.cost;
@@ -2349,6 +2373,15 @@ pub(in crate::bot) fn prospective_airworks_package_value(
         request.tuning.cadence,
     )
     .ok()?;
+    // A new campaign cannot make retained obligations fit after buying its factory.
+    allocate_with_incompatible_layouts::<()>(
+        &capacity,
+        obligations.to_vec(),
+        Vec::new(),
+        AllocationPersonality::default(),
+        &[],
+    )
+    .ok()?;
     prospective.scrap -= restored;
     let unavailable: Vec<_> = prospective.my_units.iter().map(|unit| unit.id).collect();
     let coordination = StrategicCoordination {
@@ -2356,7 +2389,14 @@ pub(in crate::bot) fn prospective_airworks_package_value(
         protected_current_scrap: 0,
         ..request.coordination
     };
+    let suppression_routes = SuppressionRoutes::new(
+        &prospective,
+        request.intel,
+        coordination.public_map,
+        coordination.orientation,
+    );
     let context = FreshConnectedDerivationContext {
+        suppression_routes: Some(&suppression_routes),
         unavailable_paid: &[],
         profile: request.profile,
         tuning: request.tuning,
@@ -2380,7 +2420,10 @@ pub(in crate::bot) fn prospective_airworks_package_value(
             target.evidence == ContactEvidence::Current && target.built && target.hp > 0
         })
         .filter_map(|target| {
+            #[cfg(test)]
+            AIRWORKS_PACKAGE_DERIVATIONS.with(|count| count.set(count.get() + 1));
             let route = ConnectedRouteContext {
+                suppression_routes: Some(&suppression_routes),
                 unavailable_paid: &[],
                 intel: request.intel,
                 home: request.home,
@@ -2435,6 +2478,7 @@ fn derive_fresh_connected_proposal(
     origin: ConnectedProposalOrigin,
 ) -> Result<FreshConnectedProposal, ConnectedPlanRejection> {
     let route = ConnectedRouteContext {
+        suppression_routes: context.suppression_routes,
         unavailable_paid: context.unavailable_paid,
         intel: context.intel,
         home: context.home,
@@ -2470,6 +2514,7 @@ fn derive_connected_proposal_with_resources(
     preparation_deadline: Tick,
 ) -> Result<FreshConnectedProposal, ConnectedPlanRejection> {
     let FreshConnectedDerivationContext {
+        suppression_routes,
         unavailable_paid,
         profile,
         tuning,
@@ -2481,7 +2526,15 @@ fn derive_connected_proposal_with_resources(
         unavailable,
         preferred_artillery,
     } = context;
+    let local_routes = SuppressionRoutes::new(
+        obs,
+        intel,
+        coordination.public_map,
+        coordination.orientation,
+    );
+    let suppression_routes = Some(suppression_routes.unwrap_or(&local_routes));
     let route = ConnectedRouteContext {
+        suppression_routes,
         unavailable_paid,
         intel,
         home,
@@ -2497,6 +2550,7 @@ fn derive_connected_proposal_with_resources(
         target,
         unavailable,
         ConnectedPlanningContext {
+            suppression_routes,
             orientation: coordination.orientation,
             public_map: coordination.public_map,
             resources: &initial_resources,
@@ -2827,6 +2881,7 @@ impl StrategicPlanner {
             let unavailable = excluding_owned(coordination.enlisted, &owned);
             return derive_fresh_connected_proposal(
                 FreshConnectedDerivationContext {
+                    suppression_routes: None,
                     unavailable_paid,
                     profile,
                     tuning,
@@ -2901,6 +2956,7 @@ impl StrategicPlanner {
         for target in current {
             match derive_fresh_connected_proposal(
                 FreshConnectedDerivationContext {
+                    suppression_routes: None,
                     unavailable_paid,
                     profile,
                     tuning,
@@ -2968,6 +3024,7 @@ impl StrategicPlanner {
         let owned = reservations(&active.op, &active.plan, obs);
         let unavailable = excluding_owned(coordination.enlisted, &owned);
         let route = ConnectedRouteContext {
+            suppression_routes: None,
             unavailable_paid,
             intel,
             home,
@@ -3000,6 +3057,7 @@ impl StrategicPlanner {
         };
         let mut proposal = derive_connected_proposal_with_resources(
             FreshConnectedDerivationContext {
+                suppression_routes: None,
                 unavailable_paid,
                 profile,
                 tuning,
@@ -3755,6 +3813,7 @@ impl StrategicPlanner {
                     current_target,
                     &connected_package,
                     ConnectedRouteContext {
+                        suppression_routes: None,
                         unavailable_paid: production.unavailable_paid,
                         intel,
                         home,
@@ -3785,6 +3844,7 @@ impl StrategicPlanner {
             && op.phase <= AirOperationPhase::Assemble
         {
             let route = ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: production.unavailable_paid,
                 intel,
                 home,
@@ -4119,6 +4179,7 @@ fn recon(
             &resources.targets,
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel,
                 home: context.home,
@@ -4221,6 +4282,7 @@ fn assemble(
             &resources.targets,
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel,
                 home: *home,
@@ -5163,15 +5225,40 @@ fn suppression_firing_assignment(
     if origins.is_empty() {
         return None;
     }
-    let mut routes =
-        route_projection_with_orientation(obs, Domain::Ground, public_map, orientation);
+    let routes = route_projection_with_orientation(obs, Domain::Ground, public_map, orientation);
+    if origins.iter().all(|origin| *origin == origins[0]) {
+        let mut stands: Vec<_> =
+            suppression_firing_stands(&routes, obs, origins[0], target, intel, public_map)
+                .take(origins.len())
+                .collect();
+        if stands.len() != origins.len() {
+            return None;
+        }
+        // With identical options, each augmenting member displaces the earlier
+        // members by one stand. Preserve that exact assignment order directly.
+        stands.reverse();
+        return Some(stands);
+    }
+    let mut by_origin = BTreeMap::new();
     let stand_options: Vec<Vec<TilePos>> = origins
         .iter()
         .map(|origin| {
-            suppression_firing_stands(&mut routes, obs, *origin, target, intel, public_map)
-                .collect()
+            by_origin
+                .entry(*origin)
+                .or_insert_with(|| {
+                    suppression_firing_stands(&routes, obs, *origin, target, intel, public_map)
+                        .collect::<Vec<_>>()
+                })
+                .clone()
         })
         .collect();
+    assign_suppression_stands(origins.len(), stand_options)
+}
+
+fn assign_suppression_stands(
+    member_count: usize,
+    stand_options: Vec<Vec<TilePos>>,
+) -> Option<Vec<TilePos>> {
     if stand_options.iter().any(Vec::is_empty) {
         return None;
     }
@@ -5195,13 +5282,13 @@ fn suppression_firing_assignment(
         })
         .collect();
     let mut owner_by_stand = vec![None; stands.len()];
-    for member in 0..origins.len() {
+    for member in 0..member_count {
         let mut visited = vec![false; stands.len()];
         if !augment_suppression_assignment(member, &options, &mut visited, &mut owner_by_stand) {
             return None;
         }
     }
-    let mut assigned = vec![None; origins.len()];
+    let mut assigned = vec![None; member_count];
     for (stand, owner) in owner_by_stand.into_iter().enumerate() {
         if let Some(member) = owner {
             assigned[member] = Some(stands[stand]);
@@ -5676,18 +5763,28 @@ fn connected_provider_unavailable<'a>(
     unavailable: &[UnitId],
     route: ConnectedRouteContext<'a>,
 ) -> Vec<UnitId> {
+    let mut excluded = unavailable.to_vec();
+    excluded.sort_unstable();
+    excluded.dedup();
+    let candidates: Vec<_> = obs
+        .my_units
+        .iter()
+        .filter(|member| excluded.binary_search(&member.id).is_err())
+        .collect();
+    if candidates.is_empty() {
+        return excluded;
+    }
     let scout_kind = Role::Scout.unit_for(obs.faction);
     let staging = connected_artillery_staging_goal(obs, route.home, route.target, route.public_map);
     let mut ground_routes =
         route_projection_with_orientation(obs, Domain::Ground, route.public_map, route.orientation);
     let mut air_routes =
         route_projection_with_orientation(obs, Domain::Air, route.public_map, route.orientation);
-    let mut excluded = unavailable.to_vec();
-    excluded.extend(obs.my_units.iter().filter_map(|member| {
+    excluded.extend(candidates.into_iter().filter_map(|member| {
         let compatible = if is_artillery(member.kind) {
             staging.is_some_and(|goal| {
                 ground_routes.ground_command_reaches(member.tile, goal)
-                    && suppression_targets_reachable(
+                    && suppression_targets_reachable_in_context(
                         &mut ground_routes,
                         obs,
                         SuppressionOrigin {
@@ -5695,8 +5792,7 @@ fn connected_provider_unavailable<'a>(
                             kind: member.kind,
                         },
                         &targets.suppression_targets,
-                        route.intel,
-                        route.public_map,
+                        route,
                     )
             })
         } else if member.kind == scout_kind || is_strike_aircraft(member.kind, obs.faction) {
@@ -5723,7 +5819,7 @@ fn connected_production_access<'a>(
     let staging = connected_artillery_staging_goal(obs, route.home, route.target, route.public_map);
     let mut ground_routes =
         route_projection_with_orientation(obs, Domain::Ground, route.public_map, route.orientation);
-    let mut air_routes =
+    let air_routes =
         route_projection_with_orientation(obs, Domain::Air, route.public_map, route.orientation);
     let mut allowed = Vec::new();
     let mut paid_allowed = Vec::new();
@@ -5763,13 +5859,12 @@ fn connected_production_access<'a>(
                     )
                     .is_some_and(|spawn| {
                         ground_routes.ground_command_reaches(spawn, staging)
-                            && suppression_targets_reachable(
+                            && suppression_targets_reachable_in_context(
                                 &mut ground_routes,
                                 obs,
                                 SuppressionOrigin { tile: spawn, kind },
                                 &targets.suppression_targets,
-                                route.intel,
-                                route.public_map,
+                                route,
                             )
                     })
                 }),
@@ -5859,13 +5954,12 @@ fn connected_target_selection<'a>(
             || staging.is_some_and(|staging| {
                 suppression_origins.iter().any(|origin| {
                     ground_routes.ground_command_reaches(origin.tile, staging)
-                        && suppression_targets_reachable(
+                        && suppression_targets_reachable_in_context(
                             &mut ground_routes,
                             obs,
                             *origin,
                             &proposed_suppression,
-                            route.intel,
-                            route.public_map,
+                            route,
                         )
                 })
             });
@@ -6015,6 +6109,20 @@ fn connected_family_reaches_all(
     })
 }
 
+fn suppression_targets_reachable_in_context(
+    routes: &mut RouteProjection<'_>,
+    obs: &Observation,
+    origin: SuppressionOrigin,
+    targets: &[Target],
+    route: ConnectedRouteContext<'_>,
+) -> bool {
+    if let Some(cached) = route.suppression_routes {
+        targets.iter().all(|target| cached.reaches(origin, *target))
+    } else {
+        suppression_targets_reachable(routes, obs, origin, targets, route.intel, route.public_map)
+    }
+}
+
 fn suppression_targets_reachable(
     routes: &mut RouteProjection<'_>,
     obs: &Observation,
@@ -6104,7 +6212,7 @@ fn suppression_weapon(kind: UnitKind) -> Option<&'static WeaponStats> {
 }
 
 fn suppression_firing_stands(
-    routes: &mut RouteProjection<'_>,
+    routes: &RouteProjection<'_>,
     obs: &Observation,
     origin: SuppressionOrigin,
     target: Target,
@@ -6998,7 +7106,7 @@ fn scout_goal(
             })
         })
         .unwrap_or(target);
-    let mut routes = route_projection(obs, Domain::Air, public_map);
+    let routes = route_projection(obs, Domain::Air, public_map);
     let radius_sq = vision.saturating_mul(vision);
     (focus.y - vision..=focus.y + vision)
         .flat_map(|y| (focus.x - vision..=focus.x + vision).map(move |x| TilePos::new(x, y)))
@@ -7331,7 +7439,7 @@ fn known_ground_connection(
         return Some(public_ground_connected(public_map, &starts, &goals));
     }
 
-    let mut optimistic = RouteProjection::new(obs, Domain::Ground);
+    let optimistic = RouteProjection::new(obs, Domain::Ground);
     if !starts
         .iter()
         .any(|start| goals.iter().any(|goal| optimistic.reaches(*start, *goal)))
@@ -7339,7 +7447,7 @@ fn known_ground_connection(
         return Some(false);
     }
 
-    let mut routes = RouteProjection::known_ground(obs);
+    let routes = RouteProjection::known_ground(obs);
     starts
         .iter()
         .any(|start| goals.iter().any(|goal| routes.reaches(*start, *goal)))
@@ -7351,43 +7459,17 @@ fn public_ground_connected(
     starts: &[TilePos],
     goals: &[TilePos],
 ) -> bool {
-    let cells = usize::try_from(public_map.map_width())
-        .ok()
-        .and_then(|width| {
-            usize::try_from(public_map.map_height())
-                .ok()
-                .and_then(|height| width.checked_mul(height))
-        })
-        .unwrap_or(0);
-    let mut visited = vec![false; cells];
-    let mut frontier = VecDeque::new();
-    for start in starts {
-        let index = (start.y * public_map.map_width() + start.x) as usize;
-        if !visited[index] {
-            visited[index] = true;
-            frontier.push_back(*start);
-        }
-    }
-    while let Some(tile) = frontier.pop_front() {
-        if goals.contains(&tile) {
-            return true;
-        }
-        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-            let next = tile.offset(dx, dy);
-            let Some(index) = public_map
-                .terrain_at(next)
-                .filter(|terrain| !terrain.blocks_ground())
-                .map(|_| (next.y * public_map.map_width() + next.x) as usize)
-            else {
-                continue;
-            };
-            if !visited[index] {
-                visited[index] = true;
-                frontier.push_back(next);
-            }
-        }
-    }
-    false
+    super::navigation::flood::reaches_any(
+        public_map.map_width(),
+        public_map.map_height(),
+        starts.iter().copied(),
+        |tile| {
+            public_map
+                .terrain_at(tile)
+                .is_some_and(|terrain| !terrain.blocks_ground())
+        },
+        |tile| goals.contains(&tile),
+    )
 }
 
 fn operation_timeout(profile: &ResolvedProfile, plan: &AirPlan) -> Tick {
@@ -7471,7 +7553,7 @@ fn connected_artillery_staging_goal(
     let starts: Vec<_> = crate::tick::rect_adjacent_tiles(home, home_size)
         .filter(|tile| public_ground_open(obs, *tile, public_map))
         .collect();
-    let mut routes = route_projection(obs, Domain::Ground, public_map);
+    let routes = route_projection(obs, Domain::Ground, public_map);
     artillery_staging_candidates(obs, home, target, public_map)
         .into_iter()
         .find(|candidate| {
@@ -7548,14 +7630,18 @@ fn connected_suppression_roster_has_firing_assignments(
         .collect();
     !origins.is_empty()
         && targets.iter().all(|target| {
-            suppression_firing_assignment(
-                obs,
-                route.intel,
-                &origins,
-                *target,
-                route.public_map,
-                route.orientation,
-            )
+            if let Some(cached) = route.suppression_routes {
+                cached.assignment(&origins, *target)
+            } else {
+                suppression_firing_assignment(
+                    obs,
+                    route.intel,
+                    &origins,
+                    *target,
+                    route.public_map,
+                    route.orientation,
+                )
+            }
             .is_some()
         })
 }
@@ -7907,6 +7993,7 @@ mod tests {
                 target,
                 &[],
                 ConnectedRouteContext {
+                    suppression_routes: None,
                     unavailable_paid: &[],
                     intel: intelligence,
                     home: HOME,
@@ -8099,6 +8186,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
@@ -8115,6 +8203,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: None,
                 resources: &resources,
@@ -10440,6 +10529,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
@@ -10456,6 +10546,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: None,
                 resources: &resources,
@@ -10946,6 +11037,7 @@ mod tests {
         let orientation = Orientation::for_home(&observation, home);
         let intelligence = knowledge(&observation);
         let route = ConnectedRouteContext {
+            suppression_routes: None,
             unavailable_paid: &[],
             intel: &intelligence,
             home,
@@ -10993,6 +11085,133 @@ mod tests {
             ),
             "individual center reachability cannot admit a spread slot in another component"
         );
+    }
+
+    #[test]
+    fn suppression_batch_preserves_assignments_and_reuses_mixed_roster_queries() {
+        let mut observation = obs(300);
+        observation.enemy_buildings = vec![building(
+            81,
+            1,
+            BuildingKind::FlakTurret,
+            TilePos::new(15, 7),
+            true,
+        )];
+        let target = Target::Building(BuildingId(81));
+        let origins = [
+            SuppressionOrigin {
+                tile: TilePos::new(2, 7),
+                kind: UnitKind::Bombard,
+            },
+            SuppressionOrigin {
+                tile: TilePos::new(2, 7),
+                kind: UnitKind::Avalanche,
+            },
+            SuppressionOrigin {
+                tile: TilePos::new(3, 7),
+                kind: UnitKind::Bombard,
+            },
+        ];
+        for blocked in [false, true] {
+            let terrain: Vec<_> = if blocked {
+                (0..observation.map_height)
+                    .flat_map(|y| {
+                        (0..observation.map_width).map(move |x| (TilePos::new(x, y), Terrain::Pit))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let map = public_map_with_terrain(&observation, terrain);
+            let intel = knowledge(&observation);
+            let cached =
+                SuppressionRoutes::new(&observation, &intel, Some(&map), test_orientation());
+            for roster in [
+                vec![],
+                vec![origins[0]],
+                vec![origins[0]; 4],
+                vec![origins[0], origins[1], origins[0], origins[1]],
+                origins.to_vec(),
+            ] {
+                let expected = suppression_firing_assignment(
+                    &observation,
+                    &intel,
+                    &roster,
+                    target,
+                    Some(&map),
+                    test_orientation(),
+                );
+                assert_eq!(cached.assignment(&roster, target), expected);
+                for origin in &roster {
+                    let mut routes = route_projection_with_orientation(
+                        &observation,
+                        Domain::Ground,
+                        Some(&map),
+                        test_orientation(),
+                    );
+                    assert_eq!(
+                        cached.reaches(*origin, target),
+                        suppression_targets_reachable(
+                            &mut routes,
+                            &observation,
+                            *origin,
+                            &[target],
+                            &intel,
+                            Some(&map)
+                        )
+                    );
+                }
+                let cold_queries = cached.evaluated_queries();
+                let (_, warm) = crate::bot::navigation::work::measure(|| {
+                    for _ in 0..20 {
+                        assert_eq!(cached.assignment(&roster, target), expected);
+                    }
+                });
+                assert_eq!(cached.evaluated_queries(), cold_queries);
+                assert_eq!(warm.searches, 0);
+            }
+            assert_eq!(cached.evaluated_queries(), origins.len());
+        }
+    }
+
+    #[test]
+    fn excluded_live_providers_require_no_route_work() {
+        let observation = obs(300);
+        let intel = knowledge(&observation);
+        let unavailable: Vec<_> = observation
+            .my_units
+            .iter()
+            .rev()
+            .map(|unit| unit.id)
+            .collect();
+        let mut expected = unavailable.clone();
+        expected.sort_unstable();
+        let ((actual, repeated), work) = crate::bot::navigation::work::measure(|| {
+            let route = ConnectedRouteContext {
+                suppression_routes: None,
+                unavailable_paid: &[],
+                intel: &intel,
+                home: HOME,
+                target: TilePos::new(15, 7),
+                public_map: None,
+                orientation: test_orientation(),
+            };
+            let targets = ConnectedTargetSelection {
+                target_anchors: vec![],
+                suppression_targets: vec![],
+                growth_order: vec![],
+            };
+            let actual =
+                connected_provider_unavailable(&observation, &targets, &unavailable, route);
+            let mut duplicates = unavailable.clone();
+            duplicates.extend_from_slice(&unavailable);
+            let repeated =
+                connected_provider_unavailable(&observation, &targets, &duplicates, route);
+            (actual, repeated)
+        });
+        assert_eq!(actual, expected);
+        assert_eq!(repeated, expected);
+        assert_eq!(work.searches, 0);
     }
 
     #[test]
@@ -11075,17 +11294,16 @@ mod tests {
             test_orientation(),
         )
         .expect("two connected legal firing tiles admit both providers");
-        assert_eq!(assigned.len(), 2);
-        assert_ne!(assigned[0], assigned[1]);
+        assert_eq!(assigned, vec![second_stand, first_stand]);
         assert!(assigned.iter().all(|stand| {
-            let mut routes = route_projection_with_orientation(
+            let routes = route_projection_with_orientation(
                 &observation,
                 Domain::Ground,
                 Some(&two_stand_map),
                 test_orientation(),
             );
             suppression_firing_stands(
-                &mut routes,
+                &routes,
                 &observation,
                 origins[0],
                 target,
@@ -11198,6 +11416,7 @@ mod tests {
         let orientation = Orientation::for_home(&observation, home);
         let intelligence = knowledge(&observation);
         let route = ConnectedRouteContext {
+            suppression_routes: None,
             unavailable_paid: &[],
             intel: &intelligence,
             home,
@@ -11883,6 +12102,7 @@ mod tests {
             initial_target,
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
@@ -11907,6 +12127,7 @@ mod tests {
             &[],
             &initial_resources.targets,
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
@@ -11915,6 +12136,7 @@ mod tests {
                 orientation: test_orientation(),
             },
             ConnectedPlanningContext {
+                suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: None,
                 resources: &initial_resources,
@@ -13217,7 +13439,7 @@ mod tests {
         let staging =
             connected_artillery_staging_goal(&observation, home, target, Some(&public_map))
                 .expect("the Foundry-side staging tile is in the same component");
-        let mut projected = route_projection_with_orientation(
+        let projected = route_projection_with_orientation(
             &observation,
             Domain::Ground,
             Some(&public_map),
@@ -13237,6 +13459,7 @@ mod tests {
             &targets,
             &resources,
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intelligence,
                 home,
@@ -13270,7 +13493,7 @@ mod tests {
         let staging =
             connected_artillery_staging_goal(&observation, home, target, Some(&public_map))
                 .expect("the Foundry-side staging tile is in the same component");
-        let mut routes = route_projection_with_orientation(
+        let routes = route_projection_with_orientation(
             &observation,
             Domain::Ground,
             Some(&public_map),
@@ -13294,6 +13517,7 @@ mod tests {
             },
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intelligence,
                 home,
@@ -13386,6 +13610,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intelligence,
                 home,
@@ -13422,14 +13647,14 @@ mod tests {
             tile: TilePos::new(255, 84),
             kind: UnitKind::Bombard,
         };
-        let mut local_routes = route_projection_with_orientation(
+        let local_routes = route_projection_with_orientation(
             &observation,
             Domain::Ground,
             Some(&public_map),
             test_orientation(),
         );
         let stand = suppression_firing_stands(
-            &mut local_routes,
+            &local_routes,
             &observation,
             local_origin,
             target,
@@ -13442,7 +13667,7 @@ mod tests {
             tile: TilePos::new(255, 255),
             kind: UnitKind::Bombard,
         };
-        let mut component_routes = route_projection_with_orientation(
+        let component_routes = route_projection_with_orientation(
             &observation,
             Domain::Ground,
             Some(&public_map),
@@ -13456,7 +13681,7 @@ mod tests {
             !component_routes.ground_command_reaches(remote_origin.tile, stand),
             "the authoritative ground command exhausts its bounded search"
         );
-        let mut actual_routes = route_projection_with_orientation(
+        let actual_routes = route_projection_with_orientation(
             &observation,
             Domain::Ground,
             Some(&public_map),
@@ -13464,7 +13689,7 @@ mod tests {
         );
         assert_eq!(
             suppression_firing_stands(
-                &mut actual_routes,
+                &actual_routes,
                 &observation,
                 remote_origin,
                 target,
@@ -13540,6 +13765,7 @@ mod tests {
             &target,
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
@@ -13556,6 +13782,7 @@ mod tests {
             &target,
             &[],
             ConnectedPlanningContext {
+                suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: None,
                 resources: &connected_resources,
@@ -13640,6 +13867,7 @@ mod tests {
             .find(|contact| contact.anchor == TARGET)
             .expect("current target");
         let optimistic_route = ConnectedRouteContext {
+            suppression_routes: None,
             unavailable_paid: &[],
             intel: &intelligence,
             home: HOME,
@@ -13648,6 +13876,7 @@ mod tests {
             orientation: test_orientation(),
         };
         let public_route = ConnectedRouteContext {
+            suppression_routes: None,
             unavailable_paid: &[],
             public_map: Some(&public_map),
             ..optimistic_route
@@ -13738,6 +13967,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
@@ -13755,6 +13985,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
@@ -13770,6 +14001,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
@@ -13786,6 +14018,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: Some(&peak_map),
                 resources: &peak_resources,
@@ -13918,7 +14151,7 @@ mod tests {
         let intelligence = knowledge(&battle);
         let target = Target::Building(BuildingId(81));
 
-        let mut bombard_routes = route_projection_with_orientation(
+        let bombard_routes = route_projection_with_orientation(
             &battle,
             Domain::Ground,
             Some(&public_map),
@@ -13926,7 +14159,7 @@ mod tests {
         );
         assert_eq!(
             suppression_firing_stands(
-                &mut bombard_routes,
+                &bombard_routes,
                 &battle,
                 SuppressionOrigin {
                     tile: origin,
@@ -13941,7 +14174,7 @@ mod tests {
             "Bombard may fire over the surrounding Pit"
         );
 
-        let mut avalanche_routes = route_projection_with_orientation(
+        let avalanche_routes = route_projection_with_orientation(
             &battle,
             Domain::Ground,
             Some(&public_map),
@@ -13949,7 +14182,7 @@ mod tests {
         );
         assert_eq!(
             suppression_firing_stands(
-                &mut avalanche_routes,
+                &avalanche_routes,
                 &battle,
                 SuppressionOrigin {
                     tile: origin,
@@ -13987,6 +14220,7 @@ mod tests {
             .find(|contact| contact.anchor == primary)
             .expect("current primary target");
         let route = ConnectedRouteContext {
+            suppression_routes: None,
             unavailable_paid: &[],
             intel: &intelligence,
             home: HOME,
@@ -14047,6 +14281,7 @@ mod tests {
             .find(|contact| contact.anchor == primary)
             .expect("current primary target");
         let route = ConnectedRouteContext {
+            suppression_routes: None,
             unavailable_paid: &[],
             intel: &intelligence,
             home: HOME,
@@ -14069,6 +14304,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: Some(&public_map),
                 resources: &open_resources,
@@ -14098,6 +14334,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: Some(&public_map),
                 resources: &resources,
@@ -14167,6 +14404,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intelligence,
                 home: HOME,
@@ -14192,6 +14430,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                suppression_routes: None,
                 orientation: test_orientation(),
                 public_map: Some(&public_map),
                 resources: &resources,
@@ -18095,10 +18334,10 @@ mod tests {
                     _ => None,
                 })
                 .expect("artillery positions before attacking mobile AA");
-            let mut routes = route_projection(&battle, Domain::Ground, None);
+            let routes = route_projection(&battle, Domain::Ground, None);
             assert!(
                 suppression_firing_stands(
-                    &mut routes,
+                    &routes,
                     &battle,
                     SuppressionOrigin {
                         tile: battle.my_units[1].tile,
@@ -18142,10 +18381,10 @@ mod tests {
                     _ => None,
                 })
                 .expect("artillery positions before attacking landed AA");
-            let mut routes = route_projection(&battle, Domain::Ground, None);
+            let routes = route_projection(&battle, Domain::Ground, None);
             assert!(
                 suppression_firing_stands(
-                    &mut routes,
+                    &routes,
                     &battle,
                     SuppressionOrigin {
                         tile: battle.my_units[1].tile,
@@ -18247,10 +18486,10 @@ mod tests {
                     _ => None,
                 })
                 .unwrap_or_else(|| panic!("{phase:?}: {decision:?}"));
-            let mut routes = route_projection(&battle, Domain::Ground, None);
+            let routes = route_projection(&battle, Domain::Ground, None);
             assert!(
                 suppression_firing_stands(
-                    &mut routes,
+                    &routes,
                     &battle,
                     SuppressionOrigin {
                         tile: battle.my_units[1].tile,
@@ -18306,6 +18545,7 @@ mod tests {
             target,
             &[],
             ConnectedRouteContext {
+                suppression_routes: None,
                 unavailable_paid: &[],
                 intel: &intel,
                 home: HOME,

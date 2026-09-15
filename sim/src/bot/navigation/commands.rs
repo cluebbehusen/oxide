@@ -1,17 +1,19 @@
 //! Fog-honest projection of movement-command routing.
 
-use super::PublicMapBriefing;
-use super::observation::{BuildingObs, Observation, UnitObs};
-use super::orient::Orientation;
+use crate::bot::PublicMapBriefing;
+use crate::bot::observation::{BuildingObs, Observation, UnitObs};
+use crate::bot::orient::Orientation;
 use crate::ids::UnitId;
 use crate::stats::{Domain, GOAL_SNAP_RADIUS};
 use chassis::grid::TilePos;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+
+type SafeRouteCosts = BTreeMap<(TilePos, TilePos, bool), Option<u32>>;
 
 /// Lazily labeled connected components for one movement domain. The first
 /// query from a component floods it once; later units and candidate goals use
 /// constant-time membership checks instead of repeating a map-sized search.
-pub(super) struct RouteProjection<'a> {
+pub(in crate::bot) struct RouteProjection<'a> {
     obs: &'a Observation,
     public_map: Option<&'a PublicMapBriefing>,
     /// The transform from the policy's oriented coordinates back into the
@@ -19,12 +21,14 @@ pub(super) struct RouteProjection<'a> {
     /// then map candidates back before consulting this projection.
     command_orientation: Option<Orientation>,
     domain: Domain,
+    safe_costs: std::cell::RefCell<SafeRouteCosts>,
+    safe_paths: std::cell::RefCell<BTreeMap<(TilePos, TilePos), bool>>,
     require_explored: bool,
     blocked_ground_rect: Option<(TilePos, (i32, i32))>,
     blocked_tiles: Vec<bool>,
     has_blocked_tiles: bool,
-    labels: Vec<u32>,
-    next_label: u32,
+    labels: std::cell::RefCell<Vec<u32>>,
+    next_label: std::cell::Cell<u32>,
     /// Per-tile memo of the domain passability predicate: 0 unqueried,
     /// 1 open, 2 closed. Known ground obstructions seed the memo once,
     /// avoiding repeated entity searches during component floods.
@@ -36,7 +40,7 @@ pub(super) struct RouteProjection<'a> {
 }
 
 impl<'a> RouteProjection<'a> {
-    pub(super) fn new(obs: &'a Observation, domain: Domain) -> Self {
+    pub(in crate::bot) fn new(obs: &'a Observation, domain: Domain) -> Self {
         let cells = usize::try_from(obs.map_width)
             .ok()
             .and_then(|width| {
@@ -80,19 +84,21 @@ impl<'a> RouteProjection<'a> {
             public_map: None,
             command_orientation: None,
             domain,
+            safe_costs: Default::default(),
+            safe_paths: Default::default(),
             require_explored: false,
             blocked_ground_rect: None,
             blocked_tiles: vec![false; cells],
             has_blocked_tiles: false,
-            labels: vec![0; cells],
-            next_label: 1,
+            labels: std::cell::RefCell::new(vec![0; cells]),
+            next_label: std::cell::Cell::new(1),
             open_memo: std::cell::RefCell::new(open_memo),
         }
     }
 
     /// Movement projected against both current dynamic knowledge and the
     /// immutable terrain shown before the match began.
-    pub(super) fn with_public_terrain(
+    pub(in crate::bot) fn with_public_terrain(
         obs: &'a Observation,
         domain: Domain,
         public_map: &'a PublicMapBriefing,
@@ -104,7 +110,7 @@ impl<'a> RouteProjection<'a> {
 
     /// Movement projected in policy coordinates while reproducing group
     /// command tie-breaks in the authoritative world frame.
-    pub(super) fn with_orientation(
+    pub(in crate::bot) fn with_orientation(
         obs: &'a Observation,
         domain: Domain,
         orientation: Orientation,
@@ -115,7 +121,7 @@ impl<'a> RouteProjection<'a> {
     }
 
     /// Public-terrain movement with authoritative group-command tie-breaks.
-    pub(super) fn with_public_terrain_and_orientation(
+    pub(in crate::bot) fn with_public_terrain_and_orientation(
         obs: &'a Observation,
         domain: Domain,
         public_map: &'a PublicMapBriefing,
@@ -129,7 +135,7 @@ impl<'a> RouteProjection<'a> {
     /// Ground routes whose complete traversable path is already explored.
     /// This is stricter than the default optimistic projection and is used
     /// when a ground unit must not chase a unit ferried onto another island.
-    pub(super) fn known_ground(obs: &'a Observation) -> Self {
+    pub(in crate::bot) fn known_ground(obs: &'a Observation) -> Self {
         let mut projection = Self::new(obs, Domain::Ground);
         projection.require_explored = true;
         projection
@@ -139,7 +145,7 @@ impl<'a> RouteProjection<'a> {
     /// blocking terrain — the founder-selection question, where checking the
     /// current route to the anchor is insufficient when the builder is
     /// standing in, or must cross, the tiles the new site will claim.
-    pub(super) fn ground_excluding_footprint(
+    pub(in crate::bot) fn ground_excluding_footprint(
         obs: &'a Observation,
         anchor: TilePos,
         size: (i32, i32),
@@ -152,7 +158,7 @@ impl<'a> RouteProjection<'a> {
     /// Ground routes that refuse every tile selected by `blocked`. This is
     /// used for work assignments whose endpoints may both be safe while the
     /// only path between them crosses a remembered kill zone.
-    pub(super) fn ground_avoiding(
+    pub(in crate::bot) fn ground_avoiding(
         obs: &'a Observation,
         blocked: impl FnMut(TilePos) -> bool,
     ) -> Self {
@@ -177,7 +183,7 @@ impl<'a> RouteProjection<'a> {
         projection
     }
 
-    pub(super) fn ground_avoiding_with_public_terrain(
+    pub(in crate::bot) fn ground_avoiding_with_public_terrain(
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
         orientation: Orientation,
@@ -186,7 +192,7 @@ impl<'a> RouteProjection<'a> {
         Self::avoiding_with_public_terrain(obs, Domain::Ground, briefing, orientation, blocked)
     }
 
-    pub(super) fn avoiding_with_public_terrain(
+    pub(in crate::bot) fn avoiding_with_public_terrain(
         obs: &'a Observation,
         domain: Domain,
         briefing: &'a PublicMapBriefing,
@@ -199,7 +205,7 @@ impl<'a> RouteProjection<'a> {
         projection
     }
 
-    pub(super) fn unit_reaches(&mut self, unit: &UnitObs, goal: TilePos) -> bool {
+    pub(in crate::bot) fn unit_reaches(&mut self, unit: &UnitObs, goal: TilePos) -> bool {
         unit.kind.stats().domain == self.domain && self.reaches(unit.tile, goal)
     }
 
@@ -207,7 +213,7 @@ impl<'a> RouteProjection<'a> {
     /// blocked tile. Pair this with [`Self::reaches`] so endpoints also share
     /// a danger-free component. The corridor check prevents ordinary movement
     /// from choosing a shorter route straight through a remembered kill zone.
-    pub(super) fn direct_line_avoids_blocked(&self, from: TilePos, to: TilePos) -> bool {
+    pub(in crate::bot) fn direct_line_avoids_blocked(&self, from: TilePos, to: TilePos) -> bool {
         !chassis::path::line_blocked(from.center(), to.center(), |tile| {
             !in_bounds(self.obs, tile) || !self.blocked_tiles[self.index(tile)]
         })
@@ -218,10 +224,25 @@ impl<'a> RouteProjection<'a> {
     /// connectivity and a clear direct danger corridor. A map with no blocked
     /// tiles needs no search; otherwise reproduce the simulation's A* path
     /// because even unobstructed terrain can have several equally short routes.
-    pub(super) fn command_path_avoids_blocked(&self, from: TilePos, to: TilePos) -> bool {
+    pub(in crate::bot) fn command_path_avoids_blocked(&self, from: TilePos, to: TilePos) -> bool {
         if !self.has_blocked_tiles {
             return true;
         }
+        let key = (from, to);
+        if let Some(safe) = self.safe_paths.borrow().get(&key) {
+            return *safe;
+        }
+        let safe = self.uncached_command_path_avoids_blocked(from, to);
+        let mut retained = self.safe_paths.borrow_mut();
+        const MAX_RETAINED_PATHS: usize = 4096;
+        if retained.len() == MAX_RETAINED_PATHS {
+            retained.pop_first();
+        }
+        retained.insert(key, safe);
+        safe
+    }
+
+    fn uncached_command_path_avoids_blocked(&self, from: TilePos, to: TilePos) -> bool {
         if !in_bounds(self.obs, from) || !domain_open(self.obs, self.domain, to) {
             return false;
         }
@@ -229,7 +250,7 @@ impl<'a> RouteProjection<'a> {
             self.command_orientation
                 .map_or(tile, |orientation| orientation.tile(tile))
         };
-        chassis::path::astar(
+        crate::bot::navigation::search::canonical_path(
             self.obs.map_width,
             self.obs.map_height,
             transform(from),
@@ -238,19 +259,33 @@ impl<'a> RouteProjection<'a> {
                 let tile = transform(tile);
                 self.domain_open_memo(tile) && (!self.require_explored || self.obs.explored(tile))
             },
-            crate::stats::PATH_EXPANSION_CAP,
         )
         .is_some_and(|path| path.into_iter().all(|tile| self.open(transform(tile))))
     }
 
     /// Exact ordinary-command travel cost, optionally escaping an initial danger
     /// region. A recall may leave danger, but cannot cross another danger region.
-    pub(super) fn safe_command_route_cost(
+    pub(in crate::bot) fn safe_command_route_cost(
         &self,
         from: TilePos,
         to: TilePos,
         escape: bool,
     ) -> Option<u32> {
+        let key = (from, to, escape);
+        if let Some(cost) = self.safe_costs.borrow().get(&key) {
+            return *cost;
+        }
+        let cost = self.uncached_safe_route_cost(from, to, escape);
+        let mut retained = self.safe_costs.borrow_mut();
+        const MAX_RETAINED_COSTS: usize = 4096;
+        if retained.len() == MAX_RETAINED_COSTS {
+            retained.pop_first();
+        }
+        retained.insert(key, cost);
+        cost
+    }
+
+    fn uncached_safe_route_cost(&self, from: TilePos, to: TilePos, escape: bool) -> Option<u32> {
         if !in_bounds(self.obs, from) || !self.open(to) || (!escape && !self.open(from)) {
             return None;
         }
@@ -277,7 +312,7 @@ impl<'a> RouteProjection<'a> {
     }
 
     /// Ordinary path in the caller's coordinate frame, without a danger overlay.
-    pub(super) fn command_route(&self, from: TilePos, to: TilePos) -> Option<Vec<TilePos>> {
+    pub(in crate::bot) fn command_route(&self, from: TilePos, to: TilePos) -> Option<Vec<TilePos>> {
         if !in_bounds(self.obs, from) || !self.domain_open_memo(to) {
             return None;
         }
@@ -285,7 +320,7 @@ impl<'a> RouteProjection<'a> {
             self.command_orientation
                 .map_or(tile, |orientation| orientation.tile(tile))
         };
-        let path = chassis::path::astar(
+        let path = crate::bot::navigation::search::canonical_path(
             self.obs.map_width,
             self.obs.map_height,
             transform(from),
@@ -294,14 +329,13 @@ impl<'a> RouteProjection<'a> {
                 let tile = transform(tile);
                 self.domain_open_memo(tile) && (!self.require_explored || self.obs.explored(tile))
             },
-            crate::stats::PATH_EXPANSION_CAP,
         )?;
         Some(path.into_iter().map(transform).collect())
     }
 
     /// Conservative exact approach for a not-yet-produced group. Both ordinary
     /// spread orders must be serviceable before membership fixes their order.
-    pub(super) fn prospective_group_route_cost(
+    pub(in crate::bot) fn prospective_group_route_cost(
         &self,
         from: TilePos,
         goal: TilePos,
@@ -328,7 +362,11 @@ impl<'a> RouteProjection<'a> {
         Some(longest)
     }
 
-    pub(super) fn group_reaches_command_goal(&mut self, units: &[UnitId], goal: TilePos) -> bool {
+    pub(in crate::bot) fn group_reaches_command_goal(
+        &mut self,
+        units: &[UnitId],
+        goal: TilePos,
+    ) -> bool {
         let members = canonical_members(self.obs, units);
         if members.is_empty()
             || members
@@ -363,7 +401,7 @@ impl<'a> RouteProjection<'a> {
     /// from one known source component. Before exact members exist, their
     /// approach cannot determine the authoritative forward/reverse scan, so
     /// admission must prove both deterministic spread orders.
-    pub(super) fn all_command_spreads_reachable_from(
+    pub(in crate::bot) fn all_command_spreads_reachable_from(
         &mut self,
         from: TilePos,
         goal: TilePos,
@@ -390,7 +428,11 @@ impl<'a> RouteProjection<'a> {
         })
     }
 
-    pub(super) fn reaches(&mut self, from: TilePos, to: TilePos) -> bool {
+    pub(in crate::bot) fn reaches(&self, from: TilePos, to: TilePos) -> bool {
+        self.connected(from, to)
+    }
+
+    fn connected(&self, from: TilePos, to: TilePos) -> bool {
         if !in_bounds(self.obs, from) || !self.open(to) {
             return false;
         }
@@ -411,37 +453,54 @@ impl<'a> RouteProjection<'a> {
 
     /// Whether an ordinary ground movement command can complete the projected
     /// route without exceeding the simulation's bounded A* search.
-    pub(super) fn ground_command_reaches(&self, from: TilePos, to: TilePos) -> bool {
+    pub(in crate::bot) fn ground_command_reaches(&self, from: TilePos, to: TilePos) -> bool {
         if self.domain != Domain::Ground || !in_bounds(self.obs, from) || !self.open(to) {
             return false;
         }
-        chassis::path::astar(
+        // A* uses a consistent octile heuristic, so each cell is expanded at
+        // most once. Below the cap, cardinal connectivity has the same verdict
+        // as its no-corner-cut search without repeating a search for each goal.
+        if self.labels.borrow().len() <= crate::stats::PATH_EXPANSION_CAP as usize {
+            return self.reaches(from, to);
+        }
+        crate::bot::navigation::search::canonical_path(
             self.obs.map_width,
             self.obs.map_height,
             from,
             to,
             |tile| self.open(tile),
-            crate::stats::PATH_EXPANSION_CAP,
         )
         .is_some()
     }
 
-    fn label(&mut self, tile: TilePos) -> Option<u32> {
-        if !self.open(tile) || self.labels.is_empty() {
+    fn label(&self, tile: TilePos) -> Option<u32> {
+        let mut labels = self.labels.borrow_mut();
+        if !self.open(tile) || labels.is_empty() {
             return None;
         }
         let index = self.index(tile);
-        if self.labels[index] != 0 {
-            return Some(self.labels[index]);
+        if labels[index] != 0 {
+            return Some(labels[index]);
         }
-        let label = self.next_label;
-        self.next_label = self
-            .next_label
-            .checked_add(1)
-            .expect("map has fewer components than u32 labels");
+        #[cfg(test)]
+        super::work::record(|work| {
+            work.components += 1;
+            work.searches += 1;
+        });
+        let label = self.next_label.get();
+        self.next_label.set(
+            label
+                .checked_add(1)
+                .expect("map has fewer components than u32 labels"),
+        );
         let mut open = VecDeque::from([tile]);
-        self.labels[index] = label;
+        labels[index] = label;
         while let Some(current) = open.pop_front() {
+            #[cfg(test)]
+            super::work::record(|work| {
+                work.expanded += 1;
+            });
+
             // Cardinal connectivity is sufficient even though simulation A*
             // also walks diagonally: no-corner-cut diagonals require both
             // cardinal companions, so they never join two cardinal components.
@@ -451,8 +510,8 @@ impl<'a> RouteProjection<'a> {
                     continue;
                 }
                 let next_index = self.index(next);
-                if self.labels[next_index] == 0 {
-                    self.labels[next_index] = label;
+                if labels[next_index] == 0 {
+                    labels[next_index] = label;
                     open.push_back(next);
                 }
             }
@@ -506,7 +565,7 @@ impl<'a> RouteProjection<'a> {
 /// anchor is insufficient when the builder is standing in, or must cross,
 /// the tiles the new site will claim.
 #[cfg(test)]
-pub(super) fn unit_reaches_build_site(
+pub(in crate::bot) fn unit_reaches_build_site(
     obs: &Observation,
     unit: &UnitObs,
     anchor: TilePos,
@@ -521,7 +580,7 @@ pub(super) fn unit_reaches_build_site(
 /// and `size`. Candidate-builder scans ask this once per unit, and the
 /// component labeling is a function of the observation and footprint
 /// alone, so one projection serves the whole scan.
-pub(super) fn unit_reaches_build_site_via(
+pub(in crate::bot) fn unit_reaches_build_site_via(
     routes: &mut RouteProjection<'_>,
     unit: &UnitObs,
     anchor: TilePos,
@@ -547,13 +606,13 @@ pub(super) fn unit_reaches_build_site_via(
 /// is insufficient when the simulation will choose a shorter route through a
 /// remembered kill zone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct BuildCommandTarget {
-    pub(super) anchor: TilePos,
-    pub(super) size: (i32, i32),
-    pub(super) defer: bool,
+pub(in crate::bot) struct BuildCommandTarget {
+    pub(in crate::bot) anchor: TilePos,
+    pub(in crate::bot) size: (i32, i32),
+    pub(in crate::bot) defer: bool,
 }
 
-pub(super) fn build_command_path_avoids(
+pub(in crate::bot) fn build_command_path_avoids(
     obs: &Observation,
     unit: &UnitObs,
     anchor: TilePos,
@@ -582,7 +641,7 @@ pub(super) fn build_command_path_avoids(
 /// a player-facing bot receives the complete terrain map before play. Dynamic
 /// blockers still come exclusively from `obs`; starting resources and
 /// Foundries remain priors rather than live obstacles.
-pub(super) fn build_command_path_avoids_with_public_terrain(
+pub(in crate::bot) fn build_command_path_avoids_with_public_terrain(
     obs: &Observation,
     briefing: &PublicMapBriefing,
     unit: &UnitObs,
@@ -607,7 +666,7 @@ pub(super) fn build_command_path_avoids_with_public_terrain(
 
 /// The exact Build-command route with authored terrain, ranking doorsteps in
 /// the authoritative world frame while pathfinding in policy coordinates.
-pub(super) fn build_command_path_avoids_with_public_terrain_and_orientation(
+pub(in crate::bot) fn build_command_path_avoids_with_public_terrain_and_orientation(
     obs: &Observation,
     briefing: &PublicMapBriefing,
     unit: &UnitObs,
@@ -639,7 +698,7 @@ fn build_command_path_avoids_with_public_terrain_projected(
 
 /// The exact Build-command route with authored terrain and additional frozen
 /// footprints, ranking doorsteps in the authoritative world frame.
-pub(super) fn build_command_path_avoids_with_public_terrain_and_blockers_and_orientation(
+pub(in crate::bot) fn build_command_path_avoids_with_public_terrain_and_blockers_and_orientation(
     obs: &Observation,
     briefing: &PublicMapBriefing,
     unit: &UnitObs,
@@ -696,16 +755,19 @@ struct CachedBuildRoute {
 
 /// Indexed passability and reusable search storage for exact Build routes in
 /// one immutable observation. Candidate footprints stay query-local.
-pub(super) struct BuildRouteProjection<'a> {
+pub(in crate::bot) struct BuildRouteProjection<'a> {
     routes: RouteProjection<'a>,
-    scratch: std::cell::RefCell<chassis::path::AstarScratch>,
+    scratch: std::cell::RefCell<crate::bot::navigation::search::Search>,
     last_path: std::cell::RefCell<Option<CachedBuildRoute>>,
     #[cfg(test)]
     searches: std::cell::Cell<usize>,
 }
 
 impl<'a> BuildRouteProjection<'a> {
-    pub(super) fn new(obs: &'a Observation, briefing: Option<&'a PublicMapBriefing>) -> Self {
+    pub(in crate::bot) fn new(
+        obs: &'a Observation,
+        briefing: Option<&'a PublicMapBriefing>,
+    ) -> Self {
         Self {
             routes: briefing.map_or_else(
                 || RouteProjection::new(obs, Domain::Ground),
@@ -727,12 +789,20 @@ impl<'a> BuildRouteProjection<'a> {
     ) -> Option<Vec<TilePos>> {
         #[cfg(test)]
         self.searches.set(self.searches.get() + 1);
+        let routes = &self.routes;
+        // Footprints and additional blockers only remove edges. A disconnected
+        // base doorstep cannot become reachable in a candidate layout.
+        if !crate::tick::rect_adjacent_tiles(target.anchor, target.size)
+            .any(|goal| routes.connected(unit.tile, goal))
+        {
+            return None;
+        }
         selected_build_command_path_with_open(
-            self.routes.obs,
+            routes.obs,
             unit,
             target,
             orientation,
-            |tile| self.routes.open(tile) && !additional_blocked(tile),
+            |tile| routes.open(tile) && !additional_blocked(tile),
             &mut self.scratch.borrow_mut(),
         )
     }
@@ -767,7 +837,7 @@ impl<'a> BuildRouteProjection<'a> {
         path
     }
 
-    pub(super) fn cost(
+    pub(in crate::bot) fn cost(
         &self,
         unit: &UnitObs,
         target: BuildCommandTarget,
@@ -777,7 +847,7 @@ impl<'a> BuildRouteProjection<'a> {
             .map(|path| path_cost_from(unit.tile, &path))
     }
 
-    pub(super) fn avoids(
+    pub(in crate::bot) fn avoids(
         &self,
         unit: &UnitObs,
         target: BuildCommandTarget,
@@ -806,7 +876,7 @@ fn selected_build_command_path_with_open(
     target: BuildCommandTarget,
     orientation: Option<Orientation>,
     base_open: impl Fn(TilePos) -> bool,
-    scratch: &mut chassis::path::AstarScratch,
+    scratch: &mut crate::bot::navigation::search::Search,
 ) -> Option<Vec<TilePos>> {
     if unit.kind.stats().domain != Domain::Ground || !in_bounds(obs, unit.tile) {
         return None;
@@ -871,15 +941,7 @@ fn selected_build_command_path_with_open(
         candidates[..near].rotate_left(rank % near);
     }
     for goal in candidates {
-        let Some(path) = chassis::path::astar_with_scratch(
-            obs.map_width,
-            obs.map_height,
-            unit.tile,
-            goal,
-            &open,
-            crate::stats::PATH_EXPANSION_CAP,
-            scratch,
-        ) else {
+        let Some(path) = scratch.path(obs.map_width, obs.map_height, unit.tile, goal, open) else {
             continue;
         };
         return Some(path);
@@ -902,7 +964,7 @@ fn path_cost_from(start: TilePos, path: &[TilePos]) -> u32 {
 
 /// First fixed-size subgroup, in candidate preference order, whose exact
 /// command spread remains reachable. Returned ids are canonical for lowering.
-pub(super) fn first_reachable_group(
+pub(in crate::bot) fn first_reachable_group(
     routes: &mut RouteProjection<'_>,
     candidates: &[UnitId],
     size: usize,
@@ -914,7 +976,7 @@ pub(super) fn first_reachable_group(
 /// First reachable fixed-size subgroup that also satisfies `accept`.
 /// Candidate preference remains the outer ordering, so rejecting one exact
 /// group continues the same deterministic combination search.
-pub(super) fn first_reachable_group_where(
+pub(in crate::bot) fn first_reachable_group_where(
     routes: &mut RouteProjection<'_>,
     candidates: &[UnitId],
     size: usize,
@@ -964,7 +1026,7 @@ pub(super) fn first_reachable_group_where(
 /// The largest canonical subset that can accept one mixed-domain Move or
 /// AttackMove. Removing a refused member changes later spread goals, so repeat
 /// until every remaining member reaches the goal it would actually receive.
-pub(super) fn routable_command_subset(
+pub(in crate::bot) fn routable_command_subset(
     obs: &Observation,
     units: &[UnitId],
     goal: TilePos,
@@ -974,7 +1036,7 @@ pub(super) fn routable_command_subset(
 
 /// The largest canonical subset that can accept one mixed-domain command when
 /// policy coordinates differ from the authoritative world frame.
-pub(super) fn routable_command_subset_with_orientation(
+pub(in crate::bot) fn routable_command_subset_with_orientation(
     obs: &Observation,
     units: &[UnitId],
     goal: TilePos,
@@ -986,7 +1048,7 @@ pub(super) fn routable_command_subset_with_orientation(
 /// The largest canonical subset that can accept one mixed-domain Move or
 /// AttackMove against public static terrain and observed dynamic blockers.
 #[cfg(test)]
-pub(super) fn routable_command_subset_with_public_terrain(
+pub(in crate::bot) fn routable_command_subset_with_public_terrain(
     obs: &Observation,
     public_map: &PublicMapBriefing,
     units: &[UnitId],
@@ -997,7 +1059,7 @@ pub(super) fn routable_command_subset_with_public_terrain(
 
 /// The largest canonical subset that can accept one mixed-domain command when
 /// policy coordinates differ from the authoritative world frame.
-pub(super) fn routable_command_subset_with_public_terrain_and_orientation(
+pub(in crate::bot) fn routable_command_subset_with_public_terrain_and_orientation(
     obs: &Observation,
     public_map: &PublicMapBriefing,
     units: &[UnitId],
@@ -1030,7 +1092,7 @@ fn routable_command_subset_projected_with_orientation(
     orientation: Option<Orientation>,
 ) -> Vec<UnitId> {
     let mut members = canonical_members(obs, units);
-    let mut ground = public_map.map_or_else(
+    let ground = public_map.map_or_else(
         || {
             orientation.map_or_else(
                 || RouteProjection::new(obs, Domain::Ground),
@@ -1051,7 +1113,7 @@ fn routable_command_subset_projected_with_orientation(
             )
         },
     );
-    let mut air = public_map.map_or_else(
+    let air = public_map.map_or_else(
         || {
             orientation.map_or_else(
                 || RouteProjection::new(obs, Domain::Air),
@@ -1119,7 +1181,7 @@ fn routable_command_subset_projected_with_orientation(
 /// Whether projected ground movement may enter a tile. Unexplored terrain is
 /// optimistically open; known static terrain, live or remembered scrap, and
 /// non-stealth building footprints remain closed.
-pub(super) fn ground_open(obs: &Observation, tile: TilePos) -> bool {
+pub(in crate::bot) fn ground_open(obs: &Observation, tile: TilePos) -> bool {
     in_bounds(obs, tile)
         && !obs.known_rock_at(tile)
         && !obs.known_scrap_at(tile)
@@ -1131,7 +1193,7 @@ pub(super) fn ground_open(obs: &Observation, tile: TilePos) -> bool {
 /// Producers are represented in policy coordinates, but the authoritative
 /// doorstep tie-break runs in the world's command frame. The selected tile is
 /// transformed back before route projection consults the oriented observation.
-pub(super) fn production_spawn_doorstep_for_open_tiles(
+pub(in crate::bot) fn production_spawn_doorstep_for_open_tiles(
     map_size: (i32, i32),
     policy_anchor: TilePos,
     size: (i32, i32),
@@ -1150,7 +1212,7 @@ pub(super) fn production_spawn_doorstep_for_open_tiles(
         .map(|(_, policy_tile)| policy_tile)
 }
 
-pub(super) fn production_spawn_doorstep(
+pub(in crate::bot) fn production_spawn_doorstep(
     obs: &Observation,
     producer: &BuildingObs,
     public_map: Option<&PublicMapBriefing>,
@@ -1171,7 +1233,7 @@ pub(super) fn production_spawn_doorstep(
 }
 
 /// The projected ground goals assigned by Move or AttackMove.
-pub(super) fn ground_command_goals(
+pub(in crate::bot) fn ground_command_goals(
     obs: &Observation,
     goal: TilePos,
     count: usize,
@@ -1400,6 +1462,18 @@ fn in_bounds(obs: &Observation, tile: TilePos) -> bool {
     (0..obs.map_width).contains(&tile.x) && (0..obs.map_height).contains(&tile.y)
 }
 
+pub(in crate::bot) fn air_production_spawn_tile(
+    producer: &crate::bot::observation::BuildingObs,
+    orientation: Option<Orientation>,
+) -> TilePos {
+    let size = producer.kind.tier_stats(producer.tier).size;
+    let world_anchor = orientation.map_or(producer.anchor, |orientation| {
+        orientation.anchor(producer.anchor, size)
+    });
+    let world_spawn = world_anchor.offset(size.0 / 2, size.1 / 2);
+    orientation.map_or(world_spawn, |orientation| orientation.tile(world_spawn))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1440,7 +1514,7 @@ mod tests {
                     obs.my_buildings.push(site);
                 }
                 assert_eq!(ground_open(&obs, tile), provisional);
-                let mut routes = RouteProjection::new(&obs, Domain::Ground);
+                let routes = RouteProjection::new(&obs, Domain::Ground);
                 assert_eq!(
                     routes.reaches(TilePos::new(2, 3), TilePos::new(9, 3)),
                     provisional
@@ -1544,7 +1618,7 @@ mod tests {
                                                 .is_some_and(|terrain| !terrain.blocks_ground())
                                             && !additional(tile)
                                     },
-                                    &mut chassis::path::AstarScratch::default(),
+                                    &mut crate::bot::navigation::search::Search::default(),
                                 );
                                 assert_eq!(
                                     routes.path(builder, target, orientation, additional),
@@ -1567,6 +1641,54 @@ mod tests {
                 routes.path(builder, target, None, |_| false).is_some()
             );
         }
+    }
+
+    #[test]
+    fn disconnected_build_candidates_share_one_connectivity_proof() {
+        let mut obs = observation();
+        obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(6, y)).collect();
+        let routes = BuildRouteProjection::new(&obs, None);
+        let builder = &obs.my_units[0];
+        let (_, work) = crate::bot::navigation::work::measure(|| {
+            for y in 1..6 {
+                for x in 8..11 {
+                    assert_eq!(
+                        routes.cost(
+                            builder,
+                            BuildCommandTarget {
+                                anchor: TilePos::new(x, y),
+                                size: (1, 1),
+                                defer: false,
+                            },
+                            None
+                        ),
+                        None
+                    );
+                }
+            }
+        });
+        assert!(
+            work.searches <= 2,
+            "candidate count must not multiply search: {work:?}"
+        );
+        assert!(
+            work.expanded <= (obs.map_width * obs.map_height) as usize,
+            "{work:?}"
+        );
+        assert_eq!(work.paths, 0);
+        obs.known_rock.clear();
+        let reopened = BuildRouteProjection::new(&obs, None);
+        let builder = &obs.my_units[0];
+        let target = BuildCommandTarget {
+            anchor: TilePos::new(9, 4),
+            size: (1, 1),
+            defer: false,
+        };
+        assert!(reopened.cost(builder, target, None).is_some());
+        assert_eq!(
+            reopened.path(builder, target, None, |tile| tile.x == 6),
+            None
+        );
     }
 
     #[test]
@@ -1672,6 +1794,39 @@ mod tests {
     }
 
     #[test]
+    fn safe_path_queries_reuse_directed_results_only_within_the_projection() {
+        let obs = observation();
+        let from = TilePos::new(2, 3);
+        let to = TilePos::new(9, 3);
+        for blocked in [TilePos::new(6, 3), TilePos::new(6, 0)] {
+            let routes = RouteProjection::ground_avoiding(&obs, |tile| tile == blocked);
+            let expected = routes.uncached_command_path_avoids_blocked(from, to);
+            assert_eq!(expected, blocked.y == 0);
+            let (actual, cold) = crate::bot::navigation::work::measure(|| {
+                routes.command_path_avoids_blocked(from, to)
+            });
+            assert_eq!(actual, expected);
+            assert_eq!(cold.searches, 1);
+            let (_, warm) = crate::bot::navigation::work::measure(|| {
+                for _ in 0..100 {
+                    assert_eq!(routes.command_path_avoids_blocked(from, to), expected);
+                }
+            });
+            assert_eq!(warm.searches, 0);
+            let (_, reverse) = crate::bot::navigation::work::measure(|| {
+                routes.command_path_avoids_blocked(to, from)
+            });
+            assert_eq!(reverse.searches, 1);
+            assert_eq!(routes.safe_paths.borrow().len(), 2);
+            for x in -4200..0 {
+                assert!(!routes.command_path_avoids_blocked(TilePos::new(x, 0), to));
+            }
+            assert_eq!(routes.safe_paths.borrow().len(), 4096);
+            assert_eq!(routes.command_path_avoids_blocked(from, to), expected);
+        }
+    }
+
+    #[test]
     fn air_projection_respects_public_peaks_and_a_shared_exposure_mask() {
         let obs = observation();
         let peaks = (0..obs.map_height)
@@ -1682,7 +1837,7 @@ mod tests {
         let orientation = Orientation::for_home(&obs, TilePos::new(2, 3));
         let from = TilePos::new(2, 4);
         let to = TilePos::new(9, 4);
-        let mut exposed = RouteProjection::avoiding_with_public_terrain(
+        let exposed = RouteProjection::avoiding_with_public_terrain(
             &obs,
             Domain::Air,
             &map,
@@ -1695,7 +1850,7 @@ mod tests {
         );
         assert!(!exposed.direct_line_avoids_blocked(from, to));
         assert!(!exposed.command_path_avoids_blocked(from, to));
-        let mut safe = RouteProjection::avoiding_with_public_terrain(
+        let safe = RouteProjection::avoiding_with_public_terrain(
             &obs,
             Domain::Air,
             &map,
@@ -2508,7 +2663,7 @@ mod tests {
             obs.visible.clear();
             obs.explored.clear();
 
-            let mut ground = RouteProjection::new(&obs, Domain::Ground);
+            let ground = RouteProjection::new(&obs, Domain::Ground);
             assert!(!ground.reaches(TilePos::new(0, 0), TilePos::new(1, 1)));
             assert_eq!(
                 routable_command_subset(&obs, &[UnitId(1), UnitId(2)], TilePos::new(1, 1)),
@@ -2576,7 +2731,7 @@ mod tests {
     fn safe_connectivity_does_not_make_a_cross_zone_command_corridor_safe() {
         let obs = observation();
         let blocked = TilePos::new(6, 3);
-        let mut routes = RouteProjection::ground_avoiding(&obs, |tile| tile == blocked);
+        let routes = RouteProjection::ground_avoiding(&obs, |tile| tile == blocked);
 
         assert!(
             routes.reaches(TilePos::new(2, 3), TilePos::new(9, 3)),
@@ -2586,6 +2741,50 @@ mod tests {
             !routes.direct_line_avoids_blocked(TilePos::new(2, 3), TilePos::new(9, 3)),
             "the ordinary command corridor crosses the blocked tile"
         );
+    }
+
+    #[test]
+    fn cached_ground_reach_matches_astar_with_blocked_origins_and_diagonals() {
+        let mut obs = observation();
+        obs.map_width = 6;
+        obs.map_height = 6;
+        obs.visible = vec![true; 36];
+        obs.explored = obs.visible.clone();
+        obs.my_buildings.clear();
+        let tiles: Vec<_> = (0..6)
+            .flat_map(|y| (0..6).map(move |x| TilePos::new(x, y)))
+            .collect();
+        for seed in 0..16_u32 {
+            obs.known_rock = tiles
+                .iter()
+                .copied()
+                .enumerate()
+                .filter_map(|(index, tile)| {
+                    let bits = (index as u32 + seed * 37).wrapping_mul(2_654_435_761);
+                    (bits % 5 < 2).then_some(tile)
+                })
+                .collect();
+            let routes = RouteProjection::new(&obs, Domain::Ground);
+            for &from in &tiles {
+                for &to in &tiles {
+                    let expected = routes.open(to)
+                        && chassis::path::astar(
+                            6,
+                            6,
+                            from,
+                            to,
+                            |tile| routes.open(tile),
+                            crate::stats::PATH_EXPANSION_CAP,
+                        )
+                        .is_some();
+                    assert_eq!(
+                        routes.ground_command_reaches(from, to),
+                        expected,
+                        "seed={seed}, from={from:?}, to={to:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -2611,7 +2810,7 @@ mod tests {
             .collect();
         let start = TilePos::new(0, 0);
         let goal = TilePos::new(0, 200);
-        let mut routes = RouteProjection::new(&obs, Domain::Ground);
+        let routes = RouteProjection::new(&obs, Domain::Ground);
 
         assert!(
             routes.reaches(start, goal),
@@ -2643,7 +2842,7 @@ mod tests {
             .map(|y| TilePos::new(6, y))
             .collect();
         let blocked = TilePos::new(6, 2);
-        let mut routes = RouteProjection::ground_avoiding(&obs, |tile| tile == blocked);
+        let routes = RouteProjection::ground_avoiding(&obs, |tile| tile == blocked);
 
         assert!(
             routes.reaches(TilePos::new(2, 3), TilePos::new(9, 3)),
@@ -2711,5 +2910,40 @@ mod tests {
             false,
             |tile| tile == blocked,
         ));
+    }
+    #[test]
+    fn safe_cost_retention_is_bounded_and_isolated_by_projection_and_escape_rule() {
+        let obs = observation();
+        let from = TilePos::new(2, 2);
+        let goal = TilePos::new(9, 2);
+        let ordinary = RouteProjection::new(&obs, Domain::Ground);
+        let expected = ordinary.safe_command_route_cost(from, goal, false);
+        assert_eq!(expected, Some(70));
+        assert_eq!(
+            ordinary.safe_command_route_cost(from, goal, false),
+            expected
+        );
+        assert_eq!(ordinary.safe_costs.borrow().len(), 1);
+        for x in -5000..0 {
+            assert_eq!(
+                ordinary.safe_command_route_cost(from, TilePos::new(x, 0), false),
+                None
+            );
+        }
+        assert_eq!(ordinary.safe_costs.borrow().len(), 4096);
+        assert_eq!(
+            ordinary.safe_command_route_cost(from, goal, false),
+            expected
+        );
+        let danger = RouteProjection::ground_avoiding(&obs, |tile| tile.x <= 3);
+        assert_eq!(danger.safe_command_route_cost(from, goal, false), None);
+        assert_eq!(danger.safe_command_route_cost(from, goal, true), expected);
+        assert_eq!(danger.safe_costs.borrow().len(), 2);
+        let sealed = RouteProjection::ground_avoiding(&obs, |tile| tile.x == 6);
+        assert_eq!(sealed.safe_command_route_cost(from, goal, false), None);
+        assert_eq!(
+            ordinary.safe_command_route_cost(from, goal, false),
+            expected
+        );
     }
 }

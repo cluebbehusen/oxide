@@ -20,6 +20,7 @@ use chassis::grid::TilePos;
 
 mod adapters;
 mod coordinator;
+mod production_bounds;
 mod session;
 
 pub(crate) use adapters::*;
@@ -104,46 +105,7 @@ impl ConnectedPortfolioContext {
     }
 }
 
-/// Stable service location for one repeatable standing-force purchase.
-///
-/// This is a real demand target rather than a route-component index. Component
-/// indices depend on discovery order, while a point or footprint remains stable
-/// across equivalent derivations and can be ordered canonically in row-major
-/// map order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StandingForceServiceKey {
-    /// A mobile contact or ordinary movement destination.
-    Point(TilePos),
-    /// A building or planned building whose reachable doorstep is the goal.
-    Footprint {
-        /// Top-left footprint anchor.
-        anchor: TilePos,
-        /// Positive footprint width and height.
-        size: (i32, i32),
-    },
-}
-
-impl StandingForceServiceKey {
-    pub(crate) const fn point(tile: TilePos) -> Self {
-        Self::Point(tile)
-    }
-
-    pub(crate) const fn footprint(anchor: TilePos, size: (i32, i32)) -> Self {
-        Self::Footprint { anchor, size }
-    }
-}
-
-impl Ord for StandingForceServiceKey {
-    fn cmp(&self, other: &Self) -> Ordering {
-        standing_force_service_key(*self).cmp(&standing_force_service_key(*other))
-    }
-}
-
-impl PartialOrd for StandingForceServiceKey {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
+pub(crate) use super::navigation::ServiceTarget as StandingForceServiceKey;
 
 /// Stable identity of one repeatable standing-force purchase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -2776,6 +2738,7 @@ impl ClaimState {
             )?;
         }
         let mut search = ProductionPortfolioSearch {
+            bounds: production_bounds::ProductionBounds::new(&self.producer_jobs, &producers),
             capacity,
             jobs: &self.producer_jobs,
             current_capital: self.current_scrap,
@@ -2932,9 +2895,9 @@ impl ClaimState {
 
 /// Builds a deliberately permissive funding-only schedule for a cheap no-go
 /// check before the exact producer search. Every flexible job receives its
-/// latest possible enqueue deadline, tightened only by the allocator's
-/// same-owner ordinal ordering. Real queue, lane, cadence, and producer
-/// conflicts can only move those payments earlier, so failure here proves that
+/// latest possible enqueue deadline, tightened by same-owner enqueue ordering
+/// and FIFO work that must share one producer. Real queue, lane, cadence,
+/// and producer conflicts can only move those payments earlier, so failure here proves that
 /// the corresponding funding mode has no exact schedule to search.
 fn optimistic_funding_schedule(jobs: &[OwnedProducerJob]) -> Option<Vec<ScheduledProducerJob>> {
     debug_assert!(
@@ -2958,12 +2921,29 @@ fn optimistic_funding_schedule(jobs: &[OwnedProducerJob]) -> Option<Vec<Schedule
 
     let mut current_owner = None;
     let mut owner_ceiling = 0;
+    let mut lane_start_ceilings = std::collections::BTreeMap::<BuildingId, Tick>::new();
     for (index, job) in jobs.iter().enumerate().rev() {
         if current_owner == Some(job.owner) {
             owner_ceiling = owner_ceiling.min(latest_enqueues[index]);
         } else {
             current_owner = Some(job.owner);
             owner_ceiling = latest_enqueues[index];
+            lane_start_ceilings.clear();
+        }
+        if let [producer] = job.claim.access.producers() {
+            let duration = Tick::from(job.claim.kind.stats().train_ticks);
+            let mut latest_start = job.claim.ready_before.checked_sub(duration)?;
+            if let Some(&next_start) = lane_start_ceilings.get(producer) {
+                latest_start = latest_start.min(next_start.checked_sub(duration)?);
+            }
+            if let Some(fixed) = job.claim.fixed_assignment() {
+                if fixed.starts_at > latest_start {
+                    return None;
+                }
+                latest_start = fixed.starts_at;
+            }
+            lane_start_ceilings.insert(*producer, latest_start);
+            owner_ceiling = owner_ceiling.min(latest_start);
         }
         let latest = owner_ceiling;
         if job
@@ -3017,6 +2997,7 @@ struct ProductionSearchState {
 }
 
 struct ProductionPortfolioSearch<'a> {
+    bounds: production_bounds::ProductionBounds,
     capacity: &'a AllocationCapacity,
     jobs: &'a [OwnedProducerJob],
     current_capital: u64,
@@ -3034,6 +3015,16 @@ struct ProductionPortfolioSearch<'a> {
 
 impl ProductionPortfolioSearch<'_> {
     fn find(
+        &mut self,
+        producers: &mut [ProducerPlanningProjection],
+        remaining: &mut [bool],
+        schedule: &mut Vec<ScheduledProducerJob>,
+        capital_assignments: &mut Vec<CapitalFundingAssignment>,
+    ) -> bool {
+        self.find_inner::<true>(producers, remaining, schedule, capital_assignments)
+    }
+
+    fn find_inner<const PRUNE_REMAINING: bool>(
         &mut self,
         producers: &mut [ProducerPlanningProjection],
         remaining: &mut [bool],
@@ -3072,7 +3063,9 @@ impl ProductionPortfolioSearch<'_> {
             }
             return false;
         }
-        if !self.remaining_fixed_jobs_fit(producers, remaining, schedule) {
+        if !self.remaining_fixed_jobs_fit(producers, remaining, schedule)
+            || (PRUNE_REMAINING && !self.remaining_jobs_can_fit(producers, remaining, schedule))
+        {
             return false;
         }
         let state = ProductionSearchState {
@@ -3091,6 +3084,7 @@ impl ProductionPortfolioSearch<'_> {
             return false;
         }
         self.explored_states = self.explored_states.saturating_add(1);
+
         let mut placements = Vec::new();
         for (job_index, is_remaining) in remaining.iter().copied().enumerate() {
             if !is_remaining || !self.is_frontier(job_index, remaining) {
@@ -3120,6 +3114,14 @@ impl ProductionPortfolioSearch<'_> {
                     job,
                     self.earliest_enqueue_dominates,
                 ) {
+                    if PRUNE_REMAINING
+                        && self
+                            .bounds
+                            .latest()
+                            .is_some_and(|bounds| enqueued_at > bounds[job_index].enqueued_at)
+                    {
+                        continue;
+                    }
                     let mut lane_after = lane.clone();
                     let Some(projected) = lane_after.append(job.claim.kind, enqueued_at) else {
                         continue;
@@ -3202,7 +3204,12 @@ impl ProductionPortfolioSearch<'_> {
             let prior_lane =
                 core::mem::replace(&mut producers[placement.lane_index], placement.lane_after);
             remaining[placement.job_index] = false;
-            if self.find(producers, remaining, schedule, capital_assignments) {
+            if self.find_inner::<PRUNE_REMAINING>(
+                producers,
+                remaining,
+                schedule,
+                capital_assignments,
+            ) {
                 return true;
             }
             remaining[placement.job_index] = true;
@@ -3211,6 +3218,78 @@ impl ProductionPortfolioSearch<'_> {
         }
         self.failed.insert(state);
         false
+    }
+
+    fn remaining_jobs_can_fit(
+        &self,
+        producers: &[ProducerPlanningProjection],
+        remaining: &[bool],
+        schedule: &[ScheduledProducerJob],
+    ) -> bool {
+        if !self.bounds.remaining_work_fits(remaining, producers) {
+            return false;
+        }
+        let Some(optimistic) = self.bounds.latest() else {
+            return false;
+        };
+        for ((job, latest), pending) in self.jobs.iter().zip(optimistic).zip(remaining) {
+            if !pending {
+                continue;
+            }
+            let owner_floor = schedule
+                .iter()
+                .filter(|row| row.owner == job.owner)
+                .map(|row| row.enqueued_at)
+                .max()
+                .unwrap_or(0);
+            if !job.claim.access.producers().iter().any(|producer| {
+                let lane = &producers[producers
+                    .binary_search_by_key(producer, ProducerPlanningProjection::producer)
+                    .expect("producer claims were validated")];
+                let Some(slot) = lane.earliest_enqueue_tick(job.claim.kind) else {
+                    return false;
+                };
+                let Some(enqueue) = self
+                    .capacity
+                    .resources
+                    .decision_at_or_after(slot.max(job.claim.enqueue_not_before).max(owner_floor))
+                else {
+                    return false;
+                };
+                enqueue <= latest.enqueued_at
+                    && lane
+                        .clone()
+                        .append(job.claim.kind, enqueue)
+                        .is_some_and(|row| row.ready_at < job.claim.ready_before)
+            }) {
+                return false;
+            }
+        }
+        if self.earliest_enqueue_dominates {
+            return true;
+        }
+        // Prefix rows keep their position in equal-priority funding order.
+        let mut combined = schedule.to_vec();
+        combined.extend(
+            optimistic
+                .iter()
+                .zip(remaining)
+                .filter(|(_, pending)| **pending)
+                .map(|(job, _)| *job),
+        );
+        assign_joint_funding(
+            JointFundingBasis {
+                capacity: self.capacity,
+                current_capital: self.current_capital,
+                minimum_residual_scrap: self.minimum_residual_scrap,
+                forecast_capital: self.forecast_capital,
+                deferrable_capital: self.deferrable_capital,
+                jobs: self.jobs,
+            },
+            &mut combined,
+            self.funding_mode,
+        )
+        .is_some()
     }
 
     fn remaining_fixed_jobs_fit(
@@ -3809,15 +3888,6 @@ pub(in crate::bot) fn voluntary_construction_admission_reserve(
 
 fn tile_key(tile: TilePos) -> (i32, i32) {
     (tile.y, tile.x)
-}
-
-fn standing_force_service_key(service: StandingForceServiceKey) -> ((i32, i32), u8, i32, i32) {
-    match service {
-        StandingForceServiceKey::Point(tile) => (tile_key(tile), 0, 0, 0),
-        StandingForceServiceKey::Footprint { anchor, size } => {
-            (tile_key(anchor), 1, size.1, size.0)
-        }
-    }
 }
 
 #[cfg(test)]
@@ -6832,13 +6902,13 @@ mod tests {
         );
         optimistic_jobs.sort_unstable_by_key(|job| (job.owner, job.ordinal));
         let optimistic = optimistic_funding_schedule(&optimistic_jobs)
-            .expect("the funding bound ignores stricter lane conflicts");
+            .expect("the funding bound includes mandatory FIFO work");
         assert_eq!(
             optimistic
                 .iter()
                 .map(|job| job.enqueued_at)
                 .collect::<Vec<_>>(),
-            vec![8_052, 8_052, 8_202, 8_202, 8_202, 8_202, 8_202, 8_202]
+            vec![7_352, 7_452, 7_452, 7_602, 7_752, 7_902, 8_052, 8_202]
         );
         for funding_mode in [
             JointFundingMode::PreferPriority,
@@ -7875,6 +7945,346 @@ mod tests {
         }
     }
 
+    fn search_fixture<const PRUNE: bool>(
+        basis: &AllocationCapacity,
+        jobs: &[OwnedProducerJob],
+        reserve: u32,
+        mode: JointFundingMode,
+    ) -> (bool, Vec<ScheduledProducerJob>, usize) {
+        let mut search = ProductionPortfolioSearch {
+            bounds: production_bounds::ProductionBounds::new(jobs, basis.resources.producers()),
+            capacity: basis,
+            jobs,
+            current_capital: 0,
+            minimum_residual_scrap: reserve,
+            guarded_minimum_residual_scrap: reserve,
+            voluntary_scrap_guard: PortfolioVoluntaryScrapGuard::default(),
+            forecast_capital: &[],
+            deferrable_capital: &[],
+            earliest_enqueue_dominates: current_bank_covers_all_claims(
+                basis,
+                0,
+                reserve,
+                &[],
+                &[],
+                jobs,
+            ),
+            failed: BTreeSet::new(),
+            explored_states: 0,
+            memo_hits: 0,
+            funding_mode: mode,
+        };
+        let mut schedule = Vec::new();
+        let fits = search.find_inner::<PRUNE>(
+            &mut basis.resources.producers().to_vec(),
+            &mut vec![true; jobs.len()],
+            &mut schedule,
+            &mut Vec::new(),
+        );
+        (fits, schedule, search.explored_states)
+    }
+
+    #[test]
+    fn forecast_funded_transport_portfolio_has_bounded_search_work() {
+        let lift = ClaimOwner::Obligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: 27_288,
+            key: ObligationKey::Legacy {
+                channel: LegacyChannel::Lift,
+                sequence: 2,
+            },
+        };
+        let standing = ClaimOwner::Proposal(ProposalKey::StandingForce(StandingForceKey::fixture(
+            UnitKind::Avalanche,
+        )));
+        let airworks = BuildingId(48);
+        let crucible = BuildingId(11);
+        let mut jobs: Vec<_> = (0..4)
+            .map(|ordinal| OwnedProducerJob {
+                claim: ProducerJobClaim::flexible(
+                    UnitKind::Skyhook,
+                    27_312,
+                    30_488,
+                    vec![airworks],
+                ),
+                owner: lift,
+                ordinal,
+                funding_priority: FundingPriority::obligation(lift),
+            })
+            .collect();
+        jobs.push(OwnedProducerJob {
+            claim: ProducerJobClaim::flexible(UnitKind::Avalanche, 27_300, 29_700, vec![crucible]),
+            owner: standing,
+            ordinal: 0,
+            funding_priority: FundingPriority::fresh_proposal(standing, 0),
+        });
+        jobs.sort_unstable_by_key(|job| (job.owner, job.ordinal));
+        let basis = timed_capacity(
+            124,
+            27_300,
+            30_488,
+            12,
+            (27_312..=30_480)
+                .step_by(12)
+                .enumerate()
+                .map(|(index, available_at)| ForecastAvailability {
+                    available_at,
+                    amount: [6, 9, 3, 9, 11][index % 5],
+                })
+                .collect(),
+            vec![
+                timed_producer_fixture(
+                    crucible,
+                    27_300,
+                    12,
+                    27_540,
+                    vec![27_300; QUEUE_CAP],
+                    vec![UnitKind::Avalanche],
+                ),
+                timed_producer_fixture(
+                    airworks,
+                    27_300,
+                    12,
+                    27_300,
+                    vec![27_300; QUEUE_CAP],
+                    vec![UnitKind::Skyhook],
+                ),
+            ],
+        );
+        for mode in [
+            JointFundingMode::PreferPriority,
+            JointFundingMode::PreserveCompatiblePortfolio,
+        ] {
+            let (fits, schedule, states) = search_fixture::<true>(&basis, &jobs, 90, mode);
+            assert!(
+                fits,
+                "the retained transports and Avalanche are compatible in {mode:?}"
+            );
+            assert_eq!(schedule.len(), 5);
+            assert!(
+                states < 100,
+                "transport scheduling explored {states} states in {mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_bomber_splits_the_available_fighter_production_windows() {
+        let key = ConnectedOffenseKey {
+            objective: BuildingId(10),
+            anchor: TilePos::new(35, 21),
+        };
+        let retained = ClaimOwner::Obligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: 54_288,
+            key: ObligationKey::ConnectedOffense {
+                objective: key.objective,
+                anchor: key.anchor,
+            },
+        };
+        let offense = ClaimOwner::Proposal(ProposalKey::ConnectedOffenseMinimum(key));
+        let standing = ClaimOwner::Proposal(ProposalKey::StandingForce(StandingForceKey::fixture(
+            UnitKind::Stinger,
+        )));
+        let airworks = BuildingId(48);
+        let fabricator = BuildingId(9);
+        let mut jobs = vec![
+            OwnedProducerJob {
+                claim: ProducerJobClaim::fixed(
+                    airworks,
+                    UnitKind::Moth,
+                    55_212,
+                    55_212,
+                    55_911,
+                    56_688,
+                ),
+                owner: retained,
+                ordinal: 0,
+                funding_priority: FundingPriority::obligation(retained),
+            },
+            OwnedProducerJob {
+                claim: ProducerJobClaim::fixed(
+                    fabricator,
+                    UnitKind::Stinger,
+                    54_336,
+                    54_476,
+                    54_575,
+                    54_600,
+                ),
+                owner: standing,
+                ordinal: 0,
+                funding_priority: FundingPriority::fresh_proposal(standing, 0),
+            },
+        ];
+        jobs.extend(
+            [
+                54_780, 54_864, 54_936, 55_008, 55_080, 55_152, 55_224, 55_308,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, release)| OwnedProducerJob {
+                claim: ProducerJobClaim::flexible(
+                    UnitKind::Darter,
+                    release,
+                    56_688,
+                    vec![airworks],
+                ),
+                owner: offense,
+                ordinal,
+                funding_priority: FundingPriority::marginal(offense),
+            }),
+        );
+        jobs.sort_unstable_by_key(|job| (job.owner, job.ordinal));
+        let basis = timed_capacity(
+            46,
+            54_336,
+            56_736,
+            12,
+            (54_348..=56_736)
+                .step_by(12)
+                .enumerate()
+                .map(|(index, available_at)| ForecastAvailability {
+                    available_at,
+                    amount: [19, 22, 14, 19, 7][index % 5],
+                })
+                .collect(),
+            vec![
+                timed_producer_fixture(
+                    fabricator,
+                    54_336,
+                    12,
+                    54_476,
+                    vec![54_336; QUEUE_CAP],
+                    vec![UnitKind::Stinger],
+                ),
+                timed_producer_fixture(
+                    airworks,
+                    54_336,
+                    12,
+                    54_336,
+                    vec![54_336; QUEUE_CAP],
+                    vec![UnitKind::Moth, UnitKind::Darter],
+                ),
+            ],
+        );
+        for mode in [
+            JointFundingMode::PreferPriority,
+            JointFundingMode::PreserveCompatiblePortfolio,
+        ] {
+            let (fits, _, states) = search_fixture::<true>(&basis, &jobs, 0, mode);
+            assert!(!fits);
+            assert_eq!(
+                states, 0,
+                "only two fighters fit before the bomber and five afterward"
+            );
+            let smaller: Vec<_> = jobs
+                .iter()
+                .filter(|job| job.owner != offense || job.ordinal < 7)
+                .cloned()
+                .collect();
+            let (fits, schedule, states) = search_fixture::<true>(&basis, &smaller, 0, mode);
+            assert!(
+                fits,
+                "the adjacent seven-fighter portfolio must remain available in {mode:?}"
+            );
+            assert_eq!(schedule.len(), 9);
+            assert!(
+                states < 100,
+                "the seven-fighter schedule explored {states} states in {mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn remaining_work_pruning_preserves_exact_small_schedules() {
+        let first = ClaimOwner::Proposal(ProposalKey::FoundryExpansion(FoundryExpansionKey {
+            anchor: TilePos::new(10, 10),
+        }));
+        let second = ClaimOwner::Proposal(ProposalKey::StandingForce(StandingForceKey::fixture(
+            UnitKind::Sentinel,
+        )));
+        let producers = [BuildingId(7), BuildingId(8)];
+        for seed in 0..256_usize {
+            let count = 1 + seed % 4;
+            let mut jobs: Vec<_> = (0..count)
+                .map(|index| {
+                    let owner = if index < 2 { first } else { second };
+                    let ordinal = index % 2;
+                    let kind = if (seed >> index) & 1 == 0 {
+                        UnitKind::Harvester
+                    } else {
+                        UnitKind::Sentinel
+                    };
+                    let mut claim = ProducerJobClaim::flexible(
+                        kind,
+                        if seed & 8 == 0 { 0 } else { 10 * index as Tick },
+                        [160, 240, 360, 480][(seed + index) % 4],
+                        if (seed >> (index + 2)) & 1 == 0 {
+                            producers.to_vec()
+                        } else {
+                            vec![producers[index % 2]]
+                        },
+                    );
+                    if seed % 7 == 0 && index == 0 {
+                        claim = ProducerJobClaim::fixed(
+                            producers[0],
+                            kind,
+                            0,
+                            0,
+                            Tick::from(kind.stats().train_ticks) - 1,
+                            480,
+                        );
+                    }
+                    OwnedProducerJob {
+                        claim,
+                        owner,
+                        ordinal,
+                        funding_priority: FundingPriority::fresh_proposal(owner, (index / 2) as u8),
+                    }
+                })
+                .collect();
+            jobs.sort_unstable_by_key(|job| (job.owner, job.ordinal));
+            let basis = timed_capacity(
+                [0, 50, 140, 500][seed % 4],
+                0,
+                480,
+                10,
+                [10, 80, 180, 300]
+                    .into_iter()
+                    .map(|available_at| ForecastAvailability {
+                        available_at,
+                        amount: 80,
+                    })
+                    .collect(),
+                producers
+                    .into_iter()
+                    .map(|producer| {
+                        timed_producer_fixture(
+                            producer,
+                            0,
+                            10,
+                            0,
+                            vec![0; QUEUE_CAP],
+                            vec![UnitKind::Harvester, UnitKind::Sentinel],
+                        )
+                    })
+                    .collect(),
+            );
+            for mode in [
+                JointFundingMode::PreferPriority,
+                JointFundingMode::PreserveCompatiblePortfolio,
+            ] {
+                let expected = search_fixture::<false>(&basis, &jobs, 0, mode);
+                let actual = search_fixture::<true>(&basis, &jobs, 0, mode);
+                assert_eq!(
+                    (actual.0, actual.1),
+                    (expected.0, expected.1),
+                    "seed={seed}, mode={mode:?}, jobs={jobs:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn wealthy_eighteen_job_package_has_a_bounded_exact_search() {
         let producers = [BuildingId(7), BuildingId(8), BuildingId(9)];
@@ -8012,6 +8422,7 @@ mod tests {
         let mut producer_state = basis.resources.producers().to_vec();
         let mut remaining = vec![true; jobs.len()];
         let mut search = ProductionPortfolioSearch {
+            bounds: production_bounds::ProductionBounds::new(&jobs, basis.resources.producers()),
             capacity: &basis,
             jobs: &jobs,
             current_capital: 0,
@@ -8033,10 +8444,9 @@ mod tests {
             &mut Vec::new(),
             &mut Vec::new(),
         ));
-        assert!(
-            search.explored_states <= 1_000,
-            "a current-funded lane conflict should not branch over irrelevant income ticks: {}",
-            search.explored_states
+        assert_eq!(
+            search.explored_states, 0,
+            "mixed unit kinds still share the same factory time"
         );
     }
 
@@ -8082,6 +8492,7 @@ mod tests {
         let mut remaining = vec![true; jobs.len()];
         let mut schedule = Vec::new();
         let mut search = ProductionPortfolioSearch {
+            bounds: production_bounds::ProductionBounds::new(&jobs, basis.resources.producers()),
             capacity: &basis,
             jobs: &jobs,
             current_capital: 0,
@@ -8097,7 +8508,7 @@ mod tests {
             funding_mode: JointFundingMode::PreferPriority,
         };
 
-        assert!(!search.find(
+        assert!(!search.find_inner::<false>(
             &mut producer_state,
             &mut remaining,
             &mut schedule,

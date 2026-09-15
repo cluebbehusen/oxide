@@ -1,5 +1,7 @@
 //! Fog-honest valuation and approach-lane scoring for static defenses.
 
+mod barricade;
+mod coverage;
 mod pruning;
 mod routes;
 mod routing_cache;
@@ -8,14 +10,16 @@ pub(super) use routing_cache::DefenseRoutingCache;
 
 use super::*;
 use crate::bot::intelligence::ContactEvidence;
+use crate::bot::navigation::paths::{EndpointRoutes, path_cost};
 use crate::bot::{Orientation, PublicMapBriefing, StartingFoundry};
 use crate::map::Terrain;
-use crate::stats::{
-    CHARGE_TRIGGER_RADIUS, PATH_EXPANSION_CAP, SAPPER_CONTACT_RANGE, SCRAP_NODE_AMOUNT, WeaponStats,
-};
+#[cfg(test)]
+use crate::stats::PATH_EXPANSION_CAP;
+use crate::stats::{CHARGE_TRIGGER_RADIUS, SAPPER_CONTACT_RANGE, SCRAP_NODE_AMOUNT, WeaponStats};
 use chassis::fx::{Fx, Vec2Fx};
-use chassis::grid::{CARDINALS, DIAGONALS};
-use routes::{CandidateRoutes, Scratch};
+use routes::CandidateRoutes;
+#[cfg(test)]
+use routes::Scratch;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -172,6 +176,7 @@ pub(super) struct DefenseGrounding<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct BuilderSafetyKey {
     builder: UnitId,
+    origin: TilePos,
     anchor: TilePos,
     size: (i32, i32),
     defer: bool,
@@ -180,6 +185,7 @@ struct BuilderSafetyKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct BuilderTravelKey {
     builder: UnitId,
+    origin: TilePos,
     placement: PlacementFootprint,
 }
 
@@ -213,12 +219,6 @@ struct ReinforcementRouteKey {
     anchor: TilePos,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BaselineEndpointRoute {
-    path: Option<Vec<TilePos>>,
-    exhausted: bool,
-}
-
 #[derive(Default)]
 struct DefenseEvaluationCache {
     builder_safety: BTreeMap<BuilderSafetyKey, bool>,
@@ -228,7 +228,8 @@ struct DefenseEvaluationCache {
     reinforcement_travel: BTreeMap<ReinforcementRouteKey, Option<u32>>,
     supported_assets: BTreeMap<PlacementFootprint, BTreeSet<usize>>,
     rerouted_approaches: BTreeMap<(DefenseDomain, PlacementFootprint), Option<Vec<Approach>>>,
-    baseline_endpoint_routes: BTreeMap<(DefenseDomain, TilePos, TilePos), BaselineEndpointRoute>,
+    barricade_approaches: BTreeMap<PlacementFootprint, Option<Vec<barricade::ApproachCost>>>,
+    baseline_endpoint_routes: EndpointRoutes,
     #[cfg(test)]
     stats: DefenseThinkCacheStats,
 }
@@ -860,6 +861,7 @@ fn cached_safe_implicit_builder(
     ordered.into_iter().find_map(|builder| {
         let key = BuilderSafetyKey {
             builder: builder.id,
+            origin: builder.tile,
             anchor,
             size,
             defer,
@@ -903,6 +905,7 @@ fn cached_builder_travel_cost(
 ) -> Option<u32> {
     let key = BuilderTravelKey {
         builder: builder.id,
+        origin: builder.tile,
         placement,
     };
     if let Some(cost) = cache.builder_travel.get(&key).copied() {
@@ -1108,6 +1111,24 @@ struct Coverage {
     spotted_reach: u32,
     redundant: u32,
     lateral: i32,
+}
+
+impl Coverage {
+    fn empty() -> Self {
+        Self {
+            new: 0,
+            reinforced: 0,
+            unplanned_new: 0,
+            unplanned_reinforced: 0,
+            interception: 0,
+            protected_value: 0,
+            planned_overlap: 0,
+            blind_exposure: 0,
+            spotted_reach: 0,
+            redundant: 0,
+            lateral: i32::MAX,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1418,30 +1439,10 @@ fn future_ground_producer_egress_certificate(
 
     let width = baseline.obs.map_width;
     let height = baseline.obs.map_height;
-    let cells = usize::try_from(width)
-        .ok()
-        .and_then(|width| {
-            usize::try_from(height)
-                .ok()
-                .and_then(|height| width.checked_mul(height))
-        })
-        .unwrap_or(0);
-    let mut reachable = vec![false; cells];
-    let start_index = tile_index(width, height, start).expect("an open doorstep is in bounds");
-    reachable[start_index] = true;
-    let mut frontier = VecDeque::from([start]);
-    while let Some(tile) = frontier.pop_front() {
-        for (dx, dy) in CARDINALS {
-            let next = tile.offset(dx, dy);
-            let Some(index) = tile_index(width, height, next) else {
-                continue;
-            };
-            if !reachable[index] && baseline.open(next, Some(footprint), DefenseDomain::Ground) {
-                reachable[index] = true;
-                frontier.push_back(next);
-            }
-        }
-    }
+    let reachable = crate::bot::navigation::flood::component(width, height, start, |tile| {
+        baseline.open(tile, Some(footprint), DefenseDomain::Ground)
+    })
+    .expect("an open doorstep is in bounds");
     let mut witnesses: Vec<_> = reachable
         .iter()
         .enumerate()
@@ -2183,27 +2184,31 @@ fn strategic_defense_quote_from_projection(
         if !cached_resource_access_survives(grounding, cache, placement, resource_detour_limit) {
             return None;
         }
-        let candidate_approaches = cached_operationally_supported_approaches(
-            ground,
-            assets,
-            approaches,
-            placement,
-            profile.domain,
-            (profile.kind == BuildingKind::Barricade).then_some(MAX_BARRICADE_DETOUR_COST),
-            cache,
-        )?;
-        let coverage = score_coverage(
-            &CoverageContext {
-                obs,
-                briefing,
+        let coverage = if profile.kind == BuildingKind::Barricade {
+            let costs = barricade::supported_costs(ground, assets, approaches, placement, cache)?;
+            barricade::coverage(assets, &projection.planned, anchor, costs.iter().copied())
+        } else {
+            let candidate_approaches = cached_operationally_supported_approaches(
+                ground,
                 assets,
-                approaches: &candidate_approaches,
-                existing: &projection.existing,
-                planned: &projection.planned,
-            },
-            profile,
-            anchor,
-        );
+                approaches,
+                placement,
+                profile.domain,
+                cache,
+            )?;
+            score_coverage(
+                &CoverageContext {
+                    obs,
+                    briefing,
+                    assets,
+                    approaches: &candidate_approaches,
+                    existing: &projection.existing,
+                    planned: &projection.planned,
+                },
+                profile,
+                anchor,
+            )
+        };
         if coverage.new == 0 && coverage.reinforced == 0 {
             return None;
         }
@@ -2247,25 +2252,29 @@ fn strategic_defense_quote_from_projection(
     };
     let (candidate, builder) = selected?;
     let placement = profile.footprint(candidate.anchor);
-    let candidate_approaches = cached_operationally_supported_approaches(
-        ground,
-        assets,
-        approaches,
-        placement,
-        profile.domain,
-        (profile.kind == BuildingKind::Barricade).then_some(MAX_BARRICADE_DETOUR_COST),
-        cache,
-    )?;
-    let threat = candidate_threat_summary(
-        obs,
-        briefing,
-        &projection.existing,
-        &projection.planned,
-        profile,
-        candidate.anchor,
-        &candidate_approaches,
-        projection.evidence,
-    )?;
+    let threat = if profile.kind == BuildingKind::Barricade {
+        let costs = barricade::supported_costs(ground, assets, approaches, placement, cache)?;
+        barricade::threat_summary(&costs, projection.evidence)?
+    } else {
+        let candidate_approaches = cached_operationally_supported_approaches(
+            ground,
+            assets,
+            approaches,
+            placement,
+            profile.domain,
+            cache,
+        )?;
+        candidate_threat_summary(
+            obs,
+            briefing,
+            &projection.existing,
+            &projection.planned,
+            profile,
+            candidate.anchor,
+            &candidate_approaches,
+            projection.evidence,
+        )?
+    };
     Some(StrategicDefenseQuote {
         placement: DefensePlacement {
             anchor: candidate.anchor,
@@ -2295,21 +2304,31 @@ fn candidate_threat_summary(
     approaches: &[Approach],
     projection_evidence: DefenseOpportunityEvidence,
 ) -> Option<CandidateThreatSummary> {
+    threat_summary_from_sources(
+        approaches
+            .iter()
+            .filter(|approach| {
+                approach_contributes_marginal_protection(
+                    obs, briefing, existing, planned, profile, candidate, approach,
+                )
+            })
+            .map(|approach| (approach.source, approach.baseline_cost)),
+        projection_evidence,
+    )
+}
+
+fn threat_summary_from_sources(
+    approaches: impl Iterator<Item = (ThreatOrigin, u32)>,
+    projection_evidence: DefenseOpportunityEvidence,
+) -> Option<CandidateThreatSummary> {
     let mut sources = BTreeSet::new();
     let mut threat_arrival_ticks = None;
-    for approach in approaches.iter().filter(|approach| {
-        approach_contributes_marginal_protection(
-            obs, briefing, existing, planned, profile, candidate, approach,
-        )
-    }) {
-        sources.insert(approach.source);
-        if let Some(arrival) = approach_threat_arrival_ticks(approach) {
+    for (source, baseline_cost) in approaches {
+        sources.insert(source);
+        if let Some(arrival) = source_threat_arrival_ticks(source, baseline_cost) {
             threat_arrival_ticks =
                 Some(threat_arrival_ticks.map_or(arrival, |earliest: u64| earliest.min(arrival)));
         }
-    }
-    if sources.is_empty() {
-        return None;
     }
     let evidence = match projection_evidence {
         DefenseOpportunityEvidence::CurrentArmed | DefenseOpportunityEvidence::CurrentFoothold => {
@@ -2367,11 +2386,9 @@ fn footprints_overlap(first: PlacementFootprint, second: PlacementFootprint) -> 
         && second.anchor.y < first.anchor.y + first.size.1
 }
 
-fn approach_threat_arrival_ticks(approach: &Approach) -> Option<u64> {
-    match approach.source.capability {
-        ThreatCapability::Mobile(kind) => {
-            Some(travel_ticks(approach.baseline_cost, kind.stats().speed))
-        }
+fn source_threat_arrival_ticks(source: ThreatOrigin, baseline_cost: u32) -> Option<u64> {
+    match source.capability {
+        ThreatCapability::Mobile(kind) => Some(travel_ticks(baseline_cost, kind.stats().speed)),
         ThreatCapability::StaticDefense { .. } => Some(0),
         ThreatCapability::Foothold => None,
     }
@@ -2855,10 +2872,7 @@ fn approach_path_cached(
     source: ThreatOrigin,
     asset: &AssetShape,
     goals: &[TilePos],
-    baseline_endpoint_routes: &mut BTreeMap<
-        (DefenseDomain, TilePos, TilePos),
-        BaselineEndpointRoute,
-    >,
+    baseline_endpoint_routes: &mut EndpointRoutes,
 ) -> Option<(TilePos, Vec<TilePos>)> {
     let (ground, candidate, domain) = routes.context();
     if let ThreatCapability::StaticDefense { kind, tier } = source.capability {
@@ -2957,10 +2971,7 @@ fn approaches_with_candidate_cached(
     candidate: PlacementFootprint,
     domain: DefenseDomain,
     max_detour: Option<u32>,
-    baseline_endpoint_routes: &mut BTreeMap<
-        (DefenseDomain, TilePos, TilePos),
-        BaselineEndpointRoute,
-    >,
+    baseline_endpoint_routes: &mut EndpointRoutes,
 ) -> Option<Vec<Approach>> {
     approaches_with_candidate_inner(
         ground,
@@ -2980,9 +2991,7 @@ fn approaches_with_candidate_inner(
     candidate: PlacementFootprint,
     domain: DefenseDomain,
     max_detour: Option<u32>,
-    mut baseline_endpoint_routes: Option<
-        &mut BTreeMap<(DefenseDomain, TilePos, TilePos), BaselineEndpointRoute>,
-    >,
+    mut baseline_endpoint_routes: Option<&mut EndpointRoutes>,
 ) -> Option<Vec<Approach>> {
     let mut routes = CandidateRoutes::new(ground, candidate, domain);
     let mut rerouted = Vec::with_capacity(baseline.len());
@@ -3199,15 +3208,12 @@ fn supported_assets_for_candidate(
         .collect()
 }
 
-fn cached_operationally_supported_approaches(
+fn cache_supported_assets(
     ground: &GroundKnowledge<'_>,
     assets: &[DefendedAsset],
-    baseline: &[Approach],
     candidate: PlacementFootprint,
-    domain: DefenseDomain,
-    max_detour: Option<u32>,
     cache: &mut DefenseEvaluationCache,
-) -> Option<Vec<Approach>> {
+) {
     match cache.supported_assets.entry(candidate) {
         std::collections::btree_map::Entry::Occupied(_) => {
             #[cfg(test)]
@@ -3223,6 +3229,17 @@ fn cached_operationally_supported_approaches(
             }
         }
     }
+}
+
+fn cached_operationally_supported_approaches(
+    ground: &GroundKnowledge<'_>,
+    assets: &[DefendedAsset],
+    baseline: &[Approach],
+    candidate: PlacementFootprint,
+    domain: DefenseDomain,
+    cache: &mut DefenseEvaluationCache,
+) -> Option<Vec<Approach>> {
+    cache_supported_assets(ground, assets, candidate, cache);
     let reroute_key = (domain, candidate);
     match cache.rerouted_approaches.entry(reroute_key) {
         std::collections::btree_map::Entry::Occupied(_) => {
@@ -3248,14 +3265,6 @@ fn cached_operationally_supported_approaches(
         }
     }
     let rerouted = cache.rerouted_approaches.get(&reroute_key)?.as_ref()?;
-    if max_detour.is_some_and(|limit| {
-        rerouted.iter().any(|approach| {
-            approach.disrupted
-                && path_cost(&approach.path).saturating_sub(approach.baseline_cost) > limit
-        })
-    }) {
-        return None;
-    }
     let supported_assets = cache.supported_assets.get(&candidate)?;
     Some(
         rerouted
@@ -3278,87 +3287,13 @@ fn tiles_reachable_within_steps(
     candidate: PlacementFootprint,
     maximum_steps: usize,
 ) -> Vec<bool> {
-    let width = ground.obs.map_width;
-    let height = ground.obs.map_height;
-    let area = usize::try_from(width)
-        .ok()
-        .and_then(|width| {
-            usize::try_from(height)
-                .ok()
-                .and_then(|height| width.checked_mul(height))
-        })
-        .unwrap_or(0);
-    let mut distance = vec![u8::MAX; area];
-    let mut open = VecDeque::new();
-    for start in starts.iter().copied() {
-        let Some(index) = tile_index(width, height, start) else {
-            continue;
-        };
-        if distance[index] == u8::MAX {
-            distance[index] = 0;
-            open.push_back(start);
-        }
-    }
-
-    while let Some(current) = open.pop_front() {
-        let current_index = tile_index(width, height, current)
-            .expect("the local route flood contains only in-bounds tiles");
-        let steps = usize::from(distance[current_index]);
-        if steps >= maximum_steps {
-            continue;
-        }
-        let mut cardinal_open = [false; 4];
-        for (dx, dy) in CARDINALS {
-            let next = current.offset(dx, dy);
-            if ground.open(next, Some(candidate), DefenseDomain::Ground) {
-                let slot = if dy == 0 {
-                    usize::from(dx < 0)
-                } else {
-                    2 + usize::from(dy < 0)
-                };
-                cardinal_open[slot] = true;
-                enqueue_local_route_tile(&mut distance, &mut open, width, height, next, steps + 1);
-            }
-        }
-        for (dx, dy) in DIAGONALS {
-            if cardinal_open[usize::from(dx < 0)] && cardinal_open[2 + usize::from(dy < 0)] {
-                let next = current.offset(dx, dy);
-                if ground.open(next, Some(candidate), DefenseDomain::Ground) {
-                    enqueue_local_route_tile(
-                        &mut distance,
-                        &mut open,
-                        width,
-                        height,
-                        next,
-                        steps + 1,
-                    );
-                }
-            }
-        }
-    }
-
-    distance
-        .into_iter()
-        .map(|steps| usize::from(steps) <= maximum_steps)
-        .collect()
-}
-
-fn enqueue_local_route_tile(
-    distance: &mut [u8],
-    open: &mut VecDeque<TilePos>,
-    width: i32,
-    height: i32,
-    tile: TilePos,
-    steps: usize,
-) {
-    let Some(index) = tile_index(width, height, tile) else {
-        return;
-    };
-    if usize::from(distance[index]) <= steps {
-        return;
-    }
-    distance[index] = u8::try_from(steps).unwrap_or(u8::MAX);
-    open.push_back(tile);
+    crate::bot::navigation::flood::within_steps(
+        ground.obs.map_width,
+        ground.obs.map_height,
+        starts,
+        |tile| ground.open(tile, Some(candidate), DefenseDomain::Ground),
+        maximum_steps,
+    )
 }
 
 fn shortest_path_between(
@@ -3368,219 +3303,21 @@ fn shortest_path_between(
     candidate: Option<PlacementFootprint>,
     domain: DefenseDomain,
 ) -> Option<(TilePos, TilePos, Vec<TilePos>)> {
-    let mut pairs: Vec<_> = starts
-        .iter()
-        .flat_map(|start| goals.iter().map(move |goal| (*start, *goal)))
-        .collect();
-    pairs.sort_unstable_by_key(|(start, goal)| {
-        (octile_cost(*start, *goal), start.y, start.x, goal.y, goal.x)
-    });
-
-    let mut best: Option<(TilePos, TilePos, Vec<TilePos>)> = None;
-    let mut proven_unreachable = BTreeSet::new();
-    let mut scratch = Scratch::default();
-    for (start, goal) in pairs {
-        if proven_unreachable.contains(&(start, goal)) {
-            continue;
-        }
-        if best
-            .as_ref()
-            .is_some_and(|(_, _, path)| octile_cost(start, goal) > path_cost(path))
-        {
-            // Every remaining pair has a strictly worse obstacle-free lower
-            // bound, so none can replace the complete route-choice key.
-            break;
-        }
-        if best.as_ref().is_some_and(|(_, _, path)| {
-            routing_cache::bound(ground, start, goal, domain) > path_cost(path)
-        }) {
-            continue;
-        }
-        let Some(mut path) =
-            routing_cache::path(ground, start, goal, candidate, domain, &mut scratch)
-        else {
-            if scratch.last_search_exhausted() {
-                // One exhaustive search proves the whole passability
-                // component. Reuse that proof for its other doorsteps.
-                let reached_starts: Vec<_> = starts
-                    .iter()
-                    .copied()
-                    .filter(|tile| scratch.last_search_reached(*tile))
-                    .collect();
-                for reached_start in reached_starts {
-                    for unreachable_goal in goals
-                        .iter()
-                        .copied()
-                        .filter(|tile| !scratch.last_search_reached(*tile))
-                    {
-                        proven_unreachable.insert((reached_start, unreachable_goal));
-                    }
-                }
-            }
-            continue;
-        };
-        path.insert(0, start);
-        let replace = best
-            .as_ref()
-            .is_none_or(|(best_start, best_goal, best_path)| {
-                (
-                    path_cost(&path),
-                    path.len(),
-                    start.y,
-                    start.x,
-                    goal.y,
-                    goal.x,
-                    path.as_slice(),
-                ) < (
-                    path_cost(best_path),
-                    best_path.len(),
-                    best_start.y,
-                    best_start.x,
-                    best_goal.y,
-                    best_goal.x,
-                    best_path.as_slice(),
-                )
-            });
-        if replace {
-            best = Some((start, goal, path));
-        }
-    }
-    best
+    crate::bot::navigation::paths::shortest_path_between(
+        routing_cache::board(ground, domain),
+        starts,
+        goals,
+        candidate.and_then(|candidate| routing_cache::overlay(candidate, domain)),
+    )
 }
 
 fn shortest_path_between_cached(
     routes: &mut CandidateRoutes<'_, '_>,
     starts: &[TilePos],
     goals: &[TilePos],
-    baseline_endpoint_routes: &mut BTreeMap<
-        (DefenseDomain, TilePos, TilePos),
-        BaselineEndpointRoute,
-    >,
+    baseline: &mut EndpointRoutes,
 ) -> Option<(TilePos, TilePos, Vec<TilePos>)> {
-    let (ground, candidate, domain) = routes.context();
-    let mut pairs: Vec<_> = starts
-        .iter()
-        .flat_map(|start| goals.iter().map(move |goal| (*start, *goal)))
-        .collect();
-    pairs.sort_unstable_by_key(|(start, goal)| {
-        (octile_cost(*start, *goal), start.y, start.x, goal.y, goal.x)
-    });
-
-    let mut best: Option<(TilePos, TilePos, Vec<TilePos>)> = None;
-    let mut scratch = Scratch::default();
-    let mut proven_unreachable = BTreeSet::new();
-    for (start, goal) in pairs {
-        if proven_unreachable.contains(&(start, goal)) {
-            continue;
-        }
-        if best
-            .as_ref()
-            .is_some_and(|(_, _, path)| octile_cost(start, goal) > path_cost(path))
-        {
-            break;
-        }
-
-        if best.as_ref().is_some_and(|(_, _, path)| {
-            routing_cache::bound(ground, start, goal, domain) > path_cost(path)
-        }) {
-            continue;
-        }
-        let key = (domain, start, goal);
-        let baseline = match baseline_endpoint_routes.entry(key) {
-            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                let mut path = routing_cache::path(ground, start, goal, None, domain, &mut scratch);
-                if let Some(path) = path.as_mut() {
-                    path.insert(0, start);
-                }
-                entry.insert(BaselineEndpointRoute {
-                    path,
-                    exhausted: scratch.last_search_exhausted(),
-                })
-            }
-        };
-        if best.as_ref().is_some_and(|(_, _, best_path)| {
-            baseline
-                .path
-                .as_ref()
-                .is_some_and(|baseline_path| path_cost(baseline_path) > path_cost(best_path))
-        }) {
-            // A blocking footprint cannot improve this endpoint pair over its
-            // no-candidate route. Keep equal-cost pairs because the complete
-            // route-choice key can still prefer their length, endpoints, or
-            // canonical path.
-            continue;
-        }
-        let path = match &baseline.path {
-            Some(path) if !candidate_affects_path(path, candidate, domain) => Some(path.clone()),
-            Some(_) => {
-                let mut path = routes.path(start, goal, &mut scratch);
-                if let Some(path) = path.as_mut() {
-                    path.insert(0, start);
-                }
-                path
-            }
-            None if baseline.exhausted => None,
-            None => {
-                let mut path = routes.path(start, goal, &mut scratch);
-                if let Some(path) = path.as_mut() {
-                    path.insert(0, start);
-                }
-                path
-            }
-        };
-        let Some(path) = path else {
-            if scratch.last_search_exhausted() {
-                // Both baseline and candidate searches are lower bounds on
-                // connectivity after adding the candidate's blocking tiles.
-                for reached_start in starts
-                    .iter()
-                    .copied()
-                    .filter(|tile| scratch.last_search_reached(*tile))
-                {
-                    for unreachable_goal in goals
-                        .iter()
-                        .copied()
-                        .filter(|tile| !scratch.last_search_reached(*tile))
-                    {
-                        proven_unreachable.insert((reached_start, unreachable_goal));
-                    }
-                }
-            }
-            continue;
-        };
-        let replace = best
-            .as_ref()
-            .is_none_or(|(best_start, best_goal, best_path)| {
-                (
-                    path_cost(&path),
-                    path.len(),
-                    start.y,
-                    start.x,
-                    goal.y,
-                    goal.x,
-                    path.as_slice(),
-                ) < (
-                    path_cost(best_path),
-                    best_path.len(),
-                    best_start.y,
-                    best_start.x,
-                    best_goal.y,
-                    best_goal.x,
-                    best_path.as_slice(),
-                )
-            });
-        if replace {
-            best = Some((start, goal, path));
-        }
-    }
-    best
-}
-
-fn octile_cost(start: TilePos, goal: TilePos) -> u32 {
-    let dx = (start.x - goal.x).unsigned_abs();
-    let dy = (start.y - goal.y).unsigned_abs();
-    10 * dx.max(dy) + 4 * dx.min(dy)
+    routes.paths.shortest(starts, goals, baseline)
 }
 
 #[cfg(test)]
@@ -3621,31 +3358,12 @@ fn shortest_path_between_exhaustive(
         })
 }
 
-fn path_cost(path: &[TilePos]) -> u32 {
-    path.windows(2).fold(0, |cost, pair| {
-        cost + if pair[0].x != pair[1].x && pair[0].y != pair[1].y {
-            14
-        } else {
-            10
-        }
-    })
-}
-
 fn candidate_affects_path(
     path: &[TilePos],
     candidate: PlacementFootprint,
     domain: DefenseDomain,
 ) -> bool {
-    if domain == DefenseDomain::Air || !candidate.blocks_ground {
-        return false;
-    }
-    path.iter().any(|tile| candidate.blocks(*tile))
-        || path.windows(2).any(|pair| {
-            pair[0].x != pair[1].x
-                && pair[0].y != pair[1].y
-                && (candidate.blocks(TilePos::new(pair[1].x, pair[0].y))
-                    || candidate.blocks(TilePos::new(pair[0].x, pair[1].y)))
-        })
+    routing_cache::overlay(candidate, domain).is_some_and(|overlay| overlay.affects_path(path))
 }
 
 fn scrap_work_tiles(
@@ -3783,6 +3501,23 @@ fn score_coverage(
     profile: DefenseProfile,
     candidate: TilePos,
 ) -> Coverage {
+    if profile.kind == BuildingKind::Barricade {
+        return barricade::coverage(
+            context.assets,
+            context.planned,
+            candidate,
+            context.approaches.iter().map(barricade::ApproachCost::from),
+        );
+    }
+    coverage::Batch::new(context, profile).score(candidate, |_| true)
+}
+
+#[cfg(test)]
+fn reference_score_coverage(
+    context: &CoverageContext<'_>,
+    profile: DefenseProfile,
+    candidate: TilePos,
+) -> Coverage {
     let CoverageContext {
         obs,
         briefing,
@@ -3791,50 +3526,19 @@ fn score_coverage(
         existing,
         planned,
     } = context;
-    let mut coverage = Coverage {
-        new: 0,
-        reinforced: 0,
-        unplanned_new: 0,
-        unplanned_reinforced: 0,
-        interception: 0,
-        protected_value: 0,
-        planned_overlap: 0,
-        blind_exposure: 0,
-        spotted_reach: 0,
-        redundant: 0,
-        lateral: i32::MAX,
-    };
+    if profile.kind == BuildingKind::Barricade {
+        return barricade::coverage(
+            assets,
+            planned,
+            candidate,
+            approaches.iter().map(barricade::ApproachCost::from),
+        );
+    }
+    let mut coverage = Coverage::empty();
     for (asset_index, asset) in assets.iter().enumerate() {
         let asset_approaches = approaches
             .iter()
             .filter(|approach| approach.asset == asset_index);
-        if profile.kind == BuildingKind::Barricade {
-            let best_detour = asset_approaches
-                .filter(|approach| approach.disrupted)
-                .map(|approach| path_cost(&approach.path).saturating_sub(approach.baseline_cost))
-                .filter(|detour| *detour > 0)
-                .max();
-            if let Some(detour) = best_detour {
-                coverage.new = coverage.new.saturating_add(asset.value);
-                coverage.unplanned_new = coverage.unplanned_new.saturating_add(asset.value);
-                coverage.protected_value = coverage.protected_value.saturating_add(asset.value);
-                coverage.interception = coverage.interception.saturating_add(
-                    asset
-                        .value
-                        .saturating_mul(detour.div_ceil(10).min(INTERCEPTION_DEPTH as u32)),
-                );
-                coverage.lateral = 0;
-                if planned.iter().any(|defense| {
-                    defense.profile.kind == BuildingKind::Barricade
-                        && defense.anchor.chebyshev(candidate) <= 2
-                }) {
-                    coverage.planned_overlap = coverage
-                        .planned_overlap
-                        .saturating_add(asset.value.saturating_mul(detour.div_ceil(10)));
-                }
-            }
-            continue;
-        }
 
         let mut protects = false;
         let mut adds_new = false;
@@ -4358,6 +4062,74 @@ mod tests {
     }
 
     #[test]
+    fn coverage_batch_preserves_repeated_paths_and_asset_masks() {
+        let map = PublicMapBriefing::from_scenario(&scenario_with(|_| '.')).unwrap();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        obs.my_buildings.push(building(
+            8,
+            obs.me,
+            BuildingKind::Turret,
+            TilePos::new(9, 8),
+        ));
+        obs.my_buildings.push(building(
+            9,
+            obs.me,
+            BuildingKind::Bastion,
+            TilePos::new(8, 12),
+        ));
+        let mut planned = building(10, obs.me, BuildingKind::Turret, TilePos::new(11, 8));
+        planned.built = false;
+        obs.my_buildings.push(planned);
+        let policy = UtilityPolicy::new();
+        let grounding = DefenseGrounding::new(&policy, &obs, &map);
+        for kind in [
+            BuildingKind::Turret,
+            BuildingKind::Bastion,
+            BuildingKind::FlakTurret,
+            BuildingKind::ScuttleCharge,
+        ] {
+            let profile = DefenseProfile::for_kind(kind).unwrap();
+            let projection =
+                strategic_lane_projection(&obs, &[], &[], &grounding, profile.domain).unwrap();
+            assert!(!projection.approaches.is_empty());
+            let mut approaches = projection.approaches.clone();
+            for _ in 0..3 {
+                approaches.extend(projection.approaches.clone());
+            }
+            let context = CoverageContext {
+                obs: &obs,
+                briefing: &map,
+                assets: &grounding.assets,
+                approaches: &approaches,
+                existing: &projection.existing,
+                planned: &projection.planned,
+            };
+            let batch = coverage::Batch::new(&context, profile);
+            for parity in 0..2 {
+                let selected: Vec<_> = approaches
+                    .iter()
+                    .filter(|a| a.asset % 2 == parity)
+                    .cloned()
+                    .collect();
+                let reference = CoverageContext {
+                    approaches: &selected,
+                    ..context
+                };
+                for y in (0..HEIGHT).step_by(3) {
+                    for x in (0..WIDTH).step_by(3) {
+                        let anchor = TilePos::new(x, y);
+                        assert_eq!(
+                            batch.score(anchor, |asset| asset % 2 == parity),
+                            reference_score_coverage(&reference, profile, anchor),
+                            "{kind:?}, {anchor:?}, {parity}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn site_bounds_preserve_exact_quotes_across_roles_and_obstacles() {
         for shape in 0..3 {
             let scenario = scenario_with(|tile| {
@@ -4444,6 +4216,11 @@ mod tests {
                                 existing: &projection.existing,
                                 planned: &projection.planned,
                             };
+                            assert_eq!(
+                                score_coverage(&context, profile, anchor),
+                                reference_score_coverage(&context, profile, anchor),
+                                "batched coverage: {shape}, {defended}, {kind:?}, {anchor:?}"
+                            );
                             let exact = Candidate {
                                 anchor,
                                 builder_travel: 0,
@@ -4695,6 +4472,134 @@ mod tests {
                 .is_some(),
             "Barricade lost its lane-shaping opportunity scorer"
         );
+    }
+
+    #[test]
+    fn barricade_costs_match_canonical_routes_for_mixed_threats_and_candidate_layouts() {
+        for lane in [false, true] {
+            let scenario = scenario_with(|tile| if lane { barricade_lane(tile) } else { '.' });
+            let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+            let mut obs = observation(PlayerId(0), LEFT_HOME);
+            if lane {
+                obs.known_peaks = (0..HEIGHT)
+                    .flat_map(|y| (0..WIDTH).map(move |x| TilePos::new(x, y)))
+                    .filter(|tile| barricade_lane(*tile) == '^')
+                    .collect();
+                obs.known_rock = obs.known_peaks.clone();
+            }
+            let policy = UtilityPolicy::new();
+            let starts = policy.uncleared_hostile_starts(&map, obs.me);
+            let ground = GroundKnowledge::new(&obs, &map, &starts).retained(&policy, false);
+            let assets = defended_assets(&policy, &obs, &ground);
+            let mut origins =
+                threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[3].clone();
+            for (tie, kind) in [(10, UnitKind::Sentinel), (11, UnitKind::Avalanche)] {
+                origins.push(ThreatOrigin {
+                    anchor: RIGHT_HOME.offset(-2, 0),
+                    size: None,
+                    capability: ThreatCapability::Mobile(kind),
+                    tie,
+                });
+            }
+            let baseline = approaches(&ground, &origins, &assets, None, DefenseDomain::Ground);
+            let anchors = sorted_tiles(
+                baseline
+                    .iter()
+                    .flat_map(|approach| approach.path.iter().copied()),
+            );
+            assert!(anchors.len() > 10);
+            let profile = DefenseProfile::for_kind(BuildingKind::Barricade).unwrap();
+            let mut cache = DefenseEvaluationCache::default();
+            for anchor in anchors.into_iter().step_by(2) {
+                let candidate = profile.footprint(anchor);
+                let expected = operationally_supported_approaches(
+                    &ground,
+                    &assets,
+                    &baseline,
+                    candidate,
+                    DefenseDomain::Ground,
+                    Some(MAX_BARRICADE_DETOUR_COST),
+                );
+                let actual =
+                    barricade::supported_costs(&ground, &assets, &baseline, candidate, &mut cache);
+                assert_eq!(
+                    actual,
+                    expected
+                        .as_ref()
+                        .map(|paths| paths.iter().map(barricade::ApproachCost::from).collect()),
+                    "lane {lane}, candidate {anchor:?}"
+                );
+                if let (Some(costs), Some(paths)) = (actual, expected) {
+                    assert_eq!(
+                        barricade::threat_summary(
+                            &costs,
+                            DefenseOpportunityEvidence::CurrentFoothold
+                        ),
+                        candidate_threat_summary(
+                            &obs,
+                            &map,
+                            &[],
+                            &[],
+                            profile,
+                            anchor,
+                            &paths,
+                            DefenseOpportunityEvidence::CurrentFoothold,
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn barricade_quotes_use_shared_cost_queries_across_decisions() {
+        let scenario = scenario_with(barricade_lane);
+        let map = PublicMapBriefing::from_scenario(&scenario).expect("lane briefing");
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        obs.my_units[0].tile = LEFT_HOME.offset(3, 1);
+        obs.known_peaks = (0..HEIGHT)
+            .flat_map(|y| (0..WIDTH).map(move |x| TilePos::new(x, y)))
+            .filter(|tile| barricade_lane(*tile) == '^')
+            .collect();
+        obs.known_rock = obs.known_peaks.clone();
+        let builders: Vec<_> = obs.my_units.iter().collect();
+        let policy = UtilityPolicy::new();
+        let quote = || {
+            policy.strategic_defense_quote_grounded(
+                BuildingKind::Barricade,
+                &obs,
+                &map,
+                &[],
+                &[],
+                &builders,
+                &mut None,
+            )
+        };
+        let (first, cold_navigation) = crate::bot::navigation::work::measure(quote);
+        let first = first.expect("a useful wall site");
+        let work = policy.defense_routing_cache.borrow().costs.work();
+        assert!(
+            work.set_searches > 0,
+            "wall detours must use the shared endpoint-set cost query"
+        );
+        assert_eq!(
+            work.pair_searches, 0,
+            "this graph fits one complete set search"
+        );
+        let (second, warm_navigation) = crate::bot::navigation::work::measure(quote);
+        assert_eq!(second, Some(first));
+        assert!(cold_navigation.searches <= 64, "{cold_navigation:?}");
+        assert!(cold_navigation.expanded <= 1_600, "{cold_navigation:?}");
+        assert!(cold_navigation.paths <= 32, "{cold_navigation:?}");
+        assert!(cold_navigation.generations <= 3, "{cold_navigation:?}");
+        assert!(warm_navigation.searches <= 24, "{warm_navigation:?}");
+        assert!(warm_navigation.expanded <= 480, "{warm_navigation:?}");
+        assert!(warm_navigation.paths <= 12, "{warm_navigation:?}");
+        assert_eq!(warm_navigation.fields, 0);
+        assert_eq!(warm_navigation.generations, 0);
+        let repeated = policy.defense_routing_cache.borrow().costs.work();
+        assert_eq!(repeated.set_searches, work.set_searches);
+        assert!(repeated.hits > work.hits);
     }
 
     #[test]

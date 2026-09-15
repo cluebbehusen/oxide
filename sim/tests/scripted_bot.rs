@@ -1729,26 +1729,22 @@ fn completed_income_forecast_cannot_fund_an_immediate_standing_purchase() {
                 .all(|job| job.forecast_scrap > 0),
         "the fixture must prove forecast income remains useful for deadline-bound future work: {future_connected_jobs:?}"
     );
-    assert_eq!(
-        future_connected_jobs
-            .iter()
-            .map(|job| job.current_scrap)
-            .sum::<u32>()
-            .saturating_add(
-                forecast_trace
-                    .allocation
-                    .proposals
-                    .entries
-                    .iter()
-                    .filter(
-                        |proposal| proposal.disposition == ProposalDispositionTrace::Accepted
-                            && matches!(proposal.key, ProposalKeyTrace::Economy { .. })
-                    )
-                    .map(|proposal| proposal.claims.current_scrap)
-                    .sum::<u32>()
-            ),
-        forecast_trace.resources.current_scrap,
-        "the small live bank may part-fund accepted future work but cannot make an immediate unit affordable"
+    let reserved_current = future_connected_jobs
+        .iter()
+        .map(|job| job.current_scrap)
+        .sum::<u32>()
+        .saturating_add(
+            forecast_trace
+                .allocation
+                .capital_assignments
+                .entries
+                .iter()
+                .map(|assignment| assignment.current_scrap)
+                .sum::<u32>(),
+        );
+    assert!(
+        reserved_current > 0 && reserved_current <= forecast_trace.resources.current_scrap,
+        "future work may reserve only the live capital needed by its payment dates"
     );
     assert!(
         forecast_trace

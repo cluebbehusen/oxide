@@ -101,12 +101,17 @@ footprint-, or map-relative frames instead of global entity ids or an absolute
 screen corner. Airworks aircraft spawn at the authoritative center of the open
 roof bay, then obey their ordinary orders from there.
 
-Defensive route evaluation retains A* allocation buffers per thread and bounded
-route answers per bot. Exact known-passability generations share successful
-endpoint paths and lazy distance bounds across defense and economic valuation.
-Temporary build layouts have separate retention from normal boards, and ground
-changes do not invalidate air routes. Actual paths keep the existing A* tie
-rules; failed searches retain their exhaustion or expansion-cap semantics.
+`bot::navigation` owns bot route queries, search storage, and cache lifetimes.
+Its `commands` module projects ordinary movement and Build routes from player
+knowledge; `paths` provides canonical endpoint routes and bounds;
+`public_fields` provides terrain and danger-aware travel distances; `service`
+retains producer and target connectivity; `egress` certifies producer exits; and
+`flood` handles connectivity and placement witnesses. Barricade foothold
+valuation asks for costs instead of full paths. Planners supply knowledge,
+safety rules, and target preferences; navigation preserves command orientation,
+path ties, and search limits. Ground, air, and hypothetical layouts retain
+separate bounded caches.
+
 Voluntary defense rejects construction kinds that cannot meet the current
 allocation reserve before searching for sites. Final allocation still owns the
 exact funding and compatibility decision.

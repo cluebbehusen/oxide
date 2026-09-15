@@ -2,13 +2,14 @@
 
 use chassis::grid::TilePos;
 use core::cmp::Reverse;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::construction::FoundryExpansionPlan;
 use crate::bot::PublicMapBriefing;
 use crate::bot::executive::{Intent, building_strength, full_ground_strength, ground_strength};
 use crate::bot::intelligence::{ContactEvidence, UnitContact};
+use crate::bot::navigation::public_fields::{PublicGroundDistances, PublicRoutes};
 use crate::bot::observation::Observation;
 use crate::ids::UnitId;
 use crate::stats::{BuildingKind, Domain, UnitKind};
@@ -44,6 +45,19 @@ impl ScrapLogistics {
 
         u64::from(self.amount).saturating_mul(u64::from(saved_distance))
             / u64::from(self.old_distance)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ScrapSummary {
+    credit: u64,
+    improving: bool,
+}
+
+impl ScrapSummary {
+    pub(super) fn include(&mut self, scrap: ScrapLogistics) {
+        self.credit = self.credit.saturating_add(scrap.credit());
+        self.improving |= scrap.amount > 0 && scrap.new_distance < scrap.old_distance;
     }
 }
 
@@ -133,6 +147,7 @@ impl FoundryOpportunity {
         .0
     }
 
+    #[cfg(test)]
     pub(super) fn admitted_objectives(
         anchor: TilePos,
         newly_supported_completed_extractors: u32,
@@ -140,42 +155,65 @@ impl FoundryOpportunity {
         current_visible_scrap: impl IntoIterator<Item = ScrapLogistics>,
         economy: ExpansionEconomy,
     ) -> Option<Self> {
-        let (opportunity, has_improving_scrap) = Self::quote_objectives(
+        let mut scrap = ScrapSummary::default();
+        for source in current_visible_scrap {
+            scrap.include(source);
+        }
+        Self::admitted_summary(
             anchor,
             newly_supported_completed_extractors,
-            current_visible_scrap,
+            ordinary_frontiers,
+            scrap,
             economy,
-        );
+        )
+    }
+
+    pub(super) fn admitted_summary(
+        anchor: TilePos,
+        newly_supported_completed_extractors: u32,
+        ordinary_frontiers: bool,
+        scrap: ScrapSummary,
+        economy: ExpansionEconomy,
+    ) -> Option<Self> {
+        let opportunity =
+            Self::quote_summary(anchor, newly_supported_completed_extractors, scrap, economy);
         let serves_admitted_objective =
-            newly_supported_completed_extractors > 0 || (ordinary_frontiers && has_improving_scrap);
+            newly_supported_completed_extractors > 0 || (ordinary_frontiers && scrap.improving);
         (serves_admitted_objective && opportunity.economically_eligible).then_some(opportunity)
     }
 
+    #[cfg(test)]
     fn quote_objectives(
         anchor: TilePos,
         newly_supported_completed_extractors: u32,
         current_visible_scrap: impl IntoIterator<Item = ScrapLogistics>,
         economy: ExpansionEconomy,
     ) -> (Self, bool) {
-        let mut current_scrap_credit = 0u64;
-        let mut has_improving_scrap = false;
-        for scrap in current_visible_scrap {
-            current_scrap_credit = current_scrap_credit.saturating_add(scrap.credit());
-            has_improving_scrap |= scrap.amount > 0 && scrap.new_distance < scrap.old_distance;
+        let mut scrap = ScrapSummary::default();
+        for source in current_visible_scrap {
+            scrap.include(source);
         }
-        let has_external_objective =
-            newly_supported_completed_extractors > 0 || has_improving_scrap;
-        let extractor_gain_per_minute = u64::from(newly_supported_completed_extractors)
-            .saturating_mul(extractor_gain_per_minute());
         (
-            Self::quote(
-                anchor,
-                current_scrap_credit,
-                extractor_gain_per_minute,
-                has_external_objective,
-                economy,
-            ),
-            has_improving_scrap,
+            Self::quote_summary(anchor, newly_supported_completed_extractors, scrap, economy),
+            scrap.improving,
+        )
+    }
+
+    fn quote_summary(
+        anchor: TilePos,
+        newly_supported_completed_extractors: u32,
+        scrap: ScrapSummary,
+        economy: ExpansionEconomy,
+    ) -> Self {
+        let has_external_objective = newly_supported_completed_extractors > 0 || scrap.improving;
+        let extractor_gain = u64::from(newly_supported_completed_extractors)
+            .saturating_mul(extractor_gain_per_minute());
+        Self::quote(
+            anchor,
+            scrap.credit,
+            extractor_gain,
+            has_external_objective,
+            economy,
         )
     }
 
@@ -621,370 +659,6 @@ impl KnownGroundThreat {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct PublicGroundDistances {
-    width: i32,
-    height: i32,
-    distances: Vec<u32>,
-}
-
-/// Exact dynamic ground exclusions for expansion logistics routing.
-///
-/// The dense membership form makes every Dijkstra edge check constant-time,
-/// while equality remains an exact invalidation key for both projected danger
-/// and the policy's independently retained contested-work regions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BlockedGroundLayout {
-    width: i32,
-    height: i32,
-    blocked: Vec<bool>,
-}
-
-impl BlockedGroundLayout {
-    pub(super) fn from_predicate(
-        public_map: &PublicMapBriefing,
-        mut blocked: impl FnMut(TilePos) -> bool,
-    ) -> Self {
-        let width = public_map.map_width();
-        let height = public_map.map_height();
-        let cells = usize::try_from(width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .unwrap_or(0);
-        let blocked = (0..cells)
-            .map(|index| {
-                let index = i32::try_from(index).unwrap_or(i32::MAX);
-                let tile = if width > 0 {
-                    TilePos::new(index % width, index / width)
-                } else {
-                    TilePos::new(-1, -1)
-                };
-                blocked(tile)
-            })
-            .collect();
-        Self {
-            width,
-            height,
-            blocked,
-        }
-    }
-
-    pub(super) fn contains(&self, tile: TilePos) -> bool {
-        PublicGroundDistances::index_for(self.width, self.height, tile)
-            .and_then(|index| self.blocked.get(index))
-            .copied()
-            .unwrap_or(true)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DangerAwareDistanceGeneration {
-    blocked: BlockedGroundLayout,
-    fields: BTreeMap<TilePos, Arc<PublicGroundDistances>>,
-}
-
-/// Bounded routing memoization for the expansion planner.
-///
-/// Dynamic logistics fields retain only the sources present in the latest
-/// exact danger generation. Terrain-only threat fields likewise retain only
-/// currently known threat positions. Authored start fields are permanent for
-/// one briefing and therefore bounded by its starting-seat count.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct ExpansionRoutingCache {
-    public_map: Option<PublicMapBriefing>,
-    danger_aware: Option<DangerAwareDistanceGeneration>,
-    threat_fields: BTreeMap<TilePos, Arc<PublicGroundDistances>>,
-    start_fields: BTreeMap<TilePos, Arc<PublicGroundDistances>>,
-    #[cfg(test)]
-    builds: ExpansionRoutingBuilds,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct ExpansionRoutingBuilds {
-    pub(super) danger_aware: usize,
-    pub(super) threats: usize,
-    pub(super) starts: usize,
-}
-
-impl ExpansionRoutingCache {
-    fn prepare_map(&mut self, public_map: &PublicMapBriefing) {
-        if self
-            .public_map
-            .as_ref()
-            .is_some_and(|cached| cached == public_map)
-        {
-            return;
-        }
-        self.public_map = Some(public_map.clone());
-        self.danger_aware = None;
-        self.threat_fields.clear();
-        self.start_fields.clear();
-    }
-
-    pub(super) fn danger_aware_fields(
-        &mut self,
-        public_map: &PublicMapBriefing,
-        blocked: BlockedGroundLayout,
-        sources: impl IntoIterator<Item = TilePos>,
-    ) -> Vec<(TilePos, Arc<PublicGroundDistances>)> {
-        self.prepare_map(public_map);
-        let mut sources = sources.into_iter().collect::<Vec<_>>();
-        sources.sort_unstable_by_key(|tile| (tile.y, tile.x));
-        sources.dedup();
-        if self
-            .danger_aware
-            .as_ref()
-            .is_none_or(|generation| generation.blocked != blocked)
-        {
-            self.danger_aware = Some(DangerAwareDistanceGeneration {
-                blocked,
-                fields: BTreeMap::new(),
-            });
-        }
-        let generation = self
-            .danger_aware
-            .as_mut()
-            .expect("a danger-aware generation was prepared");
-        generation.fields.retain(|source, _| {
-            sources
-                .binary_search_by_key(&(source.y, source.x), |tile| (tile.y, tile.x))
-                .is_ok()
-        });
-        for &source in &sources {
-            generation.fields.entry(source).or_insert_with(|| {
-                #[cfg(test)]
-                {
-                    self.builds.danger_aware += 1;
-                }
-                Arc::new(PublicGroundDistances::from_sources_avoiding(
-                    public_map,
-                    [source],
-                    |tile| generation.blocked.contains(tile),
-                ))
-            });
-        }
-        sources
-            .into_iter()
-            .filter_map(|source| {
-                generation
-                    .fields
-                    .get(&source)
-                    .map(|field| (source, Arc::clone(field)))
-            })
-            .collect()
-    }
-
-    fn threat_fields(
-        &mut self,
-        public_map: &PublicMapBriefing,
-        sources: impl IntoIterator<Item = TilePos>,
-    ) -> BTreeMap<TilePos, Arc<PublicGroundDistances>> {
-        self.prepare_map(public_map);
-        let mut sources = sources.into_iter().collect::<Vec<_>>();
-        sources.sort_unstable_by_key(|tile| (tile.y, tile.x));
-        sources.dedup();
-        self.threat_fields.retain(|source, _| {
-            sources
-                .binary_search_by_key(&(source.y, source.x), |tile| (tile.y, tile.x))
-                .is_ok()
-        });
-        for &source in &sources {
-            self.threat_fields.entry(source).or_insert_with(|| {
-                #[cfg(test)]
-                {
-                    self.builds.threats += 1;
-                }
-                Arc::new(PublicGroundDistances::from_sources(public_map, [source]))
-            });
-        }
-        self.threat_fields.clone()
-    }
-
-    fn start_fields(
-        &mut self,
-        public_map: &PublicMapBriefing,
-        starts: &[crate::bot::StartingFoundry],
-    ) -> Vec<Arc<PublicGroundDistances>> {
-        self.prepare_map(public_map);
-        starts
-            .iter()
-            .map(|start| {
-                Arc::clone(self.start_fields.entry(start.anchor).or_insert_with(|| {
-                    #[cfg(test)]
-                    {
-                        self.builds.starts += 1;
-                    }
-                    Arc::new(PublicGroundDistances::from_sources(
-                        public_map,
-                        foundry_footprint_tiles(start.anchor),
-                    ))
-                }))
-            })
-            .collect()
-    }
-
-    #[cfg(test)]
-    pub(super) fn build_count(&self) -> ExpansionRoutingBuilds {
-        self.builds
-    }
-
-    #[cfg(test)]
-    pub(super) fn retained_field_counts(&self) -> (usize, usize, usize) {
-        (
-            self.danger_aware
-                .as_ref()
-                .map_or(0, |generation| generation.fields.len()),
-            self.threat_fields.len(),
-            self.start_fields.len(),
-        )
-    }
-}
-
-impl PublicGroundDistances {
-    pub(super) fn from_sources(
-        public_map: &PublicMapBriefing,
-        sources: impl IntoIterator<Item = TilePos>,
-    ) -> Self {
-        Self::from_sources_avoiding(public_map, sources, |_| false)
-    }
-
-    pub(super) fn from_sources_avoiding(
-        public_map: &PublicMapBriefing,
-        sources: impl IntoIterator<Item = TilePos>,
-        mut blocked: impl FnMut(TilePos) -> bool,
-    ) -> Self {
-        let width = public_map.map_width();
-        let height = public_map.map_height();
-        let cells = usize::try_from(width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .unwrap_or(0);
-        let mut distances = vec![u32::MAX; cells];
-        const MAX_STEP_COST: usize = 14;
-        let mut frontier = (0..=MAX_STEP_COST)
-            .map(|_| VecDeque::new())
-            .collect::<Vec<VecDeque<(u32, TilePos)>>>();
-        let mut queued = 0usize;
-        for source in sources {
-            if !Self::ground_open(public_map, source) || blocked(source) {
-                continue;
-            }
-            let Some(index) = Self::index_for(width, height, source) else {
-                continue;
-            };
-            if distances[index] == 0 {
-                continue;
-            }
-            distances[index] = 0;
-            frontier[0].push_back((0, source));
-            queued += 1;
-        }
-
-        let mut current_distance = 0u32;
-        while queued > 0 {
-            let bucket_index = usize::try_from(
-                current_distance % u32::try_from(MAX_STEP_COST + 1).expect("small bucket count"),
-            )
-            .expect("bucket index fits usize");
-            let Some(&(distance, current)) = frontier[bucket_index].front() else {
-                current_distance = current_distance.saturating_add(1);
-                continue;
-            };
-            if distance > current_distance {
-                current_distance = current_distance.saturating_add(1);
-                continue;
-            }
-            frontier[bucket_index].pop_front();
-            queued -= 1;
-            let Some(current_index) = Self::index_for(width, height, current) else {
-                continue;
-            };
-            if distances[current_index] != distance {
-                continue;
-            }
-            for (dx, dy, step) in [
-                (-1, 0, 10),
-                (1, 0, 10),
-                (0, -1, 10),
-                (0, 1, 10),
-                (-1, -1, 14),
-                (1, -1, 14),
-                (-1, 1, 14),
-                (1, 1, 14),
-            ] {
-                let next = current.offset(dx, dy);
-                if !Self::ground_open(public_map, next)
-                    || blocked(next)
-                    || (dx != 0
-                        && dy != 0
-                        && (!Self::ground_open(public_map, current.offset(dx, 0))
-                            || blocked(current.offset(dx, 0))
-                            || !Self::ground_open(public_map, current.offset(0, dy))
-                            || blocked(current.offset(0, dy))))
-                {
-                    continue;
-                }
-                let Some(next_index) = Self::index_for(width, height, next) else {
-                    continue;
-                };
-                let next_distance = distance.saturating_add(step);
-                if next_distance < distances[next_index] {
-                    distances[next_index] = next_distance;
-                    let bucket = usize::try_from(
-                        next_distance
-                            % u32::try_from(MAX_STEP_COST + 1).expect("small bucket count"),
-                    )
-                    .expect("bucket index fits usize");
-                    frontier[bucket].push_back((next_distance, next));
-                    queued += 1;
-                }
-            }
-        }
-
-        Self {
-            width,
-            height,
-            distances,
-        }
-    }
-
-    fn ground_open(public_map: &PublicMapBriefing, tile: TilePos) -> bool {
-        public_map
-            .terrain_at(tile)
-            .is_some_and(|terrain| !terrain.blocks_ground())
-    }
-
-    fn index_for(width: i32, height: i32, tile: TilePos) -> Option<usize> {
-        if tile.x < 0 || tile.y < 0 || tile.x >= width || tile.y >= height {
-            return None;
-        }
-        usize::try_from(tile.y)
-            .ok()?
-            .checked_mul(usize::try_from(width).ok()?)?
-            .checked_add(usize::try_from(tile.x).ok()?)
-    }
-
-    pub(super) fn footprint_distance(&self, anchor: TilePos, size: (i32, i32)) -> Option<u32> {
-        (0..size.1)
-            .flat_map(|dy| (0..size.0).map(move |dx| anchor.offset(dx, dy)))
-            .filter_map(|tile| {
-                Self::index_for(self.width, self.height, tile)
-                    .and_then(|index| self.distances.get(index).copied())
-                    .filter(|distance| *distance != u32::MAX)
-            })
-            .min()
-    }
-}
-
 fn scale_strength(strength: GroundStrength, scale: u16) -> GroundStrength {
     GroundStrength(
         (u128::from(strength.0) * u128::from(scale) / 10_000).min(u128::from(u64::MAX)) as u64,
@@ -1017,11 +691,6 @@ fn missing_security_scrap(
     u32::try_from(sentinels)
         .unwrap_or(u32::MAX)
         .saturating_mul(UnitKind::Sentinel.stats().cost)
-}
-
-fn foundry_footprint_tiles(anchor: TilePos) -> impl Iterator<Item = TilePos> {
-    let size = BuildingKind::Foundry.base_stats().size;
-    (0..size.1).flat_map(move |dy| (0..size.0).map(move |dx| anchor.offset(dx, dy)))
 }
 
 fn known_ground_threats(
@@ -1089,7 +758,7 @@ struct RoutedGroundThreat {
 fn ground_threat_distance_fields(
     public_map: &PublicMapBriefing,
     known: &BTreeMap<UnitId, KnownGroundThreat>,
-    routing_cache: &mut ExpansionRoutingCache,
+    routing_cache: &mut PublicRoutes,
 ) -> Vec<RoutedGroundThreat> {
     let fields = routing_cache.threat_fields(public_map, known.values().map(|threat| threat.tile));
     known
@@ -1132,7 +801,7 @@ fn routed_ground_threats(
 fn hostile_start_distance_fields(
     public_map: &PublicMapBriefing,
     starts: &[crate::bot::StartingFoundry],
-    routing_cache: &mut ExpansionRoutingCache,
+    routing_cache: &mut PublicRoutes,
 ) -> Vec<Arc<PublicGroundDistances>> {
     routing_cache.start_fields(public_map, starts)
 }
@@ -1245,10 +914,7 @@ struct ExpansionSecurityWorld {
 }
 
 impl ExpansionSecurityWorld {
-    fn observe(
-        context: &ExpansionAssessmentContext<'_>,
-        routing_cache: &mut ExpansionRoutingCache,
-    ) -> Self {
+    fn observe(context: &ExpansionAssessmentContext<'_>, routing_cache: &mut PublicRoutes) -> Self {
         let sentinel_strength = GroundStrength(full_ground_strength(UnitKind::Sentinel));
         let network_core = GroundStrength(
             sentinel_strength
@@ -1329,14 +995,14 @@ pub(super) fn quote_foundry_expansions(
     opportunities: Vec<FoundryOpportunity>,
     context: &ExpansionAssessmentContext<'_>,
 ) -> Vec<FoundryExpansionQuote> {
-    let mut routing_cache = ExpansionRoutingCache::default();
+    let mut routing_cache = PublicRoutes::default();
     quote_foundry_expansions_cached(opportunities, context, &mut routing_cache)
 }
 
 pub(super) fn quote_foundry_expansions_cached(
     opportunities: Vec<FoundryOpportunity>,
     context: &ExpansionAssessmentContext<'_>,
-    routing_cache: &mut ExpansionRoutingCache,
+    routing_cache: &mut PublicRoutes,
 ) -> Vec<FoundryExpansionQuote> {
     let world = ExpansionSecurityWorld::observe(context, routing_cache);
     let mut quotes = opportunities
@@ -1372,7 +1038,7 @@ pub(super) fn assess_retained_foundry(
     opportunity: FoundryOpportunity,
     builder: UnitId,
     context: &ExpansionAssessmentContext<'_>,
-    routing_cache: &mut ExpansionRoutingCache,
+    routing_cache: &mut PublicRoutes,
 ) -> FoundryExpansionAssessment {
     let world = ExpansionSecurityWorld::observe(context, routing_cache);
     let (security, missing_security_scrap, preparation_target_strength) =
@@ -1978,209 +1644,6 @@ mod tests {
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         }
-    }
-
-    fn reference_ground_distances(
-        public_map: &PublicMapBriefing,
-        sources: impl IntoIterator<Item = TilePos>,
-        blocked: &BlockedGroundLayout,
-    ) -> PublicGroundDistances {
-        use std::collections::BinaryHeap;
-
-        let width = public_map.map_width();
-        let height = public_map.map_height();
-        let cells = usize::try_from(width * height).expect("small test map");
-        let mut distances = vec![u32::MAX; cells];
-        let mut frontier = BinaryHeap::new();
-        for source in sources {
-            if !PublicGroundDistances::ground_open(public_map, source) || blocked.contains(source) {
-                continue;
-            }
-            let Some(index) = PublicGroundDistances::index_for(width, height, source) else {
-                continue;
-            };
-            if distances[index] == 0 {
-                continue;
-            }
-            distances[index] = 0;
-            frontier.push(Reverse((0u32, source.y, source.x)));
-        }
-        while let Some(Reverse((distance, y, x))) = frontier.pop() {
-            let current = TilePos::new(x, y);
-            let Some(current_index) = PublicGroundDistances::index_for(width, height, current)
-            else {
-                continue;
-            };
-            if distances[current_index] != distance {
-                continue;
-            }
-            for (dx, dy, step) in [
-                (-1, 0, 10),
-                (1, 0, 10),
-                (0, -1, 10),
-                (0, 1, 10),
-                (-1, -1, 14),
-                (1, -1, 14),
-                (-1, 1, 14),
-                (1, 1, 14),
-            ] {
-                let next = current.offset(dx, dy);
-                if !PublicGroundDistances::ground_open(public_map, next)
-                    || blocked.contains(next)
-                    || (dx != 0
-                        && dy != 0
-                        && (!PublicGroundDistances::ground_open(public_map, current.offset(dx, 0))
-                            || blocked.contains(current.offset(dx, 0))
-                            || !PublicGroundDistances::ground_open(
-                                public_map,
-                                current.offset(0, dy),
-                            )
-                            || blocked.contains(current.offset(0, dy))))
-                {
-                    continue;
-                }
-                let Some(next_index) = PublicGroundDistances::index_for(width, height, next) else {
-                    continue;
-                };
-                let next_distance = distance.saturating_add(step);
-                if next_distance < distances[next_index] {
-                    distances[next_index] = next_distance;
-                    frontier.push(Reverse((next_distance, next.y, next.x)));
-                }
-            }
-        }
-        PublicGroundDistances {
-            width,
-            height,
-            distances,
-        }
-    }
-
-    #[test]
-    fn bounded_bucket_routes_match_the_reference_dijkstra_exactly() {
-        let walls = (0..9)
-            .filter(|y| !matches!(y, 2 | 7))
-            .map(|y| TilePos::new(6, y))
-            .chain([TilePos::new(3, 4), TilePos::new(4, 3)]);
-        let public_map = briefing(13, 9, walls, Vec::new());
-        let blocked = BlockedGroundLayout::from_predicate(&public_map, |tile| {
-            matches!((tile.x, tile.y), (8, 2) | (8, 3) | (9, 3))
-        });
-        let sources = [
-            TilePos::new(1, 1),
-            TilePos::new(11, 7),
-            TilePos::new(1, 1),
-            TilePos::new(-1, -1),
-        ];
-
-        let actual = PublicGroundDistances::from_sources_avoiding(&public_map, sources, |tile| {
-            blocked.contains(tile)
-        });
-        let reference = reference_ground_distances(&public_map, sources, &blocked);
-
-        assert_eq!(actual, reference);
-    }
-
-    #[test]
-    fn routing_cache_reuses_exact_generations_and_keeps_dynamic_fields_bounded() {
-        let public_map = briefing(18, 10, [], Vec::new());
-        let clear = BlockedGroundLayout::from_predicate(&public_map, |_| false);
-        let mut cache = ExpansionRoutingCache::default();
-        let first = cache.danger_aware_fields(
-            &public_map,
-            clear.clone(),
-            [TilePos::new(3, 3), TilePos::new(14, 7)],
-        );
-        assert_eq!(cache.build_count().danger_aware, 2);
-        assert_eq!(cache.retained_field_counts().0, 2);
-
-        let repeated = cache.danger_aware_fields(
-            &public_map,
-            clear,
-            [TilePos::new(14, 7), TilePos::new(3, 3), TilePos::new(3, 3)],
-        );
-        assert_eq!(cache.build_count().danger_aware, 2);
-        assert_eq!(first.len(), repeated.len());
-        assert!(
-            first
-                .iter()
-                .zip(&repeated)
-                .all(|(left, right)| { left.0 == right.0 && Arc::ptr_eq(&left.1, &right.1) })
-        );
-
-        cache.danger_aware_fields(
-            &public_map,
-            BlockedGroundLayout::from_predicate(&public_map, |tile| tile == TilePos::new(9, 5)),
-            [TilePos::new(14, 7)],
-        );
-        assert_eq!(cache.build_count().danger_aware, 3);
-        assert_eq!(cache.retained_field_counts().0, 1);
-    }
-
-    #[test]
-    fn row_major_source_retention_reuses_nonmonotone_coordinates() {
-        let public_map = briefing(18, 10, [], Vec::new());
-        let clear = BlockedGroundLayout::from_predicate(&public_map, |_| false);
-        let sources = [TilePos::new(14, 2), TilePos::new(3, 7)];
-        let mut cache = ExpansionRoutingCache::default();
-
-        cache.danger_aware_fields(&public_map, clear.clone(), sources);
-        cache.threat_fields(&public_map, sources);
-        let before = cache.build_count();
-        cache.danger_aware_fields(&public_map, clear, sources.into_iter().rev());
-        cache.threat_fields(&public_map, sources.into_iter().rev());
-
-        assert_eq!(cache.build_count(), before);
-        assert_eq!(cache.retained_field_counts(), (2, 2, 0));
-    }
-
-    #[test]
-    fn dynamic_danger_never_invalidates_terrain_only_threat_or_start_fields() {
-        let starts = vec![
-            crate::bot::StartingFoundry {
-                player: crate::ids::PlayerId(0),
-                anchor: TilePos::new(1, 1),
-            },
-            crate::bot::StartingFoundry {
-                player: crate::ids::PlayerId(1),
-                anchor: TilePos::new(14, 6),
-            },
-        ];
-        let public_map = briefing(18, 10, [], starts.clone());
-        let mut cache = ExpansionRoutingCache::default();
-        cache.threat_fields(&public_map, [TilePos::new(4, 4), TilePos::new(12, 4)]);
-        cache.start_fields(&public_map, &starts);
-        let before = cache.build_count();
-
-        for blocked in [TilePos::new(7, 4), TilePos::new(8, 4)] {
-            cache.danger_aware_fields(
-                &public_map,
-                BlockedGroundLayout::from_predicate(&public_map, |tile| tile == blocked),
-                [TilePos::new(5, 4)],
-            );
-            cache.threat_fields(&public_map, [TilePos::new(12, 4), TilePos::new(4, 4)]);
-            cache.start_fields(&public_map, &starts[1..]);
-        }
-
-        let after = cache.build_count();
-        assert_eq!(after.threats, before.threats);
-        assert_eq!(after.starts, before.starts);
-        assert_eq!(cache.retained_field_counts(), (1, 2, 2));
-    }
-
-    #[test]
-    fn routing_cache_replaces_departed_threats_and_resets_for_any_map_change() {
-        let public_map = briefing(18, 10, [], Vec::new());
-        let mut cache = ExpansionRoutingCache::default();
-        cache.threat_fields(&public_map, [TilePos::new(3, 3), TilePos::new(9, 3)]);
-        cache.threat_fields(&public_map, [TilePos::new(9, 3), TilePos::new(14, 3)]);
-        assert_eq!(cache.build_count().threats, 3);
-        assert_eq!(cache.retained_field_counts().1, 2);
-
-        let changed_map = briefing(18, 10, [TilePos::new(8, 5)], Vec::new());
-        cache.threat_fields(&changed_map, [TilePos::new(9, 3)]);
-        assert_eq!(cache.build_count().threats, 4);
-        assert_eq!(cache.retained_field_counts(), (0, 1, 0));
     }
 
     fn building(

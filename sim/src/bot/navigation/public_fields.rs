@@ -1,0 +1,730 @@
+//! Retained public-terrain distances for logistics and threat travel.
+
+use crate::bot::PublicMapBriefing;
+use crate::stats::BuildingKind;
+use chassis::grid::TilePos;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::bot) struct PublicGroundDistances {
+    width: i32,
+    height: i32,
+    distances: Vec<u32>,
+}
+
+/// Exact dynamic ground exclusions for expansion logistics routing.
+///
+/// The dense membership form makes every Dijkstra edge check constant-time,
+/// while equality remains an exact invalidation key for both projected danger
+/// and the policy's independently retained contested-work regions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::bot) struct BlockedGroundLayout {
+    width: i32,
+    height: i32,
+    blocked: Vec<bool>,
+}
+
+impl BlockedGroundLayout {
+    pub(in crate::bot) fn from_predicate(
+        public_map: &PublicMapBriefing,
+        mut blocked: impl FnMut(TilePos) -> bool,
+    ) -> Self {
+        let width = public_map.map_width();
+        let height = public_map.map_height();
+        let cells = usize::try_from(width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .unwrap_or(0);
+        let blocked = (0..cells)
+            .map(|index| {
+                let index = i32::try_from(index).unwrap_or(i32::MAX);
+                let tile = if width > 0 {
+                    TilePos::new(index % width, index / width)
+                } else {
+                    TilePos::new(-1, -1)
+                };
+                blocked(tile)
+            })
+            .collect();
+        Self {
+            width,
+            height,
+            blocked,
+        }
+    }
+
+    pub(in crate::bot) fn contains(&self, tile: TilePos) -> bool {
+        PublicGroundDistances::index_for(self.width, self.height, tile)
+            .and_then(|index| self.blocked.get(index))
+            .copied()
+            .unwrap_or(true)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DangerAwareDistanceGeneration {
+    blocked: BlockedGroundLayout,
+    fields: BTreeMap<TilePos, Arc<PublicGroundDistances>>,
+}
+
+/// Bounded routing memoization for the expansion planner.
+///
+/// Dynamic logistics fields retain only the sources present in the latest
+/// exact danger generation. Terrain-only threat fields likewise retain only
+/// currently known threat positions. Authored start fields are permanent for
+/// one briefing and therefore bounded by its starting-seat count.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(in crate::bot) struct PublicRoutes {
+    public_map: Option<PublicMapBriefing>,
+    danger_aware: Option<DangerAwareDistanceGeneration>,
+    threat_fields: BTreeMap<TilePos, Arc<PublicGroundDistances>>,
+    start_fields: BTreeMap<TilePos, Arc<PublicGroundDistances>>,
+    #[cfg(test)]
+    builds: PublicRouteBuilds,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::bot) struct PublicRouteBuilds {
+    pub(in crate::bot) danger_aware: usize,
+    pub(in crate::bot) threats: usize,
+    pub(in crate::bot) starts: usize,
+}
+
+impl PublicRoutes {
+    fn prepare_map(&mut self, public_map: &PublicMapBriefing) {
+        if self
+            .public_map
+            .as_ref()
+            .is_some_and(|cached| cached == public_map)
+        {
+            return;
+        }
+        #[cfg(test)]
+        super::work::record(|work| {
+            work.generations += 1;
+        });
+        self.public_map = Some(public_map.clone());
+        self.danger_aware = None;
+        self.threat_fields.clear();
+        self.start_fields.clear();
+    }
+
+    pub(in crate::bot) fn danger_aware_fields(
+        &mut self,
+        public_map: &PublicMapBriefing,
+        blocked: BlockedGroundLayout,
+        sources: impl IntoIterator<Item = TilePos>,
+    ) -> Vec<(TilePos, Arc<PublicGroundDistances>)> {
+        self.prepare_map(public_map);
+        let mut sources = sources.into_iter().collect::<Vec<_>>();
+        sources.sort_unstable_by_key(|tile| (tile.y, tile.x));
+        sources.dedup();
+        if self
+            .danger_aware
+            .as_ref()
+            .is_none_or(|generation| generation.blocked != blocked)
+        {
+            #[cfg(test)]
+            super::work::record(|work| work.generations += 1);
+            self.danger_aware = Some(DangerAwareDistanceGeneration {
+                blocked,
+                fields: BTreeMap::new(),
+            });
+        }
+        let generation = self
+            .danger_aware
+            .as_mut()
+            .expect("a danger-aware generation was prepared");
+        generation.fields.retain(|source, _| {
+            sources
+                .binary_search_by_key(&(source.y, source.x), |tile| (tile.y, tile.x))
+                .is_ok()
+        });
+        for &source in &sources {
+            generation.fields.entry(source).or_insert_with(|| {
+                #[cfg(test)]
+                {
+                    self.builds.danger_aware += 1;
+                }
+                Arc::new(PublicGroundDistances::from_sources_avoiding(
+                    public_map,
+                    [source],
+                    |tile| generation.blocked.contains(tile),
+                ))
+            });
+        }
+        sources
+            .into_iter()
+            .filter_map(|source| {
+                generation
+                    .fields
+                    .get(&source)
+                    .map(|field| (source, Arc::clone(field)))
+            })
+            .collect()
+    }
+
+    pub(in crate::bot) fn threat_fields(
+        &mut self,
+        public_map: &PublicMapBriefing,
+        sources: impl IntoIterator<Item = TilePos>,
+    ) -> BTreeMap<TilePos, Arc<PublicGroundDistances>> {
+        self.prepare_map(public_map);
+        let mut sources = sources.into_iter().collect::<Vec<_>>();
+        sources.sort_unstable_by_key(|tile| (tile.y, tile.x));
+        sources.dedup();
+        self.threat_fields.retain(|source, _| {
+            sources
+                .binary_search_by_key(&(source.y, source.x), |tile| (tile.y, tile.x))
+                .is_ok()
+        });
+        for &source in &sources {
+            self.threat_fields.entry(source).or_insert_with(|| {
+                #[cfg(test)]
+                {
+                    self.builds.threats += 1;
+                }
+                Arc::new(PublicGroundDistances::from_sources(public_map, [source]))
+            });
+        }
+        self.threat_fields.clone()
+    }
+
+    pub(in crate::bot) fn start_fields(
+        &mut self,
+        public_map: &PublicMapBriefing,
+        starts: &[crate::bot::StartingFoundry],
+    ) -> Vec<Arc<PublicGroundDistances>> {
+        self.prepare_map(public_map);
+        starts
+            .iter()
+            .map(|start| {
+                Arc::clone(self.start_fields.entry(start.anchor).or_insert_with(|| {
+                    #[cfg(test)]
+                    {
+                        self.builds.starts += 1;
+                    }
+                    Arc::new(PublicGroundDistances::from_sources(
+                        public_map,
+                        foundry_footprint_tiles(start.anchor),
+                    ))
+                }))
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(in crate::bot) fn build_count(&self) -> PublicRouteBuilds {
+        self.builds
+    }
+
+    #[cfg(test)]
+    pub(in crate::bot) fn retained_field_counts(&self) -> (usize, usize, usize) {
+        (
+            self.danger_aware
+                .as_ref()
+                .map_or(0, |generation| generation.fields.len()),
+            self.threat_fields.len(),
+            self.start_fields.len(),
+        )
+    }
+}
+
+impl PublicGroundDistances {
+    pub(in crate::bot) fn from_sources(
+        public_map: &PublicMapBriefing,
+        sources: impl IntoIterator<Item = TilePos>,
+    ) -> Self {
+        Self::from_sources_avoiding(public_map, sources, |_| false)
+    }
+
+    pub(in crate::bot) fn from_sources_avoiding(
+        public_map: &PublicMapBriefing,
+        sources: impl IntoIterator<Item = TilePos>,
+        mut blocked: impl FnMut(TilePos) -> bool,
+    ) -> Self {
+        #[cfg(test)]
+        super::work::record(|work| {
+            work.fields += 1;
+            work.searches += 1;
+        });
+        let width = public_map.map_width();
+        let height = public_map.map_height();
+        let cells = usize::try_from(width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .unwrap_or(0);
+        let mut distances = vec![u32::MAX; cells];
+        const MAX_STEP_COST: usize = 14;
+        let mut frontier = (0..=MAX_STEP_COST)
+            .map(|_| VecDeque::new())
+            .collect::<Vec<VecDeque<(u32, TilePos)>>>();
+        let mut queued = 0usize;
+        for source in sources {
+            if !Self::ground_open(public_map, source) || blocked(source) {
+                continue;
+            }
+            let Some(index) = Self::index_for(width, height, source) else {
+                continue;
+            };
+            if distances[index] == 0 {
+                continue;
+            }
+            distances[index] = 0;
+            frontier[0].push_back((0, source));
+            queued += 1;
+        }
+
+        let mut current_distance = 0u32;
+        while queued > 0 {
+            let bucket_index = usize::try_from(
+                current_distance % u32::try_from(MAX_STEP_COST + 1).expect("small bucket count"),
+            )
+            .expect("bucket index fits usize");
+            let Some(&(distance, current)) = frontier[bucket_index].front() else {
+                current_distance = current_distance.saturating_add(1);
+                continue;
+            };
+            if distance > current_distance {
+                current_distance = current_distance.saturating_add(1);
+                continue;
+            }
+            frontier[bucket_index].pop_front();
+            queued -= 1;
+            let Some(current_index) = Self::index_for(width, height, current) else {
+                continue;
+            };
+            if distances[current_index] != distance {
+                continue;
+            }
+            #[cfg(test)]
+            super::work::record(|work| {
+                work.expanded += 1;
+            });
+            for (dx, dy, step) in [
+                (-1, 0, 10),
+                (1, 0, 10),
+                (0, -1, 10),
+                (0, 1, 10),
+                (-1, -1, 14),
+                (1, -1, 14),
+                (-1, 1, 14),
+                (1, 1, 14),
+            ] {
+                let next = current.offset(dx, dy);
+                if !Self::ground_open(public_map, next)
+                    || blocked(next)
+                    || (dx != 0
+                        && dy != 0
+                        && (!Self::ground_open(public_map, current.offset(dx, 0))
+                            || blocked(current.offset(dx, 0))
+                            || !Self::ground_open(public_map, current.offset(0, dy))
+                            || blocked(current.offset(0, dy))))
+                {
+                    continue;
+                }
+                let Some(next_index) = Self::index_for(width, height, next) else {
+                    continue;
+                };
+                let next_distance = distance.saturating_add(step);
+                if next_distance < distances[next_index] {
+                    distances[next_index] = next_distance;
+                    let bucket = usize::try_from(
+                        next_distance
+                            % u32::try_from(MAX_STEP_COST + 1).expect("small bucket count"),
+                    )
+                    .expect("bucket index fits usize");
+                    frontier[bucket].push_back((next_distance, next));
+                    queued += 1;
+                }
+            }
+        }
+
+        Self {
+            width,
+            height,
+            distances,
+        }
+    }
+
+    fn ground_open(public_map: &PublicMapBriefing, tile: TilePos) -> bool {
+        public_map
+            .terrain_at(tile)
+            .is_some_and(|terrain| !terrain.blocks_ground())
+    }
+
+    fn index_for(width: i32, height: i32, tile: TilePos) -> Option<usize> {
+        if tile.x < 0 || tile.y < 0 || tile.x >= width || tile.y >= height {
+            return None;
+        }
+        usize::try_from(tile.y)
+            .ok()?
+            .checked_mul(usize::try_from(width).ok()?)?
+            .checked_add(usize::try_from(tile.x).ok()?)
+    }
+
+    /// Visits reachable, fully in-bounds footprint anchors in row-major order.
+    /// The index includes unreachable anchors, allowing callers to accumulate
+    /// several fields into the same dense candidate array.
+    pub(in crate::bot) fn visit_footprint_distances(
+        &self,
+        size: (i32, i32),
+        mut visit: impl FnMut(usize, u32),
+    ) {
+        if size.0 <= 0 || size.1 <= 0 || size.0 > self.width || size.1 > self.height {
+            return;
+        }
+        let width = self.width as usize;
+        let columns = (self.width - size.0 + 1) as usize;
+        for y in 0..=(self.height - size.1) as usize {
+            for x in 0..columns {
+                let mut distance = u32::MAX;
+                for dy in 0..size.1 as usize {
+                    let start = (y + dy) * width + x;
+                    for value in &self.distances[start..start + size.0 as usize] {
+                        distance = distance.min(*value);
+                    }
+                }
+                if distance != u32::MAX {
+                    visit(y * columns + x, distance);
+                }
+            }
+        }
+    }
+
+    pub(in crate::bot) fn footprint_distance(
+        &self,
+        anchor: TilePos,
+        size: (i32, i32),
+    ) -> Option<u32> {
+        (0..size.1)
+            .flat_map(|dy| (0..size.0).map(move |dx| anchor.offset(dx, dy)))
+            .filter_map(|tile| {
+                Self::index_for(self.width, self.height, tile)
+                    .and_then(|index| self.distances.get(index).copied())
+                    .filter(|distance| *distance != u32::MAX)
+            })
+            .min()
+    }
+}
+
+fn foundry_footprint_tiles(anchor: TilePos) -> impl Iterator<Item = TilePos> {
+    let size = BuildingKind::Foundry.base_stats().size;
+    (0..size.1).flat_map(move |dy| (0..size.0).map(move |dx| anchor.offset(dx, dy)))
+}
+
+pub(in crate::bot) struct WorkRoutes<'a, 'b> {
+    commands: &'a super::commands::RouteProjection<'b>,
+    distances: &'a PublicGroundDistances,
+    doors: &'a [TilePos],
+    origins: BTreeMap<TilePos, Option<u32>>,
+}
+impl<'a, 'b> WorkRoutes<'a, 'b> {
+    pub fn new(
+        commands: &'a super::commands::RouteProjection<'b>,
+        distances: &'a PublicGroundDistances,
+        doors: &'a [TilePos],
+    ) -> Self {
+        Self {
+            commands,
+            distances,
+            doors,
+            origins: BTreeMap::new(),
+        }
+    }
+    pub fn distance(&mut self, origin: TilePos) -> Option<u32> {
+        *self.origins.entry(origin).or_insert_with(|| {
+            let door = self
+                .doors
+                .iter()
+                .min_by_key(|door| (door.chebyshev(origin), door.y, door.x))?;
+            (self.commands.direct_line_avoids_blocked(origin, *door)
+                && self.commands.command_path_avoids_blocked(origin, *door))
+            .then(|| self.distances.footprint_distance(origin, (1, 1)))
+            .flatten()
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn batched_footprint_distances_match_scalar_edges_and_unreachable_tiles() {
+        for width in 1..9 {
+            for height in 1..8 {
+                let distances = super::PublicGroundDistances {
+                    width,
+                    height,
+                    distances: (0..width * height)
+                        .map(|i| if i % 7 < 3 { u32::MAX } else { (i * 13) as u32 })
+                        .collect(),
+                };
+                for w in 1..=width + 1 {
+                    for h in 1..=height + 1 {
+                        let mut actual = Vec::new();
+                        distances.visit_footprint_distances((w, h), |index, cost| {
+                            actual.push((index, cost))
+                        });
+                        let expected: Vec<_> = (0..=(height - h))
+                            .flat_map(|y| (0..=(width - w)).map(move |x| (x, y)))
+                            .filter_map(|(x, y)| {
+                                distances
+                                    .footprint_distance(chassis::grid::TilePos::new(x, y), (w, h))
+                                    .map(|cost| ((y * (width - w + 1) + x) as usize, cost))
+                            })
+                            .collect();
+                        assert_eq!(actual, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    use super::*;
+    use core::cmp::Reverse;
+    fn briefing(
+        width: i32,
+        height: i32,
+        walls: impl IntoIterator<Item = TilePos>,
+        starts: Vec<crate::bot::StartingFoundry>,
+    ) -> PublicMapBriefing {
+        let mut non_ground_terrain = walls
+            .into_iter()
+            .map(|tile| (tile, crate::map::Terrain::Rock))
+            .collect::<Vec<_>>();
+        non_ground_terrain.sort_unstable_by_key(|(tile, _)| (tile.y, tile.x));
+        PublicMapBriefing {
+            map_width: width,
+            map_height: height,
+            starting_foundries: starts,
+            teams: vec![Some(0), Some(1)],
+            non_ground_terrain,
+            extractor_frames: Vec::new(),
+            initial_scrap: Vec::new(),
+        }
+    }
+
+    fn reference_ground_distances(
+        public_map: &PublicMapBriefing,
+        sources: impl IntoIterator<Item = TilePos>,
+        blocked: &BlockedGroundLayout,
+    ) -> PublicGroundDistances {
+        use std::collections::BinaryHeap;
+
+        let width = public_map.map_width();
+        let height = public_map.map_height();
+        let cells = usize::try_from(width * height).expect("small test map");
+        let mut distances = vec![u32::MAX; cells];
+        let mut frontier = BinaryHeap::new();
+        for source in sources {
+            if !PublicGroundDistances::ground_open(public_map, source) || blocked.contains(source) {
+                continue;
+            }
+            let Some(index) = PublicGroundDistances::index_for(width, height, source) else {
+                continue;
+            };
+            if distances[index] == 0 {
+                continue;
+            }
+            distances[index] = 0;
+            frontier.push(Reverse((0u32, source.y, source.x)));
+        }
+        while let Some(Reverse((distance, y, x))) = frontier.pop() {
+            let current = TilePos::new(x, y);
+            let Some(current_index) = PublicGroundDistances::index_for(width, height, current)
+            else {
+                continue;
+            };
+            if distances[current_index] != distance {
+                continue;
+            }
+            for (dx, dy, step) in [
+                (-1, 0, 10),
+                (1, 0, 10),
+                (0, -1, 10),
+                (0, 1, 10),
+                (-1, -1, 14),
+                (1, -1, 14),
+                (-1, 1, 14),
+                (1, 1, 14),
+            ] {
+                let next = current.offset(dx, dy);
+                if !PublicGroundDistances::ground_open(public_map, next)
+                    || blocked.contains(next)
+                    || (dx != 0
+                        && dy != 0
+                        && (!PublicGroundDistances::ground_open(public_map, current.offset(dx, 0))
+                            || blocked.contains(current.offset(dx, 0))
+                            || !PublicGroundDistances::ground_open(
+                                public_map,
+                                current.offset(0, dy),
+                            )
+                            || blocked.contains(current.offset(0, dy))))
+                {
+                    continue;
+                }
+                let Some(next_index) = PublicGroundDistances::index_for(width, height, next) else {
+                    continue;
+                };
+                let next_distance = distance.saturating_add(step);
+                if next_distance < distances[next_index] {
+                    distances[next_index] = next_distance;
+                    frontier.push(Reverse((next_distance, next.y, next.x)));
+                }
+            }
+        }
+        PublicGroundDistances {
+            width,
+            height,
+            distances,
+        }
+    }
+
+    #[test]
+    fn bounded_bucket_routes_match_the_reference_dijkstra_exactly() {
+        let walls = (0..9)
+            .filter(|y| !matches!(y, 2 | 7))
+            .map(|y| TilePos::new(6, y))
+            .chain([TilePos::new(3, 4), TilePos::new(4, 3)]);
+        let public_map = briefing(13, 9, walls, Vec::new());
+        let blocked = BlockedGroundLayout::from_predicate(&public_map, |tile| {
+            matches!((tile.x, tile.y), (8, 2) | (8, 3) | (9, 3))
+        });
+        let sources = [
+            TilePos::new(1, 1),
+            TilePos::new(11, 7),
+            TilePos::new(1, 1),
+            TilePos::new(-1, -1),
+        ];
+
+        let actual = PublicGroundDistances::from_sources_avoiding(&public_map, sources, |tile| {
+            blocked.contains(tile)
+        });
+        let reference = reference_ground_distances(&public_map, sources, &blocked);
+
+        assert_eq!(actual, reference);
+    }
+
+    #[test]
+    fn routing_cache_reuses_exact_generations_and_keeps_dynamic_fields_bounded() {
+        let public_map = briefing(18, 10, [], Vec::new());
+        let clear = BlockedGroundLayout::from_predicate(&public_map, |_| false);
+        let mut cache = PublicRoutes::default();
+        let first = cache.danger_aware_fields(
+            &public_map,
+            clear.clone(),
+            [TilePos::new(3, 3), TilePos::new(14, 7)],
+        );
+        assert_eq!(cache.build_count().danger_aware, 2);
+        assert_eq!(cache.retained_field_counts().0, 2);
+
+        let repeated = cache.danger_aware_fields(
+            &public_map,
+            clear,
+            [TilePos::new(14, 7), TilePos::new(3, 3), TilePos::new(3, 3)],
+        );
+        assert_eq!(cache.build_count().danger_aware, 2);
+        assert_eq!(first.len(), repeated.len());
+        assert!(
+            first
+                .iter()
+                .zip(&repeated)
+                .all(|(left, right)| { left.0 == right.0 && Arc::ptr_eq(&left.1, &right.1) })
+        );
+
+        cache.danger_aware_fields(
+            &public_map,
+            BlockedGroundLayout::from_predicate(&public_map, |tile| tile == TilePos::new(9, 5)),
+            [TilePos::new(14, 7)],
+        );
+        assert_eq!(cache.build_count().danger_aware, 3);
+        assert_eq!(cache.retained_field_counts().0, 1);
+    }
+
+    #[test]
+    fn row_major_source_retention_reuses_nonmonotone_coordinates() {
+        let public_map = briefing(18, 10, [], Vec::new());
+        let clear = BlockedGroundLayout::from_predicate(&public_map, |_| false);
+        let sources = [TilePos::new(14, 2), TilePos::new(3, 7)];
+        let mut cache = PublicRoutes::default();
+
+        cache.danger_aware_fields(&public_map, clear.clone(), sources);
+        cache.threat_fields(&public_map, sources);
+        let before = cache.build_count();
+        cache.danger_aware_fields(&public_map, clear, sources.into_iter().rev());
+        cache.threat_fields(&public_map, sources.into_iter().rev());
+
+        assert_eq!(cache.build_count(), before);
+        assert_eq!(cache.retained_field_counts(), (2, 2, 0));
+    }
+
+    #[test]
+    fn dynamic_danger_never_invalidates_terrain_only_threat_or_start_fields() {
+        let starts = vec![
+            crate::bot::StartingFoundry {
+                player: crate::ids::PlayerId(0),
+                anchor: TilePos::new(1, 1),
+            },
+            crate::bot::StartingFoundry {
+                player: crate::ids::PlayerId(1),
+                anchor: TilePos::new(14, 6),
+            },
+        ];
+        let public_map = briefing(18, 10, [], starts.clone());
+        let mut cache = PublicRoutes::default();
+        cache.threat_fields(&public_map, [TilePos::new(4, 4), TilePos::new(12, 4)]);
+        cache.start_fields(&public_map, &starts);
+        let before = cache.build_count();
+
+        let (_, work) = crate::bot::navigation::work::measure(|| {
+            for blocked in [TilePos::new(7, 4), TilePos::new(8, 4)] {
+                cache.danger_aware_fields(
+                    &public_map,
+                    BlockedGroundLayout::from_predicate(&public_map, |tile| tile == blocked),
+                    [TilePos::new(5, 4)],
+                );
+                cache.threat_fields(&public_map, [TilePos::new(12, 4), TilePos::new(4, 4)]);
+                cache.start_fields(&public_map, &starts[1..]);
+            }
+        });
+        assert_eq!(
+            work.fields, 2,
+            "only the two changed danger fields need rebuilding: {work:?}"
+        );
+        assert_eq!(work.generations, 2);
+        assert_eq!(work.searches, 2);
+        assert!(work.expanded <= 2 * 18 * 10, "{work:?}");
+
+        let after = cache.build_count();
+        assert_eq!(after.threats, before.threats);
+        assert_eq!(after.starts, before.starts);
+        assert_eq!(cache.retained_field_counts(), (1, 2, 2));
+    }
+
+    #[test]
+    fn routing_cache_replaces_departed_threats_and_resets_for_any_map_change() {
+        let public_map = briefing(18, 10, [], Vec::new());
+        let mut cache = PublicRoutes::default();
+        cache.threat_fields(&public_map, [TilePos::new(3, 3), TilePos::new(9, 3)]);
+        cache.threat_fields(&public_map, [TilePos::new(9, 3), TilePos::new(14, 3)]);
+        assert_eq!(cache.build_count().threats, 3);
+        assert_eq!(cache.retained_field_counts().1, 2);
+
+        let changed_map = briefing(18, 10, [TilePos::new(8, 5)], Vec::new());
+        cache.threat_fields(&changed_map, [TilePos::new(9, 3)]);
+        assert_eq!(cache.build_count().threats, 4);
+        assert_eq!(cache.retained_field_counts(), (0, 1, 0));
+    }
+}

@@ -6678,7 +6678,7 @@ mod tests {
             .expect("the oriented observation retains the home Foundry")
             .anchor;
         let expected_returning =
-            super::super::routing::routable_command_subset_with_public_terrain_and_orientation(
+            super::super::navigation::commands::routable_command_subset_with_public_terrain_and_orientation(
                 &oriented,
                 brain
                     .mind()
