@@ -1110,18 +1110,16 @@ fn best_complete_portfolio_path<'a>(
     let score = |candidate: &PackageBuilder<'_>| {
         package_candidate_score(profile, useful, useful_bombing, candidate)
     };
-    let mut frontier: Vec<_> = unique_search_states(minimum_candidates)
-        .into_iter()
-        .map(|candidate| vec![candidate])
-        .collect();
-    let rank = |paths: &mut Vec<Vec<PackageBuilder<'a>>>| {
+    let minimums = unique_search_states(minimum_candidates);
+    let mut frontier: Vec<_> = minimums.iter().cloned().enumerate().collect();
+    let rank = |paths: &mut Vec<(usize, PackageBuilder<'a>)>| {
         // Stable ties preserve the canonical provider discovery order.
-        paths.sort_by_key(|path| Reverse(score(path.last().expect("nonempty package path"))));
+        paths.sort_by_key(|path| Reverse(score(&path.1)));
         if let Some(index) = paths
             .iter()
             .enumerate()
             .min_by_key(|(_, path)| {
-                let candidate = path.last().expect("nonempty package path");
+                let candidate = &path.1;
                 (candidate.committed_scrap, Reverse(score(candidate)))
             })
             .map(|(index, _)| index)
@@ -1129,7 +1127,7 @@ fn best_complete_portfolio_path<'a>(
             let economical = paths.remove(index);
             paths.truncate(COMPOSITION_BEAM_WIDTH - 1);
             paths.push(economical);
-            paths.sort_by_key(|path| Reverse(score(path.last().expect("nonempty package path"))));
+            paths.sort_by_key(|path| Reverse(score(&path.1)));
         }
     };
     rank(&mut frontier);
@@ -1137,10 +1135,9 @@ fn best_complete_portfolio_path<'a>(
     while !frontier.is_empty() {
         let mut next = Vec::new();
         let mut seen = BTreeSet::new();
-        for path in frontier {
-            let candidate = path.last().expect("nonempty package path");
-            if score(candidate) > score(best.last().expect("the incumbent is complete")) {
-                best = path.clone();
+        for (minimum_index, candidate) in frontier {
+            if score(&candidate) > score(&best.1) {
+                best = (minimum_index, candidate.clone());
             }
             for family in [ForceFamily::Suppression, ForceFamily::Strike] {
                 if candidate.capability_for(family) >= useful.for_family(family)
@@ -1165,9 +1162,7 @@ fn best_complete_portfolio_path<'a>(
                             > candidate.bombing.min(useful_bombing);
                     if (advances_family || advances_bombing) && seen.insert(successor.search_key())
                     {
-                        let mut successor_path = path.clone();
-                        successor_path.push(successor);
-                        next.push(successor_path);
+                        next.push((minimum_index, successor));
                     }
                 }
             }
@@ -1175,7 +1170,54 @@ fn best_complete_portfolio_path<'a>(
         rank(&mut next);
         frontier = next;
     }
-    best
+    canonical_growth_path(profile, minimums[best.0].clone(), best.1)
+}
+
+fn canonical_growth_path<'a>(
+    profile: &ResolvedProfile,
+    mut current: PackageBuilder<'a>,
+    target: PackageBuilder<'a>,
+) -> Vec<PackageBuilder<'a>> {
+    // Discovery order may differ from the final funding order. Every offered
+    // prefix must retain job ordinals and payment times when a variant grows.
+    debug_assert!(
+        target
+            .funded_providers
+            .starts_with(&current.funded_providers)
+    );
+    let mut result = vec![current.clone()];
+    for tranche in &target.provider_priority {
+        let minimum = current
+            .provider_priority
+            .iter()
+            .find(|prior| {
+                (prior.priority, prior.family, prior.kind)
+                    == (tranche.priority, tranche.family, tranche.kind)
+            })
+            .map_or(0, |prior| prior.count);
+        for _ in minimum..tranche.count {
+            let preserved = current.preserved.iter().zip(&target.preserved).position(
+                |(prior, final_provider)| {
+                    prior.family == tranche.family
+                        && prior.kind == tranche.kind
+                        && prior.remaining > final_provider.remaining
+                },
+            );
+            if let Some(index) = preserved {
+                current.preserved[index].remaining -= 1;
+            } else {
+                let funded = target.funded_providers[current.funded_providers.len()];
+                assert_eq!(funded.kind, tranche.kind);
+                current.funded_providers.push(funded);
+                current.committed_scrap += tranche.kind.stats().cost;
+            }
+            current.accept_provider(tranche.family, tranche.kind, tranche.priority);
+            current.canonicalize_provider_priority(profile);
+            result.push(current.clone());
+        }
+    }
+    debug_assert_eq!(current.search_key(), target.search_key());
+    result
 }
 
 fn unique_search_states<'a>(candidates: Vec<PackageBuilder<'a>>) -> Vec<PackageBuilder<'a>> {
@@ -4934,6 +4976,54 @@ mod tests {
         );
         assert_eq!(package.current_scrap, minimum_scrap);
         assert!(package.forecast_scrap >= UnitKind::Avalanche.stats().cost);
+    }
+
+    #[test]
+    fn every_marginal_variant_preserves_earlier_provider_identity_and_funding() {
+        let mut nontrivial = false;
+        for (air, siege) in [(10, 90), (90, 10), (50, 50)] {
+            for scrap in [400, 700, 1_000, 1_600] {
+                let mut observation = observation(scrap);
+                add_baseline_tech(&mut observation);
+                add_valuable_cluster(&mut observation);
+                let (intelligence, target) = intelligence_with_target(&mut observation, 3);
+                let resources = ResourceSnapshot::from_observation(&observation);
+                let cluster = intelligence.buildings().iter().collect::<Vec<_>>();
+                let Ok(options) = derive_connected_force_package_options_for_cluster(
+                    &profile(air, siege),
+                    &observation,
+                    &intelligence,
+                    ConnectedTargetEvidence {
+                        primary: &target,
+                        cluster: &cluster,
+                    },
+                    ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+                    &[],
+                    constraints(5_000, 0),
+                ) else {
+                    continue;
+                };
+                let variants = std::iter::once(options.minimum)
+                    .chain(options.marginal)
+                    .collect::<Vec<_>>();
+                nontrivial |= variants.len() >= 4;
+                for pair in variants.windows(2) {
+                    assert!(
+                        pair[1]
+                            .funded_providers
+                            .starts_with(&pair[0].funded_providers),
+                        "air {air}, siege {siege}, scrap {scrap}"
+                    );
+                    assert!(funded_providers_fit(
+                        &resources,
+                        &pair[1].funded_providers,
+                        5_000,
+                        &ProductionAccess::Unrestricted
+                    ));
+                }
+            }
+        }
+        assert!(nontrivial, "exercise growth beyond one extra provider");
     }
 
     #[test]

@@ -1039,7 +1039,9 @@ and uses personality to weight how otherwise competitive marginal capability is
 divided between air, siege, direct strike, and attack-run bombing. Personality
 never gates a provider or family. One beam slot preserves the cheapest
 alternative; existing useful providers remain eligible at minimum strength, and
-every extension revalidates its canonical funding order. For otherwise identical
+every extension revalidates its canonical funding order. The offered growth
+ladder is rebuilt in that final order, so enlarging or revising a package keeps
+earlier job identities and payment times intact. For otherwise identical
 evidence, more current scrap, more available preparation time at derivation, or
 additional completed usable production capability cannot revoke admission or
 reduce capped total useful capability.
