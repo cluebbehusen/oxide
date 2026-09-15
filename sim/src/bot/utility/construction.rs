@@ -4097,6 +4097,62 @@ mod tests {
     }
 
     #[test]
+    fn fresh_foundry_planning_resumes_and_saved_sites_bypass_optional_deferral() {
+        use crate::bot::planning::PlanningWork;
+        let mut obs = developed_expansion_observation();
+        obs.known_scrap = vec![(TilePos::new(32, 12), 1_800)];
+        let map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+        let query = |policy: &UtilityPolicy, obs: &Observation, required| {
+            let (foundries, _) = UtilityPolicy::projected_foundries(obs);
+            let builders = policy.construction_builders(obs, &[], &[]);
+            let claim = FoundryClaimContext {
+                home: HOME,
+                projected_foundries: &foundries,
+                builders: &builders,
+                support_extractors: false,
+                ordinary_frontiers: true,
+                unit_contacts: None,
+                building_contacts: None,
+            };
+            let economy = expansion_economy(&expansion_dials(), obs, obs.scrap, Reserve::Ordinary);
+            let danger = policy.harvest_danger_projection(obs, None, None);
+            policy.regional_foundry_opportunities(obs, claim, &map, economy, &danger, required)
+        };
+        let policy = UtilityPolicy::new();
+        *policy.planning.borrow_mut() = PlanningWork::with_allowance(1_200);
+        let initial_tick = obs.tick;
+        assert!(query(&policy, &obs, None).is_empty());
+        assert_eq!(policy.planning.borrow().spent(), 1_200);
+        let pending = policy.planning.borrow().clone();
+        assert!(query(&policy, &obs, None).is_empty());
+        assert_eq!(*policy.planning.borrow(), pending);
+        let mut completed = None;
+        for delay in (12..120).step_by(12) {
+            obs.tick = initial_tick + delay;
+            let cloned = policy.clone();
+            let quotes = query(&policy, &obs, None);
+            assert_eq!(quotes, query(&cloned, &obs, None));
+            if let Some(quote) = quotes.into_iter().next() {
+                completed = Some(quote);
+                break;
+            }
+        }
+        let completed = completed.expect("fresh logistics must progress across decisions");
+        let exact = query(&UtilityPolicy::new(), &obs, Some(completed.anchor));
+        assert_eq!(exact, [completed]);
+        *policy.planning.borrow_mut() = PlanningWork::with_allowance(0);
+        assert!(query(&policy, &obs, None).is_empty());
+        assert_eq!(query(&policy, &obs, Some(completed.anchor)), exact);
+        assert_eq!(policy.planning.borrow().spent(), 0);
+    }
+
+    #[test]
     fn shortlisted_foundry_quotes_match_exact_all_anchor_logistics_prices() {
         let mut obs = developed_expansion_observation();
         obs.known_scrap = vec![

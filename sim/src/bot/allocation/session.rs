@@ -3166,7 +3166,7 @@ impl<'a> AllocationSession<'a> {
                 self.context.dials.cadence,
             ) {
                 Ok(mut allocation) => {
-                    self.reject_incompatible_fresh_layouts(&mut allocation, &prepared);
+                    let layouts = Self::fresh_layouts(&prepared);
                     let allocatable_voluntary_scrap_guard = prepared
                         .voluntary_scrap_guard
                         .min(prepared.resources.current_scrap().amount());
@@ -3432,9 +3432,49 @@ impl<'a> AllocationSession<'a> {
                             &self.participants.policy.experience,
                             self.context.observation.tick,
                         );
-                        match allocation.resolve(
+                        let mut checked = std::collections::BTreeMap::new();
+                        let policy = &*self.participants.policy;
+                        let context = &self.context;
+                        let observer = self.observer;
+                        let mut validate_layout = |selected: &[ProposalKey]| {
+                            let selected_layouts = layouts
+                                .iter()
+                                .filter(|(key, _)| selected.contains(key))
+                                .collect::<Vec<_>>();
+                            if selected_layouts.len() < 2 {
+                                return None;
+                            }
+                            let keys = selected_layouts
+                                .iter()
+                                .map(|(key, _)| *key)
+                                .collect::<Vec<_>>();
+                            let safe = *checked.entry(keys.clone()).or_insert_with(|| {
+                                let _scope = crate::bot::observer::PhaseScope::new(
+                                    observer,
+                                    crate::bot::observer::BotPhase::Layouts,
+                                );
+                                policy.combined_build_layout_with_builders_is_safe(
+                                    context.observation,
+                                    context.public_map,
+                                    context.intelligence.units(),
+                                    context.intelligence.buildings(),
+                                    context.orientation,
+                                    &selected_layouts
+                                        .iter()
+                                        .map(|(_, build)| *build)
+                                        .collect::<Vec<_>>(),
+                                )
+                            });
+                            if safe {
+                                None
+                            } else {
+                                super::IncompatibleLayoutSet::from_keys(keys)
+                            }
+                        };
+                        match allocation.resolve_validated(
                             AllocationPersonality::from_profile(self.context.profile),
                             self.trace.as_deref_mut(),
+                            &mut validate_layout,
                         ) {
                             Ok(resolved) => settlement = Some(resolved),
                             Err(_) => allocation_ok = false,
@@ -3459,15 +3499,9 @@ impl<'a> AllocationSession<'a> {
         }
     }
 
-    fn reject_incompatible_fresh_layouts(
-        &self,
-        allocation: &mut CrossDomainAllocation,
+    fn fresh_layouts(
         prepared: &PreparedAllocation,
-    ) {
-        let _scope = crate::bot::observer::PhaseScope::new(
-            self.observer,
-            crate::bot::observer::BotPhase::Layouts,
-        );
+    ) -> Vec<(ProposalKey, (BuildingKind, TilePos, UnitId))> {
         let mut layouts = Vec::new();
         if let Some(foundry) = prepared.fresh_foundry.as_ref() {
             layouts.push((
@@ -3500,39 +3534,8 @@ impl<'a> AllocationSession<'a> {
                         .map(|build| (ProposalKey::SupportConstruction(bay.key), build))
                 }),
         );
-        let safe = |builds: &[_]| {
-            self.participants
-                .policy
-                .combined_build_layout_with_builders_is_safe(
-                    self.context.observation,
-                    self.context.public_map,
-                    self.context.intelligence.units(),
-                    self.context.intelligence.buildings(),
-                    self.context.orientation,
-                    builds,
-                )
-        };
-        let mut pending = vec![(0, Vec::<usize>::new())];
-        while let Some((start, selected)) = pending.pop() {
-            for index in start..layouts.len() {
-                if selected
-                    .iter()
-                    .any(|&prior| layouts[prior].0.domain() == layouts[index].0.domain())
-                {
-                    continue;
-                }
-                let mut next = selected.clone();
-                next.push(index);
-                if next.len() >= 2 && !safe(&next.iter().map(|&i| layouts[i].1).collect::<Vec<_>>())
-                {
-                    allocation.reject_incompatible_layout_set(
-                        next.iter().map(|&i| layouts[i].0).collect(),
-                    );
-                } else {
-                    pending.push((index + 1, next));
-                }
-            }
-        }
+        layouts.sort_unstable_by_key(|(key, _)| *key);
+        layouts
     }
 
     fn commit_settlement(
@@ -4099,7 +4102,9 @@ impl<'a> AllocationSession<'a> {
         let mut raid_decision = core::mem::take(&mut prepared.raid_decision);
         let mut staged_strategy = prepared.staged_strategy.take();
         if !allocation_ok {
+            let planning = std::mem::take(&mut self.participants.policy.planning);
             *self.participants.policy = snapshots.policy;
+            self.participants.policy.planning = planning;
             self.advanced.snapshots.restore(&mut self.participants);
             team_decision = StrategicDecision::default();
             lift_decision = StrategicDecision::default();
@@ -7512,6 +7517,21 @@ mod tests {
         let intelligence = StrategicIntelligence::new();
         let original_policy = UtilityPolicy::new();
         let mut policy = original_policy.clone();
+        *policy.planning.borrow_mut() = crate::bot::planning::PlanningWork::with_allowance(1);
+        let blocked = crate::bot::navigation::public_fields::BlockedGroundLayout::from_predicate(
+            &briefing,
+            |_| false,
+        );
+        assert_eq!(
+            policy.planning.borrow_mut().field(
+                observation.tick,
+                &briefing,
+                &blocked,
+                [TilePos::new(1, 1)]
+            ),
+            crate::bot::planning::Progress::Deferred
+        );
+        let pending = policy.planning.borrow().clone();
         policy.record_dispatched_build(&observation, BuildingKind::Turret, TilePos::new(4, 4));
         let original_strategy = Some(StrategicPlanner::new());
         let mut strategy = None;
@@ -7601,6 +7621,8 @@ mod tests {
         assert_eq!(outcome.budget.residual_scrap, 0);
         assert_eq!(outcome.budget.utility_spendable, 0);
         assert_eq!(outcome.budget.connected_forecast_hold, u32::MAX);
+        assert_eq!(*policy.planning.borrow(), pending);
+        *original_policy.planning.borrow_mut() = pending;
         assert_eq!(policy, original_policy);
         assert_eq!(strategy, original_strategy);
         assert_eq!(team, original_team);
@@ -9087,6 +9109,15 @@ mod tests {
 
     #[test]
     fn fresh_standing_force_cannot_defer_a_payable_saved_foundry() {
+        payable_saved_foundry_with_planning_allowance(128_000);
+    }
+
+    #[test]
+    fn exhausted_optional_planning_does_not_delay_a_payable_saved_foundry() {
+        payable_saved_foundry_with_planning_allowance(0);
+    }
+
+    fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
         let mut observation = connected_observation(1_200, 0);
         let builder = UnitId(200);
         let foundry_anchor = TilePos::new(15, 14);
@@ -9116,6 +9147,8 @@ mod tests {
             .saturating_add(Tick::from(foundry_cost).saturating_mul(crate::stats::RECLAIMER_PERIOD))
             .saturating_add(crate::stats::RECLAIMER_PERIOD);
         let mut policy = UtilityPolicy::new();
+        *policy.planning.borrow_mut() =
+            crate::bot::planning::PlanningWork::with_allowance(allowance);
         let mut initial_intents = Vec::new();
         policy
             .commit_adjudicated_foundry(

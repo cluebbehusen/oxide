@@ -761,10 +761,14 @@ genuine semantic tie and never removes a domain or defensive role from
 consideration.
 
 Portfolio evaluation stages all ownership and capital claims before solving the
-combined producer schedule once. Acceptance reuses that validated schedule.
-Production search and candidate enumeration can yield deterministic work slices;
-the current synchronous scheduling adapter still drains them to a decision, so
-this alone does not bound a controller tick.
+combined producer schedule once. Acceptance reuses that validated schedule. Only
+financially feasible portfolios receive exact combined-layout checks. Those
+checks retain full multi-foundation egress and builder safety, remember rejected
+sets, and share results across connected-force contexts in the same decision;
+unused construction combinations are not enumerated in advance. Production
+search and candidate enumeration can yield deterministic work slices; the
+current synchronous scheduling adapter still drains them to a decision, so this
+alone does not bound a controller tick.
 
 Fixed jobs on one factory follow their retained enqueue and execution times;
 funding priority does not reorder that lane. Production preflight rejects
@@ -1256,8 +1260,13 @@ live reachability, route safety, command timing, or placement legality.
 Orientation and terrain changes invalidate the index independently of dynamic
 navigation caches. Public distance fields materialize passability once and use
 an owned traversal that can yield after a deterministic number of queue entries.
-Unfinished fields cannot be read as reachability evidence; synchronous callers
-currently request completion.
+Fresh Foundry logistics uses a controller-owned allowance shared across its
+field requests. Passability preparation and traversal both consume work; an
+unfinished field resumes on later decisions and never means unreachable. At most
+four jobs survive, with exact terrain and danger invalidation and a 120-tick
+unfinished lifetime. Allocation rollback preserves work already done and spent
+allowance. Saved Foundry validation remains immediate; other synchronous field
+consumers still request completion.
 
 Exact Build-route checks index observed and public ground passability once per
 defensive grounding and reuse A* storage across builders and candidate sites.

@@ -9,9 +9,9 @@ use super::{
     AllocationCapacity, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
     ClaimOwner, ConnectedMarginalError, ConnectedPortfolioContext, DeferrableCapitalClaim,
     DomainAllocationResult, DomainInvestmentProposal, ForecastClaim, ImportedObligation,
-    IncompatibleLayoutSet, LegacyChannel, ObligationClass, ObligationKey, ProducerJobClaim,
-    ProposalKey, ScheduledProducerJob, accepted_portfolio_rank, allocate_requiring,
-    allocate_with_incompatible_layouts, future_producer_lane_reservations,
+    LayoutValidator, LegacyChannel, ObligationClass, ObligationKey, ProducerJobClaim, ProposalKey,
+    ScheduledProducerJob, accepted_portfolio_rank, allocate_requiring, allocate_with_required,
+    future_producer_lane_reservations,
 };
 use crate::bot::observation::Observation;
 use crate::bot::resources::ProducerLaneReservations;
@@ -99,7 +99,6 @@ pub(crate) struct CrossDomainAllocation {
     obligations: Vec<ImportedObligation>,
     proposals: Vec<DomainInvestmentProposal>,
     contextual_proposals: Vec<ContextualProposalSet>,
-    incompatible_layouts: Vec<IncompatibleLayoutSet>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,7 +120,6 @@ impl CrossDomainAllocation {
             obligations: Vec::new(),
             proposals: Vec::new(),
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         })
     }
 
@@ -157,16 +155,6 @@ impl CrossDomainAllocation {
         }
     }
 
-    /// Rejects a set of individually legal builds when their combined layout
-    /// fails a domain-owned route, egress, or resource-access preflight.
-    pub(crate) fn reject_incompatible_layout_set(&mut self, keys: Vec<ProposalKey>) {
-        if let Some(layout) = IncompatibleLayoutSet::from_keys(keys) {
-            self.incompatible_layouts.push(layout);
-            self.incompatible_layouts.sort_unstable();
-            self.incompatible_layouts.dedup();
-        }
-    }
-
     /// Registers every proposal derived against one exact connected state.
     ///
     /// Register empty proposal sets too: the absence of standing-force demand
@@ -187,13 +175,21 @@ impl CrossDomainAllocation {
         personality: AllocationPersonality,
         trace: Option<&mut AllocationTrace>,
     ) -> Result<CrossDomainSettlement, AllocationError> {
+        self.resolve_validated(personality, trace, &mut |_| None)
+    }
+
+    pub(crate) fn resolve_validated(
+        self,
+        personality: AllocationPersonality,
+        trace: Option<&mut AllocationTrace>,
+        validate_layout: &mut LayoutValidator<'_>,
+    ) -> Result<CrossDomainSettlement, AllocationError> {
         let Self {
             capacity,
             current_scrap,
             obligations,
             mut proposals,
             mut contextual_proposals,
-            incompatible_layouts,
         } = self;
         pin_standing_waits(&capacity, &obligations, &mut proposals);
         for context in &mut contextual_proposals {
@@ -202,14 +198,16 @@ impl CrossDomainAllocation {
         let mut trace = trace;
         let (mut result, considered_proposals, selected_context, considered_contexts) =
             if contextual_proposals.is_empty() {
-                let result = match allocate_with_incompatible_layouts(
+                let result = match allocate_with_required(
                     &capacity,
                     obligations.clone(),
                     proposals.clone(),
                     personality,
-                    &incompatible_layouts,
+                    None,
+                    &[],
+                    validate_layout,
                 ) {
-                    Ok(result) => result,
+                    Ok(result) => result.expect("the empty portfolio preserves valid obligations"),
                     Err(error) => {
                         if let Some(trace) = trace.as_deref_mut() {
                             *trace = AllocationTrace::from_inputs(&obligations, &proposals);
@@ -226,7 +224,7 @@ impl CrossDomainAllocation {
                     &proposals,
                     contextual_proposals,
                     personality,
-                    &incompatible_layouts,
+                    validate_layout,
                 )?
             };
         if let Some(trace) = trace.as_deref_mut() {
@@ -287,7 +285,7 @@ fn select_contextual_portfolio(
     base_proposals: &[DomainInvestmentProposal],
     mut contextual: Vec<ContextualProposalSet>,
     personality: AllocationPersonality,
-    incompatible_layouts: &[IncompatibleLayoutSet],
+    validate_layout: &mut LayoutValidator<'_>,
 ) -> Result<
     (
         DomainAllocationResult,
@@ -329,23 +327,15 @@ fn select_contextual_portfolio(
                 Some(ProposalKey::ConnectedOffenseMinimum(key))
             }
         };
-        let result = match required {
-            Some(required) => allocate_requiring(
-                capacity,
-                obligations.to_vec(),
-                proposals.clone(),
-                personality,
-                required,
-                incompatible_layouts,
-            )?,
-            None => Some(allocate_with_incompatible_layouts(
-                capacity,
-                obligations.to_vec(),
-                proposals.clone(),
-                personality,
-                incompatible_layouts,
-            )?),
-        };
+        let result = allocate_with_required(
+            capacity,
+            obligations.to_vec(),
+            proposals.clone(),
+            personality,
+            required,
+            &[],
+            validate_layout,
+        )?;
         let Some(mut result) = result else {
             continue;
         };
@@ -1531,7 +1521,6 @@ mod tests {
                     .expect("the Foundry proposal has valid exact claims"),
             ],
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
         let mut trace = AllocationTrace::default();
 
@@ -1931,7 +1920,6 @@ mod tests {
                     .expect("the connected proposal has valid claims"),
             ],
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
         let mut trace = AllocationTrace::default();
 
@@ -1997,7 +1985,6 @@ mod tests {
                     .with_voluntary_scrap_guard(UnitKind::Sentinel.stats().cost),
             ],
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
         allocation.offer_context(
             ConnectedPortfolioContext::Absent,
@@ -2123,7 +2110,6 @@ mod tests {
                     .expect("the connected ladder has valid exact claims"),
             ],
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
         let standing = || standing_proposal(UnitKind::Lancer, crucible, common_case);
         allocation.offer_context(ConnectedPortfolioContext::Absent, vec![standing()]);
@@ -2261,7 +2247,6 @@ mod tests {
             obligations: Vec::new(),
             proposals: proposals(),
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         }
         .resolve(AllocationPersonality::default(), None)
         .expect("the ordinary portfolio resolves");
@@ -2271,7 +2256,6 @@ mod tests {
             obligations: Vec::new(),
             proposals: proposals(),
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
         contextual.offer_context(ConnectedPortfolioContext::Absent, Vec::new());
         contextual.offer_context(
@@ -2500,7 +2484,6 @@ mod tests {
                     .expect("the connected proposal has valid exact claims"),
             ],
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
 
         let settlement = allocation
@@ -2585,7 +2568,6 @@ mod tests {
                     .expect("the connected package has valid claims"),
             ],
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
         let settlement = allocation
             .resolve(AllocationPersonality::default(), None)
@@ -2689,7 +2671,6 @@ mod tests {
             obligations,
             proposals: Vec::new(),
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         }
         .resolve(AllocationPersonality::default(), None)
         .expect("current survival and forecast-funded future production are jointly feasible");

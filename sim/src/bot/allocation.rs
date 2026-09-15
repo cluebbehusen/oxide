@@ -1634,10 +1634,9 @@ impl<Payload> AllocationResult<Payload> {
     }
 }
 
-/// Selects the exact best compatible subset of the current proposal domains.
+/// Selects a compatible portfolio from a bounded, ranked search.
 ///
-/// Every zero-or-one choice within each submitted domain is evaluated. Named
-/// semantic bands win first, then personality at a deliberate near-tie, lower
+/// Semantic bands win first, then personality at a deliberate near-tie, lower
 /// claimed capital, and finally the smaller structural-key vector.
 #[cfg(test)]
 pub(crate) fn allocate<Payload>(
@@ -1646,10 +1645,16 @@ pub(crate) fn allocate<Payload>(
     proposals: Vec<InvestmentProposal<Payload>>,
     personality: AllocationPersonality,
 ) -> Result<AllocationResult<Payload>, AllocationError> {
-    Ok(
-        allocate_with_required(capacity, obligations, proposals, personality, None, &[])?
-            .expect("the unconstrained empty portfolio always preserves valid obligations"),
-    )
+    Ok(allocate_with_required(
+        capacity,
+        obligations,
+        proposals,
+        personality,
+        None,
+        &[],
+        &mut |_| None,
+    )?
+    .expect("the unconstrained empty portfolio always preserves valid obligations"))
 }
 
 pub(super) fn allocate_with_incompatible_layouts<Payload>(
@@ -1666,6 +1671,7 @@ pub(super) fn allocate_with_incompatible_layouts<Payload>(
         personality,
         None,
         incompatible_layouts,
+        &mut |_| None,
     )?
     .expect("the unconstrained empty portfolio always preserves valid obligations"))
 }
@@ -1685,8 +1691,11 @@ pub(super) fn allocate_requiring<Payload>(
         personality,
         Some(required),
         incompatible_layouts,
+        &mut |_| None,
     )
 }
+
+type LayoutValidator<'a> = dyn FnMut(&[ProposalKey]) -> Option<IncompatibleLayoutSet> + 'a;
 
 fn allocate_with_required<Payload>(
     capacity: &AllocationCapacity,
@@ -1695,7 +1704,9 @@ fn allocate_with_required<Payload>(
     personality: AllocationPersonality,
     required: Option<ProposalKey>,
     incompatible_layouts: &[IncompatibleLayoutSet],
+    validate_layout: &mut LayoutValidator<'_>,
 ) -> Result<Option<AllocationResult<Payload>>, AllocationError> {
+    let mut incompatible_layouts = incompatible_layouts.to_vec();
     proposals.sort_by_key(InvestmentProposal::key);
     for pair in proposals.windows(2) {
         if pair[0].key() == pair[1].key() {
@@ -1750,9 +1761,9 @@ fn allocate_with_required<Payload>(
     if required.is_some() && required_index.is_none() {
         return Ok(None);
     }
-    let evaluate = |selected: &[usize]| {
+    let mut evaluate = |selected: &[usize]| {
         if required_index.is_some_and(|required| !selected.contains(&required))
-            || portfolio_layout_conflict(selected, &proposals, incompatible_layouts).is_some()
+            || portfolio_layout_conflict(selected, &proposals, &incompatible_layouts).is_some()
         {
             return None;
         }
@@ -1775,6 +1786,14 @@ fn allocate_with_required<Payload>(
                 .ok()?;
         }
         let resolved = state.resolve(capacity).ok()?;
+        let keys = selected
+            .iter()
+            .map(|&index| proposals[index].key())
+            .collect::<Vec<_>>();
+        if let Some(conflict) = validate_layout(&keys) {
+            incompatible_layouts.push(conflict);
+            return None;
+        }
         Some((
             selected.to_vec(),
             portfolio_rank(selected, &proposals, personality),
@@ -1850,7 +1869,7 @@ fn allocate_with_required<Payload>(
                     &alternative,
                     &proposals,
                     personality,
-                    incompatible_layouts,
+                    &incompatible_layouts,
                 ) {
                     let individual_rank = portfolio_rank(&[index], &proposals, personality);
                     if selected_indices.iter().any(|&selected| {
@@ -4717,6 +4736,27 @@ mod tests {
             IncompatibleLayoutSet::from_keys(reversed),
             Some(certificate.clone())
         );
+        let mut checked_four = false;
+        let lazy = allocate_with_required(
+            &capacity(0, 0, vec![], vec![]),
+            vec![],
+            proposals.clone(),
+            AllocationPersonality::default(),
+            None,
+            &[],
+            &mut |selected| {
+                if certificate.keys.iter().all(|key| selected.contains(key)) {
+                    checked_four = true;
+                    Some(certificate.clone())
+                } else {
+                    None
+                }
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(checked_four);
+        assert_eq!(lazy.accepted.len(), 3);
         for omitted in 0..4 {
             let subset = proposals
                 .iter()
@@ -4743,6 +4783,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.accepted.len(), 3);
+    }
+
+    #[test]
+    fn layout_refinement_skips_unfundable_portfolios() {
+        let cheap = foundry(10, 100, vec![], ordinary_case());
+        let expensive = defense(
+            BuildingKind::Turret,
+            TilePos::new(18, 10),
+            200,
+            ordinary_case(),
+        );
+        let expensive_key = expensive.key();
+        let mut calls = 0;
+        let result = allocate_with_required(
+            &capacity(100, 0, vec![], vec![]),
+            vec![],
+            vec![cheap, expensive],
+            AllocationPersonality::default(),
+            None,
+            &[],
+            &mut |selected| {
+                calls += 1;
+                assert!(!selected.contains(&expensive_key));
+                None
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(calls > 0);
+        assert_eq!(result.accepted.len(), 1);
     }
 
     #[test]

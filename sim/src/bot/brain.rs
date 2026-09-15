@@ -213,6 +213,10 @@ impl Brain {
         {
             return Vec::new();
         }
+        self.policy
+            .planning
+            .borrow_mut()
+            .begin(state.current_tick());
         if let Some(recorder) = recorder.as_deref_mut() {
             recorder.begin(&obs);
         }

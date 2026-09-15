@@ -175,25 +175,49 @@ impl UtilityPolicy {
             return Vec::new();
         }
         let blocked = self.foundry_logistics_blocked_layout(public_map, danger);
-        let mut routes = self.expansion_routing_cache.borrow_mut();
-        let previous = (!scraps.is_empty()).then(|| {
-            routes.danger_aware_source_set(
-                public_map,
-                &blocked,
-                projected_foundries.iter().flat_map(|&anchor| {
+        let mut planning = self.planning.borrow_mut();
+        let field = |planning: &mut crate::bot::planning::PlanningWork, sources: Vec<TilePos>| {
+            if required.is_some() {
+                crate::bot::planning::Progress::Ready(
+                    self.expansion_routing_cache
+                        .borrow_mut()
+                        .danger_aware_source_set(public_map, &blocked, sources),
+                )
+            } else {
+                planning.field(obs.tick, public_map, &blocked, sources)
+            }
+        };
+        let previous = if scraps.is_empty() {
+            None
+        } else {
+            let sources = projected_foundries
+                .iter()
+                .flat_map(|&anchor| {
                     (0..size.1).flat_map(move |dy| (0..size.0).map(move |dx| anchor.offset(dx, dy)))
-                }),
-            )
-        });
+                })
+                .collect();
+            match field(&mut planning, sources) {
+                crate::bot::planning::Progress::Ready(field) => Some(field),
+                crate::bot::planning::Progress::Deferred => return Vec::new(),
+                crate::bot::planning::Progress::ProvenInfeasible => {
+                    unreachable!("field completion is distinct from reachability")
+                }
+            }
+        };
         let mut opportunities = Vec::new();
         for anchor in anchors {
             let mut scrap = expansion::ScrapSummary::default();
             if let Some(previous) = &previous {
-                let next = routes.danger_aware_source_set(
-                    public_map,
-                    &blocked,
-                    (0..size.1).flat_map(|dy| (0..size.0).map(move |dx| anchor.offset(dx, dy))),
-                );
+                let sources = (0..size.1)
+                    .flat_map(|dy| (0..size.0).map(move |dx| anchor.offset(dx, dy)))
+                    .collect();
+                let next = match field(&mut planning, sources) {
+                    crate::bot::planning::Progress::Ready(field) => field,
+                    crate::bot::planning::Progress::Deferred => continue,
+                    crate::bot::planning::Progress::ProvenInfeasible => {
+                        unreachable!("field completion is distinct from reachability")
+                    }
+                };
                 for &(tile, amount) in &scraps {
                     if let (Some(old_distance), Some(new_distance)) = (
                         previous.footprint_distance(tile, (1, 1)),

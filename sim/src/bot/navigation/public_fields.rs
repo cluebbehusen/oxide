@@ -12,6 +12,81 @@ pub(in crate::bot) struct PublicGroundDistances {
     distances: Vec<u32>,
 }
 
+/// An owned field job, including the passability preparation before traversal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::bot) struct PublicFieldWork {
+    width: i32,
+    height: i32,
+    sources: Vec<TilePos>,
+    open: Vec<bool>,
+    traversal: Option<super::distance_work::DistanceWork>,
+    ready: Option<Arc<PublicGroundDistances>>,
+}
+
+impl PublicFieldWork {
+    pub(in crate::bot) fn new(map: &PublicMapBriefing, sources: Vec<TilePos>) -> Self {
+        Self {
+            width: map.map_width().max(0),
+            height: map.map_height().max(0),
+            sources,
+            open: Vec::new(),
+            traversal: None,
+            ready: None,
+        }
+    }
+
+    pub(in crate::bot) fn is_ready(&self) -> bool {
+        self.ready.is_some()
+    }
+
+    pub(in crate::bot) fn advance(
+        &mut self,
+        map: &PublicMapBriefing,
+        blocked: &BlockedGroundLayout,
+        budget: &mut crate::bot::planning::WorkBudget,
+    ) -> crate::bot::planning::Progress<Arc<PublicGroundDistances>> {
+        use crate::bot::planning::Progress;
+        if let Some(ready) = &self.ready {
+            return Progress::Ready(Arc::clone(ready));
+        }
+        let cells = self.width as usize * self.height as usize;
+        if self.traversal.is_none() {
+            while self.open.len() < cells {
+                if !budget.charge(1) {
+                    return Progress::Deferred;
+                }
+                let index = self.open.len();
+                let tile = TilePos::new(
+                    (index % self.width as usize) as i32,
+                    (index / self.width as usize) as i32,
+                );
+                self.open
+                    .push(PublicGroundDistances::ground_open(map, tile) && !blocked.contains(tile));
+            }
+            self.traversal = Some(super::distance_work::DistanceWork::new(
+                self.width,
+                self.height,
+                std::mem::take(&mut self.open),
+                self.sources.iter().copied(),
+            ));
+        }
+        match self.traversal.as_mut().unwrap().advance(budget) {
+            Progress::Deferred => Progress::Deferred,
+            Progress::ProvenInfeasible => unreachable!("a field retains unreachable cells"),
+            Progress::Ready(()) => {
+                let distances = self.traversal.take().unwrap().into_distances();
+                let ready = Arc::new(PublicGroundDistances {
+                    width: self.width,
+                    height: self.height,
+                    distances,
+                });
+                self.ready = Some(Arc::clone(&ready));
+                Progress::Ready(ready)
+            }
+        }
+    }
+}
+
 /// Exact dynamic ground exclusions for expansion logistics routing.
 ///
 /// The dense membership form makes every Dijkstra edge check constant-time,
@@ -826,5 +901,78 @@ mod tests {
         cache.threat_fields(&changed_map, [TilePos::new(9, 3)]);
         assert_eq!(cache.build_count().threats, 4);
         assert_eq!(cache.retained_field_counts(), (0, 1, 0));
+    }
+
+    #[test]
+    fn controller_field_budget_covers_preparation_and_resumes_after_deferral() {
+        use crate::bot::planning::{PlanningWork, Progress};
+        let map = briefing(20, 12, (1..10).map(|y| TilePos::new(10, y)), Vec::new());
+        let blocked = BlockedGroundLayout::from_predicate(&map, |_| false);
+        let sources = [TilePos::new(2, 2)];
+        let expected = PublicGroundDistances::from_sources(&map, sources);
+        let mut planning = PlanningWork::with_allowance(60);
+        assert_eq!(
+            planning.field(0, &map, &blocked, sources),
+            Progress::Deferred
+        );
+        assert_eq!(planning.spent(), 60);
+        let saved = planning.clone();
+        assert_eq!(
+            planning.field(0, &map, &blocked, sources),
+            Progress::Deferred
+        );
+        assert_eq!(
+            planning, saved,
+            "a repeated call cannot refill the controller allowance"
+        );
+        let mut cloned = planning.clone();
+        let mut complete = false;
+        for tick in (12..120).step_by(12) {
+            let actual = planning.field(tick, &map, &blocked, sources);
+            assert_eq!(actual, cloned.field(tick, &map, &blocked, sources));
+            assert!(planning.spent() <= 60);
+            if let Progress::Ready(field) = actual {
+                assert_eq!(*field, expected);
+                complete = true;
+                break;
+            }
+        }
+        assert!(
+            complete,
+            "the original job must continue beyond its first slice"
+        );
+        let changed = BlockedGroundLayout::from_predicate(&map, |tile| tile.x == 10);
+        assert_eq!(
+            planning.field(120, &map, &changed, sources),
+            Progress::Deferred
+        );
+        let expected = PublicGroundDistances::from_sources_avoiding(&map, sources, |tile| {
+            changed.contains(tile)
+        });
+        let mut complete = false;
+        for tick in (132..240).step_by(12) {
+            if let Progress::Ready(field) = planning.field(tick, &map, &changed, sources) {
+                assert_eq!(*field, expected);
+                assert_eq!(field.footprint_distance(TilePos::new(17, 2), (1, 1)), None);
+                complete = true;
+                break;
+            }
+        }
+        assert!(complete);
+    }
+
+    #[test]
+    fn multiple_field_requests_share_one_controller_allowance() {
+        use crate::bot::planning::{PlanningWork, Progress};
+        let map = briefing(20, 12, [], Vec::new());
+        let blocked = BlockedGroundLayout::from_predicate(&map, |_| false);
+        let mut planning = PlanningWork::with_allowance(60);
+        for x in [2, 3, 4] {
+            assert_eq!(
+                planning.field(24, &map, &blocked, [TilePos::new(x, 2)]),
+                Progress::Deferred
+            );
+            assert_eq!(planning.spent(), 60);
+        }
     }
 }

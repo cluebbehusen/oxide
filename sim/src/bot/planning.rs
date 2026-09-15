@@ -1,6 +1,64 @@
 //! Deterministic work allowances shared by nested planning services.
 
+mod fields;
 pub(super) mod sites;
+
+const DECISION_WORK: usize = 128_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::bot) struct PlanningWork {
+    tick: Option<u64>,
+    allowance: usize,
+    budget: WorkBudget,
+    fields: fields::FieldPreparation,
+}
+
+impl Default for PlanningWork {
+    fn default() -> Self {
+        Self {
+            tick: None,
+            allowance: DECISION_WORK,
+            budget: WorkBudget::new(DECISION_WORK),
+            fields: fields::FieldPreparation::default(),
+        }
+    }
+}
+
+impl PlanningWork {
+    #[cfg(test)]
+    pub(in crate::bot) fn with_allowance(allowance: usize) -> Self {
+        Self {
+            allowance,
+            budget: WorkBudget::new(allowance),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::bot) fn spent(&self) -> usize {
+        self.budget.spent()
+    }
+
+    pub(in crate::bot) fn begin(&mut self, tick: u64) {
+        if self.tick != Some(tick) {
+            self.tick = Some(tick);
+            self.budget = WorkBudget::new(self.allowance);
+        }
+    }
+
+    pub(in crate::bot) fn field(
+        &mut self,
+        tick: u64,
+        map: &crate::bot::PublicMapBriefing,
+        blocked: &crate::bot::navigation::public_fields::BlockedGroundLayout,
+        sources: impl IntoIterator<Item = chassis::grid::TilePos>,
+    ) -> Progress<std::sync::Arc<crate::bot::navigation::public_fields::PublicGroundDistances>>
+    {
+        self.begin(tick);
+        self.fields
+            .advance(tick, map, blocked, sources, &mut self.budget)
+    }
+}
 
 /// Refine the strongest estimate plus a rotating remainder on actual requests.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
