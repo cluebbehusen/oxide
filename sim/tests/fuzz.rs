@@ -67,13 +67,14 @@ enum CommandTag {
     Load,
     Unload,
     ClearFocus,
+    ReturnCargo,
 }
 
 /// The draw pool. Paired with the exhaustive matches below, the array and
 /// the variant list cannot drift apart — the old `next_below(10)` bound
 /// against nine arms is exactly how `Repair`, `Salvage`, and
 /// `CancelTrain` went unfuzzed.
-const COMMAND_TAGS: [CommandTag; 22] = [
+const COMMAND_TAGS: [CommandTag; 23] = [
     CommandTag::Move,
     CommandTag::Attack,
     CommandTag::AttackMove,
@@ -96,6 +97,7 @@ const COMMAND_TAGS: [CommandTag; 22] = [
     CommandTag::Load,
     CommandTag::Unload,
     CommandTag::ClearFocus,
+    CommandTag::ReturnCargo,
 ];
 
 /// How rarely a drawn [`CommandTag::Surrender`] is kept: one landed
@@ -134,6 +136,7 @@ fn tag_index(tag: CommandTag) -> usize {
         CommandTag::Load => 19,
         CommandTag::Unload => 20,
         CommandTag::ClearFocus => 21,
+        CommandTag::ReturnCargo => 22,
     }
 }
 
@@ -162,6 +165,7 @@ fn tag_of(command: &Command) -> CommandTag {
         Command::Load { .. } => CommandTag::Load,
         Command::Unload { .. } => CommandTag::Unload,
         Command::ClearFocus { .. } => CommandTag::ClearFocus,
+        Command::ReturnCargo { .. } => CommandTag::ReturnCargo,
     }
 }
 
@@ -440,6 +444,15 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
             goal: tile(rng, state),
             queue: queue(rng),
         },
+        CommandTag::ReturnCargo => Command::ReturnCargo {
+            units: units(rng, state),
+            foundry: if rng.next_below(2) == 0 {
+                None
+            } else {
+                Some(building_id(rng, state))
+            },
+            repair: rng.next_below(2) == 0,
+        },
         CommandTag::Harvest => Command::Harvest {
             units: units(rng, state),
             node: tile(rng, state),
@@ -665,9 +678,52 @@ fn exercise_cancel_found_reach(state: &mut State) {
     assert_eq!(found_claims(state, player, kind, anchor), 0);
 }
 
+fn exercise_return_cargo_reach(state: &mut State) {
+    let worker = state
+        .units()
+        .iter()
+        .find(|u| u.player == PlayerId(0) && u.kind == UnitKind::Harvester)
+        .unwrap()
+        .id;
+    let mut data = serde_json::to_value(&*state).unwrap();
+    let row = data["units"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|u| u["id"] == serde_json::json!(worker))
+        .unwrap();
+    row["carrying"] = serde_json::json!(3);
+    *state = serde_json::from_value(data).unwrap();
+    let report = state.tick(&[PlayerCommand {
+        player: PlayerId(0),
+        command: Command::ReturnCargo {
+            units: vec![worker, worker],
+            foundry: None,
+            repair: false,
+        },
+    }]);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { .. }))
+    );
+    assert!(
+        matches!(
+            state.unit(worker).unwrap().order,
+            oxide_sim::Order::ReturnCargo { .. }
+        ) || report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ScrapDeposited { .. }))
+    );
+    state.validate_invariants().unwrap();
+}
+
 fn fuzz_run(seed: u64) -> Run {
     let mut state = arena();
     exercise_cancel_found_reach(&mut state);
+    exercise_return_cargo_reach(&mut state);
     let mut rng = Pcg32::new(seed, 0xF022);
     let mut reach = Reach {
         cancelled_found: 1,

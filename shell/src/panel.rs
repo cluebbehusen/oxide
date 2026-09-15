@@ -490,6 +490,15 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
         },
         // A weld patient is own by construction — no fog gate needed,
         // and its meter is the wound closing.
+        Order::ReturnCargo { foundry, .. } => {
+            let building = game.state.building(*foundry)?;
+            Some((
+                OrderSubject::Building(building.kind, faction_of(building.player)),
+                entity_name(building.kind.name()),
+                false,
+                None,
+            ))
+        }
         Order::RepairUnit { unit } => {
             let u = game.state.unit(*unit)?;
             let frac = (u.hp as f32 / u.kind.stats().max_hp.max(1) as f32).clamp(0.0, 1.0);
@@ -530,6 +539,15 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
             VerbIcon::Move,
             "Run",
             "Running without firing or engaging enemies.",
+        ),
+        Order::ReturnCargo { repair, .. } => (
+            VerbIcon::Harvest,
+            "Return cargo",
+            if *repair {
+                "Delivering scrap, then repairing the Foundry."
+            } else {
+                "Delivering scrap, then waiting at the Foundry."
+            },
         ),
         Order::Harvest { .. } => (
             VerbIcon::Harvest,
@@ -1188,6 +1206,22 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                 "Select a completed friendly building to dismantle".into(),
                 "for a partial refund. Foundries cannot be salvaged.".into(),
             ],
+            progress: None,
+        });
+    }
+    if has_builder {
+        let loaded = units
+            .iter()
+            .any(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0);
+        panel.cards.push(Card {
+            icon: CardIcon::Verb(VerbIcon::Harvest),
+            title: "Return cargo".into(),
+            cost: None,
+            hotkey: chord(bindings, Action::ReturnCargo),
+            action: CardAction::Dispatch(Action::ReturnCargo),
+            enabled: loaded,
+            why: (!loaded).then(|| "No scrap carried.".into()),
+            desc: vec!["Cancel current and queued work, deliver scrap to the nearest reachable Foundry, then stay there.".into()],
             progress: None,
         });
     }

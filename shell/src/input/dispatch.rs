@@ -19,6 +19,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 | Action::Salvage
                 | Action::RepairUnit
                 | Action::Unload
+                | Action::ReturnCargo
         )
     {
         input.close_construction();
@@ -63,6 +64,27 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 }
                 input.groups[slot] = own;
             }
+        }
+        Action::ReturnCargo => {
+            if !game.selection_commandable() {
+                game.toast("You can only command your own units.");
+                return;
+            }
+            if !game.selection.units.iter().any(|id| {
+                game.state
+                    .unit(*id)
+                    .is_some_and(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
+            }) {
+                game.toast("No scrap carried.");
+                return;
+            }
+            input.disarm_click_verbs();
+            input.patrol_route = None;
+            game.issue(Command::ReturnCargo {
+                units: game.selection.units.clone(),
+                foundry: None,
+                repair: false,
+            });
         }
         Action::StopOrScrap => {
             // Contextual: units selected halt in place; a selected own

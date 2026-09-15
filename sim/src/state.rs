@@ -198,11 +198,17 @@ pub enum Order {
         at: TilePos,
     },
     /// Fly a run-in onto a ground tile and set the airframe down on its
-    /// center. (Last variant by appending discipline: earlier
-    /// discriminants keep their serialized bytes.)
+    /// center.
     Land {
         /// The tile to park on.
         goal: TilePos,
+    },
+    /// Deliver carried scrap to this Foundry, optionally welding it afterward.
+    ReturnCargo {
+        /// The owned drop-off chosen when the command was accepted.
+        foundry: BuildingId,
+        /// Repair this Foundry after delivery if it is still damaged.
+        repair: bool,
     },
 }
 
@@ -1030,6 +1036,14 @@ impl State {
             {
                 return Err(E::HarvestSourceOutsideZone(u.id));
             }
+            if std::iter::once(&u.order).chain(&u.queue).any(|order| {
+                matches!(order, Order::ReturnCargo { foundry, repair } if
+                    stats.harvest.is_none() || (*repair && !stats.welder)
+                    || self.building(*foundry).is_some_and(|building|
+                        building.player != u.player || !building.kind.is_drop_off()))
+            }) {
+                return Err(E::InvalidReturnCargo(u.id));
+            }
             for target in std::iter::once(&u.order)
                 .chain(&u.queue)
                 .filter_map(order_reference)
@@ -1845,6 +1859,7 @@ fn point_inside_envelope(p: Vec2Fx) -> bool {
 fn order_inside_envelope(order: &Order) -> bool {
     match order {
         Order::Idle
+        | Order::ReturnCargo { .. }
         | Order::Build { .. }
         | Order::Repair { .. }
         | Order::Salvage { .. }
@@ -1890,6 +1905,7 @@ fn order_reference(order: &Order) -> Option<Target> {
         | Order::Land { .. } => None,
         Order::Attack { target, .. } => target.entity(),
         Order::Build { site } => Some(Target::Building(*site)),
+        Order::ReturnCargo { foundry, .. } => Some(Target::Building(*foundry)),
         Order::Repair { building } | Order::Salvage { building } => {
             Some(Target::Building(*building))
         }
@@ -2196,6 +2212,9 @@ pub enum StateIntegrityError {
     /// An anchored Harvest order names a source outside its bounded work zone.
     #[error("unit {0} names a harvest source outside its work zone")]
     HarvestSourceOutsideZone(UnitId),
+    /// Cargo delivery requires a worker and an own drop-off target.
+    #[error("unit {0} has an invalid cargo delivery")]
+    InvalidReturnCargo(UnitId),
     /// A unit's order names an entity id this run never handed out.
     #[error("unit {0} is ordered against an id the run never minted")]
     UnmintedOrderTarget(UnitId),
