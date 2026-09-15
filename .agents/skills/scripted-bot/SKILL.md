@@ -66,10 +66,11 @@ immutable PublicMapBriefing + fog-honest Observation
   current proposal set compares Foundry, connected offense, standing force,
   defense, economy, reconnaissance, and support. Each domain admits at most one
   fresh alternative per pass; retained assignments can run concurrently. The
-  allocator evaluates every zero-or-one choice from each domain without a
-  proposal-count or machine-word cutoff. Only accepted Support relief starts a
-  new team operation. Fresh lift, tactical raid execution, and unmigrated
-  utility work consume the resulting residual.
+  allocator uses bounded portfolio refinement. Validate it against small
+  exhaustive oracles, and distinguish unrefined alternatives from proven
+  conflicts. Only accepted Support relief starts a new team operation. Fresh
+  lift, tactical raid execution, and unmigrated utility work consume the
+  resulting residual.
 - `sim/src/bot/strategy.rs` owns air operations, `sim/src/bot/lift.rs` owns
   severed-ground transport operations, and `sim/src/bot/navigation/commands.rs`
   owns their fog-honest route projection and exact command-subset checks.

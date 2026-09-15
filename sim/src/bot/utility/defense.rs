@@ -1385,14 +1385,13 @@ fn future_ground_producer_keeps_egress(
     ) else {
         return false;
     };
-    shortest_path_between(
-        combined,
-        &[spawn],
-        &[witness],
-        combined_candidate,
-        DefenseDomain::Ground,
+    crate::bot::navigation::search::reachable(
+        combined.obs.map_width,
+        combined.obs.map_height,
+        spawn,
+        witness,
+        |tile| combined.open(tile, combined_candidate, DefenseDomain::Ground),
     )
-    .is_some()
 }
 
 impl UtilityPolicy {
@@ -4957,9 +4956,18 @@ mod tests {
         let mut context =
             DefenseThinkContext::new_oriented(&policy, &obs, &map, &[], &[], orientation);
 
-        assert!(context.future_ground_producer_egress_survives(BuildingKind::Turret, safe_site,));
-        assert!(!context.future_ground_producer_egress_survives(BuildingKind::Turret, exit,));
-        assert!(!context.future_ground_producer_egress_survives(BuildingKind::Array, exit,));
+        let (_, work) = crate::bot::navigation::work::measure(|| {
+            assert!(
+                context.future_ground_producer_egress_survives(BuildingKind::Turret, safe_site)
+            );
+            assert!(!context.future_ground_producer_egress_survives(BuildingKind::Turret, exit));
+            assert!(!context.future_ground_producer_egress_survives(BuildingKind::Array, exit));
+        });
+        assert_eq!(
+            work.paths, 0,
+            "egress needs connectivity, not a shortest route"
+        );
+        assert_eq!(work.fields, 0);
         let stats = context.cache_stats();
         assert_eq!(stats.future_producer_baseline_builds, 1);
         assert_eq!(stats.future_producer_egress_builds, 2);
