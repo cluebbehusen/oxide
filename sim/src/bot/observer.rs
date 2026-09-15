@@ -33,12 +33,31 @@ pub enum BotPhase {
     /// Preserve controller state for atomic allocation rollback.
     Snapshot,
 }
+
+/// Deterministic work consumed by the incremental planning services this decision.
+/// This does not include synchronous planner or mandatory-validation work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct PlanningWorkStats {
+    /// Total allowance for field work and opportunity refinement.
+    pub allowance: usize,
+    /// Work consumed from that allowance.
+    pub spent: usize,
+    /// New exact site evaluations; retained-site validation is separate.
+    pub new_site_checks: usize,
+    /// Field jobs whose distances are not yet complete.
+    pub pending_fields: usize,
+    /// Completed and unfinished fields retained by this controller.
+    pub retained_fields: usize,
+}
+
 /// Observational notifications. Implementations must not block or affect game inputs.
 pub trait PhaseObserver {
     /// Enter a nested operation.
     fn enter(&self, phase: BotPhase);
     /// Leave that operation, including unwinding.
     fn exit(&self, phase: BotPhase);
+    /// Publish completed-decision work counters without influencing scheduling.
+    fn planning_work(&self, _work: PlanningWorkStats) {}
 }
 
 pub(crate) struct PhaseScope<'a> {

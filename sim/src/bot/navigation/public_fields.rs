@@ -910,7 +910,7 @@ mod tests {
         let blocked = BlockedGroundLayout::from_predicate(&map, |_| false);
         let sources = [TilePos::new(2, 2)];
         let expected = PublicGroundDistances::from_sources(&map, sources);
-        let mut planning = PlanningWork::with_allowance(60);
+        let planning = PlanningWork::with_allowance(60);
         assert_eq!(
             planning.field(0, &map, &blocked, sources),
             Progress::Deferred
@@ -925,7 +925,7 @@ mod tests {
             planning, saved,
             "a repeated call cannot refill the controller allowance"
         );
-        let mut cloned = planning.clone();
+        let cloned = planning.clone();
         let mut complete = false;
         for tick in (12..120).step_by(12) {
             let actual = planning.field(tick, &map, &blocked, sources);
@@ -966,7 +966,7 @@ mod tests {
         use crate::bot::planning::{PlanningWork, Progress};
         let map = briefing(20, 12, [], Vec::new());
         let blocked = BlockedGroundLayout::from_predicate(&map, |_| false);
-        let mut planning = PlanningWork::with_allowance(60);
+        let planning = PlanningWork::with_allowance(60);
         for x in [2, 3, 4] {
             assert_eq!(
                 planning.field(24, &map, &blocked, [TilePos::new(x, 2)]),
@@ -974,5 +974,48 @@ mod tests {
             );
             assert_eq!(planning.spent(), 60);
         }
+    }
+
+    #[test]
+    fn pending_fields_advance_between_admissions_without_reissuing_the_query() {
+        use crate::bot::planning::{PlanningWork, Progress};
+        let map = briefing(20, 12, [], Vec::new());
+        let blocked = BlockedGroundLayout::from_predicate(&map, |_| false);
+        let planning = PlanningWork::with_allowance(240);
+        for x in [2, 15] {
+            assert_eq!(
+                planning.field(0, &map, &blocked, [TilePos::new(x, 2)]),
+                Progress::Deferred
+            );
+        }
+        let clone = planning.clone();
+        for tick in (12..120).step_by(12) {
+            planning.begin(tick);
+            clone.begin(tick);
+            assert_eq!(planning, clone);
+            assert!(
+                planning.spent() <= 120,
+                "background work leaves half for current requests"
+            );
+            let spent = planning.spent();
+            planning.begin(tick);
+            assert_eq!(planning.spent(), spent);
+            if planning.stats().pending_fields == 0 {
+                for x in [2, 15] {
+                    let Progress::Ready(field) =
+                        planning.field(tick, &map, &blocked, [TilePos::new(x, 2)])
+                    else {
+                        panic!("completed work must survive until its consumer returns");
+                    };
+                    assert_eq!(
+                        *field,
+                        PublicGroundDistances::from_sources(&map, [TilePos::new(x, 2)])
+                    );
+                }
+                assert_eq!(planning.spent(), spent);
+                return;
+            }
+        }
+        panic!("both jobs must finish within their lifetime without new admissions");
     }
 }

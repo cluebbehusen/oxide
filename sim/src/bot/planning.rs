@@ -3,23 +3,31 @@
 mod fields;
 pub(super) mod sites;
 
+use std::cell::{Cell, RefCell};
+
 const DECISION_WORK: usize = 128_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::bot) struct PlanningWork {
-    tick: Option<u64>,
+    tick: Cell<Option<u64>>,
     allowance: usize,
-    budget: WorkBudget,
-    fields: fields::FieldPreparation,
+    budget: RefCell<WorkBudget>,
+    fields: RefCell<fields::FieldPreparation>,
+    sites: RefCell<sites::SiteWork>,
+    foundry: RefCell<RankedRotation>,
+    site_checks: Cell<usize>,
 }
 
 impl Default for PlanningWork {
     fn default() -> Self {
         Self {
-            tick: None,
+            tick: Cell::new(None),
             allowance: DECISION_WORK,
-            budget: WorkBudget::new(DECISION_WORK),
-            fields: fields::FieldPreparation::default(),
+            budget: RefCell::new(WorkBudget::new(DECISION_WORK)),
+            fields: RefCell::default(),
+            sites: RefCell::default(),
+            foundry: RefCell::default(),
+            site_checks: Cell::new(0),
         }
     }
 }
@@ -29,25 +37,84 @@ impl PlanningWork {
     pub(in crate::bot) fn with_allowance(allowance: usize) -> Self {
         Self {
             allowance,
-            budget: WorkBudget::new(allowance),
+            budget: RefCell::new(WorkBudget::new(allowance)),
             ..Self::default()
         }
     }
 
     #[cfg(test)]
     pub(in crate::bot) fn spent(&self) -> usize {
-        self.budget.spent()
+        self.budget.borrow().spent()
     }
 
-    pub(in crate::bot) fn begin(&mut self, tick: u64) {
-        if self.tick != Some(tick) {
-            self.tick = Some(tick);
-            self.budget = WorkBudget::new(self.allowance);
+    pub(in crate::bot) fn begin(&self, tick: u64) {
+        if self.tick.get() != Some(tick) {
+            self.tick.set(Some(tick));
+            *self.budget.borrow_mut() = WorkBudget::new(self.allowance);
+            self.site_checks.set(0);
+            self.budget
+                .borrow_mut()
+                .run_slice(self.allowance / 2, |budget| {
+                    self.fields.borrow_mut().resume_pending(tick, budget);
+                });
+        }
+    }
+
+    pub(in crate::bot) fn site_incumbent(
+        &self,
+        tick: u64,
+        kind: crate::stats::BuildingKind,
+    ) -> Option<chassis::grid::TilePos> {
+        self.sites.borrow().retained(tick, kind)
+    }
+
+    pub(in crate::bot) fn clear_site(&self, kind: crate::stats::BuildingKind) {
+        self.sites.borrow_mut().clear_incumbent(kind);
+    }
+
+    pub(in crate::bot) fn foundry_indices(
+        &self,
+        tick: u64,
+        count: usize,
+        limit: usize,
+    ) -> Vec<usize> {
+        self.foundry.borrow_mut().indices(tick, count, limit)
+    }
+
+    pub(in crate::bot) fn site<T>(
+        &self,
+        tick: u64,
+        kind: crate::stats::BuildingKind,
+        anchors: &[chassis::grid::TilePos],
+        evaluate: impl FnMut(chassis::grid::TilePos) -> Option<T>,
+        better: impl Fn(&T, &T) -> bool,
+    ) -> Progress<T> {
+        self.begin(tick);
+        self.sites
+            .borrow_mut()
+            .advance_ranked(tick, kind, anchors, evaluate, better, || {
+                if self.budget.borrow_mut().charge(1) {
+                    self.site_checks.set(self.site_checks.get() + 1);
+                    true
+                } else {
+                    false
+                }
+            })
+    }
+
+    pub(in crate::bot) fn stats(&self) -> super::observer::PlanningWorkStats {
+        let (pending_fields, retained_fields) = self.fields.borrow().counts();
+        super::observer::PlanningWorkStats {
+            allowance: self.allowance,
+            spent: self.budget.borrow().spent(),
+            new_site_checks: self.site_checks.get(),
+            pending_fields,
+            retained_fields,
         }
     }
 
     pub(in crate::bot) fn field(
-        &mut self,
+        &self,
         tick: u64,
         map: &crate::bot::PublicMapBriefing,
         blocked: &crate::bot::navigation::public_fields::BlockedGroundLayout,
@@ -56,7 +123,8 @@ impl PlanningWork {
     {
         self.begin(tick);
         self.fields
-            .advance(tick, map, blocked, sources, &mut self.budget)
+            .borrow_mut()
+            .advance(tick, map, blocked, sources, &mut self.budget.borrow_mut())
     }
 }
 
@@ -121,11 +189,66 @@ impl WorkBudget {
     pub(super) const fn spent(&self) -> usize {
         self.spent
     }
+
+    pub(super) fn run_slice<T>(&mut self, limit: usize, run: impl FnOnce(&mut Self) -> T) -> T {
+        let mut slice = Self::new(self.remaining.min(limit));
+        let result = run(&mut slice);
+        assert!(self.charge(slice.spent));
+        result
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_preparation_and_site_refinement_share_one_allowance() {
+        use crate::bot::{PublicMapBriefing, navigation::public_fields::BlockedGroundLayout};
+        use crate::stats::BuildingKind;
+        use chassis::grid::TilePos;
+
+        let map = PublicMapBriefing::from_scenario(&crate::Scenario::skirmish()).unwrap();
+        let blocked = BlockedGroundLayout::from_predicate(&map, |_| false);
+        let work = PlanningWork::with_allowance(3);
+        let anchors = (0..8).map(|x| TilePos::new(x, 0)).collect::<Vec<_>>();
+        let mut visited = Vec::new();
+        assert_eq!(
+            work.site(
+                24,
+                BuildingKind::Turret,
+                &anchors,
+                |anchor| {
+                    visited.push(anchor);
+                    assert_eq!(
+                        work.field(24, &map, &blocked, [TilePos::new(1, 1)]),
+                        Progress::Deferred
+                    );
+                    None::<()>
+                },
+                |_, _| false
+            ),
+            Progress::Deferred
+        );
+        assert_eq!(visited, anchors[..1]);
+        assert_eq!(work.spent(), 3);
+        assert_eq!(
+            work.site(
+                24,
+                BuildingKind::Array,
+                &anchors,
+                |_| { panic!("a different role cannot refill the exhausted controller allowance") },
+                |_: &(), _| false
+            ),
+            Progress::Deferred
+        );
+        let clone = work.clone();
+        let next =
+            |work: &PlanningWork| work.site(36, BuildingKind::Turret, &anchors, Some, |_, _| false);
+        assert_eq!(next(&work), Progress::Ready(anchors[1]));
+        assert_eq!(next(&clone), Progress::Ready(anchors[1]));
+        assert_eq!(work, clone);
+    }
 
     #[test]
     fn ranked_refinement_does_not_starve_candidates_when_admissions_skip_ticks() {

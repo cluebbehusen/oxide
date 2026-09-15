@@ -213,10 +213,7 @@ impl Brain {
         {
             return Vec::new();
         }
-        self.policy
-            .planning
-            .borrow_mut()
-            .begin(state.current_tick());
+        self.policy.planning.begin(state.current_tick());
         if let Some(recorder) = recorder.as_deref_mut() {
             recorder.begin(&obs);
         }
@@ -363,6 +360,9 @@ impl Brain {
                     decision_commands: bounded_count(recovery_commands),
                     total_commands: bounded_count(commands.len()),
                 };
+            }
+            if let Some(observer) = observer {
+                observer.planning_work(self.policy.planning.stats());
             }
             return commands;
         }
@@ -987,6 +987,9 @@ impl Brain {
             };
         }
         commands.extend(lowered);
+        if let Some(observer) = observer {
+            observer.planning_work(self.policy.planning.stats());
+        }
         commands
     }
 }

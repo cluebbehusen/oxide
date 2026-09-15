@@ -7515,23 +7515,20 @@ mod tests {
         let tuning = DifficultyTuning::for_level(profile.difficulty);
         let dials = Dials::scripted(&profile, tuning);
         let intelligence = StrategicIntelligence::new();
-        let original_policy = UtilityPolicy::new();
+        let mut original_policy = UtilityPolicy::new();
         let mut policy = original_policy.clone();
-        *policy.planning.borrow_mut() = crate::bot::planning::PlanningWork::with_allowance(1);
+        policy.planning = crate::bot::planning::PlanningWork::with_allowance(1);
         let blocked = crate::bot::navigation::public_fields::BlockedGroundLayout::from_predicate(
             &briefing,
             |_| false,
         );
         assert_eq!(
-            policy.planning.borrow_mut().field(
-                observation.tick,
-                &briefing,
-                &blocked,
-                [TilePos::new(1, 1)]
-            ),
+            policy
+                .planning
+                .field(observation.tick, &briefing, &blocked, [TilePos::new(1, 1)]),
             crate::bot::planning::Progress::Deferred
         );
-        let pending = policy.planning.borrow().clone();
+        let pending = policy.planning.clone();
         policy.record_dispatched_build(&observation, BuildingKind::Turret, TilePos::new(4, 4));
         let original_strategy = Some(StrategicPlanner::new());
         let mut strategy = None;
@@ -7621,8 +7618,8 @@ mod tests {
         assert_eq!(outcome.budget.residual_scrap, 0);
         assert_eq!(outcome.budget.utility_spendable, 0);
         assert_eq!(outcome.budget.connected_forecast_hold, u32::MAX);
-        assert_eq!(*policy.planning.borrow(), pending);
-        *original_policy.planning.borrow_mut() = pending;
+        assert_eq!(policy.planning, pending);
+        original_policy.planning = pending;
         assert_eq!(policy, original_policy);
         assert_eq!(strategy, original_strategy);
         assert_eq!(team, original_team);
@@ -9147,8 +9144,7 @@ mod tests {
             .saturating_add(Tick::from(foundry_cost).saturating_mul(crate::stats::RECLAIMER_PERIOD))
             .saturating_add(crate::stats::RECLAIMER_PERIOD);
         let mut policy = UtilityPolicy::new();
-        *policy.planning.borrow_mut() =
-            crate::bot::planning::PlanningWork::with_allowance(allowance);
+        policy.planning = crate::bot::planning::PlanningWork::with_allowance(allowance);
         let mut initial_intents = Vec::new();
         policy
             .commit_adjudicated_foundry(

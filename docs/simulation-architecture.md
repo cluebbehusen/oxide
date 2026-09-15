@@ -1269,8 +1269,13 @@ field requests. Passability preparation and traversal both consume work; an
 unfinished field resumes on later decisions and never means unreachable. At most
 four jobs survive, with exact terrain and danger invalidation and a 120-tick
 unfinished lifetime. Allocation rollback preserves work already done and spent
-allowance. Saved Foundry validation remains immediate; other synchronous field
-consumers still request completion.
+allowance, including Foundry and defensive-site cursors. Weapon and Array
+refinement share this controller allowance and each retain their four-new-site
+limit; incumbent validation is separate. Diagnostics report consumed work, new
+site checks, and pending and retained fields. These counters do not cover
+synchronous planner preparation or mandatory validation. Saved Foundry
+validation remains immediate; other synchronous field consumers still request
+completion.
 
 Exact Build-route checks index observed and public ground passability once per
 defensive grounding and reuse A* storage across builders and candidate sites.

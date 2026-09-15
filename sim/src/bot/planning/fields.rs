@@ -22,9 +22,43 @@ struct Job {
 pub(in crate::bot) struct FieldPreparation {
     generation: Option<(PublicMapBriefing, BlockedGroundLayout)>,
     jobs: BTreeMap<Vec<TilePos>, Job>,
+    next_pending: usize,
 }
 
 impl FieldPreparation {
+    pub(super) fn resume_pending(&mut self, tick: u64, budget: &mut WorkBudget) {
+        self.jobs.retain(|_, job| {
+            job.work.is_ready() || tick.saturating_sub(job.started_at) < PENDING_LIFETIME
+        });
+        let Some((map, blocked)) = &self.generation else {
+            return;
+        };
+        let mut pending = self
+            .jobs
+            .values_mut()
+            .filter(|job| !job.work.is_ready())
+            .collect::<Vec<_>>();
+        if pending.is_empty() {
+            return;
+        }
+        let first = self.next_pending % pending.len();
+        self.next_pending = (first + 1) % pending.len();
+        pending.rotate_left(first);
+        for job in pending {
+            budget.run_slice(16_000, |slice| job.work.advance(map, blocked, slice));
+        }
+    }
+
+    pub(super) fn counts(&self) -> (usize, usize) {
+        (
+            self.jobs
+                .values()
+                .filter(|job| !job.work.is_ready())
+                .count(),
+            self.jobs.len(),
+        )
+    }
+
     pub(in crate::bot) fn advance(
         &mut self,
         tick: u64,
@@ -40,6 +74,7 @@ impl FieldPreparation {
         {
             self.generation = Some((map.clone(), blocked.clone()));
             self.jobs.clear();
+            self.next_pending = 0;
         }
         self.jobs.retain(|_, job| {
             job.work.is_ready() || tick.saturating_sub(job.started_at) < PENDING_LIFETIME

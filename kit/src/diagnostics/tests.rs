@@ -41,14 +41,21 @@ fn observed_parallel_and_serial_commands_match_the_ordinary_controller() {
     let (root, writer) = recording();
     let recorder = Recorder::start(writer.clone()).unwrap();
     let mut scenario = Scenario::skirmish();
-    for player in &mut scenario.players {
+    for (seat, player) in scenario.players.iter_mut().enumerate() {
         player.bot = true;
+        player.bot_config = Some(oxide_sim::scenario::BotConfig::scripted(
+            oxide_sim::scenario::BotDifficulty::Prime,
+            oxide_sim::scenario::BotStance::Balanced,
+            seat as u64 + 7,
+        ));
     }
     for serial in [false, true] {
         let mut plain = scenario.build().unwrap();
         let mut observed = plain.clone();
         let mut a = seat_bots(&scenario).unwrap();
         let mut b = a.clone();
+        assert_eq!(a.len(), scenario.players.len());
+        let mut emitted = 0;
         for tick in 0..900 {
             recorder.set_enabled(tick % 100 < 75);
             let expected = crate::bot_execution::commands(&plain, &mut a);
@@ -60,11 +67,40 @@ fn observed_parallel_and_serial_commands_match_the_ordinary_controller() {
                 crate::bot_execution::commands_observed(&observed, &mut b, Some(&recorder))
             };
             assert_eq!(actual, expected, "tick {tick}");
+            emitted += actual.len();
             let expected = plain.tick(&expected);
             let actual = observed.tick(&actual);
             assert_eq!(expected.events, actual.events);
             assert_eq!(plain.hash(), observed.hash());
         }
+        assert!(emitted > 0);
+    }
+    until(|| {
+        std::fs::read(writer.directory().join("timings.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_some_and(|data| {
+                data["events"]
+                    .as_array()
+                    .is_some_and(|rows| rows.iter().any(|row| row["planning_work"].is_object()))
+            })
+    });
+    let data: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(writer.directory().join("timings.json")).unwrap())
+            .unwrap();
+    for row in data["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["planning_work"].is_object())
+    {
+        assert_eq!(row["phase"], 20);
+        assert!(row["slot"].as_u64().unwrap() > 0);
+        let work = &row["planning_work"];
+        assert!(work["spent"].as_u64().unwrap() <= work["allowance"].as_u64().unwrap());
+        assert!(
+            work["pending_fields"].as_u64().unwrap() <= work["retained_fields"].as_u64().unwrap()
+        );
     }
     cleanup(root, writer, recorder);
 }
@@ -146,7 +182,7 @@ fn watchdog_reports_a_stalled_bot_worker_and_presentation_wait() {
     let bot = std::thread::spawn(move || {
         inner.begin(2, BotPhase::Economy as u8, 30);
         blocked.recv().unwrap();
-        inner.end(2, BotPhase::Economy as u8, 30, 0);
+        inner.end(2, BotPhase::Economy as u8, 30, 0, None);
     });
     until(|| writer.directory().join("watchdog.json").exists());
     let data: serde_json::Value =
@@ -217,14 +253,18 @@ fn watchdog_updates_when_stalled_workers_change_without_full_resumption() {
     until(|| incidents().len() >= 2);
     assert_eq!(stalled_slots(&incidents()[1]), [1, 2]);
 
-    recorder.inner.end(1, BotPhase::Economy as u8, 30, first);
+    recorder
+        .inner
+        .end(1, BotPhase::Economy as u8, 30, first, None);
     until(|| incidents().len() >= 3);
     let data = incidents();
     assert_eq!(data[2]["kind"], "suspected stall");
     assert_eq!(stalled_slots(&data[2]), [2]);
     assert_eq!(data[2]["progress"].as_array().unwrap().len(), 1);
 
-    recorder.inner.end(2, BotPhase::Executive as u8, 30, second);
+    recorder
+        .inner
+        .end(2, BotPhase::Executive as u8, 30, second, None);
     until(|| incidents().len() >= 4);
     assert_eq!(incidents()[3]["kind"], "progress resumed");
     cleanup(root, writer, recorder);

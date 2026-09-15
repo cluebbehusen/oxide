@@ -319,7 +319,7 @@ impl UtilityPolicy {
             .into_iter()
             .map(|candidate| (candidate.anchor, candidate))
             .collect::<std::collections::BTreeMap<_, _>>();
-        let progress = self.defense_site_work.borrow_mut().advance_ranked(
+        let progress = self.planning.site(
             obs.tick,
             kind,
             &anchors,

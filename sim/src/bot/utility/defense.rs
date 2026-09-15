@@ -2117,19 +2117,20 @@ fn strategic_defense_quote_from_projection(
     };
     let selected = match search {
         DefenseSiteSearch::Progressive => {
-            let retained = policy.defense_site_work.borrow().retained(obs.tick, kind);
+            let retained = policy.planning.site_incumbent(obs.tick, kind);
             if let Some(candidate) = retained.and_then(&mut evaluate) {
                 Some(candidate)
             } else {
-                policy.defense_site_work.borrow_mut().clear_incumbent(kind);
+                policy.planning.clear_site(kind);
                 let mut candidate_tiles =
                     defense_candidate_tiles(policy, obs, assets, approaches, profile);
                 progressive::rank(&mut candidate_tiles, assets, approaches, profile);
-                match policy.defense_site_work.borrow_mut().advance(
+                match policy.planning.site(
                     obs.tick,
-                    profile,
+                    profile.kind,
                     &candidate_tiles,
                     evaluate,
+                    |candidate, prior| candidate.0.key(profile) > prior.0.key(profile),
                 ) {
                     crate::bot::planning::Progress::Ready(candidate) => Some(candidate),
                     crate::bot::planning::Progress::Deferred

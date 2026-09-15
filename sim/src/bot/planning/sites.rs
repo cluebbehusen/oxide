@@ -1,6 +1,6 @@
 //! Bounded site refinement with independent role cursors and live revalidation.
 
-use super::{Progress, WorkBudget};
+use super::Progress;
 use crate::stats::BuildingKind;
 use chassis::grid::TilePos;
 use std::collections::BTreeMap;
@@ -43,6 +43,7 @@ impl SiteWork {
         anchors: &[TilePos],
         mut evaluate: impl FnMut(TilePos) -> Option<T>,
         better: impl Fn(&T, &T) -> bool,
+        mut try_claim: impl FnMut() -> bool,
     ) -> Progress<T> {
         if anchors.is_empty() {
             return Progress::ProvenInfeasible;
@@ -60,12 +61,12 @@ impl SiteWork {
             return Progress::Ready(candidate);
         }
         role.incumbent = None;
-        let mut budget = WorkBudget::new(role.remaining);
         let mut selected: Option<(TilePos, T)> = None;
         for _ in 0..anchors.len().min(role.remaining) {
-            if !budget.charge(1) {
+            if !try_claim() {
                 break;
             }
+            role.remaining -= 1;
             let anchor = anchors[role.cursor % anchors.len()];
             role.cursor = (role.cursor + 1) % anchors.len();
             if let Some(candidate) = evaluate(anchor)
@@ -76,7 +77,6 @@ impl SiteWork {
                 selected = Some((anchor, candidate));
             }
         }
-        role.remaining -= budget.spent();
         match selected {
             Some((anchor, candidate)) => {
                 role.incumbent = Some((tick, anchor));

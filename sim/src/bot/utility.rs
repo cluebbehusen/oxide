@@ -705,9 +705,7 @@ impl Dials {
 /// memory, and the scout rotation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UtilityPolicy {
-    pub(in crate::bot) planning: std::cell::RefCell<super::planning::PlanningWork>,
-    foundry_refinement: std::cell::RefCell<super::planning::RankedRotation>,
-    defense_site_work: std::cell::RefCell<defense::progressive::SiteWork>,
+    pub(in crate::bot) planning: super::planning::PlanningWork,
     defense_routing_cache: std::cell::RefCell<defense::DefenseRoutingCache>,
     pub(in crate::bot) work_experience: experience_work::WorkExperience,
     pub(in crate::bot) ground_inputs: Option<combat::GroundMissionInputs>,

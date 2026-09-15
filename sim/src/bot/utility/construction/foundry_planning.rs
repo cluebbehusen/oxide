@@ -164,9 +164,8 @@ impl UtilityPolicy {
                 .filter(|quote| seen.insert(quote.anchor))
                 .map(|quote| quote.anchor)
                 .collect::<Vec<_>>();
-            self.foundry_refinement
-                .borrow_mut()
-                .indices(obs.tick, ranked.len(), EXACT_SITES)
+            self.planning
+                .foundry_indices(obs.tick, ranked.len(), EXACT_SITES)
                 .into_iter()
                 .map(|index| ranked[index])
                 .collect::<Vec<_>>()
@@ -175,8 +174,8 @@ impl UtilityPolicy {
             return Vec::new();
         }
         let blocked = self.foundry_logistics_blocked_layout(public_map, danger);
-        let mut planning = self.planning.borrow_mut();
-        let field = |planning: &mut crate::bot::planning::PlanningWork, sources: Vec<TilePos>| {
+        let planning = &self.planning;
+        let field = |planning: &crate::bot::planning::PlanningWork, sources: Vec<TilePos>| {
             if required.is_some() {
                 crate::bot::planning::Progress::Ready(
                     self.expansion_routing_cache
@@ -196,7 +195,7 @@ impl UtilityPolicy {
                     (0..size.1).flat_map(move |dy| (0..size.0).map(move |dx| anchor.offset(dx, dy)))
                 })
                 .collect();
-            match field(&mut planning, sources) {
+            match field(planning, sources) {
                 crate::bot::planning::Progress::Ready(field) => Some(field),
                 crate::bot::planning::Progress::Deferred => return Vec::new(),
                 crate::bot::planning::Progress::ProvenInfeasible => {
@@ -211,7 +210,7 @@ impl UtilityPolicy {
                 let sources = (0..size.1)
                     .flat_map(|dy| (0..size.0).map(move |dx| anchor.offset(dx, dy)))
                     .collect();
-                let next = match field(&mut planning, sources) {
+                let next = match field(planning, sources) {
                     crate::bot::planning::Progress::Ready(field) => field,
                     crate::bot::planning::Progress::Deferred => continue,
                     crate::bot::planning::Progress::ProvenInfeasible => {

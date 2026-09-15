@@ -4124,14 +4124,14 @@ mod tests {
             let danger = policy.harvest_danger_projection(obs, None, None);
             policy.regional_foundry_opportunities(obs, claim, &map, economy, &danger, required)
         };
-        let policy = UtilityPolicy::new();
-        *policy.planning.borrow_mut() = PlanningWork::with_allowance(1_200);
+        let mut policy = UtilityPolicy::new();
+        policy.planning = PlanningWork::with_allowance(1_200);
         let initial_tick = obs.tick;
         assert!(query(&policy, &obs, None).is_empty());
-        assert_eq!(policy.planning.borrow().spent(), 1_200);
-        let pending = policy.planning.borrow().clone();
+        assert_eq!(policy.planning.spent(), 1_200);
+        let pending = policy.planning.clone();
         assert!(query(&policy, &obs, None).is_empty());
-        assert_eq!(*policy.planning.borrow(), pending);
+        assert_eq!(policy.planning, pending);
         let mut completed = None;
         for delay in (12..120).step_by(12) {
             obs.tick = initial_tick + delay;
@@ -4146,10 +4146,10 @@ mod tests {
         let completed = completed.expect("fresh logistics must progress across decisions");
         let exact = query(&UtilityPolicy::new(), &obs, Some(completed.anchor));
         assert_eq!(exact, [completed]);
-        *policy.planning.borrow_mut() = PlanningWork::with_allowance(0);
+        policy.planning = PlanningWork::with_allowance(0);
         assert!(query(&policy, &obs, None).is_empty());
         assert_eq!(query(&policy, &obs, Some(completed.anchor)), exact);
-        assert_eq!(policy.planning.borrow().spent(), 0);
+        assert_eq!(policy.planning.spent(), 0);
     }
 
     #[test]

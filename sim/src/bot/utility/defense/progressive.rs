@@ -1,10 +1,13 @@
 //! Incremental voluntary site selection; exact validation remains query-local.
 
 use super::*;
+#[cfg(test)]
 use crate::bot::planning::Progress;
 
-pub(in crate::bot::utility) use crate::bot::planning::sites::SiteWork;
+#[cfg(test)]
+use crate::bot::planning::sites::SiteWork;
 
+#[cfg(test)]
 impl SiteWork {
     pub(super) fn advance(
         &mut self,
@@ -13,9 +16,14 @@ impl SiteWork {
         anchors: &[TilePos],
         evaluate: impl FnMut(TilePos) -> Option<(Candidate, UnitId)>,
     ) -> Progress<(Candidate, UnitId)> {
-        self.advance_ranked(tick, profile.kind, anchors, evaluate, |candidate, prior| {
-            candidate.0.key(profile) > prior.0.key(profile)
-        })
+        self.advance_ranked(
+            tick,
+            profile.kind,
+            anchors,
+            evaluate,
+            |candidate, prior| candidate.0.key(profile) > prior.0.key(profile),
+            || true,
+        )
     }
 }
 
