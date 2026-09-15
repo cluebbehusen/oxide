@@ -138,6 +138,42 @@ mod tests {
     use chassis::grid::TilePos;
 
     #[test]
+    fn last_worker_wreck_survives_provisional_site_cleanup_and_refund() {
+        for provisional in [false, true] {
+            let mut state = Scenario::skirmish().build().unwrap();
+            let worker = state
+                .units
+                .iter()
+                .find(|u| u.player == PlayerId(0) && u.kind.stats().harvest.is_some())
+                .unwrap()
+                .id;
+            let tile = state.unit(worker).unwrap().tile();
+            let value = state.unit(worker).unwrap().kind.stats().cost
+                * crate::stats::WRECK_VALUE_NUM
+                / crate::stats::WRECK_VALUE_DEN;
+            let site = state.place_site(PlayerId(0), BuildingKind::Turret, tile);
+            state.building_mut(site).unwrap().provisional = provisional;
+            state.rebuild_building_occupancy();
+            let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
+            state.player_mut(PlayerId(0)).scrap -= cost;
+            let bank = state.player(PlayerId(0)).scrap;
+            let unit = state.unit_mut(worker).unwrap();
+            unit.order = Order::Build { site };
+            unit.hp = 0;
+            let mut events = Vec::new();
+            super::super::cleanup(&mut state, &mut events);
+            cancel_abandoned(&mut state, &mut events);
+            assert!(state.unit(worker).is_none());
+            assert!(state.building(site).is_none());
+            assert_eq!(state.player(PlayerId(0)).scrap, bank + cost);
+            assert_eq!(
+                state.map.wreck_at(tile),
+                if provisional { value } else { 0 }
+            );
+        }
+    }
+
+    #[test]
     fn paid_site_activation_does_not_recheck_lost_prerequisites() {
         let mut state = Scenario::skirmish().build().unwrap();
         let worker = state

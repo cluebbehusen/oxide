@@ -51,6 +51,7 @@ fn observed_unit(id: u32, kind: UnitKind, tile: TilePos) -> UnitObs {
 
 fn observed_building(id: u32, kind: BuildingKind, anchor: TilePos, built: bool) -> BuildingObs {
     BuildingObs {
+        provisional: false,
         id: BuildingId(id),
         player: PlayerId(0),
         kind,

@@ -594,6 +594,7 @@ mod tests {
 
     fn enemy_building(id: u32, kind: BuildingKind, anchor: TilePos, seen: bool) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: PlayerId(1),
             kind,

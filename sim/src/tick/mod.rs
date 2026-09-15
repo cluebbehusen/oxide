@@ -323,7 +323,11 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
         // cannot reach it, and the building's own eventual wreck would
         // double-stack). Buildings that died this tick are already gone
         // from the vec, so their footprints take deposits normally.
-        if state.buildings.iter().any(|b| b.contains(tile)) {
+        if state
+            .buildings
+            .iter()
+            .any(|b| !b.provisional && b.contains(tile))
+        {
             continue;
         }
         // Rock and peaks never open up, so salvage there is bait no

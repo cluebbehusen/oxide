@@ -3935,6 +3935,7 @@ mod tests {
             let mut prior = raw.clone();
             prior.tick = prior.tick.saturating_sub(100);
             prior.enemy_buildings.push(BuildingObs {
+                provisional: false,
                 id: enemy_foundry.id,
                 player: enemy_foundry.player,
                 kind: enemy_foundry.kind,
@@ -4338,6 +4339,7 @@ mod tests {
         let mut prior = raw.clone();
         prior.tick = prior.tick.saturating_sub(100);
         prior.enemy_buildings.push(BuildingObs {
+            provisional: false,
             id: enemy_foundry.id,
             player: enemy_foundry.player,
             kind: enemy_foundry.kind,
@@ -7496,6 +7498,7 @@ mod tests {
         let mut prior = raw.clone();
         prior.tick = prior.tick.saturating_sub(100);
         prior.enemy_buildings.push(BuildingObs {
+            provisional: false,
             id: enemy_foundry.id,
             player: enemy_foundry.player,
             kind: enemy_foundry.kind,
@@ -9045,6 +9048,7 @@ mod tests {
         let mut prior = raw;
         prior.tick = last_seen;
         prior.enemy_buildings.push(BuildingObs {
+            provisional: false,
             id: enemy_foundry.id,
             player: enemy_foundry.player,
             kind: enemy_foundry.kind,
@@ -9496,6 +9500,7 @@ mod tests {
 
     fn test_building(id: u32, player: u8, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: PlayerId(player),
             kind,

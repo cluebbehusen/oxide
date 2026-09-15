@@ -1064,6 +1064,7 @@ mod tests {
     #[test]
     fn pressure_objective_identity_preserves_fog_but_refuses_observed_replacements() {
         let current = BuildingObs {
+            provisional: false,
             id: BuildingId(900),
             player: PlayerId(1),
             kind: BuildingKind::Foundry,
@@ -1075,6 +1076,7 @@ mod tests {
         };
         let target = ArmyObjective::from_building(&current);
         let ghost = BuildingObs {
+            provisional: false,
             id: BuildingId(u32::MAX),
             seen: false,
             ..current.clone()
@@ -1084,6 +1086,7 @@ mod tests {
         assert!(ArmyObjective::from_building(&ghost).matches(&current));
         for replacement in [
             BuildingObs {
+                provisional: false,
                 id: BuildingId(901),
                 ..current.clone()
             },
@@ -1109,6 +1112,7 @@ mod tests {
         use crate::bot::experience::Outcome;
         let (mut obs, mut executive) = target_holding_position();
         let mut building = BuildingObs {
+            provisional: false,
             id: BuildingId(u32::MAX),
             player: PlayerId(1),
             kind: BuildingKind::Foundry,
@@ -1278,6 +1282,7 @@ mod tests {
         ] {
             let (mut obs, mut executive) = target_holding_position();
             obs.my_buildings.push(BuildingObs {
+                provisional: false,
                 id: BuildingId(900),
                 player: obs.me,
                 kind: BuildingKind::Foundry,
@@ -1857,6 +1862,7 @@ mod tests {
         obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(10, y)).collect();
         let building = BuildingId(9);
         obs.my_buildings = vec![BuildingObs {
+            provisional: false,
             id: building,
             player: PlayerId(0),
             kind: BuildingKind::Turret,
@@ -1887,6 +1893,7 @@ mod tests {
             UnitKind::Harvester.stats().max_hp,
         )];
         obs.my_buildings = vec![crate::bot::observation::BuildingObs {
+            provisional: false,
             id: BuildingId(9),
             player: PlayerId(0),
             kind: BuildingKind::Turret,
@@ -1992,6 +1999,7 @@ mod tests {
         ];
         let building = BuildingId(9);
         obs.my_buildings = vec![crate::bot::observation::BuildingObs {
+            provisional: false,
             id: building,
             player: PlayerId(0),
             kind: BuildingKind::Foundry,

@@ -550,10 +550,11 @@ memory, computed once per team and cloned to later seats.
 The bot `Observation` copies both masks in canonical row-major order. Policies
 therefore distinguish current sight from remembered terrain without consulting
 authoritative state; seat orientation transforms both masks with the rest of the
-observed world. Observation schema 18 exposes continuous contact tracks and each
-own carried unit's identity, kind, health, and carrier separately from available
-units. This is presence evidence, not permission to assign or command a
-passenger. Allied and enemy manifests remain opaque.
+observed world. Observation schema 19 marks provisional footprints and paid
+deferred sites, and exposes continuous contact tracks and each own carried
+unit's identity, kind, health, and carrier separately from available units. This
+is presence evidence, not permission to assign or command a passenger. Allied
+and enemy manifests remain opaque.
 
 The maintained player-facing controller also receives a `PublicMapBriefing`
 derived from the final authored `Scenario`. It contains static terrain,

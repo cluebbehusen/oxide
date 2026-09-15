@@ -86,8 +86,8 @@ pub enum Command {
         kind: UnitKind,
     },
     /// Start a construction site and send harvesters to stand it up.
-    /// The full price is paid on placement; cancelling salvages
-    /// `cost x hp / max_hp`.
+    /// The full price is paid on placement. Cancellation refunds it in full
+    /// before work starts, then returns `cost x hp / max_hp` afterward.
     Build {
         /// Candidate builders. Every accepted harvester joins the crew,
         /// fresh placement and resume alike (builders stack); on a

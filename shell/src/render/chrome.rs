@@ -405,14 +405,7 @@ pub(crate) fn draw_hud(
     // the seat has no voice left. Commands still route; the sim rejects
     // them.
     let resigned = game.state.player(game.human).resigned;
-    if game.state.result().is_none()
-        && (resigned
-            || !game
-                .state
-                .buildings()
-                .iter()
-                .any(|b| b.player == game.human && b.kind == oxide_sim::BuildingKind::Foundry))
-    {
+    if game.state.result().is_none() && (resigned || game.home_foundry().is_none()) {
         let text = if resigned {
             "SURRENDERED - SPECTATING"
         } else {

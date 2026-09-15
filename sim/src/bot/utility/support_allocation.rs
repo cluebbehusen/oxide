@@ -992,6 +992,7 @@ mod tests {
         };
         let mut covered = obs.clone();
         covered.my_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(100),
             player: obs.me,
             kind: BuildingKind::RepairBay,

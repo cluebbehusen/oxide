@@ -5379,6 +5379,7 @@ mod tests {
 
     fn observed_building(id: u32, player: u8, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
         BuildingObs {
+            provisional: false,
             id: BuildingId(id),
             player: PlayerId(player),
             kind,
@@ -6242,6 +6243,7 @@ mod tests {
         observation.tick = 120;
         observation.scrap = 100;
         observation.my_buildings.push(BuildingObs {
+            provisional: false,
             id: BuildingId(9),
             player: PlayerId(0),
             kind: BuildingKind::Foundry,
