@@ -18,6 +18,20 @@ pub enum BotPhase {
     Economy,
     /// Lower funded intentions to ordinary commands.
     Executive,
+    /// Rank and price fresh resource expansion.
+    Foundry = 21,
+    /// Derive ordinary force capabilities and production alternatives.
+    StandingForce,
+    /// Resolve shared claims and compatible proposal portfolios.
+    Portfolio,
+    /// Validate combinations of proposed construction footprints.
+    Layouts,
+    /// Reconcile observation assignments and their paid occurrences.
+    Reconnaissance,
+    /// Observe repair and protection demand across owned assets.
+    Support,
+    /// Preserve controller state for atomic allocation rollback.
+    Snapshot,
 }
 /// Observational notifications. Implementations must not block or affect game inputs.
 pub trait PhaseObserver {

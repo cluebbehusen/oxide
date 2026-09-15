@@ -477,11 +477,20 @@ impl<'a> AllocationSession<'a> {
             protected_scrap: 0,
             air_work: &[],
         };
+        let recon_scope = crate::bot::observer::PhaseScope::new(
+            self.observer,
+            crate::bot::observer::BotPhase::Reconnaissance,
+        );
         let recon_intents = self
             .participants
             .policy
             .observe_reconnaissance(observed_context, self.context.home);
         self.recon_paid_exclusions = self.participants.policy.reconnaissance.paid_exclusions();
+        drop(recon_scope);
+        let support_scope = crate::bot::observer::PhaseScope::new(
+            self.observer,
+            crate::bot::observer::BotPhase::Support,
+        );
         let support_snapshot = self
             .participants
             .policy
@@ -494,9 +503,15 @@ impl<'a> AllocationSession<'a> {
             .policy
             .observe_support_deployments(observed_context, &support_snapshot.protection);
         self.support_snapshot = Some(support_snapshot);
+        drop(support_scope);
+        let snapshot_scope = crate::bot::observer::PhaseScope::new(
+            self.observer,
+            crate::bot::observer::BotPhase::Snapshot,
+        );
         let snapshots = CommitSnapshots {
             policy: self.participants.policy.clone(),
         };
+        drop(snapshot_scope);
         let prepared = self.prepare();
         let resolved = self.resolve(prepared, snapshots);
         let mut outcome = self.commit_or_restore(resolved);
@@ -2269,6 +2284,10 @@ impl<'a> AllocationSession<'a> {
             .iter()
             .filter(|unit| available_builders.binary_search(&unit.id).is_ok())
             .collect::<Vec<_>>();
+        let foundry_scope = crate::bot::observer::PhaseScope::new(
+            self.observer,
+            crate::bot::observer::BotPhase::Foundry,
+        );
         let foundry_investment = admission_tick
             .then(|| {
                 self.participants.policy.fresh_foundry_investment(
@@ -2292,6 +2311,7 @@ impl<'a> AllocationSession<'a> {
                 )
             })
             .flatten();
+        drop(foundry_scope);
         let expansion_security_need = foundry_investment
             .as_ref()
             .and_then(FreshFoundryInvestment::preparation_need)
@@ -2712,6 +2732,10 @@ impl<'a> AllocationSession<'a> {
         unit_exclusions: &[UnitId],
         connected_paid_production: &[StandingProductionCommitment],
     ) -> (Vec<StandingForceProposal>, Vec<CapabilityDemand>) {
+        let _scope = crate::bot::observer::PhaseScope::new(
+            self.observer,
+            crate::bot::observer::BotPhase::StandingForce,
+        );
         if !claims.opening_core.ready
             || obligations.coordinator_failure.is_some()
             || (self.participants.policy.economic_saving().is_some()
@@ -3129,6 +3153,10 @@ impl<'a> AllocationSession<'a> {
         mut prepared: PreparedAllocation,
         snapshots: CommitSnapshots,
     ) -> ResolvedAllocation {
+        let _scope = crate::bot::observer::PhaseScope::new(
+            self.observer,
+            crate::bot::observer::BotPhase::Portfolio,
+        );
         let mut allocation_ok = prepared.coordinator_failure.is_none();
         let mut settlement = None;
         if allocation_ok {
@@ -3436,6 +3464,10 @@ impl<'a> AllocationSession<'a> {
         allocation: &mut CrossDomainAllocation,
         prepared: &PreparedAllocation,
     ) {
+        let _scope = crate::bot::observer::PhaseScope::new(
+            self.observer,
+            crate::bot::observer::BotPhase::Layouts,
+        );
         let mut layouts = Vec::new();
         if let Some(foundry) = prepared.fresh_foundry.as_ref() {
             layouts.push((
