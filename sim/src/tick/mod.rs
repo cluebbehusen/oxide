@@ -4,8 +4,8 @@
 //! outcomes (and therefore every regression hash):
 //!
 //! 1. **Recovery and commands** — capture any newly stranded economy's
-//!    finite entitlement from the tick-boundary state, then validate and
-//!    apply this tick's [`PlayerCommand`]s.
+//!    finite entitlement, resolve visible provisional sites, then apply this
+//!    tick's [`PlayerCommand`]s and refund abandoned unstarted sites.
 //! 2. **Production** — Foundries advance queues and spawn finished units
 //!    (before brains, so a fresh unit acts on its birth tick).
 //! 3. **Brains** — each unit, in id order, turns intent into action:
@@ -24,12 +24,14 @@
 //! 7. **Cleanup** — entities at 0 hp are removed, with events; every
 //!    death deposits wreck salvage on its ground. Due aircraft crashes
 //!    damage post-movement ground targets before charges and cleanup;
-//!    cleanup schedules new crashes with their retained flight momentum.
+//!    cleanup schedules new crashes with their retained flight momentum and
+//!    refunds unstarted sites whose last committed worker is gone.
 //! 8. **Decay** — on its global cadence, every wreck tile loses one
 //!    salvage. Cleanup and decay share the tick, so a wreck born on a
 //!    cadence tick pays its first salvage immediately.
 //! 9. **Vision** — every player's fog-of-war visible set is rebuilt from
-//!    their surviving entities (explored only accumulates).
+//!    their surviving entities (explored only accumulates). Newly visible
+//!    provisional sites activate or refund against the revealed ground.
 //! 10. **Victory** — a player with no Foundry (or who conceded) is out;
 //!     last standing wins immediately; remaining aircraft crashes are discarded.
 //!
@@ -40,6 +42,7 @@ mod aircraft_crashes;
 mod brain;
 mod charges;
 mod commands;
+pub(crate) mod construction;
 pub(crate) mod flight;
 pub(crate) mod landing;
 mod movement;
@@ -77,13 +80,24 @@ impl CommandPhaseView<'_> {
                 .try_player(player)
                 .is_some_and(|seat| !seat.resigned)
             && self.state.buildings.iter().any(|building| {
-                building.player == player && building.kind == crate::stats::BuildingKind::Foundry
+                building.player == player
+                    && !building.provisional
+                    && building.kind == crate::stats::BuildingKind::Foundry
             })
     }
 
     /// Projected scrap in `player`'s bank.
     pub fn scrap(&self, player: crate::ids::PlayerId) -> Option<u32> {
         self.state.try_player(player).map(|seat| seat.scrap)
+    }
+
+    /// Full refunds released by replacing the selected workers' unstarted sites.
+    pub fn construction_refund(
+        &self,
+        player: crate::ids::PlayerId,
+        units: &[crate::ids::UnitId],
+    ) -> u32 {
+        self.state.construction_refund(player, units)
     }
 
     /// Projected live units, in canonical id order.
@@ -99,25 +113,6 @@ impl CommandPhaseView<'_> {
     /// One projected live unit.
     pub fn unit(&self, id: crate::ids::UnitId) -> Option<&crate::state::Unit> {
         self.state.unit(id)
-    }
-
-    /// Whether projected commands already paid for a matching ordinary site.
-    ///
-    /// A deferred founder joins that unfinished site for free when it
-    /// arrives, so callers must not reserve the construction price again.
-    pub fn has_own_unfinished_site(
-        &self,
-        player: crate::ids::PlayerId,
-        kind: crate::stats::BuildingKind,
-        anchor: TilePos,
-    ) -> bool {
-        self.state.buildings.iter().any(|building| {
-            building.player == player
-                && building.kind == kind
-                && building.anchor == anchor
-                && !building.built
-                && building.tier == 0
-        })
     }
 
     /// Fog-safe projected placement verdict, excluding claims carried by
@@ -179,6 +174,7 @@ impl State {
             // point, and it must never ride on `State` (see `spatial`).
             let mut index = spatial::UnitIndex::new();
             production::capture_recovery_entitlements(self);
+            construction::reveal(self, &mut events);
             commands::apply(self, commands, &mut events);
             production::run(self, &mut events);
             charges::cancel_discovered(self, &mut events);
@@ -210,10 +206,12 @@ impl State {
             aircraft_crashes::land(self, &mut events);
             charges::detonate_under_units(self, &mut events);
             cleanup(self, &mut events);
+            construction::cancel_abandoned(self, &mut events);
             if self.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
                 self.map.decay_wrecks();
             }
             self.refresh_vision();
+            construction::reveal(self, &mut events);
             if charges::cancel_discovered(self, &mut events) {
                 self.reconcile_attack_knowledge();
             }
@@ -366,10 +364,9 @@ fn victory(state: &mut State, events: &mut Vec<Event>) {
         }
         let seat = crate::ids::PlayerId(index as u8);
         let out = state.players[index].resigned
-            || !state
-                .buildings
-                .iter()
-                .any(|b| b.player == seat && b.kind == crate::stats::BuildingKind::Foundry);
+            || !state.buildings.iter().any(|b| {
+                b.player == seat && !b.provisional && b.kind == crate::stats::BuildingKind::Foundry
+            });
         if out {
             state.players[index].eliminated_at = Some(state.tick);
         }
@@ -380,7 +377,10 @@ fn victory(state: &mut State, events: &mut Vec<Event>) {
     let alive = |team: u8| {
         state.buildings.iter().any(|b| {
             let owner = &state.players[b.player.0 as usize];
-            b.kind == crate::stats::BuildingKind::Foundry && owner.team == team && !owner.resigned
+            !b.provisional
+                && b.kind == crate::stats::BuildingKind::Foundry
+                && owner.team == team
+                && !owner.resigned
         })
     };
     let survivors: Vec<u8> = teams.iter().copied().filter(|&t| alive(t)).collect();
@@ -609,7 +609,9 @@ pub(crate) fn rect_approach_origin(
         .buildings
         .iter()
         .filter(|building| {
-            building.player == player && building.kind == crate::stats::BuildingKind::Foundry
+            building.player == player
+                && !building.provisional
+                && building.kind == crate::stats::BuildingKind::Foundry
         })
         .min_by_key(|building| building.id)
         .map(|foundry| (foundry.anchor, foundry.kind.base_stats().size));

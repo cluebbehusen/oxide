@@ -244,7 +244,7 @@ pub(crate) enum LiveCmd {
         #[arg(long)]
         queue: bool,
     },
-    /// Scrap an own unfinished site for a partial refund.
+    /// Scrap an own unfinished site: full refund before work, health-scaled afterward.
     Cancel {
         /// Acting player index.
         player: u8,

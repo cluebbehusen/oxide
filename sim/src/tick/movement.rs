@@ -119,7 +119,7 @@ fn early_advance_safe(
         map.terrain_passable(t)
             && !buildings
                 .iter()
-                .any(|b| b.contains(t) && !b.kind.is_stealthy())
+                .any(|b| b.contains(t) && !b.kind.is_stealthy() && !b.provisional)
     };
     let (dx, dy) = (nxt.x - cur.x, nxt.y - cur.y);
     if dx == 0 || dy == 0 {
@@ -188,7 +188,7 @@ pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Op
         || unit.path.is_some()
         || state
             .buildings_at(unit.tile())
-            .all(|b| b.kind.is_stealthy())
+            .all(|b| b.kind.is_stealthy() || b.provisional)
     {
         return None;
     }

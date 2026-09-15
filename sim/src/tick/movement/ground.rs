@@ -23,7 +23,7 @@ fn route_target(unit: &mut Unit, map: &Map, buildings: &[Building]) -> Option<(V
             map.terrain_passable(tile)
                 && !buildings
                     .iter()
-                    .any(|b| b.contains(tile) && !b.kind.is_stealthy())
+                    .any(|b| b.contains(tile) && !b.kind.is_stealthy() && !b.provisional)
         };
         if !open(waypoint) || !super::early_advance_safe(here, waypoint, map, buildings) {
             unit.path = None;
@@ -110,7 +110,7 @@ pub(super) fn advance(unit: &mut Unit, map: &Map, buildings: &[Building]) {
         || (map.terrain_passable(there)
             && !buildings
                 .iter()
-                .any(|b| b.contains(there) && !b.kind.is_stealthy())
+                .any(|b| b.contains(there) && !b.kind.is_stealthy() && !b.provisional)
             && super::early_advance_safe(here, there, map, buildings))
     {
         unit.pos = proposed;

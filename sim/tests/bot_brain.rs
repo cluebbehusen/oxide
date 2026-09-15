@@ -693,7 +693,7 @@ fn allied_observations_reveal_presence_but_not_private_programs() {
     ));
     assert!(matches!(
         state.unit(founder).expect("the founder lives").order,
-        Order::Found { kind: BuildingKind::Turret, anchor } if anchor == founding_anchor
+        Order::Build { site } if state.building(site).unwrap().anchor == founding_anchor
     ));
     assert!(
         !state
@@ -774,12 +774,19 @@ fn own_observations_expose_salvage_and_deferred_found_commitments() {
         },
     )]);
     let founding = Observation::fog_honest(&state, PlayerId(0));
-    assert_eq!(
-        founding.my_units[0].founding,
-        Some((BuildingKind::Turret, anchor))
-    );
+    assert_eq!(founding.my_units[0].founding, None);
     assert_eq!(founding.my_units[0].salvaging, None);
-    assert_eq!(founding.my_units[0].site, None);
+    assert_eq!(
+        founding.my_units[0].site,
+        Some(
+            state
+                .buildings()
+                .iter()
+                .find(|b| b.anchor == anchor)
+                .unwrap()
+                .id
+        )
+    );
 }
 
 #[test]
@@ -920,7 +927,7 @@ fn a_stranded_brain_spends_only_on_one_recovery_harvester() {
 }
 
 #[test]
-fn a_fallen_opening_core_stops_repairs_and_unpaid_deferred_capital() {
+fn a_fallen_opening_core_stops_repairs_but_preserves_paid_construction() {
     let mut scenario = open_arena(vec![
         unit(0, UnitKind::Harvester, 4, 3),
         unit(0, UnitKind::Harvester, 4, 10),
@@ -1019,10 +1026,7 @@ fn a_fallen_opening_core_stops_repairs_and_unpaid_deferred_capital() {
     );
     assert!(matches!(
         state.unit(founder).unwrap().order,
-        Order::Found {
-            kind: BuildingKind::Foundry,
-            anchor: promised,
-        } if promised == anchor
+        Order::Build { site } if state.building(site).unwrap().anchor == anchor
     ));
     assert!(matches!(
         state.unit(repairer).unwrap().order,
@@ -1051,21 +1055,11 @@ fn a_fallen_opening_core_stops_repairs_and_unpaid_deferred_capital() {
          {commands:?}"
     );
     assert!(
-        commands.iter().any(|command| matches!(
+        commands.iter().all(|command| !matches!(
             &command.command,
-            Command::Stop { units } if units == &[founder]
+            Command::Stop { units } if units.contains(&founder)
         )),
-        "the unpaid remote founder must release its claim while the core recovers: {commands:?}"
-    );
-    assert!(
-        commands.iter().any(|command| matches!(
-            command.command,
-            Command::Train {
-                kind: UnitKind::Sentinel,
-                ..
-            }
-        )),
-        "released capital must immediately fund the missing combat core: {commands:?}"
+        "paid construction remains committed while the core recovers: {commands:?}"
     );
     assert!(
         commands.iter().all(|command| !matches!(
@@ -1088,21 +1082,16 @@ fn a_fallen_opening_core_stops_repairs_and_unpaid_deferred_capital() {
         "the recovery commands must all be legal: {:?}",
         report.events
     );
-    assert!(!matches!(
-        state.unit(founder).unwrap().order,
-        Order::Found {
-            kind: BuildingKind::Foundry,
-            anchor: requested,
-        } if requested == anchor
-    ));
+    assert!(matches!(state.unit(founder).unwrap().order,
+        Order::Build { site } if state.building(site).unwrap().anchor == anchor));
     assert!(!matches!(
         state.unit(repairer).unwrap().order,
         Order::Repair { .. }
     ));
-    assert!(state.buildings().iter().all(|building| {
-        building.player != PlayerId(0)
-            || building.kind != BuildingKind::Foundry
-            || building.anchor != anchor
+    assert!(state.buildings().iter().any(|building| {
+        building.player == PlayerId(0)
+            && building.kind == BuildingKind::Foundry
+            && building.anchor == anchor
     }));
 }
 

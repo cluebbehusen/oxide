@@ -33,10 +33,11 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
         // Alive means a standing Foundry and no concession, matching the
         // victory rule — which also makes a second Surrender reject here.
         if state.players[pc.player.0 as usize].resigned
-            || !state
-                .buildings
-                .iter()
-                .any(|b| b.player == pc.player && b.kind == crate::stats::BuildingKind::Foundry)
+            || !state.buildings.iter().any(|b| {
+                b.player == pc.player
+                    && !b.provisional
+                    && b.kind == crate::stats::BuildingKind::Foundry
+            })
         {
             events.push(Event::CommandRejected {
                 player: pc.player,
@@ -72,10 +73,13 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 state,
                 pc.player,
                 &canonical_units(units),
-                *kind,
-                *anchor,
+                BuildPlacement {
+                    kind: *kind,
+                    anchor: *anchor,
+                    defer: *defer,
+                },
                 *queue,
-                *defer,
+                events,
             ),
             Command::Cancel { building } => apply_cancel(state, pc.player, *building, events),
             Command::Repair {
@@ -126,7 +130,7 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 }
             }
             Command::CancelFound { kind, anchor } => {
-                apply_cancel_found(state, pc.player, *kind, *anchor)
+                apply_cancel_found(state, pc.player, *kind, *anchor, events)
             }
             Command::UpgradeBuilding { building } => apply_upgrade(state, pc.player, *building),
             Command::Load {
@@ -151,6 +155,8 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 player: pc.player,
                 reason,
             });
+        } else {
+            super::construction::cancel_abandoned(state, events);
         }
     }
 }
@@ -386,7 +392,9 @@ fn spread_scan_reversed(state: &State, center: TilePos, ids: &[UnitId]) -> bool 
         .buildings
         .iter()
         .find(|building| {
-            building.player == player && building.kind == crate::stats::BuildingKind::Foundry
+            building.player == player
+                && !building.provisional
+                && building.kind == crate::stats::BuildingKind::Foundry
         })
         .map(|building| (building.anchor, building.kind.base_stats().size));
     super::group_spread_scan_reversed(
@@ -728,15 +736,61 @@ fn apply_patrol(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct BuildPlacement {
+    kind: crate::stats::BuildingKind,
+    anchor: TilePos,
+    defer: bool,
+}
+
 /// Claims the site immediately (full price, footprint blocks) and
 /// commits the whole accepted crew: the first accepted harvester founds
 /// the site — pays, proves a doorstep is reachable — and every other
 /// accepted harvester takes the same Build order (builders stack).
 /// Aiming at an existing own unfinished site resumes it instead —
 /// that's how a dead builder's work gets picked back up. With `defer`,
-/// nothing is claimed now: the crew takes [`Order::Found`] and the
-/// founder claims through [`found_site`] on arrival.
+/// a paid provisional scaffold reserves the plan without occupying hidden
+/// ground. The crew takes [`Order::Found`] until visibility verifies the site.
 fn apply_build(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    placement: BuildPlacement,
+    queue: bool,
+    events: &mut Vec<Event>,
+) -> Result<(), RejectReason> {
+    let BuildPlacement {
+        kind,
+        anchor,
+        defer,
+    } = placement;
+    let replaced = if queue {
+        Vec::new()
+    } else {
+        super::construction::replaced_sites(state, player, units)
+            .into_iter()
+            .filter(|id| {
+                state
+                    .building(*id)
+                    .is_some_and(|b| b.kind != kind || b.anchor != anchor)
+            })
+            .collect::<Vec<_>>()
+    };
+    if replaced.is_empty() {
+        return apply_build_inner(state, player, units, kind, anchor, queue, defer);
+    }
+    let mut candidate = state.clone();
+    let mut refunds = Vec::new();
+    for id in replaced {
+        super::construction::refund(&mut candidate, id, &mut refunds);
+    }
+    apply_build_inner(&mut candidate, player, units, kind, anchor, queue, defer)?;
+    *state = candidate;
+    events.extend(refunds);
+    Ok(())
+}
+
+fn apply_build_inner(
     state: &mut State,
     player: PlayerId,
     units: &[UnitId],
@@ -771,10 +825,19 @@ fn apply_build(
         })
         .map(|b| b.id);
     if let Some(site) = existing {
+        let provisional = state.building(site).expect("found site").provisional;
         let mut landed = 0;
         for id in crew {
             if let Some(unit) = state.unit_mut(id)
-                && assign(unit, Order::Build { site }, queue)
+                && assign(
+                    unit,
+                    if provisional {
+                        Order::Found { kind, anchor }
+                    } else {
+                        Order::Build { site }
+                    },
+                    queue,
+                )
             {
                 landed += 1;
             }
@@ -789,12 +852,8 @@ fn apply_build(
         return Err(RejectReason::MissingPrerequisite);
     }
     if defer {
-        // The deferred mode: validate against the issuer's KNOWLEDGE,
-        // then hand out intent. No site, no charge, no route demand —
-        // an unroutable claim stalls honestly at walk time, exactly
-        // like a Move into fog. Affordability is judged at arrival
-        // too: the bank when the ground is claimed is the bank that
-        // matters.
+        // Hidden occupancy cannot affect acceptance or payment. Physical
+        // validation waits until the entire footprint is visible.
         let replaced_units = if queue { &[][..] } else { crew.as_slice() };
         if state
             .place_intent_refusal_replacing(player, kind, anchor, replaced_units)
@@ -802,6 +861,32 @@ fn apply_build(
         {
             return Err(RejectReason::BadSite);
         }
+        let cost = kind
+            .base_stats()
+            .construction
+            .ok_or(RejectReason::BadSite)?
+            .cost;
+        if state.player(player).scrap < cost {
+            return Err(RejectReason::NotEnoughScrap);
+        }
+        if !crew.iter().any(|id| {
+            state.unit(*id).is_some_and(|unit| {
+                !queue || unit.order == Order::Idle || unit.queue.len() < ORDER_QUEUE_CAP
+            })
+        }) {
+            return Err(RejectReason::QueueFull);
+        }
+        let site = state.place_site(player, kind, anchor);
+        let index = state
+            .buildings
+            .iter()
+            .position(|b| b.id == site)
+            .expect("new site");
+        state.stamp_building_occupancy(index, false);
+        state.building_mut(site).expect("new site").provisional = true;
+        // A provisional site may overlap a hidden physical building.
+        state.rebuild_building_occupancy();
+        state.player_mut(player).scrap -= cost;
         let mut landed = 0;
         for id in crew {
             if let Some(unit) = state.unit_mut(id)
@@ -835,16 +920,8 @@ fn apply_build(
     Ok(())
 }
 
-/// The one ground-claiming path: place the site, prove a doorstep,
-/// commit the builder, pay, bury wreck, and deal walk-less friendlies
-/// onto the perimeter. Every rejection retracts the site and leaves no
-/// trace on the hash. Serves the instant command path and the deferred
-/// founder's arrival identically — `commit_builder` is each caller's
-/// own way of putting the founder to work (`false` aborts with the
-/// site retracted and nothing spent). The caller has already proved
-/// the placement predicate appropriate to its information: `can_place`
-/// for instant builds, the arrival re-check for deferred ones.
-pub(super) fn found_site(
+/// Creates an immediate paid site only after its builder can accept and reach it.
+fn found_site(
     state: &mut State,
     player: PlayerId,
     builder: UnitId,
@@ -862,8 +939,8 @@ pub(super) fn found_site(
     }
     // Place first, then prove the founder can actually reach a
     // doorstep *around the now-blocking footprint* — otherwise
-    // undo for free. Charging for a site nobody can ever touch
-    // would burn 80% of the price through the hp-scaled refund.
+    // undo for free. Unreachable placement must leave the command rejected
+    // without spending scrap or consuming a building id.
     let site = state.place_site(player, kind, anchor);
     let from = state.unit(builder).expect("caller checked").tile();
     let size = kind.base_stats().size;
@@ -882,6 +959,14 @@ pub(super) fn found_site(
         return Err(RejectReason::QueueFull);
     }
     state.player_mut(player).scrap -= cost;
+    finish_site_claim(state, site, builder);
+    Ok(site)
+}
+
+pub(super) fn finish_site_claim(state: &mut State, site: BuildingId, builder: UnitId) {
+    let building = state.building(site).expect("accepted site");
+    let (player, anchor, size) = (building.player, building.anchor, building.stats().size);
+    let from = state.unit(builder).expect("committed builder").tile();
     // The accepted foundation buries whatever wreck salvage lay
     // there (only now — a rejected site must leave no trace).
     for dy in 0..size.1 {
@@ -934,11 +1019,9 @@ pub(super) fn found_site(
         unit.pos = to.center();
         unit.path = None;
     }
-    Ok(site)
 }
 
-/// Salvage an unfinished site: refund scales with its current health, so
-/// enemy fire on the scaffold burns the owner's money.
+/// Refund an unstarted site in full; after work starts, scale by current hp.
 fn apply_cancel(
     state: &mut State,
     player: PlayerId,
@@ -963,7 +1046,11 @@ fn apply_cancel(
         }
         let stats = b.stats();
         let cost = stats.construction.expect("sites are buildable kinds").cost;
-        cost * b.hp / stats.max_hp
+        if b.progress == 0 {
+            cost
+        } else {
+            cost * b.hp / stats.max_hp
+        }
     };
     cancel_site(state, player, building, refund, events);
     Ok(())
@@ -982,8 +1069,8 @@ pub(super) fn cancel_site(
         state.stamp_building_occupancy(index, false);
     }
     crate::vision::forget_observed_building(state, building, false);
-    state.buildings.retain(|b| b.id != building);
     clear_site_orders(state, player, building);
+    state.buildings.retain(|b| b.id != building);
     events.push(Event::BuildCancelled {
         building,
         player,
@@ -996,10 +1083,14 @@ pub(super) fn clear_site_orders(
     player: PlayerId,
     building: crate::ids::BuildingId,
 ) {
+    let claim = state.building(building).map(|b| (b.kind, b.anchor));
+    let matches_site = |order: &Order| {
+        matches!(order, Order::Build { site } if *site == building)
+            || matches!(order, Order::Found { kind, anchor } if Some((*kind, *anchor)) == claim)
+    };
     for unit in state.units.iter_mut().filter(|unit| unit.player == player) {
-        unit.queue
-            .retain(|order| !matches!(order, Order::Build { site } if *site == building));
-        if matches!(unit.order, Order::Build { site } if site == building) {
+        unit.queue.retain(|order| !matches_site(order));
+        if matches_site(&unit.order) {
             remove_active_order(unit);
         }
     }
@@ -1268,7 +1359,24 @@ pub(super) fn apply_cancel_found(
     player: PlayerId,
     kind: crate::stats::BuildingKind,
     anchor: TilePos,
+    events: &mut Vec<Event>,
 ) -> Result<(), RejectReason> {
+    if let Some(id) = state
+        .buildings
+        .iter()
+        .find(|b| {
+            b.player == player
+                && b.kind == kind
+                && b.anchor == anchor
+                && !b.built
+                && b.tier == 0
+                && b.progress == 0
+        })
+        .map(|b| b.id)
+    {
+        super::construction::refund(state, id, events);
+        return Ok(());
+    }
     let matches_site = |order: &Order| {
         matches!(order, Order::Found { kind: found_kind, anchor: found_anchor }
             if *found_kind == kind && *found_anchor == anchor)

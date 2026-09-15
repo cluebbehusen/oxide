@@ -869,7 +869,9 @@ fn a_right_click_on_ground_stages_an_advance() {
 
 #[test]
 fn a_context_order_cancels_placement_and_every_deferred_build_ghost() {
-    let mut game = headless_game();
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.players[0].scrap = 300;
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
     let mut input = InputState::new();
     let builder = game
         .state
@@ -4540,9 +4542,9 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     ));
 
     let queued = pending_build_projection(&game, kind, replacement, true).funds;
-    assert_eq!(queued.scrap, scrap);
+    assert_eq!(queued.scrap, scrap - cost);
     assert_eq!(
-        queued.reserved, cost,
+        queued.refund, 0,
         "Shift preserves the pending claim and its reservation"
     );
     assert_eq!(
@@ -4551,9 +4553,9 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
         "Shift preserves the overlapping pending footprint"
     );
     let replacing = pending_build_projection(&game, kind, replacement, false).funds;
-    assert_eq!(replacing.scrap, scrap);
+    assert_eq!(replacing.scrap, scrap - cost);
     assert_eq!(
-        replacing.reserved, 0,
+        replacing.refund, cost,
         "a plain click replaces the pending claim before it can charge"
     );
     assert_eq!(
@@ -4581,8 +4583,8 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     );
     assert_eq!(
         game.state.player(game.human).scrap,
-        scrap,
-        "the founder is still walking, so neither deferred command charged"
+        scrap - cost,
+        "replacement refunds the first site and pays for the second"
     );
     assert!(matches!(
         game.state.unit(builder).expect("builder survives").order,
@@ -4641,7 +4643,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
 }
 
 #[test]
-fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
+fn pending_projection_refunds_unstarted_sites_on_replacement_or_stop() {
     let mut game = drag_arena(500);
     let builder = game.state.units()[0].id;
     let kind = oxide_sim::BuildingKind::Turret;
@@ -4668,11 +4670,11 @@ fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
         500 - cost,
         "an immediate site charges before its builder is reprogrammed"
     );
-    assert_eq!(committed.reserved, 0);
+    assert_eq!(committed.refund, cost);
     assert_eq!(
         placement_refusal(&game, kind, anchor, false),
-        Some(oxide_sim::PlaceRefusal::Building),
-        "an immediate site's ground stays committed after replacement"
+        None,
+        "replacement releases an unstarted site"
     );
 
     game.pending.clear();
@@ -4689,8 +4691,8 @@ fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
     assert_eq!(
         pending_build_projection(&game, kind, anchor, true).funds,
         PendingBuildFunds {
-            scrap: 500,
-            reserved: cost,
+            scrap: 500 - cost,
+            refund: 0,
         }
     );
     assert_eq!(
@@ -4707,8 +4709,8 @@ fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
     assert_eq!(
         pending_build_projection(&game, kind, anchor, true).funds,
         PendingBuildFunds {
-            scrap: 500,
-            reserved: cost,
+            scrap: 500 - cost,
+            refund: 0,
         },
         "a rejected pending command cannot release the claim"
     );
@@ -4728,7 +4730,7 @@ fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
         pending_build_projection(&game, kind, anchor, true).funds,
         PendingBuildFunds {
             scrap: 500,
-            reserved: 0,
+            refund: 0,
         },
         "Stop clears the deferred promise before it can charge"
     );
@@ -4790,10 +4792,7 @@ fn a_paid_site_does_not_reserve_its_surviving_deferred_claim_again() {
                     anchor: claimed,
                 } if ordered == kind && claimed == anchor
             ));
-            assert!(
-                projected.has_own_unfinished_site(game.human, kind, anchor),
-                "the later immediate command paid for the deferred claim's site"
-            );
+            assert_eq!(projected.scrap(game.human), Some(scrap - cost));
         });
 
     game.selection.units = vec![workers[1]];
@@ -4802,7 +4801,7 @@ fn a_paid_site_does_not_reserve_its_surviving_deferred_claim_again() {
         projection.funds,
         PendingBuildFunds {
             scrap: scrap - cost,
-            reserved: 0,
+            refund: 0,
         },
         "the projected bank is charged once and the free join reserves nothing"
     );
@@ -4950,19 +4949,48 @@ fn a_plain_placement_replaces_the_selected_claim_while_shift_preserves_it() {
             .iter()
             .any(|event| matches!(event, oxide_sim::Event::CommandRejected { .. }))
     );
-    assert!(matches!(
+    let site = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == old_spot)
+        .unwrap();
+    assert!(!site.built);
+    assert_eq!(site.progress, 0);
+    assert_eq!(
         game.state.unit(builder).unwrap().order,
-        oxide_sim::Order::Found {
-            kind: claimed_kind,
-            anchor,
-        } if claimed_kind == kind && anchor == old_spot
-    ));
-    assert!(
-        game.state.buildings().iter().all(|b| b.anchor != old_spot),
-        "the founder is still walking, so only its claim occupies the ground"
+        oxide_sim::Order::Build { site: site.id }
     );
 
     game.selection.units = vec![builder];
+    input.build_menu = true;
+    let affordable = |game: &Game, input: &InputState| {
+        crate::panel::build_for_input(game, input)
+            .unwrap()
+            .cards
+            .iter()
+            .find(|card| card.action == crate::panel::CardAction::ArmBuild(kind))
+            .unwrap()
+            .enabled
+    };
+    assert!(
+        affordable(&game, &input),
+        "replacement cards can use the unstarted site's refund"
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::KeyDown { key: Key::Shift }],
+    );
+    assert!(
+        !affordable(&game, &input),
+        "queued construction cannot spend a retained site's refund"
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::KeyUp { key: Key::Shift }],
+    );
     input.placing = Some(kind);
     game.camera.center = vec2(new_spot.x as f32 + 0.5, new_spot.y as f32 + 0.5);
     game.camera.pan(Vec2::ZERO);
@@ -5474,7 +5502,7 @@ fn a_hidden_mine_does_not_change_placement_selection_or_resume_input() {
         assert_eq!(game.state.player(game.human).scrap, 760);
         assert_eq!(
             placement_refusal(&game, BuildingKind::Barricade, anchor, false),
-            Some(oxide_sim::PlaceRefusal::Building)
+            None
         );
         input.placing = None;
         let point = game.camera.to_screen(vec2(12.5, 4.5));

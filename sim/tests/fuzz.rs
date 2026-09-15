@@ -610,6 +610,7 @@ fn found_claims(state: &State, player: PlayerId, kind: BuildingKind, anchor: Til
     let matches = |order: &oxide_sim::Order| {
         matches!(order, oxide_sim::Order::Found { kind: found_kind, anchor: found_anchor }
             if *found_kind == kind && *found_anchor == anchor)
+            || matches!(order, oxide_sim::Order::Build { site } if state.building(*site).is_some_and(|b| b.kind == kind && b.anchor == anchor))
     };
     state
         .units()

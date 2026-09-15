@@ -100,7 +100,7 @@ pub(super) fn build(
         .expect("sites only exist for buildable kinds")
         .build_ticks;
     let tile = state.unit(id).expect("caller checked").tile();
-    if tile_adjacent_to_rect(tile, anchor, size) {
+    if !b.provisional && tile_adjacent_to_rect(tile, anchor, size) {
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
         // An Excavator's crew-tick counts double: same ramp, half the
@@ -146,74 +146,39 @@ pub(super) fn build(
     }
 }
 
-/// Walk out to a deferred claim ([`Order::Found`]) and, once standing
-/// beside — or inside — the promised footprint, buffer the founding for
-/// id-ordered resolution after the volley. Adjacency is what makes the
-/// arrival re-check honest: a harvester's sight covers every buildable
-/// footprint from its doorstep, so the strict predicate reads only
-/// ground the founder now sees. A crewmate arriving after the claim
-/// stood simply joins the site. No route stalls exactly like every
-/// other walk-to-work order.
+/// Approach a paid provisional scaffold without claiming hidden ground.
 pub(super) fn found(
     state: &mut State,
     id: UnitId,
     kind: crate::stats::BuildingKind,
     anchor: TilePos,
     events: &mut Vec<Event>,
-    founds: &mut Vec<super::PendingFounding>,
+    builds: &mut Vec<PendingHpGain>,
 ) {
-    let me = state.unit(id).expect("caller checked").player;
-    // The claim already stands (a crewmate founded on an earlier tick,
-    // or the player resumed the same corner): join the crew.
-    let ours = state
+    let player = state.unit(id).expect("caller checked").player;
+    let site = state
         .buildings
         .iter()
-        .find(|b| {
-            b.anchor == anchor
-                && b.kind == kind
-                && b.player == me
-                && !b.built
-                && b.tier == 0
-                && b.hp > 0
-        })
-        .map(|b| b.id);
-    if let Some(site) = ours {
-        let unit = state.unit_mut(id).expect("caller checked");
-        unit.order = Order::Build { site };
-        unit.path = None;
-        unit.progress = 0;
+        .find(|b| b.player == player && b.kind == kind && b.anchor == anchor && b.hp > 0)
+        .map(|b| (b.id, b.provisional));
+    let Some((site, provisional)) = site else {
+        state.unit_mut(id).expect("caller checked").advance_queue();
+        return;
+    };
+    if !provisional {
+        state.unit_mut(id).expect("caller checked").order = Order::Build { site };
+        build(state, id, site, events, builds);
         return;
     }
-    // The crew already FINISHED it: a late crewmate's founding is done,
-    // not stalled — falling through would read its own standing
-    // building as taken ground.
-    let done = state
-        .buildings
-        .iter()
-        .any(|b| b.anchor == anchor && b.kind == kind && b.player == me && b.built);
-    if done {
-        let unit = state.unit_mut(id).expect("caller checked");
-        unit.progress = 0;
-        unit.advance_queue();
-        return;
-    }
-    let size = kind.base_stats().size;
     let tile = state.unit(id).expect("caller checked").tile();
-    let inside = tile.x >= anchor.x
-        && tile.x < anchor.x + size.0
-        && tile.y >= anchor.y
-        && tile.y < anchor.y + size.1;
-    if inside || tile_adjacent_to_rect(tile, anchor, size) {
-        founds.push(super::PendingFounding {
-            unit: id,
-            player: me,
-            kind,
-            anchor,
-        });
+    let size = kind.base_stats().size;
+    if state.building(site).expect("found site").contains(tile)
+        || tile_adjacent_to_rect(tile, anchor, size)
+    {
         state.unit_mut(id).expect("caller checked").path = None;
     } else if !approach_rect(state, id, anchor, size) {
         let unit = state.unit_mut(id).expect("caller checked");
-        let (player, pos) = (unit.player, unit.pos);
+        let pos = unit.pos;
         unit.clear_program();
         events.push(Event::OrderStalled {
             unit: id,

@@ -199,7 +199,7 @@ fn forge_buildings(
         building["hp"] = serde_json::json!(hp);
         building["built"] = serde_json::json!(built);
         building["tier"] = serde_json::json!(tier);
-        building["progress"] = serde_json::json!(0);
+        building["progress"] = serde_json::json!(if *built { 0 } else { 1 });
     }
     serde_json::from_value(json).unwrap()
 }
@@ -655,8 +655,7 @@ fn an_unbuilt_bay_is_inert() {
         state.units()[1].id,
         state.units()[2].id,
     );
-    // Found the bay, then call the founder off: the site stands at a
-    // fifth of max hp, blind and inert, forever.
+    // Begin work before abandoning the bay so its inert scaffold remains.
     state.tick(&[cmd(
         0,
         Command::Build {
@@ -667,6 +666,11 @@ fn an_unbuilt_bay_is_inert() {
             defer: false,
         },
     )]);
+    run_until(&mut state, 500, |s, _| {
+        s.buildings()
+            .iter()
+            .any(|b| b.kind == BuildingKind::RepairBay && b.progress > 0)
+    });
     state.tick(&[cmd(
         0,
         Command::Stop {

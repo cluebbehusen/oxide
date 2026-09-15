@@ -377,10 +377,11 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::InvalidAirMotion(_) => 71,
         E::InvalidAircraftCrash(_) => 72,
         E::InvalidContactTracking(_) => 73,
+        E::InvalidProvisionalSite(_) => 74,
     }
 }
 
-const ROWS: usize = 74;
+const ROWS: usize = 75;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -467,6 +468,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::InvalidAirMotion(UnitId(0)),
         E::InvalidAircraftCrash(0),
         E::InvalidContactTracking(PlayerId(0)),
+        E::InvalidProvisionalSite(BuildingId(0)),
     ]
 }
 
@@ -749,6 +751,11 @@ fn every_checklist_row_refuses_its_forgery() {
                     json!({"order": "attack", "target": {"kind": "unit", "id": 9_999}});
             },
             "unit u0 is ordered against an id the run never minted",
+        ),
+        (
+            "a completed building marked provisional",
+            |d| d["buildings"][0]["provisional"] = json!(true),
+            "building b0 has invalid provisional state",
         ),
         (
             "a building owned off the table",

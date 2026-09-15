@@ -308,6 +308,7 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
             .iter()
             .filter(|b| {
                 b.hp > 0
+                    && !b.provisional
                     && shell.targets.ground
                     && state.hostile(shell.player, b.player)
                     && b.closest_point_to(shell.impact).dist_sq(shell.impact)
@@ -330,6 +331,7 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
         if shell.targets.ground {
             for b in state.buildings.iter() {
                 if b.hp == 0
+                    || b.provisional
                     || !b.kind.is_stealthy()
                     || !state.hostile(shell.player, b.player)
                     || direct.is_some_and(|d| d.id == b.id)
@@ -415,6 +417,7 @@ fn buffer_shot(
     if weapon.targets.ground {
         for b in state.buildings.iter() {
             if b.hp == 0
+                || b.provisional
                 || !b.kind.is_stealthy()
                 || !state.hostile(attacker_owner, b.player)
                 || Target::Building(b.id) == victim

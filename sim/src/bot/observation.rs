@@ -76,18 +76,15 @@ pub struct UnitObs {
     /// Sling room its riders occupy (own transports; zero otherwise).
     #[serde(default)]
     pub cargo: u8,
-    /// The construction site this unit is building, if any (own units
-    /// only; always `None` for enemy observations).
+    /// The paid construction site this unit is approaching or building,
+    /// including provisional scaffolds (own units only).
     pub site: Option<BuildingId>,
     /// The building this unit is stripping, if any (own units only —
     /// the repair channel reads it to keep the two verbs off one
     /// target; enemy work orders stay opaque).
     pub salvaging: Option<BuildingId>,
-    /// The deferred claim this unit is walking out to, if any (own
-    /// units only): the promised kind and footprint anchor of a live
-    /// [`Order::Found`]. A walking founder is spoken for — the site
-    /// audit waits on it and the labor choosers keep off it — and no
-    /// site exists to carry an id until the claim lands.
+    /// A deferred intent without an associated paid site (own units only).
+    /// Paid provisional construction is reported through `site`.
     pub founding: Option<(BuildingKind, TilePos)>,
     /// Whether the current program is voluntary building or unit repair (own
     /// units only; always false for allies and enemies).
@@ -371,7 +368,7 @@ impl Observation {
                 continue;
             }
             if u.player == me {
-                obs.my_units.push(own_unit(u));
+                obs.my_units.push(own_unit(state, u));
                 obs.observe_own_cargo(u);
                 if let Some(target) = own_repair_target(&u.order) {
                     obs.my_repair_targets.push((u.id, target));
@@ -457,7 +454,7 @@ impl Observation {
                 continue;
             }
             if u.player == me {
-                obs.my_units.push(own_unit(u));
+                obs.my_units.push(own_unit(state, u));
                 obs.observe_own_cargo(u);
                 if let Some(target) = own_repair_target(&u.order) {
                     obs.my_repair_targets.push((u.id, target));
@@ -648,7 +645,16 @@ fn own_repair_target(order: &Order) -> Option<Target> {
     }
 }
 
-fn own_unit(u: &crate::state::Unit) -> UnitObs {
+fn own_unit(state: &State, u: &crate::state::Unit) -> UnitObs {
+    let site = match u.order {
+        Order::Build { site } => Some(site),
+        Order::Found { kind, anchor } => state
+            .buildings()
+            .iter()
+            .find(|b| b.player == u.player && b.kind == kind && b.anchor == anchor && !b.built)
+            .map(|b| b.id),
+        _ => None,
+    };
     UnitObs {
         id: u.id,
         player: u.player,
@@ -662,16 +668,13 @@ fn own_unit(u: &crate::state::Unit) -> UnitObs {
             _ => None,
         },
         cargo: u.cargo.iter().map(|r| r.kind.stats().transport_size).sum(),
-        site: match u.order {
-            Order::Build { site } => Some(site),
-            _ => None,
-        },
+        site,
         salvaging: match u.order {
             Order::Salvage { building } => Some(building),
             _ => None,
         },
         founding: match u.order {
-            Order::Found { kind, anchor } => Some((kind, anchor)),
+            Order::Found { kind, anchor } if site.is_none() => Some((kind, anchor)),
             _ => None,
         },
         repairing: matches!(u.order, Order::Repair { .. } | Order::RepairUnit { .. }),

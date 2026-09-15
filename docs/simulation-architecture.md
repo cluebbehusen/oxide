@@ -142,24 +142,27 @@ reachable reality.
 
 Phase order is game behavior. `State::tick` currently performs:
 
-1. Capture any newly stranded economy's finite recovery entitlement.
-2. Validate and apply this tick's commands in their recorded order.
+1. Capture any newly stranded economy's finite recovery entitlement and resolve
+   provisional sites whose full footprints are visible.
+2. Validate and apply this tick's commands in their recorded order, refunding
+   unstarted sites after their last worker commitment is replaced.
 3. Apply recurring income, advance production queues, and spawn completed units.
 4. Cancel unstarted construction over known mines, then decay unclaimed
    tier-zero construction sites on their global cadence.
 5. Run unit brains and building behavior, land arriving shells, and resolve
-   buffered damage, construction, salvage, repair, and deferred founding.
+   buffered damage, construction, salvage, and repair.
 6. Resolve boarding and unloading after every unit has decided.
 7. Evict pathless ground bodies from newly claimed blocking footprints.
 8. Follow paths, then resolve same-domain unit collisions.
 9. Retain large aircraft motion and resolve due crash impacts against current
    positions.
 10. Detonate armed Scuttle Charges under hostile post-movement bodies.
-11. Schedule airborne crashes, remove dead entities, and deposit eligible wreck
-    salvage.
+11. Schedule airborne crashes, remove dead entities, deposit eligible wreck
+    salvage, and refund unstarted sites with no surviving worker commitments.
 12. Apply wreck decay on its global cadence.
-13. Rebuild team-shared visibility and reconcile fog memory. Newly discovered
-    mines cancel unstarted sites and deferred claims before the next command.
+13. Rebuild team-shared visibility and reconcile fog memory. Activate or refund
+    newly visible provisional sites. Newly discovered mines cancel unstarted
+    sites before the next command.
 14. Determine victory or draw from surviving, non-resigned teams and discard any
     remaining pending crashes when the match ends.
 
@@ -376,12 +379,15 @@ ownership state.
 An accepted immediate build pays for and places an unfinished site at partial
 hp. A non-stealthy footprint blocks ground from that command onward; the buried
 Scuttle Charge is the deliberate exception. Harvesters raise the site over time.
-A deferred build, used to claim remembered ground, instead installs a `Found`
-program. The worker walks there, then proves the strict placement predicate with
-current sight before payment and placement. A matching paid site can be joined
-without charging twice. Hidden state cannot alter the earlier intent verdict or
-preview; the final authoritative claim may still stall on an ordinary occupied
-site when the worker arrives.
+A deferred build pays for one provisional scaffold and installs a `Found`
+program for its workers. Provisional scaffolds provide no vision, physical
+occupancy, damage target, or construction progress. Once the owner's team sees
+the entire footprint, the simulation checks placement against that knowledge: a
+blocker cancels the scaffold with a full refund; clear ground activates its
+occupancy and converts every matching worker commitment to `Build` using the
+same building id, without another charge. Shared crews pay once per site. Hidden
+occupancy cannot change command acceptance, payment, or the preview. Provisional
+Foundries do not count toward survival.
 
 Completed enemy Scuttle Charges remain concealed without detector coverage;
 unfinished charges are visible under ordinary sight. A witnessed charge retains
@@ -391,8 +397,8 @@ visible replacement covering the mine's tile from its own team clears that
 memory. Known live or remembered charges block placement. An undiscovered charge
 allows the same immediate or deferred order as empty ground; an unstarted paid
 site can temporarily overlap it. Discovery cancels that site's active and queued
-construction commitments and refunds its full price. Deferred unpaid claims are
-removed without a charge. Unrelated queued orders survive cancellation.
+construction commitments and refunds its full price. Provisional scaffolds
+receive the same full refund. Unrelated queued orders survive cancellation.
 
 The first actual crew work over an undiscovered armed charge triggers its blast
 before construction hp or completion resolves. The new site is destroyed; nearby
@@ -403,16 +409,20 @@ blast does not fire. Multiple workers cannot multiply one detonation. An
 artillery impact on an overlapping scaffold hits the scaffold directly; the
 buried charge remains vulnerable to the shell's ordinary splash damage.
 
-An unfinished tier-zero site decays on a fixed cadence only when no living own
-construction-capable worker has an active or queued commitment to build it. An
-upgrade pays up front and takes a completed building offline as a committed site
-on its new tier. The building refits itself at one progress tick per simulation
-tick: it cannot be accelerated by workers, paused, cancelled, or abandoned to
-decay. Its hp gain and completion use the shared damage-first work resolver, so
-lethal fire wins a completion-tick tie and nonlethal damage remains when it
-returns to service.
+An unstarted tier-zero site is cancelled with a full refund when its final
+living worker loses its active or queued commitment, including replacement,
+Stop, failed travel, boarding, or death. Replacement construction can use these
+refunds atomically: rejection preserves the old sites and programs. Once work
+has started, an abandoned site retains the existing decay and health-based
+refund rules. Provisional scaffolds never decay. An upgrade pays up front and
+takes a completed building offline as a committed site on its new tier. The
+building refits itself at one progress tick per simulation tick: it cannot be
+accelerated by workers, paused, cancelled, or abandoned to decay. Its hp gain
+and completion use the shared damage-first work resolver, so lethal fire wins a
+completion-tick tie and nonlethal damage remains when it returns to service.
 
-Cancelling an unfinished paid site returns value proportional to its remaining
+Cancelling before the first build tick returns the full price. Cancelling an
+unfinished site after work starts returns value proportional to its remaining
 hp. Salvaging is active dismantling of a built own structure other than a
 Foundry; its cumulative refund ledger prevents rounding drift, and a salvaged
 building does not count as a combat loss or create a wreck. Prepaid production
@@ -792,9 +802,9 @@ Recurring-income investments are capped by unfunded useful work; completed
 income alone supplies spendable forecasts. Self-refits own exact building ids
 and withhold their offline source income separately from purchase capital. The
 residual technology scalar and the operational Airworks capital tax are absent.
-Accepted unpaid economic plans keep their original identity and deadline through
-saving and deferred travel, release unsafe or expired unpaid founders, and leave
-paid foundations and refits to ordinary simulation rules.
+Accepted economic plans keep their original identity and deadline while saving.
+Issuing a build pays for its site immediately, including travel through fog.
+Paid foundations and refits follow ordinary simulation rules.
 
 Before the difficulty floor is projected, the player-facing policy pauses new
 voluntary construction and upgrades, discretionary production, mobile support,
@@ -815,11 +825,10 @@ do not reopen until the next observation confirms the floor. After the floor,
 voluntary capital must leave a Sentinel that will remain shallow after the
 upcoming production phase or keep its exact cost unspent, unless fog-honest
 knowledge plus public terrain proves there is no ground objective. A lone
-existing front-slot Sentinel can complete before a deferred founder pays and
-therefore does not satisfy that condition. An unpaid deferred project keeps the
-exact reserve as bank escrow through its walk; once it becomes a paid site, the
-reserve returns to shallow production before another voluntary project. Losing
-enough core strength reapplies the same gate.
+existing front-slot Sentinel that completes during the upcoming production phase
+does not satisfy that condition. Construction pays at command acceptance, so its
+travel does not reserve additional purchase capital. Losing enough core strength
+reapplies the same gate.
 
 The residual Foundry pass no longer originates player-facing ordinary combat,
 siege, anti-air, or Tender orders. Residual construction no longer originates a
@@ -1100,16 +1109,16 @@ partial radar disc. Optimistic readiness bounds order candidates; exact route
 quotes stop once no remaining bound can beat the selected site's completion-time
 coverage.
 
-The player-facing budget counts each unique deferred construction claim until
-its site is paid and stops voluntary repair programs that could drain that
-commitment. Player-facing Foundry expansion has no count ceiling. It ranks every
-exact legal site by bounded post-construction payback from newly supported owned
-Extractors, Foundry drip attached to an external objective, and shorter hauling
-for currently visible scrap. Hauling value uses public-ground route distance
-while avoiding observed dynamic danger rather than geometric distance. Public
-unbuilt Extractor frames remain scouting priors rather than live capital value.
-Greed and genuinely uncommitted scrap extend the forecast without changing
-capability.
+The player-facing budget observes provisional scaffolds as paid construction
+with an exact site id. Their prices have already left the bank, so retained
+worker obligations do not reserve that money again. Player-facing Foundry
+expansion has no count ceiling. It ranks every exact legal site by bounded
+post-construction payback from newly supported owned Extractors, Foundry drip
+attached to an external objective, and shorter hauling for currently visible
+scrap. Hauling value uses public-ground route distance while avoiding observed
+dynamic danger rather than geometric distance. Public unbuilt Extractor frames
+remain scouting priors rather than live capital value. Greed and genuinely
+uncommitted scrap extend the forecast without changing capability.
 
 Expansion saving and construction share one exact claim: a legal footprint and a
 specific worker with a known safe route and work area. Admission preserves the

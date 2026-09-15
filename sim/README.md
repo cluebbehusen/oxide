@@ -81,6 +81,11 @@ an ordinary command source rather than a separate ruleset.
   implementation contracts.
 - `vision` provides visibility and explored-world state.
 
+Queued construction pays for one site immediately. Fogged footprints remain
+provisional, nonblocking scaffolds until full visibility verifies the ground.
+Invalid sites and sites abandoned by their last worker before work starts refund
+in full; activation keeps the same site identity and never charges again.
+
 Repair and salvage share one damage-first building-work resolver and remain
 mutually exclusive. Completed Repair Bays automatically heal nearby owned units
 before completed buildings, use the ordinary player bank, and skip structures

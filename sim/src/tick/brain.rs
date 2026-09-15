@@ -123,18 +123,6 @@ struct PendingHpDrain {
     step: u32,
 }
 
-/// A deferred founder that arrived this tick. Buffered like damage and
-/// resolved in unit-id order after the volley: brains iterate reversed
-/// on odd ticks, and an inline claim would let tick parity decide which
-/// of two arriving crewmates founds — the buffer keeps the choice a
-/// pure function of ids.
-struct PendingFounding {
-    unit: UnitId,
-    player: crate::ids::PlayerId,
-    kind: crate::stats::BuildingKind,
-    anchor: chassis::grid::TilePos,
-}
-
 pub(super) fn run(
     state: &mut State,
     index: &mut super::spatial::UnitIndex,
@@ -151,7 +139,6 @@ pub(super) fn run(
     let mut heals: Vec<PendingUnitHeal> = Vec::new();
     let mut field_welds: Vec<PendingFieldWeld> = Vec::new();
     let mut drains: Vec<PendingHpDrain> = Vec::new();
-    let mut founds: Vec<PendingFounding> = Vec::new();
     let mut launches: Vec<crate::state::Shell> = Vec::new();
     let mut logistics_pending = logistics::Pending::default();
     let mut harvest_danger_by_team: Vec<Option<crate::vision::GroundSalvageDanger>> =
@@ -248,7 +235,7 @@ pub(super) fn run(
             Order::Build { site } => build(state, id, site, events, &mut builds),
             Order::Repair { building } => repair(state, id, building, events, &mut builds),
             Order::Salvage { building } => salvage(state, id, building, events, &mut drains),
-            Order::Found { kind, anchor } => found(state, id, kind, anchor, events, &mut founds),
+            Order::Found { kind, anchor } => found(state, id, kind, anchor, events, &mut builds),
             Order::RepairUnit { unit } => repair_unit(state, id, unit, events, &mut field_welds),
             Order::Board { transport } => {
                 logistics::board(state, id, transport, &mut logistics_pending, events)
@@ -270,7 +257,6 @@ pub(super) fn run(
     land_shells(state, &mut hits, events);
     state.shells.extend(launches);
     resolve_hits(state, hits, builds, heals, drains, events);
-    resolve_founds(state, founds, events);
     logistics_pending
 }
 
@@ -320,6 +306,9 @@ fn resolve_hits(
                 }
             }
             Target::Building(bid) => {
+                if state.building(bid).is_some_and(|b| b.provisional) {
+                    continue;
+                }
                 let incident_tile = state.building(bid).and_then(|b| {
                     (hit.approach != chassis::fx::Vec2Fx::ZERO).then(|| {
                         super::footprint_incident_tile(
@@ -823,118 +812,6 @@ fn crucible_smelter(state: &mut State) {
         {
             let bank = &mut state.player_mut(owner).scrap;
             *bank = bank.saturating_add(1);
-        }
-    }
-}
-
-/// Arrived deferred founders claim their ground, strictly in unit-id
-/// order. The claim re-proves [`crate::State::place_refusal`] on ground
-/// the founder now stands beside — adjacency puts the whole footprint
-/// inside a harvester's sight, so every fact the verdict reads is one
-/// the founder's own eyes deliver. Ground honestly taken (a building
-/// raised, a hostile machine parked) drops the program with a fog-safe
-/// stall; a crewmate whose lower-id partner founded first simply joins
-/// the fresh site. Nothing was charged before this moment, so a failed
-/// claim has nothing to refund.
-fn resolve_founds(state: &mut State, mut founds: Vec<PendingFounding>, events: &mut Vec<Event>) {
-    use crate::command::RejectReason;
-    use crate::event::StallReason;
-    founds.sort_unstable_by_key(|f| f.unit);
-    for f in founds {
-        let Some(unit) = state.unit(f.unit) else {
-            continue;
-        };
-        if unit.hp == 0 {
-            continue; // the volley won; a corpse claims nothing
-        }
-        // Retaliation (just resolved) can hand a hit machine a new
-        // order; a founder no longer on the errand claims nothing.
-        if unit.order
-            != (Order::Found {
-                kind: f.kind,
-                anchor: f.anchor,
-            })
-        {
-            continue;
-        }
-        // A lower-id crewmate founded this tick (or the site already
-        // stood): join it instead of stalling on "taken" ground that
-        // is the crew's own.
-        let ours = state
-            .buildings
-            .iter()
-            .find(|b| {
-                b.anchor == f.anchor
-                    && b.kind == f.kind
-                    && b.player == f.player
-                    && !b.built
-                    && b.tier == 0
-            })
-            .map(|b| b.id);
-        if let Some(site) = ours {
-            let unit = state.unit_mut(f.unit).expect("checked above");
-            unit.order = Order::Build { site };
-            unit.path = None;
-            unit.progress = 0;
-            continue;
-        }
-        let stall = |state: &mut State, reason: StallReason, events: &mut Vec<Event>| {
-            let unit = state.unit_mut(f.unit).expect("checked above");
-            let (player, pos) = (unit.player, unit.pos);
-            unit.clear_program();
-            events.push(Event::OrderStalled {
-                unit: f.unit,
-                player,
-                pos,
-                reason,
-            });
-        };
-        if state.place_refusal(f.player, f.kind, f.anchor).is_some() {
-            stall(state, StallReason::GroundTaken, events);
-            continue;
-        }
-        let claimed = super::commands::found_site(
-            state,
-            f.player,
-            f.unit,
-            f.kind,
-            f.anchor,
-            |state, site| {
-                // Every promise for this logical site must follow the paid
-                // entity. Otherwise a delayed crewmate can retain Found,
-                // outlive a cancellation that clears Build orders by id,
-                // and claim the same ground (and price) again.
-                let matches_claim = |order: &Order| {
-                    matches!(order, Order::Found { kind, anchor }
-                        if *kind == f.kind && *anchor == f.anchor)
-                };
-                let mut founder_committed = false;
-                for unit in state
-                    .units
-                    .iter_mut()
-                    .filter(|unit| unit.player == f.player)
-                {
-                    if matches_claim(&unit.order) {
-                        founder_committed |= unit.id == f.unit;
-                        unit.order = Order::Build { site };
-                        unit.path = None;
-                        unit.progress = 0;
-                    }
-                    for order in &mut unit.queue {
-                        if matches_claim(order) {
-                            *order = Order::Build { site };
-                        }
-                    }
-                }
-                founder_committed
-            },
-        );
-        match claimed {
-            Ok(_) => {}
-            Err(RejectReason::NotEnoughScrap) => {
-                stall(state, StallReason::InsufficientScrap, events);
-            }
-            Err(_) => stall(state, StallReason::NoRoute, events),
         }
     }
 }
