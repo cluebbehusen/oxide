@@ -29,6 +29,12 @@ pub(in crate::bot) struct StaticRegions {
 }
 
 impl StaticRegions {
+    pub(in crate::bot) fn region_at(&self, tile: TilePos) -> Option<usize> {
+        self.index(tile)
+            .map(|index| self.labels[index])
+            .filter(|region| *region != ABSENT)
+    }
+
     pub(in crate::bot) fn clusters(
         &self,
         points: impl IntoIterator<Item = TilePos>,

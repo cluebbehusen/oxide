@@ -2,6 +2,7 @@
 
 mod barricade;
 mod coverage;
+mod fronts;
 pub(super) mod progressive;
 mod pruning;
 mod routes;
@@ -2066,7 +2067,7 @@ fn strategic_lane_projection<'a>(
     .enumerate()
     .filter(|(_, origins)| !origins.is_empty())
     .find_map(|(tier, origins)| {
-        let approaches = approaches(&grounding.ground, &origins, &grounding.assets, None, domain);
+        let approaches = fronts::approaches(&grounding.ground, &origins, &grounding.assets, domain);
         let evidence = match tier {
             0 => DefenseOpportunityEvidence::CurrentArmed,
             1 if origins.iter().any(|origin| {
@@ -6828,6 +6829,51 @@ mod tests {
                 .collect();
 
         assert_eq!(sources, BTreeSet::from([north, east]));
+    }
+
+    #[test]
+    fn voluntary_fronts_share_clumped_routes_but_keep_directions_and_weapon_roles() {
+        let map = briefing();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        obs.enemy_units = (0..6)
+            .map(|index| {
+                unit(
+                    20 + index,
+                    PlayerId(1),
+                    UnitKind::Sentinel,
+                    TilePos::new(20 + index as i32, 10),
+                )
+            })
+            .chain([
+                unit(30, PlayerId(1), UnitKind::Avalanche, TilePos::new(24, 11)),
+                unit(31, PlayerId(1), UnitKind::Sentinel, TilePos::new(4, 1)),
+            ])
+            .collect();
+        let policy = UtilityPolicy::new();
+        let starts = policy.uncleared_hostile_starts(&map, obs.me);
+        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let assets = defended_assets(&policy, &obs, &ground);
+        let origins = &threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[0];
+        let reference = approaches(&ground, origins, &assets, None, DefenseDomain::Ground);
+        let selected = fronts::approaches(&ground, origins, &assets, DefenseDomain::Ground);
+        assert!(!selected.is_empty());
+        assert!(selected.len() < reference.len());
+        assert!(
+            selected
+                .iter()
+                .any(|approach| approach.source.anchor == TilePos::new(4, 1))
+        );
+        assert!(
+            selected
+                .iter()
+                .any(|approach| approach.source.mobile_kind() == Some(UnitKind::Avalanche))
+        );
+        for approach in selected {
+            assert!(
+                reference.contains(&approach),
+                "a representative must retain an exact reachable approach"
+            );
+        }
     }
 
     #[test]
