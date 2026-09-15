@@ -34,6 +34,7 @@ mod navigation;
 pub mod observation;
 pub mod observer;
 pub mod orient;
+mod planning;
 pub mod profile;
 pub mod raid;
 mod residual_coordination;

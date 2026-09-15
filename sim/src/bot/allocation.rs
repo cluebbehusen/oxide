@@ -21,6 +21,7 @@ use chassis::grid::TilePos;
 mod adapters;
 mod coordinator;
 mod production_bounds;
+mod production_search;
 mod session;
 
 pub(crate) use adapters::*;
@@ -3021,9 +3022,26 @@ impl ProductionPortfolioSearch<'_> {
         schedule: &mut Vec<ScheduledProducerJob>,
         capital_assignments: &mut Vec<CapitalFundingAssignment>,
     ) -> bool {
-        self.find_inner::<true>(producers, remaining, schedule, capital_assignments)
+        let mut continuation = production_search::Continuation::new(producers, remaining, schedule);
+        loop {
+            let mut budget = super::planning::WorkBudget::new(256);
+            let progress = continuation.advance(self, &mut budget);
+            debug_assert!(budget.spent() <= 256);
+            match progress {
+                super::planning::Progress::Ready(solution) => {
+                    producers.clone_from_slice(&solution.producers);
+                    remaining.fill(false);
+                    *schedule = solution.schedule;
+                    *capital_assignments = solution.capital;
+                    return true;
+                }
+                super::planning::Progress::ProvenInfeasible => return false,
+                super::planning::Progress::Deferred => {}
+            }
+        }
     }
 
+    #[cfg(test)]
     fn find_inner<const PRUNE_REMAINING: bool>(
         &mut self,
         producers: &mut [ProducerPlanningProjection],
@@ -3218,6 +3236,97 @@ impl ProductionPortfolioSearch<'_> {
         }
         self.failed.insert(state);
         false
+    }
+
+    fn placements(
+        &self,
+        producers: &[ProducerPlanningProjection],
+        remaining: &[bool],
+        schedule: &[ScheduledProducerJob],
+    ) -> Vec<ProductionPlacement> {
+        let mut placements = Vec::new();
+        for (job_index, is_remaining) in remaining.iter().copied().enumerate() {
+            if !is_remaining || !self.is_frontier(job_index, remaining) {
+                continue;
+            }
+            let job = &self.jobs[job_index];
+            let owner_enqueue = schedule
+                .iter()
+                .filter(|row| row.owner == job.owner && row.request_ordinal < job.ordinal)
+                .map(|row| row.enqueued_at)
+                .max()
+                .unwrap_or(0);
+            for &producer in job.claim.access.producers() {
+                let lane_index = producers
+                    .binary_search_by_key(&producer, ProducerPlanningProjection::producer)
+                    .expect("every producer claim was validated against capacity");
+                let lane = &producers[lane_index];
+                let Some(slot_tick) = lane.earliest_enqueue_tick(job.claim.kind) else {
+                    continue;
+                };
+                let earliest = slot_tick
+                    .max(job.claim.enqueue_not_before)
+                    .max(owner_enqueue);
+                for enqueued_at in candidate_enqueue_ticks(
+                    self.capacity,
+                    earliest,
+                    job,
+                    self.earliest_enqueue_dominates,
+                ) {
+                    if self
+                        .bounds
+                        .latest()
+                        .is_some_and(|bounds| enqueued_at > bounds[job_index].enqueued_at)
+                    {
+                        continue;
+                    }
+                    let mut lane_after = lane.clone();
+                    let Some(projected) = lane_after.append(job.claim.kind, enqueued_at) else {
+                        continue;
+                    };
+                    if projected.ready_at >= job.claim.ready_before {
+                        continue;
+                    }
+                    if job.claim.fixed_assignment().is_some_and(|fixed| {
+                        fixed.enqueued_at != enqueued_at
+                            || fixed.starts_at != projected.starts_at
+                            || fixed.ready_at != projected.ready_at
+                    }) {
+                        continue;
+                    }
+                    placements.push(ProductionPlacement {
+                        job_index,
+                        lane_index,
+                        lane_after,
+                        row: ScheduledProducerJob {
+                            owner: job.owner,
+                            producer,
+                            kind: job.claim.kind,
+                            request_ordinal: job.ordinal,
+                            enqueued_at,
+                            starts_at: projected.starts_at,
+                            ready_at: projected.ready_at,
+                            ready_before: job.claim.ready_before,
+                            current_scrap: 0,
+                            forecast_scrap: 0,
+                        },
+                    });
+                }
+            }
+        }
+        placements.sort_unstable_by_key(|placement| {
+            (
+                placement.row.enqueued_at,
+                self.jobs[placement.job_index].funding_priority,
+                placement.row.owner,
+                placement.row.request_ordinal,
+                placement.row.starts_at,
+                placement.row.producer,
+                placement.job_index,
+            )
+        });
+
+        placements
     }
 
     fn remaining_jobs_can_fit(
@@ -7975,12 +8084,41 @@ mod tests {
             funding_mode: mode,
         };
         let mut schedule = Vec::new();
-        let fits = search.find_inner::<PRUNE>(
-            &mut basis.resources.producers().to_vec(),
-            &mut vec![true; jobs.len()],
-            &mut schedule,
-            &mut Vec::new(),
-        );
+        let fits = if PRUNE {
+            use super::super::planning::{Progress, WorkBudget};
+            let mut continuation = production_search::Continuation::new(
+                basis.resources.producers(),
+                &vec![true; jobs.len()],
+                &[],
+            );
+            let mut zero = WorkBudget::new(0);
+            assert!(matches!(
+                continuation.advance(&mut search, &mut zero),
+                Progress::Deferred
+            ));
+            assert!(search.failed.is_empty());
+            assert_eq!(search.explored_states, 0);
+            loop {
+                let mut budget = WorkBudget::new(1);
+                let progress = continuation.advance(&mut search, &mut budget);
+                assert!(budget.spent() <= 1);
+                match progress {
+                    Progress::Ready(solution) => {
+                        schedule = solution.schedule;
+                        break true;
+                    }
+                    Progress::ProvenInfeasible => break false,
+                    Progress::Deferred => {}
+                }
+            }
+        } else {
+            search.find_inner::<false>(
+                &mut basis.resources.producers().to_vec(),
+                &mut vec![true; jobs.len()],
+                &mut schedule,
+                &mut Vec::new(),
+            )
+        };
         (fits, schedule, search.explored_states)
     }
 
