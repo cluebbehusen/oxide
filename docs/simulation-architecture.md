@@ -1196,13 +1196,15 @@ for selected workers covered by any blocking footprint; nonblocking mines do not
 cover starts, and unselected workers do not trigger this rejection.
 
 Voluntary weapon-bearing site search ranks inexpensive approach-frontage
-estimates. Weapon and Array placement share a small per-role refinement slice
-and continue beyond rejected sites on later decisions. A retained candidate
-avoids rediscovery but must pass current builder, egress, resource-route,
-support, and coverage checks before reuse; uncommitted candidates expire.
-Emergency defense retains exhaustive best-site selection with conservative
-coverage bounds. A candidate rejected by investment valuation does not remain
-the role's incumbent.
+estimates. Nearby mobile threats with the same weapon capability, local terrain
+region, and direction toward an asset share one reachable representative route;
+static threats and distinct fronts remain separate. Weapon and Array placement
+share a small per-role refinement slice and continue beyond rejected sites on
+later decisions. A retained candidate avoids rediscovery but must pass current
+builder, egress, resource-route, support, and coverage checks before reuse;
+uncommitted candidates expire. Emergency defense retains exhaustive best-site
+selection with conservative coverage bounds. A candidate rejected by investment
+valuation does not remain the role's incumbent.
 
 Defensive geometry shares a bot-owned route cache across economic and defensive
 valuation. Each retained generation compares map dimensions and the complete
@@ -1219,16 +1221,21 @@ Successful hits clear old exhausted-component evidence, while failures are not
 stored as bare unreachable results.
 
 Lazy reverse distance fields use the same open-tile graph, 10/14 movement costs,
-and diagonal corner rules. Normal fields reject endpoint pairs whose cost
-exceeds a route already found; adding a blocking footprint cannot improve that
-bound. For long paths, exact fields for the current footprint also prune A*
-branches that cannot belong to a shortest route. Queue ordering remains
-unchanged to preserve the complete route-choice key and mobile firing positions.
-This pruning is disabled when the map exceeds the expansion cap or the start is
-blocked, preserving capped searches and escape from blocked origins. A* still
-constructs every uncached selected path. Investment scores, threat evidence,
-asset values, and budgets are recomputed from the current observation rather
-than retained with passability.
+and diagonal corner rules. Endpoint ranking uses an obstacle-free bound unless
+an exact field is already retained. Repeated uncached routes sharing either
+endpoint earn a normal field after their accumulated expansions reach the map's
+cell count; tracking retains at most 256 endpoints. Large endpoint sets can
+prepare one origin field sooner when the measured first search projects more
+work than the field across the batch. Cache hits contribute no search work.
+Existing fields reject endpoint pairs whose cost exceeds a route already found;
+adding a blocking footprint cannot improve that bound. For long paths, exact
+fields for the current footprint also prune A* branches that cannot belong to a
+shortest route. Queue ordering remains unchanged to preserve the complete
+route-choice key and mobile firing positions. This pruning is disabled when the
+map exceeds the expansion cap or the start is blocked, preserving capped
+searches and escape from blocked origins. A* still constructs every uncached
+selected path. Investment scores, threat evidence, asset values, and budgets are
+recomputed from the current observation rather than retained with passability.
 
 `bot::navigation` owns all bot path, cost, connectivity, and distance-field
 searches, including their scratch storage, cache invalidation, and retention.

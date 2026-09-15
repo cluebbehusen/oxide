@@ -4,14 +4,14 @@ use super::{BlockedRect, KnownGrid, octile, search::Search};
 use chassis::grid::TilePos;
 use std::{
     cell::RefCell,
-    cmp::Reverse,
-    collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     mem::size_of,
 };
 
 const MIB: usize = 1024 * 1024;
 const ENTRY_ALLOWANCE: usize = 1024;
 const MIN_FIELD_SPAN: i32 = 30;
+const TRACKED_FIELD_GOALS: usize = 256;
 
 type FieldKey = (Option<BlockedRect>, TilePos);
 
@@ -36,6 +36,7 @@ struct Generation {
     path_order: VecDeque<PathKey>,
     distances: BTreeMap<TilePos, Box<[u32]>>,
     distance_order: VecDeque<TilePos>,
+    field_work: BTreeMap<TilePos, u32>,
     overlay_distances: BTreeMap<FieldKey, Box<[u32]>>,
     overlay_distance_order: VecDeque<FieldKey>,
     overlay_distance_bytes: usize,
@@ -79,6 +80,7 @@ impl Generation {
                 .distances
                 .remove(&goal)
                 .expect("retained distance goal");
+            self.field_work.remove(&goal);
             self.distance_bytes -= field.len() * size_of::<u32>() + ENTRY_ALLOWANCE;
         }
         self.distance_bytes += bytes;
@@ -152,6 +154,7 @@ impl PathQueries {
                 path_order: VecDeque::new(),
                 distances: BTreeMap::new(),
                 distance_order: VecDeque::new(),
+                field_work: BTreeMap::new(),
                 overlay_distances: BTreeMap::new(),
                 overlay_distance_order: VecDeque::new(),
                 overlay_distance_bytes: 0,
@@ -186,16 +189,39 @@ impl PathBoard<'_> {
             search.clear_search_evidence();
             return Some(path.to_vec());
         }
+        let eligible = self.grid.open(start, overlay)
+            && self.grid.index(goal).is_some()
+            && self.grid.blocked.len() <= crate::stats::PATH_EXPANSION_CAP as usize;
+        if eligible && overlay.is_none() {
+            for (source, destination) in [(start, goal), (goal, start)] {
+                let promote = self
+                    .cache
+                    .borrow_mut()
+                    .generation(self.grid, self.class)
+                    .is_some_and(|generation| {
+                        !generation.distances.contains_key(&destination)
+                            && generation
+                                .field_work
+                                .get(&destination)
+                                .copied()
+                                .unwrap_or(0)
+                                >= self.grid.blocked.len() as u32
+                    });
+                if promote {
+                    self.bound(source, destination);
+                }
+            }
+        }
         let result = {
             let mut cache = self.cache.borrow_mut();
-            let field = (self.grid.open(start, overlay)
-                && self.grid.index(goal).is_some()
-                && self.grid.blocked.len() <= crate::stats::PATH_EXPANSION_CAP as usize
-                && start.chebyshev(goal) >= MIN_FIELD_SPAN)
+            let field = eligible
                 .then(|| cache.generation(self.grid, self.class))
                 .flatten()
                 .and_then(|generation| {
                     if let Some(overlay) = overlay {
+                        if start.chebyshev(goal) < MIN_FIELD_SPAN {
+                            return None;
+                        }
                         let key = (Some(overlay), goal);
                         if !generation.overlay_distances.contains_key(&key) {
                             if !generation.reserve_overlay_distance(
@@ -226,6 +252,23 @@ impl PathBoard<'_> {
                 })
             }
         };
+        if eligible
+            && overlay.is_none()
+            && let Some(generation) = self.cache.borrow_mut().generation(self.grid, self.class)
+        {
+            for endpoint in [start, goal] {
+                if generation.distances.contains_key(&endpoint) {
+                    continue;
+                }
+                if !generation.field_work.contains_key(&endpoint)
+                    && generation.field_work.len() == TRACKED_FIELD_GOALS
+                {
+                    generation.field_work.pop_first();
+                }
+                let work = generation.field_work.entry(endpoint).or_default();
+                *work = work.saturating_add(search.last_expansions());
+            }
+        }
         // Failures retain query-specific exhaustion evidence, never a bare cached absence.
         if let Some(path) = &result
             && let Some(generation) = self.cache.borrow_mut().generation(self.grid, self.class)
@@ -237,6 +280,45 @@ impl PathBoard<'_> {
             generation.path_order.push_back(key);
         }
         result
+    }
+
+    fn prepare_endpoint_batch(
+        self,
+        start: TilePos,
+        goal: TilePos,
+        queries: usize,
+        search: &Search,
+    ) {
+        let cells = self.grid.blocked.len();
+        if queries >= 8
+            && cells <= crate::stats::PATH_EXPANSION_CAP as usize
+            && (search.last_expansions() as usize).saturating_mul(queries) >= cells
+        {
+            self.bound(goal, start);
+        }
+    }
+
+    fn pruning_bound(self, start: TilePos, goal: TilePos) -> u32 {
+        let fallback = octile(start, goal);
+        if !self.grid.open(start, None) {
+            return fallback;
+        }
+        self.cache
+            .borrow_mut()
+            .generation(self.grid, self.class)
+            .map_or(fallback, |generation| {
+                generation
+                    .distances
+                    .get(&goal)
+                    .map(|field| field[self.grid.index(start).unwrap()])
+                    .or_else(|| {
+                        generation
+                            .distances
+                            .get(&start)
+                            .and_then(|field| self.grid.index(goal).map(|index| field[index]))
+                    })
+                    .unwrap_or(fallback)
+            })
     }
 
     pub fn bound(self, start: TilePos, goal: TilePos) -> u32 {
@@ -284,48 +366,17 @@ fn distance_field(
         work.fields += 1;
         work.searches += 1;
     });
-    let mut distance = vec![u32::MAX; (width as usize) * (height as usize)];
-    let Some(index) = super::flood::tile_index(width, height, goal) else {
-        return distance;
-    };
-    if !open(goal) {
-        return distance;
-    }
-    distance[index] = 0;
-    let mut queue = BinaryHeap::from([Reverse((0u32, index))]);
-    while let Some(Reverse((cost, index))) = queue.pop() {
-        if distance[index] != cost {
-            continue;
-        }
-        #[cfg(test)]
-        super::work::record(|work| {
-            work.expanded += 1;
-        });
-        let tile = TilePos::new(
-            (index % width as usize) as i32,
-            (index / width as usize) as i32,
-        );
-        for (dx, dy) in chassis::grid::CARDINALS
-            .into_iter()
-            .chain(chassis::grid::DIAGONALS)
-        {
-            let next = tile.offset(dx, dy);
-            let Some(next_index) = super::flood::tile_index(width, height, next) else {
-                continue;
-            };
-            if !open(next)
-                || (dx != 0 && dy != 0 && (!open(tile.offset(dx, 0)) || !open(tile.offset(0, dy))))
-            {
-                continue;
-            }
-            let next_cost = cost + if dx == 0 || dy == 0 { 10 } else { 14 };
-            if next_cost < distance[next_index] {
-                distance[next_index] = next_cost;
-                queue.push(Reverse((next_cost, next_index)));
-            }
-        }
-    }
-    distance
+    let width = width.max(0);
+    let height = height.max(0);
+    let surface = (0..height)
+        .flat_map(|y| (0..width).map(move |x| TilePos::new(x, y)))
+        .map(open)
+        .collect();
+    let mut work = super::distance_work::DistanceWork::new(width, height, surface, [goal]);
+    let mut budget = crate::bot::planning::WorkBudget::new(usize::MAX);
+    let result = work.advance(&mut budget);
+    debug_assert_eq!(result, crate::bot::planning::Progress::Ready(()));
+    work.into_distances()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,11 +474,13 @@ pub(in crate::bot) fn shortest_path_between(
         }
         if best
             .as_ref()
-            .is_some_and(|(_, _, path)| board.bound(start, goal) > path_cost(path))
+            .is_some_and(|(_, _, path)| board.pruning_bound(start, goal) > path_cost(path))
         {
             continue;
         }
-        let Some(mut path) = board.path(start, goal, candidate, &mut scratch) else {
+        let result = board.path(start, goal, candidate, &mut scratch);
+        board.prepare_endpoint_batch(start, goal, goals.len(), &scratch);
+        let Some(mut path) = result else {
             if scratch.last_search_exhausted() {
                 // One exhaustive search proves the whole passability
                 // component. Reuse that proof for its other doorsteps.
@@ -509,7 +562,7 @@ fn shortest_path_between_cached(
 
         if best
             .as_ref()
-            .is_some_and(|(_, _, path)| board.bound(start, goal) > path_cost(path))
+            .is_some_and(|(_, _, path)| board.pruning_bound(start, goal) > path_cost(path))
         {
             continue;
         }
@@ -518,6 +571,7 @@ fn shortest_path_between_cached(
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
                 let mut path = board.path(start, goal, None, &mut scratch);
+                board.prepare_endpoint_batch(start, goal, goals.len(), &scratch);
                 if let Some(path) = path.as_mut() {
                     path.insert(0, start);
                 }

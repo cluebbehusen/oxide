@@ -7,32 +7,46 @@ thread_local! {
     static SCRATCH: RefCell<AstarScratch> = RefCell::default();
 }
 
-pub(in crate::bot) struct Search(AstarScratch);
+pub(in crate::bot) struct Search {
+    scratch: AstarScratch,
+    queried: bool,
+}
 
 impl Default for Search {
     fn default() -> Self {
         let mut scratch = SCRATCH.with_borrow_mut(std::mem::take);
         // Reachability evidence belongs to the old passability context.
         scratch.clear_search_evidence();
-        Self(scratch)
+        Self {
+            scratch,
+            queried: false,
+        }
     }
 }
 
 impl Drop for Search {
     fn drop(&mut self) {
-        SCRATCH.with_borrow_mut(|scratch| *scratch = std::mem::take(&mut self.0));
+        SCRATCH.with_borrow_mut(|scratch| *scratch = std::mem::take(&mut self.scratch));
     }
 }
 
 impl Search {
     pub(super) fn clear_search_evidence(&mut self) {
-        self.0.clear_search_evidence();
+        self.scratch.clear_search_evidence();
+        self.queried = false;
+    }
+    pub(super) fn last_expansions(&self) -> u32 {
+        if self.queried {
+            self.scratch.last_expansions()
+        } else {
+            0
+        }
     }
     pub(in crate::bot) fn last_search_exhausted(&self) -> bool {
-        self.0.last_search_exhausted()
+        self.scratch.last_search_exhausted()
     }
     pub(in crate::bot) fn last_search_reached(&self, tile: TilePos) -> bool {
-        self.0.last_search_reached(tile)
+        self.scratch.last_search_reached(tile)
     }
 
     pub(super) fn path_with_distances(
@@ -43,19 +57,20 @@ impl Search {
         goal: TilePos,
         distances: &[u32],
     ) -> Option<Vec<TilePos>> {
+        self.queried = true;
         let path = chassis::path::astar_with_distances(
             (grid.width, grid.height),
             start,
             goal,
             |tile| grid.open(tile, overlay),
             crate::stats::PATH_EXPANSION_CAP,
-            &mut self.0,
+            &mut self.scratch,
             distances,
         );
         #[cfg(test)]
         super::work::record(|work| {
             work.searches += 1;
-            work.expanded += self.0.last_expansions() as usize;
+            work.expanded += self.scratch.last_expansions() as usize;
             work.paths += usize::from(path.is_some());
         });
         path
@@ -69,6 +84,7 @@ impl Search {
         goal: TilePos,
         open: impl Fn(TilePos) -> bool,
     ) -> Option<Vec<TilePos>> {
+        self.queried = true;
         let path = chassis::path::astar_with_scratch(
             width,
             height,
@@ -76,12 +92,12 @@ impl Search {
             goal,
             open,
             crate::stats::PATH_EXPANSION_CAP,
-            &mut self.0,
+            &mut self.scratch,
         );
         #[cfg(test)]
         super::work::record(|work| {
             work.searches += 1;
-            work.expanded += self.0.last_expansions() as usize;
+            work.expanded += self.scratch.last_expansions() as usize;
             work.paths += usize::from(path.is_some());
         });
         path

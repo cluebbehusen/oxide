@@ -629,3 +629,141 @@ fn invalid_long_route_endpoints_do_not_enter_field_arithmetic() {
     });
     assert_eq!(work.fields, 0);
 }
+
+#[test]
+fn endpoint_pruning_does_not_build_fields_for_one_off_routes() {
+    let grid = TestGrid::new(80, 60, |_| '.');
+    let cache = RefCell::new(PathQueries::default());
+    let borrowed = grid.borrowed(&cache, false);
+    let board = borrowed.board(CacheClass::Ground);
+    let starts = [TilePos::new(3, 20), TilePos::new(3, 21)];
+    let goals = [TilePos::new(70, 20), TilePos::new(70, 21)];
+    let (route, work) = crate::bot::navigation::work::measure(|| {
+        shortest_path_between(board, &starts, &goals, None)
+    });
+    assert_eq!(
+        route.unwrap(),
+        (
+            starts[0],
+            goals[0],
+            std::iter::once(starts[0])
+                .chain(
+                    Search::default()
+                        .path(80, 60, starts[0], goals[0], |_| true)
+                        .unwrap()
+                )
+                .collect()
+        )
+    );
+    assert_eq!(work.fields, 0, "{work:?}");
+    assert!(cache.borrow().ground[0].distances.is_empty());
+}
+
+#[test]
+fn normal_fields_are_promoted_after_repeated_expensive_routes() {
+    let grid = TestGrid::new(
+        80,
+        60,
+        |tile| {
+            if tile.x == 40 && tile.y > 3 { '#' } else { '.' }
+        },
+    );
+    let cache = RefCell::new(PathQueries::default());
+    let borrowed = grid.borrowed(&cache, false);
+    let board = borrowed.board(CacheClass::Ground);
+    let goal = TilePos::new(4, 40);
+    let starts = (20..50).map(|y| TilePos::new(70, y)).collect::<Vec<_>>();
+    let (expected, reference_work) = crate::bot::navigation::work::measure(|| {
+        starts
+            .iter()
+            .map(|&start| {
+                Search::default().path(80, 60, start, goal, |tile| board.grid.open(tile, None))
+            })
+            .collect::<Vec<_>>()
+    });
+    let (actual, work) = crate::bot::navigation::work::measure(|| {
+        starts
+            .iter()
+            .map(|&start| board.path(start, goal, None, &mut Search::default()))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(actual, expected);
+    assert_eq!(work.fields, 1, "{work:?}");
+    assert!(
+        work.expanded < reference_work.expanded,
+        "{work:?}, {reference_work:?}"
+    );
+    let (_, warm) = crate::bot::navigation::work::measure(|| {
+        for (&start, expected) in starts.iter().zip(&expected) {
+            assert_eq!(
+                &board.path(start, goal, None, &mut Search::default()),
+                expected
+            );
+        }
+    });
+    assert_eq!(warm.expanded, 0);
+    assert_eq!(warm.fields, 0);
+}
+
+#[test]
+fn repeated_doorstep_searches_share_an_earned_origin_field() {
+    let grid = TestGrid::new(
+        80,
+        60,
+        |tile| {
+            if tile.x == 40 && tile.y > 3 { '#' } else { '.' }
+        },
+    );
+    let cache = RefCell::new(PathQueries::default());
+    let borrowed = grid.borrowed(&cache, false);
+    let board = borrowed.board(CacheClass::Ground);
+    let start = TilePos::new(70, 40);
+    let goals = (20..50).map(|y| TilePos::new(4, y)).collect::<Vec<_>>();
+    let (reference, exhaustive) = crate::bot::navigation::work::measure(|| {
+        goals
+            .iter()
+            .filter_map(|&goal| {
+                Search::default()
+                    .path(80, 60, start, goal, |tile| board.grid.open(tile, None))
+                    .map(|path| {
+                        let path = std::iter::once(start).chain(path).collect::<Vec<_>>();
+                        (path_cost(&path), path.len(), goal.y, goal.x, path)
+                    })
+            })
+            .min()
+            .unwrap()
+    });
+    let (selected, actual) = crate::bot::navigation::work::measure(|| {
+        shortest_path_between(board, &[start], &goals, None).unwrap()
+    });
+    assert_eq!(
+        selected,
+        (start, TilePos::new(reference.3, reference.2), reference.4)
+    );
+    assert!(cache.borrow().ground[0].distances.contains_key(&start));
+    assert!(
+        actual.expanded < exhaustive.expanded,
+        "{actual:?}, {exhaustive:?}"
+    );
+}
+
+#[test]
+fn cached_paths_do_not_charge_the_previous_search_to_a_new_endpoint_batch() {
+    let grid = TestGrid::new(80, 60, |_| '.');
+    let cache = RefCell::new(PathQueries::default());
+    let borrowed = grid.borrowed(&cache, false);
+    let board = borrowed.board(CacheClass::Ground);
+    let start = TilePos::new(3, 20);
+    let goal = TilePos::new(70, 20);
+    let expected = board.path(start, goal, None, &mut Search::default());
+    let mut search = Search::default();
+    search.path(80, 60, start, goal, |tile| tile.x != 40);
+    assert!(search.last_expansions() > 0);
+    let (_, work) = crate::bot::navigation::work::measure(|| {
+        assert_eq!(board.path(start, goal, None, &mut search), expected);
+        board.prepare_endpoint_batch(start, goal, 100, &search);
+    });
+    assert_eq!(search.last_expansions(), 0);
+    assert_eq!(work.fields, 0);
+    assert_eq!(work.expanded, 0);
+}
