@@ -1268,7 +1268,10 @@ endpoint. Once that work exceeds the map area, they share a field proving
 whether all shortest routes avoid danger. Ambiguous routes still use canonical
 A*, and maps above its expansion cap bypass the proof. Each immutable route
 projection retains at most sixteen safety fields, independently of the directed
-route-answer cache.
+route-answer cache. Producer-exit certificates first repair an intersected route
+inside a small rectangle around the candidate footprint. Blocked endpoints or
+failed local repairs use the full connectivity check; a failed local detour
+never proves that a producer is trapped.
 
 Match setup prepares and shares a public terrain index for each seat
 orientation, with connected components inside 16-by-16 regions and deterministic
