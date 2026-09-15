@@ -760,6 +760,12 @@ time-to-impact, and safety bands decide first; personality resolves only a
 genuine semantic tie and never removes a domain or defensive role from
 consideration.
 
+Portfolio evaluation stages all ownership and capital claims before solving the
+combined producer schedule once. Acceptance reuses that validated schedule.
+Production search and candidate enumeration can yield deterministic work slices;
+the current synchronous scheduling adapter still drains them to a decision, so
+this alone does not bound a controller tick.
+
 Fixed jobs on one factory follow their retained enqueue and execution times;
 funding priority does not reorder that lane. Production preflight rejects
 overlapping fixed execution intervals on the same factory before enumerating

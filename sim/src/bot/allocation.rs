@@ -1766,7 +1766,7 @@ fn allocate_with_required<Payload>(
         ) {
             let proposal = &proposals[index];
             state
-                .try_apply_with_priority(
+                .stage(
                     capacity,
                     ClaimOwner::Proposal(proposal.key()),
                     proposal.claims(),
@@ -1774,10 +1774,12 @@ fn allocate_with_required<Payload>(
                 )
                 .ok()?;
         }
+        let resolved = state.resolve(capacity).ok()?;
         Some((
             selected.to_vec(),
             portfolio_rank(selected, &proposals, personality),
             state,
+            resolved,
         ))
     };
 
@@ -1806,14 +1808,17 @@ fn allocate_with_required<Payload>(
         search.advance(&proposals, personality, &mut budget)
     {
         if let Some(feasible) = evaluate(&candidate) {
-            if best.as_ref().is_none_or(|(_, rank, _)| feasible.1 > *rank) {
+            if best
+                .as_ref()
+                .is_none_or(|(_, rank, _, _)| feasible.1 > *rank)
+            {
                 best = Some(feasible);
             }
             break;
         }
     }
 
-    let Some((selected_indices, selected_rank, selected_state)) = best else {
+    let Some((selected_indices, selected_rank, selected_state, resolved)) = best else {
         return Ok(None);
     };
     let mut selected_keys: Vec<_> = selected_indices
@@ -1886,9 +1891,6 @@ fn allocate_with_required<Payload>(
         })
         .collect();
 
-    let resolved = selected_state
-        .resolve(capacity)
-        .expect("the selected claim state was already proven feasible");
     #[cfg(not(test))]
     let _ = (resolved.search_states, resolved.memo_hits);
     let mut accepted: Vec<_> = proposals
@@ -1933,7 +1935,7 @@ fn portfolio_conflict<Payload>(
         capacity.resources.observed_at(),
     ) {
         let proposal = &proposals[index];
-        if let Err(conflict) = state.try_apply_with_priority(
+        if let Err(conflict) = state.stage(
             capacity,
             ClaimOwner::Proposal(proposal.key()),
             proposal.claims(),
@@ -1942,7 +1944,7 @@ fn portfolio_conflict<Payload>(
             return Some(conflict);
         }
     }
-    None
+    state.resolve(capacity).err()
 }
 
 fn portfolio_layout_conflict<Payload>(
@@ -2441,7 +2443,10 @@ impl ClaimState {
         funding_priority: FundingPriority,
     ) -> Result<ResolvedClaimState, AllocationConflict> {
         let checkpoint = self.clone();
-        match self.apply(capacity, owner, claims, funding_priority) {
+        match self
+            .stage(capacity, owner, claims, funding_priority)
+            .and_then(|()| self.resolve(capacity))
+        {
             Ok(result) => Ok(result),
             Err(conflict) => {
                 *self = checkpoint;
@@ -2450,13 +2455,13 @@ impl ClaimState {
         }
     }
 
-    fn apply(
+    fn stage(
         &mut self,
         capacity: &AllocationCapacity,
         owner: ClaimOwner,
         claims: &ClaimBundle,
         funding_priority: FundingPriority,
-    ) -> Result<ResolvedClaimState, AllocationConflict> {
+    ) -> Result<(), AllocationConflict> {
         for &building in &claims.buildings {
             if capacity.buildings.binary_search(&building).is_err() {
                 return Err(AllocationConflict::UnknownBuilding(building));
@@ -2593,7 +2598,7 @@ impl ClaimState {
         }
         self.producer_jobs
             .sort_unstable_by_key(|job| (job.owner, job.ordinal));
-        self.resolve(capacity)
+        Ok(())
     }
 
     fn validate_forecast(&self, capacity: &AllocationCapacity) -> Result<(), AllocationConflict> {
