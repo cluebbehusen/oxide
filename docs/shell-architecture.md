@@ -92,12 +92,12 @@ against pending commands again. Selecting one factory retains the exact ordered
 queue and its per-slot cancellation controls. Mixed building kinds retain rally
 controls and the first compatible producer's training shortcuts.
 
-Production panels reserve a fixed-width rally group with adjacent Set/Reset and
-Clear buttons. Clear stays visible but disabled until a selected producer has a
-rally. Rally changes preserve the action band's height and production-card
-positions. Narrow layouts widen the group to preserve minimum touch targets;
-production wraps in the remaining columns. Card rectangles and panel bounds
-share the same separator and inset calculations.
+Production panels reserve a fixed-width rally group with one shared flag beside
+adjacent Set/Reset and Clear buttons. Clear stays visible but disabled until a
+selected producer has a rally. Rally changes preserve the action band's height
+and production-card positions. Narrow layouts widen the group to preserve
+minimum touch targets; production wraps in the remaining columns. Card
+rectangles and panel bounds share the same separator and inset calculations.
 
 Coordinates are logical throughout the input/layout pipeline; the hardware
 adapter applies DPI conversion once. Drawing publishes a shared `LayoutModel`

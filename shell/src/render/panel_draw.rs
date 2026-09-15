@@ -8,6 +8,8 @@ use super::panel_layout::{PanelGeometry, measure_info};
 
 const CARD_RIGHT_INSET: f32 = 12.0;
 const CARD_LEFT_INSET: f32 = 8.0;
+const RALLY_ICON_SIZE: f32 = 24.0;
+const RALLY_CONTEXT_WIDTH: f32 = RALLY_ICON_SIZE + 6.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PanelPacking {
@@ -28,7 +30,8 @@ fn card_metrics(viewport: Vec2, scale: f32) -> (f32, f32, f32, f32) {
 }
 
 fn rally_group_width(card_width: f32, scale: f32) -> f32 {
-    card_width.max((2.0 * crate::layout::MIN_TOUCH_TARGET + 6.0) * scale)
+    RALLY_CONTEXT_WIDTH * scale
+        + card_width.max((2.0 * crate::layout::MIN_TOUCH_TARGET + 6.0) * scale)
 }
 
 fn panel_packing_at_right(
@@ -180,7 +183,9 @@ fn command_card_geometry(
         .map(|index| {
             let (row, column, after_rally) = grouped_card_slot(index, rally_count, packing.per_row);
             let group_width = rally_group_width(width, scale);
-            let rally_width = ((group_width - gap * rally_count.saturating_sub(1) as f32)
+            let rally_width = ((group_width
+                - RALLY_CONTEXT_WIDTH * scale
+                - gap * rally_count.saturating_sub(1) as f32)
                 / rally_count.max(1) as f32)
                 .max(crate::layout::MIN_TOUCH_TARGET * scale);
             let rally = index < rally_count;
@@ -193,7 +198,7 @@ fn command_card_geometry(
                         0.0
                     }
                     + if rally {
-                        index as f32 * (rally_width + gap)
+                        RALLY_CONTEXT_WIDTH * scale + index as f32 * (rally_width + gap)
                     } else {
                         0.0
                     },
@@ -213,6 +218,16 @@ fn command_card_geometry(
             + CARD_RIGHT_INSET * scale
     };
     (slots, band_width.min(packing.right))
+}
+
+fn rally_context_rect(first_button: Rect, scale: f32) -> Rect {
+    let size = RALLY_ICON_SIZE * scale;
+    Rect::new(
+        first_button.x - RALLY_CONTEXT_WIDTH * scale,
+        first_button.y + (first_button.h - size) * 0.5,
+        size,
+        size,
+    )
 }
 
 fn draw_rally_control(card: &crate::panel::Card, rect: Rect, scale: f32) {
@@ -913,6 +928,14 @@ pub(crate) fn draw_panel(
             roster_slots[roster_count] = (rect, card.action);
             roster_count += 1;
         }
+    }
+
+    if packing.rally_count > 0 {
+        draw_icon(
+            rally_context_rect(card_rects[0], s),
+            &CardIcon::Verb(crate::panel::VerbIcon::Rally),
+            WHITE,
+        );
     }
 
     // Command cards, wrapping into as many rows as the width demands.
@@ -1646,6 +1669,13 @@ mod tests {
                                     assert_eq!(slots.len(), panel.cards.len());
                                     let rally_count = rally_card_count(&panel.cards);
                                     if rally_count > 0 {
+                                        let context = rally_context_rect(slots[0], scale);
+                                        assert!(context.x >= card_metrics(viewport, scale).0);
+                                        assert!(
+                                            context.y >= packing.top
+                                                && context.bottom() <= viewport.y
+                                        );
+                                        assert!(slots.iter().all(|slot| !context.overlaps(slot)));
                                         assert!(
                                             slots[..rally_count].iter().all(|r| r.y == slots[0].y)
                                         );
