@@ -111,12 +111,12 @@ impl UtilityPolicy {
                 for dy in -radius..=radius {
                     for dx in -radius..=radius {
                         let anchor = center.offset(dx - size.0 / 2, dy - size.1 / 2);
-                        if self.placement_valid_prepared(obs, BuildingKind::Foundry, anchor) {
+                        if self.placement_geometry_valid(obs, BuildingKind::Foundry, anchor) {
                             candidates.insert(anchor);
                         }
                     }
                 }
-                let best = candidates
+                let mut ranked = candidates
                     .into_iter()
                     .map(|anchor| {
                         let mut scrap = expansion::ScrapSummary::default();
@@ -139,14 +139,21 @@ impl UtilityPolicy {
                             economy,
                         )
                     })
-                    .max_by_key(|quote| {
-                        (
-                            quote.projected_return,
-                            quote.recurring_gain_per_minute,
-                            std::cmp::Reverse(quote.anchor.y),
-                            std::cmp::Reverse(quote.anchor.x),
-                        )
-                    });
+                    .collect::<Vec<_>>();
+                ranked.sort_by_key(|quote| {
+                    (
+                        std::cmp::Reverse(quote.projected_return),
+                        std::cmp::Reverse(quote.recurring_gain_per_minute),
+                        quote.anchor.y,
+                        quote.anchor.x,
+                    )
+                });
+                let best = ranked.into_iter().find(|quote| {
+                    self.preserves_ground_producer_egress_prepared(
+                        &[],
+                        (BuildingKind::Foundry, quote.anchor),
+                    )
+                });
                 if let Some(best) = best {
                     selected.push(best);
                 }
