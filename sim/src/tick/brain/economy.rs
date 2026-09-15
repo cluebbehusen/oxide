@@ -120,6 +120,14 @@ pub(super) fn build(
         // after damage — see PendingHpGain. The builder learns the site is
         // done next tick, through the built-site branch above.
         let completes = b.progress >= build_ticks;
+        if starts {
+            // Before the first work, a full-refund cancellation must preserve salvage.
+            for dy in 0..size.1 {
+                for dx in 0..size.0 {
+                    state.map.clear_wreck(anchor.offset(dx, dy));
+                }
+            }
+        }
         if starts || step > 0 || completes {
             builds.push(PendingHpGain {
                 starts,

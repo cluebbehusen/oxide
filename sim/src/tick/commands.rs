@@ -967,13 +967,6 @@ pub(super) fn finish_site_claim(state: &mut State, site: BuildingId, builder: Un
     let building = state.building(site).expect("accepted site");
     let (player, anchor, size) = (building.player, building.anchor, building.stats().size);
     let from = state.unit(builder).expect("committed builder").tile();
-    // The accepted foundation buries whatever wreck salvage lay
-    // there (only now — a rejected site must leave no trace).
-    for dy in 0..size.1 {
-        for dx in 0..size.0 {
-            state.map.clear_wreck(anchor.offset(dx, dy));
-        }
-    }
     // Friendly machines make way as the site claims the ground: no
     // sim rule expects a resting unit on a claimed footprint. The
     // builders' own approach and the eviction pre-pass both route out

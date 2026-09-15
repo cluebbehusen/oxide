@@ -379,15 +379,17 @@ ownership state.
 An accepted immediate build pays for and places an unfinished site at partial
 hp. A non-stealthy footprint blocks ground from that command onward; the buried
 Scuttle Charge is the deliberate exception. Harvesters raise the site over time.
-A deferred build pays for one provisional scaffold and installs a `Found`
-program for its workers. Provisional scaffolds provide no vision, physical
-occupancy, damage target, or construction progress. Once the owner's team sees
-the entire footprint, the simulation checks placement against that knowledge: a
-blocker cancels the scaffold with a full refund; clear ground activates its
-occupancy and converts every matching worker commitment to `Build` using the
-same building id, without another charge. Shared crews pay once per site. Hidden
-occupancy cannot change command acceptance, payment, or the preview. Provisional
-Foundries do not count toward survival.
+Wreck salvage beneath a site remains, with ordinary decay, until the first crew
+work clears its footprint. Cancelling before that work preserves the salvage. A
+deferred build pays for one provisional scaffold and installs a `Found` program
+for its workers. Provisional scaffolds provide no vision, physical occupancy,
+damage target, or construction progress. Once the owner's team sees the entire
+footprint, the simulation checks placement against that knowledge: a blocker
+cancels the scaffold with a full refund; clear ground activates its occupancy
+and converts every matching worker commitment to `Build` using the same building
+id, without another charge. Shared crews pay once per site. Hidden occupancy
+cannot change command acceptance, payment, or the preview. Provisional Foundries
+do not count toward survival or the bot's home selection.
 
 Completed enemy Scuttle Charges remain concealed without detector coverage;
 unfinished charges are visible under ordinary sight. A witnessed charge retains

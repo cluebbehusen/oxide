@@ -207,10 +207,9 @@ impl Brain {
         drop(observation_scope);
         let maintenance_scope = PhaseScope::new(observer, BotPhase::Maintenance);
         if state.player(self.player).resigned
-            || !obs
-                .my_buildings
-                .iter()
-                .any(|building| building.kind == crate::stats::BuildingKind::Foundry)
+            || !obs.my_buildings.iter().any(|building| {
+                !building.provisional && building.kind == crate::stats::BuildingKind::Foundry
+            })
         {
             return Vec::new();
         }
@@ -225,7 +224,7 @@ impl Brain {
         let (rear_anchor, rear_size) = obs
             .my_buildings
             .iter()
-            .filter(|b| b.kind == crate::stats::BuildingKind::Foundry)
+            .filter(|b| !b.provisional && b.kind == crate::stats::BuildingKind::Foundry)
             .min_by_key(|b| b.id)
             .map(|b| (b.anchor, b.kind.base_stats().size))
             .unwrap_or((TilePos::new(0, 0), (1, 1)));
@@ -325,7 +324,10 @@ impl Brain {
                 let home = oriented
                     .my_buildings
                     .iter()
-                    .filter(|building| building.kind == crate::stats::BuildingKind::Foundry)
+                    .filter(|building| {
+                        !building.provisional
+                            && building.kind == crate::stats::BuildingKind::Foundry
+                    })
                     .min_by_key(|building| building.id)
                     .map(|building| building.anchor)
                     .unwrap_or(TilePos::new(0, 0));
@@ -386,7 +388,9 @@ impl Brain {
         let oriented_home = oriented
             .my_buildings
             .iter()
-            .filter(|building| building.kind == crate::stats::BuildingKind::Foundry)
+            .filter(|building| {
+                !building.provisional && building.kind == crate::stats::BuildingKind::Foundry
+            })
             .min_by_key(|building| building.id)
             .map(|building| building.anchor)
             .unwrap_or(TilePos::new(0, 0));
@@ -1227,13 +1231,32 @@ mod tests {
             BotDifficulty::Veteran,
             BotDifficulty::Prime,
         ] {
-            for surrender in [false, true] {
+            for (surrender, provisional) in [(false, false), (true, false), (false, true)] {
                 let mut state = scenario.build().unwrap();
                 let config = BotConfig::scripted(difficulty, BotStance::Balanced, 9000);
                 let mut brain = scripted_brain(&scenario, PlayerId(0), config);
                 let initial = brain.act_traced(&state);
                 assert!(initial.trace.is_some());
                 state.tick(&initial.commands);
+                let planned = provisional.then(|| {
+                    let anchor = TilePos::new(15, 1);
+                    let site = state.place_site(PlayerId(0), BuildingKind::Foundry, anchor);
+                    state.building_mut(site).unwrap().provisional = true;
+                    state.rebuild_building_occupancy();
+                    let worker = state
+                        .units
+                        .iter_mut()
+                        .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Harvester)
+                        .unwrap();
+                    worker.clear_program();
+                    worker.order = crate::Order::Found {
+                        kind: BuildingKind::Foundry,
+                        anchor,
+                    };
+                    state.refresh_vision();
+                    assert!(!state.can_see(PlayerId(0), anchor));
+                    site
+                });
                 if surrender {
                     state.tick(&[PlayerCommand {
                         player: PlayerId(0),
@@ -1244,7 +1267,9 @@ mod tests {
                         .buildings()
                         .iter()
                         .filter(|building| {
-                            building.player == PlayerId(0) && building.kind == BuildingKind::Foundry
+                            building.player == PlayerId(0)
+                                && building.kind == BuildingKind::Foundry
+                                && !building.provisional
                         })
                         .map(|building| building.id)
                         .collect();
@@ -1262,6 +1287,14 @@ mod tests {
                 while !state.current_tick().is_multiple_of(brain.dials.cadence) {
                     state.tick(&[]);
                 }
+                if let Some(site) = planned {
+                    assert!(
+                        state
+                            .building(site)
+                            .is_some_and(|building| building.provisional)
+                    );
+                    state.validate_invariants().unwrap();
+                }
                 let before = brain.clone();
                 assert!(brain.act(&state).is_empty());
                 let traced = brain.act_traced(&state);
@@ -1272,6 +1305,47 @@ mod tests {
                 assert!(ally.act_traced(&state).trace.is_some());
             }
         }
+    }
+
+    #[test]
+    fn home_orientation_uses_a_physical_foundry_instead_of_an_older_plan() {
+        let scenario = opening_core_team_relief_scenario();
+        let mut state = scenario.build().unwrap();
+        let planned = state
+            .buildings
+            .iter_mut()
+            .find(|building| building.player == PlayerId(0))
+            .unwrap();
+        planned.anchor = TilePos::new(3, 1);
+        planned.built = false;
+        planned.provisional = true;
+        planned.hp = planned.stats().max_hp / 5;
+        let anchor = planned.anchor;
+        let worker = state
+            .units
+            .iter_mut()
+            .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Harvester)
+            .unwrap();
+        worker.order = crate::Order::Found {
+            kind: BuildingKind::Foundry,
+            anchor,
+        };
+        let home = TilePos::new(30, 20);
+        state.place_site(PlayerId(0), BuildingKind::Foundry, home);
+        state.rebuild_building_occupancy();
+        state.refresh_vision();
+        state.validate_invariants().unwrap();
+        let obs = Observation::fog_honest(&state, PlayerId(0));
+        assert_eq!(
+            obs.my_buildings
+                .iter()
+                .filter(|b| b.kind == BuildingKind::Foundry)
+                .count(),
+            2
+        );
+        let mut brain = scripted_brain(&scenario, PlayerId(0), BotConfig::default());
+        assert!(brain.act_traced(&state).trace.is_some());
+        assert_eq!(brain.orientation, Some(Orientation::for_home(&obs, home)));
     }
 
     fn operation_identity_brain(player: PlayerId, scenario: &Scenario) -> Brain {

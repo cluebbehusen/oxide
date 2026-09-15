@@ -416,7 +416,7 @@ impl Map {
         }
     }
 
-    /// Erases the wreck under a new foundation.
+    /// Erases wreck salvage when construction starts on the tile.
     pub(crate) fn clear_wreck(&mut self, pos: TilePos) {
         if let Some(tile) = self.grid.get_mut(pos) {
             tile.wreck = 0;

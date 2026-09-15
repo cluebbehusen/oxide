@@ -246,7 +246,7 @@ fn wrecks_decay_back_into_the_dirt() {
 }
 
 #[test]
-fn foundations_bury_wrecks() {
+fn foundations_preserve_wrecks_until_construction_starts() {
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 5, 5),
         unit(1, UnitKind::Scuttler, 6, 5),
@@ -277,6 +277,41 @@ fn foundations_bury_wrecks() {
     run_until(&mut state, 300, |s, _| {
         s.unit(executioner).unwrap().tile().chebyshev(grave) > 1
     });
+    let build = cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: grave,
+            queue: false,
+            defer: false,
+        },
+    );
+    let mut stopped = state.clone();
+    let mut control = state.clone();
+    control.tick(&[]);
+    let report = stopped.tick(&[
+        build.clone(),
+        cmd(
+            0,
+            Command::Stop {
+                units: vec![builder],
+            },
+        ),
+    ]);
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::BuildCancelled { refund, .. }
+        if *refund == BuildingKind::Turret.base_stats().construction.unwrap().cost))
+    );
+    assert_eq!(
+        stopped.player(PlayerId(0)).scrap,
+        control.player(PlayerId(0)).scrap
+    );
+    assert_eq!(stopped.map().wreck_at(grave), control.map().wreck_at(grave));
+    stopped.validate_invariants().unwrap();
     state.tick(&[cmd(
         0,
         Command::Build {
@@ -291,6 +326,29 @@ fn foundations_bury_wrecks() {
         state.buildings().iter().any(|b| b.anchor == grave),
         "the site must land for this test to mean anything"
     );
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == grave)
+        .unwrap()
+        .id;
+    assert_eq!(state.building(site).unwrap().progress, 0);
+    assert_eq!(state.map().wreck_at(grave), control.map().wreck_at(grave));
+    let mut cancelled = state.clone();
+    let mut untouched = control.clone();
+    untouched.tick(&[]);
+    cancelled.tick(&[cmd(0, Command::Cancel { building: site })]);
+    assert_eq!(
+        cancelled.map().wreck_at(grave),
+        untouched.map().wreck_at(grave)
+    );
+    assert_eq!(
+        cancelled.player(PlayerId(0)).scrap,
+        untouched.player(PlayerId(0)).scrap
+    );
+    run_until(&mut state, 400, |s, _| {
+        s.building(site).unwrap().progress > 0
+    });
     assert_eq!(state.map().wreck_at(grave), 0, "foundations bury salvage");
 }
 
