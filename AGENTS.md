@@ -204,11 +204,10 @@ correctness and replay compatibility.
 - Pin GitHub Actions to full commit SHAs and leave the release tag as a comment.
 - Keep screenshots, replays, generated review banks, and experiments out of
   production commits unless the user explicitly promotes them.
-- When maintained behavior or workflows change, update the documentation whose
-  claims or procedures are affected. Keep entry points and responsibilities in
-  READMEs, detailed implementation contracts in architecture documents, and
-  repeatable procedures in skills; do not duplicate a rule across those
-  surfaces.
+- Update documentation when a change makes an existing claim inaccurate. Add
+  architectural documentation only for significant boundaries, contracts, or
+  responsibilities. Keep small implementation and visual details in code and
+  tests.
 
 ## Generated assets
 
