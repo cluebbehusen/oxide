@@ -1,84 +1,21 @@
 //! Incremental voluntary site selection; exact validation remains query-local.
 
 use super::*;
-use crate::bot::planning::{Progress, WorkBudget};
+use crate::bot::planning::Progress;
 
-const CANDIDATES_PER_DECISION: usize = 4;
-const INCUMBENT_LIFETIME: u64 = 120;
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(in crate::bot::utility) struct SiteWork {
-    roles: BTreeMap<BuildingKind, RoleWork>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct RoleWork {
-    cursor: usize,
-    incumbent: Option<(u64, TilePos)>,
-    tick: Option<u64>,
-    remaining: usize,
-}
+pub(in crate::bot::utility) use crate::bot::planning::sites::SiteWork;
 
 impl SiteWork {
-    pub(super) fn retained(&self, tick: u64, kind: BuildingKind) -> Option<TilePos> {
-        self.roles
-            .get(&kind)?
-            .incumbent
-            .filter(|(started_at, _)| tick.saturating_sub(*started_at) < INCUMBENT_LIFETIME)
-            .map(|(_, anchor)| anchor)
-    }
-
-    pub(super) fn clear_incumbent(&mut self, kind: BuildingKind) {
-        if let Some(role) = self.roles.get_mut(&kind) {
-            role.incumbent = None;
-        }
-    }
-
     pub(super) fn advance(
         &mut self,
         tick: u64,
         profile: DefenseProfile,
         anchors: &[TilePos],
-        mut evaluate: impl FnMut(TilePos) -> Option<(Candidate, UnitId)>,
+        evaluate: impl FnMut(TilePos) -> Option<(Candidate, UnitId)>,
     ) -> Progress<(Candidate, UnitId)> {
-        if anchors.is_empty() {
-            return Progress::ProvenInfeasible;
-        }
-        let role = self.roles.entry(profile.kind).or_default();
-        if role.tick != Some(tick) {
-            role.tick = Some(tick);
-            role.remaining = CANDIDATES_PER_DECISION;
-        }
-        if let Some((started_at, anchor)) = role.incumbent
-            && tick.saturating_sub(started_at) < INCUMBENT_LIFETIME
-            && anchors.contains(&anchor)
-            && let Some(candidate) = evaluate(anchor)
-        {
-            return Progress::Ready(candidate);
-        }
-        role.incumbent = None;
-        let mut budget = WorkBudget::new(role.remaining);
-        let mut selected: Option<(Candidate, UnitId)> = None;
-        for _ in 0..anchors.len().min(role.remaining) {
-            if !budget.charge(1) {
-                break;
-            }
-            let anchor = anchors[role.cursor % anchors.len()];
-            role.cursor = (role.cursor + 1) % anchors.len();
-            if let Some(candidate) = evaluate(anchor)
-                && selected.is_none_or(|(prior, _)| candidate.0.key(profile) > prior.key(profile))
-            {
-                selected = Some(candidate);
-            }
-        }
-        role.remaining -= budget.spent();
-        match selected {
-            Some(candidate) => {
-                role.incumbent = Some((tick, candidate.0.anchor));
-                Progress::Ready(candidate)
-            }
-            None => Progress::Deferred,
-        }
+        self.advance_ranked(tick, profile.kind, anchors, evaluate, |candidate, prior| {
+            candidate.0.key(profile) > prior.0.key(profile)
+        })
     }
 }
 

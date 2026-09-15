@@ -3,7 +3,7 @@
 use super::*;
 use std::collections::BTreeSet;
 
-const EXACT_SITES: usize = 8;
+const EXACT_SITES: usize = 2;
 
 impl UtilityPolicy {
     pub(super) fn regional_foundry_opportunities(
@@ -159,18 +159,17 @@ impl UtilityPolicy {
                 }
             }
             let mut seen = BTreeSet::new();
-            let mut ranked = expansion::rank_foundry_opportunities(selected)
+            let ranked = expansion::rank_foundry_opportunities(selected)
                 .into_iter()
                 .filter(|quote| seen.insert(quote.anchor))
                 .map(|quote| quote.anchor)
                 .collect::<Vec<_>>();
-            if ranked.len() > EXACT_SITES {
-                let remaining = ranked.len() - 1;
-                let offset = usize::try_from((obs.tick / 24) % remaining as u64).unwrap_or(0);
-                ranked[1..].rotate_left(offset);
-                ranked.truncate(EXACT_SITES);
-            }
-            ranked
+            self.foundry_refinement
+                .borrow_mut()
+                .indices(obs.tick, ranked.len(), EXACT_SITES)
+                .into_iter()
+                .map(|index| ranked[index])
+                .collect::<Vec<_>>()
         };
         if anchors.is_empty() {
             return Vec::new();

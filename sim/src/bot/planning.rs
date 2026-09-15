@@ -1,5 +1,35 @@
 //! Deterministic work allowances shared by nested planning services.
 
+pub(super) mod sites;
+
+/// Refine the strongest estimate plus a rotating remainder on actual requests.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct RankedRotation {
+    tick: Option<u64>,
+    offset: usize,
+    next: usize,
+}
+
+impl RankedRotation {
+    pub(super) fn indices(&mut self, tick: u64, count: usize, limit: usize) -> Vec<usize> {
+        if count <= limit {
+            return (0..count).collect();
+        }
+        if limit == 0 {
+            return Vec::new();
+        }
+        let remaining = count - 1;
+        if self.tick != Some(tick) {
+            self.tick = Some(tick);
+            self.offset = self.next % remaining;
+            self.next = (self.offset + limit - 1) % remaining;
+        }
+        std::iter::once(0)
+            .chain((0..limit - 1).map(|index| 1 + (self.offset + index) % remaining))
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Progress<T> {
     Ready(T),
@@ -38,6 +68,24 @@ impl WorkBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ranked_refinement_does_not_starve_candidates_when_admissions_skip_ticks() {
+        let mut rotation = RankedRotation::default();
+        let mut visited = std::collections::BTreeSet::new();
+        for tick in [24, 72, 120, 168, 216, 264] {
+            let indices = rotation.indices(tick, 7, 2);
+            assert_eq!(indices[0], 0);
+            assert_eq!(indices.len(), 2);
+            assert_eq!(rotation.indices(tick, 7, 2), indices);
+            let mut clone = rotation.clone();
+            assert_eq!(clone.indices(tick, 7, 2), indices);
+            visited.extend(indices);
+        }
+        assert_eq!(visited, (0..7).collect());
+        assert!(rotation.indices(288, 7, 0).is_empty());
+        assert_eq!(rotation.indices(288, 1, 2), [0]);
+    }
 
     #[test]
     fn nested_services_cannot_refill_or_overdraw_the_shared_allowance() {

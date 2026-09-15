@@ -1196,12 +1196,13 @@ for selected workers covered by any blocking footprint; nonblocking mines do not
 cover starts, and unselected workers do not trigger this rejection.
 
 Voluntary weapon-bearing site search ranks inexpensive approach-frontage
-estimates, validates a small per-role slice, and continues beyond rejected sites
-on later decisions. A retained candidate avoids rediscovery but must pass
-current builder, egress, resource-route, support, and coverage checks before
-reuse; uncommitted candidates expire. Emergency defense retains exhaustive
-best-site selection with conservative coverage bounds. Array selection remains
-separate.
+estimates. Weapon and Array placement share a small per-role refinement slice
+and continue beyond rejected sites on later decisions. A retained candidate
+avoids rediscovery but must pass current builder, egress, resource-route,
+support, and coverage checks before reuse; uncommitted candidates expire.
+Emergency defense retains exhaustive best-site selection with conservative
+coverage bounds. A candidate rejected by investment valuation does not remain
+the role's incumbent.
 
 Defensive geometry shares a bot-owned route cache across economic and defensive
 valuation. Each retained generation compares map dimensions and the complete
@@ -1288,21 +1289,23 @@ contribute nothing because no unit can occupy them. Current contacts, remembered
 contacts, and uncleared public starting priors break otherwise equivalent sites
 toward credible hostile approaches. Sensor cases remain bounded below an
 immediate survival defense regardless of coverage, and compact maps may use a
-partial radar disc. Optimistic readiness bounds order candidates; exact route
-quotes stop once no remaining bound can beat the selected site's completion-time
-coverage.
+partial radar disc. Array refinement mixes coverage-ranked sites with nearby
+sites, rejects disconnected builder doorsteps, and checks exact readiness and
+safety within the shared site allowance.
 
 The player-facing budget observes provisional scaffolds as paid construction
 with an exact site id. Their prices have already left the bank, so retained
 worker obligations do not reserve that money again. Player-facing Foundry
 expansion has no count ceiling. It groups known resources by public terrain
 region, ranks potential sites using approximate travel, and prices a bounded
-shortlist exactly. The strongest regional candidate remains in consideration
-while remaining regions rotate. Payback includes supported owned Extractors,
-Foundry drip attached to an external objective, and shorter visible-scrap hauls.
-Reverse fields from shortlisted Foundry footprints preserve exact haul costs
-while avoiding observed danger. Public unbuilt frames remain scouting priors.
-Greed and uncommitted scrap extend the forecast without changing capability.
+pair exactly. The strongest regional candidate remains in consideration while
+remaining regions rotate on actual planning requests; skipped admissions and
+repeated same-tick queries cannot skip or refill that rotation. Payback includes
+supported owned Extractors, Foundry drip attached to an external objective, and
+shorter visible-scrap hauls. Reverse fields from shortlisted Foundry footprints
+preserve exact haul costs while avoiding observed danger. Public unbuilt frames
+remain scouting priors. Greed and uncommitted scrap extend the forecast without
+changing capability.
 
 Expansion saving and construction share one exact claim: a legal footprint and a
 specific worker with a known safe route and work area. Admission preserves the

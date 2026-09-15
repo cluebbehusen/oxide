@@ -279,6 +279,8 @@ impl UtilityPolicy {
             };
             if let Some(proposal) = proposal {
                 proposals.push(proposal);
+            } else {
+                self.defense_site_work.borrow_mut().clear_incumbent(kind);
             }
         }
         proposals.sort_unstable_by_key(proposal_preference_key);
