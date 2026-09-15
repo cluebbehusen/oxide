@@ -1195,13 +1195,13 @@ overlap before quoting defense. Full layout validation uses the same cheap check
 for selected workers covered by any blocking footprint; nonblocking mines do not
 cover starts, and unselected workers do not trigger this rejection.
 
-The site search evaluates candidates in descending order of conservative score
-bounds. Unchanged approach routes retain their coverage score; assets whose
-routes could change receive the maximum positive contribution, and bounds omit
-penalties and builder travel. A site is skipped only when it cannot provide
-coverage or its bound falls below the best exact candidate. Surviving sites
-still undergo every builder, egress, resource-route, and support check. The
-existing score and coordinate tie-breaks determine the selected site.
+Voluntary weapon-bearing site search ranks inexpensive approach-frontage
+estimates, validates a small per-role slice, and continues beyond rejected sites
+on later decisions. A retained candidate avoids rediscovery but must pass
+current builder, egress, resource-route, support, and coverage checks before
+reuse; uncommitted candidates expire. Emergency defense retains exhaustive
+best-site selection with conservative coverage bounds. Array selection remains
+separate.
 
 Defensive geometry shares a bot-owned route cache across economic and defensive
 valuation. Each retained generation compares map dimensions and the complete

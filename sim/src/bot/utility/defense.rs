@@ -2,6 +2,7 @@
 
 mod barricade;
 mod coverage;
+pub(super) mod progressive;
 mod pruning;
 mod routes;
 mod routing_cache;
@@ -44,6 +45,7 @@ enum DefenseEvidenceScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DefenseSiteSearch {
     Best,
+    Progressive,
     #[cfg(test)]
     Any,
     #[cfg(test)]
@@ -1956,6 +1958,21 @@ impl UtilityPolicy {
         builders: &[&UnitObs],
         context: &mut DefenseThinkContext<'_>,
     ) -> Option<StrategicDefenseQuote> {
+        self.strategic_defense_quote_in_context_search(
+            kind,
+            builders,
+            context,
+            DefenseSiteSearch::Progressive,
+        )
+    }
+
+    fn strategic_defense_quote_in_context_search(
+        &self,
+        kind: BuildingKind,
+        builders: &[&UnitObs],
+        context: &mut DefenseThinkContext<'_>,
+        search: DefenseSiteSearch,
+    ) -> Option<StrategicDefenseQuote> {
         let profile = DefenseProfile::for_kind(kind)?;
         if builders.is_empty() {
             return None;
@@ -1974,7 +1991,7 @@ impl UtilityPolicy {
             &context.grounding,
             projection,
             &context.danger,
-            DefenseSiteSearch::Best,
+            search,
             context.future_egress_orientation,
             &mut context.evaluation,
         )
@@ -2122,31 +2139,11 @@ fn strategic_defense_quote_from_projection(
     let origins = &projection.origins;
     let approaches = &projection.approaches;
 
-    let mut candidate_tiles = BTreeSet::new();
-    for approach in approaches {
-        for seed in approach
-            .path
-            .iter()
-            .rev()
-            .take(INTERCEPTION_DEPTH + 1)
-            .copied()
-            .chain(assets[approach.asset].shape.candidate_seeds())
-        {
-            for dy in -profile.candidate_reach..=profile.candidate_reach {
-                for dx in -profile.candidate_reach..=profile.candidate_reach {
-                    if dx.abs().max(dy.abs()) <= profile.candidate_reach {
-                        candidate_tiles.insert(seed.offset(dx, dy));
-                    }
-                }
-            }
-        }
-    }
-    let mut candidate_tiles: Vec<_> = candidate_tiles.into_iter().collect();
-    candidate_tiles.sort_by_key(|tile| (tile.y, tile.x));
-
     policy.prepare_ground_producer_egress(obs);
-    candidate_tiles.retain(|&anchor| policy.placement_valid_prepared(obs, kind, anchor));
-    let evaluate = |anchor| {
+    let mut evaluate = |anchor| {
+        if !policy.placement_valid_prepared(obs, kind, anchor) {
+            return None;
+        }
         let placement = profile.footprint(anchor);
         if future_egress_orientation.is_some_and(|orientation| {
             !cached_future_ground_producer_egress_survives(grounding, orientation, cache, placement)
@@ -2228,8 +2225,29 @@ fn strategic_defense_quote_from_projection(
         ))
     };
     let selected = match search {
+        DefenseSiteSearch::Progressive => {
+            let retained = policy.defense_site_work.borrow().retained(obs.tick, kind);
+            if let Some(candidate) = retained.and_then(&mut evaluate) {
+                Some(candidate)
+            } else {
+                policy.defense_site_work.borrow_mut().clear_incumbent(kind);
+                let mut candidate_tiles =
+                    defense_candidate_tiles(policy, obs, assets, approaches, profile);
+                progressive::rank(&mut candidate_tiles, assets, approaches, profile);
+                match policy.defense_site_work.borrow_mut().advance(
+                    obs.tick,
+                    profile,
+                    &candidate_tiles,
+                    evaluate,
+                ) {
+                    crate::bot::planning::Progress::Ready(candidate) => Some(candidate),
+                    crate::bot::planning::Progress::Deferred
+                    | crate::bot::planning::Progress::ProvenInfeasible => None,
+                }
+            }
+        }
         DefenseSiteSearch::Best => pruning::Bounds::new(ground, assets, approaches).best(
-            candidate_tiles,
+            defense_candidate_tiles(policy, obs, assets, approaches, profile),
             &CoverageContext {
                 obs,
                 briefing,
@@ -2243,12 +2261,16 @@ fn strategic_defense_quote_from_projection(
             evaluate,
         ),
         #[cfg(test)]
-        DefenseSiteSearch::Any => candidate_tiles.into_iter().find_map(evaluate),
-        #[cfg(test)]
-        DefenseSiteSearch::Exhaustive => candidate_tiles
+        DefenseSiteSearch::Any => defense_candidate_tiles(policy, obs, assets, approaches, profile)
             .into_iter()
-            .filter_map(evaluate)
-            .max_by_key(|(candidate, _)| candidate.key(profile)),
+            .find_map(evaluate),
+        #[cfg(test)]
+        DefenseSiteSearch::Exhaustive => {
+            defense_candidate_tiles(policy, obs, assets, approaches, profile)
+                .into_iter()
+                .filter_map(evaluate)
+                .max_by_key(|(candidate, _)| candidate.key(profile))
+        }
     };
     let (candidate, builder) = selected?;
     let placement = profile.footprint(candidate.anchor);
@@ -3487,6 +3509,39 @@ fn planned_defenses(obs: &Observation, domain: DefenseDomain) -> Vec<PlannedDefe
     planned
 }
 
+fn defense_candidate_tiles(
+    policy: &UtilityPolicy,
+    obs: &Observation,
+    assets: &[DefendedAsset],
+    approaches: &[Approach],
+    profile: DefenseProfile,
+) -> Vec<TilePos> {
+    let mut candidate_tiles = BTreeSet::new();
+    for approach in approaches {
+        for seed in approach
+            .path
+            .iter()
+            .rev()
+            .take(INTERCEPTION_DEPTH + 1)
+            .copied()
+            .chain(assets[approach.asset].shape.candidate_seeds())
+        {
+            for dy in -profile.candidate_reach..=profile.candidate_reach {
+                for dx in -profile.candidate_reach..=profile.candidate_reach {
+                    if dx.abs().max(dy.abs()) <= profile.candidate_reach {
+                        candidate_tiles.insert(seed.offset(dx, dy));
+                    }
+                }
+            }
+        }
+    }
+    let mut candidate_tiles: Vec<_> = candidate_tiles.into_iter().collect();
+    candidate_tiles.sort_by_key(|tile| (tile.y, tile.x));
+
+    candidate_tiles.retain(|&anchor| policy.placement_valid_prepared(obs, profile.kind, anchor));
+    candidate_tiles
+}
+
 struct CoverageContext<'a> {
     obs: &'a Observation,
     briefing: &'a PublicMapBriefing,
@@ -4616,15 +4671,10 @@ mod tests {
             BuildingKind::FlakTurret,
             BuildingKind::ScuttleCharge,
         ] {
-            let uncached = policy.strategic_defense_quote_grounded(
-                kind,
-                &obs,
-                &map,
-                &[],
-                &[],
-                &builders,
-                &mut None,
-            );
+            let cold_policy = policy.clone();
+            let mut cold_context = DefenseThinkContext::new(&cold_policy, &obs, &map, &[], &[]);
+            let uncached =
+                cold_policy.strategic_defense_quote_in_context(kind, &builders, &mut cold_context);
             let first = policy.strategic_defense_quote_in_context(kind, &builders, &mut context);
             let repeated = policy.strategic_defense_quote_in_context(kind, &builders, &mut context);
             assert_eq!(first, uncached, "{kind:?} changed under the think cache");
@@ -4925,7 +4975,12 @@ mod tests {
         let builders = vec![&obs.my_units[0]];
         let mut unguarded = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
         let otherwise_best = policy
-            .strategic_defense_quote_in_context(BuildingKind::Turret, &builders, &mut unguarded)
+            .strategic_defense_quote_in_context_search(
+                BuildingKind::Turret,
+                &builders,
+                &mut unguarded,
+                DefenseSiteSearch::Best,
+            )
             .expect("the public approach has an otherwise-useful Turret site");
         assert_eq!(otherwise_best.placement.anchor, exit);
 
