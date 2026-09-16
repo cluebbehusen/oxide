@@ -5,16 +5,55 @@ use chassis::grid::TilePos;
 type PlannedFootprint = (BuildingKind, TilePos);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ComponentWitnesses {
+    rows: Vec<Vec<TilePos>>,
+    columns: Vec<Vec<TilePos>>,
+}
+
+impl ComponentWitnesses {
+    fn new(mut tiles: Vec<TilePos>) -> Self {
+        tiles.sort_unstable_by_key(|tile| (tile.y, tile.x));
+        let width = tiles.iter().map(|tile| tile.x + 1).max().unwrap_or(0) as usize;
+        let height = tiles.iter().map(|tile| tile.y + 1).max().unwrap_or(0) as usize;
+        let mut rows = vec![Vec::new(); height];
+        let mut columns = vec![Vec::new(); width];
+        for tile in tiles {
+            rows[tile.y as usize].push(tile);
+            columns[tile.x as usize].push(tile);
+        }
+        Self { rows, columns }
+    }
+
+    fn farthest(&self, anchor: TilePos, passable: impl Fn(&TilePos) -> bool) -> Option<TilePos> {
+        let first_open = |line: &Vec<TilePos>| line.iter().copied().find(&passable);
+        // Chebyshev distance reaches its maximum on a coordinate extremum.
+        [
+            self.rows.iter().find_map(first_open),
+            self.rows.iter().rev().find_map(first_open),
+            self.columns.iter().find_map(first_open),
+            self.columns.iter().rev().find_map(first_open),
+        ]
+        .into_iter()
+        .flatten()
+        .min_by_key(|tile| (std::cmp::Reverse(tile.chebyshev(anchor)), tile.y, tile.x))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct GroundProducerEgress {
+    anchor: TilePos,
     ring: Vec<TilePos>,
-    witnesses: Vec<TilePos>,
+    witnesses: std::sync::Arc<ComponentWitnesses>,
 }
 
 impl GroundProducerEgress {
-    fn new(anchor: TilePos, ring: Vec<TilePos>, mut witnesses: Vec<TilePos>) -> Self {
-        witnesses
-            .sort_by_cached_key(|tile| (std::cmp::Reverse(tile.chebyshev(anchor)), tile.y, tile.x));
-        Self { ring, witnesses }
+    #[cfg(test)]
+    fn new(anchor: TilePos, ring: Vec<TilePos>, witnesses: Vec<TilePos>) -> Self {
+        Self {
+            anchor,
+            ring,
+            witnesses: std::sync::Arc::new(ComponentWitnesses::new(witnesses)),
+        }
     }
 
     fn endpoints(&self, open: &[bool], map_size: (i32, i32)) -> Option<(TilePos, TilePos)> {
@@ -22,7 +61,7 @@ impl GroundProducerEgress {
             super::flood::tile_index(map_size.0, map_size.1, *tile).is_some_and(|index| open[index])
         };
         let spawn = self.ring.iter().copied().find(passable)?;
-        let witness = self.witnesses.iter().copied().find(passable)?;
+        let witness = self.witnesses.farthest(self.anchor, passable)?;
         Some((spawn, witness))
     }
 }
@@ -453,6 +492,7 @@ impl GroundEgressCache {
     fn ground_producer_egress(obs: &Observation, base_open: &[bool]) -> Vec<GroundProducerEgress> {
         let map_size = (obs.map_width, obs.map_height);
         let labels = crate::bot::navigation::flood::labels(base_open, map_size);
+        let mut components = std::collections::BTreeMap::new();
         let index = |tile: TilePos| (tile.y * obs.map_width + tile.x) as usize;
         obs.my_buildings
             .iter()
@@ -479,15 +519,22 @@ impl GroundEgressCache {
                         && base_open[index(*tile)]
                 })?;
                 let component = labels[index(current_spawn)];
-                let witnesses: Vec<_> = labels
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, label)| **label == component)
-                    .map(|(index, _)| {
-                        TilePos::new(index as i32 % obs.map_width, index as i32 / obs.map_width)
-                    })
-                    .collect();
-                Some(GroundProducerEgress::new(producer.anchor, ring, witnesses))
+                let witnesses = components.entry(component).or_insert_with(|| {
+                    let tiles = labels
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, label)| **label == component)
+                        .map(|(index, _)| {
+                            TilePos::new(index as i32 % obs.map_width, index as i32 / obs.map_width)
+                        })
+                        .collect();
+                    std::sync::Arc::new(ComponentWitnesses::new(tiles))
+                });
+                Some(GroundProducerEgress {
+                    anchor: producer.anchor,
+                    ring,
+                    witnesses: std::sync::Arc::clone(witnesses),
+                })
             })
             .collect()
     }
@@ -541,6 +588,102 @@ impl GroundEgressCertificate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn producers_and_controller_clones_share_only_their_current_component_index() {
+        let mut obs = Observation {
+            map_width: 128,
+            map_height: 128,
+            my_buildings: (0..8)
+                .map(|id| crate::bot::observation::BuildingObs {
+                    id: crate::ids::BuildingId(id),
+                    player: crate::ids::PlayerId(0),
+                    kind: BuildingKind::Foundry,
+                    anchor: TilePos::new(4 + id as i32 * 16, 10),
+                    hp: 1,
+                    built: true,
+                    seen: true,
+                    tier: 0,
+                    provisional: false,
+                })
+                .collect(),
+            ..Observation::default()
+        };
+        let mut cache = None;
+        GroundEgressCache::prepare(&mut cache, &obs);
+        let prior = cache.as_ref().unwrap().clone();
+        assert_eq!(prior.producers.len(), 8);
+        for producer in &cache.as_ref().unwrap().producers {
+            assert!(std::sync::Arc::ptr_eq(
+                &producer.witnesses,
+                &prior.producers[0].witnesses
+            ));
+        }
+        obs.known_rock = (0..128).map(|y| TilePos::new(64, y)).collect();
+        GroundEgressCache::prepare(&mut cache, &obs);
+        let next = cache.unwrap();
+        for (index, producer) in next.producers.iter().enumerate() {
+            let representative = if index < 4 { 0 } else { 4 };
+            assert!(std::sync::Arc::ptr_eq(
+                &producer.witnesses,
+                &next.producers[representative].witnesses
+            ));
+            assert!(!std::sync::Arc::ptr_eq(
+                &producer.witnesses,
+                &prior.producers[0].witnesses
+            ));
+        }
+        assert!(!std::sync::Arc::ptr_eq(
+            &next.producers[0].witnesses,
+            &next.producers[4].witnesses
+        ));
+    }
+
+    #[test]
+    fn component_extrema_match_full_ranking_after_arbitrary_removals() {
+        for mask in 0..512 {
+            let tiles: Vec<_> = (0..9)
+                .rev()
+                .filter(|i| mask & (1 << i) == 0)
+                .map(|i| TilePos::new(i % 3, i / 3))
+                .collect();
+            let witnesses = ComponentWitnesses::new(tiles.clone());
+            for anchor in (0..9).map(|i| TilePos::new(i % 3, i / 3)) {
+                for removed in 0..10 {
+                    let passable = |tile: &TilePos| tile.y * 3 + tile.x != removed;
+                    let expected = tiles.iter().copied().filter(passable).min_by_key(|tile| {
+                        (std::cmp::Reverse(tile.chebyshev(anchor)), tile.y, tile.x)
+                    });
+                    assert_eq!(witnesses.farthest(anchor, passable), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn large_component_queries_only_inspect_the_four_live_extrema() {
+        let witnesses = ComponentWitnesses::new(
+            (0..160 * 160)
+                .map(|i| TilePos::new(i % 160, i / 160))
+                .collect(),
+        );
+        for blocked_corner in [false, true] {
+            let inspected = std::cell::Cell::new(0);
+            let chosen = witnesses.farthest(TilePos::new(80, 80), |tile| {
+                inspected.set(inspected.get() + 1);
+                !blocked_corner || tile.x >= 4 || tile.y >= 4
+            });
+            assert_eq!(
+                chosen,
+                Some(if blocked_corner {
+                    TilePos::new(4, 0)
+                } else {
+                    TilePos::new(0, 0)
+                })
+            );
+            assert!(inspected.get() <= 12, "inspected {} cells", inspected.get());
+        }
+    }
 
     #[test]
     fn interior_route_repairs_have_local_work_on_large_maps() {
@@ -690,7 +833,7 @@ mod tests {
             assert_eq!(
                 alternate.last(),
                 Some(&if endpoint == route[11] {
-                    producer.witnesses[1]
+                    TilePos::new(11, 5)
                 } else {
                     route[11]
                 })

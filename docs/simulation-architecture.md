@@ -1287,12 +1287,13 @@ A*, and maps above its expansion cap bypass the proof. Each immutable route
 projection retains at most sixteen safety fields, independently of the directed
 route-answer cache. Producer-exit certificates first repair an intersected route
 inside a small rectangle around the candidate footprint, including nearby
-replacement doors or destinations when an endpoint is blocked. Destination
-ordering is prepared once per layout. Failed local repairs use the full
-connectivity check; a failed local detour never proves that a producer is
-trapped. Long cardinal proofs first try a bounded monotone search. A successful
-probe retains the canonical shortest path; detours fall back to the complete
-search.
+replacement doors or destinations when an endpoint is blocked. Producers share
+one row/column index per connected component; its four live coordinate extrema
+select the exact farthest destination without per-producer rankings. Failed
+local repairs use the full connectivity check; a failed local detour never
+proves that a producer is trapped. Long cardinal proofs first try a bounded
+monotone search. A successful probe retains the canonical shortest path; detours
+fall back to the complete search.
 
 Reinforcement valuation requests scalar travel costs and visits units in
 optimistic arrival order, stopping when no remaining unit can arrive sooner.
