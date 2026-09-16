@@ -131,6 +131,7 @@ impl UtilityPolicy {
         };
         // Freeze single-frame prices before comparing overlapping development alternatives.
         let original = proposals.to_vec();
+        let placement = super::terrain::PlacementGeometry::new(obs);
         for (members, mut anchors) in sites {
             anchors.sort_by_key(|anchor| {
                 (
@@ -152,7 +153,7 @@ impl UtilityPolicy {
                         && building.anchor == anchor
                 });
                 if existing
-                    || (self.placement_geometry_valid(obs, BuildingKind::Foundry, anchor)
+                    || (placement.valid(self, BuildingKind::Foundry, anchor)
                         && (!open_origin || base_routes.reaches(worker.tile, anchor))
                         && geometry.resource_access_survives(BuildingKind::Foundry, anchor)
                         && geometry

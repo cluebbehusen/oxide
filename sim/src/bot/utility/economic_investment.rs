@@ -629,8 +629,9 @@ impl UtilityPolicy {
             .iter()
             .filter_map(|&(kind, anchor)| (kind == BuildingKind::Airworks).then_some(anchor))
             .collect();
+        let placement = super::terrain::PlacementGeometry::new(obs);
         for (kind, anchor) in possible {
-            if !self.placement_geometry_valid(obs, kind, anchor) {
+            if !placement.valid(self, kind, anchor) {
                 continue;
             }
             let Some(stats) = kind.base_stats().construction else {

@@ -173,6 +173,7 @@ pub(super) struct DefenseGrounding<'a> {
     public_starts: Vec<StartingFoundry>,
     ground: GroundKnowledge<'a>,
     build_routes: routing::BuildRouteProjection<'a>,
+    placement: super::terrain::PlacementGeometry<'a>,
     assets: Vec<DefendedAsset>,
     future_ground_producers: Vec<FutureGroundProducerEgress>,
 }
@@ -326,6 +327,7 @@ impl<'a> DefenseGrounding<'a> {
             public_starts,
             ground,
             build_routes: routing::BuildRouteProjection::new(obs, Some(briefing)),
+            placement: super::terrain::PlacementGeometry::new(obs),
             assets,
             future_ground_producers,
         }
@@ -628,14 +630,18 @@ impl<'a> DefenseThinkContext<'a> {
             building_doorsteps(&self.grounding.ground, anchor, footprint.size)
         };
         let candidate = (movement_domain == DefenseDomain::Ground).then_some(footprint);
-        let cost = shortest_path_between(
-            &self.grounding.ground,
-            &[unit.tile],
-            &goals,
-            candidate,
-            movement_domain,
-        )
-        .map(|(_, _, path)| path_cost(&path));
+        let board = routing_cache::board(&self.grounding.ground, movement_domain);
+        let cost = board
+            .cache
+            .borrow_mut()
+            .costs
+            .between_sets(
+                board.grid,
+                candidate.and_then(|candidate| routing_cache::overlay(candidate, movement_domain)),
+                &[unit.tile],
+                &goals,
+            )
+            .available_cost();
         self.evaluation.reinforcement_travel.insert(key, cost);
         #[cfg(test)]
         {
@@ -2093,7 +2099,9 @@ fn strategic_defense_quote_from_projection(
     });
     policy.prepare_ground_producer_egress(obs);
     let mut evaluate = |anchor| {
-        if !policy.placement_valid_prepared(obs, kind, anchor) {
+        if !grounding.placement.valid(policy, kind, anchor)
+            || !policy.preserves_ground_producer_egress_prepared(&[], (kind, anchor))
+        {
             return None;
         }
         let placement = profile.footprint(anchor);
@@ -2181,8 +2189,14 @@ fn strategic_defense_quote_from_projection(
                 Some(candidate)
             } else {
                 policy.planning.clear_site(kind);
-                let mut candidate_tiles =
-                    defense_candidate_tiles(policy, obs, assets, approaches, profile);
+                let mut candidate_tiles = defense_candidate_tiles(
+                    policy,
+                    obs,
+                    assets,
+                    approaches,
+                    profile,
+                    &grounding.placement,
+                );
                 progressive::rank(&mut candidate_tiles, assets, approaches, profile);
                 if let Some(egress) = policy.ground_egress_cache.borrow().as_ref() {
                     candidate_tiles.sort_by_key(|anchor| !egress.certifies((kind, *anchor)));
@@ -2201,7 +2215,14 @@ fn strategic_defense_quote_from_projection(
             }
         }
         DefenseSiteSearch::Best => pruning::Bounds::new(ground, assets, approaches).best(
-            defense_candidate_tiles(policy, obs, assets, approaches, profile),
+            defense_candidate_tiles(
+                policy,
+                obs,
+                assets,
+                approaches,
+                profile,
+                &grounding.placement,
+            ),
             &CoverageContext {
                 obs,
                 briefing,
@@ -2215,16 +2236,28 @@ fn strategic_defense_quote_from_projection(
             evaluate,
         ),
         #[cfg(test)]
-        DefenseSiteSearch::Any => defense_candidate_tiles(policy, obs, assets, approaches, profile)
-            .into_iter()
-            .find_map(evaluate),
+        DefenseSiteSearch::Any => defense_candidate_tiles(
+            policy,
+            obs,
+            assets,
+            approaches,
+            profile,
+            &grounding.placement,
+        )
+        .into_iter()
+        .find_map(evaluate),
         #[cfg(test)]
-        DefenseSiteSearch::Exhaustive => {
-            defense_candidate_tiles(policy, obs, assets, approaches, profile)
-                .into_iter()
-                .filter_map(evaluate)
-                .max_by_key(|(candidate, _)| candidate.key(profile))
-        }
+        DefenseSiteSearch::Exhaustive => defense_candidate_tiles(
+            policy,
+            obs,
+            assets,
+            approaches,
+            profile,
+            &grounding.placement,
+        )
+        .into_iter()
+        .filter_map(evaluate)
+        .max_by_key(|(candidate, _)| candidate.key(profile)),
     };
     let (candidate, builder) = selected?;
     let placement = profile.footprint(candidate.anchor);
@@ -3382,6 +3415,7 @@ fn defense_candidate_tiles(
     assets: &[DefendedAsset],
     approaches: &[Approach],
     profile: DefenseProfile,
+    placement: &super::terrain::PlacementGeometry<'_>,
 ) -> Vec<TilePos> {
     let seeds = approaches.iter().flat_map(|approach| {
         approach
@@ -3398,7 +3432,7 @@ fn defense_candidate_tiles(
         seeds,
         profile.candidate_reach,
     );
-    candidate_tiles.retain(|&anchor| policy.placement_geometry_valid(obs, profile.kind, anchor));
+    candidate_tiles.retain(|&anchor| placement.valid(policy, profile.kind, anchor));
     candidate_tiles
 }
 
@@ -4604,7 +4638,14 @@ mod tests {
         policy.prepare_ground_producer_egress(&obs);
         let profile = DefenseProfile::for_kind(BuildingKind::Turret).unwrap();
         let (candidates, work) = crate::bot::navigation::work::measure(|| {
-            defense_candidate_tiles(&policy, &obs, &assets, &baseline, profile)
+            defense_candidate_tiles(
+                &policy,
+                &obs,
+                &assets,
+                &baseline,
+                profile,
+                &super::terrain::PlacementGeometry::new(&obs),
+            )
         });
         assert!(!candidates.is_empty());
         assert_eq!(work.searches, 0, "{work:?}");

@@ -94,6 +94,7 @@ impl UtilityPolicy {
                 })
                 .collect::<Vec<_>>();
             let mut selected = Vec::new();
+            let geometry = super::super::terrain::PlacementGeometry::new(obs);
             for cluster in clusters {
                 let count = i64::try_from(cluster.len()).unwrap_or(i64::MAX).max(1);
                 let center = TilePos::new(
@@ -111,7 +112,7 @@ impl UtilityPolicy {
                 for dy in -radius..=radius {
                     for dx in -radius..=radius {
                         let anchor = center.offset(dx - size.0 / 2, dy - size.1 / 2);
-                        if self.placement_geometry_valid(obs, BuildingKind::Foundry, anchor) {
+                        if geometry.valid(self, BuildingKind::Foundry, anchor) {
                             candidates.insert(anchor);
                         }
                     }

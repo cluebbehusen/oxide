@@ -5,6 +5,86 @@ use crate::bot::navigation::egress::GroundEgressCache;
 
 type PlannedFootprint = (BuildingKind, TilePos);
 
+pub(super) struct PlacementGeometry<'a> {
+    obs: &'a Observation,
+    open: Vec<bool>,
+    unclaimed: Vec<bool>,
+}
+
+impl<'a> PlacementGeometry<'a> {
+    pub(super) fn new(obs: &'a Observation) -> Self {
+        let cells = (obs.map_width.max(0) as usize) * (obs.map_height.max(0) as usize);
+        let mut open = vec![true; cells];
+        let index = |tile: TilePos| {
+            (tile.x >= 0 && tile.y >= 0 && tile.x < obs.map_width && tile.y < obs.map_height)
+                .then(|| (tile.y * obs.map_width + tile.x) as usize)
+        };
+        for tile in obs
+            .known_rock
+            .iter()
+            .copied()
+            .chain(obs.known_scrap.iter().map(|(tile, _)| *tile))
+        {
+            if let Some(index) = index(tile) {
+                open[index] = false;
+            }
+        }
+        let block = |grid: &mut Vec<bool>, anchor: TilePos, size: (i32, i32)| {
+            for dy in 0..size.1 {
+                for dx in 0..size.0 {
+                    if let Some(index) = index(anchor.offset(dx, dy)) {
+                        grid[index] = false;
+                    }
+                }
+            }
+        };
+        for building in obs
+            .my_buildings
+            .iter()
+            .chain(&obs.ally_buildings)
+            .chain(&obs.enemy_buildings)
+        {
+            block(&mut open, building.anchor, building.kind.base_stats().size);
+        }
+        let mut unclaimed = open.clone();
+        for anchor in &obs.known_frames {
+            block(&mut unclaimed, *anchor, (2, 2));
+        }
+        for (kind, anchor) in obs.my_units.iter().filter_map(|unit| unit.founding) {
+            block(&mut unclaimed, anchor, kind.base_stats().size);
+        }
+        for unit in obs
+            .enemy_units
+            .iter()
+            .filter(|unit| unit.body_domain() == Domain::Ground)
+        {
+            block(&mut unclaimed, unit.tile, (1, 1));
+        }
+        Self {
+            obs,
+            open,
+            unclaimed,
+        }
+    }
+
+    pub(super) fn valid(
+        &self,
+        policy: &UtilityPolicy,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) -> bool {
+        let index = |tile: TilePos| (tile.y * self.obs.map_width + tile.x) as usize;
+        policy.placement_geometry_valid_with(
+            self.obs,
+            kind,
+            anchor,
+            None,
+            |tile| self.open[index(tile)],
+            |tile| self.unclaimed[index(tile)],
+        )
+    }
+}
+
 /// Membership form of the known-road flood: one BFS from home answers
 /// [`UtilityPolicy::ground_route_known`] for every candidate anchor.
 /// `None` inside mirrors the degenerate-map and out-of-bounds cases
@@ -164,8 +244,11 @@ impl UtilityPolicy {
         mut final_check: impl FnMut(TilePos) -> bool,
     ) -> Option<TilePos> {
         self.prepare_ground_producer_egress(obs);
+        let geometry = PlacementGeometry::new(obs);
         candidates.into_iter().find(|anchor| {
-            self.placement_valid_prepared(obs, kind, *anchor) && final_check(*anchor)
+            geometry.valid(self, kind, *anchor)
+                && self.preserves_ground_producer_egress_prepared(&[], (kind, *anchor))
+                && final_check(*anchor)
         })
     }
 
@@ -201,6 +284,25 @@ impl UtilityPolicy {
         anchor: TilePos,
         retained: Option<(BuildingKind, TilePos)>,
     ) -> bool {
+        self.placement_geometry_valid_with(
+            obs,
+            kind,
+            anchor,
+            retained,
+            |tile| self.tile_open(obs, tile),
+            |tile| self.placement_tile_open_except(obs, tile, retained),
+        )
+    }
+
+    fn placement_geometry_valid_with(
+        &self,
+        obs: &Observation,
+        kind: BuildingKind,
+        anchor: TilePos,
+        retained: Option<(BuildingKind, TilePos)>,
+        open: impl Fn(TilePos) -> bool,
+        unclaimed: impl Fn(TilePos) -> bool,
+    ) -> bool {
         if self.dead_anchors.contains(&anchor)
             || (retained != Some((kind, anchor)) && self.pending_sites.contains(&anchor))
         {
@@ -224,9 +326,9 @@ impl UtilityPolicy {
                     && (kind.is_stealthy()
                         || !self.work_experience.construction_work_tiles.contains(&tile))
                     && if kind == BuildingKind::Extractor {
-                        self.tile_open(obs, tile)
+                        open(tile)
                     } else {
-                        self.placement_tile_open_except(obs, tile, retained)
+                        unclaimed(tile)
                     }
             })
         });
@@ -237,7 +339,7 @@ impl UtilityPolicy {
             (-1..=height).any(|dy| {
                 let core = (0..width).contains(&dx) && (0..height).contains(&dy);
                 let tile = anchor.offset(dx, dy);
-                !core && in_bounds(tile) && obs.explored(tile) && self.tile_open(obs, tile)
+                !core && in_bounds(tile) && obs.explored(tile) && open(tile)
             })
         })
     }
@@ -453,6 +555,58 @@ mod tests {
         anchor: TilePos,
     ) -> bool {
         policy.first_valid_placement(obs, kind, [anchor]) == Some(anchor)
+    }
+
+    #[test]
+    fn indexed_placement_matches_scalar_geometry_across_known_obstacles() {
+        let mut obs = observation();
+        obs.known_rock = vec![TilePos::new(3, 3), TilePos::new(3, 4)];
+        obs.known_scrap = vec![(TilePos::new(4, 3), 10)];
+        obs.known_frames = vec![TilePos::new(12, 8)];
+        obs.explored[0] = false;
+        add_building(&mut obs, BuildingKind::ScuttleCharge, TilePos::new(5, 5));
+        obs.enemy_units.push(UnitObs {
+            id: UnitId(90),
+            player: PlayerId(1),
+            kind: UnitKind::Sentinel,
+            tile: TilePos::new(10, 10),
+            hp: 60,
+            idle: true,
+            carrying: 0,
+            harvesting: None,
+            cargo: 0,
+            site: None,
+            salvaging: None,
+            founding: None,
+            repairing: false,
+            grounded: false,
+        });
+        let mut founder = obs.enemy_units[0].clone();
+        founder.id = UnitId(91);
+        founder.player = obs.me;
+        founder.kind = UnitKind::Harvester;
+        founder.founding = Some((BuildingKind::Fabricator, TilePos::new(2, 8)));
+        obs.my_units.push(founder);
+        let geometry = PlacementGeometry::new(&obs);
+        let mut policy = UtilityPolicy::new();
+        policy.pending_sites.push(TilePos::new(8, 10));
+        policy.dead_anchors.push(TilePos::new(10, 2));
+        policy
+            .work_experience
+            .construction_work_tiles
+            .insert(TilePos::new(4, 9));
+        for kind in BuildingKind::ALL {
+            for y in -1..=obs.map_height {
+                for x in -1..=obs.map_width {
+                    let anchor = TilePos::new(x, y);
+                    assert_eq!(
+                        geometry.valid(&policy, kind, anchor),
+                        policy.placement_geometry_valid(&obs, kind, anchor),
+                        "{kind:?} at {anchor:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

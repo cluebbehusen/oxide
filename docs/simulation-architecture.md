@@ -1282,6 +1282,12 @@ inside a small rectangle around the candidate footprint. Blocked endpoints or
 failed local repairs use the full connectivity check; a failed local detour
 never proves that a producer is trapped.
 
+Reinforcement valuation requests scalar travel costs and visits units in
+optimistic arrival order, stopping when no remaining unit can arrive sooner.
+Candidate placement scans share indexed obstacle, frame, foundation, and enemy
+occupancy masks for their immutable observation. Current policy reservations,
+exploration, worker access, and producer exits remain separate checks.
+
 Each immutable campaign comparison shares ground and air connectivity, staging
 choices, and artillery firing stands across target selection, producer access,
 and exact group admission. Comparing another target or production mix does not
