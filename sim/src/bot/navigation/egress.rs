@@ -102,7 +102,7 @@ impl GroundEgressLayout {
             .iter()
             .chain(obs.ally_buildings.iter())
             .chain(obs.enemy_buildings.iter())
-            .filter(|building| !building.kind.is_stealthy())
+            .filter(|building| !building.provisional && !building.kind.is_stealthy())
             .map(|building| (building.kind, building.anchor))
             .collect();
         blocking_buildings.sort_unstable();
@@ -450,7 +450,7 @@ impl GroundEgressCache {
             .iter()
             .chain(obs.ally_buildings.iter())
             .chain(obs.enemy_buildings.iter())
-            .filter(|building| !building.kind.is_stealthy())
+            .filter(|building| !building.provisional && !building.kind.is_stealthy())
         {
             let (width, height) = building.kind.base_stats().size;
             for dy in 0..height {
@@ -599,6 +599,78 @@ impl GroundEgressCertificate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provisional_sites_preserve_egress_until_activation() {
+        use crate::bot::navigation::commands::RouteProjection;
+        use crate::bot::observation::BuildingObs;
+        use crate::ids::{BuildingId, PlayerId};
+
+        for owner in 0..3 {
+            let mut obs = Observation {
+                map_width: 16,
+                map_height: 16,
+                my_buildings: vec![BuildingObs {
+                    id: BuildingId(0),
+                    player: PlayerId(0),
+                    kind: BuildingKind::Foundry,
+                    anchor: TilePos::new(2, 2),
+                    hp: 1,
+                    built: true,
+                    seen: true,
+                    tier: 0,
+                    provisional: false,
+                }],
+                ..Observation::default()
+            };
+            let mut cache = None;
+            GroundEgressCache::prepare(QueryPurpose::NavigationTest, &mut cache, &obs);
+            let before = cache.clone().unwrap();
+            let site = BuildingObs {
+                id: BuildingId(1),
+                player: PlayerId(owner),
+                kind: BuildingKind::Barricade,
+                anchor: TilePos::new(8, 8),
+                hp: 1,
+                built: false,
+                seen: true,
+                tier: 0,
+                provisional: true,
+            };
+            let buildings = match owner {
+                0 => &mut obs.my_buildings,
+                1 => &mut obs.ally_buildings,
+                _ => &mut obs.enemy_buildings,
+            };
+            buildings.push(site);
+            let (_, work) = super::super::work::measure(|| {
+                GroundEgressCache::prepare(QueryPurpose::NavigationTest, &mut cache, &obs);
+            });
+            let routes = RouteProjection::new(QueryPurpose::NavigationTest, &obs, Domain::Ground);
+            assert!(routes.open(TilePos::new(8, 8)));
+            assert_eq!(
+                GroundEgressCache::ground_egress_base_open(&obs),
+                before.base_open
+            );
+            assert_eq!(work.generations, 0);
+            assert_eq!(cache.as_ref().unwrap(), &before);
+
+            match owner {
+                0 => obs.my_buildings.last_mut(),
+                1 => obs.ally_buildings.last_mut(),
+                _ => obs.enemy_buildings.last_mut(),
+            }
+            .unwrap()
+            .provisional = false;
+            let (_, work) = super::super::work::measure(|| {
+                GroundEgressCache::prepare(QueryPurpose::NavigationTest, &mut cache, &obs);
+            });
+            assert_eq!(work.generations, 1);
+            assert!(!cache.as_ref().unwrap().base_open[8 * 16 + 8]);
+            let routes = RouteProjection::new(QueryPurpose::NavigationTest, &obs, Domain::Ground);
+            assert!(!routes.open(TilePos::new(8, 8)));
+        }
+    }
 
     #[test]
     fn producers_and_controller_clones_share_only_their_current_component_index() {

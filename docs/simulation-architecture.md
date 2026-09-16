@@ -611,7 +611,7 @@ memory, computed once per team and cloned to later seats.
 The bot `Observation` copies both masks in canonical row-major order. Policies
 therefore distinguish current sight from remembered terrain without consulting
 authoritative state; seat orientation transforms both masks with the rest of the
-observed world. Observation schema 19 distinguishes explored pits from
+observed world. Observation schema 20 distinguishes explored pits from
 fire-blocking rock and peaks, marks provisional footprints and paid deferred
 sites, and exposes continuous contact tracks and each own carried unit's
 identity, kind, health, and carrier separately from available units. This is

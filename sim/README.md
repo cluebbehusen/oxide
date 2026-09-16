@@ -63,7 +63,7 @@ an ordinary command source rather than a separate ruleset.
   and corroborated doctrine preferences affect future unpaid alternatives, not
   ordinary rules. Context contributions retain their individual ages, failed
   approaches retain frozen objective sites through fog, and Array ranking uses
-  exact builder readiness. Observation schema 19 includes explored pits,
+  exact builder readiness. Observation schema 20 includes explored pits,
   provisional footprints, paid deferred sites, continuous contact tracks and
   owner-only carried identities and health separately from available units.
   Decision trace schema 12 separates raw evidence from adjusted return, mission

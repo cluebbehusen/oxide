@@ -1166,6 +1166,26 @@ mod tests {
     }
 
     #[test]
+    fn observation_without_pit_knowledge_is_rejected_without_mutating_memory() {
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(&observation(100));
+        let before = intelligence.clone();
+        let mut snapshot = observation(200);
+        snapshot.known_rock = vec![TilePos::new(4, 4)];
+        snapshot.known_pits = snapshot.known_rock.clone();
+        let mut legacy = serde_json::to_value(&snapshot).unwrap();
+        legacy["version"] = 19.into();
+        legacy.as_object_mut().unwrap().remove("known_pits");
+        let legacy: Observation = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.known_pits.is_empty());
+        let result = catch_unwind(AssertUnwindSafe(|| intelligence.update(&legacy)));
+        assert!(result.is_err());
+        assert_eq!(intelligence, before);
+        intelligence.update(&snapshot);
+        assert_eq!(intelligence.observed_at(), Some(200));
+    }
+
+    #[test]
     fn an_unknown_observation_schema_is_rejected_without_mutating_memory() {
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&observation(100));

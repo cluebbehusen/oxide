@@ -36,7 +36,8 @@ use serde::{Deserialize, Serialize};
 /// owner-only carried identities separately from available units.
 /// Version 19 marks provisional building footprints and reports paid deferred
 /// construction through `UnitObs::site` instead of `UnitObs::founding`.
-pub const OBSERVATION_VERSION: u32 = 19;
+/// Version 20 distinguishes explored pits from fire-blocking rock and peaks.
+pub const OBSERVATION_VERSION: u32 = 20;
 
 /// An own passenger that remains alive but is unavailable for new assignments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -771,7 +772,7 @@ mod tests {
             state.unit_mut(worker).unwrap().order = Order::Found { kind, anchor };
             state.rebuild_building_occupancy();
             let own = Observation::fog_honest(&state, PlayerId(0));
-            assert_eq!(own.version, 19);
+            assert_eq!(own.version, OBSERVATION_VERSION);
             assert!(
                 own.my_buildings
                     .iter()
