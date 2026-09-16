@@ -741,6 +741,26 @@ boundary, but it never becomes current credit.
 Before considering fresh work, the session imports exact obligations for
 already-paid or retained construction, protected opening work, standing and
 planner-owned units, saved Foundry expansion, and active connected operations.
+`RetainedWork` owns that reconciliation and returns the claim snapshot, imported
+capacity, saved expansion, active revision, and admission guards used by fresh
+preparation. It selects the retained Foundry/island/lift order once and
+refreshes planner claims at the existing advancement boundaries. Standing-army
+ownership is imported after operation advancement and before a trailing Foundry.
+Equal admission ticks preserve island-before-lift and operation-before-Foundry
+ties. Repair renewal finishes before fresh support quotations.
+
+Lift, connected, and connected-revision funding share one conflict/retry path.
+Only a production conflict attributed to that exact retained owner can trigger
+its recovery. The path first defers an eligible younger or equal-tick Foundry
+and retries with a recomputed horizon; deferred planning and another owner's
+failure do not prove this owner unfundable. Recovery remains domain-specific and
+preserves its existing live-member, paid-work, and deadline rules. If a quoted
+connected revision recovers, fresh preparation explicitly discards that quote,
+rederives standing work from current ownership, and clears the dependent
+economic alternatives. The two original rollback checkpoint boundaries remain
+unchanged. The historical Airworks-capacity trace field remains zero; retained
+preparation no longer carries an inert reserve for it.
+
 When the opening core is deficient, one current-threat emergency defense may
 also enter as a survival obligation with its scorer-selected site and builder.
 The remaining opening reserve receives only the bank left after that defense.

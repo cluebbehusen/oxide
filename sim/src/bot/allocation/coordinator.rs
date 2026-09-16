@@ -718,11 +718,7 @@ fn owner_is_utility(owner: ClaimOwner) -> bool {
                     | ObligationKey::PaidConstruction(_)
                     | ObligationKey::ObservedBuilderWork { .. }
                     | ObligationKey::DeferredFoundation { .. }
-                    | ObligationKey::SavedFoundry { .. }
-                    | ObligationKey::Legacy {
-                        channel: LegacyChannel::AirworksCapacity,
-                        ..
-                    },
+                    | ObligationKey::SavedFoundry { .. },
                 ..
             }
     )
