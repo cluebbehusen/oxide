@@ -2,7 +2,6 @@
 //! away from the battlefield floor.
 
 use crate::game::Game;
-use chassis::grid::TilePos;
 use macroquad::prelude::*;
 
 const SALT: u32 = 347;
@@ -36,38 +35,6 @@ impl BoundaryInsets {
                     .iter()
                     .all(|row| row.as_bytes().first().copied().is_some_and(blocked)),
         }
-    }
-}
-
-/// Quarry terraces inherit sight from the nearest floor inside the boundary.
-pub(super) struct BoundaryKnowledge {
-    min: TilePos,
-    max: TilePos,
-}
-
-impl BoundaryKnowledge {
-    pub(super) fn new(rows: &[String]) -> Self {
-        let insets = BoundaryInsets::from_rows(rows);
-        let width = rows.first().map_or(0, String::len) as i32;
-        let height = rows.len() as i32;
-        let max = TilePos::new(
-            (width - 1 - i32::from(insets.right)).max(0),
-            (height - 1 - i32::from(insets.bottom)).max(0),
-        );
-        Self {
-            min: TilePos::new(
-                i32::from(insets.left).min(max.x),
-                i32::from(insets.top).min(max.y),
-            ),
-            max,
-        }
-    }
-
-    pub(super) fn tile(&self, tile: TilePos) -> TilePos {
-        TilePos::new(
-            tile.x.clamp(self.min.x, self.max.x),
-            tile.y.clamp(self.min.y, self.max.y),
-        )
     }
 }
 
@@ -315,8 +282,8 @@ fn cell_color(material: Material, ix: i32, iy: i32) -> Option<Color> {
         }
         Material::Vignette(step) => Some(mixed(
             LAYERS.last().expect("terrace layers").top,
-            BLACK,
-            (0.25 + f32::from(step) / 4.0 * 0.72).min(0.97),
+            super::FOG_UNEXPLORED,
+            (0.25 + f32::from(step) / 4.0 * 0.75).min(1.0),
         )),
         Material::Void => None,
     }
@@ -535,7 +502,14 @@ pub(super) fn hash(x: i32, y: i32, salt: u32) -> u32 {
 }
 
 pub(super) fn draw_backdrop(_game: &Game) {
-    draw_rectangle(0.0, 0.0, screen_width(), screen_height(), rgba(8, 9, 12));
+    // Boundary sight extends off-map, so the void must match opaque fog.
+    draw_rectangle(
+        0.0,
+        0.0,
+        screen_width(),
+        screen_height(),
+        super::FOG_UNEXPLORED,
+    );
 }
 
 pub(super) fn draw_boundary(game: &Game, fractured: bool) {
@@ -545,41 +519,6 @@ pub(super) fn draw_boundary(game: &Game, fractured: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn boundary_knowledge_follows_adjacent_floor_at_edges_and_corners() {
-        let rows = ["#####", "#...#", "#...#", "#####"].map(str::to_string);
-        let boundary = BoundaryKnowledge::new(&rows);
-        for (outside, floor) in [
-            ((2, -8), (2, 1)),
-            ((9, 2), (3, 2)),
-            ((2, 9), (2, 2)),
-            ((-7, 2), (1, 2)),
-            ((-7, -8), (1, 1)),
-            ((9, -8), (3, 1)),
-            ((9, 9), (3, 2)),
-            ((-7, 9), (1, 2)),
-            ((0, 2), (1, 2)),
-            ((2, 2), (2, 2)),
-        ] {
-            assert_eq!(
-                boundary.tile(TilePos::new(outside.0, outside.1)),
-                TilePos::new(floor.0, floor.1),
-            );
-        }
-    }
-
-    #[test]
-    fn open_edges_keep_their_own_knowledge_and_tiny_maps_have_valid_bounds() {
-        let rows = [".....", ".....", "....."].map(str::to_string);
-        let boundary = BoundaryKnowledge::new(&rows);
-        assert_eq!(boundary.tile(TilePos::new(-1, -1)), TilePos::new(0, 0));
-        assert_eq!(boundary.tile(TilePos::new(8, 8)), TilePos::new(4, 2));
-        for rows in [vec![], vec!["#".to_string()]] {
-            let boundary = BoundaryKnowledge::new(&rows);
-            assert_eq!(boundary.tile(TilePos::new(-1, 3)), TilePos::new(0, 0));
-        }
-    }
 
     #[test]
     fn solid_authored_walls_are_absorbed_but_open_lanes_stay_playable() {

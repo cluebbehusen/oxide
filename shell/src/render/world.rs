@@ -6,21 +6,17 @@ use super::*;
 /// Fog of war from the local player's perspective: unexplored is void,
 /// explored-but-unseen is dimmed.
 pub(crate) fn draw_fog(game: &Game) {
-    let vision = game.my_vision();
-    let boundary = environment::BoundaryKnowledge::new(&game.scenario.map);
+    let fog_alpha = |tile| tile_fog_alpha(game, tile);
     let (lo, hi) = game.camera.world_rect();
     let min = TilePos::new(lo.x.floor() as i32, lo.y.floor() as i32);
     let max = TilePos::new(hi.x.ceil() as i32, hi.y.ceil() as i32);
     for y in min.y..max.y {
         for x in min.x..max.x {
-            let tile = boundary.tile(TilePos::new(x, y));
-            let cover = if !vision.explored(tile) {
-                FOG_UNEXPLORED
-            } else if !vision.visible(tile) {
-                FOG_EXPLORED
-            } else {
+            let alpha = fog_alpha(TilePos::new(x, y));
+            if alpha == 0.0 {
                 continue;
-            };
+            }
+            let cover = Color::new(FOG_UNEXPLORED.r, FOG_UNEXPLORED.g, FOG_UNEXPLORED.b, alpha);
             // Exact shared edges: translucent rects that overlap draw
             // double-dark seams, so each tile ends where the next begins.
             let a = game.camera.to_screen(vec2(x as f32, y as f32)).floor();
@@ -32,16 +28,6 @@ pub(crate) fn draw_fog(game: &Game) {
         }
     }
     // Feather inward into known ground. Unknown tiles retain their opaque veil.
-    let fog_alpha = |tile| {
-        let tile = boundary.tile(tile);
-        if !vision.explored(tile) {
-            1.0
-        } else if !vision.visible(tile) {
-            FOG_EXPLORED.a
-        } else {
-            0.0
-        }
-    };
     for y in min.y..max.y {
         for x in min.x..max.x {
             let tile = TilePos::new(x, y);
@@ -103,6 +89,27 @@ pub(crate) fn draw_fog(game: &Game) {
                 });
             }
         }
+    }
+}
+
+fn tile_fog_alpha(game: &Game, tile: TilePos) -> f32 {
+    let (explored, visible) = if game.state.map().tile(tile).is_some() {
+        (
+            game.my_vision().explored(tile),
+            game.my_vision().visible(tile),
+        )
+    } else {
+        (
+            game.boundary_fog.explored(tile),
+            game.boundary_fog.visible(tile),
+        )
+    };
+    if !explored {
+        1.0
+    } else if !visible {
+        FOG_EXPLORED.a
+    } else {
+        0.0
     }
 }
 

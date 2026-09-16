@@ -270,8 +270,13 @@ rules.
 sprite key; the renderer does not load individual sprite textures. Optional rigs
 may fall back to composite sprites, but incomplete rig families are rejected.
 Procedural quarry boundaries and pits derive from map geometry with fog-aware
-visibility. Animation, heading, and weapon effects use the relevant simulation
-state rather than inventing movement or firing delays.
+visibility. The shell extends allied unit sight discs and completed-building
+footprint sight into a bounded off-map quarry margin. Its presentation-only
+exploration cache updates on every tick, including bulk advances, and rebuilds
+from the command log when a saved match resumes. Map tiles retain authoritative
+simulation fog; the replay viewer remains fog-free. Animation, heading, and
+weapon effects use the relevant simulation state rather than inventing movement
+or firing delays.
 
 `entity_lod` derives full, half, quarter, and eighth-resolution entity textures
 at startup without changing authored atlas bytes. Regions pack in descending
