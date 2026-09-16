@@ -115,7 +115,7 @@ mod tests {
                 let mut enemy = scenario.players[1].clone();
                 enemy.team = Some(1);
                 scenario.players.push(enemy);
-                scenario.map[12].replace_range(4..5, "3");
+                scenario.map[12].replace_range(2..3, "3");
             }
             let state = scenario.build().unwrap();
             let hash = state.hash();
