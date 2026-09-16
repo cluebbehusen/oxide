@@ -37,8 +37,8 @@ use crate::bot::query_work::QueryPurpose;
 use crate::bot::raid::RaidPlanner;
 use crate::bot::resources::{ProducerLaneReservations, ReservedProducerJob, ResourceSnapshot};
 use crate::bot::standing_force::{
-    CapabilityDemand, StandingForceContext, StandingForceProposal, StandingGroundTarget,
-    StandingProductionCommitment, derive_standing_force_with_demand,
+    StandingForceContext, StandingGroundTarget, StandingProductionCommitment,
+    derive_standing_force_with_demand,
 };
 use crate::bot::strategy::{
     ActiveConnectedObligation, AirOperation, AirOperationOutcome, AirOperationPhase,
@@ -61,7 +61,25 @@ use crate::ids::UnitId;
 use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::Tick;
 use chassis::grid::TilePos;
-use std::collections::BTreeMap;
+
+mod standing;
+use standing::{
+    StandingForceDerivation, StandingForceInputs, StandingForcePreparation, StandingForceWork,
+};
+
+#[derive(Default)]
+struct SupportPreparation {
+    assignments: Vec<crate::bot::utility::RepairAssignment>,
+    construction: Vec<EconomicInvestment>,
+    repair_work: Vec<crate::bot::standing_force::RepairWork>,
+}
+
+struct FreshInvestmentInputs<'a> {
+    active_revision: ActiveRevisionPreparation,
+    defense_admission_reserve: u32,
+    recon_paid_exclusions: &'a [(crate::ids::BuildingId, UnitKind, usize)],
+    standing_force: StandingForceWork,
+}
 
 /// One current view over every exact unit retained by a planner.
 ///
@@ -185,41 +203,6 @@ pub(crate) fn prior_planner_claims(
     claims.sort_unstable();
     claims.dedup();
     claims
-}
-
-fn merged_production_commitments(
-    retained: &[StandingProductionCommitment],
-    contextual: &[StandingProductionCommitment],
-) -> Vec<StandingProductionCommitment> {
-    let multiplicities = |commitments: &[StandingProductionCommitment]| {
-        commitments.iter().copied().fold(
-            BTreeMap::<StandingProductionCommitment, usize>::new(),
-            |mut counts, commitment| {
-                let count = counts.entry(commitment).or_default();
-                *count = count.saturating_add(1);
-                counts
-            },
-        )
-    };
-    let retained = multiplicities(retained);
-    let contextual = multiplicities(contextual);
-    let mut keys = retained
-        .keys()
-        .chain(contextual.keys())
-        .copied()
-        .collect::<Vec<_>>();
-    keys.sort_unstable();
-    keys.dedup();
-    keys.into_iter()
-        .flat_map(|commitment| {
-            let count = retained
-                .get(&commitment)
-                .copied()
-                .unwrap_or_default()
-                .max(contextual.get(&commitment).copied().unwrap_or_default());
-            core::iter::repeat_n(commitment, count)
-        })
-        .collect()
 }
 
 fn residual_current_after_obligations(
@@ -423,9 +406,6 @@ pub(crate) struct AllocationSession<'a> {
     participants: AllocationParticipants<'a>,
     advanced: AdvancedPlannerWork,
     trace: Option<&'a mut AllocationTrace>,
-    repair_work: Vec<crate::bot::standing_force::RepairWork>,
-    protection_work: Vec<crate::bot::utility::ProtectionRequest>,
-    raid_work: Option<crate::bot::raid::RaidProcurementRequest>,
 }
 
 impl<'a> AllocationSession<'a> {
@@ -441,9 +421,6 @@ impl<'a> AllocationSession<'a> {
             participants,
             advanced,
             trace,
-            repair_work: Vec::new(),
-            protection_work: Vec::new(),
-            raid_work: None,
         }
     }
 
@@ -714,8 +691,7 @@ impl<'a> AllocationSession<'a> {
             self.prospective_carrier_floor(&claims, obligations.coordinator_failure.is_none());
         self.reconcile_unfundable_reconnaissance(&claims, &mut obligations);
         self.reconcile_standing_saving(&mut obligations);
-        let (fresh_support, fresh_support_construction) =
-            self.prepare_support(&claims, &mut obligations, &support_snapshot);
+        let support = self.prepare_support(&claims, &mut obligations, &support_snapshot);
         let fresh_support_relief = self.prepare_support_relief(&claims);
         let fresh_support_deployments =
             if claims.opening_core.ready && self.participants.policy.economic_saving().is_none() {
@@ -753,16 +729,16 @@ impl<'a> AllocationSession<'a> {
                         &recon_paid_exclusions,
                     )
                 });
-        self.raid_work =
+        let raid_work =
             self.prepare_raid_procurement(&claims, &obligations, &recon_paid_unavailable);
         let mut recon_unavailable = claims.planner_claims.clone();
-        if let Some(request) = &self.raid_work {
+        if let Some(request) = &raid_work {
             recon_unavailable.extend_from_slice(&request.members);
         }
         if let Some(team) = &self.participants.team {
             recon_unavailable.extend(team.reservations());
         }
-        self.protection_work = self
+        let protection_work = self
             .participants
             .policy
             .discretionary_protection_work(self.context.observation.tick, self.context.tuning)
@@ -828,9 +804,20 @@ impl<'a> AllocationSession<'a> {
             &claims,
             &saved,
             &mut obligations,
-            active_revision,
-            defense_admission_reserve,
-            &recon_paid_exclusions,
+            FreshInvestmentInputs {
+                active_revision,
+                defense_admission_reserve,
+                recon_paid_exclusions: &recon_paid_exclusions,
+                standing_force: StandingForceWork {
+                    repair_work: support.repair_work,
+                    protection_work,
+                    raid: raid_work.filter(|request| {
+                        request.missing > 0
+                            || !request.newly_claimed.is_empty()
+                            || !request.new_paid_claims().is_empty()
+                    }),
+                },
+            },
         );
         self.downgrade_unfundable_active_revision(
             &claims,
@@ -859,8 +846,8 @@ impl<'a> AllocationSession<'a> {
             fresh_foundry: fresh.foundry,
             fresh_defense: fresh.defense,
             fresh_economy: fresh.economy,
-            fresh_support,
-            fresh_support_construction,
+            fresh_support: support.assignments,
+            fresh_support_construction: support.construction,
             fresh_support_relief,
             fresh_support_deployments,
             fresh_reconnaissance,
@@ -936,10 +923,7 @@ impl<'a> AllocationSession<'a> {
         claims: &ClaimSnapshot,
         obligations: &mut ObligationPreparation,
         support_snapshot: &SupportWorkSnapshot,
-    ) -> (
-        Vec<crate::bot::utility::RepairAssignment>,
-        Vec<EconomicInvestment>,
-    ) {
+    ) -> SupportPreparation {
         let available = residual_current_after_obligations(
             &obligations.resources,
             &obligations.obligations,
@@ -1020,17 +1004,19 @@ impl<'a> AllocationSession<'a> {
                 self.context.observation.tick,
                 self.context.tuning,
             );
-            self.repair_work = fresh.unit_work();
-            (
-                self.participants
+            SupportPreparation {
+                repair_work: fresh.unit_work(),
+                assignments: self
+                    .participants
                     .policy
                     .prepared_repair_assignments(context, &fresh),
-                self.participants
+                construction: self
+                    .participants
                     .policy
                     .prepared_repair_bays(context, &fresh),
-            )
+            }
         } else {
-            (Vec::new(), Vec::new())
+            SupportPreparation::default()
         }
     }
 
@@ -2341,10 +2327,14 @@ impl<'a> AllocationSession<'a> {
         claims: &ClaimSnapshot,
         saved: &SavedFoundryPreparation,
         obligations: &mut ObligationPreparation,
-        active_revision: ActiveRevisionPreparation,
-        defense_admission_reserve: u32,
-        recon_paid_exclusions: &[(crate::ids::BuildingId, UnitKind, usize)],
+        inputs: FreshInvestmentInputs<'_>,
     ) -> FreshInvestmentPreparation {
+        let FreshInvestmentInputs {
+            active_revision,
+            defense_admission_reserve,
+            recon_paid_exclusions,
+            standing_force: work,
+        } = inputs;
         let admission_tick = strategic_admission_tick(self.context.observation.tick)
             && claims.opening_core.ready
             && self.participants.policy.economic_saving().is_none()
@@ -2535,120 +2525,16 @@ impl<'a> AllocationSession<'a> {
         let standing_force_derivation = StandingForceDerivation {
             projection_targets: self.standing_force_projection_targets(),
             expansion_security_need,
-            raid: self.raid_work.clone().filter(|request| {
-                request.missing > 0
-                    || !request.newly_claimed.is_empty()
-                    || !request.new_paid_claims().is_empty()
-            }),
+            work,
         };
-        let mut capability_demands = None;
-        let mut derive_standing_force =
-            |unit_exclusions: &[UnitId],
-             connected_paid_production: &[StandingProductionCommitment]| {
-                let (proposals, demands) = self.derive_standing_force(
-                    claims,
-                    obligations,
-                    &standing_force_derivation,
-                    &committed_production,
-                    unit_exclusions,
-                    connected_paid_production,
-                );
-                capability_demands.get_or_insert(demands);
-                proposals
-            };
-        let standing_force = if let Some(proposal) = connected.as_ref() {
-            let mut standing_force_cache = Vec::<(
-                Vec<UnitId>,
-                Vec<StandingProductionCommitment>,
-                Vec<StandingForceProposal>,
-            )>::new();
-            let mut derive_contextual_standing_force =
-                |unit_exclusions: &[UnitId], paid_production: &[StandingProductionCommitment]| {
-                    if let Some((_, _, proposals)) = standing_force_cache.iter().find(
-                        |(cached_exclusions, cached_production, _)| {
-                            cached_exclusions == unit_exclusions
-                                && cached_production == paid_production
-                        },
-                    ) {
-                        return proposals.clone();
-                    }
-                    let proposals = derive_standing_force(unit_exclusions, paid_production);
-                    standing_force_cache.push((
-                        unit_exclusions.to_vec(),
-                        paid_production.to_vec(),
-                        proposals.clone(),
-                    ));
-                    proposals
-                };
-            let key = ConnectedOffenseKey {
-                objective: proposal.objective(),
-                anchor: proposal.anchor(),
-            };
-            let mut contexts = Vec::with_capacity(
-                usize::from(!proposal.revises_active_operation())
-                    .saturating_add(1)
-                    .saturating_add(proposal.marginal_variants().len()),
-            );
-            if !proposal.revises_active_operation() {
-                contexts.push(ContextualStandingForce {
-                    context: ConnectedPortfolioContext::Absent,
-                    proposals: derive_contextual_standing_force(
-                        &claims.strategic_core_exclusions,
-                        &[],
-                    ),
-                });
-            }
-            let mut selected_exclusions = claims.strategic_core_exclusions.clone();
-            selected_exclusions.extend_from_slice(proposal.minimum_claims().units());
-            selected_exclusions.sort_unstable();
-            selected_exclusions.dedup();
-            let mut selected_paid_production = proposal
-                .minimum_claims()
-                .paid_providers()
-                .iter()
-                .map(|provider| {
-                    StandingProductionCommitment::paid(provider.producer(), provider.kind())
-                })
-                .collect::<Vec<_>>();
-            selected_paid_production.sort_unstable();
-            contexts.push(ContextualStandingForce {
-                context: ConnectedPortfolioContext::Selected {
-                    key,
-                    marginal_depth: 0,
-                },
-                proposals: derive_contextual_standing_force(
-                    &selected_exclusions,
-                    &selected_paid_production,
-                ),
-            });
-            for (marginal_index, marginal) in proposal.marginal_variants().iter().enumerate() {
-                selected_exclusions.extend_from_slice(marginal.additions().units());
-                selected_exclusions.sort_unstable();
-                selected_exclusions.dedup();
-                selected_paid_production.extend(marginal.additions().paid_providers().iter().map(
-                    |provider| {
-                        StandingProductionCommitment::paid(provider.producer(), provider.kind())
-                    },
-                ));
-                selected_paid_production.sort_unstable();
-                contexts.push(ContextualStandingForce {
-                    context: ConnectedPortfolioContext::Selected {
-                        key,
-                        marginal_depth: marginal_index.saturating_add(1),
-                    },
-                    proposals: derive_contextual_standing_force(
-                        &selected_exclusions,
-                        &selected_paid_production,
-                    ),
-                });
-            }
-            StandingForcePreparation::ConnectedContexts(contexts)
-        } else {
-            StandingForcePreparation::Unconditional(derive_standing_force(
-                &claims.strategic_core_exclusions,
-                &[],
-            ))
-        };
+        let (standing_force, capability_demands) = self
+            .standing_force_inputs(
+                claims,
+                obligations,
+                &standing_force_derivation,
+                &committed_production,
+            )
+            .prepare(&claims.strategic_core_exclusions, connected.as_ref());
         let unavailable_economy_workers = self
             .context
             .observation
@@ -2674,7 +2560,7 @@ impl<'a> AllocationSession<'a> {
                 briefing: self.context.public_map,
                 orientation: self.context.orientation,
                 unavailable: &unavailable_economy_workers,
-                demands: capability_demands.as_deref().unwrap_or(&[]),
+                demands: &capability_demands,
                 air_work: &air_work,
                 cadence: self.context.dials.cadence,
                 unit_contacts: self.context.intelligence.units(),
@@ -2799,87 +2685,47 @@ impl<'a> AllocationSession<'a> {
         committed
     }
 
-    fn derive_standing_force(
-        &self,
+    fn standing_force_inputs<'b>(
+        &'b self,
         claims: &ClaimSnapshot,
-        obligations: &ObligationPreparation,
-        derivation: &StandingForceDerivation,
-        committed_production: &[StandingProductionCommitment],
-        unit_exclusions: &[UnitId],
-        connected_paid_production: &[StandingProductionCommitment],
-    ) -> (Vec<StandingForceProposal>, Vec<CapabilityDemand>) {
-        let _scope = crate::bot::observer::PhaseScope::new(
-            self.observer,
-            crate::bot::observer::BotPhase::StandingForce,
-        );
-        if !claims.opening_core.ready
-            || obligations.coordinator_failure.is_some()
-            || (self.participants.policy.economic_saving().is_some()
-                && !self
-                    .context
-                    .observation
-                    .my_buildings
-                    .iter()
-                    .any(|building| building.kind == BuildingKind::Fabricator && building.built))
-        {
-            return (Vec::new(), Vec::new());
-        }
-        let owned_production =
-            merged_production_commitments(committed_production, connected_paid_production);
-        let funded_repairers: Vec<_> = self
-            .participants
-            .policy
-            .support_work
-            .repairs
-            .iter()
-            .map(|repair| repair.key.worker)
-            .collect();
-        let mut context = StandingForceContext::new(unit_exclusions, &owned_production)
-            .with_repair_work(&self.repair_work)
-            .with_funded_repairers(&funded_repairers)
-            .with_protection_work(&self.protection_work)
-            .with_ground_routing(
-                StandingGroundTarget::footprint(
-                    self.context.home,
-                    BuildingKind::Foundry.base_stats().size,
-                ),
-                Some(self.context.public_map),
-                &derivation.projection_targets,
-                Some(self.context.orientation),
-            );
-        if let Some((anchor, target_strength)) = derivation.expansion_security_need {
-            context = context.with_expansion_security(
-                StandingGroundTarget::footprint(anchor, BuildingKind::Foundry.base_stats().size),
-                target_strength,
-            );
-        }
-        let (mut proposals, mut demands) = derive_standing_force_with_demand(
-            self.context.observation,
-            self.context.intelligence,
-            self.context.profile,
-            self.context.tuning,
-            &obligations.resources,
-            context,
-        );
-        if let Some(saving) = &self.participants.policy.standing_saving {
-            proposals.retain(|proposal| {
-                proposal.accumulation().is_none()
-                    && !saving.covers(proposal.reason(), proposal.key().service)
-            });
-        }
-        demands.extend_from_slice(self.participants.policy.reconnaissance.capability_demands());
-        if let Some(request) = derivation.raid.as_ref().filter(|request| {
-            request
-                .newly_claimed
+        obligations: &'b ObligationPreparation,
+        derivation: &'b StandingForceDerivation,
+        committed_production: &'b [StandingProductionCommitment],
+    ) -> StandingForceInputs<'b> {
+        StandingForceInputs {
+            observer: self.observer,
+            observation: self.context.observation,
+            intelligence: self.context.intelligence,
+            profile: self.context.profile,
+            tuning: self.context.tuning,
+            resources: &obligations.resources,
+            home: self.context.home,
+            public_map: self.context.public_map,
+            orientation: self.context.orientation,
+            eligible: claims.opening_core.ready
+                && obligations.coordinator_failure.is_none()
+                && (self.participants.policy.economic_saving().is_none()
+                    || self
+                        .context
+                        .observation
+                        .my_buildings
+                        .iter()
+                        .any(|building| {
+                            building.kind == BuildingKind::Fabricator && building.built
+                        })),
+            derivation,
+            committed_production,
+            funded_repairers: self
+                .participants
+                .policy
+                .support_work
+                .repairs
                 .iter()
-                .all(|id| !unit_exclusions.contains(id))
-        }) {
-            proposals.push(StandingForceProposal::for_raid(
-                request.clone().with_paid_ownership(&owned_production),
-                self.context.profile,
-            ));
+                .map(|repair| repair.key.worker)
+                .collect(),
+            saving: self.participants.policy.standing_saving.as_ref(),
+            recon_demands: self.participants.policy.reconnaissance.capability_demands(),
         }
-        (proposals, demands)
     }
 
     fn prepare_raid_procurement(
@@ -3056,14 +2902,14 @@ impl<'a> AllocationSession<'a> {
             .tick
             .saturating_add(connected_preparation_horizon());
         let committed_production = self.committed_standing_production();
-        let standing_force = self.derive_standing_force(
-            claims,
-            obligations,
-            &fresh.standing_force_derivation,
-            &committed_production,
-            &claims.strategic_core_exclusions,
-            &[],
-        );
+        let standing_force = self
+            .standing_force_inputs(
+                claims,
+                obligations,
+                &fresh.standing_force_derivation,
+                &committed_production,
+            )
+            .derive(&claims.strategic_core_exclusions, &[]);
         fresh.standing_force = StandingForcePreparation::Unconditional(standing_force.0);
         fresh.economy.clear();
     }
@@ -4384,41 +4230,6 @@ impl FreshInvestmentPreparation {
     }
 }
 
-#[derive(Default)]
-struct StandingForceDerivation {
-    projection_targets: Vec<StandingGroundTarget>,
-    expansion_security_need: Option<(TilePos, u64)>,
-    raid: Option<crate::bot::raid::RaidProcurementRequest>,
-}
-
-enum StandingForcePreparation {
-    Unconditional(Vec<StandingForceProposal>),
-    ConnectedContexts(Vec<ContextualStandingForce>),
-}
-
-impl Default for StandingForcePreparation {
-    fn default() -> Self {
-        Self::Unconditional(Vec::new())
-    }
-}
-
-impl StandingForcePreparation {
-    fn for_each(&self, mut visit: impl FnMut(&StandingForceProposal)) {
-        match self {
-            Self::Unconditional(proposals) => proposals.iter().for_each(&mut visit),
-            Self::ConnectedContexts(contexts) => contexts
-                .iter()
-                .flat_map(|context| &context.proposals)
-                .for_each(visit),
-        }
-    }
-}
-
-struct ContextualStandingForce {
-    context: ConnectedPortfolioContext,
-    proposals: Vec<StandingForceProposal>,
-}
-
 struct CommitEffects {
     accepted_connected: bool,
     producer_lane_reservations: ProducerLaneReservations,
@@ -5502,12 +5313,15 @@ mod tests {
         Confidence, DeferrableCapitalClaim, ExecutionSafety, ProposalCase, StrategicValue,
         TimeToImpact, Urgency,
     };
+    use super::standing::ContextualStandingForce;
     use super::*;
     use crate::bot::briefing::PublicMapBriefing;
     use crate::bot::lift::LiftPhase;
     use crate::bot::observation::{BuildingObs, UnitObs};
     use crate::bot::profile::Specialty;
-    use crate::bot::standing_force::{StandingForceFixture, StandingForceReason};
+    use crate::bot::standing_force::{
+        StandingForceFixture, StandingForceProposal, StandingForceReason,
+    };
     use crate::bot::strategy::{
         AirRecoveryReason, ConnectedConfidence, ConnectedExecutionSafety, ConnectedOffenseClaims,
         ConnectedOpportunityCase, ConnectedProducerAssignment, ConnectedProducerFunding,
@@ -10071,6 +9885,117 @@ mod tests {
     }
 
     #[test]
+    fn contextual_standing_force_reuses_ownership_and_keeps_first_context_demand() {
+        use crate::bot::observer::{BotPhase, PhaseObserver};
+        use std::cell::Cell;
+
+        #[derive(Default)]
+        struct Derivations(Cell<usize>);
+        impl PhaseObserver for Derivations {
+            fn enter(&self, phase: BotPhase) {
+                if phase == BotPhase::StandingForce {
+                    self.0.set(self.0.get() + 1);
+                }
+            }
+            fn exit(&self, _phase: BotPhase) {}
+        }
+
+        let observation = connected_inventory_transfer_observation(300, 5);
+        let briefing = connected_briefing(&observation);
+        let profile = prime_profile();
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(&observation);
+        let resources = ResourceSnapshot::from_observation(&observation);
+        let derivation = StandingForceDerivation::default();
+        let observer = Derivations::default();
+        let inputs = StandingForceInputs {
+            observer: Some(&observer),
+            observation: &observation,
+            intelligence: &intelligence,
+            profile: &profile,
+            tuning: DifficultyTuning::for_level(profile.difficulty),
+            resources: &resources,
+            home: TilePos::new(3, 10),
+            public_map: &briefing,
+            orientation: Orientation::for_home(&observation, TilePos::new(3, 10)),
+            eligible: true,
+            derivation: &derivation,
+            committed_production: &[],
+            funded_repairers: Vec::new(),
+            saving: None,
+            recon_demands: &[],
+        };
+        let proposal = FreshConnectedProposal::fixture(FreshConnectedProposalFixture {
+            objective: BuildingId(700),
+            anchor: TilePos::new(22, 15),
+            deadline: 3_000,
+            case: ConnectedOpportunityCase::fixture(
+                ConnectedUrgency::Timely,
+                ConnectedConfidence::Current,
+                ConnectedStrategicValue::Material,
+                ConnectedTimeToImpact::Near,
+                ConnectedExecutionSafety::Managed,
+            ),
+            minimum_claims: ConnectedOffenseClaims::fixture(Vec::new(), Vec::new()),
+            marginal_additions: vec![
+                ConnectedOffenseClaims::fixture(Vec::new(), Vec::new()),
+                ConnectedOffenseClaims::fixture(vec![UnitId(201)], Vec::new()),
+            ],
+            protected_current_scrap: 0,
+            protected_forecast_scrap: 0,
+        });
+        let first = inputs.derive(&[], &[]);
+        let claimed = inputs.derive(&[UnitId(201)], &[]);
+        assert_ne!(
+            first.0, claimed.0,
+            "owning the Bombard must change replacement demand"
+        );
+        for revision in [false, true] {
+            let proposal = if revision {
+                proposal.clone().into_active_revision_fixture()
+            } else {
+                proposal.clone()
+            };
+            observer.0.set(0);
+            let (prepared, demands) = inputs.prepare(&[], Some(&proposal));
+            let StandingForcePreparation::ConnectedContexts(contexts) = prepared else {
+                panic!("connected ownership requires contextual alternatives");
+            };
+            assert_eq!(
+                observer.0.get(),
+                2,
+                "evaluate each distinct ownership only once"
+            );
+            assert_eq!(demands, first.1);
+            let key = ConnectedOffenseKey {
+                objective: proposal.objective(),
+                anchor: proposal.anchor(),
+            };
+            let expected = (!revision)
+                .then_some(ConnectedPortfolioContext::Absent)
+                .into_iter()
+                .chain(
+                    (0..3).map(|marginal_depth| ConnectedPortfolioContext::Selected {
+                        key,
+                        marginal_depth,
+                    }),
+                )
+                .collect::<Vec<_>>();
+            assert_eq!(
+                contexts
+                    .iter()
+                    .map(|entry| entry.context)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            for entry in &contexts[..contexts.len() - 1] {
+                assert_eq!(entry.proposals, first.0);
+            }
+            assert_eq!(contexts.last().unwrap().proposals, claimed.0);
+        }
+    }
+
+    #[test]
     fn fresh_connected_live_claim_triggers_same_think_standing_replacement() {
         let observation = connected_inventory_transfer_observation(300, 5);
         let mut policy = UtilityPolicy::new();
@@ -10269,17 +10194,5 @@ mod tests {
             })
             .expect("the selected Connected context accepts the replacement demand");
         assert_eq!(lancer.case.urgency, crate::bot::trace::UrgencyTrace::Timely);
-    }
-
-    #[test]
-    fn retained_and_contextual_paid_claims_use_multiset_union() {
-        let bombard = StandingProductionCommitment::paid(BuildingId(11), UnitKind::Bombard);
-        let moth = StandingProductionCommitment::paid(BuildingId(12), UnitKind::Moth);
-
-        assert_eq!(
-            merged_production_commitments(&[bombard, bombard], &[bombard, moth]),
-            vec![bombard, bombard, moth],
-            "an active revision must not double-own one occurrence, while distinct multiplicity remains exact"
-        );
     }
 }

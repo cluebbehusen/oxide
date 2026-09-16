@@ -806,6 +806,15 @@ cannot fit after imported fixed capital. This prefilter leaves viable quotes
 unchanged; the allocator still owns producer funding and portfolio
 compatibility.
 
+Standing-force preparation receives explicit observed, ownership, and demand
+inputs. Repair, protection, and raid work belongs to the preparation phase,
+rather than mutable session scratch. It enumerates absent, minimum, and marginal
+connected-operation ownership in order, deduplicates equal live-unit and paid
+production inputs, then evaluates each distinct input serially with local
+scratch. Paid production preserves queue multiplicity. Results return in the
+original context order; economic capability demand comes from the first context.
+Recovery rebuilds current ownership inputs before deriving replacement work.
+
 Accepted payloads retain the exact site, builder, objective, force membership,
 unit kind, and producer assignments selected by their domain. A defensive
 payload includes the scorer-selected role and footprint, its route-proven
