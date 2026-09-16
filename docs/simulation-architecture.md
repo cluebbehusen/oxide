@@ -819,6 +819,16 @@ coordinator failure. Otherwise, still-unmigrated fresh lift and raid work runs
 against the true residual bank, and future producer reservations prevent it or
 `UtilityPolicy` from occupying an accepted lane.
 
+Resolution returns either an exact settlement or a failure; deferred refinement
+may first try a portfolio containing only retained commitments. Commit adapters
+return errors directly and stop at the first rejection. Partially produced
+commands and budget effects stay private to commitment and are returned only on
+success. One outer boundary freezes spending and restores ownership on failure.
+Planner checkpoints precede active-work advancement; the policy checkpoint
+follows reconnaissance and support observation. Restoration retains observed
+outcome journals, unfinished planning, and maintenance commands from that
+observation phase. It does not provide rollback after a panic.
+
 Within the residual utility pass, a fresh `CommitmentLedger` imports upstream
 committed scrap, reserved units, strategic queue appends, persistent saving, and
 retained deferred foundations. It attributes current-bank spending and holds
